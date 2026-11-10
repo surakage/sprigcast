@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "canvases": [
+    { "id": "horizontal", "width": 1920, "height": 1080, "fps": 60 },
+    { "id": "vertical", "width": 1080, "height": 1920, "fps": 60 }
+  ],
+  "sources": [
+    { "id": "bg-moss", "kind": "color", "name": "Moss background", "settings": { "color": "#2f4a3a", "width": 1920, "height": 1920 } },
+    { "id": "panel-bloom", "kind": "color", "name": "Bloom panel", "settings": { "color": "#e8a4b8cc", "width": 640, "height": 360 } },
+    { "id": "bar-sprig", "kind": "color", "name": "Sprig bar", "settings": { "color": "#9cc89a", "width": 1920, "height": 96 } },
+    { "id": "bg-night", "kind": "color", "name": "Night background", "settings": { "color": "#1d2233", "width": 1920, "height": 1920 } }
+  ],
+  "scenes": [
+    { "id": "starting", "name": "Starting soon", "canvas": "horizontal", "items": [
+      { "source": "bg-moss", "x": 0, "y": 0 },
+      { "source": "panel-bloom", "x": 640, "y": 360 },
+      { "source": "bar-sprig", "x": 0, "y": 984 }
+    ]},
+    { "id": "starting-v", "name": "Starting soon (vertical)", "canvas": "vertical", "linked_to": "starting", "items": [
+      { "source": "bg-moss", "x": 0, "y": 0 },
+      { "source": "panel-bloom", "x": 220, "y": 780 },
+      { "source": "bar-sprig", "x": 0, "y": 1824, "crop": [420, 0, 420, 0] }
+    ]},
+    { "id": "brb", "name": "Be right back", "canvas": "horizontal", "items": [
+      { "source": "bg-night", "x": 0, "y": 0 },
+      { "source": "panel-bloom", "x": 1200, "y": 640, "scale": 0.8, "rotation": -4 }
+    ]},
+    { "id": "brb-v", "name": "Be right back (vertical)", "canvas": "vertical", "linked_to": "brb", "items": [
+      { "source": "bg-night", "x": 0, "y": 0 },
+      { "source": "panel-bloom", "x": 140, "y": 1300, "scale": 1.25, "rotation": 4 }
+    ]}
+  ],
+  "active_scenes": { "horizontal": "starting", "vertical": "starting-v" },
+  "outputs": [
+    { "id": "out-twitch", "type": "stream", "service": "twitch", "canvas": "horizontal", "bitrate_kbps": 6000, "key_ref": "sprigcast/twitch" },
+    { "id": "out-tiktok", "type": "stream", "service": "tiktok", "canvas": "vertical", "bitrate_kbps": 4500, "key_ref": "sprigcast/tiktok" }
+  ]
+}
