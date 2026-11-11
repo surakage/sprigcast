@@ -9,17 +9,24 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QKeySequence,
+)
 from PySide6.QtWidgets import (
-    QCheckBox,
     QApplication,
-    QComboBox,
-    QFrame,
+    QCheckBox,
     QColorDialog,
+    QComboBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -31,8 +38,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
+    QToolBar,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -42,14 +51,27 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
+from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.filters_dialog import FiltersDialog
 from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.preview import Preview
 from sprigcast.app.settings_dialog import SettingsDialog
+from sprigcast.app.settings_window import (
+    CONFIRM_RECORDING,
+    CONFIRM_STREAM,
+    SettingsWindow,
+    confirm_enabled,
+)
 from sprigcast.app.stats_panel import StatsPanel
-from sprigcast.app.settings_window import CONFIRM_RECORDING, CONFIRM_STREAM, SettingsWindow, confirm_enabled
 from sprigcast.app.stream_dialog import output_label
-from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
+from sprigcast.core.events import (
+    AudioLevels,
+    EngineError,
+    ReplaceCollection,
+    SourceInfo,
+    Stats,
+)
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key
@@ -153,7 +175,9 @@ class MainWindow(QMainWindow):
         self._build_sources_dock()
         self._build_audio_dock()
         self._build_transitions_dock()
+        self._build_destinations_dock()
         self._build_controls_dock()
+        self._build_live_dock()
         self._build_properties_dock()
         self.stats_panel = StatsPanel()
         self.stats_dock = self._dock("Stats", self.stats_panel)
@@ -174,6 +198,8 @@ class MainWindow(QMainWindow):
         self.hotkeys.triggered.connect(self._on_hotkey)
         self.hotkeys.apply(self.collection.hotkeys)
 
+        self.mode = "build"
+        self._build_mode_bar()
         self._refresh_all()
         self._restore_layout()
 
@@ -238,11 +264,13 @@ class MainWindow(QMainWindow):
         if state is not None:
             self.restoreState(state, self.LAYOUT_VERSION)
         self._set_docks_locked(QSettings().value("window/locked", False, type=bool))
+        if settings.value("window/mode", "build") == "live":
+            self._set_mode("live")
 
     def _save_layout(self) -> None:
         settings = QSettings()
         settings.setValue("window/geometry", self.saveGeometry())
-        settings.setValue("window/state", self.saveState(self.LAYOUT_VERSION))
+        settings.setValue(self._state_key(self.mode), self.saveState(self.LAYOUT_VERSION))
 
     def _build_sources_dock(self) -> None:
         self.source_list = QListWidget()
@@ -410,11 +438,10 @@ class MainWindow(QMainWindow):
         self.stream_status = QLabel("Offline")
         self.stream_status.setWordWrap(True)
         layout.addWidget(self.stream_status)
-        self.stream_boxes_layout = QVBoxLayout()
-        self.stream_boxes_layout.setSpacing(2)
-        layout.addLayout(self.stream_boxes_layout)
-        self.stream_boxes: dict[str, QCheckBox] = {}
-        self._refresh_stream_boxes()
+        hint = QLabel("Where to stream: the Destinations dock.")
+        hint.setStyleSheet("color: gray")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
         self.record_status = QLabel("Not recording")
         self.record_status.setWordWrap(True)
         layout.addWidget(self.record_status)
@@ -432,6 +459,92 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(panel)
         self._dock("Controls", scroll)
+
+    def _build_destinations_dock(self) -> None:
+        from sprigcast.output.keys import get_key
+
+        def has_key(ref):
+            try:
+                return bool(ref and get_key(ref))
+            except Exception:
+                return False
+
+        self.destinations = DestinationsPanel(self._on_stream_toggled, self._edit_destination, has_key)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.destinations)
+        self._dock("Destinations", scroll)
+
+    def _edit_destination(self, output_id: str | None) -> None:
+        self._open_settings("Stream", output_id=output_id or "new")
+
+    def _build_live_dock(self) -> None:
+        self.live_panel = LivePanel(self._switch_to_scene)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.live_panel)
+        self._dock("Live", scroll)
+
+    def _switch_to_scene(self, scene_id: str) -> None:
+        self.selected_scene_id = scene_id
+        self._make_active()
+        self._refresh_sources()
+
+    # Modes -------------------------------------------------------------------------
+
+    MODES = {"build": "Build", "live": "Live"}
+
+    def _build_mode_bar(self) -> None:
+        """Build (edit scenes, OBS-style docks) or Live (big scene buttons, destinations, mixer)."""
+        bar = QToolBar("Mode")
+        bar.setObjectName("modeBar")
+        bar.setMovable(False)
+        bar.setStyleSheet(
+            "QToolButton { padding: 4px 16px; border-radius: 4px; }"
+            "QToolButton:checked { background: #e8a4b8; color: #1e1f1c; font-weight: bold; }"
+        )
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        self.mode_actions: dict[str, QAction] = {}
+        for mode, label in self.MODES.items():
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setToolTip({"build": "Edit scenes and sources (Ctrl+1)",
+                               "live": "Run the show: big scene buttons, destinations and mixer (Ctrl+2)"}[mode])
+            action.setShortcut(QKeySequence("Ctrl+1" if mode == "build" else "Ctrl+2"))
+            action.triggered.connect(lambda _=False, m=mode: self._set_mode(m))
+            group.addAction(action)
+            bar.addAction(action)
+            self.mode_actions[mode] = action
+        self.mode_actions["build"].setChecked(True)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        bar.addWidget(spacer)
+        self.mode_clock = QLabel("")
+        bar.addWidget(self.mode_clock)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+
+    def _set_mode(self, mode: str) -> None:
+        if mode == self.mode:
+            self.mode_actions[mode].setChecked(True)
+            return
+        QSettings().setValue(self._state_key(self.mode), self.saveState(self.LAYOUT_VERSION))
+        self.mode = mode
+        self.mode_actions[mode].setChecked(True)
+        state = QSettings().value(self._state_key(mode))
+        if state is None or not self.restoreState(state, self.LAYOUT_VERSION):
+            self._arrange_default_layout()
+        editable = mode == "build"
+        for preview in self.previews.values():
+            preview.editable = editable
+            preview.update()
+        QSettings().setValue("window/mode", mode)
+
+    @staticmethod
+    def _state_key(mode: str) -> str:
+        return "window/state" if mode == "build" else f"window/state_{mode}"
 
     def _dock(self, title: str, body: QWidget, toolbar: QWidget | None = None) -> QDockWidget:
         wrapper = QWidget()
@@ -451,11 +564,19 @@ class MainWindow(QMainWindow):
 
     # Dock layout -----------------------------------------------------------------
 
-    LAYOUT_VERSION = 2  # bump when the set of docks changes, so an old saved layout is ignored
+    LAYOUT_VERSION = 3  # bump when the set of docks changes, so an old saved layout is ignored
+
+    DEFAULT_LAYOUTS = {
+        # mode: (docks along the bottom, their widths)
+        "build": (["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls"],
+                  [200, 260, 330, 170, 260, 190]),
+        "live": (["Live", "Audio Mixer", "Destinations", "Controls"], [560, 360, 300, 200]),
+    }
 
     def _arrange_default_layout(self) -> None:
-        """OBS-style: Scenes | Sources | Audio Mixer | Scene Transitions | Controls along the bottom."""
-        order = ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Controls"]
+        """Build: OBS-style Scenes | Sources | Audio Mixer | Scene Transitions | Destinations | Controls.
+        Live: Live (scene buttons) | Audio Mixer | Destinations | Controls."""
+        order, widths = self.DEFAULT_LAYOUTS[getattr(self, "mode", "build")]
         for dock in self.docks.values():
             dock.setFloating(False)
             dock.show()
@@ -466,10 +587,11 @@ class MainWindow(QMainWindow):
         for prev, name in zip(order, order[1:]):
             self.splitDockWidget(self.docks[prev], self.docks[name], Qt.Orientation.Horizontal)
             self.docks[name].show()
-        for name in ("Properties", "Stats"):
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.docks[name])
-            self.docks[name].hide()
-        self.resizeDocks([self.docks[n] for n in order], [220, 280, 360, 180, 220], Qt.Orientation.Horizontal)
+        for name, dock in self.docks.items():
+            if name not in order:
+                self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+                dock.hide()
+        self.resizeDocks([self.docks[n] for n in order], widths, Qt.Orientation.Horizontal)
         self.resizeDocks([first], [300], Qt.Orientation.Vertical)
 
     def _reset_layout(self) -> None:
@@ -527,7 +649,8 @@ class MainWindow(QMainWindow):
             settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
 
         docks_menu = self.menuBar().addMenu("&Docks")
-        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Controls", "Properties", "Stats"]:
+        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Live",
+                     "Properties", "Stats"]:
             action = self.docks[name].toggleViewAction()
             if name == "Stats":
                 action.setShortcut(QKeySequence("Ctrl+Shift+S"))
@@ -621,6 +744,7 @@ class MainWindow(QMainWindow):
         self._refresh_scenes()
         self._refresh_sources()
         self._refresh_previews()
+        self._refresh_stream_boxes()
 
     def _refresh_previews(self) -> None:
         for canvas_id, preview in self.previews.items():
@@ -628,6 +752,7 @@ class MainWindow(QMainWindow):
             preview.subtitle = scene.name if scene else "no scene"
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
             preview.set_scene(scene, index)
+        self.live_panel.show_scenes(self.collection)
 
     def _refresh_scenes(self) -> None:
         self._updating = True
@@ -651,6 +776,7 @@ class MainWindow(QMainWindow):
                     child.setSelected(True)
             parent.setExpanded(True)
         self._updating = False
+        self.live_panel.show_scenes(self.collection)
 
     def _refresh_sources(self, keep_row: int | None = None) -> None:
         self._updating = True
@@ -1283,9 +1409,11 @@ class MainWindow(QMainWindow):
         names = ", ".join(p.name for p in session.paths)
         if errors:
             self.record_status.setText("Recording failed")
+            self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
         else:
             self.record_status.setText(f"Saved {names}")
+            self.live_panel.set_recording("")
 
     def _refresh_recording_status(self) -> None:
         session = self.recording
@@ -1300,32 +1428,19 @@ class MainWindow(QMainWindow):
         if dropped:
             text += f"  ·  {dropped} frames dropped (encoder too slow)"
         self.record_status.setText(text)
+        self.live_panel.set_recording(text)
 
     # Streaming -----------------------------------------------------------------
 
     def _refresh_stream_boxes(self) -> None:
-        while self.stream_boxes_layout.count():
-            widget = self.stream_boxes_layout.takeAt(0).widget()
-            if widget is not None:
-                widget.deleteLater()
-        self.stream_boxes = {}
-        outputs = [o for o in self.collection.outputs if o.type == "stream"]
-        if not outputs:
-            hint = QLabel("No stream outputs yet: use Settings → Stream outputs… to add Twitch, YouTube or TikTok.")
-            hint.setWordWrap(True)
-            self.stream_boxes_layout.addWidget(hint)
-        for output in outputs:
-            box = QCheckBox(f"Stream to {output_label(output)}")
-            box.setChecked(output.enabled)
-            box.toggled.connect(lambda on, oid=output.id: self._on_stream_toggled(oid, on))
-            self.stream_boxes[output.id] = box
-            self.stream_boxes_layout.addWidget(box)
+        self.destinations.show_outputs(self.collection)
 
     def _on_stream_toggled(self, output_id: str, on: bool) -> None:
         for output in self.collection.outputs:
             if output.id == output_id:
                 output.enabled = on
         self.collection.save(self.scenes_path)
+        self._refresh_stream_boxes()
 
     def _on_live_clicked(self) -> None:
         if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
@@ -1363,7 +1478,7 @@ class MainWindow(QMainWindow):
                 name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
                 kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
                 target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
-                                      output.bandwidth_test and service.bandwidth_test)
+                                      output.bandwidth_test and service.bandwidth_test, output_id=output.id)
                 if output.enhanced and output.service == "twitch":
                     target = self._enhanced_target(output, target)
                     if target is None:
@@ -1385,8 +1500,7 @@ class MainWindow(QMainWindow):
             self.live_button.setEnabled(True)
         self.live_button.setText("End stream")
         self.live_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
-        for box in self.stream_boxes.values():
-            box.setEnabled(False)
+        self.destinations.set_live(True)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
 
@@ -1460,8 +1574,10 @@ class MainWindow(QMainWindow):
         session.stop()
         self.live_button.setText("Go live")
         self.live_button.setStyleSheet("")
-        for box in self.stream_boxes.values():
-            box.setEnabled(True)
+        self.destinations.set_live(False)
+        self._refresh_stream_boxes()
+        self.live_panel.set_clock("Offline", False)
+        self.mode_clock.setText("")
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
@@ -1477,24 +1593,18 @@ class MainWindow(QMainWindow):
         self._stream_status_at = now
         session = self.streaming
         seconds = int(session.elapsed)
-        lines = [f"● LIVE {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
-        colors = {"good": "#2ecc71", "warning": "#f1c40f", "bad": "#e74c3c"}
+        clock = f"● LIVE {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+        states, worst = {}, "good"
+        rank = {"good": 0, "warning": 1, "bad": 2}
         for _, st in session.streamers:
-            kbps = st.measure_kbps()
-            level, reason = st.health()
-            line = f"<span style='color:{colors[level]}'>●</span> {html.escape(st.name)}: "
-            if st.connected:
-                line += f"{kbps:.0f} kbps, {st.out_width}×{st.out_height} {st.fps} fps"
-                if reason != "live":
-                    line += f" · {html.escape(reason)}"
-                if st.dropped:
-                    line += f" · {st.dropped} dropped"
-                if st.reconnects:
-                    line += f" · {st.reconnects} reconnects"
-            else:
-                line += html.escape(st.status)
-            lines.append(line)
-        self.stream_status.setText("<br>".join(lines))
+            level, text = live_line(st)
+            states[getattr(st, "output_id", st.name)] = (level, text)
+            worst = max(worst, level, key=lambda lv: rank.get(lv, 0))
+        self.destinations.show_live(states)
+        names = ", ".join(html.escape(st.name) for _, st in session.streamers)
+        self.stream_status.setText(f"{clock}<br>{names}")
+        self.live_panel.set_clock(clock, True)
+        self.mode_clock.setText(clock + ("" if worst == "good" else "  ·  check Destinations") + "  ")
 
     # Hotkeys -----------------------------------------------------------------
 
@@ -1505,7 +1615,7 @@ class MainWindow(QMainWindow):
 
     # Settings window -------------------------------------------------------------
 
-    def _open_settings(self, tab: str = "General") -> None:
+    def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
         devices = {
             "audio_input": [d.name for d in list_audio_devices(loopback=False)],
             "audio_output": [d.name for d in list_audio_devices(loopback=True)],
@@ -1522,6 +1632,10 @@ class MainWindow(QMainWindow):
             tab=tab,
             parent=self,
         )
+        if output_id == "new":
+            window.stream_page.add_output()
+        elif output_id:
+            window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
         window.exec()
 

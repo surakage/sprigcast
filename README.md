@@ -89,7 +89,15 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - *Video*: size, frame rate and on/off for each canvas. These apply the next time SprigCast starts.
   - *Plugins*: which plugins loaded (and why any failed), what they added, and *Open plugins folder*.
   - Stream settings are locked while you're live, and recording settings while you record.
-- **Controls dock**: *Go live*, *Start recording* and *Settings*. The ticks choose which outputs go live and which canvases record.
+- **Build and Live modes** (the buttons at the top left, or Ctrl+1 / Ctrl+2). *Build* is the editing layout above.
+  *Live* is for running the show: big scene buttons for each canvas (linked scenes, marked ⇄, switch together),
+  a large on-air clock, the Audio Mixer, Destinations and Controls; the previews can't be edited by a stray
+  click. Each mode remembers its own dock layout, and SprigCast reopens in the mode you left it in.
+- **Destinations dock**: a card for every place you stream to, showing what it gets (canvas, size, fps,
+  bitrate, or Enhanced), whether it's ready ("Needs a stream key", "Needs a server URL"), and while live its
+  bitrate, drops and a health dot. *On* includes it in the next *Go live*; ⚙ opens its settings, and
+  *+ Add destination* adds a new one.
+- **Controls dock**: *Go live*, *Start recording* and *Settings*. The ticks choose which canvases record.
   - *Settings → Stream* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
     fills in its preset (Twitch: horizontal 1920×1080 60 fps 6000 kbps; TikTok: vertical 720×1280 30 fps
     4000 kbps), and you can change the canvas, resolution, frame rate and bitrate per output.

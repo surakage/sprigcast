@@ -91,6 +91,7 @@ class StreamTarget:
     bandwidth_test: bool = False
     enhanced: object | None = None  # output.enhanced.EnhancedConfig: several qualities over one connection
     canvases: list | None = None  # with enhanced: the canvases its tracks come from (index = canvas_index)
+    output_id: str | None = None  # the scene collection Output this target came from
 
 
 class Streamer(Recorder):
@@ -346,6 +347,7 @@ class StreamSession:
                 st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
                               t.size, t.bandwidth_test, encoder)
                 taps.append((c.id, st.push_frame))
+            st.output_id = t.output_id or t.name
             st.start()
             streamers.append((c.id, st))
         session = cls(engine, streamers)
