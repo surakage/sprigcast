@@ -83,6 +83,10 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     items to hide them in that bloom only, e.g. the "Live now" badge on your BRB webcam frame. The sprig
     and its other placements keep showing them, and edits to the sprig still reach every bloom. The source
     row says "N hidden here"; *Show everything* undoes the tweaks.
+  - **Live states**: right-click a sprig in Scenes → *Live states…* (or *Live states…* in the sprig editor)
+    to give it looks like "Hidden" and "Follower alert", each ticking which items show. In Live, each sprig
+    with states gets a row of buttons (plus *As built*); a click fades the change in on every bloom that uses
+    it. Hotkeys can switch states too (Settings → Hotkeys).
   - Sources **+ → Sprig** places a sprig in the selected bloom (or inside another sprig). Sprigs appear as
     "❧ name [sprig]" in the Sources dock, and hovering one in a preview says so. Move, resize and crop it
     like any source. SprigCast won't let a sprig end up inside itself.

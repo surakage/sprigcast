@@ -21,7 +21,7 @@ from sprigcast.core.events import (
 )
 from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, SceneCollection
+from sprigcast.core.scene import PART_KIND, STATE_FADE_S, SceneCollection
 from sprigcast.core.source import Source, create_source
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ class Engine:
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
         self._transitions: dict[str, tuple] = {}  # canvas id -> (outgoing scene, start time, duration s)
+        self._state_fades: dict[str, tuple] = {}  # sprig id -> (start time, hidden before, hidden after)
 
     # Called from the UI thread ----------------------------------------------
 
@@ -145,6 +146,7 @@ class Engine:
                 return False
             if isinstance(command, ReplaceCollection):
                 self._start_transitions(self._collection, command.collection)
+                self._start_state_fades(self._collection, command.collection)
                 self._collection = command.collection
                 for canvas in self._collection.canvases:
                     self.frames.setdefault(canvas.id, Mailbox())
@@ -163,6 +165,32 @@ class Engine:
             outgoing = next((s for s in old.scenes if s.id == before), None)
             if outgoing is not None:
                 self._transitions[canvas.id] = (outgoing, time.perf_counter(), transition.duration_ms / 1000)
+
+    def _start_state_fades(self, old: SceneCollection, new: SceneCollection) -> None:
+        """When a sprig switches state, fade the items it shows or hides instead of popping them."""
+        before = {p.id: p for p in old.parts()}
+        for part in new.parts():
+            was = before.get(part.id)
+            if was is None:
+                continue
+            old_hidden, new_hidden = old.state_hidden(was), new.state_hidden(part)
+            if old_hidden != new_hidden:
+                self._state_fades[part.id] = (time.perf_counter(), old_hidden, new_hidden)
+
+    def _state_view(self, collection: SceneCollection, layout):
+        """A sprig layout as its Live state shows it right now: (layout to draw, per-item fade opacities)."""
+        main = collection.main_part(layout)
+        fade = self._state_fades.get(main.id)
+        if fade is not None:
+            start, old_hidden, new_hidden = fade
+            t = (time.perf_counter() - start) / STATE_FADE_S
+            if t < 1.0:
+                t = max(0.0, t)
+                fades = {sid: t for sid in old_hidden - new_hidden}  # appearing
+                fades.update({sid: 1.0 - t for sid in new_hidden - old_hidden})  # disappearing
+                return collection.hide_items(layout, old_hidden & new_hidden), fades
+            del self._state_fades[main.id]
+        return collection.hide_items(layout, collection.state_hidden(layout)), None
 
     def _sync_sources(self, compositor) -> None:
         """Create, update and remove source instances so they match the collection."""
@@ -277,7 +305,11 @@ class Engine:
                 continue
             compositor.parts = self._part_sources(textures)
             size = (canvas.width, canvas.height)
-            textures[part.id] = compositor.render_part(part.id, size, part, sizes)
+            if part.id == self.editing_part:
+                view, fades = part, None  # being edited: show every item, whatever its Live state
+            else:
+                view, fades = self._state_view(collection, part)
+            textures[part.id] = compositor.render_part(part.id, size, view, sizes, fades)
             if part.id == self.editing_part:
                 data = compositor.read(f"part:{part.id}")
                 self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, now))
@@ -285,8 +317,9 @@ class Engine:
             main = collection.main_part(part)
             for source in collection.sources:
                 if collection.part_of(source) is main and collection.hidden_here(source):
-                    view = collection.placement_view(source, part)
-                    textures[(source.id, part.id)] = compositor.render_part(f"{part.id}~{source.id}", size, view, sizes)
+                    tweaked = collection.placement_view(source, view)
+                    textures[(source.id, part.id)] = compositor.render_part(
+                        f"{part.id}~{source.id}", size, tweaked, sizes, fades)
         compositor.parts = self._part_sources(textures)
 
     def _part_sources(self, textures: dict) -> dict:

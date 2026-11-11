@@ -39,10 +39,11 @@ def test_placement_view_hides_only_its_items():
 
 class FakeCompositor:
     def __init__(self):
-        self.parts, self.drawn = {}, []
+        self.parts, self.drawn, self.fades = {}, [], []
 
-    def render_part(self, key, size, scene, sizes):
+    def render_part(self, key, size, scene, sizes, fades=None):
         self.drawn.append((key, [i.source for i in scene.items if i.visible]))
+        self.fades.append(fades)
         return key  # stands in for the texture
 
     def read(self, key):

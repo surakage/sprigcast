@@ -17,16 +17,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.terms import PART_MARK, PARTS, cap
 from sprigcast.core.scene import SceneCollection
 
 COLUMNS = 4
 
 
 class LivePanel(QWidget):
-    def __init__(self, on_scene: Callable[[str], None]):
+    def __init__(self, on_scene: Callable[[str], None], on_state: Callable[[str, str | None], None] | None = None):
         super().__init__()
         self.on_scene = on_scene
+        self.on_state = on_state or (lambda part_id, name: None)
         self.buttons: dict[str, QPushButton] = {}
+        self.state_buttons: dict[tuple[str, str | None], QPushButton] = {}  # (sprig id, state name or None)
         self._signature: tuple = ()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -47,10 +50,16 @@ class LivePanel(QWidget):
 
     def show_scenes(self, collection: SceneCollection) -> None:
         signature = (tuple((s.id, s.name, s.canvas, s.kind, s.folder, s.linked_to) for s in collection.scenes),
-                     tuple((f.id, f.name, f.colour, f.live) for f in collection.folders))
+                     tuple((f.id, f.name, f.colour, f.live) for f in collection.folders),
+                     tuple((p.id, p.name, tuple(s.name for s in p.states)) for p in collection.parts()))
         if signature != self._signature:
             self._signature = signature
             self._rebuild(collection)
+        current = {p.id: p.state for p in collection.parts()}
+        for (part_id, name), button in self.state_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(current.get(part_id) == name)
+            button.blockSignals(False)
         for canvas in collection.canvases:
             active = collection.active_scenes.get(canvas.id)
             for scene in collection.scenes_for(canvas.id):
@@ -69,6 +78,7 @@ class LivePanel(QWidget):
                 widget.setParent(None)  # off screen now, not at the next event loop turn
                 widget.deleteLater()
         self.buttons = {}
+        self.state_buttons = {}
         for canvas in collection.canvases:
             groups = [(f, shows) for f, shows in collection.live_scenes(canvas.id) if shows]
             if not groups:
@@ -82,6 +92,33 @@ class LivePanel(QWidget):
                     heading.setStyleSheet(f"color: {folder.colour}; font-weight: bold; margin-top: 4px;")
                     self.rows.addWidget(heading)
                 self._add_grid(group)
+        self._add_state_rows(collection)
+
+    def _add_state_rows(self, collection: SceneCollection) -> None:
+        """One row per sprig with Live states: a button per state, plus "As built"."""
+        parts = [p for p in collection.parts() if p.states]
+        if not parts:
+            return
+        title = QLabel(f"{cap(PARTS)}")
+        title.setStyleSheet("color: #8cc4a3; margin-top: 6px;")
+        self.rows.addWidget(title)
+        for part in parts:
+            row_box = QWidget()
+            row = QHBoxLayout(row_box)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            name = QLabel(f"{PART_MARK} {part.name}")
+            name.setMinimumWidth(110)
+            row.addWidget(name)
+            for state in [None, *(s.name for s in part.states)]:
+                button = QPushButton("As built" if state is None else state)
+                button.setCheckable(True)
+                button.setMinimumHeight(36)
+                button.setToolTip("Switches with a quick fade, on every bloom that uses it")
+                button.clicked.connect(lambda _=False, pid=part.id, st=state: self.on_state(pid, st))
+                self.state_buttons[(part.id, state)] = button
+                row.addWidget(button, 1)
+            self.rows.addWidget(row_box)
 
     def _add_grid(self, scenes) -> None:
         grid_box = QWidget()

@@ -60,7 +60,8 @@ from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
-from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app.hotkeys import SCENE_PREFIX, STATE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.part_dialog import NewPartDialog
 from sprigcast.app.preview import Preview
@@ -234,6 +235,10 @@ class MainWindow(QMainWindow):
         self.remove_shape_button.setToolTip(f"{cap(SHOWS)} on this canvas go back to using the {PART}'s main layout")
         self.remove_shape_button.clicked.connect(self._remove_shape)
         header.addWidget(self.remove_shape_button)
+        states = QPushButton("Live states…")
+        states.setToolTip(f"Looks for this {PART} that you switch between in Live, like “Alert showing”")
+        states.clicked.connect(lambda: self._scene() is not None and self._edit_states(self._scene().id))
+        header.addWidget(states)
         done = QPushButton("Done")
         done.setToolTip("Back to the canvases")
         done.clicked.connect(self._close_part)
@@ -512,6 +517,10 @@ class MainWindow(QMainWindow):
                         action.setEnabled(False)
                     action.triggered.connect(lambda _=False, pid=part.id, sid=show.id: self._add_part_source(pid, sid))
                 menu.addSeparator()
+                states = menu.addAction("Live states…" + (f"  ({len(part.states)})" if part.states else ""))
+                states.setToolTip(f"Looks for this {PART} that you switch between in Live, like “Alert showing”")
+                states.triggered.connect(lambda _=False, pid=part.id: self._edit_states(pid))
+                menu.addSeparator()
             menu.addAction("Rename…").triggered.connect(self._rename_scene)
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
@@ -763,7 +772,7 @@ class MainWindow(QMainWindow):
         self._open_settings("Stream", output_id=output_id or "new")
 
     def _build_live_dock(self) -> None:
-        self.live_panel = LivePanel(self._switch_to_scene)
+        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1546,6 +1555,23 @@ class MainWindow(QMainWindow):
         canvas = self.collection.canvas(self.collection.shape_for(part, scene.canvas).canvas)
         self._fit_item(size=(canvas.width, canvas.height))  # a horizontal-only part fits a vertical show too
         self._refresh_scenes()
+
+    # Live states ---------------------------------------------------------------------
+
+    def _edit_states(self, part_id: str) -> None:
+        part = self.collection.main_part(self.collection.scene(part_id))
+        dialog = StatesDialog(self.collection, part, self)
+        if dialog.exec():
+            dialog.apply_to(part)
+            self._changed()
+            self._refresh_scenes()
+            self.live_panel.show_scenes(self.collection)
+
+    def _set_sprig_state(self, part_id: str, name: str | None) -> None:
+        """From Live (or a hotkey): switch a sprig's look everywhere it's used. The engine fades it."""
+        self.collection.set_state(part_id, name)
+        self._changed()
+        self.live_panel.show_scenes(self.collection)
 
     # Per-placement tweaks ------------------------------------------------------------
 
@@ -2462,6 +2488,11 @@ class MainWindow(QMainWindow):
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:
             self._toggle_recording()
+        elif action.startswith(STATE_PREFIX):
+            part_id, _, name = action[len(STATE_PREFIX):].partition(":")
+            part = next((p for p in self.collection.parts() if p.id == part_id), None)
+            if part is not None and (not name or any(s.name == name for s in part.states)):
+                self._set_sprig_state(part_id, name or None)
         elif action.startswith(SCENE_PREFIX):
             scene_id = action[len(SCENE_PREFIX):]
             if any(s.id == scene_id for s in self.collection.scenes):

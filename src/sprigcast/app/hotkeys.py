@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 TOGGLE_STREAM = "toggle_stream"
 TOGGLE_RECORD = "toggle_record"
 SCENE_PREFIX = "scene:"
+STATE_PREFIX = "state:"  # "state:<sprig id>:<state name>"; an empty name goes back to as built
 
 _MODIFIERS = {"ctrl": "<ctrl>", "alt": "<alt>", "shift": "<shift>", "meta": "<cmd>"}
 _NAMED = {
@@ -37,6 +38,11 @@ def actions(collection: SceneCollection) -> list[tuple[str, str]]:
     for canvas in collection.canvases:
         for scene in collection.scenes_for(canvas.id):
             items.append((SCENE_PREFIX + scene.id, f"Show scene: {scene.name} ({canvas.id})"))
+    for part in collection.parts():
+        if part.states:
+            items.append((f"{STATE_PREFIX}{part.id}:", f"Sprig {part.name}: as built"))
+        for state in part.states:
+            items.append((f"{STATE_PREFIX}{part.id}:{state.name}", f"Sprig {part.name}: {state.name}"))
     return items
 
 

@@ -182,14 +182,14 @@ class Compositor:
         return target
 
     def render_part(self, part_id: str, size: tuple[int, int], scene: Scene,
-                    source_sizes: dict[str, tuple[int, int]]) -> moderngl.Texture:
+                    source_sizes: dict[str, tuple[int, int]], fades: dict[str, float] | None = None) -> moderngl.Texture:
         """Draw a part onto its own transparent texture (key "part:<id>"), once per frame.
 
         Every scene that places the part then samples this texture, so a part used in five
         scenes on two canvases costs one render.
         """
         target = self._target_sized(f"part:{part_id}", size)
-        self._draw_scene(target.fbo, size, scene, source_sizes)
+        self._draw_scene(target.fbo, size, scene, source_sizes, fades)
         return target.color
 
     def forget_part(self, part_id: str) -> None:
@@ -235,7 +235,9 @@ class Compositor:
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA, moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
 
-    def _draw_scene(self, fbo, size: tuple[int, int], scene: Scene | None, source_sizes: dict[str, tuple[int, int]]) -> None:
+    def _draw_scene(self, fbo, size: tuple[int, int], scene: Scene | None, source_sizes: dict[str, tuple[int, int]],
+                    fades: dict[str, float] | None = None) -> None:
+        """fades: source id -> opacity, for items fading in or out (a sprig changing state)."""
         fbo.use()
         self.ctx.viewport = (0, 0, size[0], size[1])
         self.ctx.clear(0.0, 0.0, 0.0, 0.0)
@@ -257,6 +259,8 @@ class Compositor:
                 continue
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
             self._apply_effects(self.effects.get(item.source, NO_EFFECTS), tex.size)
+            if fades:
+                self.program["opacity"].value = fades.get(item.source, 1.0)
             self.program["premul"].value = part is not None
             tex.use(location=0)
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
