@@ -6,7 +6,10 @@ import numpy as np
 
 import moderngl
 
+from sprigcast.core.filters import VideoEffects
 from sprigcast.core.scene import Canvas, Scene
+
+NO_EFFECTS = VideoEffects()
 
 VERTEX_SHADER = """
 #version 330
@@ -23,14 +26,71 @@ void main() {
 }
 """
 
+# Source filters (core/filters.py) are uniforms here. With the defaults the shader just samples the texture.
 FRAGMENT_SHADER = """
 #version 330
 uniform sampler2D tex;
 uniform float opacity;
+uniform vec2 scroll;        // uv offset (already multiplied by time)
+uniform bool wrap;
+uniform float sharpen;
+uniform int key_mode;       // 0 none, 1 chroma, 2 luma
+uniform vec3 key_color;
+uniform float similarity;
+uniform float smoothness;
+uniform float spill;
+uniform vec3 luma_key;      // min, max, smoothness
+uniform float gamma;
+uniform float contrast;
+uniform float brightness;
+uniform float saturation;
+uniform float hue;
+uniform float fx_opacity;
+uniform vec3 tint;
 in vec2 uv;
 out vec4 color;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+vec2 cbcr(vec3 rgb) {
+    return vec2(dot(rgb, vec3(-0.1146, -0.3854, 0.5)), dot(rgb, vec3(0.5, -0.4542, -0.0458)));
+}
+
+vec3 rotate_hue(vec3 c, float a) {
+    // Rodrigues rotation around the grey axis.
+    vec3 k = vec3(0.57735);
+    float cs = cos(a);
+    return c * cs + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cs);
+}
+
 void main() {
-    color = texture(tex, uv) * vec4(1.0, 1.0, 1.0, opacity);
+    vec2 st = wrap ? fract(uv + scroll) : uv;
+    vec4 c = texture(tex, st);
+    if (sharpen > 0.0) {
+        vec2 px = 1.0 / vec2(textureSize(tex, 0));
+        vec3 around = texture(tex, st + vec2(px.x, 0.0)).rgb + texture(tex, st - vec2(px.x, 0.0)).rgb
+                    + texture(tex, st + vec2(0.0, px.y)).rgb + texture(tex, st - vec2(0.0, px.y)).rgb;
+        c.rgb = clamp(c.rgb + (4.0 * c.rgb - around) * sharpen, 0.0, 1.0);
+    }
+    if (key_mode == 1) {
+        float dist = distance(cbcr(c.rgb), cbcr(key_color));
+        float base = dist - similarity;
+        c.a *= pow(clamp(base / smoothness, 0.0, 1.0), 1.5);
+        float keep = pow(clamp(base / spill, 0.0, 1.0), 1.5);
+        c.rgb = mix(vec3(dot(c.rgb, LUMA)), c.rgb, keep);
+    } else if (key_mode == 2) {
+        float l = dot(c.rgb, LUMA);
+        float s = max(luma_key.z, 0.0001);
+        c.a *= smoothstep(luma_key.x - s, luma_key.x, l) * (1.0 - smoothstep(luma_key.y, luma_key.y + s, l));
+    }
+    c.rgb = pow(max(c.rgb, 0.0), vec3(gamma));
+    c.rgb = (c.rgb - 0.5) * contrast + 0.5 + brightness;
+    c.rgb = mix(vec3(dot(c.rgb, LUMA)), c.rgb, saturation);
+    if (hue != 0.0) {
+        c.rgb = rotate_hue(c.rgb, hue);
+    }
+    c.rgb = clamp(c.rgb * tint, 0.0, 1.0);
+    color = c * vec4(1.0, 1.0, 1.0, opacity * fx_opacity);
 }
 """
 
@@ -71,6 +131,9 @@ class Compositor:
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
         self.textures: dict[str, moderngl.Texture] = {}
         self.targets: dict[str, _CanvasTarget] = {}
+        self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
+        self.time = 0.0  # seconds, drives the Scroll filter
+        self._applied: VideoEffects | None = None
 
     # Sources -------------------------------------------------------------
 
@@ -133,6 +196,7 @@ class Compositor:
         w, h = float(canvas.width), float(canvas.height)
         self.vbo.write(np.array([(0, 0, 0, 0), (w, 0, 1, 0), (0, h, 0, 1), (w, h, 1, 1)], dtype="f4").tobytes())
         self.program["opacity"].value = max(0.0, min(1.0, 1.0 - progress))
+        self._apply_effects(NO_EFFECTS, (1, 1))
         target.aux_color.use(location=0)
         self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
 
@@ -150,6 +214,7 @@ class Compositor:
         self.program["canvas_size"].value = (float(canvas.width), float(canvas.height))
         self.program["tex"].value = 0
         self.program["opacity"].value = 1.0
+        self._applied = None
         for item in scene.items:
             tex = self.textures.get(item.source)
             size = source_sizes.get(item.source)
@@ -159,8 +224,33 @@ class Compositor:
             if not quad:
                 continue
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
+            self._apply_effects(self.effects.get(item.source, NO_EFFECTS), tex.size)
             tex.use(location=0)
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
+
+    def _apply_effects(self, fx: VideoEffects, size: tuple[int, int]) -> None:
+        moving = fx.scroll != (0.0, 0.0)
+        if fx is self._applied and not moving:
+            return
+        self._applied = fx
+        p = self.program
+        w, h = max(1, size[0]), max(1, size[1])
+        p["wrap"].value = moving
+        p["scroll"].value = (fx.scroll[0] * self.time / w % 1.0, fx.scroll[1] * self.time / h % 1.0)
+        p["sharpen"].value = fx.sharpen
+        p["key_mode"].value = fx.key_mode
+        p["key_color"].value = fx.key_color
+        p["similarity"].value = fx.similarity
+        p["smoothness"].value = fx.smoothness
+        p["spill"].value = fx.spill
+        p["luma_key"].value = fx.luma
+        p["gamma"].value = fx.gamma
+        p["contrast"].value = fx.contrast
+        p["brightness"].value = fx.brightness
+        p["saturation"].value = fx.saturation
+        p["hue"].value = fx.hue
+        p["fx_opacity"].value = fx.opacity
+        p["tint"].value = fx.tint
 
     def read(self, canvas_id: str) -> bytes:
         """Return the canvas as tightly packed RGBA rows, top row first."""
