@@ -46,7 +46,7 @@ class LivePanel(QWidget):
         root.addStretch(1)
 
     def show_scenes(self, collection: SceneCollection) -> None:
-        signature = tuple((s.id, s.name, s.canvas) for s in collection.scenes)
+        signature = tuple((s.id, s.name, s.canvas, s.kind) for s in collection.scenes)
         if signature != self._signature:
             self._signature = signature
             self._rebuild(collection)
@@ -63,6 +63,7 @@ class LivePanel(QWidget):
             item = self.rows.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.setParent(None)  # off screen now, not at the next event loop turn
                 widget.deleteLater()
         self.buttons = {}
         for canvas in collection.canvases:

@@ -76,11 +76,21 @@ class SceneItem(BaseModel):
 
 
 class Scene(BaseModel):
+    """A show (a main scene you switch to on air) or a part (a reusable piece placed inside other scenes).
+
+    A part is laid out on its canvas's size and appears in other scenes through a source of kind
+    "scene" whose settings name it ({"scene": part id}). Parts are never shown on air by themselves.
+    """
+
     id: str
     name: str
     canvas: str
+    kind: Literal["show", "part"] = "show"
     linked_to: str | None = None  # switching to that scene also switches to this one
     items: list[SceneItem] = Field(default_factory=list)  # index 0 draws first (bottom)
+
+
+PART_KIND = "scene"  # source kind that places a part inside another scene
 
 
 class Output(BaseModel):
@@ -162,6 +172,8 @@ class SceneCollection(BaseModel):
         for canvas_id, scene_id in self.active_scenes.items():
             if canvas_id not in canvas_ids or scene_id not in scene_ids:
                 raise ValueError(f"active scene {canvas_id!r} -> {scene_id!r} is invalid")
+            if self.scene(scene_id).kind == "part":
+                raise ValueError(f"part {scene_id!r} can't be the active scene of {canvas_id!r}")
         for output in self.outputs:
             if output.canvas not in canvas_ids:
                 raise ValueError(f"output {output.id!r} uses unknown canvas {output.canvas!r}")
@@ -179,7 +191,57 @@ class SceneCollection(BaseModel):
         return next(s for s in self.scenes if s.id == scene_id)
 
     def scenes_for(self, canvas_id: str) -> list[Scene]:
-        return [s for s in self.scenes if s.canvas == canvas_id]
+        """The shows on a canvas (parts are listed by parts())."""
+        return [s for s in self.scenes if s.canvas == canvas_id and s.kind == "show"]
+
+    def parts(self) -> list[Scene]:
+        return [s for s in self.scenes if s.kind == "part"]
+
+    def part_of(self, source: SourceConfig) -> Scene | None:
+        """The part a nested-part source shows, or None."""
+        if source.kind != PART_KIND:
+            return None
+        part_id = source.settings.get("scene")
+        return next((s for s in self.scenes if s.id == part_id and s.kind == "part"), None)
+
+    def parts_inside(self, scene: Scene) -> list[Scene]:
+        """Parts placed directly in a scene."""
+        out = []
+        for item in scene.items:
+            part = self.part_of(self.source(item.source))
+            if part is not None and part not in out:
+                out.append(part)
+        return out
+
+    def part_uses(self, part_id: str) -> list[Scene]:
+        """Scenes (shows or parts) that place this part."""
+        return [s for s in self.scenes if any(p.id == part_id for p in self.parts_inside(s))]
+
+    def contains(self, scene: Scene, part_id: str, _seen: frozenset = frozenset()) -> bool:
+        """True if `scene` is the part or places it, at any depth. Used to refuse a part inside itself."""
+        if scene.id == part_id:
+            return True
+        if scene.id in _seen:
+            return False
+        return any(self.contains(p, part_id, _seen | {scene.id}) for p in self.parts_inside(scene))
+
+    def part_order(self) -> list[Scene]:
+        """Parts in the order to render them: every part after the parts it contains. Cycles are skipped."""
+        order: list[Scene] = []
+        state: dict[str, str] = {}
+
+        def visit(part: Scene) -> None:
+            if state.get(part.id) in ("done", "busy"):
+                return
+            state[part.id] = "busy"
+            for inner in self.parts_inside(part):
+                visit(inner)
+            state[part.id] = "done"
+            order.append(part)
+
+        for part in self.parts():
+            visit(part)
+        return order
 
     def active_scene(self, canvas_id: str) -> Scene | None:
         scene_id = self.active_scenes.get(canvas_id)
@@ -190,6 +252,8 @@ class SceneCollection(BaseModel):
     def set_active(self, scene_id: str) -> None:
         """Make a scene active on its canvas, and switch any scenes linked to it (in either direction)."""
         scene = self.scene(scene_id)
+        if scene.kind == "part":
+            return  # parts are only shown inside other scenes
         self.active_scenes[scene.canvas] = scene.id
         for other in self.scenes:
             if other.linked_to == scene.id or (scene.linked_to == other.id):

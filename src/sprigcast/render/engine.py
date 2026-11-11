@@ -13,7 +13,7 @@ from sprigcast.audio.mixer import Mixer
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
 from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import SceneCollection
+from sprigcast.core.scene import PART_KIND, SceneCollection
 from sprigcast.core.source import Source, create_source
 
 log = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ class Engine:
         self.commands: queue.Queue = queue.Queue()  # UI -> engine
         self.events: queue.Queue = queue.Queue()  # engine -> UI
         self.frames: dict[str, Mailbox[Frame]] = {c.id: Mailbox() for c in collection.canvases}
+        self.part_frames: Mailbox[Frame] = Mailbox()  # the part open in the Part editor, if any
+        self.editing_part: str | None = None  # set by the UI: which part to read back for the Part editor
         self._collection = collection.model_copy(deep=True)
         self._sources: dict[str, Source] = {}
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
@@ -170,6 +172,7 @@ class Engine:
             elif existing.settings != config.settings:
                 existing.update(config.settings)
         self._sync_filters(compositor, wanted)
+        self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
 
     def _sync_filters(self, compositor, wanted: dict) -> None:
@@ -187,6 +190,59 @@ class Engine:
             source.audio_chain = new_chain if new_chain.processors else None
         compositor.effects = effects
 
+    def _sync_parts(self, compositor) -> None:
+        """Tell each nested-part source its part's size, and drop textures of parts that are gone."""
+        collection = self._collection
+        for source_id, source in self._sources.items():
+            if source.kind != PART_KIND:
+                continue
+            part = collection.part_of(next(s for s in collection.sources if s.id == source_id))
+            canvas = next((c for c in collection.canvases if part and c.id == part.canvas), None)
+            source.part_size = (canvas.width, canvas.height) if canvas else (0, 0)
+        alive = {p.id for p in collection.parts()}
+        for key in [k for k in compositor.targets if k.startswith("part:")]:
+            if key[5:] not in alive:
+                compositor.forget_part(key[5:])
+
+    def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
+        """Render every part once (inner parts first), then point each nested-part source at its texture."""
+        collection = self._collection
+        # Only parts that something on screen (or the Part editor) shows, however deep.
+        used: set[str] = set()
+        stack = [s for s in collection.scenes if s.kind == "show"]
+        if self.editing_part:
+            stack += [p for p in collection.parts() if p.id == self.editing_part]
+            used.add(self.editing_part)
+        while stack:
+            for inner in collection.parts_inside(stack.pop()):
+                if inner.id not in used:
+                    used.add(inner.id)
+                    stack.append(inner)
+        textures = {}
+        for part in collection.part_order():
+            if part.id not in used:
+                continue
+            if any(collection.contains(inner, part.id) for inner in collection.parts_inside(part)):
+                continue  # a part inside itself: never drawn
+            canvas = next((c for c in collection.canvases if c.id == part.canvas), None)
+            if canvas is None:
+                continue
+            compositor.parts = {sid: tex for sid, tex in self._part_sources(textures).items()}
+            textures[part.id] = compositor.render_part(part.id, (canvas.width, canvas.height), part, sizes)
+            if part.id == self.editing_part:
+                data = compositor.read(f"part:{part.id}")
+                self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, now))
+        compositor.parts = self._part_sources(textures)
+
+    def _part_sources(self, textures: dict) -> dict:
+        collection = self._collection
+        out = {}
+        for source in collection.sources:
+            part = collection.part_of(source)
+            if part is not None and part.id in textures:
+                out[source.id] = textures[part.id]
+        return out
+
     def _tick(self, compositor, now: float) -> None:
         compositor.time = now
         for source_id, source in self._sources.items():
@@ -194,6 +250,10 @@ class Engine:
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        if self._collection.parts():
+            self._render_parts(compositor, sizes, now)
+        elif compositor.parts:
+            compositor.parts = {}
         with self._taps_lock:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
         for canvas in self._collection.canvases:
