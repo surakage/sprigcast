@@ -1,12 +1,12 @@
-"""Main window: two canvas previews plus Scenes, Sources and Properties docks."""
+"""Main window: two canvas previews plus Scenes, Sources, Properties, Audio and Recording docks."""
 
 from __future__ import annotations
 
 import queue
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
+from PySide6.QtCore import QStandardPaths, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -33,8 +33,10 @@ from PySide6.QtWidgets import (
 from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.preview import Preview
+from sprigcast.app.recording_dialog import RecordingDialog
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
+from sprigcast.output.recorder import RecordingSession, codec_label, pick_codec
 from sprigcast.render.engine import Engine
 from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
@@ -58,6 +60,7 @@ class MainWindow(QMainWindow):
         self._updating = False  # True while we fill widgets, so their signals do not echo back
         self.source_sizes: dict[str, tuple[int, int]] = {}
         self.source_statuses: dict[str, str] = {}
+        self.recording: RecordingSession | None = None
 
         self.setWindowTitle("SprigCast")
         self.resize(1440, 860)
@@ -78,6 +81,7 @@ class MainWindow(QMainWindow):
         self._build_sources_dock()
         self._build_properties_dock()
         self._build_audio_dock()
+        self._build_recording_dock()
         self._build_menu()
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
@@ -161,6 +165,31 @@ class MainWindow(QMainWindow):
         buttons.addWidget(_button("Remove", self._remove_audio))
         self._dock("Audio", self.audio_panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
 
+    def _build_recording_dock(self) -> None:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.record_button = QPushButton("Start recording")
+        self.record_button.setMinimumHeight(40)
+        self.record_button.clicked.connect(self._toggle_recording)
+        layout.addWidget(self.record_button)
+        self.record_status = QLabel("Not recording")
+        self.record_status.setWordWrap(True)
+        layout.addWidget(self.record_status)
+        self.record_canvas_boxes: dict[str, QCheckBox] = {}
+        for canvas in self.collection.canvases:
+            box = QCheckBox(f"Record {canvas.id} ({canvas.width}×{canvas.height})")
+            box.setChecked(canvas.id in self.collection.recording.canvases)
+            box.toggled.connect(self._on_record_canvases_changed)
+            self.record_canvas_boxes[canvas.id] = box
+            layout.addWidget(box)
+        layout.addStretch(1)
+        buttons = QHBoxLayout()
+        self.record_settings_button = _button("Settings…", self._recording_settings)
+        buttons.addWidget(self.record_settings_button)
+        buttons.addWidget(_button("Open folder", self._open_recordings_folder))
+        self._dock("Recording", panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+
     def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> None:
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
@@ -181,6 +210,9 @@ class MainWindow(QMainWindow):
             lambda: QMessageBox.information(self, "SprigCast", f"Scenes are saved to:\n{self.scenes_path}")
         )
         file_menu.addAction(open_folder)
+        recordings = QAction("Open recordings folder", self)
+        recordings.triggered.connect(self._open_recordings_folder)
+        file_menu.addAction(recordings)
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -213,6 +245,8 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(event.message, 10000)
                 if "compositor" in event.message:
                     QMessageBox.critical(self, "SprigCast", event.message)
+        if self.recording is not None:
+            self._refresh_recording_status()
 
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
@@ -221,6 +255,8 @@ class MainWindow(QMainWindow):
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if self.recording is not None:
+            self._stop_recording()
         self.timer.stop()
         self.engine.stop()
         super().closeEvent(event)
@@ -757,3 +793,94 @@ class MainWindow(QMainWindow):
             config.name = window.title if len(window.title) <= 40 else window.title[:37] + "…"
         self._changed()
         self._refresh_sources(keep_row=self.source_list.currentRow())
+
+    # Recording -----------------------------------------------------------------
+
+    def _default_recordings_folder(self) -> str:
+        videos = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+        return str(Path(videos or Path.home()) / "SprigCast")
+
+    def _recordings_folder(self) -> Path:
+        return Path(self.collection.recording.folder or self._default_recordings_folder())
+
+    def _on_record_canvases_changed(self) -> None:
+        self.collection.recording.canvases = [cid for cid, box in self.record_canvas_boxes.items() if box.isChecked()]
+        self.collection.save(self.scenes_path)
+
+    def _recording_settings(self) -> None:
+        default = self._default_recordings_folder()
+        dialog = RecordingDialog(self.collection.recording, default, codec_label(pick_codec()), self)
+        if dialog.exec():
+            dialog.apply_to(self.collection.recording, default)
+            self.collection.save(self.scenes_path)
+
+    def _open_recordings_folder(self) -> None:
+        folder = self._recordings_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _toggle_recording(self) -> None:
+        if self.recording is None:
+            self._start_recording()
+        else:
+            self._stop_recording()
+
+    def _start_recording(self) -> None:
+        settings = self.collection.recording
+        canvases = [c for c in self.collection.canvases if c.enabled and c.id in settings.canvases]
+        if not canvases:
+            QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
+            return
+        self.record_button.setEnabled(False)
+        self.record_status.setText("Starting…")
+        try:
+            self.recording = RecordingSession.start(
+                self.engine, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container
+            )
+        except Exception as exc:
+            self.recording = None
+            QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
+            self.record_status.setText("Not recording")
+            return
+        finally:
+            self.record_button.setEnabled(True)
+        self.record_button.setText("Stop recording")
+        self.record_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
+        for box in self.record_canvas_boxes.values():
+            box.setEnabled(False)
+        self.record_settings_button.setEnabled(False)
+        self._refresh_recording_status()
+
+    def _stop_recording(self) -> None:
+        session, self.recording = self.recording, None
+        if session is None:
+            return
+        self.record_status.setText("Finishing files…")
+        self.record_status.repaint()
+        session.stop()
+        self.record_button.setText("Start recording")
+        self.record_button.setStyleSheet("")
+        for box in self.record_canvas_boxes.values():
+            box.setEnabled(True)
+        self.record_settings_button.setEnabled(True)
+        errors = session.errors
+        names = ", ".join(p.name for p in session.paths)
+        if errors:
+            self.record_status.setText("Recording failed")
+            QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
+        else:
+            self.record_status.setText(f"Saved {names}")
+
+    def _refresh_recording_status(self) -> None:
+        session = self.recording
+        if session.errors:
+            self._stop_recording()
+            return
+        seconds = int(session.elapsed)
+        clock = f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+        codec = "NVENC" if session.recorders and session.recorders[0][1].codec == "h264_nvenc" else "x264 (CPU)"
+        dropped = session.dropped
+        text = f"● REC {clock}  ·  {codec}"
+        if dropped:
+            text += f"  ·  {dropped} frames dropped (encoder too slow)"
+        self.record_status.setText(text)

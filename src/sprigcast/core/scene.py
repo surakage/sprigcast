@@ -81,6 +81,13 @@ class Output(BaseModel):
     key_ref: str | None = None  # name of the secret in the OS keyring, never the key itself
 
 
+class RecordingSettings(BaseModel):
+    folder: str = ""  # empty: Videos/SprigCast
+    canvases: list[str] = Field(default_factory=lambda: ["horizontal", "vertical"])  # which canvases to record
+    bitrate_kbps: int = 12000
+    container: Literal["mkv", "mp4"] = "mkv"
+
+
 class SceneCollection(BaseModel):
     version: int = FORMAT_VERSION
     canvases: list[Canvas]
@@ -88,6 +95,7 @@ class SceneCollection(BaseModel):
     scenes: list[Scene] = Field(default_factory=list)
     active_scenes: dict[str, str] = Field(default_factory=dict)  # canvas id -> scene id
     outputs: list[Output] = Field(default_factory=list)
+    recording: RecordingSettings = Field(default_factory=RecordingSettings)
 
     @model_validator(mode="after")
     def _check_references(self) -> "SceneCollection":

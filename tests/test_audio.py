@@ -69,7 +69,16 @@ def test_mixer_tick_reports_per_source_and_master_levels():
     assert out[0, 0] == pytest.approx(0.25)
     assert mixer._meters["desk"] == (FLOOR_DB, FLOOR_DB)  # muted
     assert mixer._meters["master"][0] == pytest.approx(-12.04, abs=0.01)
-    assert len(mixer.output) == 1
+
+
+def test_mixer_taps_get_every_block_until_removed():
+    mixer = Mixer(report=lambda levels: None)
+    got = []
+    mixer.add_tap(got.append)
+    mixer.tick()
+    mixer.remove_tap(got.append)
+    mixer.tick()
+    assert len(got) == 1 and got[0].shape == (1024, 2)
 
 
 def test_gain_from_settings():
