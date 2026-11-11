@@ -43,6 +43,17 @@ def run() -> None:
     app.setOrganizationName("Slothbloom")
     app.setApplicationVersion(__version__)
 
+    from sprigcast.app.theme import apply_theme
+    from sprigcast.plugins import ensure_example, load_plugins
+
+    apply_theme(app)
+    plugins_dir = config_dir() / "plugins"
+    try:
+        ensure_example(plugins_dir)
+    except OSError as exc:
+        logging.warning("could not create %s: %s", plugins_dir, exc)
+    plugins = load_plugins(plugins_dir)
+
     from sprigcast.app.main_window import MainWindow
 
     scenes_path = config_dir() / "scenes.json"
@@ -52,8 +63,11 @@ def run() -> None:
         QMessageBox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
         sys.exit(1)
 
-    window = MainWindow(collection, scenes_path)
+    window = MainWindow(collection, scenes_path, plugins_dir)
     window.show()
+    if plugins.failed:
+        names = ", ".join(plugins.failed)
+        window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
     sys.exit(app.exec())
 
 
