@@ -17,6 +17,9 @@ from sprigcast.output.recorder import Recorder
 log = logging.getLogger(__name__)
 
 RETRY_FIRST, RETRY_MAX = 2.0, 30.0
+GRACE_SECONDS = 5.0  # right after connecting, frames queued during the handshake are still going out
+HOLD_SECONDS = 10.0  # a warning stays on screen this long so it can be read
+SEVERITY = {"good": 0, "warning": 1, "bad": 2}
 
 
 @dataclass(frozen=True)
@@ -109,15 +112,30 @@ class Streamer(Recorder):
         self.reconnects = 0
         self.status = "connecting"
         self._health: tuple | None = None
+        self._held: tuple[str, str, float] | None = None  # (level, reason, shown until)
+        self._connected_at = 0.0
 
     def health(self) -> tuple[str, str]:
-        """("good" | "warning" | "bad", short reason), comparing against the previous call (about 1 s ago)."""
+        """("good" | "warning" | "bad", short reason), comparing against the previous call (about 1 s ago).
+
+        Connecting shows as a warning, a drop in connection as bad. A warning or worse stays shown
+        for HOLD_SECONDS even after things recover, unless something more severe replaces it.
+        """
         now = time.monotonic()
+        level, reason = self._measure_health(now)
+        held = self._held
+        if held and now < held[2] and SEVERITY[held[0]] >= SEVERITY[level] and self.connected:
+            return held[0], held[1]
+        if level != "good" and self.connected:  # connection states speak for themselves, no need to hold them
+            self._held = (level, reason, now + HOLD_SECONDS)
+        return level, reason
+
+    def _measure_health(self, now: float) -> tuple[str, str]:
         sample = (now, self.frames, self.dropped, self.mux_seconds)
         last, self._health = self._health, sample
         if not self.connected:
-            return "bad", self.status
-        if last is None or now <= last[0]:
+            return ("warning" if self.status.startswith(("connecting", "reconnecting")) else "bad"), self.status
+        if last is None or now <= last[0] or now - self._connected_at < GRACE_SECONDS:
             return "good", "live"
         sent, lost = sample[1] - last[1], sample[2] - last[2]
         waiting_on_network = (sample[3] - last[3]) / (now - last[0]) > 0.5
@@ -133,6 +151,31 @@ class Streamer(Recorder):
     def redact(self, text: str) -> str:
         """Error text from FFmpeg can contain the URL; never let the key reach the screen or a log."""
         return text.replace(self._key, "****") if self._key else text
+
+    def summary(self) -> str:
+        """One line for after the stream ends: how much was dropped and what was slow."""
+        total = self.frames + self.dropped
+        if not total:
+            return f"{self.name}: never connected ({self.status})"
+        loss = self.dropped / total
+        encode_ms = 1000 * self.encode_seconds / max(1, self.frames)
+        budget_ms = 1000 / self.fps
+        waiting = self.mux_seconds / max(1e-6, time.monotonic() - self.started_at)
+        line = (
+            f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}). "
+            f"Encoding took {encode_ms:.1f} ms per frame (budget {budget_ms:.1f} ms); "
+            f"waiting on the network {waiting:.0%} of the time"
+        )
+        if self.reconnects:
+            line += f"; {self.reconnects} reconnects"
+        if loss > 0.01:
+            if waiting > 0.5:
+                line += ". Your upload can't keep up: lower this output's bitrate."
+            elif encode_ms > 0.6 * budget_ms:
+                line += ". Your PC can't prepare frames fast enough: lower this output's resolution or frame rate."
+            else:
+                line += ". Neither looks maxed out, so the drops were probably brief hiccups."
+        return line + ("" if line.endswith(".") else ".")
 
     # Recorder hooks ------------------------------------------------------------
 
@@ -169,6 +212,7 @@ class Streamer(Recorder):
         super()._mux(container, packets)
         if not self.connected and self.bytes_out:
             self.connected = True
+            self._connected_at = time.monotonic()
             self.status = "live"
 
     # Stream thread -------------------------------------------------------------

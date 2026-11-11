@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import queue
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
@@ -48,6 +51,7 @@ from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 ROLE_ID = Qt.ItemDataRole.UserRole
+log = logging.getLogger(__name__)
 
 
 def _button(text: str, slot) -> QPushButton:
@@ -219,7 +223,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(body)
         if buttons is not None:
-            layout.addLayout(buttons)
+            # Lay the buttons out in a grid (2 or 4 per row) instead of one long row, so the docks
+            # side by side still fit a 1920 px wide screen, and smaller laptop screens too.
+            widgets = [buttons.itemAt(i).widget() for i in range(buttons.count())]
+            columns = len(widgets) if len(widgets) <= 3 else (2 if len(widgets) <= 4 else 4)
+            grid = QGridLayout()
+            grid.setSpacing(4)
+            for i, widget in enumerate(widgets):
+                widget.setMinimumWidth(0)
+                widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                grid.addWidget(widget, i // columns, i % columns)
+            layout.addLayout(grid)
         dock = QDockWidget(title, self)
         dock.setObjectName(title)
         dock.setWidget(wrapper)
@@ -1008,7 +1022,12 @@ class MainWindow(QMainWindow):
             box.setEnabled(True)
         self.stream_settings_button.setEnabled(True)
         seconds = int(session.elapsed)
-        self.stream_status.setText(f"Offline (last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d})")
+        lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
+        lines += [st.summary() for _, st in session.streamers]
+        self.stream_status.setText("\n".join(lines))
+        self.stream_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        for line in lines[1:]:
+            log.info("stream summary: %s", line)
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()

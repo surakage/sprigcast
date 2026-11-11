@@ -115,9 +115,12 @@ def test_bandwidth_test_url():
     assert stream_url("rtmp://live.twitch.tv/app", "k", bandwidth_test=True) == "rtmp://live.twitch.tv/app/k?bandwidthtest=true"
 
 
-def test_health_levels():
+def test_health_levels(monkeypatch):
+    monkeypatch.setattr(stream_mod, "GRACE_SECONDS", 0.0)
     st = Streamer("T", "rtmp://x/app", "k", 16, 16, 30, 1000, "libx264", 0.0)
-    assert st.health()[0] == "bad"  # not connected yet
+    assert st.health() == ("warning", "connecting")
+    st.status = "disconnected: Broken pipe; retrying in 2 s"
+    assert st.health()[0] == "bad"
     st.connected = True
     st.health()
     st.frames += 30
@@ -128,3 +131,36 @@ def test_health_levels():
     st.mux_seconds += 1.0  # mostly waiting on the network
     level, reason = st.health()
     assert level == "bad" and "upload" in reason
+
+
+def test_health_grace_after_connect_and_warnings_are_held(monkeypatch):
+    st = Streamer("T", "rtmp://x/app", "k", 16, 16, 30, 1000, "libx264", 0.0)
+    st.connected, st._connected_at = True, time.monotonic()
+    st.health()
+    st.frames, st.dropped = 20, 10  # backlog from the handshake: inside the grace period
+    time.sleep(0.01)
+    assert st.health() == ("good", "live")
+    st._connected_at -= 10  # well after connecting
+    st.health()
+    st.frames, st.dropped = 40, 11
+    time.sleep(0.01)
+    level, reason = st.health()
+    assert level == "warning" and "falling behind" in reason
+    st.frames += 30
+    time.sleep(0.01)
+    assert st.health() == (level, reason)  # recovered, but still shown for a while
+    st._held = (level, reason, time.monotonic() - 1)
+    st.frames += 30
+    time.sleep(0.01)
+    assert st.health() == ("good", "live")
+
+
+def test_summary_names_the_bottleneck():
+    st = Streamer("Twitch (horizontal)", "rtmp://x/app", "k", 16, 16, 60, 1000, "libx264", 0.0)
+    assert "never connected" in st.summary()
+    st.frames, st.dropped, st.encode_seconds = 900, 100, 900 * 0.014  # 14 ms of a 16.7 ms budget
+    assert "100 of 1000 frames dropped (10.0%)" in st.summary()
+    assert "prepare frames" in st.summary()
+    st.started_at -= 10
+    st.mux_seconds, st.encode_seconds = 8.0, 900 * 0.004
+    assert "upload can't keep up" in st.summary()

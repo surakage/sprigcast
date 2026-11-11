@@ -130,3 +130,18 @@ def test_scales_and_halves_frame_rate(tmp_path):
         pts = [frame.pts for frame in f.decode(video=0)]
     steps = {round(b - a) for a, b in zip(pts, pts[1:])}
     assert max(steps) - min(steps) <= 1  # evenly spaced (MKV stores milliseconds: 33 or 34)
+
+
+def test_colours_survive_encoding(tmp_path):
+    w, h = 64, 64
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    rgba[...] = (232, 164, 184, 255)  # the Sprig pink
+    rec = Recorder(tmp_path / "c.mkv", w, h, 30, 2000, "libx264", 0.0)
+    rec.start()
+    for i in range(10):
+        rec.push_frame(Frame("h", w, h, rgba.tobytes(), i / 30))
+        time.sleep(0.002)
+    rec.stop()
+    with av.open(str(tmp_path / "c.mkv")) as f:
+        pixel = next(f.decode(video=0)).to_ndarray(format="rgb24")[32, 32]
+    assert np.allclose(pixel, (232, 164, 184), atol=4)
