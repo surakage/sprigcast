@@ -40,7 +40,7 @@ def test_hidden_items_are_skipped(compositor):
     canvas = Canvas(id="h", width=64, height=36)
     scene = Scene(id="s", name="s", canvas="h", items=[SceneItem(source="red", visible=False)])
     compositor.render(canvas, scene, {"red": (64, 36)})
-    assert tuple(pixels(compositor, canvas)[10, 10]) == (0, 0, 0, 255)
+    assert tuple(pixels(compositor, canvas)[10, 10]) == (0, 0, 0, 0)  # see-through, black once alpha is dropped
 
 
 def test_vertical_canvas_renders_independently(compositor):
@@ -50,7 +50,7 @@ def test_vertical_canvas_renders_independently(compositor):
     img = pixels(compositor, vertical)
     assert img.shape == (64, 36, 4)
     assert tuple(img[60, 5]) == (0, 255, 0, 255)
-    assert tuple(img[5, 5]) == (0, 0, 0, 255)
+    assert tuple(img[5, 5]) == (0, 0, 0, 0)
 
 
 def test_bgra_frames_are_swizzled_on_the_gpu(compositor):
@@ -86,3 +86,17 @@ def test_fade_blends_outgoing_scene_over_new_one(compositor):
     assert tuple(pixels(compositor, canvas)[0, 31]) == (0, 0, 255, 255)
     compositor.render(canvas, new, sizes, previous=old, progress=0.0)
     assert tuple(pixels(compositor, canvas)[17, 0]) == (255, 0, 0, 255)  # orientation preserved at the corners
+
+
+def test_fade_from_a_half_empty_scene_keeps_new_scene_visible_in_the_gap(compositor):
+    """The outgoing scene's see-through area must not paint black over the incoming one."""
+    canvas = Canvas(id="h", width=64, height=36)
+    compositor.upload("red", np.full((36, 64, 4), (255, 0, 0, 255), dtype=np.uint8))
+    compositor.upload("blue", np.full((36, 32, 4), (0, 0, 255, 255), dtype=np.uint8))
+    old = Scene(id="o", name="o", canvas="h", items=[SceneItem(source="blue")])  # left half only
+    new = Scene(id="n", name="n", canvas="h", items=[SceneItem(source="red")])
+    compositor.render(canvas, new, {"red": (64, 36), "blue": (32, 36)}, previous=old, progress=0.5)
+    img = pixels(compositor, canvas)
+    assert tuple(img[10, 50]) == (255, 0, 0, 255)  # right half: only the new scene
+    r, g, b, a = (int(v) for v in img[10, 10])
+    assert abs(r - 128) <= 2 and abs(b - 128) <= 2 and a == 255  # left half: half and half

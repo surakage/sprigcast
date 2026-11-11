@@ -53,7 +53,7 @@ class Preview(QWidget):
         self.scene: Scene | None = None
         self.sizes: dict[str, tuple[int, int]] = {}
         self.selected_index: int | None = None
-        self.transparent = False  # a part: show see-through areas as a checkerboard
+        self.transparent = True  # show see-through canvas areas as a checkerboard
         self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
         # Editing a part in place: where its layout sits on this canvas (see set_inner).
         self.inner: tuple[float, float, float, float, float] | None = None  # x, y, scale, crop left, crop top
@@ -194,8 +194,8 @@ class Preview(QWidget):
             tile = QPixmap(2 * cell, 2 * cell)
             tile.fill(QColor("#13301f"))
             tp = QPainter(tile)
-            tp.fillRect(0, 0, cell, cell, QColor("#183a27"))
-            tp.fillRect(cell, cell, cell, cell, QColor("#183a27"))
+            tp.fillRect(0, 0, cell, cell, QColor("#1e4a31"))
+            tp.fillRect(cell, cell, cell, cell, QColor("#1e4a31"))
             tp.end()
             cls._checker = QBrush(tile)
         p.fillRect(rect, cls._checker)
