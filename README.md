@@ -127,7 +127,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - *Video*: size, frame rate and on/off for each canvas. These apply the next time SprigCast starts.
   - *Plugins*: which plugins loaded (and why any failed), what they added, and *Open plugins folder*.
   - Stream settings are locked while you're live, and recording settings while you record.
-- **Build and Live modes** (the buttons at the top left, or Ctrl+1 / Ctrl+2). *Build* is the editing layout above.
+- **Live and Build modes** (the buttons at the top left, or Ctrl+1 / Ctrl+2). *Build* is the editing layout above, with a Horizontal and a Vertical tab: each shows that canvas with its own blooms and sources. On the Vertical tab, 🔗 Link (or right-click a bloom) picks the horizontal bloom it switches together with.
   *Live* is for running the show: big buttons for each canvas's blooms (linked scenes, marked ⇄, switch together),
   a large on-air clock, the Audio Mixer, Destinations and Controls; the previews can't be edited by a stray
   click. Each mode remembers its own dock layout, and SprigCast reopens in the mode you left it in.
