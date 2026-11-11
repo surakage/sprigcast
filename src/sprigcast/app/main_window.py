@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QTabBar,
     QToolBar,
     QToolButton,
     QTreeWidget,
@@ -168,6 +169,12 @@ class MainWindow(QMainWindow):
         self.recording: RecordingSession | None = None
         self.streaming: StreamSession | None = None
         self._stream_status_at = 0.0
+        # Build mode edits one canvas at a time, picked with the Horizontal / Vertical tabs.
+        canvas_ids = [c.id for c in collection.canvases]
+        saved = QSettings().value("build/canvas", canvas_ids[0])
+        self.build_canvas: str = saved if saved in canvas_ids else canvas_ids[0]
+        if self.selected_scene_id is not None:
+            self.selected_scene_id = collection.active_scenes.get(self.build_canvas, self.selected_scene_id)
 
         self.setWindowTitle("SprigCast")
         self.resize(1440, 860)
@@ -219,8 +226,35 @@ class MainWindow(QMainWindow):
         self.part_empty.setStyleSheet("background: #1f5236; color: #f0fff5; padding: 8px 12px; border-radius: 8px; margin: 4px 8px;")
         part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
+        self.splitter = splitter
+        self.canvas_tabs = QTabBar()
+        self.canvas_tabs.setDrawBase(False)
+        self.canvas_tabs.setExpanding(False)
+        self.canvas_tabs.setStyleSheet(
+            "QTabBar::tab { padding: 6px 16px; margin-right: 4px; border: 1px solid #2c7a4f; border-bottom: none;"
+            " border-top-left-radius: 8px; border-top-right-radius: 8px; background: #10291b; color: #8cc4a3; }"
+            "QTabBar::tab:selected { background: #1f5a3a; color: #f0fff5; font-weight: bold;"
+            " border-top: 3px solid #ff5fa2; }"
+        )
+        for canvas in collection.canvases:
+            self.canvas_tabs.addTab(f"{canvas.id.capitalize()}   {canvas.width}×{canvas.height}")
+            self.canvas_tabs.setTabToolTip(self.canvas_tabs.count() - 1, f"Edit the {canvas.id} {SHOWS} and their sources")
+        self.canvas_tabs.setCurrentIndex(canvas_ids.index(self.build_canvas))
+        self.canvas_tabs.currentChanged.connect(self._on_canvas_tab)
+        canvas_page = QWidget()
+        page_layout = QVBoxLayout(canvas_page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
+        tabs_row = QHBoxLayout()
+        tabs_row.setContentsMargins(8, 4, 8, 0)
+        tabs_row.addWidget(self.canvas_tabs)
+        tabs_row.addStretch(1)
+        self.canvas_tabs_row = QWidget()
+        self.canvas_tabs_row.setLayout(tabs_row)
+        page_layout.addWidget(self.canvas_tabs_row)
+        page_layout.addWidget(splitter, 1)
         self.center = QStackedWidget()
-        self.center.addWidget(splitter)
+        self.center.addWidget(canvas_page)
         self.center.addWidget(part_panel)
         self.setCentralWidget(self.center)
 
@@ -261,6 +295,7 @@ class MainWindow(QMainWindow):
         self._build_mode_bar()
         self._refresh_all()
         self._restore_layout()
+        self._apply_canvas_view()
         self._show_part_editor()
 
     # Building the UI ------------------------------------------------------
@@ -282,6 +317,15 @@ class MainWindow(QMainWindow):
             None,
             ("▶ Show", "Show this scene on its canvas (or double-click it)", self._make_active),
         )
+        self.link_menu = QMenu(self)
+        self.link_menu.aboutToShow.connect(lambda: self._fill_link_menu(self.link_menu))
+        self.link_button = QToolButton()
+        self.link_button.setText("🔗 Link")
+        self.link_button.setAutoRaise(True)
+        self.link_button.setMinimumSize(30, 28)
+        self.link_button.setMenu(self.link_menu)
+        self.link_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        bar.layout().insertWidget(bar.layout().count() - 1, self.link_button)
         self._dock("Scenes", self.scene_tree, bar)
 
     def _build_transitions_dock(self) -> None:
@@ -418,6 +462,9 @@ class MainWindow(QMainWindow):
             scene = self._scene()
             if scene.kind == "show":
                 menu.addAction("Show").triggered.connect(self._make_active)
+                if scene.canvas != self.collection.canvases[0].id:
+                    link = menu.addMenu("🔗 Switch together with")
+                    self._fill_link_menu(link)
             else:
                 part = self.collection.main_part(scene)
                 for canvas in self.collection.canvases:
@@ -590,7 +637,7 @@ class MainWindow(QMainWindow):
 
     # Modes -------------------------------------------------------------------------
 
-    MODES = {"build": "Build", "live": "Live"}
+    MODES = {"live": "Live", "build": "Build"}  # Live first: it's where the show runs
 
     def _build_mode_bar(self) -> None:
         """Build (edit scenes, OBS-style docks) or Live (big scene buttons, destinations, mixer)."""
@@ -608,9 +655,9 @@ class MainWindow(QMainWindow):
         for mode, label in self.MODES.items():
             action = QAction(label, self)
             action.setCheckable(True)
-            action.setToolTip({"build": "Edit scenes and sources (Ctrl+1)",
-                               "live": "Run the show: big scene buttons, destinations and mixer (Ctrl+2)"}[mode])
-            action.setShortcut(QKeySequence("Ctrl+1" if mode == "build" else "Ctrl+2"))
+            action.setToolTip({"build": "Edit scenes and sources, one canvas at a time (Ctrl+2)",
+                               "live": "Run the show: big scene buttons, destinations and mixer (Ctrl+1)"}[mode])
+            action.setShortcut(QKeySequence("Ctrl+1" if mode == "live" else "Ctrl+2"))
             action.triggered.connect(lambda _=False, m=mode: self._set_mode(m))
             group.addAction(action)
             bar.addAction(action)
@@ -639,7 +686,80 @@ class MainWindow(QMainWindow):
         for preview in self.previews.values():
             preview.editable = editable
             preview.update()
+        self._apply_canvas_view()
         QSettings().setValue("window/mode", mode)
+
+    # Build mode's canvas tabs ---------------------------------------------------------
+
+    def _apply_canvas_view(self) -> None:
+        """Build shows only the canvas of the current tab; Live shows every canvas side by side."""
+        build = self.mode == "build"
+        self.canvas_tabs_row.setVisible(build)
+        for canvas_id, preview in self.previews.items():
+            preview.setVisible(not build or canvas_id == self.build_canvas)
+        primary = self.collection.canvases[0].id
+        self.link_button.setVisible(self.build_canvas != primary)
+
+    def _on_canvas_tab(self, index: int) -> None:
+        canvas_id = self.collection.canvases[index].id
+        if canvas_id == self.build_canvas:
+            return
+        self._exit_in_place()
+        self.build_canvas = canvas_id
+        QSettings().setValue("build/canvas", canvas_id)
+        scene = self._scene()
+        if scene is None or (scene.kind == "show" and scene.canvas != canvas_id):
+            active = self.collection.active_scene(canvas_id)
+            shows = self.collection.scenes_for(canvas_id)
+            self.selected_scene_id = active.id if active else (shows[0].id if shows else None)
+        self._apply_canvas_view()
+        self._refresh_scenes()
+        self._refresh_sources()
+        self._refresh_previews()
+        self._show_part_editor()
+
+    def _link_target(self, scene: Scene) -> Scene | None:
+        return next((s for s in self.collection.scenes if s.id == scene.linked_to), None) if scene.linked_to else None
+
+    def _link_label(self, scene: Scene) -> str:
+        """'🔗 Other name' for the scenes that switch together with this one."""
+        target = self._link_target(scene)
+        names = [target.name] if target else [s.name for s in self.collection.scenes if s.linked_to == scene.id]
+        return f"   🔗 {', '.join(names)}" if names else ""
+
+    def _fill_link_menu(self, menu: QMenu) -> None:
+        """Pick which bloom on the main canvas this one switches together with."""
+        menu.clear()
+        scene = self._scene()
+        if scene is None or scene.kind != "show" or scene.canvas == self.collection.canvases[0].id:
+            menu.addAction(f"Select a {self.build_canvas} {SHOW} first").setEnabled(False)
+            return
+        others = [s for s in self.collection.scenes if s.kind == "show" and s.canvas != scene.canvas]
+        none = menu.addAction("Not linked")
+        none.setCheckable(True)
+        none.setChecked(scene.linked_to is None)
+        none.triggered.connect(lambda: self._link_scene(scene.id, None))
+        if others:
+            menu.addSeparator()
+        for other in others:
+            action = menu.addAction(f"{other.name}   ({other.canvas})")
+            action.setCheckable(True)
+            action.setChecked(scene.linked_to == other.id)
+            action.triggered.connect(lambda _=False, oid=other.id: self._link_scene(scene.id, oid))
+
+    def _link_scene(self, scene_id: str, target_id: str | None) -> None:
+        """Switching to the target (on any canvas) also switches to this scene, and the other way round."""
+        scene = self.collection.scene(scene_id)
+        scene.linked_to = target_id
+        if target_id is not None:
+            target = self.collection.scene(target_id)
+            if self.collection.active_scenes.get(target.canvas) == target_id:
+                self.collection.active_scenes[scene.canvas] = scene.id
+        self._changed()
+        self._refresh_scenes()
+        self._refresh_previews()
+        linked = f"linked to “{self.collection.scene(target_id).name}”" if target_id else "not linked"
+        self.statusBar().showMessage(f"“{scene.name}” is {linked}.", 4000)
 
     @staticmethod
     def _state_key(mode: str) -> str:
@@ -881,12 +1001,14 @@ class MainWindow(QMainWindow):
         bold = QFont()
         bold.setBold(True)
         for canvas in self.collection.canvases:
-            parent = QTreeWidgetItem([f"{canvas.id.capitalize()}  ({canvas.width}x{canvas.height})"])
+            if canvas.id != self.build_canvas:
+                continue  # the other shape has its own tab
+            parent = QTreeWidgetItem([f"{cap(SHOWS)}  ·  {canvas.id}"])
             parent.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.scene_tree.addTopLevelItem(parent)
             active = self.collection.active_scenes.get(canvas.id)
             for scene in self.collection.scenes_for(canvas.id):
-                label = scene.name + ("   (linked)" if scene.linked_to else "")
+                label = scene.name + self._link_label(scene)
                 child = QTreeWidgetItem([label])
                 child.setData(0, ROLE_ID, scene.id)
                 if scene.id == active:
@@ -1176,19 +1298,21 @@ class MainWindow(QMainWindow):
         self._refresh_previews()
 
     def _add_scene(self) -> None:
-        canvases = [c.id for c in self.collection.canvases]
-        canvas_id, ok = QInputDialog.getItem(self, "Add scene", "Canvas:", canvases, 0, False)
-        if not ok:
-            return
-        name, ok = QInputDialog.getText(self, "Add scene", "Scene name:")
+        canvas_id = self.build_canvas  # the Build tab you're on
+        title = f"New {canvas_id} {SHOW}"
+        name, ok = QInputDialog.getText(self, title, "Name:")
         if not ok or not name.strip():
             return
-        shows = [s for s in self.collection.scenes if s.kind == "show"]
-        link_options = ["(not linked)"] + [s.name for s in shows if s.canvas != canvas_id]
-        link, ok = QInputDialog.getItem(self, "Add scene", "Switch together with:", link_options, 0, False)
-        if not ok:
-            return
-        linked = next((s.id for s in shows if s.name == link and s.canvas != canvas_id), None)
+        linked = None
+        shows = [s for s in self.collection.scenes if s.kind == "show" and s.canvas != canvas_id]
+        if canvas_id != self.collection.canvases[0].id and shows:
+            link_options = ["(not linked)"] + [s.name for s in shows]
+            # Suggest the main-canvas bloom with the same name, if there is one.
+            guess = next((i + 1 for i, s in enumerate(shows) if s.name.lower() == name.strip().lower()), 0)
+            link, ok = QInputDialog.getItem(self, title, "Switch together with:", link_options, guess, False)
+            if not ok:
+                return
+            linked = next((s.id for s in shows if s.name == link), None)
         scene = Scene(id=self.collection.new_id("scene"), name=name.strip(), canvas=canvas_id, linked_to=linked)
         self.collection.scenes.append(scene)
         self.collection.active_scenes.setdefault(canvas_id, scene.id)

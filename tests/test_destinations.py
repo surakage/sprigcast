@@ -116,3 +116,58 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
+    import keyring
+    from PySide6.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("CanvasTabsTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    w = MainWindow(col, tmp_path / "scenes.json")
+
+    def listed():
+        top = w.scene_tree.topLevelItem(0)
+        return [top.child(i).data(0, Qt.ItemDataRole.UserRole) for i in range(top.childCount())]
+
+    from PySide6.QtCore import Qt
+    try:
+        w.show()
+        assert [a.text() for a in w.mode_actions.values()] == ["Live", "Build"]  # Live comes first
+        # Build starts on the horizontal tab: only its preview and its blooms.
+        assert w.build_canvas == "horizontal"
+        assert w.previews["horizontal"].isVisible() and not w.previews["vertical"].isVisible()
+        assert "v1" not in {w.scene_tree.topLevelItem(0).child(i).data(0, 256) for i in range(2)}
+        assert not w.link_button.isVisible()
+        w.canvas_tabs.setCurrentIndex(1)
+        assert w.build_canvas == "vertical" and w.selected_scene_id == "v1"
+        assert w.previews["vertical"].isVisible() and not w.previews["horizontal"].isVisible()
+        assert w.link_button.isVisible()
+        assert "🔗 Main" in w.scene_tree.topLevelItem(0).child(0).text(0)
+        # Re-link the vertical bloom to BRB from the vertical tab; switching BRB on now brings it along.
+        w._link_scene("v1", "h2")
+        assert col.scene("v1").linked_to == "h2"
+        col.set_active("h2")
+        assert col.active_scenes["vertical"] == "v1"
+        w._link_scene("v1", None)
+        assert col.scene("v1").linked_to is None
+        # New blooms land on the tab you're on, and can be linked as they're made.
+        answers = iter([("Gameplay", True)])
+        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: next(answers))
+        monkeypatch.setattr(QInputDialog, "getItem", lambda *a, **k: ("BRB", True))
+        w._add_scene()
+        new = col.scene(w.selected_scene_id)
+        assert new.canvas == "vertical" and new.linked_to == "h2"
+        # Live shows both canvases again.
+        w._set_mode("live")
+        assert w.previews["horizontal"].isVisible() and w.previews["vertical"].isVisible()
+        assert not w.canvas_tabs_row.isVisible()
+        assert QSettings().value("build/canvas") == "vertical"
+    finally:
+        w.close()
+        QSettings().clear()
