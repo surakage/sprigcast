@@ -18,12 +18,8 @@ dependencies = [
     "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",  # mic and desktop audio over WASAPI (M6)
     "soxr>=0.3",  # resampling to 48 kHz
     "keyring>=25",  # stream keys in Windows Credential Manager (M8)
-]
-
-[project.optional-dependencies]
-# Needed from later milestones (global hotkeys).
-devices = [
-    "pynput>=1.7",
+    "pynput>=1.7; sys_platform == 'win32'",  # global hotkeys (M10)
+    "psutil>=5.9",  # CPU and memory in the stats panel (M10)
 ]
 
 [project.scripts]

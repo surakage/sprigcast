@@ -108,6 +108,7 @@ class Recorder:
         self.bytes_out = 0  # bytes muxed so far, for the bitrate readout
         self.mux_seconds = 0.0  # time spent handing packets to the file or network
         self.encode_seconds = 0.0  # time spent converting and encoding video frames
+        self.longest_stall = 0.0  # longest single wait to hand a packet to the file or network
         self.started_at = time.monotonic()
         self._video: queue.Queue = queue.Queue(VIDEO_QUEUE)
         self._audio: queue.Queue = queue.Queue(AUDIO_QUEUE)
@@ -168,6 +169,23 @@ class Recorder:
     @property
     def running(self) -> bool:
         return self._thread.is_alive()
+
+    def stats(self) -> dict:
+        """Numbers for the stats panel."""
+        total = self.frames + self.dropped
+        running = max(1e-6, time.monotonic() - self.started_at)
+        return {
+            "frames": self.frames,
+            "dropped": self.dropped,
+            "dropped_pct": 100 * self.dropped / total if total else 0.0,
+            "encode_ms": 1000 * self.encode_seconds / max(1, self.frames),
+            "budget_ms": 1000 / self.fps,
+            "network_pct": 100 * self.mux_seconds / running,
+            "longest_stall_s": self.longest_stall,
+            "megabytes": self.bytes_out / 1e6,
+            "size": f"{self.out_width}×{self.out_height}",
+            "fps": self.fps,
+        }
 
     def measure_kbps(self) -> float:
         """Average output bitrate since the previous call (call it about once a second)."""
@@ -249,7 +267,9 @@ class Recorder:
         for packet in packets:
             began = time.perf_counter()
             container.mux(packet)
-            self.mux_seconds += time.perf_counter() - began
+            waited = time.perf_counter() - began
+            self.mux_seconds += waited
+            self.longest_stall = max(self.longest_stall, waited)
             self.bytes_out += packet.size
 
     def _write_video(self, container, stream, frame) -> None:

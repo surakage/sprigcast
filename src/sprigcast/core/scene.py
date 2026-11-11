@@ -93,6 +93,13 @@ class RecordingSettings(BaseModel):
     container: Literal["mkv", "mp4"] = "mkv"
 
 
+class Transition(BaseModel):
+    """How a canvas changes scenes: a cut, or a fade that crossfades over duration_ms."""
+
+    kind: Literal["cut", "fade"] = "fade"
+    duration_ms: int = 300
+
+
 class SceneCollection(BaseModel):
     version: int = FORMAT_VERSION
     canvases: list[Canvas]
@@ -101,6 +108,8 @@ class SceneCollection(BaseModel):
     active_scenes: dict[str, str] = Field(default_factory=dict)  # canvas id -> scene id
     outputs: list[Output] = Field(default_factory=list)
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
+    transition: Transition = Field(default_factory=Transition)
+    hotkeys: dict[str, str] = Field(default_factory=dict)  # action -> key combo, e.g. "scene:brb" -> "Ctrl+Alt+2"
 
     @model_validator(mode="after")
     def _check_references(self) -> "SceneCollection":

@@ -4,9 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M9 of the build guide:
+Status: early development. This code covers milestones M0 to M10 of the build guide:
 toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
-display and window capture, webcams, mouse editing in the previews, an audio mixer, recording, and live streaming.
+display and window capture, webcams, mouse editing in the previews, an audio mixer, recording, live streaming, transitions, hotkeys and stats.
 
 ## Requirements
 
@@ -47,6 +47,11 @@ The key is typed at a hidden prompt and is never saved.
   - Tick *Locked* in Properties for backgrounds, so clicks pass through them to the items on top.
 - **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
+  Under the scene list, pick the *Transition*: *Fade* (crossfade, 300 ms by default) or *Cut*.
+- **Hotkeys** (*File → Hotkeys…*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
+  They work while a game has focus. Pick combos your games don't use.
+- **Stats** (*View → Stats*, Ctrl+Shift+S): render fps, CPU and memory, free disk space, and for every stream
+  and recording the frames sent and dropped, encoding time per frame, and time spent waiting on the network.
 - **Sources dock**: add a display, window, color or image source to the selected scene, tick to show or hide,
   and use *Up* and *Down* to change which item draws on top.
   - *+ Display* captures a whole monitor, cursor included, and fits it to the canvas.
@@ -104,7 +109,7 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M10 transitions, hotkeys, stats · M11 plugins and polish.
+M11 plugins and polish.
 
 ## License
 
