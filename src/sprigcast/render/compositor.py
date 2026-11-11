@@ -31,6 +31,7 @@ FRAGMENT_SHADER = """
 #version 330
 uniform sampler2D tex;
 uniform float opacity;
+uniform bool premul;        // a part's texture: colors are multiplied by alpha already
 uniform vec2 scroll;        // uv offset (already multiplied by time)
 uniform bool wrap;
 uniform float sharpen;
@@ -66,6 +67,9 @@ vec3 rotate_hue(vec3 c, float a) {
 void main() {
     vec2 st = wrap ? fract(uv + scroll) : uv;
     vec4 c = texture(tex, st);
+    if (premul && c.a > 0.0) {
+        c.rgb /= c.a;
+    }
     if (sharpen > 0.0) {
         vec2 px = 1.0 / vec2(textureSize(tex, 0));
         vec3 around = texture(tex, st + vec2(px.x, 0.0)).rgb + texture(tex, st - vec2(px.x, 0.0)).rgb
@@ -100,10 +104,11 @@ SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1"}
 
 
 class _CanvasTarget:
-    def __init__(self, ctx: moderngl.Context, canvas: Canvas):
+    def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
         self.ctx = ctx
-        self.size = (canvas.width, canvas.height)
+        self.size = size
         self.color = ctx.texture(self.size, 4)
+        self.color.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self.fbo = ctx.framebuffer(color_attachments=[self.color])
         self.aux_color: moderngl.Texture | None = None  # the outgoing scene during a transition
         self.aux_fbo: moderngl.Framebuffer | None = None
@@ -131,6 +136,7 @@ class Compositor:
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
         self.textures: dict[str, moderngl.Texture] = {}
         self.targets: dict[str, _CanvasTarget] = {}
+        self.parts: dict[str, moderngl.Texture] = {}  # nested-part source id -> its part's rendered texture
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
         self.time = 0.0  # seconds, drives the Scroll filter
         self._applied: VideoEffects | None = None
@@ -163,13 +169,32 @@ class Compositor:
     # Canvases ------------------------------------------------------------
 
     def _target(self, canvas: Canvas) -> _CanvasTarget:
-        target = self.targets.get(canvas.id)
-        if target is None or target.size != (canvas.width, canvas.height):
+        return self._target_sized(canvas.id, (canvas.width, canvas.height))
+
+    def _target_sized(self, key: str, size: tuple[int, int]) -> _CanvasTarget:
+        target = self.targets.get(key)
+        if target is None or target.size != size:
             if target is not None:
                 target.release()
-            target = _CanvasTarget(self.ctx, canvas)
-            self.targets[canvas.id] = target
+            target = _CanvasTarget(self.ctx, size)
+            self.targets[key] = target
         return target
+
+    def render_part(self, part_id: str, size: tuple[int, int], scene: Scene,
+                    source_sizes: dict[str, tuple[int, int]]) -> moderngl.Texture:
+        """Draw a part onto its own transparent texture (key "part:<id>"), once per frame.
+
+        Every scene that places the part then samples this texture, so a part used in five
+        scenes on two canvases costs one render.
+        """
+        target = self._target_sized(f"part:{part_id}", size)
+        self._draw_scene(target.fbo, size, scene, source_sizes, clear_alpha=0.0)
+        return target.color
+
+    def forget_part(self, part_id: str) -> None:
+        target = self.targets.pop(f"part:{part_id}", None)
+        if target is not None:
+            target.release()
 
     def render(
         self,
@@ -185,17 +210,19 @@ class Compositor:
         scene is drawn, then the old one on top at opacity 1 - progress.
         """
         target = self._target(canvas)
-        self._draw_scene(target.fbo, canvas, scene, source_sizes)
+        size = (canvas.width, canvas.height)
+        self._draw_scene(target.fbo, size, scene, source_sizes)
         if previous is None or progress >= 1.0:
             return
         aux = target.aux()
-        self._draw_scene(aux, canvas, previous, source_sizes)
+        self._draw_scene(aux, size, previous, source_sizes)
         target.fbo.use()
         self.ctx.viewport = (0, 0, canvas.width, canvas.height)
         self._blend()
         w, h = float(canvas.width), float(canvas.height)
         self.vbo.write(np.array([(0, 0, 0, 0), (w, 0, 1, 0), (0, h, 0, 1), (w, h, 1, 1)], dtype="f4").tobytes())
         self.program["opacity"].value = max(0.0, min(1.0, 1.0 - progress))
+        self.program["premul"].value = False
         self._apply_effects(NO_EFFECTS, (1, 1))
         target.aux_color.use(location=0)
         self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
@@ -204,19 +231,21 @@ class Compositor:
         self.ctx.enable(moderngl.BLEND)
         self.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA, moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
 
-    def _draw_scene(self, fbo, canvas: Canvas, scene: Scene | None, source_sizes: dict[str, tuple[int, int]]) -> None:
+    def _draw_scene(self, fbo, size: tuple[int, int], scene: Scene | None, source_sizes: dict[str, tuple[int, int]],
+                    clear_alpha: float = 1.0) -> None:
         fbo.use()
-        self.ctx.viewport = (0, 0, canvas.width, canvas.height)
-        self.ctx.clear(0.0, 0.0, 0.0, 1.0)
+        self.ctx.viewport = (0, 0, size[0], size[1])
+        self.ctx.clear(0.0, 0.0, 0.0, clear_alpha)
         if scene is None:
             return
         self._blend()
-        self.program["canvas_size"].value = (float(canvas.width), float(canvas.height))
+        self.program["canvas_size"].value = (float(size[0]), float(size[1]))
         self.program["tex"].value = 0
         self.program["opacity"].value = 1.0
         self._applied = None
         for item in scene.items:
-            tex = self.textures.get(item.source)
+            part = self.parts.get(item.source)
+            tex = part or self.textures.get(item.source)
             size = source_sizes.get(item.source)
             if not item.visible or tex is None or size is None:
                 continue
@@ -225,6 +254,7 @@ class Compositor:
                 continue
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
             self._apply_effects(self.effects.get(item.source, NO_EFFECTS), tex.size)
+            self.program["premul"].value = part is not None
             tex.use(location=0)
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
 

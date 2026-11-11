@@ -136,6 +136,7 @@ class DestinationsPanel(QWidget):
         if [o.id for o in outputs] != list(self.cards):
             for card in self.cards.values():
                 self._cards_box.removeWidget(card)
+                card.setParent(None)
                 card.deleteLater()
             self.cards = {}
             for output in outputs:

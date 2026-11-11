@@ -54,6 +54,18 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - Right-click a background and pick *Lock*, so clicks pass through them to the items on top.
 - **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *▶ Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
+- **Shows and parts**: SprigCast has two kinds of scene. A *show* is what goes on air (Starting soon,
+  Gaming, Be right back). A *part* is a reusable piece, like a webcam frame, an alerts box or a brand bar,
+  that you drop into shows. Build a part once and use it on both canvases: change it, and every show
+  using it changes too.
+  - Scenes **+ → New part…** makes one (it asks which canvas size to lay it out on). Parts are listed
+    under *Parts* in the Scenes dock with where they're used, for example "◇ Webcam frame (horizontal · used in 2)".
+  - Select a part to open it in the *part editor* in place of the canvases. The see-through areas show as a
+    checkerboard, and the header lists every show that uses it. *Done: back to the canvases* closes it.
+  - Sources **+ → Part** places a part in the selected show (or inside another part). Move, resize and crop it
+    like any source. SprigCast won't let a part end up inside itself.
+  - A part is drawn once per frame however many shows and canvases use it. Removing a part warns you where
+    it's used. Parts never appear in Live mode, which lists shows only.
 - **Scene Transitions dock**: *Fade* (crossfade, 300 ms by default) or *Cut*.
 - **Hotkeys** (*Settings → Hotkeys*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
   They work while a game has focus. Pick combos your games don't use.
@@ -90,7 +102,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - *Plugins*: which plugins loaded (and why any failed), what they added, and *Open plugins folder*.
   - Stream settings are locked while you're live, and recording settings while you record.
 - **Build and Live modes** (the buttons at the top left, or Ctrl+1 / Ctrl+2). *Build* is the editing layout above.
-  *Live* is for running the show: big scene buttons for each canvas (linked scenes, marked ⇄, switch together),
+  *Live* is for running the show: big buttons for each canvas's shows (linked scenes, marked ⇄, switch together),
   a large on-air clock, the Audio Mixer, Destinations and Controls; the previews can't be edited by a stray
   click. Each mode remembers its own dock layout, and SprigCast reopens in the mode you left it in.
 - **Destinations dock**: a card for every place you stream to, showing what it gets (canvas, size, fps,
@@ -178,7 +190,7 @@ as SprigCast, so only install ones you trust.
 src/sprigcast/
   core/      scene collection model (canvases, sources, scenes, outputs), Source base class, filters, mailbox, events
   render/    moderngl compositor and the render engine thread
-  sources/   built-in sources: color, image, text, display and window capture, camera, mic and desktop audio
+  sources/   built-in sources: color, image, text, display and window capture, camera, mic and desktop audio, parts
   audio/     mixer that combines audio sources into one 48 kHz stereo stream
   output/    recorder (MKV/MP4) and RTMP streamer: H.264 (NVENC or x264) and AAC, stream keys via keyring
   app/       PySide6 main window, canvas previews, dialogs and theme

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.core import edit
@@ -48,6 +48,7 @@ class Preview(QWidget):
         self.scene: Scene | None = None
         self.sizes: dict[str, tuple[int, int]] = {}
         self.selected_index: int | None = None
+        self.transparent = False  # a part: show see-through areas as a checkerboard
         self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
         self._image: QImage | None = None
         self._drag: tuple[str, int | None, QPointF, SceneItem] | None = None  # mode, corner, start, item copy
@@ -60,7 +61,8 @@ class Preview(QWidget):
 
     def set_frame(self, data: bytes, width: int, height: int) -> None:
         # copy() detaches the image from the bytes object, which the engine may drop at any time.
-        self._image = QImage(data, width, height, width * 4, QImage.Format.Format_RGBA8888).copy()
+        fmt = QImage.Format.Format_RGBA8888_Premultiplied if self.transparent else QImage.Format.Format_RGBA8888
+        self._image = QImage(data, width, height, width * 4, fmt).copy()
         self.aspect = (width, height)
         self.update()
 
@@ -123,10 +125,26 @@ class Preview(QWidget):
             p.fillRect(rect, QColor("#000000"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Waiting for the renderer…")
         else:
+            if self.transparent:
+                self._paint_checker(p, rect)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(rect, self._image)
         self._paint_selection(p)
         p.end()
+
+    _checker: QBrush | None = None
+
+    @classmethod
+    def _paint_checker(cls, p: QPainter, rect: QRectF, cell: int = 12) -> None:
+        if cls._checker is None:
+            tile = QPixmap(2 * cell, 2 * cell)
+            tile.fill(QColor("#2a2d27"))
+            tp = QPainter(tile)
+            tp.fillRect(0, 0, cell, cell, QColor("#33372f"))
+            tp.fillRect(cell, cell, cell, cell, QColor("#33372f"))
+            tp.end()
+            cls._checker = QBrush(tile)
+        p.fillRect(rect, cls._checker)
 
     def _paint_selection(self, p: QPainter) -> None:
         selected = self._selected_item() if self.editable else None
