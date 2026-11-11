@@ -58,7 +58,8 @@ class Preview(QWidget):
         self.inner: tuple[float, float, float, float, float] | None = None  # x, y, scale, crop left, crop top
         self.inner_size: tuple[int, int] | None = None  # the part layout's own size
         self.inner_rect: tuple[float, float, float, float] | None = None  # visible part area, canvas pixels
-        self._inner_image: QImage | None = None  # the part alone, drawn bright over the dimmed show
+        self._inner_image: QImage | None = None
+        self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
         self._drag: tuple[str, int | None, QPointF, SceneItem] | None = None  # mode, corner, start, item copy
         self.setMinimumSize(160, 160)
@@ -344,7 +345,12 @@ class Preview(QWidget):
                 diagonal = corner in (0, 3)
                 self.setCursor(Qt.CursorShape.SizeFDiagCursor if diagonal else Qt.CursorShape.SizeBDiagCursor)
                 return
-        if edit.hit_test(self.scene.items, self.sizes, point) is not None:
+        index = edit.hit_test(self.scene.items, self.sizes, point)
+        if index is not None:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
         else:
             self.unsetCursor()
+        name = self.part_names.get(self.scene.items[index].source) if index is not None else None
+        hint = f"◇ {name}: a part. Double-click to edit it here." if name and self.inner is None else ""
+        if hint != self.toolTip():
+            self.setToolTip(hint)

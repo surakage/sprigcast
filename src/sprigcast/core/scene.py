@@ -353,6 +353,26 @@ class SceneCollection(BaseModel):
         self._refit_placements(part, canvas_id, (src.width, src.height), (dst.width, dst.height))
         return shape
 
+    def make_part(self, scene: Scene, indices: list[int], name: str) -> tuple[Scene, SourceConfig]:
+        """Move some of a scene's items into a new part and put the part where they were.
+
+        The part is laid out on the scene's canvas and the items keep their positions, so nothing
+        moves on screen. The placement goes where the top-most moved item was. Returns the part and
+        its placement source.
+        """
+        chosen = sorted({i for i in indices if 0 <= i < len(scene.items)})
+        if not chosen:
+            raise ValueError("no items to make a part from")
+        part = Scene(id=self.new_id("part"), name=name, canvas=scene.canvas, kind="part",
+                     items=[scene.items[i] for i in chosen])
+        self.scenes.append(part)
+        placement = SourceConfig(id=self.new_id("part-src"), kind=PART_KIND, name=name, settings={"scene": part.id})
+        self.sources.append(placement)
+        at = chosen[-1] - (len(chosen) - 1)  # where the top-most item lands once the others are gone
+        scene.items = [item for i, item in enumerate(scene.items) if i not in set(chosen)]
+        scene.items.insert(at, SceneItem(source=placement.id))
+        return part, placement
+
     def remove_shape(self, shape: Scene) -> None:
         """Drop a part's extra layout; shows on that canvas go back to its main layout, refitted."""
         if shape.shape_of is None:
