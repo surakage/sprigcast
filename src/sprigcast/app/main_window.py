@@ -15,7 +15,10 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
+    QIcon,
     QKeySequence,
+    QPainter,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -78,6 +81,7 @@ from sprigcast.core.events import (
     Stats,
 )
 from sprigcast.core.scene import (
+    FOLDER_COLOURS,
     PART_KIND,
     Scene,
     SceneCollection,
@@ -94,6 +98,21 @@ from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 ROLE_ID = Qt.ItemDataRole.UserRole
+ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1  # a folder row in the Scenes list
+COLOUR_NAMES = dict(zip(FOLDER_COLOURS, ("Pink", "Green", "Blue", "Yellow", "Orange", "Purple"), strict=True))
+
+
+def _dot(colour: str, size: int = 12) -> QIcon:
+    """A small filled circle, the colour tag of a folder and its blooms."""
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor(colour))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(1, 1, size - 2, size - 2)
+    p.end()
+    return QIcon(pix)
 log = logging.getLogger(__name__)
 
 
@@ -173,6 +192,7 @@ class MainWindow(QMainWindow):
         canvas_ids = [c.id for c in collection.canvases]
         saved = QSettings().value("build/canvas", canvas_ids[0])
         self.build_canvas: str = saved if saved in canvas_ids else canvas_ids[0]
+        self.selected_folder_id: str | None = None  # the folder last picked in the Scenes list
         if self.selected_scene_id is not None:
             self.selected_scene_id = collection.active_scenes.get(self.build_canvas, self.selected_scene_id)
 
@@ -307,8 +327,11 @@ class MainWindow(QMainWindow):
         self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.scene_tree.customContextMenuRequested.connect(self._scene_context_menu)
+        self.scene_tree.itemExpanded.connect(lambda item: self._folder_expanded(item, True))
+        self.scene_tree.itemCollapsed.connect(lambda item: self._folder_expanded(item, False))
         add_menu = QMenu(self)
         add_menu.addAction(f"New {SHOW}…").triggered.connect(self._add_scene)
+        add_menu.addAction("New folder…").triggered.connect(self._add_folder)
         add_menu.addAction(f"New {PART}…").triggered.connect(self._add_part)
         bar = _toolbar(
             ("+", f"Add {a(SHOW)} (a scene you switch to on air) or {a(PART)} (a reusable piece for {SHOWS})", add_menu),
@@ -458,10 +481,21 @@ class MainWindow(QMainWindow):
 
     def _scene_context_menu(self, pos) -> None:
         menu = QMenu(self)
-        if self.scene_tree.itemAt(pos) is not None and self._scene() is not None:
+        under = self.scene_tree.itemAt(pos)
+        folder_id = under.data(0, ROLE_FOLDER) if under is not None else None
+        if folder_id:
+            self._folder_menu(menu, self.collection.folder(folder_id))
+            menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+            return
+        if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
                 menu.addAction("Show").triggered.connect(self._make_active)
+                self._fill_move_menu(menu.addMenu("Move to folder"), scene)
+                up = menu.addAction("Move up")
+                up.triggered.connect(lambda: self._move_scene(scene.id, -1))
+                down = menu.addAction("Move down")
+                down.triggered.connect(lambda: self._move_scene(scene.id, 1))
                 if scene.canvas != self.collection.canvases[0].id:
                     link = menu.addMenu("🔗 Switch together with")
                     self._fill_link_menu(link)
@@ -480,8 +514,102 @@ class MainWindow(QMainWindow):
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
         menu.addAction(f"New {SHOW}…").triggered.connect(self._add_scene)
+        menu.addAction("New folder…").triggered.connect(self._add_folder)
         menu.addAction(f"New {PART}…").triggered.connect(self._add_part)
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+
+    # Folders -------------------------------------------------------------------------
+
+    def _folder_menu(self, menu: QMenu, folder) -> None:
+        menu.addAction(f"New {SHOW} in “{folder.name}”…").triggered.connect(
+            lambda: (setattr(self, "selected_folder_id", folder.id), self._add_scene()))
+        menu.addSeparator()
+        menu.addAction("Rename folder…").triggered.connect(lambda: self._rename_folder(folder.id))
+        colours = menu.addMenu("Colour")
+        for colour in FOLDER_COLOURS:
+            action = colours.addAction(_dot(colour, 14), COLOUR_NAMES[colour])
+            action.setCheckable(True)
+            action.setChecked(folder.colour == colour)
+            action.triggered.connect(lambda _=False, c=colour: self._recolour_folder(folder.id, c))
+        menu.addSeparator()
+        menu.addAction(f"Remove folder (keeps its {SHOWS})").triggered.connect(lambda: self._remove_folder(folder.id))
+
+    def _fill_move_menu(self, menu: QMenu, scene: Scene) -> None:
+        loose = menu.addAction("No folder")
+        loose.setCheckable(True)
+        loose.setChecked(scene.folder is None)
+        loose.triggered.connect(lambda: self._move_to_folder(scene.id, None))
+        folders = self.collection.folders_for(scene.canvas)
+        if folders:
+            menu.addSeparator()
+        for folder in folders:
+            action = menu.addAction(_dot(folder.colour, 14), folder.name)
+            action.setCheckable(True)
+            action.setChecked(scene.folder == folder.id)
+            action.triggered.connect(lambda _=False, fid=folder.id: self._move_to_folder(scene.id, fid))
+        menu.addSeparator()
+        menu.addAction("New folder…").triggered.connect(lambda: self._add_folder(move=scene.id))
+
+    def _add_folder(self, move: str | None = None) -> None:
+        name, ok = QInputDialog.getText(self, "New folder", f"Folder name (e.g. Main {cap(SHOWS)}):")
+        if not ok or not name.strip():
+            return
+        folder = self.collection.add_folder(self.build_canvas, name.strip())
+        self.selected_folder_id = folder.id
+        if move is not None:
+            self.collection.scene(move).folder = folder.id
+        else:
+            self.selected_scene_id = None  # select the new folder, ready for "New bloom"
+        self._changed()
+        self._refresh_scenes()
+        self._refresh_sources()
+
+    def _rename_folder(self, folder_id: str) -> None:
+        folder = self.collection.folder(folder_id)
+        name, ok = QInputDialog.getText(self, "Rename folder", "Folder name:", text=folder.name)
+        if ok and name.strip():
+            folder.name = name.strip()
+            self._changed()
+            self._refresh_scenes()
+
+    def _recolour_folder(self, folder_id: str, colour: str) -> None:
+        self.collection.folder(folder_id).colour = colour
+        self._changed()
+        self._refresh_scenes()
+
+    def _remove_folder(self, folder_id: str) -> None:
+        self.collection.remove_folder(folder_id)
+        if self.selected_folder_id == folder_id:
+            self.selected_folder_id = None
+        self._changed()
+        self._refresh_scenes()
+
+    def _move_to_folder(self, scene_id: str, folder_id: str | None) -> None:
+        self.collection.scene(scene_id).folder = folder_id
+        self.selected_folder_id = folder_id
+        self._changed()
+        self._refresh_scenes()
+
+    def _move_scene(self, scene_id: str, step: int) -> None:
+        """Swap with the neighbour in the same list (same canvas and folder)."""
+        scenes = self.collection.scenes
+        scene = self.collection.scene(scene_id)
+        group = [i for i, s in enumerate(scenes)
+                 if s.kind == "show" and s.canvas == scene.canvas and s.folder == scene.folder]
+        at = group.index(scenes.index(scene))
+        if not 0 <= at + step < len(group):
+            return
+        i, j = group[at], group[at + step]
+        scenes[i], scenes[j] = scenes[j], scenes[i]
+        self._changed()
+        self._refresh_scenes()
+
+    def _folder_expanded(self, item: QTreeWidgetItem, expanded: bool) -> None:
+        folder_id = item.data(0, ROLE_FOLDER)
+        if self._updating or not folder_id:
+            return
+        self.collection.folder(folder_id).collapsed = not expanded
+        self._changed()
 
     def _rename_item(self) -> None:
         item = self._item()
@@ -706,6 +834,7 @@ class MainWindow(QMainWindow):
             return
         self._exit_in_place()
         self.build_canvas = canvas_id
+        self.selected_folder_id = None
         QSettings().setValue("build/canvas", canvas_id)
         scene = self._scene()
         if scene is None or (scene.kind == "show" and scene.canvas != canvas_id):
@@ -1007,17 +1136,35 @@ class MainWindow(QMainWindow):
             parent.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.scene_tree.addTopLevelItem(parent)
             active = self.collection.active_scenes.get(canvas.id)
-            for scene in self.collection.scenes_for(canvas.id):
-                label = scene.name + self._link_label(scene)
-                child = QTreeWidgetItem([label])
-                child.setData(0, ROLE_ID, scene.id)
-                if scene.id == active:
-                    child.setFont(0, bold)
-                    child.setText(0, "▶ " + label)
-                parent.addChild(child)
-                if scene.id == self.selected_scene_id:
-                    child.setSelected(True)
+            folder_items = []
+            for folder, scenes in self.collection.grouped_scenes(canvas.id):
+                holder = parent
+                if folder is not None:
+                    holder = QTreeWidgetItem([f"{folder.name}   ({len(scenes)})"])
+                    holder.setData(0, ROLE_FOLDER, folder.id)
+                    holder.setIcon(0, _dot(folder.colour, 14))
+                    holder.setFont(0, bold)
+                    holder.setToolTip(0, f"Folder: right-click to rename, recolour or remove. {cap(SHOWS)} move in "
+                                         "with right-click → Move to folder.")
+                    parent.addChild(holder)
+                    folder_items.append((holder, folder))
+                    if folder.id == self.selected_folder_id and self.selected_scene_id is None:
+                        holder.setSelected(True)
+                for scene in scenes:
+                    label = scene.name + self._link_label(scene)
+                    child = QTreeWidgetItem([label])
+                    child.setData(0, ROLE_ID, scene.id)
+                    if folder is not None:
+                        child.setIcon(0, _dot(folder.colour))
+                    if scene.id == active:
+                        child.setFont(0, bold)
+                        child.setText(0, "▶ " + label)
+                    holder.addChild(child)
+                    if scene.id == self.selected_scene_id:
+                        child.setSelected(True)
             parent.setExpanded(True)
+            for holder, folder in folder_items:
+                holder.setExpanded(not folder.collapsed)
         parts = self.collection.parts()
         if parts:
             group = QTreeWidgetItem([f"{cap(PARTS)}  (reusable pieces for {SHOWS})"])
@@ -1275,7 +1422,12 @@ class MainWindow(QMainWindow):
             return
         selected = self.scene_tree.selectedItems()
         scene_id = selected[0].data(0, ROLE_ID) if selected else None
+        folder_id = selected[0].data(0, ROLE_FOLDER) if selected else None
+        if folder_id:
+            self.selected_folder_id = folder_id  # new blooms go in here
         if scene_id:
+            scene = self.collection.scene(scene_id)
+            self.selected_folder_id = scene.folder if scene.kind == "show" else None
             if self.in_place is not None:
                 self.in_place = None
                 self.engine.editing_part = None
@@ -1313,7 +1465,11 @@ class MainWindow(QMainWindow):
             if not ok:
                 return
             linked = next((s.id for s in shows if s.name == link), None)
-        scene = Scene(id=self.collection.new_id("scene"), name=name.strip(), canvas=canvas_id, linked_to=linked)
+        folder = self.selected_folder_id
+        if folder is not None and all(f.id != folder for f in self.collection.folders_for(canvas_id)):
+            folder = None
+        scene = Scene(id=self.collection.new_id("scene"), name=name.strip(), canvas=canvas_id, linked_to=linked,
+                      folder=folder)
         self.collection.scenes.append(scene)
         self.collection.active_scenes.setdefault(canvas_id, scene.id)
         self.selected_scene_id = scene.id
