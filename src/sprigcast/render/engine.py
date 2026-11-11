@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 
-from sprigcast.core.events import EngineError, ReplaceCollection, Shutdown, Stats
+from sprigcast.core.events import EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import Source, create_source
@@ -87,6 +87,12 @@ class Engine:
                 if now - stats_at >= 1.0:
                     avg_ms = 1000 * sum(render_times) / max(1, len(render_times))
                     self.events.put(Stats(fps=ticks / (now - stats_at), render_ms=avg_ms, dropped_ticks=dropped))
+                    self.events.put(
+                        SourceInfo(
+                            sizes={sid: src.size for sid, src in self._sources.items()},
+                            statuses={sid: src.status for sid, src in self._sources.items()},
+                        )
+                    )
                     ticks, stats_at = 0, now
         finally:
             for source in self._sources.values():
@@ -132,7 +138,7 @@ class Engine:
         for source_id, source in self._sources.items():
             frame = source.video_frame()
             if frame is not None:
-                compositor.upload(source_id, frame)
+                compositor.upload(source_id, frame, source.channel_order)
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
         for canvas in self._collection.canvases:
             if not canvas.enabled:

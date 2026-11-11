@@ -1,6 +1,5 @@
 import threading
 
-import numpy as np
 import pytest
 
 from sprigcast.core.mailbox import Mailbox

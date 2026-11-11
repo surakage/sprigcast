@@ -51,3 +51,12 @@ def test_vertical_canvas_renders_independently(compositor):
     assert img.shape == (64, 36, 4)
     assert tuple(img[60, 5]) == (0, 255, 0, 255)
     assert tuple(img[5, 5]) == (0, 0, 0, 255)
+
+
+def test_bgra_frames_are_swizzled_on_the_gpu(compositor):
+    canvas = Canvas(id="b", width=8, height=8)
+    bgra_red = np.full((8, 8, 4), (0, 0, 255, 255), dtype=np.uint8)  # red, stored as B G R A
+    compositor.upload("cap", bgra_red, "BGRA")
+    scene = Scene(id="s", name="s", canvas="b", items=[SceneItem(source="cap")])
+    compositor.render(canvas, scene, {"cap": (8, 8)})
+    assert tuple(pixels(compositor, canvas)[4, 4]) == (255, 0, 0, 255)

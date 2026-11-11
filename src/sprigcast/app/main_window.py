@@ -30,9 +30,10 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.preview import Preview
-from sprigcast.core.events import EngineError, ReplaceCollection, Stats
+from sprigcast.core.events import EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.render.engine import Engine
+from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 ROLE_ID = Qt.ItemDataRole.UserRole
 
@@ -50,6 +51,8 @@ class MainWindow(QMainWindow):
         self.scenes_path = scenes_path
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
         self._updating = False  # True while we fill widgets, so their signals do not echo back
+        self.source_sizes: dict[str, tuple[int, int]] = {}
+        self.source_statuses: dict[str, str] = {}
 
         self.setWindowTitle("SprigCast")
         self.resize(1440, 860)
@@ -99,6 +102,8 @@ class MainWindow(QMainWindow):
         self.source_list.itemSelectionChanged.connect(self._refresh_properties)
         self.source_list.itemChanged.connect(self._on_source_toggled)
         buttons = QHBoxLayout()
+        buttons.addWidget(_button("+ Display", self._add_display))
+        buttons.addWidget(_button("+ Window", self._add_window))
         buttons.addWidget(_button("+ Color", self._add_color))
         buttons.addWidget(_button("+ Image", self._add_image))
         buttons.addWidget(_button("Remove", self._remove_item))
@@ -128,6 +133,11 @@ class MainWindow(QMainWindow):
             form.addRow(key.capitalize(), box)
         self.prop_extra = _button("", self._edit_source_settings)
         form.addRow("Source", self.prop_extra)
+        self.prop_fit = _button("Fit to canvas", self._fit_item)
+        form.addRow("", self.prop_fit)
+        self.prop_status = QLabel("")
+        self.prop_status.setWordWrap(True)
+        form.addRow("Status", self.prop_status)
         self._dock("Properties", panel, None, Qt.DockWidgetArea.BottomDockWidgetArea)
 
     def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> None:
@@ -171,6 +181,9 @@ class MainWindow(QMainWindow):
                 self.status.setText(
                     f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
                 )
+            elif isinstance(event, SourceInfo):
+                self.source_sizes, self.source_statuses = event.sizes, event.statuses
+                self._refresh_source_labels()
             elif isinstance(event, EngineError):
                 self.statusBar().showMessage(event.message, 10000)
                 if "compositor" in event.message:
@@ -249,8 +262,7 @@ class MainWindow(QMainWindow):
         scene = self._scene()
         if scene is not None:
             for item in reversed(scene.items):  # top-most first, like OBS
-                config = self.collection.source(item.source)
-                row = QListWidgetItem(f"{config.name}   [{config.kind}]")
+                row = QListWidgetItem(self._source_label(item.source))
                 row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 row.setCheckState(Qt.CheckState.Checked if item.visible else Qt.CheckState.Unchecked)
                 self.source_list.addItem(row)
@@ -258,6 +270,31 @@ class MainWindow(QMainWindow):
             self.source_list.setCurrentRow(keep_row)
         self._updating = False
         self._refresh_properties()
+
+    def _source_label(self, source_id: str) -> str:
+        config = self.collection.source(source_id)
+        label = f"{config.name}   [{config.kind}]"
+        status = self.source_statuses.get(source_id, "ok")
+        return label if status in ("ok", "capturing") else f"{label}   ({status})"
+
+    def _refresh_source_labels(self) -> None:
+        scene = self._scene()
+        if scene is None or self.source_list.count() != len(scene.items):
+            return
+        self._updating = True
+        for row, item in enumerate(reversed(scene.items)):
+            text = self._source_label(item.source)
+            if self.source_list.item(row).text() != text:
+                self.source_list.item(row).setText(text)
+        self._updating = False
+        item = self._item()
+        if item is not None:
+            self.prop_status.setText(self._status_text(item.source))
+
+    def _status_text(self, source_id: str) -> str:
+        size = self.source_sizes.get(source_id)
+        status = self.source_statuses.get(source_id, "")
+        return f"{status}" + (f"  ·  {size[0]}x{size[1]}" if size and size[0] else "")
 
     def _refresh_properties(self) -> None:
         item = self._item()
@@ -267,15 +304,25 @@ class MainWindow(QMainWindow):
             box.setEnabled(enabled)
         self.prop_name.setEnabled(enabled)
         self.prop_extra.setEnabled(enabled)
+        self.prop_fit.setEnabled(enabled)
         if item is not None:
             config = self.collection.source(item.source)
             self.prop_name.setText(config.name)
             for key, box in self.spin.items():
                 box.setValue(float(getattr(item, key)))
-            self.prop_extra.setText("Pick color…" if config.kind == "color" else "Choose image…")
+            self.prop_extra.setText(
+                {
+                    "color": "Pick color…",
+                    "image": "Choose image…",
+                    "display_capture": "Choose monitor…",
+                    "window_capture": "Choose window…",
+                }.get(config.kind, "Settings…")
+            )
+            self.prop_status.setText(self._status_text(item.source))
         else:
             self.prop_name.clear()
             self.prop_extra.setText("")
+            self.prop_status.setText("")
         self._updating = False
 
     # Scene actions ---------------------------------------------------------------
@@ -387,6 +434,79 @@ class MainWindow(QMainWindow):
             SourceConfig(id=self.collection.new_id("image"), kind="image", name=Path(path).stem, settings={"path": path})
         )
 
+    def _pick_monitor(self, current: int | None = None):
+        monitors = list_monitors()
+        if not monitors:
+            QMessageBox.information(self, "SprigCast", "Display capture is only available on Windows.")
+            return None
+        labels = [m.label for m in monitors]
+        start = next((i for i, m in enumerate(monitors) if m.index == current), 0)
+        label, ok = QInputDialog.getItem(self, "Display capture", "Monitor:", labels, start, False)
+        return monitors[labels.index(label)] if ok else None
+
+    def _pick_window(self):
+        windows = list_windows()
+        if not windows:
+            QMessageBox.information(self, "SprigCast", "Window capture is only available on Windows.")
+            return None
+        labels = [w.label for w in windows]
+        label, ok = QInputDialog.getItem(self, "Window capture", "Window:", labels, 0, False)
+        return windows[labels.index(label)] if ok else None
+
+    def _add_display(self) -> None:
+        scene = self._scene()
+        if scene is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        monitor = self._pick_monitor()
+        if monitor is None:
+            return
+        config = SourceConfig(
+            id=self.collection.new_id("display"),
+            kind="display_capture",
+            name=f"Monitor {monitor.index}",
+            settings={"monitor": monitor.index, "cursor": True},
+        )
+        self._add_item(config)
+        self._fit_item(size=(monitor.width, monitor.height))
+
+    def _add_window(self) -> None:
+        if self._scene() is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        window = self._pick_window()
+        if window is None:
+            return
+        name = window.title if len(window.title) <= 40 else window.title[:37] + "…"
+        self._add_item(
+            SourceConfig(
+                id=self.collection.new_id("window"),
+                kind="window_capture",
+                name=name,
+                settings={"title": window.title, "process": window.process, "cursor": True},
+            )
+        )
+
+    def _fit_item(self, checked: bool = False, size: tuple[int, int] | None = None) -> None:
+        """Scale the selected item to fit its canvas and centre it."""
+        scene, item = self._scene(), self._item()
+        if scene is None or item is None:
+            return
+        size = size or self.source_sizes.get(item.source)
+        if not size or not size[0] or not size[1]:
+            self.statusBar().showMessage("That source has no picture yet. Try again in a second.", 4000)
+            return
+        canvas = self.collection.canvas(scene.canvas)
+        w, h = item.cropped_size(size)
+        if not w or not h:
+            return
+        item.scale = min(canvas.width / w, canvas.height / h)
+        item.rotation = 0.0
+        item.x = (canvas.width - w * item.scale) / 2
+        item.y = (canvas.height - h * item.scale) / 2
+        self._changed()
+        self._refresh_properties()
+
     def _remove_item(self) -> None:
         scene, index = self._scene(), self._item_index()
         if scene is None or index is None:
@@ -454,4 +574,17 @@ class MainWindow(QMainWindow):
             if not path:
                 return
             config.settings = {**config.settings, "path": path}
+        elif config.kind == "display_capture":
+            monitor = self._pick_monitor(current=int(config.settings.get("monitor", 1)))
+            if monitor is None:
+                return
+            config.settings = {**config.settings, "monitor": monitor.index}
+            config.name = f"Monitor {monitor.index}"
+        elif config.kind == "window_capture":
+            window = self._pick_window()
+            if window is None:
+                return
+            config.settings = {**config.settings, "title": window.title, "process": window.process}
+            config.name = window.title if len(window.title) <= 40 else window.title[:37] + "…"
         self._changed()
+        self._refresh_sources(keep_row=self.source_list.currentRow())
