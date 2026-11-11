@@ -176,3 +176,50 @@ def test_desktop_audio_by_name(fake_pyaudio):
         assert wait_for(lambda: fake_pyaudio and fake_pyaudio[0][0] == 1)
     finally:
         src.stop()
+
+
+def test_sources_never_create_portaudio_at_the_same_time(fake_pyaudio):
+    """Two threads inside PyAudio() at once crashed the app on Windows (access violation)."""
+    mod = sys.modules["pyaudiowpatch"]
+    base = mod.PyAudio
+    state = {"inside": 0, "overlap": False, "created": 0}
+
+    class SlowPyAudio(base):
+        def __init__(self):
+            state["inside"] += 1
+            state["created"] += 1
+            if state["inside"] > 1:
+                state["overlap"] = True
+            time.sleep(0.05)
+            state["inside"] -= 1
+
+    mod.PyAudio = SlowPyAudio
+    sources = [create_source("audio_input", "mic", {}), create_source("audio_output", "desk", {})]
+    for src in sources:
+        src.start()
+    try:
+        assert wait_for(lambda: len(fake_pyaudio) == 2)
+        assert not state["overlap"]
+        assert state["created"] == 1  # one shared instance
+    finally:
+        for src in sources:
+            src.stop()
+
+
+def test_falls_back_to_stereo_when_device_refuses_its_channel_count(fake_pyaudio):
+    mod = sys.modules["pyaudiowpatch"]
+    base_open = mod.PyAudio.open
+
+    def picky_open(self, **kw):
+        if kw["channels"] != 2:
+            raise OSError("[Errno -9998] Invalid number of channels")
+        return base_open(self, **kw)
+
+    mod.PyAudio.open = picky_open
+    src = create_source("audio_input", "mic", {})  # the fake mic advertises 1 channel
+    src.start()
+    try:
+        assert wait_for(lambda: src.status.startswith("capturing"))
+        assert fake_pyaudio[-1][1] == 2
+    finally:
+        src.stop()
