@@ -58,8 +58,11 @@ class Compositor:
 
     # Sources -------------------------------------------------------------
 
-    def upload(self, source_id: str, frame: np.ndarray) -> None:
-        """Copy a new RGBA frame for a source to the GPU, resizing its texture if needed."""
+    def upload(self, source_id: str, frame: np.ndarray, channel_order: str = "RGBA") -> None:
+        """Copy a new frame for a source to the GPU, resizing its texture if needed.
+
+        BGRA frames (screen capture) are uploaded as-is and swizzled when sampled, so no CPU conversion.
+        """
         h, w = frame.shape[:2]
         tex = self.textures.get(source_id)
         if tex is None or tex.size != (w, h):
@@ -68,6 +71,7 @@ class Compositor:
             tex = self.ctx.texture((w, h), 4)
             tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
             self.textures[source_id] = tex
+        tex.swizzle = "BGRA" if channel_order == "BGRA" else "RGBA"
         tex.write(np.ascontiguousarray(frame, dtype=np.uint8))
 
     def forget(self, source_id: str) -> None:

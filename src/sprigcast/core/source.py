@@ -10,10 +10,12 @@ import numpy as np
 
 class Source(ABC):
     kind: str = "base"
+    channel_order: str = "RGBA"  # byte order of video_frame(); "BGRA" is swizzled on the GPU for free
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         self.id = source_id
         self.settings = dict(settings)
+        self.status = "ok"  # short human-readable state shown in the UI
 
     def start(self) -> None:
         """Open devices or spawn capture threads. Called on the render thread."""
@@ -30,7 +32,7 @@ class Source(ABC):
         """Current frame size in pixels (width, height)."""
 
     def video_frame(self) -> np.ndarray | None:
-        """Newest frame as an H x W x 4 uint8 RGBA array, or None to keep showing the last one.
+        """Newest frame as an H x W x 4 uint8 array in `channel_order`, or None to keep the last one.
 
         Called on the render thread once per tick. Must never block.
         """

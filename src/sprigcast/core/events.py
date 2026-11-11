@@ -31,5 +31,13 @@ class Stats:
 
 
 @dataclass
+class SourceInfo:
+    """Sent once a second: each source's current frame size and a short status line."""
+
+    sizes: dict[str, tuple[int, int]]
+    statuses: dict[str, str]
+
+
+@dataclass
 class EngineError:
     message: str

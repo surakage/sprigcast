@@ -12,13 +12,12 @@ dependencies = [
     "pydantic>=2.6",
     "pillow>=10.0",
     "av>=12.0",
+    "windows-capture>=2.0; sys_platform == 'win32'",  # display and window capture (M3)
 ]
 
 [project.optional-dependencies]
-# Needed from milestone M3 onward (capture, camera, audio, hotkeys).
-capture = [
-    "dxcam>=0.0.5; sys_platform == 'win32'",
-    "windows-capture>=1.4; sys_platform == 'win32'",
+# Needed from milestone M5 onward (camera, audio, hotkeys).
+devices = [
     "opencv-python>=4.9",
     "sounddevice>=0.4",
     "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",

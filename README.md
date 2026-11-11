@@ -4,8 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M2 of the build guide:
-toolchain checks, a GPU canvas with live previews, and scenes built from color and image sources.
+Status: early development. This code covers milestones M0 to M3 of the build guide:
+toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
+and display and window capture.
 
 ## Requirements
 
@@ -36,14 +37,21 @@ uv run sprigcast-teststream --service twitch --vertical # 720x1280
 
 The key is typed at a hidden prompt and is never saved.
 
-## Using the app (M2)
+## Using the app
 
 - **Previews**: the horizontal canvas (1920x1080) on the left, the vertical canvas (1080x1920) on the right.
 - **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
-- **Sources dock**: add color or image sources to the selected scene, tick to show or hide,
+- **Sources dock**: add a display, window, color or image source to the selected scene, tick to show or hide,
   and use *Up* and *Down* to change which item draws on top.
-- **Properties dock**: name, position, scale and rotation of the selected item, plus its color or image file.
+  - *+ Display* captures a whole monitor, cursor included, and fits it to the canvas.
+  - *+ Window* captures one window even when other windows cover it. SprigCast remembers the window's
+    program and title, so a game that restarts or a browser that changes tabs is found again automatically.
+- **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
+  window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
+
+Capture uses Windows Graphics Capture. SprigCast hides the yellow capture border on Windows 11;
+Windows 10 always shows it.
 
 Scenes save automatically to `scenes.json` in your AppData folder
 (*File → Show scenes file location* shows the exact path).
@@ -54,7 +62,7 @@ Scenes save automatically to `scenes.json` in your AppData folder
 src/sprigcast/
   core/      scene collection model (canvases, sources, scenes, outputs), Source base class, mailbox, events
   render/    moderngl compositor and the render engine thread
-  sources/   built-in sources: color, image
+  sources/   built-in sources: color, image, display and window capture, plus monitor and window lookup
   app/       PySide6 main window and canvas previews
   tools/     sprigcast-check and sprigcast-teststream
   data/      default scene collection used on first run
@@ -65,7 +73,7 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M3 screen and window capture · M4 drag-to-edit in the preview · M5 camera · M6 audio mixer ·
+M4 drag-to-edit in the preview · M5 camera · M6 audio mixer ·
 M7 NVENC encoding and recording · M8 RTMP streaming · M9 vertical canvas outputs and multistream ·
 M10 transitions, hotkeys, stats · M11 plugins and polish.
 
