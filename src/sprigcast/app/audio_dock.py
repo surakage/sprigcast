@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 FLOOR_DB = -60.0
-GREEN, YELLOW, RED = QColor("#7ee08a"), QColor("#ffd65c"), QColor("#ff6b6b")
+GREEN, YELLOW, RED = QColor("#3ddc84"), QColor("#ffd23f"), QColor("#ff6b6b")
 HORIZONTAL, VERTICAL = "horizontal", "vertical"
 
 
@@ -77,7 +77,7 @@ class LevelMeter(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#151a14"))
+        p.fillRect(self.rect(), QColor("#08170f"))
         # Zones: green to -20 dB, yellow to -9 dB, red above.
         for start, end, colour in ((FLOOR_DB, -20.0, GREEN), (-20.0, -9.0, YELLOW), (-9.0, 0.0, RED)):
             if self.rms > start:
@@ -127,7 +127,7 @@ class AudioRow(QWidget):
         else:
             self._lay_out_strip()
         if info.hidden:
-            self.setStyleSheet("color: #8d8a83")
+            self.setStyleSheet("color: #8cc4a3")
             self.select.setText(f"{info.name} (hidden)")
         self._update_labels()
 
@@ -195,7 +195,7 @@ class AudioPanel(QWidget):
         master.addWidget(self.master, 1)
         self.ducking = QLabel()
         self.ducking.setToolTip("Your voice is lowering the other sounds")
-        self.ducking.setStyleSheet("color: #ffd65c")
+        self.ducking.setStyleSheet("color: #ffd23f")
         master.addWidget(self.ducking)
         self._layout.addLayout(master)
         self._rows_box = QBoxLayout(QBoxLayout.Direction.TopToBottom)
@@ -206,8 +206,8 @@ class AudioPanel(QWidget):
         self.hidden_button = QPushButton()
         self.hidden_button.setFlat(True)
         self.hidden_button.setStyleSheet(
-            "QPushButton { border: none; background: transparent; color: #8d8a83; padding: 2px; }"
-            "QPushButton:hover { color: #ece8e1; }")
+            "QPushButton { border: none; background: transparent; color: #8cc4a3; padding: 2px; }"
+            "QPushButton:hover { color: #f0fff5; }")
         self.hidden_button.clicked.connect(lambda: self.set_show_hidden(not self.show_hidden))
         self._layout.addWidget(self.hidden_button)
         self._stretch = self._layout.addStretch(0)

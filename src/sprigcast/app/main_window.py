@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
             f"Empty {PART}: add sources with Sources → +, or right-click sources in {a(SHOW)} → Turn into {a(PART)}."
         )
         self.part_empty.setWordWrap(True)
-        self.part_empty.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 8px 12px; border-radius: 8px; margin: 4px 8px;")
+        self.part_empty.setStyleSheet("background: #1f5236; color: #f0fff5; padding: 8px 12px; border-radius: 8px; margin: 4px 8px;")
         part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.center = QStackedWidget()
@@ -600,8 +600,8 @@ class MainWindow(QMainWindow):
         bar.setMovable(False)
         bar.setStyleSheet(
             "QToolButton { padding: 5px 18px; border-radius: 8px; margin: 2px; }"
-            "QToolButton:checked { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f3c3d1, stop:1 #de93aa);"
-            " color: #1e1f1c; font-weight: bold; border: 1px solid #b9768b; }"
+            "QToolButton:checked { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff8fc4, stop:1 #f23f8f);"
+            " color: #0c1d14; font-weight: bold; border: 1px solid #c02670; }"
         )
         group = QActionGroup(self)
         group.setExclusive(True)
@@ -1503,7 +1503,7 @@ class MainWindow(QMainWindow):
         scene = self._scene()
         if scene is None:
             return
-        color = QColorDialog.getColor(QColor("#9cc89a"), self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        color = QColorDialog.getColor(QColor("#3ddc84"), self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)
         if not color.isValid():
             return
         canvas = self.collection.canvas(scene.canvas)

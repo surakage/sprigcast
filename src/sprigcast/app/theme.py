@@ -1,4 +1,4 @@
-"""The Slothbloom look: a dark moss-and-bark palette with a blossom-pink accent.
+"""The Slothbloom look: a rainforest palette. Deep canopy greens, a vivid emerald and an orchid-pink accent.
 
 Uses Qt's Fusion style so it looks the same on every Windows version. Settings → General picks
 the theme (saved in QSettings "general/theme"); the environment variable SPRIGCAST_THEME=system
@@ -13,19 +13,19 @@ from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QS
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QDialog
 
-BARK = "#1e1f1c"  # window background
-MOSS = "#2a2d27"  # panels and inputs
-LICHEN = "#3a3f36"  # borders, hover
-LEAF = "#9cc89a"  # secondary accent (moss green)
-BLOOM = "#e8a4b8"  # main accent (blossom pink)
-INPUT = "#363a32"  # checkbox and number-box fill, a step lighter so they stand out
-PETAL = "#ece8e1"  # text
-DUSK = "#8d8a83"  # muted text
+BARK = "#0c1d14"  # window background: the forest floor in shade
+MOSS = "#13301f"  # panels and inputs
+LICHEN = "#1f5236"  # borders, hover
+LEAF = "#3ddc84"  # secondary accent: sunlit emerald leaf
+BLOOM = "#ff5fa2"  # main accent: orchid pink
+INPUT = "#16402a"  # checkbox and number-box fill, a step lighter so they stand out
+PETAL = "#f0fff5"  # text
+DUSK = "#8cc4a3"  # muted text
 # Light from above: raised surfaces are lighter at the top, with a bright rim and a dark lower edge.
-RAISED_TOP, RAISED_BOTTOM = "#363a32", "#262923"
-RIM, SHADE = "#4c5246", "#121310"
-BLOOM_TOP, BLOOM_BOTTOM, BLOOM_EDGE = "#f3c3d1", "#de93aa", "#b9768b"
-POP_TOP, POP_BOTTOM = "#30342c", "#23261f"  # dialogs and menus sit a step above the window
+RAISED_TOP, RAISED_BOTTOM = "#1f5a3a", "#10291b"
+RIM, SHADE = "#2c7a4f", "#04100a"
+BLOOM_TOP, BLOOM_BOTTOM, BLOOM_EDGE = "#ff8fc4", "#f23f8f", "#c02670"
+POP_TOP, POP_BOTTOM = "#173d28", "#0f2a1b"  # dialogs and menus sit a step above the window
 
 STYLESHEET = f"""
 QToolTip {{ color: {PETAL}; background: {MOSS}; border: 1px solid {LICHEN}; }}
