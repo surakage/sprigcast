@@ -39,14 +39,52 @@ def _pyaudio():
     return pyaudiowpatch
 
 
+class PortAudio:
+    """The one PyAudio instance every audio source shares.
+
+    PortAudio's initialise and terminate are global and not thread-safe: creating or terminating
+    a PyAudio instance on one thread while another source's stream is running can crash the whole
+    process. So all PortAudio calls go through this lock, and the instance is only re-created (to
+    see devices plugged in later) while no stream is open.
+    """
+
+    lock = threading.RLock()
+    _mod = None
+    _pa = None
+    _open_streams = 0
+
+    @classmethod
+    def get(cls, pa_mod, rescan: bool = False):
+        """Call with `lock` held."""
+        if cls._pa is not None and cls._mod is pa_mod and not (rescan and cls._open_streams == 0):
+            return cls._pa
+        if cls._pa is not None and cls._mod is pa_mod and cls._open_streams:
+            return cls._pa  # streams are running: keep the current device list rather than risk a crash
+        if cls._pa is not None:
+            try:
+                cls._pa.terminate()
+            except Exception:
+                pass
+        cls._mod, cls._pa, cls._open_streams = pa_mod, pa_mod.PyAudio(), 0
+        return cls._pa
+
+    @classmethod
+    def opened(cls) -> None:
+        cls._open_streams += 1
+
+    @classmethod
+    def closed(cls) -> None:
+        cls._open_streams = max(0, cls._open_streams - 1)
+
+
 def list_audio_devices(loopback: bool) -> list[AudioDevice]:
     """WASAPI microphones (loopback=False) or speakers to capture (loopback=True)."""
     try:
         pa_mod = _pyaudio()
     except RuntimeError:
         return []
-    pa = pa_mod.PyAudio()
-    try:
+    with PortAudio.lock:
+        pa = PortAudio.get(pa_mod, rescan=True)
         devices = []
         for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
             if loopback and info.get("isLoopbackDevice"):
@@ -54,8 +92,6 @@ def list_audio_devices(loopback: bool) -> list[AudioDevice]:
             elif not loopback and not info.get("isLoopbackDevice") and info["maxInputChannels"] > 0:
                 devices.append(AudioDevice(str(info["name"]), False))
         return devices
-    finally:
-        pa.terminate()
 
 
 def to_stereo(samples: np.ndarray) -> np.ndarray:
@@ -123,7 +159,6 @@ class _WasapiSource(Source):
         self.ring = AudioRing()
         self._stop = threading.Event()
         self._restart = threading.Event()
-        self._failed = threading.Event()
         self._thread: threading.Thread | None = None
         self.status = "starting"
 
@@ -175,29 +210,61 @@ class _WasapiSource(Source):
             return
         import soxr
 
+        rescan = False
         while not self._stop.is_set():
             self._restart.clear()
-            self._failed.clear()
-            pa = pa_mod.PyAudio()  # a fresh instance sees devices plugged in since the last try
             stream = None
             try:
-                info = self._find(pa, pa_mod)
+                with PortAudio.lock:
+                    pa = PortAudio.get(pa_mod, rescan=rescan)
+                    info = self._find(pa, pa_mod)
+                    if info is not None:
+                        stream, channels = self._open(pa, pa_mod, info, soxr)
+                        PortAudio.opened()
                 if info is None:
                     self.status = "device not found, retrying"
+                    rescan = True
                     self._restart.wait(RETRY_SECONDS)
                     continue
-                rate = int(info["defaultSampleRate"])
-                channels = max(1, int(info["maxInputChannels"]))
-                resampler = soxr.ResampleStream(rate, SAMPLE_RATE, CHANNELS, dtype="float32") if rate != SAMPLE_RATE else None
+                rescan = False
+                self.status = f"capturing {str(info['name']).replace(' [Loopback]', '')}"
+                if channels > 2:
+                    self.status += f" ({channels} channels mixed to stereo)"
+                while not (self._stop.is_set() or self._restart.is_set()):
+                    if not stream.is_active():
+                        self.status = "device lost, retrying"
+                        rescan = True
+                        break
+                    self._restart.wait(0.5)
+            except Exception as exc:  # unplugged mid-open, exclusive mode, unsupported format, driver errors
+                self.status = f"error: {exc}"
+                log.info("%s: audio failed: %s", self.id, exc)
+                rescan = True
+            finally:
+                if stream is not None:
+                    with PortAudio.lock:
+                        try:
+                            stream.stop_stream()
+                            stream.close()
+                        except Exception:
+                            pass
+                        PortAudio.closed()
+            if not (self._stop.is_set() or self._restart.is_set()):
+                self._restart.wait(RETRY_SECONDS)
 
-                def callback(in_data, frame_count, time_info, status_flags):
-                    samples = np.frombuffer(in_data, dtype=np.float32).reshape(-1, channels)
-                    samples = to_stereo(samples) if channels != 2 else samples
-                    if resampler is not None:
-                        samples = resampler.resample_chunk(np.ascontiguousarray(samples))
-                    self.ring.write(np.ascontiguousarray(samples, dtype=np.float32))
-                    return (None, pa_mod.paContinue)
+    def _open(self, pa, pa_mod, info: dict, soxr):
+        """Open a capture stream, trying the device's own channel count first, then stereo, then mono.
 
+        Some drivers (surround and virtual-surround headsets, Bluetooth hands-free) refuse the channel
+        count they advertise, which PortAudio reports as "Invalid number of channels".
+        """
+        rate = int(info["defaultSampleRate"])
+        advertised = int(info["maxInputChannels"])
+        candidates = [c for c in dict.fromkeys([advertised, 2, 1]) if c > 0]
+        last_error: Exception | None = None
+        for channels in candidates:
+            resampler = soxr.ResampleStream(rate, SAMPLE_RATE, CHANNELS, dtype="float32") if rate != SAMPLE_RATE else None
+            try:
                 stream = pa.open(
                     format=pa_mod.paFloat32,
                     channels=channels,
@@ -205,27 +272,27 @@ class _WasapiSource(Source):
                     input=True,
                     input_device_index=int(info["index"]),
                     frames_per_buffer=rate // 100,  # 10 ms
-                    stream_callback=callback,
+                    stream_callback=self._callback(pa_mod, channels, resampler),
                 )
-                self.status = f"capturing {str(info['name']).replace(' [Loopback]', '')}"
-                while not (self._stop.is_set() or self._restart.is_set()):
-                    if not stream.is_active():
-                        self.status = "device lost, retrying"
-                        break
-                    self._restart.wait(0.5)
-            except Exception as exc:  # unplugged mid-open, exclusive mode, driver errors
-                self.status = f"error: {exc}"
-                log.info("%s: audio failed: %s", self.id, exc)
-            finally:
-                if stream is not None:
-                    try:
-                        stream.stop_stream()
-                        stream.close()
-                    except Exception:
-                        pass
-                pa.terminate()
-            if not (self._stop.is_set() or self._restart.is_set()):
-                self._restart.wait(RETRY_SECONDS)
+                return stream, channels
+            except Exception as exc:
+                log.info("%s: %d channels at %d Hz refused: %s", self.id, channels, rate, exc)
+                last_error = exc
+        raise last_error or RuntimeError("device has no input channels")
+
+    def _callback(self, pa_mod, channels: int, resampler):
+        def callback(in_data, frame_count, time_info, status_flags):
+            try:
+                samples = np.frombuffer(in_data, dtype=np.float32).reshape(-1, channels)
+                samples = to_stereo(samples) if channels != 2 else samples
+                if resampler is not None:
+                    samples = resampler.resample_chunk(np.ascontiguousarray(samples))
+                self.ring.write(np.ascontiguousarray(samples, dtype=np.float32))
+            except Exception as exc:  # never let an exception escape into PortAudio's thread
+                log.warning("%s: dropped audio: %s", self.id, exc)
+            return (None, pa_mod.paContinue)
+
+        return callback
 
 
 @register("audio_input")

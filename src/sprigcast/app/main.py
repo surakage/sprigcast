@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
 import sys
 from importlib import resources
@@ -35,6 +36,7 @@ def load_collection(path: Path) -> SceneCollection:
 
 
 def run() -> None:
+    faulthandler.enable()  # if a native library crashes, print where instead of closing silently
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
     app.setApplicationName("SprigCast")
