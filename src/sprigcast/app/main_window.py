@@ -185,7 +185,6 @@ class MainWindow(QMainWindow):
             splitter.setStretchFactor(splitter.count() - 1, 3 if canvas.width >= canvas.height else 1)
         # While a part is open in Build mode, the canvases make way for the part, edited in place.
         self.part_preview = Preview("part:", "Part", (16, 9))
-        self.part_preview.transparent = True
         self.part_preview.selected.connect(self._on_preview_selected)
         self.part_preview.edited.connect(self._on_preview_edited)
         part_panel = QWidget()

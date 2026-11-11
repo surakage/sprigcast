@@ -175,7 +175,7 @@ def test_gpu_no_filter_is_identity(compositor):
 
 
 def test_gpu_chroma_key_removes_green_and_keeps_red(compositor):
-    assert render_one(compositor, (0, 255, 0, 255), [flt("chroma_key")]) == (0, 0, 0, 255)  # canvas black shows
+    assert render_one(compositor, (0, 255, 0, 255), [flt("chroma_key")]) == (0, 0, 0, 0)  # empty canvas shows through
     r, g, b, _ = render_one(compositor, (255, 0, 0, 255), [flt("chroma_key")])
     assert r > 240 and g < 10 and b < 10
 
