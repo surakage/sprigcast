@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ RETRY_FIRST, RETRY_MAX = 2.0, 30.0
 GRACE_SECONDS = 5.0  # right after connecting, frames queued during the handshake are still going out
 HOLD_SECONDS = 10.0  # a warning stays on screen this long so it can be read
 SEVERITY = {"good": 0, "warning": 1, "bad": 2}
+# Encoded packets wait in a send buffer so a slow network never stalls the encoder. Up to
+# MAX_BACKLOG seconds of video can queue up (a few MB); past that, new frames are skipped until
+# the backlog is back under RESUME_BACKLOG.
+MAX_BACKLOG, RESUME_BACKLOG = 4.0, 2.0
 
 
 @dataclass(frozen=True)
@@ -113,6 +118,11 @@ class Streamer(Recorder):
         self.status = "connecting"
         self._health: tuple | None = None
         self._held: tuple[str, str, float] | None = None  # (level, reason, shown until)
+        self._send_q: queue.Queue = queue.Queue()
+        self._send_error: Exception | None = None
+        self._backlog_bytes = 0
+        self._congested = False
+        self._sender: threading.Thread | None = None
         self._connected_at = 0.0
 
     def health(self) -> tuple[str, str]:
@@ -140,12 +150,15 @@ class Streamer(Recorder):
         sent, lost = sample[1] - last[1], sample[2] - last[2]
         waiting_on_network = (sample[3] - last[3]) / (now - last[0]) > 0.5
         backlog = self._video.qsize() / self._video.maxsize
+        behind = self.backlog_seconds()
         loss = lost / max(1, sent + lost)
         why = "upload too slow for this bitrate" if waiting_on_network else "encoder overloaded"
         if loss > 0.05:
             return "bad", f"dropping {loss:.0%} of frames: {why}"
         if lost or backlog > 0.5:
             return "warning", f"falling behind: {why}"
+        if behind > 1.0:
+            return "warning", f"network slow, {behind:.1f} s behind"
         return "good", "live"
 
     def redact(self, text: str) -> str:
@@ -202,12 +215,72 @@ class Streamer(Recorder):
             return {"preset": "p5", "tune": "hq", "rc": "cbr", "profile": "high", "spatial-aq": "1", **rate}
         return {"preset": "veryfast", "profile": "high", "nal-hrd": "cbr", **rate}
 
+    # Sending: the encoder thread queues packets, a sender thread writes them to the network ----------
+
+    def backlog_seconds(self) -> float:
+        return self._backlog_bytes * 8 / (self.bitrate_kbps * 1000)
+
+    def push_frame(self, frame) -> None:
+        if self.connected:
+            backlog = self.backlog_seconds()
+            if self._congested and backlog < RESUME_BACKLOG:
+                self._congested = False
+            elif backlog > MAX_BACKLOG:
+                self._congested = True
+            if self._congested:
+                if self._slot(frame) > self._last_queued:  # a frame we would have sent
+                    self._last_queued = self._slot(frame)
+                    self.dropped += 1
+                return
+        super().push_frame(frame)
+
+    def _open(self):
+        container, video, audio = super()._open()
+        self._send_q = queue.Queue()
+        self._send_error = None
+        self._backlog_bytes = 0
+        self._sender = threading.Thread(
+            target=self._send_loop, args=(container,), name=f"sprigcast-send-{self.name}", daemon=True
+        )
+        self._sender.start()
+        return container, video, audio
+
     def _mux(self, container, packets) -> None:
-        super()._mux(container, packets)
-        if not self.connected and self.bytes_out:
-            self.connected = True
-            self._connected_at = time.monotonic()
-            self.status = "live"
+        if self._send_error is not None:
+            raise self._send_error  # the connection failed: end this session so _run reconnects
+        for packet in packets:
+            self._backlog_bytes += packet.size
+            self._send_q.put(packet)
+
+    def _send_loop(self, container) -> None:
+        while True:
+            packet = self._send_q.get()
+            if packet is None:
+                return
+            if self._send_error is not None:
+                self._backlog_bytes -= packet.size  # connection already failed: discard
+                continue
+            try:
+                Recorder._mux(self, container, [packet])  # timing, bytes_out and longest_stall
+            except Exception as exc:
+                self._send_error = exc
+            finally:
+                self._backlog_bytes -= packet.size
+            if not self.connected and self.bytes_out and self._send_error is None:
+                self.connected = True
+                self._connected_at = time.monotonic()
+                self.status = "live"
+
+    def _before_close(self, container) -> bool:
+        """Let the sender finish what is queued (briefly), then stop it before the container closes."""
+        self._send_q.put(None)
+        self._sender.join(timeout=3.0 if self._send_error is None else 0.5)
+        if self._sender.is_alive():
+            log.warning("stream %s: sender still blocked on the network; abandoning the connection", self.name)
+            return False  # closing now would free the connection under the sender's feet
+        if self._send_error is not None:
+            raise self._send_error
+        return True
 
     # Stream thread -------------------------------------------------------------
 
@@ -225,6 +298,7 @@ class Streamer(Recorder):
             self._drain()  # anything queued while disconnected would arrive late and out of sync
             self.start_time = time.perf_counter()
             self._last_pts, self._last_queued, self._samples = -1, -1, 0
+            self._congested = False
             self.connected = False
             self.status = "connecting" if not self.reconnects else f"reconnecting (try {self.reconnects})"
             began = time.monotonic()

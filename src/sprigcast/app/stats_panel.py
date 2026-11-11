@@ -65,6 +65,8 @@ class StatsPanel(QWidget):
             rows.append(_row("Waiting on file/network", f"{st['network_pct']:.0f}% of the time, longest {st['longest_stall_s']:.2f} s",
                              st["longest_stall_s"] > 1.0))
             rows.append(_row("Data written", f"{st['megabytes']:.0f} MB"))
+            if "backlog_s" in st and label.startswith("Stream"):
+                rows.append(_row("Send buffer", f"{st['backlog_s']:.1f} s waiting to upload", st["backlog_s"] > 1.0))
         if not outputs:
             rows.append("<tr><td colspan=2 style='padding-top:8px; color:gray'>Not streaming or recording.</td></tr>")
         self.label.setText("<table>" + "".join(rows) + "</table>")

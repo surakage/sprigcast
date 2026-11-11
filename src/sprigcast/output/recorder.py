@@ -183,6 +183,7 @@ class Recorder:
             "network_pct": 100 * self.mux_seconds / running,
             "longest_stall_s": self.longest_stall,
             "megabytes": self.bytes_out / 1e6,
+            "backlog_s": getattr(self, "backlog_seconds", lambda: 0.0)(),
             "size": f"{self.out_width}×{self.out_height}",
             "fps": self.fps,
         }
@@ -255,13 +256,17 @@ class Recorder:
                 self._mux(container, stream.encode(None))
             finished = True
         finally:
-            if container is not None:
+            if container is not None and self._before_close(container):
                 try:
                     container.close()
                 except Exception as exc:
                     if finished:
                         raise  # the file's ending could not be written (disk full, drive removed)
                     log.warning("closing %s failed: %s", self.path, exc)
+
+    def _before_close(self, container) -> bool:
+        """Hook for subclasses that write from another thread. Return False to skip closing."""
+        return True
 
     def _mux(self, container, packets) -> None:
         for packet in packets:

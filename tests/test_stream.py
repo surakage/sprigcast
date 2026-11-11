@@ -164,3 +164,50 @@ def test_summary_names_the_bottleneck():
     st.started_at -= 10
     st.mux_seconds, st.encode_seconds = 8.0, 900 * 0.004
     assert "upload can't keep up" in st.summary()
+
+
+class _SlowNetwork:
+    """Wraps a real output container; one mux call stalls, like a congested upload."""
+
+    def __init__(self, container, stall_after=10, stall=1.5):
+        self._c, self._n, self._after, self._stall = container, 0, stall_after, stall
+
+    def __getattr__(self, name):
+        return getattr(self._c, name)
+
+    def mux(self, packet):
+        self._n += 1
+        if self._n == self._after:
+            time.sleep(self._stall)
+        return self._c.mux(packet)
+
+
+def test_a_network_stall_delays_the_stream_but_drops_nothing(tmp_path, monkeypatch):
+    out = tmp_path / "stall.flv"
+
+    class SlowStreamer(Streamer):
+        def _open_container(self):
+            return _SlowNetwork(av.open(str(out), "w", format="flv"))
+
+    st = SlowStreamer("Local", "rtmp://unused/app", "k", 160, 90, 30, 1000, "libx264", time.perf_counter())
+    st.start()
+    try:
+        feed(st, 3.0)
+    finally:
+        st.stop()
+    assert st.longest_stall >= 1.4
+    assert st.dropped == 0
+    assert st.frames >= 80
+    with av.open(str(out)) as f:
+        assert sum(1 for _ in f.decode(video=0)) == st.frames
+
+
+def test_a_long_outage_skips_frames_instead_of_growing_forever(monkeypatch):
+    st = Streamer("T", "rtmp://x/app", "k", 16, 16, 30, 1000, "libx264", 0.0)
+    st.connected = True
+    st._backlog_bytes = int(5 * 1000 * 1000 / 8)  # 5 s of video waiting to upload
+    st.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 0.0))
+    assert st.dropped == 1 and st._video.qsize() == 0
+    st._backlog_bytes = int(1 * 1000 * 1000 / 8)  # caught up below the resume mark
+    st.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 0.1))
+    assert st._video.qsize() == 1
