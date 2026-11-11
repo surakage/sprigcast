@@ -47,14 +47,16 @@ class LivePanel(QWidget):
 
     def show_scenes(self, collection: SceneCollection) -> None:
         signature = (tuple((s.id, s.name, s.canvas, s.kind, s.folder, s.linked_to) for s in collection.scenes),
-                     tuple((f.id, f.name, f.colour) for f in collection.folders))
+                     tuple((f.id, f.name, f.colour, f.live) for f in collection.folders))
         if signature != self._signature:
             self._signature = signature
             self._rebuild(collection)
         for canvas in collection.canvases:
             active = collection.active_scenes.get(canvas.id)
             for scene in collection.scenes_for(canvas.id):
-                button = self.buttons[scene.id]
+                button = self.buttons.get(scene.id)
+                if button is None:
+                    continue  # not in a Live folder
                 button.blockSignals(True)
                 button.setChecked(scene.id == active)
                 button.blockSignals(False)
@@ -68,16 +70,14 @@ class LivePanel(QWidget):
                 widget.deleteLater()
         self.buttons = {}
         for canvas in collection.canvases:
-            scenes = collection.scenes_for(canvas.id)
-            if not scenes:
+            groups = [(f, shows) for f, shows in collection.live_scenes(canvas.id) if shows]
+            if not groups:
                 continue
             title = QLabel(f"{canvas.id.capitalize()}  ·  {canvas.width}×{canvas.height}")
             title.setStyleSheet("color: #8cc4a3")
             self.rows.addWidget(title)
-            for folder, group in collection.grouped_scenes(canvas.id):
-                if not group:
-                    continue
-                if folder is not None:
+            for folder, group in groups:
+                if folder is not None and len(groups) > 1:  # one Live folder needs no heading
                     heading = QLabel(f"●  {folder.name}")
                     heading.setStyleSheet(f"color: {folder.colour}; font-weight: bold; margin-top: 4px;")
                     self.rows.addWidget(heading)

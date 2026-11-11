@@ -85,10 +85,29 @@ def test_scenes_list_and_live_panel_show_folders(tmp_path, monkeypatch):
         assert col.folder(folder.id).collapsed
         w._recolour_folder(folder.id, FOLDER_COLOURS[2])
         assert col.folder(folder.id).colour == FOLDER_COLOURS[2]
+        # The first folder is the Live folder: Live lists only what's in it.
+        assert col.folder(folder.id).live
         w.live_panel.show_scenes(col)
-        assert set(w.live_panel.buttons) >= {"h1", "h2", "h3", new.id}
+        assert set(w.live_panel.buttons) == {"h2", new.id, "v1"}  # vertical has no folders: all its blooms
+        w._set_folder_live(folder.id, False)
+        w.live_panel.show_scenes(col)
+        assert set(w.live_panel.buttons) == {"h1", "h2", "h3", new.id, "v1"}
         w._remove_folder(folder.id)
         assert not col.folders and col.scene("h2").folder is None
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_live_lists_only_live_folders():
+    col = _collection()
+    main = col.add_folder("horizontal", "Main Scenes")
+    other = col.add_folder("horizontal", "Browser Scenes")
+    assert main.live and not other.live  # only the first folder starts as Live
+    col.scene("h1").folder = main.id
+    col.scene("h3").folder = other.id
+    assert [(f.id, [s.id for s in shows]) for f, shows in col.live_scenes("horizontal")] == [(main.id, ["h1"])]
+    col.scene("h2").folder = main.id  # adding a bloom to Main Scenes makes it a Live button
+    assert [s.id for s in col.live_scenes("horizontal")[0][1]] == ["h1", "h2"]
+    other.live = True
+    assert [f.id for f, _ in col.live_scenes("horizontal")] == [main.id, other.id]

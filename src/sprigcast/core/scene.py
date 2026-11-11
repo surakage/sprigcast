@@ -110,6 +110,7 @@ class SceneFolder(BaseModel):
     canvas: str
     colour: str = FOLDER_COLOURS[0]
     collapsed: bool = False
+    live: bool = False  # its shows are the buttons in Live mode (see live_scenes)
 
 
 PART_KIND = "scene"  # source kind that places a part inside another scene
@@ -265,8 +266,9 @@ class SceneCollection(BaseModel):
 
     def add_folder(self, canvas_id: str, name: str) -> SceneFolder:
         used = len(self.folders_for(canvas_id))
+        # The first folder on a canvas is its Live folder, like "Main Scenes"; change it any time.
         folder = SceneFolder(id=self.new_id("folder"), name=name, canvas=canvas_id,
-                             colour=FOLDER_COLOURS[used % len(FOLDER_COLOURS)])
+                             colour=FOLDER_COLOURS[used % len(FOLDER_COLOURS)], live=used == 0)
         self.folders.append(folder)
         return folder
 
@@ -283,6 +285,14 @@ class SceneCollection(BaseModel):
         groups: list[tuple[SceneFolder | None, list[Scene]]] = [(None, [s for s in shows if s.folder is None])]
         groups += [(f, [s for s in shows if s.folder == f.id]) for f in self.folders_for(canvas_id)]
         return groups
+
+    def live_scenes(self, canvas_id: str) -> list[tuple[SceneFolder | None, list[Scene]]]:
+        """What Live mode shows as buttons: the shows in the canvas's Live folders.
+
+        With no Live folder on a canvas (no folders yet, or all switched off), every show is listed.
+        """
+        live = [(f, shows) for f, shows in self.grouped_scenes(canvas_id) if f is not None and f.live]
+        return live if live else self.grouped_scenes(canvas_id)
 
     def scenes_for(self, canvas_id: str) -> list[Scene]:
         """The shows on a canvas (parts are listed by parts())."""

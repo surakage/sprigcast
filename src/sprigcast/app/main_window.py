@@ -524,6 +524,11 @@ class MainWindow(QMainWindow):
         menu.addAction(f"New {SHOW} in “{folder.name}”…").triggered.connect(
             lambda: (setattr(self, "selected_folder_id", folder.id), self._add_scene()))
         menu.addSeparator()
+        live = menu.addAction("Show in Live")
+        live.setCheckable(True)
+        live.setChecked(folder.live)
+        live.setToolTip(f"Its {SHOWS} become the buttons in Live mode")
+        live.toggled.connect(lambda on: self._set_folder_live(folder.id, on))
         menu.addAction("Rename folder…").triggered.connect(lambda: self._rename_folder(folder.id))
         colours = menu.addMenu("Colour")
         for colour in FOLDER_COLOURS:
@@ -571,6 +576,11 @@ class MainWindow(QMainWindow):
             folder.name = name.strip()
             self._changed()
             self._refresh_scenes()
+
+    def _set_folder_live(self, folder_id: str, on: bool) -> None:
+        self.collection.folder(folder_id).live = on
+        self._changed()
+        self._refresh_scenes()
 
     def _recolour_folder(self, folder_id: str, colour: str) -> None:
         self.collection.folder(folder_id).colour = colour
@@ -1140,7 +1150,7 @@ class MainWindow(QMainWindow):
             for folder, scenes in self.collection.grouped_scenes(canvas.id):
                 holder = parent
                 if folder is not None:
-                    holder = QTreeWidgetItem([f"{folder.name}   ({len(scenes)})"])
+                    holder = QTreeWidgetItem([f"{folder.name}   ({len(scenes)})" + ("   · Live" if folder.live else "")])
                     holder.setData(0, ROLE_FOLDER, folder.id)
                     holder.setIcon(0, _dot(folder.colour, 14))
                     holder.setFont(0, bold)
