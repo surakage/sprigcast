@@ -12,21 +12,21 @@
   ],
   "scenes": [
     { "id": "starting", "name": "Starting soon", "canvas": "horizontal", "items": [
-      { "source": "bg-moss", "x": 0, "y": 0 },
+      { "source": "bg-moss", "x": 0, "y": 0, "locked": true },
       { "source": "panel-bloom", "x": 640, "y": 360 },
       { "source": "bar-sprig", "x": 0, "y": 984 }
     ]},
     { "id": "starting-v", "name": "Starting soon (vertical)", "canvas": "vertical", "linked_to": "starting", "items": [
-      { "source": "bg-moss", "x": 0, "y": 0 },
+      { "source": "bg-moss", "x": 0, "y": 0, "locked": true },
       { "source": "panel-bloom", "x": 220, "y": 780 },
       { "source": "bar-sprig", "x": 0, "y": 1824, "crop": [420, 0, 420, 0] }
     ]},
     { "id": "brb", "name": "Be right back", "canvas": "horizontal", "items": [
-      { "source": "bg-night", "x": 0, "y": 0 },
+      { "source": "bg-night", "x": 0, "y": 0, "locked": true },
       { "source": "panel-bloom", "x": 1200, "y": 640, "scale": 0.8, "rotation": -4 }
     ]},
     { "id": "brb-v", "name": "Be right back (vertical)", "canvas": "vertical", "linked_to": "brb", "items": [
-      { "source": "bg-night", "x": 0, "y": 0 },
+      { "source": "bg-night", "x": 0, "y": 0, "locked": true },
       { "source": "panel-bloom", "x": 140, "y": 1300, "scale": 1.25, "rotation": 4 }
     ]}
   ],
