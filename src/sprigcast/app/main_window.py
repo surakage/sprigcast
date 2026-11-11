@@ -396,6 +396,7 @@ class MainWindow(QMainWindow):
         self._set_docks_locked(QSettings().value("window/locked", False, type=bool))
         if settings.value("window/mode", "build") == "live":
             self._set_mode("live")
+        self._hide_other_mode_docks()
 
     def _save_layout(self) -> None:
         settings = QSettings()
@@ -818,6 +819,7 @@ class MainWindow(QMainWindow):
         state = QSettings().value(self._state_key(mode))
         if state is None or not self.restoreState(state, self.LAYOUT_VERSION):
             self._arrange_default_layout()
+        self._hide_other_mode_docks()
         editable = mode == "build"
         self._exit_in_place()
         self._show_part_editor()
@@ -826,6 +828,18 @@ class MainWindow(QMainWindow):
             preview.update()
         self._apply_canvas_view()
         QSettings().setValue("window/mode", mode)
+
+    def _hide_other_mode_docks(self) -> None:
+        """Live never shows Scenes, Sources and the other editing docks; Build never shows the Live dock.
+        Their Docks menu entries are disabled in the other mode too."""
+        for mode, names in self.MODE_ONLY.items():
+            for name in names:
+                dock = self.docks.get(name)
+                if dock is None:
+                    continue
+                if mode != self.mode:
+                    dock.hide()
+                dock.toggleViewAction().setEnabled(mode == self.mode)
 
     # Build mode's canvas tabs ---------------------------------------------------------
 
@@ -930,6 +944,11 @@ class MainWindow(QMainWindow):
                   [200, 260, 330, 170, 260, 190]),
         "live": (["Live", "Audio Mixer", "Destinations", "Controls"], [560, 360, 300, 200]),
     }
+    # Docks that only make sense in one mode: hidden in the other even if an older saved layout shows them.
+    MODE_ONLY = {
+        "build": {"Scenes", "Sources", "Scene Transitions", "Properties"},
+        "live": {"Live"},
+    }
 
     def _arrange_default_layout(self) -> None:
         """Build: OBS-style Scenes | Sources | Audio Mixer | Scene Transitions | Destinations | Controls.
@@ -955,6 +974,7 @@ class MainWindow(QMainWindow):
     def _reset_layout(self) -> None:
         self._set_docks_locked(False)
         self._arrange_default_layout()
+        self._hide_other_mode_docks()
 
     def _set_docks_locked(self, locked: bool) -> None:
         features = QDockWidget.DockWidgetFeature.NoDockWidgetFeatures

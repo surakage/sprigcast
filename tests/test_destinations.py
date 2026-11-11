@@ -107,6 +107,15 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         assert w.docks["Destinations"].isVisible()
         w._set_mode("live")
         assert w.docks["Live"].isVisible() and not w.docks["Sources"].isVisible()
+        assert not w.docks["Scenes"].isVisible() and w.docks["Audio Mixer"].isVisible()
+        assert not w.docks["Scenes"].toggleViewAction().isEnabled()
+        # Even a saved Live layout that shows Scenes (from an older version) gets it hidden again.
+        w._set_mode("build")
+        w._set_mode("live")
+        w.docks["Scenes"].show()
+        w._set_mode("build")
+        w._set_mode("live")
+        assert not w.docks["Scenes"].isVisible()
         assert not any(p.editable for p in w.previews.values())
         w.live_panel.buttons["h2"].click()
         assert col.active_scenes["horizontal"] == "h2"
