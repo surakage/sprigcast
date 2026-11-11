@@ -192,10 +192,10 @@ class Preview(QWidget):
     def _paint_checker(cls, p: QPainter, rect: QRectF, cell: int = 12) -> None:
         if cls._checker is None:
             tile = QPixmap(2 * cell, 2 * cell)
-            tile.fill(QColor("#13301f"))
+            tile.fill(QColor("#2b2b2b"))
             tp = QPainter(tile)
-            tp.fillRect(0, 0, cell, cell, QColor("#1e4a31"))
-            tp.fillRect(cell, cell, cell, cell, QColor("#1e4a31"))
+            tp.fillRect(0, 0, cell, cell, QColor("#3d3d3d"))
+            tp.fillRect(cell, cell, cell, cell, QColor("#3d3d3d"))
             tp.end()
             cls._checker = QBrush(tile)
         p.fillRect(rect, cls._checker)
