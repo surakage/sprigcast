@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 
 from sprigcast.audio.mixer import Mixer
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
@@ -20,10 +21,11 @@ log = logging.getLogger(__name__)
 class Frame:
     """One finished canvas image: RGBA bytes, top row first."""
 
-    __slots__ = ("canvas_id", "width", "height", "data")
+    __slots__ = ("canvas_id", "width", "height", "data", "time")
 
-    def __init__(self, canvas_id: str, width: int, height: int, data: bytes):
+    def __init__(self, canvas_id: str, width: int, height: int, data: bytes, time: float = 0.0):
         self.canvas_id, self.width, self.height, self.data = canvas_id, width, height, data
+        self.time = time  # perf_counter() at the start of the tick that drew it
 
 
 class Engine:
@@ -35,6 +37,8 @@ class Engine:
         self._sources: dict[str, Source] = {}
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
         self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
+        self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
+        self._taps_lock = threading.Lock()
 
     # Called from the UI thread ----------------------------------------------
 
@@ -44,6 +48,17 @@ class Engine:
 
     def send(self, command) -> None:
         self.commands.put(command)
+
+    def add_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
+        """Hand every finished frame of a canvas to callback, on the render thread. It must not block."""
+        with self._taps_lock:
+            self._taps.setdefault(canvas_id, []).append(callback)
+
+    def remove_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
+        with self._taps_lock:
+            taps = self._taps.get(canvas_id, [])
+            if callback in taps:
+                taps.remove(callback)
 
     def stop(self, timeout: float = 2.0) -> None:
         self.commands.put(Shutdown())
@@ -73,7 +88,7 @@ class Engine:
                 if not self._drain_commands(compositor):
                     break
                 started = time.perf_counter()
-                self._tick(compositor)
+                self._tick(compositor, started)
                 render_times.append(time.perf_counter() - started)
                 ticks += 1
 
@@ -139,15 +154,23 @@ class Engine:
                 existing.update(config.settings)
         self.mixer.set_sources(list(self._sources.values()))
 
-    def _tick(self, compositor) -> None:
+    def _tick(self, compositor, now: float) -> None:
         for source_id, source in self._sources.items():
             frame = source.video_frame()
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        with self._taps_lock:
+            taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
         for canvas in self._collection.canvases:
             if not canvas.enabled:
                 continue
             compositor.render(canvas, self._collection.active_scene(canvas.id), sizes)
             data = compositor.read(canvas.id)
-            self.frames[canvas.id].put(Frame(canvas.id, canvas.width, canvas.height, data))
+            frame = Frame(canvas.id, canvas.width, canvas.height, data, now)
+            self.frames[canvas.id].put(frame)
+            for callback in taps.get(canvas.id, ()):
+                try:
+                    callback(frame)
+                except Exception:
+                    log.exception("frame tap for %s failed", canvas.id)

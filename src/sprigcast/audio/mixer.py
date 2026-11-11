@@ -1,7 +1,7 @@
 """Mixes every audio source into one 48 kHz stereo track and measures levels.
 
 Runs on its own thread, one 1024-sample block (about 21 ms) at a time, paced by the clock.
-The mixed blocks wait in `output` for the encoder (M7); until then they are simply dropped.
+Every mixed block is handed to each tap (recorders now, streams later).
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 
 import numpy as np
@@ -45,7 +44,7 @@ def mix(blocks: list[tuple[np.ndarray, float]]) -> np.ndarray:
 class Mixer:
     def __init__(self, report: Callable[[dict[str, tuple[float, float]]], None]):
         self.report = report
-        self.output: deque[np.ndarray] = deque(maxlen=int(SAMPLE_RATE / BLOCK))  # about 1 s
+        self._taps: list[Callable[[np.ndarray], None]] = []
         self._sources: list = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -55,6 +54,15 @@ class Mixer:
         """Called by the engine whenever sources change. Only sources with read_block() are mixed."""
         with self._lock:
             self._sources = [s for s in sources if hasattr(s, "read_block")]
+
+    def add_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        """Hand every mixed block, float32 (BLOCK, 2), to callback on the mixer thread. It must not block."""
+        with self._lock:
+            self._taps = [*self._taps, callback]
+
+    def remove_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        with self._lock:
+            self._taps = [t for t in self._taps if t != callback]
 
     def start(self) -> None:
         self._thread.start()
@@ -66,7 +74,7 @@ class Mixer:
     def tick(self) -> np.ndarray:
         """Mix one block. Returns it and collects per-source levels (after gain)."""
         with self._lock:
-            sources = list(self._sources)
+            sources, taps = list(self._sources), self._taps
         blocks, meters = [], {}
         for source in sources:
             block = source.read_block(BLOCK)
@@ -76,7 +84,8 @@ class Mixer:
         mixed = mix(blocks)
         meters["master"] = levels(mixed)
         self._meters = meters
-        self.output.append(mixed)
+        for tap in taps:
+            tap(mixed)
         return mixed
 
     def _run(self) -> None:
