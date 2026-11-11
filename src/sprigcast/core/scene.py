@@ -80,6 +80,10 @@ class Scene(BaseModel):
 
     A part is laid out on its canvas's size and appears in other scenes through a source of kind
     "scene" whose settings name it ({"scene": part id}). Parts are never shown on air by themselves.
+
+    A part can have one layout per canvas shape: its other shapes are scenes with `shape_of` set to
+    the main part's id. A show on the vertical canvas then gets the part's vertical layout, and falls
+    back to the main layout when there is none.
     """
 
     id: str
@@ -87,10 +91,34 @@ class Scene(BaseModel):
     canvas: str
     kind: Literal["show", "part"] = "show"
     linked_to: str | None = None  # switching to that scene also switches to this one
+    shape_of: str | None = None  # parts only: this is the layout of that part for another canvas
     items: list[SceneItem] = Field(default_factory=list)  # index 0 draws first (bottom)
 
 
 PART_KIND = "scene"  # source kind that places a part inside another scene
+
+
+def _bounds(items: list[SceneItem], sizes: dict[str, tuple[int, int]]) -> tuple[float, float, float, float] | None:
+    """Left, top, right, bottom around the visible items whose size is known (rotation ignored)."""
+    boxes = []
+    for item in items:
+        size = sizes.get(item.source)
+        if not item.visible or not size:
+            continue
+        w, h = item.cropped_size(size)
+        if w and h:
+            boxes.append((item.x, item.y, item.x + w * item.scale, item.y + h * item.scale))
+    if not boxes:
+        return None
+    return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
+
+
+def _keep_between_edges(pos: float, length: float, extent: float, new_length: float, new_extent: float) -> float:
+    """Where an item of new_length goes so it sits the same share of the way between the edges."""
+    room, new_room = extent - length, new_extent - new_length
+    if room <= 0 or new_room <= 0:
+        return (pos + length / 2) * new_extent / extent - new_length / 2  # fills the axis: keep the centre
+    return pos / room * new_room
 
 
 class Output(BaseModel):
@@ -164,6 +192,8 @@ class SceneCollection(BaseModel):
         for scene in self.scenes:
             if scene.canvas not in canvas_ids:
                 raise ValueError(f"scene {scene.id!r} uses unknown canvas {scene.canvas!r}")
+            if scene.shape_of is not None and scene.shape_of not in scene_ids:
+                raise ValueError(f"scene {scene.id!r} is a shape of unknown part {scene.shape_of!r}")
             if scene.linked_to is not None and scene.linked_to not in scene_ids:
                 raise ValueError(f"scene {scene.id!r} links to unknown scene {scene.linked_to!r}")
             for item in scene.items:
@@ -195,17 +225,38 @@ class SceneCollection(BaseModel):
         return [s for s in self.scenes if s.canvas == canvas_id and s.kind == "show"]
 
     def parts(self) -> list[Scene]:
+        """Parts as the user sees them: one entry per part, whatever shapes it has."""
+        return [s for s in self.scenes if s.kind == "part" and s.shape_of is None]
+
+    def part_scenes(self) -> list[Scene]:
+        """Every part layout, main and other shapes: what the renderer draws."""
         return [s for s in self.scenes if s.kind == "part"]
 
+    def main_part(self, scene: Scene) -> Scene:
+        """The part a shape belongs to (a main part or a show is returned as is)."""
+        if scene.shape_of is None:
+            return scene
+        return next((s for s in self.scenes if s.id == scene.shape_of), scene)
+
+    def shapes(self, part: Scene) -> list[Scene]:
+        """A part's layouts: the main one first, then one per other canvas."""
+        part = self.main_part(part)
+        return [part] + [s for s in self.scenes if s.shape_of == part.id]
+
+    def shape_for(self, part: Scene, canvas_id: str) -> Scene:
+        """The layout of a part to use on a canvas: its shape for that canvas, else its main layout."""
+        shapes = self.shapes(part)
+        return next((s for s in shapes if s.canvas == canvas_id), shapes[0])
+
     def part_of(self, source: SourceConfig) -> Scene | None:
-        """The part a nested-part source shows, or None."""
+        """The (main) part a nested-part source shows, or None."""
         if source.kind != PART_KIND:
             return None
         part_id = source.settings.get("scene")
-        return next((s for s in self.scenes if s.id == part_id and s.kind == "part"), None)
+        return next((s for s in self.scenes if s.id == part_id and s.kind == "part" and s.shape_of is None), None)
 
     def parts_inside(self, scene: Scene) -> list[Scene]:
-        """Parts placed directly in a scene."""
+        """Parts placed directly in a scene (as main parts)."""
         out = []
         for item in scene.items:
             part = self.part_of(self.source(item.source))
@@ -213,20 +264,36 @@ class SceneCollection(BaseModel):
                 out.append(part)
         return out
 
+    def inner_shapes(self, scene: Scene) -> list[Scene]:
+        """The part layouts a scene draws: each placed part in the shape for the scene's canvas."""
+        return [self.shape_for(p, scene.canvas) for p in self.parts_inside(scene)]
+
     def part_uses(self, part_id: str) -> list[Scene]:
-        """Scenes (shows or parts) that place this part."""
-        return [s for s in self.scenes if any(p.id == part_id for p in self.parts_inside(s))]
+        """Shows and parts that place this part (a part counts once, whichever of its shapes places it)."""
+        out: list[Scene] = []
+        for s in self.scenes:
+            if any(p.id == part_id for p in self.parts_inside(s)):
+                user = self.main_part(s)
+                if user not in out:
+                    out.append(user)
+        return out
 
     def contains(self, scene: Scene, part_id: str, _seen: frozenset = frozenset()) -> bool:
-        """True if `scene` is the part or places it, at any depth. Used to refuse a part inside itself."""
-        if scene.id == part_id:
+        """True if `scene` is the part or places it, at any depth and in any shape.
+
+        Used to refuse a part inside itself. Shapes count as their part.
+        """
+        target = next((s.shape_of or s.id for s in self.scenes if s.id == part_id), part_id)
+        main = self.main_part(scene)
+        if main.id == target:
             return True
-        if scene.id in _seen:
+        if main.id in _seen:
             return False
-        return any(self.contains(p, part_id, _seen | {scene.id}) for p in self.parts_inside(scene))
+        seen = _seen | {main.id}
+        return any(self.contains(p, target, seen) for shape in self.shapes(main) for p in self.parts_inside(shape))
 
     def part_order(self) -> list[Scene]:
-        """Parts in the order to render them: every part after the parts it contains. Cycles are skipped."""
+        """Part layouts in the order to render them: each after the layouts it draws. Cycles are skipped."""
         order: list[Scene] = []
         state: dict[str, str] = {}
 
@@ -234,14 +301,92 @@ class SceneCollection(BaseModel):
             if state.get(part.id) in ("done", "busy"):
                 return
             state[part.id] = "busy"
-            for inner in self.parts_inside(part):
+            for inner in self.inner_shapes(part):
                 visit(inner)
             state[part.id] = "done"
             order.append(part)
 
-        for part in self.parts():
+        for part in self.part_scenes():
             visit(part)
         return order
+
+    def add_shape(self, part: Scene, canvas_id: str, new_id: str,
+                  sizes: dict[str, tuple[int, int]] | None = None) -> Scene:
+        """Give a part a layout for another canvas, starting from its main layout scaled to fit.
+
+        The layout moves as one group: it shrinks or grows by the smaller of the two canvas ratios
+        and keeps where it sits between the edges, so a webcam frame in the top-right corner stays a
+        webcam frame in the top-right corner. `sizes` (source id -> size) gives the group's exact
+        bounds; without them, positions just scale with the canvas. Nested parts get their own
+        placement sources, because a placement's size follows the layout it sits in. Placements on
+        that canvas are refitted so they show the new layout where they showed the old one.
+        """
+        part = self.main_part(part)
+        existing = next((s for s in self.shapes(part) if s.canvas == canvas_id), None)
+        if existing is not None:
+            return existing
+        src, dst = self.canvas(part.canvas), self.canvas(canvas_id)
+        ratio = min(dst.width / src.width, dst.height / src.height)
+        box = _bounds(part.items, sizes or {})
+        if box is None:
+            def move(x: float, y: float) -> tuple[float, float]:
+                return x * dst.width / src.width, y * dst.height / src.height
+        else:
+            left, top, right, bottom = box
+            new_left = _keep_between_edges(left, right - left, src.width, (right - left) * ratio, dst.width)
+            new_top = _keep_between_edges(top, bottom - top, src.height, (bottom - top) * ratio, dst.height)
+
+            def move(x: float, y: float) -> tuple[float, float]:
+                return new_left + (x - left) * ratio, new_top + (y - top) * ratio
+        items = []
+        for item in part.items:
+            source = self.source(item.source)
+            if source.kind == PART_KIND:
+                copy = source.model_copy(deep=True)
+                copy.id = self.new_id(source.id)
+                self.sources.append(copy)
+                source = copy
+            x, y = move(item.x, item.y)
+            items.append(item.model_copy(update={"source": source.id, "x": x, "y": y, "scale": item.scale * ratio}))
+        shape = Scene(id=new_id, name=part.name, canvas=canvas_id, kind="part", shape_of=part.id, items=items)
+        self.scenes.append(shape)
+        self._refit_placements(part, canvas_id, (src.width, src.height), (dst.width, dst.height))
+        return shape
+
+    def remove_shape(self, shape: Scene) -> None:
+        """Drop a part's extra layout; shows on that canvas go back to its main layout, refitted."""
+        if shape.shape_of is None:
+            return
+        part = self.main_part(shape)
+        self.scenes = [s for s in self.scenes if s.id != shape.id]
+        for item in shape.items:
+            self.remove_source_if_unused(item.source)
+        main = self.canvas(part.canvas)
+        here = self.canvas(shape.canvas)
+        self._refit_placements(part, shape.canvas, (here.width, here.height), (main.width, main.height))
+
+    def _refit_placements(self, part: Scene, canvas_id: str, old: tuple[int, int], new: tuple[int, int]) -> None:
+        """Placements of `part` on a canvas switch from a layout of size `old` to one of size `new`.
+
+        Each keeps its centre and its size relative to "fit to canvas", so a part that filled the
+        canvas still fills it.
+        """
+        canvas = self.canvas(canvas_id)
+        fit_old = min(canvas.width / old[0], canvas.height / old[1])
+        fit_new = min(canvas.width / new[0], canvas.height / new[1])
+        placements = {s.id for s in self.sources if self.part_of(s) is part}
+        for scene in self.scenes:
+            if scene.canvas != canvas_id:
+                continue
+            for item in scene.items:
+                if item.source not in placements:
+                    continue
+                w, h = item.cropped_size(old)
+                cx, cy = item.x + w * item.scale / 2, item.y + h * item.scale / 2
+                item.crop = (0, 0, 0, 0)
+                item.scale = item.scale * fit_new / fit_old
+                item.x = cx - new[0] * item.scale / 2
+                item.y = cy - new[1] * item.scale / 2
 
     def active_scene(self, canvas_id: str) -> Scene | None:
         scene_id = self.active_scenes.get(canvas_id)

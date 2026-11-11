@@ -184,6 +184,18 @@ class MainWindow(QMainWindow):
         self.part_path = QLabel()
         self.part_path.setStyleSheet("font-weight: bold")
         header.addWidget(self.part_path, 1)
+        # One button per canvas shape: switch to that layout, or make it ("+ Vertical layout").
+        self.shape_buttons: dict[str, QPushButton] = {}
+        for canvas in self.collection.canvases:
+            button = QPushButton()
+            button.setCheckable(True)
+            button.clicked.connect(lambda _=False, cid=canvas.id: self._edit_shape(cid))
+            self.shape_buttons[canvas.id] = button
+            header.addWidget(button)
+        self.remove_shape_button = QPushButton("Remove this layout")
+        self.remove_shape_button.setToolTip("Shows on this canvas go back to using the part's main layout")
+        self.remove_shape_button.clicked.connect(self._remove_shape)
+        header.addWidget(self.remove_shape_button)
         done = QPushButton("Done: back to the canvases")
         done.clicked.connect(self._close_part)
         header.addWidget(done)
@@ -830,13 +842,17 @@ class MainWindow(QMainWindow):
             group = QTreeWidgetItem(["Parts  (reusable pieces for shows)"])
             group.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.scene_tree.addTopLevelItem(group)
+            selected = self.collection.scene(self.selected_scene_id) if self.selected_scene_id in {
+                s.id for s in self.collection.scenes} else None
+            selected_part = self.collection.main_part(selected) if selected is not None else None
             for part in parts:
                 uses = len(self.collection.part_uses(part.id))
-                child = QTreeWidgetItem([f"◇ {part.name}   ({part.canvas} · used in {uses})"])
+                shapes = " + ".join(s.canvas for s in self.collection.shapes(part))
+                child = QTreeWidgetItem([f"◇ {part.name}   ({shapes} · used in {uses})"])
                 child.setData(0, ROLE_ID, part.id)
                 child.setToolTip(0, "A part: add it to shows with Sources → + → Part. Select it to edit it.")
                 group.addChild(child)
-                if part.id == self.selected_scene_id:
+                if part is selected_part:
                     child.setSelected(True)
             group.setExpanded(True)
         self._updating = False
@@ -1014,7 +1030,7 @@ class MainWindow(QMainWindow):
     def _on_preview_selected(self, canvas_id: str, index: int) -> None:
         """A click in a preview selects that canvas's active scene and the item under the mouse."""
         if canvas_id.startswith("part:"):
-            scene = next((s for s in self.collection.parts() if s.id == canvas_id[5:]), None)
+            scene = next((s for s in self.collection.part_scenes() if s.id == canvas_id[5:]), None)
         else:
             scene = self.collection.active_scene(canvas_id)
         if scene is None:
@@ -1115,8 +1131,8 @@ class MainWindow(QMainWindow):
         config = SourceConfig(id=self.collection.new_id("part-src"), kind=PART_KIND, name=part.name,
                               settings={"scene": part.id})
         self._add_item(config)
-        canvas = self.collection.canvas(part.canvas)
-        self._fit_item(size=(canvas.width, canvas.height))  # a horizontal part fits a vertical show too
+        canvas = self.collection.canvas(self.collection.shape_for(part, scene.canvas).canvas)
+        self._fit_item(size=(canvas.width, canvas.height))  # a horizontal-only part fits a vertical show too
         self._refresh_scenes()
 
     def _show_part_editor(self) -> None:
@@ -1128,11 +1144,23 @@ class MainWindow(QMainWindow):
             self.center.setCurrentIndex(0)
             return
         canvas = self.collection.canvas(scene.canvas)
-        uses = self.collection.part_uses(scene.id)
+        main = self.collection.main_part(scene)
+        uses = self.collection.part_uses(main.id)
         self.part_path.setText(
-            f"Editing part ◇ {scene.name}   ·   {canvas.width}×{canvas.height}   ·   "
+            f"Editing part ◇ {scene.name}   ·   {scene.canvas} layout {canvas.width}×{canvas.height}   ·   "
             + (f"used in {', '.join(s.name for s in uses)}" if uses else "not used in any show yet")
         )
+        shapes = {s.canvas: s for s in self.collection.shapes(main)}
+        for canvas_id, button in self.shape_buttons.items():
+            has = canvas_id in shapes
+            button.setText(canvas_id.capitalize() if has else f"+ {canvas_id.capitalize()} layout")
+            button.setChecked(canvas_id == scene.canvas)
+            button.setToolTip(
+                f"Edit the layout shows on the {canvas_id} canvas get" if has else
+                f"Give this part its own {canvas_id} layout. Until then, {canvas_id} shows use the "
+                f"{main.canvas} layout, scaled to fit."
+            )
+        self.remove_shape_button.setVisible(scene.shape_of is not None)
         if self.part_preview.canvas_id != f"part:{scene.id}":
             self.part_preview._image = None
         self.part_preview.canvas_id = f"part:{scene.id}"
@@ -1142,6 +1170,40 @@ class MainWindow(QMainWindow):
         self.engine.editing_part = scene.id
         self.center.setCurrentIndex(1)
         self._refresh_previews()
+
+    def _edit_shape(self, canvas_id: str) -> None:
+        """Switch the part editor to the part's layout for a canvas, making that layout first if needed."""
+        scene = self._scene()
+        if scene is None or scene.kind != "part":
+            return
+        main = self.collection.main_part(scene)
+        shape = next((s for s in self.collection.shapes(main) if s.canvas == canvas_id), None)
+        if shape is None:
+            shape = self.collection.add_shape(main, canvas_id, self.collection.new_id(f"{main.id}-{canvas_id}"),
+                                              sizes=self.source_sizes)
+            self._changed()
+            self.statusBar().showMessage(
+                f"Made a {canvas_id} layout for {main.name!r} from its {main.canvas} one. "
+                f"{canvas_id.capitalize()} shows now use it.", 6000)
+        self.selected_scene_id = shape.id
+        self._refresh_scenes()
+        self._refresh_sources()
+        self._show_part_editor()
+
+    def _remove_shape(self) -> None:
+        scene = self._scene()
+        if scene is None or scene.shape_of is None:
+            return
+        main = self.collection.main_part(scene)
+        question = (f"Remove the {scene.canvas} layout of {main.name!r}?\n\n"
+                    f"{scene.canvas.capitalize()} shows will use its {main.canvas} layout, scaled to fit.")
+        if QMessageBox.question(self, "Remove layout", question) != QMessageBox.StandardButton.Yes:
+            return
+        self.collection.remove_shape(scene)
+        self.selected_scene_id = main.id
+        self._changed()
+        self._refresh_all()
+        self._show_part_editor()
 
     def _close_part(self) -> None:
         canvas_id = self.collection.canvases[0].id
@@ -1157,9 +1219,13 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "Rename scene", "Scene name:", text=scene.name)
         if ok and name.strip():
             scene.name = name.strip()
-            for source in self.collection.sources:
-                if self.collection.part_of(source) is scene:
-                    source.name = scene.name
+            if scene.kind == "part":
+                main = self.collection.main_part(scene)
+                for shape in self.collection.shapes(main):
+                    shape.name = scene.name
+                for source in self.collection.sources:
+                    if self.collection.part_of(source) is main:
+                        source.name = scene.name
             self._changed()
             self._refresh_all()
 
@@ -1168,7 +1234,7 @@ class MainWindow(QMainWindow):
         if scene is None:
             return
         if scene.kind == "part":
-            self._remove_part(scene)
+            self._remove_part(self.collection.main_part(scene))
             return
         if len(self.collection.scenes_for(scene.canvas)) == 1:
             QMessageBox.information(self, "SprigCast", "Each canvas needs at least one scene.")
@@ -1199,9 +1265,11 @@ class MainWindow(QMainWindow):
         for scene in self.collection.scenes:
             scene.items = [i for i in scene.items if i.source not in placed]
         self.collection.sources = [s for s in self.collection.sources if s.id not in placed]
-        self.collection.scenes = [s for s in self.collection.scenes if s.id != part.id]
-        for item in part.items:
-            self.collection.remove_source_if_unused(item.source)
+        shapes = self.collection.shapes(part)
+        self.collection.scenes = [s for s in self.collection.scenes if s not in shapes]
+        for shape in shapes:
+            for item in shape.items:
+                self.collection.remove_source_if_unused(item.source)
         self.selected_scene_id = self.collection.active_scenes.get(self.collection.canvases[0].id)
         self._changed()
         self._refresh_all()
