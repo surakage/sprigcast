@@ -96,31 +96,38 @@ class _CaptureSource(Source):
                 self._restart.wait(RETRY_SECONDS)
                 continue
             ended = threading.Event()
-            try:
-                capture = windows_capture_cls(
-                    cursor_capture=bool(self.settings.get("cursor", True)),
-                    draw_border=self.settings.get("border"),  # None = Windows default
-                    **target,
-                )
 
-                def on_frame_arrived(frame, control):
-                    if self._stop.is_set() or self._restart.is_set():
-                        control.stop()
-                        return
-                    self._on_frame(frame)
+            def on_frame_arrived(frame, control):
+                if self._stop.is_set() or self._restart.is_set():
+                    control.stop()
+                    return
+                self._on_frame(frame)
 
-                def on_closed():
-                    ended.set()
+            def on_closed():
+                ended.set()
 
-                capture.event(on_frame_arrived)
-                capture.event(on_closed)
-                control = capture.start_free_threaded()
-                self.status = "capturing"
-            except Exception as exc:  # target vanished between lookup and start, access denied, ...
-                self.status = f"error: {exc}"
-                log.info("%s: capture failed to start: %s", self.id, exc)
+            # Hide the yellow capture border by default. Windows 10 does not allow that, so if
+            # starting with border=False fails, try once more with the Windows default.
+            border = self.settings.get("border", False)
+            attempts = [border, None] if border is False else [border]
+            control, error = None, None
+            for draw_border in attempts:
+                try:
+                    capture = windows_capture_cls(
+                        cursor_capture=bool(self.settings.get("cursor", True)), draw_border=draw_border, **target
+                    )
+                    capture.event(on_frame_arrived)
+                    capture.event(on_closed)
+                    control = capture.start_free_threaded()
+                    break
+                except Exception as exc:  # target vanished, border not supported, access denied, ...
+                    error = exc
+            if control is None:
+                self.status = f"error: {error}"
+                log.info("%s: capture failed to start: %s", self.id, error)
                 self._restart.wait(RETRY_SECONDS)
                 continue
+            self.status = "capturing"
 
             while not (self._stop.is_set() or self._restart.is_set() or ended.is_set() or control.is_finished()):
                 self._restart.wait(0.2)

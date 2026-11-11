@@ -50,8 +50,8 @@ The key is typed at a hidden prompt and is never saved.
 - **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
   window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
 
-Capture uses Windows Graphics Capture. On Windows 10 a yellow border appears around captured windows;
-Windows 11 lets apps hide it.
+Capture uses Windows Graphics Capture. SprigCast hides the yellow capture border on Windows 11;
+Windows 10 always shows it.
 
 Scenes save automatically to `scenes.json` in your AppData folder
 (*File → Show scenes file location* shows the exact path).

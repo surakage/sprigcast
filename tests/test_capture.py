@@ -137,3 +137,21 @@ def test_find_window_prefers_process_and_title(monkeypatch):
     assert win32_enum.find_window("Renamed", "GAME.EXE").hwnd == 2  # title changed, same app
     assert win32_enum.find_window("Game", "").hwnd == 1
     assert win32_enum.find_window("Nope", "nope.exe") is None
+
+
+def test_border_falls_back_to_default_when_hiding_is_unsupported(fake_backend, monkeypatch):
+    class Win10Capture(FakeWindowsCapture):
+        def __init__(self, draw_border=None, **kwargs):
+            if draw_border is False:
+                raise RuntimeError("border toggle not supported")
+            super().__init__(draw_border=draw_border, **kwargs)
+            self.kwargs["draw_border"] = draw_border
+
+    sys.modules["windows_capture"].WindowsCapture = Win10Capture
+    src = create_source("display_capture", "d", {"monitor": 1})
+    src.start()
+    try:
+        assert wait_for(lambda: src.status == "capturing")
+        assert Win10Capture.instances[0].kwargs["draw_border"] is None
+    finally:
+        src.stop()
