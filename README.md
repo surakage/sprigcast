@@ -62,6 +62,12 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     under *Parts* in the Scenes dock with where they're used, for example "◇ Webcam frame (horizontal · used in 2)".
   - Select a part to open it in the *part editor* in place of the canvases. The see-through areas show as a
     checkerboard, and the header lists every show that uses it. *Done: back to the canvases* closes it.
+  - **One part, two shapes.** A part starts with a layout for the canvas you picked. The buttons at the top of
+    the part editor switch layouts: click *+ Vertical layout* (or *+ Horizontal layout*) and SprigCast copies
+    the layout over, scaled to fit and kept in the same spot (a top-right webcam frame stays top-right). Then
+    arrange it however that shape needs. Vertical shows use the vertical layout and horizontal shows the
+    horizontal one. Without a second layout, both canvases use the one layout, scaled to fit.
+    *Remove this layout* goes back to one layout. The Parts list shows which layouts a part has.
   - Sources **+ → Part** places a part in the selected show (or inside another part). Move, resize and crop it
     like any source. SprigCast won't let a part end up inside itself.
   - A part is drawn once per frame however many shows and canvases use it. Removing a part warns you where

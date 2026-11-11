@@ -191,30 +191,40 @@ class Engine:
         compositor.effects = effects
 
     def _sync_parts(self, compositor) -> None:
-        """Tell each nested-part source its part's size, and drop textures of parts that are gone."""
+        """Tell each nested-part source the size of the layout it shows, and drop textures of layouts that are gone.
+
+        A placement shows the part's layout for the canvas of the scene it sits in.
+        """
         collection = self._collection
+        placed_on = {}  # source id -> canvas of the first scene that places it
+        for scene in collection.scenes:
+            for item in scene.items:
+                placed_on.setdefault(item.source, scene.canvas)
         for source_id, source in self._sources.items():
             if source.kind != PART_KIND:
                 continue
             part = collection.part_of(next(s for s in collection.sources if s.id == source_id))
-            canvas = next((c for c in collection.canvases if part and c.id == part.canvas), None)
+            canvas = None
+            if part is not None:
+                shape = collection.shape_for(part, placed_on.get(source_id, part.canvas))
+                canvas = next((c for c in collection.canvases if c.id == shape.canvas), None)
             source.part_size = (canvas.width, canvas.height) if canvas else (0, 0)
-        alive = {p.id for p in collection.parts()}
+        alive = {p.id for p in collection.part_scenes()}
         for key in [k for k in compositor.targets if k.startswith("part:")]:
             if key[5:] not in alive:
                 compositor.forget_part(key[5:])
 
     def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
-        """Render every part once (inner parts first), then point each nested-part source at its texture."""
+        """Render every part layout in use once (inner ones first), then point each placement at its texture."""
         collection = self._collection
-        # Only parts that something on screen (or the Part editor) shows, however deep.
+        # Only layouts that something on screen (or the Part editor) shows, however deep.
         used: set[str] = set()
         stack = [s for s in collection.scenes if s.kind == "show"]
         if self.editing_part:
-            stack += [p for p in collection.parts() if p.id == self.editing_part]
+            stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
             used.add(self.editing_part)
         while stack:
-            for inner in collection.parts_inside(stack.pop()):
+            for inner in collection.inner_shapes(stack.pop()):
                 if inner.id not in used:
                     used.add(inner.id)
                     stack.append(inner)
@@ -227,7 +237,7 @@ class Engine:
             canvas = next((c for c in collection.canvases if c.id == part.canvas), None)
             if canvas is None:
                 continue
-            compositor.parts = {sid: tex for sid, tex in self._part_sources(textures).items()}
+            compositor.parts = self._part_sources(textures)
             textures[part.id] = compositor.render_part(part.id, (canvas.width, canvas.height), part, sizes)
             if part.id == self.editing_part:
                 data = compositor.read(f"part:{part.id}")
@@ -235,12 +245,17 @@ class Engine:
         compositor.parts = self._part_sources(textures)
 
     def _part_sources(self, textures: dict) -> dict:
+        """(placement source id, canvas id) -> texture of the part's layout for that canvas."""
         collection = self._collection
         out = {}
         for source in collection.sources:
             part = collection.part_of(source)
-            if part is not None and part.id in textures:
-                out[source.id] = textures[part.id]
+            if part is None:
+                continue
+            for canvas in collection.canvases:
+                shape = collection.shape_for(part, canvas.id)
+                if shape.id in textures:
+                    out[(source.id, canvas.id)] = textures[shape.id]
         return out
 
     def _tick(self, compositor, now: float) -> None:

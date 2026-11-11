@@ -78,7 +78,7 @@ def test_part_drawn_inside_scenes_on_both_canvases(compositor):
     sizes = {"red": (8, 8), "cam": (64, 36), "cam2": (64, 36), "inner": (64, 36)}
     compositor.parts = {}
     tex = compositor.render_part("p-cam", (64, 36), part, sizes)
-    compositor.parts = {"cam": tex, "cam2": tex}
+    compositor.parts = {("cam", "h"): tex, ("cam2", "v"): tex}
     h, v = col.canvas("h"), col.canvas("v")
     compositor.render(h, col.scene("show-h"), sizes)
     img = np.frombuffer(compositor.read("h"), dtype=np.uint8).reshape(36, 64, 4)
@@ -97,7 +97,7 @@ def test_half_transparent_part_keeps_its_color(compositor):
     sizes = {"red": (8, 8), "cam": (64, 36), "inner": (64, 36)}
     compositor.parts = {}
     tex = compositor.render_part("p-cam", (64, 36), col.scene("p-cam"), sizes)
-    compositor.parts = {"cam": tex}
+    compositor.parts = {("cam", "h"): tex}
     compositor.render(col.canvas("h"), col.scene("show-h"), sizes)
     img = np.frombuffer(compositor.read("h"), dtype=np.uint8).reshape(36, 64, 4)
     assert abs(int(img[4, 4][0]) - 128) <= 3  # 50% red over black, not darkened twice
@@ -125,6 +125,66 @@ def test_engine_renders_parts_once_and_feeds_the_part_editor(compositor):
     assert img[4, 4][0] > 200 and img[4, 4][1] < 50  # red from inside the part
     part_frame = engine.part_frames.take()
     assert part_frame is not None and part_frame.canvas_id == "part:p-cam"
+    for source in engine._sources.values():
+        source.stop()
+    compositor.parts = {}
+
+
+def test_part_shapes_model():
+    col = _collection()
+    part = col.scene("p-cam")
+    col.sources.append(SourceConfig(id="box", kind="color", name="Box", settings={"width": 16, "height": 9}))
+    part.items.append(SceneItem(source="box", x=48, y=0))  # top-right corner of the 64x36 layout
+    shape = col.add_shape(part, "v", "p-cam-v", sizes={"box": (16, 9), "red": (8, 8)})
+    assert shape.shape_of == "p-cam" and shape.kind == "part" and shape.canvas == "v"
+    assert col.add_shape(part, "v", "again") is shape  # one layout per canvas
+    assert col.parts() == [part, col.scene("p-badge")] and shape in col.part_scenes()
+    assert col.shape_for(part, "v") is shape and col.shape_for(part, "h") is part
+    assert col.shape_for(col.scene("p-badge"), "v").id == "p-badge"  # no vertical layout: main one
+    box = next(i for i in shape.items if i.source == "box")
+    assert box.scale == pytest.approx(36 / 64)  # the smaller ratio
+    assert box.x + 16 * box.scale == pytest.approx(36) and box.y == pytest.approx(0)  # still top-right
+    nested = [i for i in shape.items if col.source(i.source).kind == "scene"]
+    assert nested and nested[0].source != "inner"  # the nested part got its own placement
+    assert col.main_part(shape) is part and col.shapes(shape) == [part, shape]
+    # a part used by both of another part's shapes counts that part once
+    assert col.part_uses("p-badge") == [part]
+    # cycles through a shape: the badge can't take the cam frame, since the frame's vertical layout holds it
+    assert col.contains(col.scene("p-badge"), "p-cam") is False
+    assert col.contains(shape, "p-badge") and col.contains(part, "p-cam-v")
+    # the vertical show's placement was fitted for the 64x36 layout; now it fits the 36x64 one
+    placement = col.scene("show-v").items[0]
+    assert placement.scale == pytest.approx(0.5 / (36 / 64))
+    SceneCollection.model_validate(col.model_dump())  # saves and loads
+    col.remove_shape(shape)
+    assert col.shapes(part) == [part] and placement.scale == pytest.approx(0.5)
+    assert not any(s.settings.get("scene") == "p-badge" and s.id != "inner" for s in col.sources)
+
+
+def test_each_canvas_gets_its_own_layout(compositor):
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    col.scene("p-cam").items = [SceneItem(source="red", x=0, y=0)]
+    col.add_shape(col.scene("p-cam"), "v", "p-cam-v")
+    col.scene("p-cam-v").items = [SceneItem(source="red", x=28, y=56)]  # bottom-right in the vertical layout
+    col.scene("show-v").items = [SceneItem(source="cam2", scale=0.5)]
+    engine = Engine(col)
+    engine._sync_sources(compositor)
+    assert engine._sources["cam"].size == (64, 36) and engine._sources["cam2"].size == (36, 64)
+    calls = []
+    original = compositor.render_part
+    compositor.render_part = lambda *a, **k: calls.append(a[0]) or original(*a, **k)
+    try:
+        engine._tick(compositor, 1.0)
+    finally:
+        compositor.render_part = original
+    assert sorted(calls) == ["p-cam", "p-cam-v"]
+    v = np.frombuffer(engine.frames["v"].take().data, dtype=np.uint8).reshape(64, 36, 4)
+    # show-v draws the vertical layout at half scale: red at (14..18, 28..32), nothing at the top-left
+    assert v[30, 16][0] > 200 and v[2, 2][0] < 50
+    h = np.frombuffer(engine.frames["h"].take().data, dtype=np.uint8).reshape(36, 64, 4)
+    assert h[4, 4][0] > 200
     for source in engine._sources.values():
         source.stop()
     compositor.parts = {}
@@ -171,12 +231,28 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
             assert w.center.currentIndex() == 0
             w._add_part_source(part.id)
         assert {s.id for s in col.part_uses(part.id)} == set(shows)
+        # give the part a vertical layout from the part editor, then remove it again
+        w.selected_scene_id = part.id
+        w._refresh_scenes()
+        w._show_part_editor()
+        assert w.shape_buttons["vertical"].text() == "+ Vertical layout" and not w.remove_shape_button.isVisibleTo(w)
+        w._edit_shape("vertical")
+        shape = w._scene()
+        assert shape.shape_of == part.id and shape.canvas == "vertical" and w.engine.editing_part == shape.id
+        assert w.shape_buttons["vertical"].isChecked() and w.remove_shape_button.isVisibleTo(w)
+        assert "horizontal + vertical" in w.scene_tree.topLevelItem(w.scene_tree.topLevelItemCount() - 1).child(0).text(0)
+        w._edit_shape("horizontal")
+        assert w._scene() is part
+        w._edit_shape("vertical")
+        w._remove_shape()
+        assert w._scene() is part and col.shapes(part) == [part]
+        w._edit_shape("vertical")  # keep one for the removal below
         # Live lists shows only, never the part
         w._set_mode("live")
         assert part.id not in w.live_panel.buttons and all(s in w.live_panel.buttons for s in shows)
         w._set_mode("build")
         w._remove_part(part)
-        assert part.id not in {s.id for s in col.scenes}
+        assert not any(s.kind == "part" for s in col.scenes)
         assert not any(col.part_of(src) for src in col.sources)
         assert all(it.source in {src.id for src in col.sources} for s in col.scenes for it in s.items)
     finally:

@@ -136,7 +136,8 @@ class Compositor:
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
         self.textures: dict[str, moderngl.Texture] = {}
         self.targets: dict[str, _CanvasTarget] = {}
-        self.parts: dict[str, moderngl.Texture] = {}  # nested-part source id -> its part's rendered texture
+        # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
+        self.parts: dict[tuple[str, str], moderngl.Texture] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
         self.time = 0.0  # seconds, drives the Scroll filter
         self._applied: VideoEffects | None = None
@@ -244,9 +245,9 @@ class Compositor:
         self.program["opacity"].value = 1.0
         self._applied = None
         for item in scene.items:
-            part = self.parts.get(item.source)
+            part = self.parts.get((item.source, scene.canvas))
             tex = part or self.textures.get(item.source)
-            size = source_sizes.get(item.source)
+            size = part.size if part is not None else source_sizes.get(item.source)
             if not item.visible or tex is None or size is None:
                 continue
             quad = item.quad(size)
