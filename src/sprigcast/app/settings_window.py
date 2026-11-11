@@ -241,8 +241,7 @@ class SettingsWindow(QDialog):
             QListWidgetItem("No plugins loaded.", self.plugin_list)
         box.addWidget(self.plugin_list)
         box.addWidget(_hint(
-            "Drop a .py file into the plugins folder and restart SprigCast to load it. Plugins run with the "
-            "same rights as SprigCast, so only install ones you trust."
+            "Drop a .py file in the plugins folder and restart. Only install plugins you trust."
         ))
         if open_plugins_folder is not None:
             open_button = QPushButton("Open plugins folder")
@@ -307,8 +306,7 @@ class SettingsWindow(QDialog):
         if not sources:
             form.addRow(_hint("No audio sources yet. Add them with + in the Audio Mixer dock."))
         hint = _hint(
-            "\"Default\" follows the device Windows uses, so switching headsets in Windows just works. "
-            "Volume and mute are in the Audio Mixer dock."
+            "\"Default\" follows Windows. Volume and mute are in the Audio Mixer."
         )
         return _page(group, hint)
 

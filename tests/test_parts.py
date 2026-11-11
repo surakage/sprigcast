@@ -235,7 +235,7 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
         w.selected_scene_id = part.id
         w._refresh_scenes()
         w._show_part_editor()
-        assert w.shape_buttons["vertical"].text() == "+ Vertical layout" and not w.remove_shape_button.isVisibleTo(w)
+        assert w.shape_buttons["vertical"].text() == "+ Vertical" and not w.remove_shape_button.isVisibleTo(w)
         w._edit_shape("vertical")
         shape = w._scene()
         assert shape.shape_of == part.id and shape.canvas == "vertical" and w.engine.editing_part == shape.id
