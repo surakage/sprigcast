@@ -67,7 +67,7 @@ from sprigcast.app.settings_window import (
     confirm_enabled,
 )
 from sprigcast.app.stats_panel import StatsPanel
-from sprigcast.app.stream_dialog import output_label
+from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.core.events import (
     AudioLevels,
     EngineError,
@@ -198,7 +198,7 @@ class MainWindow(QMainWindow):
             self.shape_buttons[canvas.id] = button
             header.addWidget(button)
         self.remove_shape_button = QPushButton("Remove this layout")
-        self.remove_shape_button.setToolTip("Shows on this canvas go back to using the part's main layout")
+        self.remove_shape_button.setToolTip(f"{cap(SHOWS)} on this canvas go back to using the {PART}'s main layout")
         self.remove_shape_button.clicked.connect(self._remove_shape)
         header.addWidget(self.remove_shape_button)
         done = QPushButton("Done: back to the canvases")
@@ -206,8 +206,8 @@ class MainWindow(QMainWindow):
         header.addWidget(done)
         part_layout.addLayout(header)
         self.part_empty = QLabel(
-            "This part is empty. Add sources with Sources → + and they go into the part. "
-            "Tip: you can also select sources in a show, right-click and pick Turn into a part."
+            f"This {PART} is empty. Add sources with Sources → + and they go into the {PART}. "
+            f"Tip: you can also select sources in {a(SHOW)}, right-click and pick Turn into {a(PART)}."
         )
         self.part_empty.setWordWrap(True)
         self.part_empty.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 8px; border-radius: 4px; margin: 4px 8px;")
@@ -267,10 +267,10 @@ class MainWindow(QMainWindow):
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.scene_tree.customContextMenuRequested.connect(self._scene_context_menu)
         add_menu = QMenu(self)
-        add_menu.addAction("New show…").triggered.connect(self._add_scene)
-        add_menu.addAction("New part…").triggered.connect(self._add_part)
+        add_menu.addAction(f"New {SHOW}…").triggered.connect(self._add_scene)
+        add_menu.addAction(f"New {PART}…").triggered.connect(self._add_part)
         bar = _toolbar(
-            ("+", "Add a show (a scene you switch to on air) or a part (a reusable piece for shows)", add_menu),
+            ("+", f"Add {a(SHOW)} (a scene you switch to on air) or {a(PART)} (a reusable piece for {SHOWS})", add_menu),
             ("−", "Remove the selected scene", self._remove_scene),
             ("✎", "Rename the selected scene", self._rename_scene),
             None,
@@ -363,13 +363,13 @@ class MainWindow(QMainWindow):
             ("Text", self._add_text),
         ):
             menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
-        parts_menu = menu.addMenu("Part")
+        parts_menu = menu.addMenu(cap(PART))
         scene = self._scene()
         parts = [p for p in self.collection.parts() if scene is None or not self.collection.contains(p, scene.id)]
         for part in parts:
             parts_menu.addAction(part.name).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
         if not parts:
-            empty = parts_menu.addAction("No parts yet: Scenes → + → New part")
+            empty = parts_menu.addAction(f"No {PARTS} yet: Scenes → + → New {PART}")
             empty.setEnabled(False)
         plugins = menu.addMenu("Plugins")
         self.more_menu = plugins
@@ -384,10 +384,10 @@ class MainWindow(QMainWindow):
         else:
             item = self._item()
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
-                menu.addAction("Edit part in place").triggered.connect(self._open_part_item)
+                menu.addAction(f"Edit {PART} in place").triggered.connect(self._open_part_item)
             count = len(self.source_list.selectedItems())
-            turn = menu.addAction("Turn into a part…" if count < 2 else f"Turn these {count} into a part…")
-            turn.setToolTip("Move the selected sources into a new reusable part, right where they are")
+            turn = menu.addAction(f"Turn into {a(PART)}…" if count < 2 else f"Turn these {count} into {a(PART)}…")
+            turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
             turn.triggered.connect(self._turn_into_part)
             menu.addSeparator()
             menu.addAction("Settings…").triggered.connect(self._edit_source_settings)
@@ -426,8 +426,8 @@ class MainWindow(QMainWindow):
             menu.addAction("Rename…").triggered.connect(self._rename_scene)
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
-        menu.addAction("New show…").triggered.connect(self._add_scene)
-        menu.addAction("New part…").triggered.connect(self._add_part)
+        menu.addAction(f"New {SHOW}…").triggered.connect(self._add_scene)
+        menu.addAction(f"New {PART}…").triggered.connect(self._add_part)
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
 
     def _rename_item(self) -> None:
@@ -850,7 +850,7 @@ class MainWindow(QMainWindow):
             scene = self.collection.active_scene(canvas_id)
             if in_place is not None and in_place[0] == canvas_id:
                 show, placement, layout, size = in_place[1:]
-                preview.subtitle = f"{show.name}  ›  ◇ {layout.name}   (editing in place: Esc or double-click outside to finish)"
+                preview.subtitle = f"{show.name}  ›  {PART_MARK} {layout.name}   (editing in place: Esc or double-click outside to finish)"
                 preview.set_inner(placement, size)
                 preview.set_scene(layout, self._item_index() if layout.id == self.selected_scene_id else None)
                 continue
@@ -888,7 +888,7 @@ class MainWindow(QMainWindow):
             parent.setExpanded(True)
         parts = self.collection.parts()
         if parts:
-            group = QTreeWidgetItem(["Parts  (reusable pieces for shows)"])
+            group = QTreeWidgetItem([f"{cap(PARTS)}  (reusable pieces for {SHOWS})"])
             group.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.scene_tree.addTopLevelItem(group)
             selected = self.collection.scene(self.selected_scene_id) if self.selected_scene_id in {
@@ -897,9 +897,9 @@ class MainWindow(QMainWindow):
             for part in parts:
                 uses = len(self.collection.part_uses(part.id))
                 shapes = " + ".join(s.canvas for s in self.collection.shapes(part))
-                child = QTreeWidgetItem([f"◇ {part.name}   ({shapes} · used in {uses})"])
+                child = QTreeWidgetItem([f"{PART_MARK} {part.name}   ({shapes} · used in {uses})"])
                 child.setData(0, ROLE_ID, part.id)
-                child.setToolTip(0, "A part: add it to shows with Sources → + → Part. Select it to edit it.")
+                child.setToolTip(0, f"{cap(a(PART))}: add it to {SHOWS} with Sources → + → {cap(PART)}. Select it to edit it.")
                 group.addChild(child)
                 if part is selected_part:
                     child.setSelected(True)
@@ -924,7 +924,7 @@ class MainWindow(QMainWindow):
 
     def _source_label(self, source_id: str) -> str:
         config = self.collection.source(source_id)
-        label = f"◇ {config.name}   [part]" if config.kind == PART_KIND else f"{config.name}   [{config.kind}]"
+        label = f"{PART_MARK} {config.name}   [{PART}]" if config.kind == PART_KIND else f"{config.name}   [{config.kind}]"
         if any(f.enabled for f in config.filters):
             label += "   ✦ filters"
         status = self.source_statuses.get(source_id, "ok")
@@ -1134,7 +1134,7 @@ class MainWindow(QMainWindow):
             return
         if scene.kind == "part":
             self.statusBar().showMessage(
-                "Parts don't go on air by themselves: add them to a show with Sources → + → Part.", 6000)
+                f"{cap(PARTS)} don't go on air by themselves: add them to {a(SHOW)} with Sources → + → {cap(PART)}.", 6000)
             return
         self.collection.set_active(scene.id)
         self._changed()
@@ -1208,7 +1208,7 @@ class MainWindow(QMainWindow):
         indices = [len(scene.items) - 1 - row for row in rows]
         first = self.collection.source(scene.items[indices[0]].source).name
         name, ok = QInputDialog.getText(
-            self, "Turn into a part", "Name the new part (you can reuse it in any show):",
+            self, f"Turn into {a(PART)}", f"Name the new {PART} (you can reuse it in any {SHOW}):",
             text=first if len(rows) == 1 else "")
         if not ok or not name.strip():
             return
@@ -1219,7 +1219,7 @@ class MainWindow(QMainWindow):
         self._refresh_sources(keep_row=len(scene.items) - 1 - index)
         self._refresh_previews()
         self.statusBar().showMessage(
-            f"Made the part {part.name!r}. Add it to other shows with Sources → + → Part; "
+            f"Made the {PART} {part.name!r}. Add it to other {SHOWS} with Sources → + → {cap(PART)}; "
             "double-click it to edit it in place.", 8000)
 
     def _show_part_editor(self) -> None:
@@ -1234,8 +1234,8 @@ class MainWindow(QMainWindow):
         main = self.collection.main_part(scene)
         uses = self.collection.part_uses(main.id)
         self.part_path.setText(
-            f"Editing part ◇ {scene.name}   ·   {scene.canvas} layout {canvas.width}×{canvas.height}   ·   "
-            + (f"used in {', '.join(s.name for s in uses)}" if uses else "not used in any show yet")
+            f"Editing {PART} {PART_MARK} {scene.name}   ·   {scene.canvas} layout {canvas.width}×{canvas.height}   ·   "
+            + (f"used in {', '.join(s.name for s in uses)}" if uses else f"not used in any {SHOW} yet")
         )
         shapes = {s.canvas: s for s in self.collection.shapes(main)}
         for canvas_id, button in self.shape_buttons.items():
@@ -1243,8 +1243,8 @@ class MainWindow(QMainWindow):
             button.setText(canvas_id.capitalize() if has else f"+ {canvas_id.capitalize()} layout")
             button.setChecked(canvas_id == scene.canvas)
             button.setToolTip(
-                f"Edit the layout shows on the {canvas_id} canvas get" if has else
-                f"Give this part its own {canvas_id} layout. Until then, {canvas_id} shows use the "
+                f"Edit the layout {SHOWS} on the {canvas_id} canvas get" if has else
+                f"Give this {PART} its own {canvas_id} layout. Until then, {canvas_id} {SHOWS} use the "
                 f"{main.canvas} layout, scaled to fit."
             )
         self.remove_shape_button.setVisible(scene.shape_of is not None)
@@ -1271,7 +1271,7 @@ class MainWindow(QMainWindow):
             self._changed()
             self.statusBar().showMessage(
                 f"Made a {canvas_id} layout for {main.name!r} from its {main.canvas} one. "
-                f"{canvas_id.capitalize()} shows now use it.", 6000)
+                f"{canvas_id.capitalize()} {SHOWS} now use it.", 6000)
         self.selected_scene_id = shape.id
         self._refresh_scenes()
         self._refresh_sources()
@@ -1283,7 +1283,7 @@ class MainWindow(QMainWindow):
             return
         main = self.collection.main_part(scene)
         question = (f"Remove the {scene.canvas} layout of {main.name!r}?\n\n"
-                    f"{scene.canvas.capitalize()} shows will use its {main.canvas} layout, scaled to fit.")
+                    f"{scene.canvas.capitalize()} {SHOWS} will use its {main.canvas} layout, scaled to fit.")
         if QMessageBox.question(self, "Remove layout", question) != QMessageBox.StandardButton.Yes:
             return
         self.collection.remove_shape(scene)
@@ -1365,7 +1365,7 @@ class MainWindow(QMainWindow):
         self.previews[canvas_id].setFocus()
         uses = len(self.collection.part_uses(part.id))
         others = f" Changes also show in the {uses - 1} other place{'s' if uses != 2 else ''} it's used." if uses > 1 else ""
-        self.statusBar().showMessage(f"Editing {part.name!r} in place.{others} Esc to finish.", 8000)
+        self.statusBar().showMessage(f"Editing the {PART} {part.name!r} in place.{others} Esc to finish.", 8000)
 
     def _exit_in_place(self) -> None:
         """Finish editing in place: back to the show, with the part's placement selected."""
@@ -1434,11 +1434,11 @@ class MainWindow(QMainWindow):
 
     def _remove_part(self, part: Scene) -> None:
         uses = self.collection.part_uses(part.id)
-        question = f"Remove the part {part.name!r}?"
+        question = f"Remove the {PART} {part.name!r}?"
         if uses:
             names = ", ".join(s.name for s in uses)
             question += f"\n\nIt's used in {len(uses)} scene{'s' if len(uses) != 1 else ''} ({names}) and will disappear from them."
-        if QMessageBox.question(self, "Remove part", question) != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, f"Remove {PART}", question) != QMessageBox.StandardButton.Yes:
             return
         placed = {s.id for s in self.collection.sources if self.collection.part_of(s) is part}
         for scene in self.collection.scenes:

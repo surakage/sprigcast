@@ -6,7 +6,15 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QGuiApplication
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from sprigcast.output import twitch_auth
 from sprigcast.output.twitch_auth import Pending, TwitchAuthError
