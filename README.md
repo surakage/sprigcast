@@ -6,7 +6,7 @@ SprigCast renders a **horizontal** and a **vertical** canvas at the same time, a
 
 Status: all milestones of the build guide (M0 to M11) are in: a GPU canvas with live previews,
 scenes built from color, image and text sources, display and window capture, webcams, mouse editing
-in the previews, an audio mixer, recording, live streaming, transitions, hotkeys, stats, plugins and a dark theme.
+in the previews, an audio mixer, recording, live streaming, transitions, hotkeys, stats, filters, plugins and a dark theme.
 
 ## Requirements
 
@@ -61,7 +61,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   and recording the frames sent and dropped, encoding time per frame, and time spent waiting on the network.
 - **Sources dock**: **+** adds a source to the selected scene (display, window, camera, image, color, text,
   or a plugin). Tick to show or hide, **▲ ▼** change which item draws on top, double-click or **⚙** opens its
-  settings, and *Transform* opens the Properties dock.
+  settings, *Filters* opens the source's filters, and *Transform* opens the Properties dock.
   - *Display capture* captures a whole monitor, cursor included, and fits it to the canvas.
   - *Window capture* captures one window even when other windows cover it. SprigCast remembers the window's
     program and title, so a game that restarts or a browser that changes tabs is found again automatically.
@@ -74,13 +74,20 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - Drag a slider to set the volume (-60 to +12 dB), click *Mute* to silence it,
     click a source's name, then **⚙** pins it to one device or **−** removes it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
+- **Filters** (*Filters* in the Sources or Audio Mixer dock, or right-click a source → *Filters…*), like OBS:
+  **+** adds a filter, the tick switches it off without removing it, **▲ ▼** reorder, and the sliders apply live.
+  - Video: *Color Correction* (gamma, contrast, brightness, saturation, hue shift, opacity, color multiply),
+    *Chroma Key* (green screen: key color, similarity, smoothness, spill reduction), *Luma Key*, *Sharpen*
+    and *Scroll*. They run on the GPU inside the compositor, so they cost next to nothing. Sources with
+    filters show "✦ filters" in the Sources list.
+  - Audio: *Noise Gate*, *Compressor*, *Gain* and *Limiter*, run top to bottom on the source before the mixer.
 - **Settings** (the *Settings* button in Controls, the *Settings* menu, or Ctrl+,): one window with tabs down the left.
   - *General*: theme (Slothbloom dark or the plain Windows look), snapping (on/off, sensitivity, canvas edges,
-    other sources, centre lines), whether to ask before ending a stream or
-    stopping a recording, and which plugins loaded.
+    other sources, centre lines), and whether to ask before ending a stream or stopping a recording.
   - *Stream*, *Recording*, *Hotkeys*: described below.
   - *Audio*: which device each mic and desktop audio source uses ("Default" follows Windows).
   - *Video*: size, frame rate and on/off for each canvas. These apply the next time SprigCast starts.
+  - *Plugins*: which plugins loaded (and why any failed), what they added, and *Open plugins folder*.
   - Stream settings are locked while you're live, and recording settings while you record.
 - **Controls dock**: *Go live*, *Start recording* and *Settings*. The ticks choose which outputs go live and which canvases record.
   - *Settings → Stream* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
@@ -146,14 +153,15 @@ class ShoutSource(TextSource):
 For anything other than text, subclass `sprigcast.core.source.Source` and implement `size` and
 `video_frame()` (return an RGBA NumPy array when the picture changes, `None` otherwise) or
 `audio_samples()`. Installed packages can also register plugins through a `sprigcast.plugins` entry point.
-A plugin that fails to load is named in the status bar and skipped. Plugins run with the same rights
+Plugins can add audio filters too, with `sprigcast.core.filters.register_filter` (see the docstring there).
+A plugin that fails to load is named in the status bar and in *Settings → Plugins*, and skipped. Plugins run with the same rights
 as SprigCast, so only install ones you trust.
 
 ## Project layout
 
 ```
 src/sprigcast/
-  core/      scene collection model (canvases, sources, scenes, outputs), Source base class, mailbox, events
+  core/      scene collection model (canvases, sources, scenes, outputs), Source base class, filters, mailbox, events
   render/    moderngl compositor and the render engine thread
   sources/   built-in sources: color, image, text, display and window capture, camera, mic and desktop audio
   audio/     mixer that combines audio sources into one 48 kHz stereo stream

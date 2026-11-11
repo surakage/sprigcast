@@ -20,6 +20,16 @@ class Canvas(BaseModel):
     enabled: bool = True
 
 
+class Filter(BaseModel):
+    """An effect on a source (color correction, chroma key, noise gate...). See core/filters.py."""
+
+    id: str
+    kind: str
+    name: str
+    enabled: bool = True
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
 class SourceConfig(BaseModel):
     """A source defined once and referenced by id from any number of scenes."""
 
@@ -27,6 +37,7 @@ class SourceConfig(BaseModel):
     kind: str  # "color", "image", later "display_capture", "camera", ...
     name: str
     settings: dict[str, Any] = Field(default_factory=dict)
+    filters: list[Filter] = Field(default_factory=list)  # applied top to bottom
 
 
 class SceneItem(BaseModel):

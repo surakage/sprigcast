@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from sprigcast.audio.mixer import Mixer
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
+from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import Source, create_source
@@ -168,9 +169,26 @@ class Engine:
                 self._sources[source_id] = source
             elif existing.settings != config.settings:
                 existing.update(config.settings)
+        self._sync_filters(compositor, wanted)
         self.mixer.set_sources(list(self._sources.values()))
 
+    def _sync_filters(self, compositor, wanted: dict) -> None:
+        """Hand each source's video filters to the compositor and keep its audio filter chain current."""
+        effects = {}
+        for source_id, source in self._sources.items():
+            filters = wanted[source_id].filters
+            fx = video_effects(filters)
+            if fx.active:
+                effects[source_id] = fx
+            chain = getattr(source, "audio_chain", None)
+            if chain is not None and (chain.matches(filters) or chain.update(filters)):
+                continue
+            new_chain = AudioChain(filters)
+            source.audio_chain = new_chain if new_chain.processors else None
+        compositor.effects = effects
+
     def _tick(self, compositor, now: float) -> None:
+        compositor.time = now
         for source_id, source in self._sources.items():
             frame = source.video_frame()
             if frame is not None:

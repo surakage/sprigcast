@@ -37,6 +37,8 @@ QLineEdit, QPlainTextEdit {{ background: {BARK}; border: 1px solid {LICHEN}; bor
 QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {BLOOM}; }}
 QListWidget, QTreeWidget {{ background: {BARK}; border: 1px solid {LICHEN}; }}
 QListWidget::item:selected, QTreeWidget::item:selected {{ background: {BLOOM}; color: {BARK}; }}
+QListWidget::indicator {{ width: 12px; height: 12px; border: 1px solid {DUSK}; border-radius: 3px; background: {INPUT}; }}
+QListWidget::indicator:checked {{ background: {LEAF}; border-color: {BARK}; }}
 QMenuBar {{ background: {BARK}; }}
 QMenuBar::item:selected, QMenu::item:selected {{ background: {BLOOM}; color: {BARK}; }}
 QMenu {{ background: {MOSS}; border: 1px solid {LICHEN}; }}

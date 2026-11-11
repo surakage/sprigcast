@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
+from sprigcast.app.filters_dialog import FiltersDialog
 from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
 from sprigcast.app.preview import Preview
 from sprigcast.app.settings_dialog import SettingsDialog
@@ -259,6 +260,7 @@ class MainWindow(QMainWindow):
             ("▲", "Move up (in front)", lambda: self._move_item(+1)),
             ("▼", "Move down (behind)", lambda: self._move_item(-1)),
             None,
+            ("Filters", "Effects for the selected source: color correction, chroma key, ...", self._edit_filters),
             ("Transform", "Position, scale, rotation and lock", self._show_transform),
         )
         self._dock("Sources", self.source_list, bar)
@@ -288,6 +290,7 @@ class MainWindow(QMainWindow):
         else:
             item = self._item()
             menu.addAction("Settings…").triggered.connect(self._edit_source_settings)
+            menu.addAction("Filters…").triggered.connect(self._edit_filters)
             menu.addAction("Transform…").triggered.connect(self._show_transform)
             menu.addAction("Fit to canvas").triggered.connect(self._fit_item)
             lock = menu.addAction("Lock")
@@ -376,6 +379,8 @@ class MainWindow(QMainWindow):
             ("+", "Add a microphone or desktop audio", add_menu),
             ("−", "Remove the selected audio source (click its name first)", self._remove_audio),
             ("⚙", "Change the selected source's device", self._change_audio_device),
+            None,
+            ("Filters", "Noise gate, compressor, gain and more for the selected audio source", self._edit_audio_filters),
         )
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -516,6 +521,7 @@ class MainWindow(QMainWindow):
             ("Audio", "Audio devices…"),
             ("Video", "Canvases…"),
             ("Hotkeys", "Hotkeys…"),
+            ("Plugins", "Plugins…"),
         ):
             settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
 
@@ -663,6 +669,8 @@ class MainWindow(QMainWindow):
     def _source_label(self, source_id: str) -> str:
         config = self.collection.source(source_id)
         label = f"{config.name}   [{config.kind}]"
+        if any(f.enabled for f in config.filters):
+            label += "   ✦ filters"
         status = self.source_statuses.get(source_id, "ok")
         return label if status in ("ok", "capturing") else f"{label}   ({status})"
 
@@ -782,6 +790,24 @@ class MainWindow(QMainWindow):
         config.name = base if device == "default" else f"{base} ({device})"
         self._changed()
         self._refresh_audio()
+
+    def _edit_audio_filters(self) -> None:
+        source_id = self.audio_panel.selected_id()
+        if source_id is None:
+            QMessageBox.information(self, "SprigCast", "Select an audio source first (click its name).")
+            return
+        self._open_filters(source_id)
+
+    def _edit_filters(self) -> None:
+        item = self._item()
+        if item is None:
+            QMessageBox.information(self, "SprigCast", "Select a source first.")
+            return
+        self._open_filters(item.source)
+
+    def _open_filters(self, source_id: str) -> None:
+        FiltersDialog(self.collection.source(source_id), self._changed, self).exec()
+        self._refresh_sources(keep_row=self.source_list.currentRow())
 
     def _remove_audio(self) -> None:
         source_id = self.audio_panel.selected_id()

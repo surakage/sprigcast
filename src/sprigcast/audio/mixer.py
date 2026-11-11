@@ -6,6 +6,7 @@ Every mixed block is handed to each tap (recorders now, streams later).
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -14,6 +15,8 @@ from collections.abc import Callable
 import numpy as np
 
 from sprigcast.sources.audio import SAMPLE_RATE
+
+log = logging.getLogger(__name__)
 
 BLOCK = 1024
 FLOOR_DB = -60.0
@@ -78,6 +81,13 @@ class Mixer:
         blocks, meters = [], {}
         for source in sources:
             block = source.read_block(BLOCK)
+            chain = getattr(source, "audio_chain", None)
+            if chain is not None:
+                try:
+                    block = chain.process(block)
+                except Exception:
+                    log.exception("audio filters on %s failed; turning them off", source.id)
+                    source.audio_chain = None
             gain = source.gain
             blocks.append((block, gain))
             meters[source.id] = levels(block * gain) if gain else (FLOOR_DB, FLOOR_DB)

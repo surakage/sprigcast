@@ -91,3 +91,14 @@ def test_live_disables_stream_and_video(app):
     assert not w.stream_page.isEnabled()
     assert not w.video_fields["horizontal"][1].isEnabled()
     assert w.recording_page.isEnabled()
+
+
+def test_plugins_have_their_own_tab(app):
+    from sprigcast.plugins import PluginReport
+
+    report = PluginReport(loaded=["countdown_example.py"], failed={"broken.py": "SyntaxError: oops"})
+    w = _window(_collection(), tab="Plugins", plugin_report=report, open_plugins_folder=lambda: None)
+    assert w.current_tab() == "Plugins"
+    rows = [w.plugin_list.item(i).text() for i in range(w.plugin_list.count())]
+    assert any("countdown_example.py" in r for r in rows) and any("broken.py" in r for r in rows)
+    assert not hasattr(w, "plugin_status")  # nothing about plugins left on General
