@@ -34,6 +34,10 @@ void main() {
 """
 
 
+# How to read each source byte order as RGBA when sampling ("1" = fully opaque).
+SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1"}
+
+
 class _CanvasTarget:
     def __init__(self, ctx: moderngl.Context, canvas: Canvas):
         self.size = (canvas.width, canvas.height)
@@ -61,17 +65,19 @@ class Compositor:
     def upload(self, source_id: str, frame: np.ndarray, channel_order: str = "RGBA") -> None:
         """Copy a new frame for a source to the GPU, resizing its texture if needed.
 
-        BGRA frames (screen capture) are uploaded as-is and swizzled when sampled, so no CPU conversion.
+        Frames are uploaded in whatever byte order the source produces (RGBA, BGRA from screen capture,
+        3-channel BGR from cameras) and swizzled when sampled, so there is no colour conversion on the CPU.
         """
         h, w = frame.shape[:2]
+        components = frame.shape[2] if frame.ndim == 3 else 1
         tex = self.textures.get(source_id)
-        if tex is None or tex.size != (w, h):
+        if tex is None or tex.size != (w, h) or tex.components != components:
             if tex is not None:
                 tex.release()
-            tex = self.ctx.texture((w, h), 4)
+            tex = self.ctx.texture((w, h), components, alignment=1)
             tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
             self.textures[source_id] = tex
-        tex.swizzle = "BGRA" if channel_order == "BGRA" else "RGBA"
+        tex.swizzle = SWIZZLES.get(channel_order, "RGBA")
         tex.write(np.ascontiguousarray(frame, dtype=np.uint8))
 
     def forget(self, source_id: str) -> None:
