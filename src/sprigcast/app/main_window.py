@@ -459,6 +459,7 @@ class MainWindow(QMainWindow):
             item = self._item()
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
                 menu.addAction(f"Edit {PART} in place").triggered.connect(self._open_part_item)
+                self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
             count = len(self.source_list.selectedItems())
             turn = menu.addAction(f"Turn into {a(PART)}…" if count < 2 else f"Turn these {count} into {a(PART)}…")
             turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
@@ -1236,6 +1237,9 @@ class MainWindow(QMainWindow):
         label = f"{PART_MARK} {config.name}   [{PART}]" if config.kind == PART_KIND else f"{config.name}   [{config.kind}]"
         if any(f.enabled for f in config.filters):
             label += "   ✦ filters"
+        hidden = len(self.collection.hidden_here(config)) if config.kind == PART_KIND else 0
+        if hidden:
+            label += f"   · {hidden} hidden here"
         status = self.source_statuses.get(source_id, "ok")
         return label if status in ("ok", "capturing") else f"{label}   ({status})"
 
@@ -1542,6 +1546,51 @@ class MainWindow(QMainWindow):
         canvas = self.collection.canvas(self.collection.shape_for(part, scene.canvas).canvas)
         self._fit_item(size=(canvas.width, canvas.height))  # a horizontal-only part fits a vertical show too
         self._refresh_scenes()
+
+    # Per-placement tweaks ------------------------------------------------------------
+
+    def _fill_tweaks_menu(self, menu: QMenu, placement_id: str) -> None:
+        """Tick what this placement shows. Unticked items are hidden here only; the sprig itself is unchanged."""
+        placement = self.collection.source(placement_id)
+        part = self.collection.part_of(placement)
+        if part is None:
+            return
+        menu.setToolTipsVisible(True)
+        hidden = self.collection.hidden_here(placement)
+        seen: set[str] = set()
+        for shape in self.collection.shapes(part):
+            for inner in reversed(shape.items):  # top-most first, like the Sources list
+                if inner.source in seen:
+                    continue
+                seen.add(inner.source)
+                action = menu.addAction(self.collection.source(inner.source).name)
+                action.setCheckable(True)
+                action.setChecked(inner.source not in hidden)
+                action.setToolTip(f"Untick to hide it in this {SHOW} only. Other {SHOWS} using the {PART} still show it.")
+                action.toggled.connect(lambda on, sid=inner.source: self._set_hidden_here(placement_id, sid, not on))
+        if not seen:
+            menu.addAction(f"The {PART} is empty").setEnabled(False)
+        menu.addSeparator()
+        reset = menu.addAction("Show everything (undo tweaks)")
+        reset.setEnabled(bool(hidden))
+        reset.triggered.connect(lambda: self._reset_tweaks(placement_id))
+
+    def _set_hidden_here(self, placement_id: str, inner_id: str, hide: bool) -> None:
+        placement = self.collection.source(placement_id)
+        hidden = self.collection.hidden_here(placement)
+        hidden = hidden | {inner_id} if hide else hidden - {inner_id}
+        settings = {k: v for k, v in placement.settings.items() if k != "hide"}
+        if hidden:
+            settings["hide"] = sorted(hidden)
+        placement.settings = settings
+        self._changed()
+        self._refresh_source_labels()
+
+    def _reset_tweaks(self, placement_id: str) -> None:
+        placement = self.collection.source(placement_id)
+        placement.settings = {k: v for k, v in placement.settings.items() if k != "hide"}
+        self._changed()
+        self._refresh_source_labels()
 
     def _turn_into_part(self) -> None:
         """Move the selected sources into a new part, placed where they were, so nothing moves on screen."""

@@ -79,6 +79,10 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     so they appear everywhere it's used. Press Esc or double-click outside the sprig to go back to the bloom.
     You edit the layout for that canvas, so editing in the vertical bloom changes the sprig's vertical layout.
     A rotated placement opens the sprig editor instead.
+  - **Just in this bloom**: right-click a sprig in the Sources dock → *Just in this bloom* and untick
+    items to hide them in that bloom only, e.g. the "Live now" badge on your BRB webcam frame. The sprig
+    and its other placements keep showing them, and edits to the sprig still reach every bloom. The source
+    row says "N hidden here"; *Show everything* undoes the tweaks.
   - Sources **+ → Sprig** places a sprig in the selected bloom (or inside another sprig). Sprigs appear as
     "❧ name [sprig]" in the Sources dock, and hovering one in a preview says so. Move, resize and crop it
     like any source. SprigCast won't let a sprig end up inside itself.
