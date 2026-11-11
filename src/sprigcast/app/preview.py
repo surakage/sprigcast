@@ -48,6 +48,7 @@ class Preview(QWidget):
         self.scene: Scene | None = None
         self.sizes: dict[str, tuple[int, int]] = {}
         self.selected_index: int | None = None
+        self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
         self._image: QImage | None = None
         self._drag: tuple[str, int | None, QPointF, SceneItem] | None = None  # mode, corner, start, item copy
         self.setMinimumSize(160, 160)
@@ -128,7 +129,7 @@ class Preview(QWidget):
         p.end()
 
     def _paint_selection(self, p: QPainter) -> None:
-        selected = self._selected_item()
+        selected = self._selected_item() if self.editable else None
         if selected is None:
             return
         item, size = selected
@@ -148,7 +149,7 @@ class Preview(QWidget):
     # Mouse and keyboard --------------------------------------------------------------------
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() != Qt.MouseButton.LeftButton or self.scene is None:
+        if event.button() != Qt.MouseButton.LeftButton or self.scene is None or not self.editable:
             return
         point = self.to_canvas(event.position())
         radius = HANDLE_PX / self._scale()
@@ -201,7 +202,7 @@ class Preview(QWidget):
                 self.edited.emit(self.canvas_id, True)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        selected = self._selected_item()
+        selected = self._selected_item() if self.editable else None
         steps = {
             Qt.Key.Key_Left: (-1, 0),
             Qt.Key.Key_Right: (1, 0),
@@ -218,7 +219,8 @@ class Preview(QWidget):
         self.update()
 
     def _update_cursor(self, pos: QPointF) -> None:
-        if self.scene is None:
+        if self.scene is None or not self.editable:
+            self.unsetCursor()
             return
         point = self.to_canvas(pos)
         selected = self._selected_item()

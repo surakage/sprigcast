@@ -237,6 +237,14 @@ class StreamPage(QWidget):
         row = self.list.currentRow()
         return self.outputs[row] if 0 <= row < len(self.outputs) else None
 
+    def select_output(self, output_id: str) -> None:
+        row = next((i for i, o in enumerate(self.outputs) if o.id == output_id), None)
+        if row is not None:
+            self.list.setCurrentRow(row)
+
+    def add_output(self) -> None:
+        self._add()
+
     def _add(self) -> None:
         taken = {o.id for o in self.outputs} | {o.id for o in self.collection.outputs}
         n = 1
