@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths, Qt, QTimer, QUrl
@@ -34,9 +35,12 @@ from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.preview import Preview
 from sprigcast.app.recording_dialog import RecordingDialog
+from sprigcast.app.stream_dialog import StreamDialog, output_label
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
+from sprigcast.output.keys import get_key
 from sprigcast.output.recorder import RecordingSession, codec_label, pick_codec
+from sprigcast.output.stream import SERVICES, StreamSession
 from sprigcast.render.engine import Engine
 from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
@@ -61,6 +65,8 @@ class MainWindow(QMainWindow):
         self.source_sizes: dict[str, tuple[int, int]] = {}
         self.source_statuses: dict[str, str] = {}
         self.recording: RecordingSession | None = None
+        self.streaming: StreamSession | None = None
+        self._stream_status_at = 0.0
 
         self.setWindowTitle("SprigCast")
         self.resize(1440, 860)
@@ -81,7 +87,7 @@ class MainWindow(QMainWindow):
         self._build_sources_dock()
         self._build_properties_dock()
         self._build_audio_dock()
-        self._build_recording_dock()
+        self._build_output_dock()
         self._build_menu()
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
@@ -165,10 +171,24 @@ class MainWindow(QMainWindow):
         buttons.addWidget(_button("Remove", self._remove_audio))
         self._dock("Audio", self.audio_panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
 
-    def _build_recording_dock(self) -> None:
+    def _build_output_dock(self) -> None:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        self.live_button = QPushButton("Go live")
+        self.live_button.setMinimumHeight(40)
+        self.live_button.clicked.connect(self._toggle_streaming)
+        layout.addWidget(self.live_button)
+        self.stream_status = QLabel("Offline")
+        self.stream_status.setWordWrap(True)
+        layout.addWidget(self.stream_status)
+        self.stream_boxes_layout = QVBoxLayout()
+        layout.addLayout(self.stream_boxes_layout)
+        self.stream_boxes: dict[str, QCheckBox] = {}
+        self._refresh_stream_boxes()
+        layout.addSpacing(10)
+
         self.record_button = QPushButton("Start recording")
         self.record_button.setMinimumHeight(40)
         self.record_button.clicked.connect(self._toggle_recording)
@@ -185,10 +205,12 @@ class MainWindow(QMainWindow):
             layout.addWidget(box)
         layout.addStretch(1)
         buttons = QHBoxLayout()
-        self.record_settings_button = _button("Settings…", self._recording_settings)
+        self.stream_settings_button = _button("Stream…", self._stream_settings)
+        buttons.addWidget(self.stream_settings_button)
+        self.record_settings_button = _button("Recording…", self._recording_settings)
         buttons.addWidget(self.record_settings_button)
-        buttons.addWidget(_button("Open folder", self._open_recordings_folder))
-        self._dock("Recording", panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+        buttons.addWidget(_button("Folder", self._open_recordings_folder))
+        self._dock("Output", panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
 
     def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> None:
         wrapper = QWidget()
@@ -247,6 +269,8 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "SprigCast", event.message)
         if self.recording is not None:
             self._refresh_recording_status()
+        if self.streaming is not None:
+            self._refresh_stream_status()
 
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
@@ -255,6 +279,8 @@ class MainWindow(QMainWindow):
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if self.streaming is not None:
+            self._stop_streaming()
         if self.recording is not None:
             self._stop_recording()
         self.timer.stop()
@@ -884,3 +910,116 @@ class MainWindow(QMainWindow):
         if dropped:
             text += f"  ·  {dropped} frames dropped (encoder too slow)"
         self.record_status.setText(text)
+
+    # Streaming -----------------------------------------------------------------
+
+    def _refresh_stream_boxes(self) -> None:
+        while self.stream_boxes_layout.count():
+            widget = self.stream_boxes_layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.stream_boxes = {}
+        outputs = [o for o in self.collection.outputs if o.type == "stream"]
+        if not outputs:
+            hint = QLabel("No stream outputs yet: press Stream… to add Twitch, YouTube or TikTok.")
+            hint.setWordWrap(True)
+            self.stream_boxes_layout.addWidget(hint)
+        for output in outputs:
+            box = QCheckBox(f"Stream to {output_label(output)}")
+            box.setChecked(output.enabled)
+            box.toggled.connect(lambda on, oid=output.id: self._on_stream_toggled(oid, on))
+            self.stream_boxes[output.id] = box
+            self.stream_boxes_layout.addWidget(box)
+
+    def _on_stream_toggled(self, output_id: str, on: bool) -> None:
+        for output in self.collection.outputs:
+            if output.id == output_id:
+                output.enabled = on
+        self.collection.save(self.scenes_path)
+
+    def _stream_settings(self) -> None:
+        dialog = StreamDialog(self.collection, self)
+        if dialog.exec() and dialog.apply_to(self.collection):
+            self.collection.save(self.scenes_path)
+            self._refresh_stream_boxes()
+
+    def _toggle_streaming(self) -> None:
+        if self.streaming is None:
+            self._start_streaming()
+        else:
+            self._stop_streaming()
+
+    def _start_streaming(self) -> None:
+        outputs = [o for o in self.collection.outputs if o.type == "stream" and o.enabled]
+        if not outputs:
+            QMessageBox.information(self, "SprigCast", "Tick at least one place to stream to, or add one with Stream….")
+            return
+        targets, problems = [], []
+        for output in outputs:
+            service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+            server = service.server or output.server
+            key = get_key(output.key_ref)
+            canvas = next((c for c in self.collection.canvases if c.id == output.canvas and c.enabled), None)
+            if not server:
+                problems.append(f"{service.label}: paste the server URL in Stream…")
+            elif not key:
+                problems.append(f"{service.label}: add your stream key in Stream…")
+            elif canvas is None:
+                problems.append(f"{service.label}: the {output.canvas} canvas is not available")
+            else:
+                targets.append((f"{service.label} ({canvas.id})", canvas, server, key, output.bitrate_kbps))
+        if problems:
+            QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
+            return
+        self.live_button.setEnabled(False)
+        self.stream_status.setText("Connecting…")
+        try:
+            self.streaming = StreamSession.start(self.engine, targets, pick_codec())
+        except Exception as exc:
+            self.streaming = None
+            QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
+            self.stream_status.setText("Offline")
+            return
+        finally:
+            self.live_button.setEnabled(True)
+        self.live_button.setText("End stream")
+        self.live_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
+        for box in self.stream_boxes.values():
+            box.setEnabled(False)
+        self.stream_settings_button.setEnabled(False)
+        self._stream_status_at = 0.0
+        self._refresh_stream_status()
+
+    def _stop_streaming(self) -> None:
+        session, self.streaming = self.streaming, None
+        if session is None:
+            return
+        self.stream_status.setText("Ending stream…")
+        self.stream_status.repaint()
+        session.stop()
+        self.live_button.setText("Go live")
+        self.live_button.setStyleSheet("")
+        for box in self.stream_boxes.values():
+            box.setEnabled(True)
+        self.stream_settings_button.setEnabled(True)
+        seconds = int(session.elapsed)
+        self.stream_status.setText(f"Offline (last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d})")
+
+    def _refresh_stream_status(self) -> None:
+        now = time.monotonic()
+        if now - self._stream_status_at < 1.0:
+            return  # bitrate is measured over about a second
+        self._stream_status_at = now
+        session = self.streaming
+        seconds = int(session.elapsed)
+        lines = [f"● LIVE {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
+        for _, st in session.streamers:
+            kbps = st.measure_kbps()
+            if st.connected:
+                line = f"{st.name}: live, {kbps:.0f} kbps"
+                if st.dropped:
+                    line += f", {st.dropped} frames dropped"
+            else:
+                line = f"{st.name}: {st.status}"
+            lines.append(line)
+        self.stream_status.setText("\n".join(lines))

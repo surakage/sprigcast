@@ -34,7 +34,7 @@
   ],
   "active_scenes": { "horizontal": "starting", "vertical": "starting-v" },
   "outputs": [
-    { "id": "out-twitch", "type": "stream", "service": "twitch", "canvas": "horizontal", "bitrate_kbps": 6000, "key_ref": "sprigcast/twitch" },
+    { "id": "out-twitch", "type": "stream", "service": "twitch", "canvas": "horizontal", "bitrate_kbps": 6000, "key_ref": "sprigcast/twitch", "enabled": true },
     { "id": "out-tiktok", "type": "stream", "service": "tiktok", "canvas": "vertical", "bitrate_kbps": 4500, "key_ref": "sprigcast/tiktok" }
   ]
 }

@@ -1,0 +1,98 @@
+import shutil
+import socket
+import subprocess
+import time
+
+import av
+import numpy as np
+import pytest
+
+from sprigcast.output import stream as stream_mod
+from sprigcast.output.stream import Streamer, stream_url
+from sprigcast.render.engine import Frame
+
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or "libx264" not in av.codecs_available, reason="needs ffmpeg CLI and libx264"
+)
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def rtmp_server(port: int, out):
+    """ffmpeg as a one-shot RTMP server that saves what it receives."""
+    return subprocess.Popen(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-listen", "1", "-i",
+         f"rtmp://127.0.0.1:{port}/app/secretkey", "-c", "copy", "-y", str(out)],
+        stdin=subprocess.DEVNULL,
+    )
+
+
+def feed(st: Streamer, seconds: float, fps: int = 30, w: int = 160, h: int = 90):
+    data = bytes(w * h * 4)
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        st.push_frame(Frame("horizontal", w, h, data, time.perf_counter()))
+        st.push_audio(np.zeros((1024, 2), dtype=np.float32))
+        time.sleep(1 / fps)
+
+
+def wait_for(predicate, timeout=10.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_stream_url_and_key_redaction():
+    assert stream_url("rtmp://live.twitch.tv/app/", "live_123") == "rtmp://live.twitch.tv/app/live_123"
+    st = Streamer("Twitch", "rtmp://x/app", "live_123", 16, 16, 30, 1000, "libx264", 0.0)
+    assert st.redact("Connection refused: rtmp://x/app/live_123") == "Connection refused: rtmp://x/app/****"
+
+
+@needs_ffmpeg
+def test_streams_video_and_audio_to_rtmp_server(tmp_path):
+    port, out = free_port(), tmp_path / "got.flv"
+    server = rtmp_server(port, out)
+    time.sleep(0.5)
+    st = Streamer("Local", f"rtmp://127.0.0.1:{port}/app", "secretkey", 160, 90, 30, 1000, "libx264", time.perf_counter())
+    st.start()
+    try:
+        feed(st, 1.5)
+        assert st.connected and st.status == "live"
+        assert st.bytes_out > 0 and st.measure_kbps() >= 0
+    finally:
+        st.stop()
+        server.wait(timeout=10)
+    with av.open(str(out)) as f:
+        assert sorted(s.type for s in f.streams) == ["audio", "video"]
+        assert sum(1 for _ in f.decode(video=0)) > 20
+
+
+@needs_ffmpeg
+def test_reconnects_when_server_appears_later(tmp_path, monkeypatch):
+    monkeypatch.setattr(stream_mod, "RETRY_FIRST", 0.3)
+    port, out = free_port(), tmp_path / "late.flv"
+    st = Streamer("Local", f"rtmp://127.0.0.1:{port}/app", "secretkey", 160, 90, 30, 1000, "libx264", time.perf_counter())
+    st.start()
+    server = None
+    try:
+        feed(st, 0.5)
+        assert wait_for(lambda: st.reconnects >= 1)
+        assert "disconnected" in st.status and "secretkey" not in st.status
+        server = rtmp_server(port, out)
+        end = time.time() + 10
+        while not st.connected and time.time() < end:
+            feed(st, 0.2)
+        assert st.connected
+        feed(st, 0.5)
+    finally:
+        st.stop()
+        if server is not None:
+            server.wait(timeout=10)
+    assert out.exists() and out.stat().st_size > 0

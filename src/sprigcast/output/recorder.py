@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 VIDEO_QUEUE = 30  # frames waiting for the encoder (half a second at 60 fps)
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
-CONTAINERS = {"mkv": "matroska", "mp4": "mp4"}
+CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
 
 _nvenc_ok: bool | None = None
 
@@ -102,12 +102,13 @@ class Recorder:
         self.frames = 0  # frames written
         self.dropped = 0  # frames the encoder could not keep up with
         self.error: str | None = None
+        self.bytes_out = 0  # bytes muxed so far, for the bitrate readout
         self._video: queue.Queue = queue.Queue(VIDEO_QUEUE)
         self._audio: queue.Queue = queue.Queue(AUDIO_QUEUE)
         self._stop = threading.Event()
         self._last_pts = -1
         self._samples = 0
-        self._thread = threading.Thread(target=self._run, name=f"sprigcast-rec-{path.stem}", daemon=True)
+        self._thread = threading.Thread(target=self._run, name=f"sprigcast-{path.stem}", daemon=True)
 
     # Called from other threads ---------------------------------------------------
 
@@ -141,14 +142,30 @@ class Recorder:
     def running(self) -> bool:
         return self._thread.is_alive()
 
+    def measure_kbps(self) -> float:
+        """Average output bitrate since the previous call (call it about once a second)."""
+        now, sent = time.monotonic(), self.bytes_out
+        last_t, last_b = getattr(self, "_measure", (now, sent))
+        self._measure = (now, sent)
+        return 0.0 if now <= last_t else (sent - last_b) * 8 / 1000 / (now - last_t)
+
     # Recorder thread ---------------------------------------------------------------
 
-    def _open(self):
+    def _open_container(self):
         import av
-        from av.video.reformatter import VideoReformatter
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        container = av.open(str(self.path), "w", format=CONTAINERS[self.container_kind])
+        return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind])
+
+    def _video_options(self) -> dict[str, str]:
+        if self.codec == "h264_nvenc":
+            return {"preset": "p5", "tune": "hq", "rc": "vbr", "profile": "high", "spatial-aq": "1"}
+        return {"preset": "veryfast", "profile": "high"}
+
+    def _open(self):
+        from av.video.reformatter import VideoReformatter
+
+        container = self._open_container()
         video = container.add_stream(self.codec, rate=self.fps)
         video.width, video.height = self.width, self.height
         video.pix_fmt = "nv12" if self.codec == "h264_nvenc" else "yuv420p"
@@ -159,10 +176,7 @@ class Recorder:
         ctx.max_b_frames = 2
         # Tag the colours so players read them as HD video (BT.709, limited range).
         ctx.colorspace, ctx.color_primaries, ctx.color_trc, ctx.color_range = 1, 1, 1, 1
-        if self.codec == "h264_nvenc":
-            video.options = {"preset": "p5", "tune": "hq", "rc": "vbr", "profile": "high", "spatial-aq": "1"}
-        else:
-            video.options = {"preset": "veryfast", "profile": "high"}
+        video.options = self._video_options()
         audio = container.add_stream("aac", rate=SAMPLE_RATE)
         audio.layout = "stereo"
         audio.bit_rate = 160_000
@@ -170,7 +184,15 @@ class Recorder:
         return container, video, audio
 
     def _run(self) -> None:
-        container = video = audio = None
+        try:
+            self._session()
+        except Exception as exc:
+            log.exception("recording %s failed", self.path)
+            self.error = str(exc) or exc.__class__.__name__
+
+    def _session(self) -> None:
+        """Open the output, encode until stop() is called, then flush and close. Raises on failure."""
+        container, finished = None, False
         try:
             container, video, audio = self._open()
             while True:
@@ -185,18 +207,21 @@ class Recorder:
                 self._write_video(container, video, frame)
             self._write_audio(container, audio)
             for stream in (video, audio):
-                for packet in stream.encode(None):
-                    container.mux(packet)
-        except Exception as exc:
-            log.exception("recording %s failed", self.path)
-            self.error = str(exc) or exc.__class__.__name__
+                self._mux(container, stream.encode(None))
+            finished = True
         finally:
             if container is not None:
                 try:
                     container.close()
                 except Exception as exc:
+                    if finished:
+                        raise  # the file's ending could not be written (disk full, drive removed)
                     log.warning("closing %s failed: %s", self.path, exc)
-                    self.error = self.error or str(exc)
+
+    def _mux(self, container, packets) -> None:
+        for packet in packets:
+            container.mux(packet)
+            self.bytes_out += packet.size
 
     def _write_video(self, container, stream, frame) -> None:
         import av
@@ -215,8 +240,7 @@ class Recorder:
             dst_color_range=ColorRange.MPEG,
         )
         vf.pts = pts
-        for packet in stream.encode(vf):
-            container.mux(packet)
+        self._mux(container, stream.encode(vf))
         self.frames += 1
 
     def _write_audio(self, container, stream) -> None:
@@ -232,8 +256,7 @@ class Recorder:
             af.sample_rate = SAMPLE_RATE
             af.pts = self._samples
             self._samples += block.shape[0]
-            for packet in stream.encode(af):
-                container.mux(packet)
+            self._mux(container, stream.encode(af))
 
 
 class RecordingSession:

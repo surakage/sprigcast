@@ -79,6 +79,8 @@ class Output(BaseModel):
     canvas: str
     bitrate_kbps: int = 6000
     key_ref: str | None = None  # name of the secret in the OS keyring, never the key itself
+    server: str = ""  # ingest URL for services without a fixed one (TikTok, Kick, custom)
+    enabled: bool = False  # included when you press Go live
 
 
 class RecordingSettings(BaseModel):
@@ -148,6 +150,7 @@ class SceneCollection(BaseModel):
 
     def new_id(self, prefix: str) -> str:
         taken = {c.id for c in self.canvases} | {s.id for s in self.sources} | {s.id for s in self.scenes}
+        taken |= {o.id for o in self.outputs}
         n = 1
         while f"{prefix}-{n}" in taken:
             n += 1

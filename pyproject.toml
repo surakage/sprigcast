@@ -17,12 +17,12 @@ dependencies = [
     "cv2-enumerate-cameras>=1.4; sys_platform == 'win32'",  # camera names and stable device paths
     "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",  # mic and desktop audio over WASAPI (M6)
     "soxr>=0.3",  # resampling to 48 kHz
+    "keyring>=25",  # stream keys in Windows Credential Manager (M8)
 ]
 
 [project.optional-dependencies]
-# Needed from later milestones (stream keys, hotkeys).
+# Needed from later milestones (global hotkeys).
 devices = [
-    "keyring>=25",
     "pynput>=1.7",
 ]
 

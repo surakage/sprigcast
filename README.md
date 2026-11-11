@@ -4,9 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M7 of the build guide:
+Status: early development. This code covers milestones M0 to M8 of the build guide:
 toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
-display and window capture, webcams, mouse editing in the previews, an audio mixer, and recording.
+display and window capture, webcams, mouse editing in the previews, an audio mixer, recording, and live streaming.
 
 ## Requirements
 
@@ -61,13 +61,16 @@ The key is typed at a hidden prompt and is never saved.
   - Drag a slider to set the volume (-60 to +12 dB), click *Mute* to silence it,
     and use *Device…* to pin a source to one device or *Remove* to delete it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
-- **Recording dock**: *Start recording* writes each ticked canvas to its own file at the same time,
-  for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
-  - Video uses NVENC on your NVIDIA GPU (x264 on the CPU if NVENC is unavailable); audio is AAC 48 kHz stereo.
-  - *Settings…* picks the folder (default `Videos\SprigCast`), bitrate and file type. MKV is the default
-    because it stays playable if the app or PC crashes mid-recording.
-  - *Open folder* (also in the File menu) shows your recordings. If the status line reports dropped frames,
-    the encoder could not keep up: lower the bitrate or record one canvas.
+- **Output dock**: go live and record.
+  - *Stream…* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server, which canvas each
+    one uses, and its bitrate. Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
+  - Tick the places to stream to and press *Go live*. Each one gets its own NVENC encoder (constant bitrate,
+    keyframe every 2 s), so Twitch can take the horizontal canvas while TikTok takes the vertical one.
+    The status shows the live bitrate per output; a dropped connection reconnects on its own.
+  - *Start recording* writes each ticked canvas to its own file at the same time,
+    for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
+    *Recording…* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays playable
+    if the PC crashes. *Folder* opens your recordings. Streaming and recording can run together.
 - **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
   window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
 
@@ -85,7 +88,7 @@ src/sprigcast/
   render/    moderngl compositor and the render engine thread
   sources/   built-in sources: color, image, display and window capture, camera, mic and desktop audio
   audio/     mixer that combines audio sources into one 48 kHz stereo stream
-  output/    recorder: H.264 (NVENC or x264) and AAC into MKV or MP4
+  output/    recorder (MKV/MP4) and RTMP streamer: H.264 (NVENC or x264) and AAC, stream keys via keyring
   app/       PySide6 main window and canvas previews
   tools/     sprigcast-check and sprigcast-teststream
   data/      default scene collection used on first run
@@ -96,7 +99,7 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M8 RTMP streaming · M9 vertical canvas outputs and multistream ·
+M9 multistream polish (platform presets, stream health, bandwidth test) ·
 M10 transitions, hotkeys, stats · M11 plugins and polish.
 
 ## License
