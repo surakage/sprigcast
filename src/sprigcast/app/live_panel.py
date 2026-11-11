@@ -71,7 +71,7 @@ class LivePanel(QWidget):
             if not scenes:
                 continue
             title = QLabel(f"{canvas.id.capitalize()}  ·  {canvas.width}×{canvas.height}")
-            title.setStyleSheet("color: #8d8a83")
+            title.setStyleSheet("color: #8cc4a3")
             self.rows.addWidget(title)
             grid_box = QWidget()
             grid = QGridLayout(grid_box)
@@ -93,7 +93,7 @@ class LivePanel(QWidget):
 
     def set_clock(self, text: str, live: bool) -> None:
         self.clock.setText(text)
-        self.clock.setStyleSheet("color: #e8a4b8" if live else "")
+        self.clock.setStyleSheet("color: #ff5fa2" if live else "")
 
     def set_recording(self, text: str) -> None:
         self.rec.setText(text)

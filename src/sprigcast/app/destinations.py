@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output.stream import SERVICES
 
-HEALTH_COLORS = {"good": "#9cc89a", "warning": "#e8c46a", "bad": "#e07a6c", "idle": "#6d6a64", "off": "#3a3f36"}
+HEALTH_COLORS = {"good": "#3ddc84", "warning": "#ffd23f", "bad": "#ff5a5a", "idle": "#5f9c7c", "off": "#1f5236"}
 
 
 def what_goes(output: Output, collection: SceneCollection) -> str:
@@ -84,7 +84,7 @@ class DestinationCard(QFrame):
         top.addWidget(edit)
         root.addLayout(top)
         self.what = QLabel()
-        self.what.setStyleSheet("color: #8d8a83")
+        self.what.setStyleSheet("color: #8cc4a3")
         root.addWidget(self.what)
         self.state = QLabel()
         self.state.setWordWrap(True)
@@ -122,8 +122,8 @@ class DestinationsPanel(QWidget):
         self.cards: dict[str, DestinationCard] = {}
         self.live = False
         self.setStyleSheet(
-            "#destinationCard { border: 1px solid #3a3f36; border-top-color: #4c5246; border-radius: 10px;"
-            " background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #30342c, stop:1 #262923); }"
+            "#destinationCard { border: 1px solid #1f5236; border-top-color: #2c7a4f; border-radius: 10px;"
+            " background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #173d28, stop:1 #10291b); }"
         )
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)

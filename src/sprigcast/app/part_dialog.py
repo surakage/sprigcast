@@ -30,7 +30,7 @@ class NewPartDialog(QDialog):
             f"A reusable piece for your {SHOWS}, like a webcam frame. Edit it once and it updates everywhere."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #8d8a83")
+        intro.setStyleSheet("color: #8cc4a3")
         self.name = QLineEdit()
         self.name.setPlaceholderText(EXAMPLES)
         shapes = QWidget()
@@ -46,7 +46,7 @@ class NewPartDialog(QDialog):
             row.addWidget(button)
         row.addStretch(1)
         shape_hint = QLabel("You can add the other shape later.")
-        shape_hint.setStyleSheet("color: #8d8a83")
+        shape_hint.setStyleSheet("color: #8cc4a3")
         self.add_to_show = QCheckBox(f"Add it to “{show.name}” now" if show is not None else "")
         self.add_to_show.setChecked(show is not None)
         self.add_to_show.setVisible(show is not None)

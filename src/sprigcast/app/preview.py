@@ -33,7 +33,7 @@ def snap_settings() -> dict:
         "sources": q.value("editing/snap_sources", True, type=bool),
         "center": q.value("editing/snap_center", True, type=bool),
     }
-ACCENT = QColor("#e8a4b8")
+ACCENT = QColor("#ff5fa2")
 
 
 class Preview(QWidget):
@@ -192,10 +192,10 @@ class Preview(QWidget):
     def _paint_checker(cls, p: QPainter, rect: QRectF, cell: int = 12) -> None:
         if cls._checker is None:
             tile = QPixmap(2 * cell, 2 * cell)
-            tile.fill(QColor("#2a2d27"))
+            tile.fill(QColor("#13301f"))
             tp = QPainter(tile)
-            tp.fillRect(0, 0, cell, cell, QColor("#33372f"))
-            tp.fillRect(cell, cell, cell, cell, QColor("#33372f"))
+            tp.fillRect(0, 0, cell, cell, QColor("#183a27"))
+            tp.fillRect(cell, cell, cell, cell, QColor("#183a27"))
             tp.end()
             cls._checker = QBrush(tile)
         p.fillRect(rect, cls._checker)

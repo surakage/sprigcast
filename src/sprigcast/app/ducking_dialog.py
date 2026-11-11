@@ -49,7 +49,7 @@ class DuckingDialog(QDialog):
         self.enabled.setChecked(audio.ducking)
         intro = QLabel("Your voice stays clear; game and music dip, then come back when you stop.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #8d8a83")
+        intro.setStyleSheet("color: #8cc4a3")
 
         voices = QGroupBox("Voices (these do the lowering)")
         voice_box = QVBoxLayout(voices)
