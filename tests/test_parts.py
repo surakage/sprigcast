@@ -258,3 +258,85 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_preview_maps_mouse_into_the_part_in_place(app):
+    from PySide6.QtCore import QPointF
+
+    from sprigcast.app.preview import Preview
+
+    preview = Preview("h", "Horizontal", (1920, 1080))
+    preview.resize(984, 564)  # canvas drawn at 960x540 under the title line
+    plain = preview.to_widget(960, 0)
+    # the part fills the right half of the show, cropped 100 px on the left
+    preview.set_inner(SceneItem(source="cam", x=960, y=0, scale=0.5, crop=(100, 0, 0, 0)), (1920, 1080))
+    assert preview.inner_rect == (960, 0, 910, 540)
+    corner = preview.to_widget(100, 0)  # the part's first visible pixel sits where the placement starts
+    assert corner.x() == pytest.approx(plain.x()) and corner.y() == pytest.approx(plain.y())
+    x, y = preview.to_canvas(QPointF(corner.x() + 50, corner.y() + 25))
+    assert x == pytest.approx(100 + 50 / (0.5 * 0.5)) and y == pytest.approx(25 / 0.25)
+    assert preview._bounds() == (1920, 1080)
+    preview.set_inner(None, None)
+    assert preview.inner is None and preview._bounds() == (1920, 1080)
+
+
+def test_main_window_edits_a_part_in_place(app, tmp_path, monkeypatch):
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QInputDialog
+
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("InPlaceTest")
+    QSettings().clear()
+    answers = iter([("horizontal", True), ("Webcam frame", True)])
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *a, **k: next(answers)))
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: next(answers)))
+    col = load_collection(tmp_path / "scenes.json")
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._add_part()
+        part = w._scene()
+        col.sources.append(SourceConfig(id="frame", kind="color", name="Frame", settings={"width": 64, "height": 36}))
+        part.items.append(SceneItem(source="frame", x=10, y=20))
+        show = col.active_scene("horizontal")
+        w.selected_scene_id = show.id
+        w._refresh_sources()
+        w._add_part_source(part.id)
+        placement = show.items[-1]
+        preview = w.previews["horizontal"]
+        # double-click the part in the show
+        w._on_preview_opened("horizontal", len(show.items) - 1)
+        assert w.in_place == ("horizontal", show.id, placement.source, part.id)
+        assert w._scene() is part and w.center.currentIndex() == 0  # the canvases stay; no part editor
+        assert w.engine.editing_part == part.id  # read back alone, drawn bright over the dimmed show
+        assert preview.scene is part and preview.inner is not None and "›  ◇ Webcam frame" in preview.subtitle
+        assert w.source_list.count() == 1  # the Sources dock lists the part's items
+        # clicking an item selects it inside the part, and edits land in the part
+        w._on_preview_selected("horizontal", 0)
+        assert w._item() is part.items[0]
+        part.items[0].x = 99
+        w._on_preview_edited("horizontal", True)
+        assert part.items[0].x == 99 and placement.x == 0
+        # double-clicking a part item does not leave; Esc (or a double-click outside) does
+        w._on_preview_opened("horizontal", -1)
+        assert w.in_place is None and w._scene() is show and preview.inner is None and preview.scene is show
+        assert w.engine.editing_part is None
+        assert w._item() is placement  # back on the show, with the part's placement selected
+        # the Sources dock's double-click opens it in place too; Live mode closes it
+        w._open_part_item()
+        assert w.in_place is not None
+        w._set_mode("live")
+        assert w.in_place is None and w._scene() is show
+        w._set_mode("build")
+        # a rotated placement opens the part editor instead
+        placement.rotation = 15
+        w._on_preview_opened("horizontal", len(show.items) - 1)
+        assert w.in_place is None and w._scene() is part and w.center.currentIndex() == 1
+    finally:
+        w.close()
+        QSettings().clear()
