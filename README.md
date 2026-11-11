@@ -104,6 +104,14 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - Drag a slider to set the volume (-60 to +12 dB), click *Mute* to silence it,
     click a source's name, then **⚙** pins it to one device or **−** removes it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
+  - **⇅** switches between rows and side-by-side vertical strips (remembered).
+  - **🎧 Monitor**: hear a source on your speakers or headphones (default playback device). Off or on, it
+    always goes to the stream and recording. Desktop audio already plays on your speakers, so it has none.
+  - **Hide**: right-click a source → *Hide from mixer*. It keeps playing; "1 hidden · show" brings it back.
+  - **Ducking**: when you talk, everything else glides down so your voice stays clear, then comes back a
+    moment after you stop. Turn it on with *Ducking* under the mixer and set how much quieter, how sensitive,
+    and how fast. Mics lead by default; right-click a source to change that. While it's working, the
+    master line shows "Ducking −12 dB".
 - **Filters** (*Filters* in the Sources or Audio Mixer dock, or right-click a source → *Filters…*), like OBS:
   **+** adds a filter, the tick switches it off without removing it, **▲ ▼** reorder, and the sliders apply live.
   - Video: *Color Correction* (gamma, contrast, brightness, saturation, hue shift, opacity, color multiply),
