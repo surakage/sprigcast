@@ -1,6 +1,6 @@
 """A widget that shows one canvas and lets you edit the active scene's items with the mouse.
 
-- Click an item to select it; drag to move it (edges and centre snap to the canvas).
+- Click an item to select it; drag to move it (snapping options are in Settings → General).
 - Drag a corner handle to scale; hold Alt while dragging a handle to crop instead.
 - Arrow keys nudge the selected item by 1 px, or 10 px with Shift.
 """
@@ -15,7 +15,21 @@ from sprigcast.core import edit
 from sprigcast.core.scene import Scene, SceneItem
 
 HANDLE_PX = 8  # handle size on screen
-SNAP_PX = 10  # snap distance on screen
+SNAP_PX = 10  # default snap distance on screen
+
+
+def snap_settings() -> dict:
+    """Snapping options from Settings → General (QSettings "editing/..."), with OBS-like defaults."""
+    from PySide6.QtCore import QSettings
+
+    q = QSettings()
+    return {
+        "enabled": q.value("editing/snap", True, type=bool),
+        "distance": q.value("editing/snap_distance", float(SNAP_PX), type=float),
+        "edges": q.value("editing/snap_edges", True, type=bool),
+        "sources": q.value("editing/snap_sources", True, type=bool),
+        "center": q.value("editing/snap_center", True, type=bool),
+    }
 ACCENT = QColor("#e8a4b8")
 
 
@@ -75,6 +89,18 @@ class Preview(QWidget):
     def to_widget(self, x: float, y: float) -> QPointF:
         r, s = self.canvas_rect(), self._scale()
         return QPointF(r.x() + x * s, r.y() + y * s)
+
+    def _other_rects(self, moving: SceneItem) -> list[tuple[float, float, float, float]]:
+        """Screen-aligned boxes of the other visible items, for snapping to them."""
+        rects = []
+        for other in self.scene.items if self.scene else []:
+            size = self.sizes.get(other.source)
+            if other is moving or not other.visible or not size or other.rotation % 360 != 0:
+                continue
+            w, h = other.cropped_size(size)
+            if w and h:
+                rects.append((other.x, other.y, w * other.scale, h * other.scale))
+        return rects
 
     def _selected_item(self) -> tuple[SceneItem, tuple[int, int]] | None:
         if self.scene is None or self.selected_index is None or self.selected_index >= len(self.scene.items):
@@ -154,8 +180,12 @@ class Preview(QWidget):
         if mode == "move":
             scale = self._scale()
             delta = ((event.position().x() - start_pos.x()) / scale, (event.position().y() - start_pos.y()) / scale)
-            snap = 0.0 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else SNAP_PX / scale
-            edit.move(item, start_item, size, delta, self.aspect, snap)
+            prefs = snap_settings()
+            off = not prefs["enabled"] or event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            snap = 0.0 if off else prefs["distance"] / scale
+            others = self._other_rects(item) if prefs["sources"] else []
+            edit.move(item, start_item, size, delta, self.aspect, snap,
+                      edges=prefs["edges"], center=prefs["center"], others=others)
         elif mode == "scale":
             edit.scale_from_corner(item, start_item, size, corner, point)
         else:

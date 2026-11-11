@@ -77,14 +77,33 @@ def move(
     delta: Point,
     canvas: Size | None = None,
     snap: float = 0.0,
+    *,
+    edges: bool = True,
+    center: bool = True,
+    others: list[tuple[float, float, float, float]] = (),
 ) -> None:
-    """Move by `delta`. With a canvas and a snap distance, edges and centre snap to the canvas edges and centre."""
+    """Move by `delta`, then snap within `snap` canvas pixels (like OBS):
+
+    edges   the item's edges to the canvas edges
+    center  the item's centre to the canvas centre lines
+    others  the item's edges to the edges of other items, given as (x, y, w, h) rectangles
+    """
     item.x, item.y = round(start.x + delta[0]), round(start.y + delta[1])  # whole pixels stay crisp
     if canvas is None or snap <= 0 or item.rotation % 360 != 0:
         return
     w, h = (d * item.scale for d in item.cropped_size(size))
     for axis, (pos, length, limit) in enumerate(((item.x, w, canvas[0]), (item.y, h, canvas[1]))):
-        options = [(0 - pos), (limit - (pos + length)), (limit / 2 - (pos + length / 2))]
+        options = []
+        if edges:
+            options += [0 - pos, limit - (pos + length)]
+        if center:
+            options.append(limit / 2 - (pos + length / 2))
+        for rect in others:
+            o, ol = rect[axis], rect[axis + 2]
+            for target in (o, o + ol):  # line up with, or butt against, the other item's edges
+                options += [target - pos, target - (pos + length)]
+        if not options:
+            continue
         nearest = min(options, key=abs)
         if abs(nearest) <= snap:
             if axis == 0:

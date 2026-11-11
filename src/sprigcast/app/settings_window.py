@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -170,6 +171,31 @@ class SettingsWindow(QDialog):
         self.theme.setCurrentIndex(max(0, self.theme.findData(chosen_theme())))
         form.addRow("Theme", self.theme)
 
+        snapping = QGroupBox("Source alignment snapping")
+        snap_form = QFormLayout(snapping)
+        q = QSettings()
+        self.snap_enabled = QCheckBox("Enable")
+        self.snap_enabled.setChecked(q.value("editing/snap", True, type=bool))
+        snap_form.addRow("", self.snap_enabled)
+        self.snap_distance = QDoubleSpinBox()
+        self.snap_distance.setRange(1.0, 50.0)
+        self.snap_distance.setSingleStep(1.0)
+        self.snap_distance.setDecimals(1)
+        self.snap_distance.setSuffix(" px")
+        self.snap_distance.setValue(q.value("editing/snap_distance", 10.0, type=float))
+        snap_form.addRow("Snap sensitivity", self.snap_distance)
+        self.snap_edges = QCheckBox("Snap sources to the edge of the canvas")
+        self.snap_sources = QCheckBox("Snap sources to other sources")
+        self.snap_center = QCheckBox("Snap sources to the horizontal and vertical center")
+        for box, key in ((self.snap_edges, "edges"), (self.snap_sources, "sources"), (self.snap_center, "center")):
+            box.setChecked(q.value(f"editing/snap_{key}", True, type=bool))
+            snap_form.addRow("", box)
+        self.snap_enabled.toggled.connect(
+            lambda on: [w.setEnabled(on) for w in (self.snap_distance, self.snap_edges, self.snap_sources, self.snap_center)]
+        )
+        self.snap_enabled.toggled.emit(self.snap_enabled.isChecked())
+        snap_form.addRow("", _hint("Hold Ctrl while dragging to place a source without snapping."))
+
         safety = QGroupBox("Confirmations")
         box = QVBoxLayout(safety)
         self.confirm_stream = QCheckBox("Ask before ending a stream")
@@ -197,7 +223,7 @@ class SettingsWindow(QDialog):
             row.addWidget(open_button)
             row.addStretch(1)
             box.addLayout(row)
-        return _page(look, safety, plugins)
+        return _page(look, snapping, safety, plugins)
 
     def _stream_page(self) -> QWidget:
         self.stream_page = StreamPage(self.collection)
@@ -316,6 +342,11 @@ class SettingsWindow(QDialog):
         settings = QSettings()
         settings.setValue("general/theme", self.theme.currentData())
         settings.setValue(CONFIRM_STREAM, self.confirm_stream.isChecked())
+        settings.setValue("editing/snap", self.snap_enabled.isChecked())
+        settings.setValue("editing/snap_distance", self.snap_distance.value())
+        settings.setValue("editing/snap_edges", self.snap_edges.isChecked())
+        settings.setValue("editing/snap_sources", self.snap_sources.isChecked())
+        settings.setValue("editing/snap_center", self.snap_center.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
         if not (self.streaming or self.recording):
             changes = {}

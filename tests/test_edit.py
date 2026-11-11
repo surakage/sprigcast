@@ -92,3 +92,22 @@ def test_nudge():
     item = SceneItem(source="s", x=1, y=1)
     edit.nudge(item, -10, 0)
     assert (item.x, item.y) == (-9, 1)
+
+
+def test_snap_options_and_other_sources():
+    size = (100, 50)
+    start = SceneItem(source="s", x=0, y=0)
+    other = (500.0, 300.0, 200.0, 100.0)  # x, y, w, h
+    item = start.model_copy()
+    # 6 px left of butting against the other item's left edge (x 400 → right edge at 500)
+    edit.move(item, start, size, (394, 600), canvas=(1920, 1080), snap=8, others=[other])
+    assert item.x == 400
+    item = start.model_copy()
+    edit.move(item, start, size, (503, 397), canvas=(1920, 1080), snap=8, others=[other])
+    assert (item.x, item.y) == (500, 400)  # left edges line up, top butts against the other's bottom
+    item = start.model_copy()
+    edit.move(item, start, size, (5, 5), canvas=(1920, 1080), snap=8, edges=False, center=False)
+    assert (item.x, item.y) == (5, 5)  # canvas edge snapping switched off
+    item = start.model_copy()
+    edit.move(item, start, size, (5, 5), canvas=(1920, 1080), snap=8)
+    assert (item.x, item.y) == (0, 0)
