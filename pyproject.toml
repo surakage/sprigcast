@@ -13,12 +13,13 @@ dependencies = [
     "pillow>=10.0",
     "av>=12.0",
     "windows-capture>=2.0; sys_platform == 'win32'",  # display and window capture (M3)
+    "opencv-python>=4.9",  # camera capture (M5)
+    "cv2-enumerate-cameras>=1.4; sys_platform == 'win32'",  # camera names and stable device paths
 ]
 
 [project.optional-dependencies]
-# Needed from milestone M5 onward (camera, audio, hotkeys).
+# Needed from milestone M6 onward (audio, hotkeys).
 devices = [
-    "opencv-python>=4.9",
     "sounddevice>=0.4",
     "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",
     "soxr>=0.3",

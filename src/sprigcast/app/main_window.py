@@ -30,10 +30,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.preview import Preview
 from sprigcast.core.events import EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.render.engine import Engine
+from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 ROLE_ID = Qt.ItemDataRole.UserRole
@@ -107,6 +109,7 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         buttons.addWidget(_button("+ Display", self._add_display))
         buttons.addWidget(_button("+ Window", self._add_window))
+        buttons.addWidget(_button("+ Camera", self._add_camera))
         buttons.addWidget(_button("+ Color", self._add_color))
         buttons.addWidget(_button("+ Image", self._add_image))
         buttons.addWidget(_button("Remove", self._remove_item))
@@ -328,6 +331,7 @@ class MainWindow(QMainWindow):
                     "image": "Choose image…",
                     "display_capture": "Choose monitor…",
                     "window_capture": "Choose window…",
+                    "camera": "Camera settings…",
                 }.get(config.kind, "Settings…")
             )
             self.prop_status.setText(self._status_text(item.source))
@@ -531,6 +535,34 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _camera_dialog(self, current: dict | None = None) -> dict | None:
+        cameras = list_cameras()
+        if not cameras:
+            QMessageBox.information(self, "SprigCast", "No cameras found. Is one plugged in and not in use by another app?")
+            return None
+        dialog = CameraDialog(cameras, current, self)
+        return dialog.settings() if dialog.exec() else None
+
+    def _add_camera(self) -> None:
+        scene = self._scene()
+        if scene is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        settings = self._camera_dialog()
+        if settings is None:
+            return
+        self._add_item(
+            SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=settings["name"], settings=settings)
+        )
+        # Start as a quarter-width overlay in the bottom-right corner, like a typical facecam.
+        item, canvas = self._item(), self.collection.canvas(scene.canvas)
+        if item is not None:
+            item.scale = (canvas.width * 0.25) / settings["width"]
+            item.x = canvas.width - settings["width"] * item.scale - 32
+            item.y = canvas.height - settings["height"] * item.scale - 32
+            self._changed()
+            self._refresh_properties()
+
     def _fit_item(self, checked: bool = False, size: tuple[int, int] | None = None) -> None:
         """Scale the selected item to fit its canvas and centre it."""
         scene, item = self._scene(), self._item()
@@ -624,6 +656,12 @@ class MainWindow(QMainWindow):
                 return
             config.settings = {**config.settings, "monitor": monitor.index}
             config.name = f"Monitor {monitor.index}"
+        elif config.kind == "camera":
+            settings = self._camera_dialog(config.settings)
+            if settings is None:
+                return
+            config.settings = settings
+            config.name = settings["name"]
         elif config.kind == "window_capture":
             window = self._pick_window()
             if window is None:

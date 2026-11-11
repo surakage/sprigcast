@@ -4,9 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M4 of the build guide:
+Status: early development. This code covers milestones M0 to M5 of the build guide:
 toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
-display and window capture, and mouse editing in the previews.
+display and window capture, webcams, and mouse editing in the previews.
 
 ## Requirements
 
@@ -52,6 +52,9 @@ The key is typed at a hidden prompt and is never saved.
   - *+ Display* captures a whole monitor, cursor included, and fits it to the canvas.
   - *+ Window* captures one window even when other windows cover it. SprigCast remembers the window's
     program and title, so a game that restarts or a browser that changes tabs is found again automatically.
+  - *+ Camera* adds a webcam or capture card as a facecam in the bottom-right corner. Pick the device,
+    mode (for example 1920x1080 at 30 fps) and mirroring. Cameras are remembered by device, so
+    replugging into another USB port is fine, and an unplugged camera reconnects on its own.
 - **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
   window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
 
@@ -78,7 +81,7 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M5 camera · M6 audio mixer ·
+M6 audio mixer ·
 M7 NVENC encoding and recording · M8 RTMP streaming · M9 vertical canvas outputs and multistream ·
 M10 transitions, hotkeys, stats · M11 plugins and polish.
 

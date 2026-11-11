@@ -60,3 +60,13 @@ def test_bgra_frames_are_swizzled_on_the_gpu(compositor):
     scene = Scene(id="s", name="s", canvas="b", items=[SceneItem(source="cap")])
     compositor.render(canvas, scene, {"cap": (8, 8)})
     assert tuple(pixels(compositor, canvas)[4, 4]) == (255, 0, 0, 255)
+
+
+def test_three_channel_bgr_frames_render_opaque(compositor):
+    canvas = Canvas(id="c3", width=6, height=4)
+    bgr_blue = np.zeros((4, 6, 3), dtype=np.uint8)
+    bgr_blue[..., 0] = 255  # odd width x 3 bytes: rows are not 4-byte aligned
+    compositor.upload("cam", bgr_blue, "BGR")
+    scene = Scene(id="s", name="s", canvas="c3", items=[SceneItem(source="cam")])
+    compositor.render(canvas, scene, {"cam": (6, 4)})
+    assert tuple(pixels(compositor, canvas)[2, 5]) == (0, 0, 255, 255)
