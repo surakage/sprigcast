@@ -9,8 +9,16 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-from sprigcast.audio.mixer import Mixer
-from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
+from sprigcast.audio.mixer import Ducking, Mixer
+from sprigcast.audio.monitor import Monitor
+from sprigcast.core.events import (
+    AudioLevels,
+    EngineError,
+    ReplaceCollection,
+    Shutdown,
+    SourceInfo,
+    Stats,
+)
 from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, SceneCollection
@@ -40,6 +48,8 @@ class Engine:
         self._sources: dict[str, Source] = {}
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
         self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
+        self.monitor = Monitor()  # plays monitored sources on the speakers, opened only when one is
+        self._monitoring = False
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
         self._transitions: dict[str, tuple] = {}  # canvas id -> (outgoing scene, start time, duration s)
@@ -68,11 +78,14 @@ class Engine:
         self.commands.put(Shutdown())
         self._thread.join(timeout)
         self.mixer.stop()
+        self.monitor.stop()
 
     # Render thread -------------------------------------------------------------
 
     def _run(self) -> None:
-        from sprigcast.render.compositor import Compositor  # GL context must live on this thread
+        from sprigcast.render.compositor import (
+            Compositor,  # GL context must live on this thread
+        )
 
         try:
             compositor = Compositor()
@@ -174,6 +187,27 @@ class Engine:
         self._sync_filters(compositor, wanted)
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
+        self._sync_audio_options()
+
+    def _sync_audio_options(self) -> None:
+        """Ducking settings to the mixer; start monitoring when a source is monitored, stop when none is."""
+        audio = self._collection.audio
+        self.mixer.set_ducking(Ducking(
+            enabled=audio.ducking, amount_db=audio.duck_amount_db, threshold_db=audio.duck_threshold_db,
+            attack_ms=audio.duck_attack_ms, release_ms=audio.duck_release_ms, hold_ms=audio.duck_hold_ms,
+        ))
+        monitoring = any(
+            s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources
+            if s.kind in ("audio_input", "audio_output")
+        )
+        if monitoring and not self._monitoring:
+            self._monitoring = True
+            self.monitor.start()
+            self.mixer.add_monitor_tap(self.monitor.write)
+        elif not monitoring and self._monitoring:
+            self._monitoring = False
+            self.mixer.remove_monitor_tap(self.monitor.write)
+            self.monitor.stop()
 
     def _sync_filters(self, compositor, wanted: dict) -> None:
         """Hand each source's video filters to the compositor and keep its audio filter chain current."""

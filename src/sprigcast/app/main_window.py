@@ -51,9 +51,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app.audio_dock import AudioPanel
+from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import DestinationsPanel, live_line
+from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
 from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
 from sprigcast.app.live_panel import LivePanel
@@ -492,7 +493,8 @@ class MainWindow(QMainWindow):
         self._dock("Properties", scroll)
 
     def _build_audio_dock(self) -> None:
-        self.audio_panel = AudioPanel(self._on_audio_changed)
+        layout = str(QSettings().value("audio/layout", HORIZONTAL))
+        self.audio_panel = AudioPanel(self._on_audio_changed, VERTICAL if layout == VERTICAL else HORIZONTAL)
         add_menu = QMenu(self)
         add_menu.addAction("Microphone").triggered.connect(lambda: self._add_audio("audio_input"))
         add_menu.addAction("Desktop audio").triggered.connect(lambda: self._add_audio("audio_output"))
@@ -500,7 +502,9 @@ class MainWindow(QMainWindow):
             ("+", "Add a microphone or desktop audio", add_menu),
             ("−", "Remove the selected audio source (click its name first)", self._remove_audio),
             ("⚙", "Change the selected source's device", self._change_audio_device),
+            ("⇅", "Switch between rows and side-by-side strips", self._toggle_mixer_layout),
             None,
+            ("Ducking", "Lower other sounds while you talk", self._open_ducking),
             ("Filters", "Noise gate, compressor, gain and more for the selected audio source", self._edit_audio_filters),
         )
         scroll = QScrollArea()
@@ -996,18 +1000,42 @@ class MainWindow(QMainWindow):
     AUDIO_KINDS = ("audio_input", "audio_output")
 
     def _refresh_audio(self) -> None:
-        self.audio_panel.set_sources(
-            [
-                (s.id, s.name, float(s.settings.get("volume_db", 0.0)), bool(s.settings.get("muted", False)))
-                for s in self.collection.sources
-                if s.kind in self.AUDIO_KINDS
-            ]
-        )
+        self.audio_panel.set_sources([
+            AudioInfo(
+                id=s.id,
+                name=s.name,
+                volume_db=float(s.settings.get("volume_db", 0.0)),
+                muted=bool(s.settings.get("muted", False)),
+                monitor=bool(s.settings.get("monitor", False)),
+                hidden=bool(s.settings.get("hidden", False)),
+                voice=is_voice(s.settings, s.kind),
+                kind=s.kind,
+            )
+            for s in self.collection.sources
+            if s.kind in self.AUDIO_KINDS
+        ])
 
-    def _on_audio_changed(self, source_id: str, volume_db: float, muted: bool) -> None:
+    def _on_audio_changed(self, source_id: str, changes: dict) -> None:
+        """A mixer control changed: volume_db, muted, monitor, hidden or duck_voice."""
         config = self.collection.source(source_id)
-        config.settings = {**config.settings, "volume_db": volume_db, "muted": muted}
+        config.settings = {**config.settings, **changes}
         self._changed()
+        if "hidden" in changes or "duck_voice" in changes:
+            self._refresh_audio()
+        if changes.get("hidden"):
+            self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
+
+    def _toggle_mixer_layout(self) -> None:
+        layout = HORIZONTAL if self.audio_panel.orientation == VERTICAL else VERTICAL
+        self.audio_panel.set_orientation(layout)
+        QSettings().setValue("audio/layout", layout)
+
+    def _open_ducking(self) -> None:
+        dialog = DuckingDialog(self.collection, self)
+        if dialog.exec():
+            dialog.apply_to(self.collection)
+            self._changed()
+            self._refresh_audio()
 
     def _pick_audio_device(self, kind: str, current: str = "default") -> str | None:
         devices = list_audio_devices(loopback=(kind == "audio_output"))

@@ -165,6 +165,18 @@ class RecordingSettings(BaseModel):
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192))
 
 
+class AudioSettings(BaseModel):
+    """Mixer-wide audio options. Per-source ones (volume, mute, monitor, hidden, duck_voice) live in
+    each audio source's settings."""
+
+    ducking: bool = False  # lower everything else while a voice source (your mic) is talking
+    duck_amount_db: float = -14.0
+    duck_threshold_db: float = -38.0
+    duck_attack_ms: float = 250.0
+    duck_release_ms: float = 900.0
+    duck_hold_ms: float = 400.0
+
+
 class Transition(BaseModel):
     """How a canvas changes scenes: a cut, or a fade that crossfades over duration_ms."""
 
@@ -182,6 +194,7 @@ class SceneCollection(BaseModel):
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     stream_encoder: EncoderSettings = Field(default_factory=EncoderSettings)
     transition: Transition = Field(default_factory=Transition)
+    audio: AudioSettings = Field(default_factory=AudioSettings)
     hotkeys: dict[str, str] = Field(default_factory=dict)  # action -> key combo, e.g. "scene:brb" -> "Ctrl+Alt+2"
 
     @model_validator(mode="after")

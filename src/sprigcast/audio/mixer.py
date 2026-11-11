@@ -1,7 +1,14 @@
 """Mixes every audio source into one 48 kHz stereo track and measures levels.
 
 Runs on its own thread, one 1024-sample block (about 21 ms) at a time, paced by the clock.
-Every mixed block is handed to each tap (recorders now, streams later).
+Every mixed block is handed to each tap (recordings and streams).
+
+Two extras on top of the plain mix:
+
+- Ducking: while a voice source (your mic) is above a threshold, every other source glides down
+  by a set amount, and glides back up a moment after you stop talking.
+- Monitoring: sources marked "monitor" are also summed into a second mix for your speakers. That
+  mix never reaches the stream; the stream always gets every unmuted source.
 """
 
 from __future__ import annotations
@@ -11,6 +18,7 @@ import math
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -44,9 +52,35 @@ def mix(blocks: list[tuple[np.ndarray, float]]) -> np.ndarray:
     return out
 
 
+@dataclass(frozen=True)
+class Ducking:
+    """How other sources make room for your voice."""
+
+    enabled: bool = False
+    amount_db: float = -14.0  # how far the others go down while you talk
+    threshold_db: float = -38.0  # voice level (RMS dBFS, after volume) that counts as talking
+    attack_ms: float = 250.0  # how quickly the others fade down
+    release_ms: float = 900.0  # how quickly they come back up
+    hold_ms: float = 400.0  # how long to wait after you stop before coming back up (no pumping between words)
+
+
+def is_voice(source) -> bool:
+    """Whether a source leads ducking: mics do unless switched off ("duck_voice": False)."""
+    settings = getattr(source, "settings", {}) or {}
+    return bool(settings.get("duck_voice", getattr(source, "kind", "") == "audio_input"))
+
+
+def is_monitored(source) -> bool:
+    return bool((getattr(source, "settings", {}) or {}).get("monitor", False))
+
+
 class Mixer:
     def __init__(self, report: Callable[[dict[str, tuple[float, float]]], None]):
         self.report = report
+        self.ducking = Ducking()
+        self.duck_gain = 1.0  # current gain on non-voice sources, 1.0 = not ducked
+        self._hold_left = 0.0
+        self._monitor_taps: list[Callable[[np.ndarray], None]] = []
         self._taps: list[Callable[[np.ndarray], None]] = []
         self._sources: list = []
         self._lock = threading.Lock()
@@ -67,6 +101,37 @@ class Mixer:
         with self._lock:
             self._taps = [t for t in self._taps if t != callback]
 
+    def set_ducking(self, ducking: Ducking) -> None:
+        self.ducking = ducking
+
+    def add_monitor_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        """Hand the monitor mix (monitored sources only) to callback on the mixer thread."""
+        with self._lock:
+            self._monitor_taps = [*self._monitor_taps, callback]
+
+    def remove_monitor_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        with self._lock:
+            self._monitor_taps = [t for t in self._monitor_taps if t != callback]
+
+    def _duck_ramp(self, voice_db: float) -> np.ndarray | float:
+        """Per-sample gain for non-voice sources this block: a glide from the last gain toward the target."""
+        d = self.ducking
+        block_s = BLOCK / SAMPLE_RATE
+        if d.enabled and voice_db > d.threshold_db:
+            self._hold_left = d.hold_ms / 1000
+        else:
+            self._hold_left = max(0.0, self._hold_left - block_s)
+        talking = d.enabled and self._hold_left > 0
+        target = 10 ** (d.amount_db / 20) if talking else 1.0
+        start = self.duck_gain
+        if abs(target - start) < 1e-4:
+            self.duck_gain = target
+            return target
+        tau = (d.attack_ms if target < start else d.release_ms) / 1000
+        end = start + (target - start) * (1 - math.exp(-block_s / max(tau, 1e-3)))
+        self.duck_gain = end
+        return np.linspace(start, end, BLOCK, dtype=np.float32)[:, None]
+
     def start(self) -> None:
         self._thread.start()
 
@@ -75,10 +140,11 @@ class Mixer:
         self._thread.join(timeout=2)
 
     def tick(self) -> np.ndarray:
-        """Mix one block. Returns it and collects per-source levels (after gain)."""
+        """Mix one block. Returns it and collects per-source levels (after gain and ducking)."""
         with self._lock:
-            sources, taps = list(self._sources), self._taps
-        blocks, meters = [], {}
+            sources, taps, monitor_taps = list(self._sources), self._taps, self._monitor_taps
+        processed, meters = [], {}
+        voice_db = FLOOR_DB
         for source in sources:
             block = source.read_block(BLOCK)
             chain = getattr(source, "audio_chain", None)
@@ -89,13 +155,30 @@ class Mixer:
                     log.exception("audio filters on %s failed; turning them off", source.id)
                     source.audio_chain = None
             gain = source.gain
+            voice = is_voice(source)
+            if voice and gain:
+                voice_db = max(voice_db, levels(block * gain)[1])
+            processed.append((source, block, gain, voice))
+        duck = self._duck_ramp(voice_db)
+        blocks, monitored = [], []
+        for source, block, gain, voice in processed:
+            if not voice and not (isinstance(duck, float) and duck == 1.0):
+                block = block * duck
             blocks.append((block, gain))
             meters[source.id] = levels(block * gain) if gain else (FLOOR_DB, FLOOR_DB)
+            if monitor_taps and gain and is_monitored(source):
+                monitored.append((block, gain))
         mixed = mix(blocks)
         meters["master"] = levels(mixed)
+        duck_db = to_db(self.duck_gain)
+        meters["duck"] = (duck_db, duck_db)
         self._meters = meters
         for tap in taps:
             tap(mixed)
+        if monitor_taps:
+            monitor_mix = mix(monitored)
+            for tap in monitor_taps:
+                tap(monitor_mix)
         return mixed
 
     def _run(self) -> None:
