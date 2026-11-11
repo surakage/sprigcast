@@ -75,6 +75,16 @@ class SceneItem(BaseModel):
         return [(cx + dx * cos_r - dy * sin_r, cy + dx * sin_r + dy * cos_r, u, v) for dx, dy, u, v in corners]
 
 
+class SprigState(BaseModel):
+    """A named look of a sprig for Live, like "Alert showing": the items it hides."""
+
+    name: str
+    hide: list[str] = Field(default_factory=list)  # source ids of the sprig's items hidden in this state
+
+
+STATE_FADE_S = 0.3  # how long items take to fade in or out when a sprig changes state
+
+
 class Scene(BaseModel):
     """A show (a main scene you switch to on air) or a part (a reusable piece placed inside other scenes).
 
@@ -93,6 +103,8 @@ class Scene(BaseModel):
     linked_to: str | None = None  # switching to that scene also switches to this one
     shape_of: str | None = None  # parts only: this is the layout of that part for another canvas
     folder: str | None = None  # shows only: the SceneFolder it's listed under (just for tidiness)
+    states: list[SprigState] = Field(default_factory=list)  # main parts only: looks to switch between in Live
+    state: str | None = None  # main parts only: the current state's name; None shows the sprig as built
     items: list[SceneItem] = Field(default_factory=list)  # index 0 draws first (bottom)
 
 
@@ -337,7 +349,11 @@ class SceneCollection(BaseModel):
     @staticmethod
     def placement_view(source: SourceConfig, shape: Scene) -> Scene:
         """The part layout as this placement shows it: the same, with its hidden items switched off."""
-        hidden = {str(s) for s in source.settings.get("hide", [])}
+        return SceneCollection.hide_items(shape, {str(s) for s in source.settings.get("hide", [])})
+
+    @staticmethod
+    def hide_items(shape: Scene, hidden: set[str]) -> Scene:
+        """A copy of a layout with these sources switched off (the layout itself when there are none)."""
         if not hidden:
             return shape
         view = shape.model_copy(deep=True)
@@ -345,6 +361,19 @@ class SceneCollection(BaseModel):
             if item.source in hidden:
                 item.visible = False
         return view
+
+    def state_hidden(self, part: Scene) -> set[str]:
+        """What the sprig's current Live state hides (in every layout of it)."""
+        main = self.main_part(part)
+        state = next((s for s in main.states if s.name == main.state), None)
+        return set(state.hide) if state else set()
+
+    def set_state(self, part_id: str, name: str | None) -> None:
+        """Switch a sprig to one of its states, or back to as-built with None."""
+        main = self.main_part(self.scene(part_id))
+        if name is not None and all(s.name != name for s in main.states):
+            raise ValueError(f"{main.name!r} has no state {name!r}")
+        main.state = name
 
     def parts_inside(self, scene: Scene) -> list[Scene]:
         """Parts placed directly in a scene (as main parts)."""
