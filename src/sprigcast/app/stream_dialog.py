@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.core.scene import Output, SceneCollection
+from sprigcast.output import twitch_auth
 from sprigcast.output.keys import get_key, set_key
 from sprigcast.output.stream import SERVICES, preset_size, sizes_for
 
@@ -100,6 +101,19 @@ class StreamPage(QWidget):
         key_row.addWidget(self.key, 1)
         key_row.addWidget(show)
         form.addRow("Stream key", key_row)
+        # Twitch: connect the account instead of pasting the key.
+        self.twitch_row = QWidget()
+        twitch = QHBoxLayout(self.twitch_row)
+        twitch.setContentsMargins(0, 0, 0, 0)
+        self.twitch_label = QLabel()
+        self.twitch_button = QPushButton()
+        self.twitch_button.clicked.connect(self._twitch_clicked)
+        twitch.addWidget(self.twitch_label, 1)
+        twitch.addWidget(self.twitch_button)
+        form.addRow("Account", self.twitch_row)
+        self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
+        self.use_account.toggled.connect(self._edited)
+        form.addRow("", self.use_account)
         self.bandwidth_test = QCheckBox("Bandwidth test: send to Twitch without going live (viewers see nothing)")
         self.bandwidth_test.toggled.connect(self._edited)
         form.addRow("", self.bandwidth_test)
@@ -166,6 +180,7 @@ class StreamPage(QWidget):
         self._fill_size_and_fps(output.size, output.fps)
         self.bitrate.setValue(output.bitrate_kbps)
         self.bandwidth_test.setChecked(output.bandwidth_test)
+        self.use_account.setChecked(output.twitch_account)
         self.key.setText(self.keys.get(output.key_ref or "", ""))
         self._show_service(output)
         self._loading = False
@@ -200,6 +215,13 @@ class StreamPage(QWidget):
             tip += f"  {service.label} accepts up to {service.max_kbps} kbps."
         self.help.setText(tip)
         self.bandwidth_test.setVisible(service.bandwidth_test)
+        is_twitch = (output.service or "") == "twitch"
+        self.twitch_row.setVisible(is_twitch)
+        account = twitch_auth.connected_account() if is_twitch else None
+        self.use_account.setVisible(is_twitch and account is not None)
+        if is_twitch:
+            self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
+            self.twitch_button.setText("Disconnect" if account else "Connect Twitch…")
 
     def _service_changed(self) -> None:
         output = self._current()
@@ -237,11 +259,35 @@ class StreamPage(QWidget):
         output.fps = self.fps.currentData() or None
         output.bitrate_kbps = self.bitrate.value()
         output.bandwidth_test = service.bandwidth_test and self.bandwidth_test.isChecked()
+        output.twitch_account = output.service == "twitch" and self.use_account.isChecked()
         if not output.key_ref:
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()
         self._show_service(output)
         self.list.item(self.list.currentRow()).setText(output_label(output))
+
+    def _twitch_clicked(self) -> None:
+        output = self._current()
+        if output is None:
+            return
+        if twitch_auth.connected_account():
+            try:
+                twitch_auth.disconnect()
+            except Exception as exc:
+                QMessageBox.warning(self, "SprigCast", f"Could not remove the Twitch sign-in:\n{exc}")
+            self.use_account.setChecked(False)
+            self._show_service(output)
+            return
+        from sprigcast.app.twitch_connect import TwitchConnectDialog
+
+        dialog = TwitchConnectDialog(self)
+        if not dialog.exec():
+            return
+        if dialog.stream_key:
+            self.key.setText(dialog.stream_key)  # saved too, so going live still works if Twitch is unreachable
+        self._show_service(output)
+        self.use_account.setChecked(True)
+        self._edited()
 
     # Result ------------------------------------------------------------------------
 

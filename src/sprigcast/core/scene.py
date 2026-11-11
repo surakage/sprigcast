@@ -84,6 +84,7 @@ class Output(BaseModel):
     size: tuple[int, int] | None = None  # encoded size, e.g. (1280, 720); None = the canvas size
     fps: int | None = None  # None = the canvas fps
     bandwidth_test: bool = False  # Twitch only: stream reaches Twitch but viewers never see it
+    twitch_account: bool = False  # Twitch only: fetch the key from the connected account at Go live
 
 
 class RecordingSettings(BaseModel):
