@@ -244,6 +244,10 @@ class Engine:
                 canvas = next((c for c in collection.canvases if c.id == shape.canvas), None)
             source.part_size = (canvas.width, canvas.height) if canvas else (0, 0)
         alive = {p.id for p in collection.part_scenes()}
+        for source in collection.sources:  # placements with their own tweaks render a copy of their own
+            part = collection.part_of(source)
+            if part is not None and collection.hidden_here(source):
+                alive |= {f"{shape.id}~{source.id}" for shape in collection.shapes(part)}
         for key in [k for k in compositor.targets if k.startswith("part:")]:
             if key[5:] not in alive:
                 compositor.forget_part(key[5:])
@@ -272,10 +276,17 @@ class Engine:
             if canvas is None:
                 continue
             compositor.parts = self._part_sources(textures)
-            textures[part.id] = compositor.render_part(part.id, (canvas.width, canvas.height), part, sizes)
+            size = (canvas.width, canvas.height)
+            textures[part.id] = compositor.render_part(part.id, size, part, sizes)
             if part.id == self.editing_part:
                 data = compositor.read(f"part:{part.id}")
                 self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, now))
+            # Placements of this layout with their own tweaks (hidden items) get their own copy.
+            main = collection.main_part(part)
+            for source in collection.sources:
+                if collection.part_of(source) is main and collection.hidden_here(source):
+                    view = collection.placement_view(source, part)
+                    textures[(source.id, part.id)] = compositor.render_part(f"{part.id}~{source.id}", size, view, sizes)
         compositor.parts = self._part_sources(textures)
 
     def _part_sources(self, textures: dict) -> dict:
@@ -288,8 +299,9 @@ class Engine:
                 continue
             for canvas in collection.canvases:
                 shape = collection.shape_for(part, canvas.id)
-                if shape.id in textures:
-                    out[(source.id, canvas.id)] = textures[shape.id]
+                texture = textures.get((source.id, shape.id), textures.get(shape.id))
+                if texture is not None:
+                    out[(source.id, canvas.id)] = texture
         return out
 
     def _tick(self, compositor, now: float) -> None:

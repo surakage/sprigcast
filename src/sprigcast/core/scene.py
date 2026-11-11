@@ -329,6 +329,23 @@ class SceneCollection(BaseModel):
         part_id = source.settings.get("scene")
         return next((s for s in self.scenes if s.id == part_id and s.kind == "part" and s.shape_of is None), None)
 
+    @staticmethod
+    def hidden_here(source: SourceConfig) -> set[str]:
+        """Sources inside a part that one placement of it hides (its own tweak; other placements still show them)."""
+        return {str(s) for s in source.settings.get("hide", [])}
+
+    @staticmethod
+    def placement_view(source: SourceConfig, shape: Scene) -> Scene:
+        """The part layout as this placement shows it: the same, with its hidden items switched off."""
+        hidden = {str(s) for s in source.settings.get("hide", [])}
+        if not hidden:
+            return shape
+        view = shape.model_copy(deep=True)
+        for item in view.items:
+            if item.source in hidden:
+                item.visible = False
+        return view
+
     def parts_inside(self, scene: Scene) -> list[Scene]:
         """Parts placed directly in a scene (as main parts)."""
         out = []
