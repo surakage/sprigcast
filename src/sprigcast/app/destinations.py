@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -54,6 +56,11 @@ class DestinationCard(QFrame):
         self.output_id = output.id
         self.setObjectName("destinationCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        shadow = QGraphicsDropShadowEffect(self)  # lifts the card off the dock
+        shadow.setBlurRadius(14)
+        shadow.setOffset(0, 3)
+        shadow.setColor(QColor(0, 0, 0, 140))
+        self.setGraphicsEffect(shadow)
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(2)
@@ -115,7 +122,8 @@ class DestinationsPanel(QWidget):
         self.cards: dict[str, DestinationCard] = {}
         self.live = False
         self.setStyleSheet(
-            "#destinationCard { border: 1px solid #3a3f36; border-radius: 8px; background: #2a2d27; }"
+            "#destinationCard { border: 1px solid #3a3f36; border-top-color: #4c5246; border-radius: 10px;"
+            " background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #30342c, stop:1 #262923); }"
         )
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)

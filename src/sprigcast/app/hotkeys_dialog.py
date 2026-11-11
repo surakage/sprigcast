@@ -23,8 +23,7 @@ class HotkeysPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         intro = QLabel(
-            "Click a box and press the keys, for example Ctrl+Alt+1. Hotkeys work while a game has focus. "
-            "Pick combos your games don't use."
+            "Click a box, then press keys (e.g. Ctrl+Alt+1). Works in games too, so pick combos they don't use."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)

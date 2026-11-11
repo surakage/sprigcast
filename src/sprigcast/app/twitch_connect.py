@@ -101,8 +101,8 @@ class TwitchConnectDialog(QDialog):
             if isinstance(result, twitch_auth.DeviceCode):
                 self._code = result
                 self.code.setText(result.user_code)
-                self.message.setText("Approve SprigCast on Twitch. Your browser should open; if it doesn't, "
-                                     "open twitch.tv/activate and enter this code:")
+                self.message.setText("Approve SprigCast on Twitch. If your browser didn't open, "
+                                     "go to twitch.tv/activate and enter:")
                 self.status.setText("Waiting for you to approve on Twitch…")
                 self.open_button.setEnabled(True)
                 self.copy_button.setEnabled(True)

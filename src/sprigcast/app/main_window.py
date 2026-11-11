@@ -145,6 +145,12 @@ def _button(text: str, slot) -> QPushButton:
     return b
 
 
+ON_AIR_STYLE = (
+    "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e0604f, stop:1 #a93226);"
+    " color: white; font-weight: bold; border: 1px solid #7d2219; border-top-color: #f08a7c; border-radius: 8px;"
+)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None):
         super().__init__()
@@ -197,20 +203,20 @@ class MainWindow(QMainWindow):
             button.clicked.connect(lambda _=False, cid=canvas.id: self._edit_shape(cid))
             self.shape_buttons[canvas.id] = button
             header.addWidget(button)
-        self.remove_shape_button = QPushButton("Remove this layout")
+        self.remove_shape_button = QPushButton("Remove layout")
         self.remove_shape_button.setToolTip(f"{cap(SHOWS)} on this canvas go back to using the {PART}'s main layout")
         self.remove_shape_button.clicked.connect(self._remove_shape)
         header.addWidget(self.remove_shape_button)
-        done = QPushButton("Done: back to the canvases")
+        done = QPushButton("Done")
+        done.setToolTip("Back to the canvases")
         done.clicked.connect(self._close_part)
         header.addWidget(done)
         part_layout.addLayout(header)
         self.part_empty = QLabel(
-            f"This {PART} is empty. Add sources with Sources → + and they go into the {PART}. "
-            f"Tip: you can also select sources in {a(SHOW)}, right-click and pick Turn into {a(PART)}."
+            f"Empty {PART}: add sources with Sources → +, or right-click sources in {a(SHOW)} → Turn into {a(PART)}."
         )
         self.part_empty.setWordWrap(True)
-        self.part_empty.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 8px; border-radius: 4px; margin: 4px 8px;")
+        self.part_empty.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 8px 12px; border-radius: 8px; margin: 4px 8px;")
         part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.center = QStackedWidget()
@@ -589,8 +595,9 @@ class MainWindow(QMainWindow):
         bar.setObjectName("modeBar")
         bar.setMovable(False)
         bar.setStyleSheet(
-            "QToolButton { padding: 4px 16px; border-radius: 4px; }"
-            "QToolButton:checked { background: #e8a4b8; color: #1e1f1c; font-weight: bold; }"
+            "QToolButton { padding: 5px 18px; border-radius: 8px; margin: 2px; }"
+            "QToolButton:checked { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f3c3d1, stop:1 #de93aa);"
+            " color: #1e1f1c; font-weight: bold; border: 1px solid #b9768b; }"
         )
         group = QActionGroup(self)
         group.setExclusive(True)
@@ -850,7 +857,7 @@ class MainWindow(QMainWindow):
             scene = self.collection.active_scene(canvas_id)
             if in_place is not None and in_place[0] == canvas_id:
                 show, placement, layout, size = in_place[1:]
-                preview.subtitle = f"{show.name}  ›  {PART_MARK} {layout.name}   (editing in place: Esc or double-click outside to finish)"
+                preview.subtitle = f"{show.name}  ›  {PART_MARK} {layout.name}   ·   Esc to finish"
                 preview.set_inner(placement, size)
                 preview.set_scene(layout, self._item_index() if layout.id == self.selected_scene_id else None)
                 continue
@@ -1219,8 +1226,7 @@ class MainWindow(QMainWindow):
         self._refresh_sources(keep_row=len(scene.items) - 1 - index)
         self._refresh_previews()
         self.statusBar().showMessage(
-            f"Made the {PART} {part.name!r}. Add it to other {SHOWS} with Sources → + → {cap(PART)}; "
-            "double-click it to edit it in place.", 8000)
+            f"Made the {PART} {part.name!r}. Double-click it to edit.", 8000)
 
     def _show_part_editor(self) -> None:
         """A selected part opens in place of the canvases (Build mode only); selecting a show closes it."""
@@ -1234,13 +1240,13 @@ class MainWindow(QMainWindow):
         main = self.collection.main_part(scene)
         uses = self.collection.part_uses(main.id)
         self.part_path.setText(
-            f"Editing {PART} {PART_MARK} {scene.name}   ·   {scene.canvas} layout {canvas.width}×{canvas.height}   ·   "
-            + (f"used in {', '.join(s.name for s in uses)}" if uses else f"not used in any {SHOW} yet")
+            f"{PART_MARK} {scene.name}   ·   {scene.canvas.capitalize()} {canvas.width}×{canvas.height}   ·   "
+            + (f"in {', '.join(s.name for s in uses)}" if uses else f"not in any {SHOW} yet")
         )
         shapes = {s.canvas: s for s in self.collection.shapes(main)}
         for canvas_id, button in self.shape_buttons.items():
             has = canvas_id in shapes
-            button.setText(canvas_id.capitalize() if has else f"+ {canvas_id.capitalize()} layout")
+            button.setText(canvas_id.capitalize() if has else f"+ {canvas_id.capitalize()}")
             button.setChecked(canvas_id == scene.canvas)
             button.setToolTip(
                 f"Edit the layout {SHOWS} on the {canvas_id} canvas get" if has else
@@ -1252,7 +1258,7 @@ class MainWindow(QMainWindow):
             self.part_preview._image = None
         self.part_preview.canvas_id = f"part:{scene.id}"
         self.part_preview.title = scene.name
-        self.part_preview.subtitle = "changes show everywhere it's used"
+        self.part_preview.subtitle = "updates everywhere it's used"
         self.part_preview.aspect = (canvas.width, canvas.height)
         self.engine.editing_part = scene.id
         self.center.setCurrentIndex(1)
@@ -1270,8 +1276,7 @@ class MainWindow(QMainWindow):
                                               sizes=self.source_sizes)
             self._changed()
             self.statusBar().showMessage(
-                f"Made a {canvas_id} layout for {main.name!r} from its {main.canvas} one. "
-                f"{canvas_id.capitalize()} {SHOWS} now use it.", 6000)
+                f"Made a {canvas_id} layout for {main.name!r}, copied from its {main.canvas} one.", 6000)
         self.selected_scene_id = shape.id
         self._refresh_scenes()
         self._refresh_sources()
@@ -1364,8 +1369,8 @@ class MainWindow(QMainWindow):
         self._refresh_previews()
         self.previews[canvas_id].setFocus()
         uses = len(self.collection.part_uses(part.id))
-        others = f" Changes also show in the {uses - 1} other place{'s' if uses != 2 else ''} it's used." if uses > 1 else ""
-        self.statusBar().showMessage(f"Editing the {PART} {part.name!r} in place.{others} Esc to finish.", 8000)
+        others = f" (also used in {uses - 1} other place{'s' if uses != 2 else ''})" if uses > 1 else ""
+        self.statusBar().showMessage(f"Editing {part.name!r} in place{others}. Esc to finish.", 8000)
 
     def _exit_in_place(self) -> None:
         """Finish editing in place: back to the show, with the part's placement selected."""
@@ -1800,7 +1805,7 @@ class MainWindow(QMainWindow):
         finally:
             self.record_button.setEnabled(True)
         self.record_button.setText("Stop recording")
-        self.record_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
+        self.record_button.setStyleSheet(ON_AIR_STYLE)
         for box in self.record_canvas_boxes.values():
             box.setEnabled(False)
         self._refresh_recording_status()
@@ -1910,7 +1915,7 @@ class MainWindow(QMainWindow):
         finally:
             self.live_button.setEnabled(True)
         self.live_button.setText("End stream")
-        self.live_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
+        self.live_button.setStyleSheet(ON_AIR_STYLE)
         self.destinations.set_live(True)
         self._stream_status_at = 0.0
         self._refresh_stream_status()

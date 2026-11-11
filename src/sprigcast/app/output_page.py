@@ -96,8 +96,7 @@ class EncoderForm(QGroupBox):
         self.audio.setCurrentIndex(self.audio.findData(settings.audio_kbps))
         form.addRow("Audio bitrate", self.audio)
         if "nvenc" not in encoder_name.lower():
-            form.addRow("", _hint("No NVIDIA encoder found, so x264 (CPU) is used: presets map to light x264 "
-                                  "presets and multipass and look-ahead are ignored."))
+            form.addRow("", _hint("No NVIDIA encoder: using x264 (CPU). Multipass and look-ahead are ignored."))
         self.rate_control.currentIndexChanged.connect(self._rate_changed)
         self._rate_changed()
 
@@ -130,9 +129,9 @@ class OutputPage(QWidget):
         super().__init__(parent)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        self.banner = QLabel("Twitch Enhanced Broadcasting is controlling some of your stream settings")
+        self.banner = QLabel("Twitch Enhanced Broadcasting controls some of these settings")
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 10px; border-radius: 4px;")
+        self.banner.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 10px; border-radius: 8px;")
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.banner.setToolTip("Twitch picks the resolutions, bitrates, keyframes and B-frames of the Twitch "
                                "output. The settings below still apply to your other streams.")
@@ -148,8 +147,7 @@ class OutputPage(QWidget):
         self.stream_form = EncoderForm("Encoder settings", collection.stream_encoder, encoder_name)
         self.stream_form.setEnabled(not streaming)
         box.addWidget(self.stream_form)
-        box.addWidget(_hint("Bitrate, resolution and frame rate are set per destination in Settings → Stream. "
-                            "Most sites (Twitch included) want Constant Bitrate and a 2 s keyframe interval."))
+        box.addWidget(_hint("Bitrate and size are set per destination (Settings → Stream). Most sites want CBR and 2 s keyframes."))
         box.addStretch(1)
         self.tabs.addTab(stream_tab, "Streaming")
 

@@ -146,9 +146,8 @@ class StreamPage(QWidget):
         self.enhanced_box = QGroupBox("Multitrack Video")
         form = QFormLayout(self.enhanced_box)
         intro = QLabel(
-            "Enhanced Broadcasting automatically optimizes your stream settings, which may include encoding "
-            "multiple video qualities and/or canvas orientations. Selecting this option will send Twitch "
-            "information about your computer and software setup. "
+            "Twitch picks your stream qualities, and can take a vertical version too. "
+            "Turning this on sends Twitch details about your PC and software. "
             '<a href="https://help.twitch.tv/s/article/multiple-encodes">Learn More</a>'
         )
         intro.setWordWrap(True)
@@ -173,8 +172,7 @@ class StreamPage(QWidget):
         self.extra_canvas.currentIndexChanged.connect(self._edited)
         form.addRow("Additional canvas", self.extra_canvas)
         self.enhanced_note = QLabel(
-            "Twitch sets the resolutions and bitrates. The Video settings above are only used if Twitch can't "
-            "set up Enhanced Broadcasting. Needs an NVIDIA (or Intel Arc) GPU."
+            "Twitch sets sizes and bitrates; the Video settings above are the fallback. Needs an NVIDIA or Intel Arc GPU."
         )
         self.enhanced_note.setWordWrap(True)
         self.enhanced_note.setStyleSheet("color: gray")

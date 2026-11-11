@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app.terms import PART, PARTS, SHOW, SHOWS, a, cap
+from sprigcast.app.terms import PART, SHOWS
 from sprigcast.core.scene import Scene, SceneCollection
 
 EXAMPLES = "Webcam frame, Alerts box, Brand bar, Chat panel"
@@ -27,9 +27,7 @@ class NewPartDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"New {PART}")
         intro = QLabel(
-            f"{cap(a(PART))} is a reusable piece, like a webcam frame or a brand bar. Build it once, then add "
-            f"it to any {SHOW} on either canvas. Change it, and every {SHOW} using it changes too. "
-            f"({cap(SHOWS)} are the scenes that go on air; {PARTS} are the pieces inside them.)"
+            f"A reusable piece for your {SHOWS}, like a webcam frame. Edit it once and it updates everywhere."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #8d8a83")
@@ -47,7 +45,7 @@ class NewPartDialog(QDialog):
             self.shape_group.addButton(button)
             row.addWidget(button)
         row.addStretch(1)
-        shape_hint = QLabel(f"You can add the other shape later from the {PART} editor.")
+        shape_hint = QLabel("You can add the other shape later.")
         shape_hint.setStyleSheet("color: #8d8a83")
         self.add_to_show = QCheckBox(f"Add it to “{show.name}” now" if show is not None else "")
         self.add_to_show.setChecked(show is not None)

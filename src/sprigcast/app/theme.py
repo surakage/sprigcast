@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QSettings
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 BARK = "#1e1f1c"  # window background
 MOSS = "#2a2d27"  # panels and inputs
@@ -21,18 +21,52 @@ BLOOM = "#e8a4b8"  # main accent (blossom pink)
 INPUT = "#363a32"  # checkbox and number-box fill, a step lighter so they stand out
 PETAL = "#ece8e1"  # text
 DUSK = "#8d8a83"  # muted text
+# Light from above: raised surfaces are lighter at the top, with a bright rim and a dark lower edge.
+RAISED_TOP, RAISED_BOTTOM = "#363a32", "#262923"
+RIM, SHADE = "#4c5246", "#121310"
+BLOOM_TOP, BLOOM_BOTTOM, BLOOM_EDGE = "#f3c3d1", "#de93aa", "#b9768b"
+POP_TOP, POP_BOTTOM = "#30342c", "#23261f"  # dialogs and menus sit a step above the window
 
 STYLESHEET = f"""
 QToolTip {{ color: {PETAL}; background: {MOSS}; border: 1px solid {LICHEN}; }}
 QDockWidget::title {{ background: {MOSS}; padding: 4px 6px; }}
 QPushButton {{
-    background: {MOSS}; border: 1px solid {LICHEN}; border-radius: 4px; padding: 4px 2px;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {RAISED_TOP}, stop:1 {RAISED_BOTTOM});
+    border: 1px solid {LICHEN}; border-top-color: {RIM}; border-bottom-color: {SHADE};
+    border-radius: 8px; padding: 6px 14px; min-height: 18px; text-align: center;
 }}
 QPushButton:hover {{ border-color: {LEAF}; }}
-QPushButton:pressed {{ background: {LICHEN}; }}
-QPushButton:checked {{ background: {BLOOM}; color: {BARK}; }}
-QPushButton:disabled {{ color: {DUSK}; }}
-QPushButton::menu-indicator {{ subcontrol-position: right center; right: 4px; }}
+QPushButton:pressed {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {RAISED_BOTTOM}, stop:1 {RAISED_TOP});
+    border-top-color: {SHADE}; border-bottom-color: {RIM}; padding-top: 7px; padding-bottom: 5px;
+}}
+QPushButton:checked {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {BLOOM_TOP}, stop:1 {BLOOM_BOTTOM});
+    color: {BARK}; border-color: {BLOOM_EDGE}; border-top-color: {BLOOM_TOP};
+}}
+QPushButton:default {{ border-color: {BLOOM}; }}
+QPushButton:disabled {{ color: {DUSK}; background: {MOSS}; border-color: {LICHEN}; }}
+QPushButton::menu-indicator {{ subcontrol-position: right center; right: 6px; }}
+QToolButton {{ border: 1px solid transparent; border-radius: 6px; padding: 3px 6px; }}
+QToolButton:hover {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {RAISED_TOP}, stop:1 {RAISED_BOTTOM});
+    border-color: {LICHEN}; border-top-color: {RIM};
+}}
+QToolButton[autoRaise="false"] {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {RAISED_TOP}, stop:1 {RAISED_BOTTOM});
+    border: 1px solid {LICHEN}; border-top-color: {RIM}; border-bottom-color: {SHADE}; padding: 3px 10px;
+}}
+QToolButton:pressed {{ background: {LICHEN}; }}
+QToolButton:checked {{ background: {BLOOM}; color: {BARK}; }}
+QDialog, QMessageBox {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {POP_TOP}, stop:1 {POP_BOTTOM});
+    border: 1px solid {LICHEN}; border-top: 3px solid {BLOOM};
+}}
+QGroupBox {{
+    background: rgba(255, 255, 255, 8); border: 1px solid {LICHEN}; border-top-color: {RIM};
+    border-radius: 8px; margin-top: 14px; padding: 10px 8px 8px 8px;
+}}
+QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {BLOOM}; }}
 QLineEdit, QPlainTextEdit {{ background: {BARK}; border: 1px solid {LICHEN}; border-radius: 3px; padding: 2px 4px; }}
 QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {BLOOM}; }}
 QListWidget, QTreeWidget {{ background: {BARK}; border: 1px solid {LICHEN}; }}
@@ -41,7 +75,8 @@ QListWidget::indicator {{ width: 12px; height: 12px; border: 1px solid {DUSK}; b
 QListWidget::indicator:checked {{ background: {LEAF}; border-color: {BARK}; }}
 QMenuBar {{ background: {BARK}; }}
 QMenuBar::item:selected, QMenu::item:selected {{ background: {BLOOM}; color: {BARK}; }}
-QMenu {{ background: {MOSS}; border: 1px solid {LICHEN}; }}
+QMenu {{ background: {POP_TOP}; border: 1px solid {LICHEN}; border-top: 2px solid {BLOOM}; padding: 4px; }}
+QMenu::item {{ padding: 5px 20px 5px 14px; border-radius: 5px; }}
 QSlider::groove:horizontal {{ height: 4px; background: {LICHEN}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {BLOOM}; width: 12px; margin: -5px 0; border-radius: 6px; }}
 QSlider::sub-page:horizontal {{ background: {LEAF}; border-radius: 2px; }}
@@ -49,6 +84,30 @@ QStatusBar {{ color: {DUSK}; }}
 QSplitter::handle {{ background: {LICHEN}; }}
 """
 
+
+class PopIn(QObject):
+    """Fades dialogs in as they open (150 ms), so a pop-up reads as arriving on top of the window."""
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent)
+        self.enabled = True
+        self._running: dict[int, QPropertyAnimation] = {}
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
+        if self.enabled and event.type() == QEvent.Type.Show and isinstance(obj, QDialog) and obj.isWindow():
+            anim = QPropertyAnimation(obj, b"windowOpacity", obj)
+            anim.setDuration(150)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            key = id(obj)
+            self._running[key] = anim
+            anim.finished.connect(lambda: self._running.pop(key, None))
+            anim.start()
+        return False
+
+
+_pop_in: PopIn | None = None
 
 THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
 _system_style: str | None = None
@@ -63,11 +122,13 @@ def chosen_theme() -> str:
 
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
-    global _system_style
+    global _system_style, _pop_in
     if _system_style is None:
         _system_style = app.style().name()
     if (name or chosen_theme()) == "system":
         app.setStyleSheet("")
+        if _pop_in is not None:
+            _pop_in.enabled = False
         app.setStyle(_system_style)
         app.setPalette(app.style().standardPalette())
         return False
@@ -95,4 +156,8 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(DUSK))
     app.setPalette(palette)
     app.setStyleSheet(STYLESHEET)
+    if _pop_in is None:
+        _pop_in = PopIn(app)
+        app.installEventFilter(_pop_in)
+    _pop_in.enabled = True
     return True
