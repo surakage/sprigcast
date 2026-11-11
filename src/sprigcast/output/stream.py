@@ -26,23 +26,61 @@ class Service:
     max_kbps: int  # what the platform accepts for video
     canvas: str  # which canvas suits it
     help: str = ""
+    # Preset applied when you pick the service: longest side of the encoded picture, fps, bitrate.
+    long_side: int = 1920
+    fps: int = 60
+    kbps: int = 6000
+    bandwidth_test: bool = False  # supports a test mode that never shows the stream to viewers
 
 
 SERVICES: dict[str, Service] = {
     "twitch": Service("Twitch", "rtmp://live.twitch.tv/app", 6000, "horizontal",
-                      "Key: Twitch Creator Dashboard → Settings → Stream → Primary Stream key."),
-    "youtube": Service("YouTube", "rtmp://a.rtmp.youtube.com/live2", 12000, "horizontal",
-                       "Key: YouTube Studio → Go live → Stream → Stream key."),
+                      "Key: Twitch Creator Dashboard → Settings → Stream → Primary Stream key.",
+                      1920, 60, 6000, bandwidth_test=True),
+    "youtube": Service("YouTube", "rtmp://a.rtmp.youtube.com/live2", 20000, "horizontal",
+                       "Key: YouTube Studio → Go live → Stream → Stream key.", 1920, 60, 9000),
     "kick": Service("Kick", "", 8000, "horizontal",
-                    "Server and key: Kick dashboard → Settings → Stream URL & Key."),
+                    "Server and key: Kick dashboard → Settings → Stream URL & Key.", 1920, 60, 8000),
     "tiktok": Service("TikTok", "", 6000, "vertical",
-                      "Server and key: TikTok LIVE Producer (needs LIVE access), copy Server URL and Stream key."),
-    "custom": Service("Custom RTMP", "", 50000, "horizontal", "Any RTMP or RTMPS server URL plus its stream key."),
+                      "Server and key: TikTok LIVE Producer (needs LIVE access), copy Server URL and Stream key.",
+                      1280, 30, 4000),
+    "custom": Service("Custom RTMP", "", 50000, "horizontal", "Any RTMP or RTMPS server URL plus its stream key.",
+                      1920, 60, 6000),
 }
 
+# Encoded sizes offered for each canvas shape.
+HORIZONTAL_SIZES = [(1920, 1080), (1600, 900), (1280, 720), (854, 480)]
+VERTICAL_SIZES = [(1080, 1920), (720, 1280), (540, 960)]
 
-def stream_url(server: str, key: str) -> str:
-    return f"{server.rstrip('/')}/{key}"
+
+def sizes_for(canvas) -> list[tuple[int, int]]:
+    """Output sizes that keep the canvas shape, never larger than the canvas."""
+    options = HORIZONTAL_SIZES if canvas.width >= canvas.height else VERTICAL_SIZES
+    fitting = [(w, h) for w, h in options if w <= canvas.width and h <= canvas.height]
+    return fitting or [(canvas.width, canvas.height)]
+
+
+def preset_size(service: Service, canvas) -> tuple[int, int]:
+    """The largest offered size whose longest side fits the service's preset."""
+    options = sizes_for(canvas)
+    return next(((w, h) for w, h in options if max(w, h) <= service.long_side), options[-1])
+
+
+def stream_url(server: str, key: str, bandwidth_test: bool = False) -> str:
+    """Twitch's bandwidth test sends the stream to Twitch without showing it to anyone."""
+    return f"{server.rstrip('/')}/{key}" + ("?bandwidthtest=true" if bandwidth_test else "")
+
+
+@dataclass
+class StreamTarget:
+    name: str  # shown in the status, e.g. "Twitch (horizontal)"
+    canvas: object  # core.scene.Canvas
+    server: str
+    key: str
+    bitrate_kbps: int
+    size: tuple[int, int] | None = None  # encoded size; None = canvas size
+    fps: int | None = None  # None = canvas fps
+    bandwidth_test: bool = False
 
 
 class Streamer(Recorder):
@@ -57,14 +95,40 @@ class Streamer(Recorder):
         bitrate_kbps: int,
         codec: str,
         start_time: float,
+        out_size: tuple[int, int] | None = None,
+        bandwidth_test: bool = False,
     ):
-        super().__init__(Path(f"stream {name}"), width, height, fps, bitrate_kbps, codec, start_time, "flv")
+        super().__init__(
+            Path(f"stream {name}"), width, height, fps, bitrate_kbps, codec, start_time, "flv", out_size
+        )
         self.name = name
-        self._url = stream_url(server, key)
+        self.bandwidth_test = bandwidth_test
+        self._url = stream_url(server, key, bandwidth_test)
         self._key = key
         self.connected = False
         self.reconnects = 0
         self.status = "connecting"
+        self._health: tuple | None = None
+
+    def health(self) -> tuple[str, str]:
+        """("good" | "warning" | "bad", short reason), comparing against the previous call (about 1 s ago)."""
+        now = time.monotonic()
+        sample = (now, self.frames, self.dropped, self.mux_seconds)
+        last, self._health = self._health, sample
+        if not self.connected:
+            return "bad", self.status
+        if last is None or now <= last[0]:
+            return "good", "live"
+        sent, lost = sample[1] - last[1], sample[2] - last[2]
+        waiting_on_network = (sample[3] - last[3]) / (now - last[0]) > 0.5
+        backlog = self._video.qsize() / self._video.maxsize
+        loss = lost / max(1, sent + lost)
+        why = "upload too slow for this bitrate" if waiting_on_network else "encoder overloaded"
+        if loss > 0.05:
+            return "bad", f"dropping {loss:.0%} of frames: {why}"
+        if lost or backlog > 0.5:
+            return "warning", f"falling behind: {why}"
+        return "good", "live"
 
     def redact(self, text: str) -> str:
         """Error text from FFmpeg can contain the URL; never let the key reach the screen or a log."""
@@ -153,14 +217,16 @@ class StreamSession:
         self.started_at = time.monotonic()
 
     @classmethod
-    def start(cls, engine, targets: list[tuple], codec: str) -> "StreamSession":
-        """targets: (name, canvas, server, key, bitrate_kbps) tuples."""
+    def start(cls, engine, targets: list[StreamTarget], codec: str) -> "StreamSession":
         start_time = time.perf_counter()
         streamers = []
-        for name, canvas, server, key, bitrate in targets:
-            st = Streamer(name, server, key, canvas.width, canvas.height, canvas.fps, bitrate, codec, start_time)
+        for t in targets:
+            c = t.canvas
+            fps = min(t.fps or c.fps, c.fps)
+            st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
+                          t.size, t.bandwidth_test)
             st.start()
-            streamers.append((canvas.id, st))
+            streamers.append((c.id, st))
         session = cls(engine, streamers)
         for canvas_id, st in streamers:
             engine.add_frame_tap(canvas_id, st.push_frame)

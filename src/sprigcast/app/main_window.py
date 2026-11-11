@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import queue
 import time
 from pathlib import Path
@@ -40,7 +41,7 @@ from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, S
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.output.keys import get_key
 from sprigcast.output.recorder import RecordingSession, codec_label, pick_codec
-from sprigcast.output.stream import SERVICES, StreamSession
+from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
 from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
@@ -967,7 +968,11 @@ class MainWindow(QMainWindow):
             elif canvas is None:
                 problems.append(f"{service.label}: the {output.canvas} canvas is not available")
             else:
-                targets.append((f"{service.label} ({canvas.id})", canvas, server, key, output.bitrate_kbps))
+                name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
+                targets.append(
+                    StreamTarget(name, canvas, server, key, output.bitrate_kbps, output.size, output.fps,
+                                 output.bandwidth_test and service.bandwidth_test)
+                )
         if problems:
             QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
             return
@@ -1013,13 +1018,20 @@ class MainWindow(QMainWindow):
         session = self.streaming
         seconds = int(session.elapsed)
         lines = [f"● LIVE {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
+        colors = {"good": "#2ecc71", "warning": "#f1c40f", "bad": "#e74c3c"}
         for _, st in session.streamers:
             kbps = st.measure_kbps()
+            level, reason = st.health()
+            line = f"<span style='color:{colors[level]}'>●</span> {html.escape(st.name)}: "
             if st.connected:
-                line = f"{st.name}: live, {kbps:.0f} kbps"
+                line += f"{kbps:.0f} kbps, {st.out_width}×{st.out_height} {st.fps} fps"
+                if reason != "live":
+                    line += f" · {html.escape(reason)}"
                 if st.dropped:
-                    line += f", {st.dropped} frames dropped"
+                    line += f" · {st.dropped} dropped"
+                if st.reconnects:
+                    line += f" · {st.reconnects} reconnects"
             else:
-                line = f"{st.name}: {st.status}"
+                line += html.escape(st.status)
             lines.append(line)
-        self.stream_status.setText("\n".join(lines))
+        self.stream_status.setText("<br>".join(lines))

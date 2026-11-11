@@ -4,7 +4,7 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M8 of the build guide:
+Status: early development. This code covers milestones M0 to M9 of the build guide:
 toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
 display and window capture, webcams, mouse editing in the previews, an audio mixer, recording, and live streaming.
 
@@ -62,11 +62,16 @@ The key is typed at a hidden prompt and is never saved.
     and use *Device…* to pin a source to one device or *Remove* to delete it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
 - **Output dock**: go live and record.
-  - *Stream…* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server, which canvas each
-    one uses, and its bitrate. Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
+  - *Stream…* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
+    fills in its preset (Twitch: horizontal 1920×1080 60 fps 6000 kbps; TikTok: vertical 720×1280 30 fps
+    4000 kbps), and you can change the canvas, resolution, frame rate and bitrate per output.
+    Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
+  - Twitch has a *Bandwidth test* option: the stream reaches Twitch so you can check it, but viewers never see it.
   - Tick the places to stream to and press *Go live*. Each one gets its own NVENC encoder (constant bitrate,
     keyframe every 2 s), so Twitch can take the horizontal canvas while TikTok takes the vertical one.
-    The status shows the live bitrate per output; a dropped connection reconnects on its own.
+    Each output shows a health dot: green is fine, yellow is falling behind, red is dropping frames or
+    disconnected, with the reason (upload too slow for the bitrate, or encoder overloaded).
+    A dropped connection reconnects on its own.
   - *Start recording* writes each ticked canvas to its own file at the same time,
     for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
     *Recording…* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays playable
@@ -99,7 +104,6 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M9 multistream polish (platform presets, stream health, bandwidth test) ·
 M10 transitions, hotkeys, stats · M11 plugins and polish.
 
 ## License

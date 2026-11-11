@@ -21,12 +21,19 @@ from PySide6.QtWidgets import (
 
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output.keys import get_key, set_key
-from sprigcast.output.stream import SERVICES
+from sprigcast.output.stream import SERVICES, preset_size, sizes_for
 
 
 def output_label(output: Output) -> str:
     service = SERVICES.get(output.service or "custom", SERVICES["custom"])
-    return f"{service.label}  ·  {output.canvas}"
+    label = f"{service.label}  ·  {output.canvas}"
+    if output.size:
+        label += f" {output.size[0]}×{output.size[1]}"
+    if output.fps:
+        label += f" {output.fps} fps"
+    if output.bandwidth_test and service.bandwidth_test:
+        label += "  (test)"
+    return label
 
 
 class StreamDialog(QDialog):
@@ -71,8 +78,14 @@ class StreamDialog(QDialog):
         self.canvas = QComboBox()
         for canvas in collection.canvases:
             self.canvas.addItem(f"{canvas.id} ({canvas.width}×{canvas.height})", canvas.id)
-        self.canvas.currentIndexChanged.connect(self._edited)
+        self.canvas.currentIndexChanged.connect(self._canvas_changed)
         form.addRow("Canvas", self.canvas)
+        self.size = QComboBox()
+        self.size.currentIndexChanged.connect(self._edited)
+        form.addRow("Resolution", self.size)
+        self.fps = QComboBox()
+        self.fps.currentIndexChanged.connect(self._edited)
+        form.addRow("Frame rate", self.fps)
         self.bitrate = QSpinBox()
         self.bitrate.setRange(500, 50000)
         self.bitrate.setSingleStep(500)
@@ -90,6 +103,9 @@ class StreamDialog(QDialog):
         key_row.addWidget(self.key, 1)
         key_row.addWidget(show)
         form.addRow("Stream key", key_row)
+        self.bandwidth_test = QCheckBox("Bandwidth test: send to Twitch without going live (viewers see nothing)")
+        self.bandwidth_test.toggled.connect(self._edited)
+        form.addRow("", self.bandwidth_test)
         self.help = QLabel()
         self.help.setWordWrap(True)
         self.help.setStyleSheet("color: gray")
@@ -154,10 +170,32 @@ class StreamDialog(QDialog):
         self._loading = True
         self.service.setCurrentIndex(max(0, self.service.findData(output.service or "custom")))
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(output.canvas)))
+        self._fill_size_and_fps(output.size, output.fps)
         self.bitrate.setValue(output.bitrate_kbps)
+        self.bandwidth_test.setChecked(output.bandwidth_test)
         self.key.setText(self.keys.get(output.key_ref or "", ""))
         self._show_service(output)
         self._loading = False
+
+    def _canvas(self):
+        canvas_id = self.canvas.currentData()
+        return next((c for c in self.collection.canvases if c.id == canvas_id), self.collection.canvases[0])
+
+    def _fill_size_and_fps(self, size: tuple[int, int] | None, fps: int | None) -> None:
+        """Offer sizes that keep the canvas shape and frame rates up to the canvas's."""
+        canvas = self._canvas()
+        loading, self._loading = self._loading, True
+        self.size.clear()
+        for w, h in sizes_for(canvas):
+            native = (w, h) == (canvas.width, canvas.height)
+            self.size.addItem(f"{w}×{h}" + ("  (canvas)" if native else ""), "" if native else f"{w}x{h}")
+        index = self.size.findData(f"{size[0]}x{size[1]}" if size else "")
+        self.size.setCurrentIndex(max(0, index))
+        self.fps.clear()
+        for rate in sorted({canvas.fps, 30} if canvas.fps > 30 else {canvas.fps}, reverse=True):
+            self.fps.addItem(f"{rate} fps" + ("  (canvas)" if rate == canvas.fps else ""), 0 if rate == canvas.fps else rate)
+        self.fps.setCurrentIndex(max(0, self.fps.findData(fps or 0)))
+        self._loading = loading
 
     def _show_service(self, output: Output) -> None:
         service = SERVICES.get(output.service or "custom", SERVICES["custom"])
@@ -168,6 +206,7 @@ class StreamDialog(QDialog):
         if output.bitrate_kbps > service.max_kbps:
             tip += f"  {service.label} accepts up to {service.max_kbps} kbps."
         self.help.setText(tip)
+        self.bandwidth_test.setVisible(service.bandwidth_test)
 
     def _service_changed(self) -> None:
         output = self._current()
@@ -175,10 +214,21 @@ class StreamDialog(QDialog):
             return
         output.service = self.service.currentData()
         service = SERVICES[output.service]
+        # Apply the platform's preset: canvas, resolution, frame rate and bitrate.
         self._loading = True
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(service.canvas)))
-        self.bitrate.setValue(min(self.bitrate.value(), service.max_kbps))
+        canvas = self._canvas()
+        size = preset_size(service, canvas)
+        self._fill_size_and_fps(None if size == (canvas.width, canvas.height) else size,
+                                None if service.fps >= canvas.fps else service.fps)
+        self.bitrate.setValue(service.kbps)
         self._loading = False
+        self._edited()
+
+    def _canvas_changed(self) -> None:
+        if self._loading:
+            return
+        self._fill_size_and_fps(None, None)
         self._edited()
 
     def _edited(self) -> None:
@@ -189,7 +239,11 @@ class StreamDialog(QDialog):
         output.service = self.service.currentData()
         output.server = "" if service.server else self.server.text().strip()
         output.canvas = self.canvas.currentData()
+        size = self.size.currentData() or ""
+        output.size = tuple(int(n) for n in size.split("x")) if size else None
+        output.fps = self.fps.currentData() or None
         output.bitrate_kbps = self.bitrate.value()
+        output.bandwidth_test = service.bandwidth_test and self.bandwidth_test.isChecked()
         if not output.key_ref:
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()
