@@ -113,6 +113,7 @@ class Recorder:
         self._audio: queue.Queue = queue.Queue(AUDIO_QUEUE)
         self._stop = threading.Event()
         self._last_pts = -1
+        self._last_queued = -1
         self._samples = 0
         self._thread = threading.Thread(target=self._run, name=f"sprigcast-{path.stem}", daemon=True)
 
@@ -121,14 +122,34 @@ class Recorder:
     def start(self) -> None:
         self._thread.start()
 
+    def _slot(self, frame) -> int:
+        """The output frame number this render belongs to.
+
+        floor(x + 0.25) rather than round(): at half the render rate (30 from 60) it keeps every
+        other frame evenly instead of alternating, and still tolerates a tick arriving a little late.
+        """
+        return math.floor((frame.time - self.start_time) * self.fps + 0.25)
+
     def push_frame(self, frame) -> None:
-        """frame has .data (RGBA bytes, top row first) and .time (perf_counter when rendered)."""
+        """frame has .data (RGBA bytes, top row first) and .time (perf_counter when rendered).
+
+        Renders that fall in an output frame slot already taken (a 60 fps canvas feeding a 30 fps
+        output) are skipped here, before the queue, so they neither take queue space nor count as drops.
+        """
         if self.error is not None or self._stop.is_set():
             return
+        slot = self._slot(frame)
+        if slot <= self._last_queued:
+            return
+        self._last_queued = slot
         try:
             self._video.put_nowait(frame)
         except queue.Full:
-            self.dropped += 1
+            if self._counts_drops():
+                self.dropped += 1
+
+    def _counts_drops(self) -> bool:
+        return True
 
     def push_audio(self, block: np.ndarray) -> None:
         """block is float32 of shape (n, 2) at 48 kHz."""
@@ -235,9 +256,7 @@ class Recorder:
         import av
         from av.video.reformatter import ColorRange, Colorspace
 
-        # floor(x + 0.25) rather than round(): at half the render rate (30 from 60) it keeps every
-        # other frame evenly instead of alternating, and still tolerates a tick arriving a little late.
-        pts = math.floor((frame.time - self.start_time) * self.fps + 0.25)
+        pts = self._slot(frame)
         if pts <= self._last_pts:
             return  # rendered before the start, or a second tick in the same output frame slot
         self._last_pts = pts

@@ -179,14 +179,8 @@ class Streamer(Recorder):
 
     # Recorder hooks ------------------------------------------------------------
 
-    def push_frame(self, frame) -> None:
-        if self._stop.is_set():
-            return
-        try:
-            self._video.put_nowait(frame)
-        except queue.Full:
-            if self.connected:  # frames lost while (re)connecting are expected, not an encoder problem
-                self.dropped += 1
+    def _counts_drops(self) -> bool:
+        return self.connected  # frames lost while (re)connecting are expected, not an encoder problem
 
     def push_audio(self, block) -> None:
         if self._stop.is_set():
@@ -230,7 +224,7 @@ class Streamer(Recorder):
         while not self._stop.is_set():
             self._drain()  # anything queued while disconnected would arrive late and out of sync
             self.start_time = time.perf_counter()
-            self._last_pts, self._samples = -1, 0
+            self._last_pts, self._last_queued, self._samples = -1, -1, 0
             self.connected = False
             self.status = "connecting" if not self.reconnects else f"reconnecting (try {self.reconnects})"
             began = time.monotonic()
