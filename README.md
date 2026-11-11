@@ -4,9 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M3 of the build guide:
+Status: early development. This code covers milestones M0 to M4 of the build guide:
 toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
-and display and window capture.
+display and window capture, and mouse editing in the previews.
 
 ## Requirements
 
@@ -40,6 +40,11 @@ The key is typed at a hidden prompt and is never saved.
 ## Using the app
 
 - **Previews**: the horizontal canvas (1920x1080) on the left, the vertical canvas (1080x1920) on the right.
+  Edit the scene shown on each canvas directly with the mouse:
+  - Click an item to select it, then drag to move it. Edges and centre snap to the canvas; hold Ctrl to stop snapping.
+  - Drag a corner handle to resize. Hold Alt while dragging a corner to crop instead.
+  - Arrow keys nudge the selected item 1 px, or 10 px with Shift.
+  - Tick *Locked* in Properties for backgrounds, so clicks pass through them to the items on top.
 - **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
 - **Sources dock**: add a display, window, color or image source to the selected scene, tick to show or hide,
@@ -73,7 +78,7 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M4 drag-to-edit in the preview · M5 camera · M6 audio mixer ·
+M5 camera · M6 audio mixer ·
 M7 NVENC encoding and recording · M8 RTMP streaming · M9 vertical canvas outputs and multistream ·
 M10 transitions, hotkeys, stats · M11 plugins and polish.
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
+    QCheckBox,
     QColorDialog,
     QDockWidget,
     QDoubleSpinBox,
@@ -61,7 +62,9 @@ class MainWindow(QMainWindow):
         self.previews: dict[str, Preview] = {}
         splitter = QSplitter(Qt.Orientation.Horizontal)
         for canvas in collection.canvases:
-            preview = Preview(canvas.id.capitalize(), (canvas.width, canvas.height))
+            preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
+            preview.selected.connect(self._on_preview_selected)
+            preview.edited.connect(self._on_preview_edited)
             self.previews[canvas.id] = preview
             splitter.addWidget(preview)
             splitter.setStretchFactor(splitter.count() - 1, 3 if canvas.width >= canvas.height else 1)
@@ -138,6 +141,9 @@ class MainWindow(QMainWindow):
         self.prop_status = QLabel("")
         self.prop_status.setWordWrap(True)
         form.addRow("Status", self.prop_status)
+        self.prop_locked = QCheckBox("Locked (clicks in the preview pass through it)")
+        self.prop_locked.toggled.connect(self._on_locked_toggled)
+        form.addRow("", self.prop_locked)
         self._dock("Properties", panel, None, Qt.DockWidgetArea.BottomDockWidgetArea)
 
     def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> None:
@@ -183,15 +189,18 @@ class MainWindow(QMainWindow):
                 )
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
+                for preview in self.previews.values():
+                    preview.sizes = self.source_sizes
                 self._refresh_source_labels()
             elif isinstance(event, EngineError):
                 self.statusBar().showMessage(event.message, 10000)
                 if "compositor" in event.message:
                     QMessageBox.critical(self, "SprigCast", event.message)
 
-    def _changed(self) -> None:
-        """Save and hand a copy of the collection to the engine after every edit."""
-        self.collection.save(self.scenes_path)
+    def _changed(self, save: bool = True) -> None:
+        """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
+        if save:
+            self.collection.save(self.scenes_path)
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
@@ -231,7 +240,8 @@ class MainWindow(QMainWindow):
         for canvas_id, preview in self.previews.items():
             scene = self.collection.active_scene(canvas_id)
             preview.subtitle = scene.name if scene else "no scene"
-            preview.update()
+            index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
+            preview.set_scene(scene, index)
 
     def _refresh_scenes(self) -> None:
         self._updating = True
@@ -305,7 +315,9 @@ class MainWindow(QMainWindow):
         self.prop_name.setEnabled(enabled)
         self.prop_extra.setEnabled(enabled)
         self.prop_fit.setEnabled(enabled)
+        self.prop_locked.setEnabled(enabled)
         if item is not None:
+            self.prop_locked.setChecked(item.locked)
             config = self.collection.source(item.source)
             self.prop_name.setText(config.name)
             for key, box in self.spin.items():
@@ -323,7 +335,39 @@ class MainWindow(QMainWindow):
             self.prop_name.clear()
             self.prop_extra.setText("")
             self.prop_status.setText("")
+            self.prop_locked.setChecked(False)
         self._updating = False
+        self._refresh_previews()
+
+    # Preview editing -------------------------------------------------------------
+
+    def _on_preview_selected(self, canvas_id: str, index: int) -> None:
+        """A click in a preview selects that canvas's active scene and the item under the mouse."""
+        scene = self.collection.active_scene(canvas_id)
+        if scene is None:
+            return
+        if scene.id != self.selected_scene_id:
+            self.selected_scene_id = scene.id
+            self._refresh_scenes()
+        row = len(scene.items) - 1 - index if index >= 0 else None
+        self._refresh_sources(keep_row=row)
+
+    def _on_preview_edited(self, canvas_id: str, finished: bool) -> None:
+        self._changed(save=finished)
+        item = self._item()
+        if item is None:
+            return
+        self._updating = True
+        for key, box in self.spin.items():
+            box.setValue(float(getattr(item, key)))
+        self._updating = False
+
+    def _on_locked_toggled(self, locked: bool) -> None:
+        item = self._item()
+        if self._updating or item is None:
+            return
+        item.locked = locked
+        self._changed()
 
     # Scene actions ---------------------------------------------------------------
 
