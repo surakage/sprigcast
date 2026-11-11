@@ -30,11 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.preview import Preview
-from sprigcast.core.events import EngineError, ReplaceCollection, SourceInfo, Stats
+from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.render.engine import Engine
+from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
@@ -75,6 +77,7 @@ class MainWindow(QMainWindow):
         self._build_scenes_dock()
         self._build_sources_dock()
         self._build_properties_dock()
+        self._build_audio_dock()
         self._build_menu()
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
@@ -149,6 +152,15 @@ class MainWindow(QMainWindow):
         form.addRow("", self.prop_locked)
         self._dock("Properties", panel, None, Qt.DockWidgetArea.BottomDockWidgetArea)
 
+    def _build_audio_dock(self) -> None:
+        self.audio_panel = AudioPanel(self._on_audio_changed)
+        buttons = QHBoxLayout()
+        buttons.addWidget(_button("+ Mic", lambda: self._add_audio("audio_input")))
+        buttons.addWidget(_button("+ Desktop", lambda: self._add_audio("audio_output")))
+        buttons.addWidget(_button("Device…", self._change_audio_device))
+        buttons.addWidget(_button("Remove", self._remove_audio))
+        self._dock("Audio", self.audio_panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+
     def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> None:
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
@@ -190,6 +202,8 @@ class MainWindow(QMainWindow):
                 self.status.setText(
                     f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
                 )
+            elif isinstance(event, AudioLevels):
+                self.audio_panel.set_levels(event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
                 for preview in self.previews.values():
@@ -235,6 +249,7 @@ class MainWindow(QMainWindow):
     # Refreshing widgets ------------------------------------------------------
 
     def _refresh_all(self) -> None:
+        self._refresh_audio()
         self._refresh_scenes()
         self._refresh_sources()
         self._refresh_previews()
@@ -342,6 +357,78 @@ class MainWindow(QMainWindow):
             self.prop_locked.setChecked(False)
         self._updating = False
         self._refresh_previews()
+
+    # Audio -------------------------------------------------------------------------
+
+    AUDIO_KINDS = ("audio_input", "audio_output")
+
+    def _refresh_audio(self) -> None:
+        self.audio_panel.set_sources(
+            [
+                (s.id, s.name, float(s.settings.get("volume_db", 0.0)), bool(s.settings.get("muted", False)))
+                for s in self.collection.sources
+                if s.kind in self.AUDIO_KINDS
+            ]
+        )
+
+    def _on_audio_changed(self, source_id: str, volume_db: float, muted: bool) -> None:
+        config = self.collection.source(source_id)
+        config.settings = {**config.settings, "volume_db": volume_db, "muted": muted}
+        self._changed()
+
+    def _pick_audio_device(self, kind: str, current: str = "default") -> str | None:
+        devices = list_audio_devices(loopback=(kind == "audio_output"))
+        if not devices:
+            QMessageBox.information(self, "SprigCast", "Audio capture is only available on Windows.")
+            return None
+        labels = ["Default (follows Windows)"] + [d.name for d in devices]
+        start = labels.index(current) if current in labels else 0
+        title = "Desktop audio" if kind == "audio_output" else "Microphone"
+        label, ok = QInputDialog.getItem(self, title, "Device:", labels, start, False)
+        if not ok:
+            return None
+        return "default" if label == labels[0] else label
+
+    def _add_audio(self, kind: str) -> None:
+        device = self._pick_audio_device(kind)
+        if device is None:
+            return
+        base = "Desktop audio" if kind == "audio_output" else "Mic"
+        name = base if device == "default" else f"{base} ({device})"
+        self.collection.sources.append(
+            SourceConfig(
+                id=self.collection.new_id("desktop" if kind == "audio_output" else "mic"),
+                kind=kind,
+                name=name,
+                settings={"device": device, "volume_db": 0.0, "muted": False},
+            )
+        )
+        self._changed()
+        self._refresh_audio()
+
+    def _change_audio_device(self) -> None:
+        source_id = self.audio_panel.selected_id()
+        if source_id is None:
+            QMessageBox.information(self, "SprigCast", "Select an audio source first (click its name).")
+            return
+        config = self.collection.source(source_id)
+        device = self._pick_audio_device(config.kind, str(config.settings.get("device", "default")))
+        if device is None:
+            return
+        config.settings = {**config.settings, "device": device}
+        base = "Desktop audio" if config.kind == "audio_output" else "Mic"
+        config.name = base if device == "default" else f"{base} ({device})"
+        self._changed()
+        self._refresh_audio()
+
+    def _remove_audio(self) -> None:
+        source_id = self.audio_panel.selected_id()
+        if source_id is None:
+            QMessageBox.information(self, "SprigCast", "Select an audio source first (click its name).")
+            return
+        self.collection.sources = [s for s in self.collection.sources if s.id != source_id]
+        self._changed()
+        self._refresh_audio()
 
     # Preview editing -------------------------------------------------------------
 

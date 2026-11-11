@@ -8,7 +8,9 @@
     { "id": "bg-moss", "kind": "color", "name": "Moss background", "settings": { "color": "#2f4a3a", "width": 1920, "height": 1920 } },
     { "id": "panel-bloom", "kind": "color", "name": "Bloom panel", "settings": { "color": "#e8a4b8cc", "width": 640, "height": 360 } },
     { "id": "bar-sprig", "kind": "color", "name": "Sprig bar", "settings": { "color": "#9cc89a", "width": 1920, "height": 96 } },
-    { "id": "bg-night", "kind": "color", "name": "Night background", "settings": { "color": "#1d2233", "width": 1920, "height": 1920 } }
+    { "id": "bg-night", "kind": "color", "name": "Night background", "settings": { "color": "#1d2233", "width": 1920, "height": 1920 } },
+    { "id": "desktop-audio", "kind": "audio_output", "name": "Desktop audio", "settings": { "device": "default", "volume_db": 0.0, "muted": false } },
+    { "id": "mic", "kind": "audio_input", "name": "Mic", "settings": { "device": "default", "volume_db": 0.0, "muted": false } }
   ],
   "scenes": [
     { "id": "starting", "name": "Starting soon", "canvas": "horizontal", "items": [

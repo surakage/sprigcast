@@ -4,9 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M5 of the build guide:
+Status: early development. This code covers milestones M0 to M6 of the build guide:
 toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
-display and window capture, webcams, and mouse editing in the previews.
+display and window capture, webcams, mouse editing in the previews, and an audio mixer.
 
 ## Requirements
 
@@ -55,6 +55,12 @@ The key is typed at a hidden prompt and is never saved.
   - *+ Camera* adds a webcam or capture card as a facecam in the bottom-right corner. Pick the device,
     mode (for example 1920x1080 at 30 fps) and mirroring. Cameras are remembered by device, so
     replugging into another USB port is fine, and an unplugged camera reconnects on its own.
+- **Audio dock**: a level meter for every audio source plus the master mix.
+  - *+ Mic* adds a microphone, *+ Desktop* adds what your speakers or headphones play (WASAPI loopback).
+    Both default to whatever device Windows uses, so switching headsets in Windows just works.
+  - Drag a slider to set the volume (-60 to +12 dB), click *Mute* to silence it,
+    and use *Device…* to pin a source to one device or *Remove* to delete it.
+  - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
 - **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
   window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
 
@@ -70,7 +76,8 @@ Scenes save automatically to `scenes.json` in your AppData folder
 src/sprigcast/
   core/      scene collection model (canvases, sources, scenes, outputs), Source base class, mailbox, events
   render/    moderngl compositor and the render engine thread
-  sources/   built-in sources: color, image, display and window capture, plus monitor and window lookup
+  sources/   built-in sources: color, image, display and window capture, camera, mic and desktop audio
+  audio/     mixer that combines audio sources into one 48 kHz stereo stream
   app/       PySide6 main window and canvas previews
   tools/     sprigcast-check and sprigcast-teststream
   data/      default scene collection used on first run
@@ -81,7 +88,6 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M6 audio mixer ·
 M7 NVENC encoding and recording · M8 RTMP streaming · M9 vertical canvas outputs and multistream ·
 M10 transitions, hotkeys, stats · M11 plugins and polish.
 

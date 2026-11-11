@@ -15,14 +15,13 @@ dependencies = [
     "windows-capture>=2.0; sys_platform == 'win32'",  # display and window capture (M3)
     "opencv-python>=4.9",  # camera capture (M5)
     "cv2-enumerate-cameras>=1.4; sys_platform == 'win32'",  # camera names and stable device paths
+    "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",  # mic and desktop audio over WASAPI (M6)
+    "soxr>=0.3",  # resampling to 48 kHz
 ]
 
 [project.optional-dependencies]
-# Needed from milestone M6 onward (audio, hotkeys).
+# Needed from later milestones (stream keys, hotkeys).
 devices = [
-    "sounddevice>=0.4",
-    "PyAudioWPatch>=0.2.12; sys_platform == 'win32'",
-    "soxr>=0.3",
     "keyring>=25",
     "pynput>=1.7",
 ]

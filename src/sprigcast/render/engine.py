@@ -8,7 +8,8 @@ import threading
 import time
 from collections import deque
 
-from sprigcast.core.events import EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
+from sprigcast.audio.mixer import Mixer
+from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, Shutdown, SourceInfo, Stats
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import Source, create_source
@@ -33,10 +34,12 @@ class Engine:
         self._collection = collection.model_copy(deep=True)
         self._sources: dict[str, Source] = {}
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
+        self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
 
     # Called from the UI thread ----------------------------------------------
 
     def start(self) -> None:
+        self.mixer.start()
         self._thread.start()
 
     def send(self, command) -> None:
@@ -45,6 +48,7 @@ class Engine:
     def stop(self, timeout: float = 2.0) -> None:
         self.commands.put(Shutdown())
         self._thread.join(timeout)
+        self.mixer.stop()
 
     # Render thread -------------------------------------------------------------
 
@@ -133,6 +137,7 @@ class Engine:
                 self._sources[source_id] = source
             elif existing.settings != config.settings:
                 existing.update(config.settings)
+        self.mixer.set_sources(list(self._sources.values()))
 
     def _tick(self, compositor) -> None:
         for source_id, source in self._sources.items():

@@ -39,5 +39,12 @@ class SourceInfo:
 
 
 @dataclass
+class AudioLevels:
+    """About 15 times a second: (peak, RMS) in dBFS per audio source id, plus "master"."""
+
+    levels: dict[str, tuple[float, float]]
+
+
+@dataclass
 class EngineError:
     message: str
