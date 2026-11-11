@@ -4,9 +4,9 @@ A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose.
 
-Status: early development. This code covers milestones M0 to M10 of the build guide:
-toolchain checks, a GPU canvas with live previews, scenes built from color and image sources,
-display and window capture, webcams, mouse editing in the previews, an audio mixer, recording, live streaming, transitions, hotkeys and stats.
+Status: all milestones of the build guide (M0 to M11) are in: a GPU canvas with live previews,
+scenes built from color, image and text sources, display and window capture, webcams, mouse editing
+in the previews, an audio mixer, recording, live streaming, transitions, hotkeys, stats, plugins and a dark theme.
 
 ## Requirements
 
@@ -81,14 +81,48 @@ The key is typed at a hidden prompt and is never saved.
     for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
     *Recording…* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays playable
     if the PC crashes. *Folder* opens your recordings. Streaming and recording can run together.
+- **Text sources** (*+ Text*): titles and labels with a font, size, colour and outline.
+  `{time}`, `{time12}` and `{date}` in the text show a live clock. Set *File* to a text file and its
+  contents are shown instead and follow its changes, handy for "now playing" tools.
 - **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
   window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
 
 Capture uses Windows Graphics Capture. SprigCast hides the yellow capture border on Windows 11;
 Windows 10 always shows it.
 
+The window remembers its size and where you put the docks. SprigCast uses a dark Slothbloom theme;
+set the environment variable `SPRIGCAST_THEME=system` before launching to keep the plain Windows look.
+
 Scenes save automatically to `scenes.json` in your AppData folder
 (*File → Show scenes file location* shows the exact path).
+
+## Plugins
+
+A plugin is a Python file that adds a new source type. *File → Open plugins folder* opens the folder
+(`%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`). Every `.py` file there loads at startup; files whose
+name starts with `_` are skipped. Plugin sources appear under *Sources → + More*.
+
+The first launch puts an example there, `countdown_example.py`, a "Starting in 4:59" countdown built on
+the text source. A minimal plugin looks like this:
+
+```python
+from sprigcast.core.source import register
+from sprigcast.sources.text import TextSource
+
+@register("shout")
+class ShoutSource(TextSource):
+    label = "Shout"                                   # name in the + More menu
+    defaults = {**TextSource.defaults, "text": "hi"}  # fields in its Settings dialog
+
+    def _current_text(self):
+        return self.settings.get("text", "").upper() + "!"
+```
+
+For anything other than text, subclass `sprigcast.core.source.Source` and implement `size` and
+`video_frame()` (return an RGBA NumPy array when the picture changes, `None` otherwise) or
+`audio_samples()`. Installed packages can also register plugins through a `sprigcast.plugins` entry point.
+A plugin that fails to load is named in the status bar and skipped. Plugins run with the same rights
+as SprigCast, so only install ones you trust.
 
 ## Project layout
 
@@ -96,10 +130,11 @@ Scenes save automatically to `scenes.json` in your AppData folder
 src/sprigcast/
   core/      scene collection model (canvases, sources, scenes, outputs), Source base class, mailbox, events
   render/    moderngl compositor and the render engine thread
-  sources/   built-in sources: color, image, display and window capture, camera, mic and desktop audio
+  sources/   built-in sources: color, image, text, display and window capture, camera, mic and desktop audio
   audio/     mixer that combines audio sources into one 48 kHz stereo stream
   output/    recorder (MKV/MP4) and RTMP streamer: H.264 (NVENC or x264) and AAC, stream keys via keyring
-  app/       PySide6 main window and canvas previews
+  app/       PySide6 main window, canvas previews, dialogs and theme
+  plugins.py loads source plugins from the plugins folder and entry points
   tools/     sprigcast-check and sprigcast-teststream
   data/      default scene collection used on first run
 tests/       pytest suite (GPU tests skip when no OpenGL context is available)
@@ -109,7 +144,8 @@ Run the tests with `uv run pytest`.
 
 ## Roadmap
 
-M11 plugins and polish.
+All planned milestones are done. Ideas for later: more transition types (slide, stinger), filters
+such as chroma key and colour correction, scene switching from chat or a Stream Deck, and replay buffer.
 
 ## License
 

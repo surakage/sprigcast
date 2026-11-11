@@ -69,3 +69,10 @@ def known_kinds() -> list[str]:
     import sprigcast.sources  # noqa: F401
 
     return sorted(_REGISTRY)
+
+
+def source_class(kind: str):
+    """The class registered for `kind`, or None. Lets the UI read a kind's `label` and `defaults`."""
+    import sprigcast.sources  # noqa: F401
+
+    return _REGISTRY.get(kind)

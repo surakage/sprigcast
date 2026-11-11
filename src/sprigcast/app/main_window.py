@@ -8,7 +8,7 @@ import queue
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, QTimer, QUrl
+from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -43,10 +44,12 @@ from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Ho
 from sprigcast.app.hotkeys_dialog import HotkeysDialog
 from sprigcast.app.preview import Preview
 from sprigcast.app.recording_dialog import RecordingDialog
+from sprigcast.app.settings_dialog import SettingsDialog
 from sprigcast.app.stats_panel import StatsPanel
 from sprigcast.app.stream_dialog import StreamDialog, output_label
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
+from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key
 from sprigcast.output.recorder import RecordingSession, codec_label, pick_codec
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
@@ -59,6 +62,18 @@ ROLE_ID = Qt.ItemDataRole.UserRole
 log = logging.getLogger(__name__)
 
 
+# Kinds that have their own button or dock; everything else with a `label` goes in "+ More".
+BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output"}
+
+
+def _name_from(settings: dict, fallback: str) -> str:
+    """A text source is named after its first line, so the sources list is readable."""
+    first = str(settings.get("text", "")).strip().splitlines()
+    if not first:
+        return fallback
+    return first[0] if len(first[0]) <= 30 else first[0][:29] + "…"
+
+
 def _button(text: str, slot) -> QPushButton:
     b = QPushButton(text)
     b.clicked.connect(slot)
@@ -66,10 +81,11 @@ def _button(text: str, slot) -> QPushButton:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, collection: SceneCollection, scenes_path: Path):
+    def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None):
         super().__init__()
         self.collection = collection
         self.scenes_path = scenes_path
+        self.plugins_dir = plugins_dir
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
         self._updating = False  # True while we fill widgets, so their signals do not echo back
         self.source_sizes: dict[str, tuple[int, int]] = {}
@@ -159,7 +175,25 @@ class MainWindow(QMainWindow):
         self.collection.transition.kind = self.transition_kind.currentData()
         self.collection.transition.duration_ms = self.transition_ms.value()
         self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
+        self._restore_layout()
         self._changed()
+
+    # Window layout ---------------------------------------------------------------
+
+    def _restore_layout(self) -> None:
+        """Put the window and docks back where they were last time (if the screen still fits them)."""
+        settings = QSettings()
+        geometry = settings.value("window/geometry")
+        state = settings.value("window/state")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        if state is not None:
+            self.restoreState(state)
+
+    def _save_layout(self) -> None:
+        settings = QSettings()
+        settings.setValue("window/geometry", self.saveGeometry())
+        settings.setValue("window/state", self.saveState())
 
     def _build_sources_dock(self) -> None:
         self.source_list = QListWidget()
@@ -171,6 +205,12 @@ class MainWindow(QMainWindow):
         buttons.addWidget(_button("+ Camera", self._add_camera))
         buttons.addWidget(_button("+ Color", self._add_color))
         buttons.addWidget(_button("+ Image", self._add_image))
+        buttons.addWidget(_button("+ Text", self._add_text))
+        self.more_button = QPushButton("+ More")
+        self.more_menu = QMenu(self.more_button)
+        self.more_menu.aboutToShow.connect(self._fill_more_menu)
+        self.more_button.setMenu(self.more_menu)
+        buttons.addWidget(self.more_button)
         buttons.addWidget(_button("Remove", self._remove_item))
         buttons.addWidget(_button("Up", lambda: self._move_item(+1)))
         buttons.addWidget(_button("Down", lambda: self._move_item(-1)))
@@ -295,6 +335,10 @@ class MainWindow(QMainWindow):
         recordings = QAction("Open recordings folder", self)
         recordings.triggered.connect(self._open_recordings_folder)
         file_menu.addAction(recordings)
+        plugins = QAction("Open plugins folder", self)
+        plugins.triggered.connect(self._open_plugins_folder)
+        plugins.setEnabled(self.plugins_dir is not None)
+        file_menu.addAction(plugins)
         view_menu = self.menuBar().addMenu("&View")
         stats_action = self.stats_dock.toggleViewAction()
         stats_action.setText("Stats")
@@ -347,6 +391,7 @@ class MainWindow(QMainWindow):
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        self._save_layout()
         self.hotkeys.stop()
         if self.streaming is not None:
             self._stop_streaming()
@@ -478,6 +523,7 @@ class MainWindow(QMainWindow):
                     "display_capture": "Choose monitor…",
                     "window_capture": "Choose window…",
                     "camera": "Camera settings…",
+                    "text": "Edit text…",
                 }.get(config.kind, "Settings…")
             )
             self.prop_status.setText(self._status_text(item.source))
@@ -692,6 +738,57 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _add_text(self) -> None:
+        self._add_from_class("text", "Text")
+
+    def _add_from_class(self, kind: str, name: str) -> None:
+        """Add a source whose settings form is described by its class's `defaults` (text and plugins)."""
+        if self._scene() is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        cls = source_class(kind)
+        defaults = dict(getattr(cls, "defaults", {}) or {})
+        dialog = SettingsDialog(f"New {name}", defaults, defaults, self)
+        if not dialog.exec():
+            return
+        settings = dialog.values()
+        scene = self._scene()
+        self._add_item(
+            SourceConfig(id=self.collection.new_id(kind), kind=kind, name=_name_from(settings, name), settings=settings)
+        )
+        # Start each new one a little lower so several don't pile up in the corner.
+        canvas = self.collection.canvas(scene.canvas)
+        stacked = sum(1 for i in scene.items[:-1] if self.collection.source(i.source).kind == kind)
+        scene.items[-1].x = round(canvas.width * 0.05)
+        scene.items[-1].y = round(canvas.height * 0.05) + (stacked * 100) % max(1, canvas.height // 2)
+        self._changed()
+        self._refresh_properties()
+
+    def _fill_more_menu(self) -> None:
+        """List source kinds from plugins (any registered class with a `label` that has no button of its own)."""
+        self.more_menu.clear()
+        entries = sorted(
+            (getattr(source_class(kind), "label", None), kind)
+            for kind in known_kinds()
+            if kind not in BUILT_IN_KINDS and getattr(source_class(kind), "label", None)
+        )
+        for label, kind in entries:
+            action = self.more_menu.addAction(label)
+            action.triggered.connect(lambda _=False, k=kind, n=label: self._add_from_class(k, n))
+        if not entries:
+            empty = self.more_menu.addAction("No plugin sources installed")
+            empty.setEnabled(False)
+        self.more_menu.addSeparator()
+        folder = self.more_menu.addAction("Open plugins folder…")
+        folder.setEnabled(self.plugins_dir is not None)
+        folder.triggered.connect(self._open_plugins_folder)
+
+    def _open_plugins_folder(self) -> None:
+        if self.plugins_dir is None:
+            return
+        self.plugins_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.plugins_dir)))
+
     def _add_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose image", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)")
         if not path:
@@ -886,6 +983,19 @@ class MainWindow(QMainWindow):
                 return
             config.settings = {**config.settings, "title": window.title, "process": window.process}
             config.name = window.title if len(window.title) <= 40 else window.title[:37] + "…"
+        else:
+            cls = source_class(config.kind)
+            defaults = getattr(cls, "defaults", None) if cls is not None else None
+            if not defaults:
+                QMessageBox.information(self, "SprigCast", f"{config.kind!r} sources have no settings to edit.")
+                return
+            dialog = SettingsDialog(config.name, defaults, config.settings, self)
+            if not dialog.exec():
+                return
+            old_auto = _name_from(config.settings, config.name)
+            config.settings = dialog.values()
+            if config.name == old_auto:  # the name followed the text, so keep it following
+                config.name = _name_from(config.settings, config.name)
         self._changed()
         self._refresh_sources(keep_row=self.source_list.currentRow())
 
