@@ -85,6 +85,10 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     fills in its preset (Twitch: horizontal 1920×1080 60 fps 6000 kbps; TikTok: vertical 720×1280 30 fps
     4000 kbps), and you can change the canvas, resolution, frame rate and bitrate per output.
     Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
+  - Twitch: *Connect Twitch…* signs in with a code at twitch.tv/activate (no password goes through
+    SprigCast) and fills in your stream key. With *Get the stream key from my Twitch account* ticked,
+    SprigCast asks Twitch for the current key each time you go live, so resetting it on Twitch just works;
+    if Twitch can't be reached it uses the saved key. Only the "read stream key" permission is requested.
   - Twitch has a *Bandwidth test* option: the stream reaches Twitch so you can check it, but viewers never see it.
   - Tick the places to stream to and press *Go live*. Each one gets its own NVENC encoder (constant bitrate,
     keyframe every 2 s), so Twitch can take the horizontal canvas while TikTok takes the vertical one.

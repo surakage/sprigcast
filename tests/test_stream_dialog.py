@@ -63,3 +63,24 @@ def test_picking_tiktok_applies_its_preset(fake_keyring):
     assert d.bandwidth_test.isVisibleTo(d)
     d.bandwidth_test.setChecked(True)
     assert out.bandwidth_test
+
+
+def test_twitch_account_row(fake_keyring, monkeypatch):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import twitch_auth
+
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)],
+        outputs=[Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/twitch")],
+    )
+    d = StreamPage(col)
+    assert d.twitch_row.isVisibleTo(d) and d.twitch_button.text() == "Connect Twitch…"
+    assert not d.use_account.isVisibleTo(d)
+    monkeypatch.setattr(twitch_auth, "connected_account", lambda: "surakage")
+    d._show_service(d.outputs[0])
+    assert d.twitch_label.text() == "Connected as surakage" and d.use_account.isVisibleTo(d)
+    d.use_account.setChecked(True)
+    assert d.outputs[0].twitch_account
+    d.service.setCurrentIndex(d.service.findData("tiktok"))
+    assert not d.twitch_row.isVisibleTo(d) and not d.outputs[0].twitch_account

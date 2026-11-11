@@ -1322,6 +1322,8 @@ class MainWindow(QMainWindow):
             service = SERVICES.get(output.service or "custom", SERVICES["custom"])
             server = service.server or output.server
             key = get_key(output.key_ref)
+            if output.twitch_account and output.service == "twitch":
+                key = self._fresh_twitch_key(output, key)
             canvas = next((c for c in self.collection.canvases if c.id == output.canvas and c.enabled), None)
             if not server:
                 problems.append(f"{service.label}: paste the server URL in Stream…")
@@ -1355,6 +1357,26 @@ class MainWindow(QMainWindow):
             box.setEnabled(False)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
+
+    def _fresh_twitch_key(self, output, saved: str | None) -> str | None:
+        """Ask Twitch for the current key (it changes if you reset it); fall back to the saved one."""
+        from sprigcast.output import twitch_auth
+        from sprigcast.output.keys import set_key
+
+        self.stream_status.setText("Getting your stream key from Twitch…")
+        self.stream_status.repaint()
+        try:
+            key = twitch_auth.fetch_stream_key()
+        except Exception as exc:
+            log.warning("could not fetch the Twitch stream key: %s", exc)
+            self.statusBar().showMessage(f"{exc} Using the saved stream key.", 15000)
+            return saved
+        if key != saved and output.key_ref:
+            try:
+                set_key(output.key_ref, key)
+            except Exception as exc:
+                log.warning("could not save the fetched Twitch key: %s", exc)
+        return key
 
     def _stop_streaming(self) -> None:
         session, self.streaming = self.streaming, None
