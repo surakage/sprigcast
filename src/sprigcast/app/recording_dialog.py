@@ -60,7 +60,6 @@ class RecordingPage(QWidget):
         self.container.setCurrentIndex(list(CONTAINER_LABELS).index(settings.container))
         form.addRow("File type", self.container)
 
-        form.addRow("Encoder", QLabel(encoder))
 
         self.canvas_boxes: dict[str, QCheckBox] = {}
         for i, canvas in enumerate(canvases):

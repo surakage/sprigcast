@@ -84,7 +84,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
 - **Settings** (the *Settings* button in Controls, the *Settings* menu, or Ctrl+,): one window with tabs down the left.
   - *General*: theme (Slothbloom dark or the plain Windows look), snapping (on/off, sensitivity, canvas edges,
     other sources, centre lines), and whether to ask before ending a stream or stopping a recording.
-  - *Stream*, *Recording*, *Hotkeys*: described below.
+  - *Stream*, *Output*, *Hotkeys*: described below.
   - *Audio*: which device each mic and desktop audio source uses ("Default" follows Windows).
   - *Video*: size, frame rate and on/off for each canvas. These apply the next time SprigCast starts.
   - *Plugins*: which plugins loaded (and why any failed), what they added, and *Open plugins folder*.
@@ -93,7 +93,9 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - *Settings → Stream* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
     fills in its preset (Twitch: horizontal 1920×1080 60 fps 6000 kbps; TikTok: vertical 720×1280 30 fps
     4000 kbps), and you can change the canvas, resolution, frame rate and bitrate per output.
-    Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
+    The page is grouped like OBS: *Destination*, *Video*, *Multitrack Video* (Twitch) and *Advanced options*.
+    Unless *Ignore streaming service setting recommendations* is ticked, the bitrate is capped at what the
+    service accepts (Twitch: 6000 kbps). Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
   - Twitch: *Connect Twitch…* signs in with a code at twitch.tv/activate (no password goes through
     SprigCast) and fills in your stream key. With *Get the stream key from my Twitch account* ticked,
     SprigCast asks Twitch for the current key each time you go live, so resetting it on Twitch just works;
@@ -101,17 +103,22 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - Twitch *Enhanced Broadcasting*: tick it and SprigCast asks Twitch which qualities suit your PC
     (it sends your GPU, CPU, memory and Windows version, like OBS does), then encodes them all at once on
     the GPU and sends them over one connection, so viewers get quality options without Twitch transcoding.
-    *Also send the vertical canvas* adds Twitch's dual-format vertical stream from the vertical canvas.
+    *Maximum streaming bandwidth* and *Maximum video tracks* (Auto or a limit) cap what Twitch picks, and
+    *Additional canvas* adds Twitch's dual-format vertical stream from the vertical canvas.
     If Twitch can't set it up, SprigCast offers to go live with a single quality instead.
   - Twitch has a *Bandwidth test* option: the stream reaches Twitch so you can check it, but viewers never see it.
-  - Tick the places to stream to and press *Go live*. Each one gets its own NVENC encoder (constant bitrate,
-    keyframe every 2 s), so Twitch can take the horizontal canvas while TikTok takes the vertical one.
+  - *Settings → Output* has the encoder settings, like OBS: rate control (CBR, VBR or constant quality),
+    keyframe interval, preset P1 to P7, tuning, multipass, profile, look-ahead, adaptive quantization,
+    B-frames and audio bitrate, once for streaming and once for recording. The defaults match what SprigCast
+    always used (CBR, P5, high quality, 2 s keyframes). A banner says when Enhanced Broadcasting is
+    choosing the Twitch output's settings instead.
+  - Tick the places to stream to and press *Go live*. Each one gets its own NVENC encoder, so Twitch can take the horizontal canvas while TikTok takes the vertical one.
     Each output shows a health dot: green is fine, yellow is falling behind, red is dropping frames or
     disconnected, with the reason (upload too slow for the bitrate, or encoder overloaded).
     A dropped connection reconnects on its own.
   - *Start recording* writes each ticked canvas to its own file at the same time,
     for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
-    *Settings → Recording* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays
+    *Settings → Output → Recording* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays
     playable if the PC crashes. *File → Open recordings folder* opens your recordings. Streaming and recording can run together.
 - **Text sources** (**+ → Text**): titles and labels with a font, size, colour and outline.
   `{time}`, `{time12}` and `{date}` in the text show a live clock. Set *File* to a text file and its

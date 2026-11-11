@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.hotkeys_dialog import HotkeysPage
+from sprigcast.app.output_page import OutputPage
 from sprigcast.app.recording_dialog import RecordingPage
 from sprigcast.app.stream_dialog import StreamPage
 from sprigcast.app.theme import THEMES, chosen_theme
@@ -40,7 +41,8 @@ from sprigcast.core.filters import filter_kinds
 from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import known_kinds, source_class
 
-TABS = ["General", "Stream", "Recording", "Audio", "Video", "Hotkeys", "Plugins"]
+TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Plugins"]
+TAB_ALIASES = {"Recording": "Output"}  # older menu entries
 FPS_CHOICES = [24, 25, 30, 48, 50, 60]
 AUDIO_KINDS = ("audio_input", "audio_output")
 
@@ -141,7 +143,7 @@ class SettingsWindow(QDialog):
         for name, page in (
             ("General", self._general_page()),
             ("Stream", self._stream_page()),
-            ("Recording", self._recording_page(encoder)),
+            ("Output", self._output_page(encoder)),
             ("Audio", self._audio_page(audio_devices)),
             ("Video", self._video_page()),
             ("Hotkeys", self._hotkeys_page()),
@@ -154,6 +156,9 @@ class SettingsWindow(QDialog):
             scroll.setWidget(page)
             self.stack.addWidget(scroll)
         self.tabs.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.tabs.currentRowChanged.connect(self._tab_changed)
+        self.output_page.show_tab(tab)
+        tab = TAB_ALIASES.get(tab, tab)
         self.tabs.setCurrentRow(TABS.index(tab) if tab in TABS else 0)
 
         body = QHBoxLayout()
@@ -268,15 +273,19 @@ class SettingsWindow(QDialog):
             widgets.insert(0, _hint("You're live. End the stream to change these."))
         return _page(*widgets, stretch=False)
 
-    def _recording_page(self, encoder: str) -> QWidget:
+    def _output_page(self, encoder: str) -> QWidget:
         self.recording_page = RecordingPage(
             self.collection.recording, self.default_recordings_folder, encoder, self.collection.canvases
         )
-        widgets: list[QWidget] = [self.recording_page]
-        if self.recording:
-            self.recording_page.setEnabled(False)
-            widgets.insert(0, _hint("Recording now. Stop the recording to change these."))
-        return _page(*widgets)
+        self.output_page = OutputPage(self.collection, encoder, self.recording_page,
+                                      streaming=self.streaming, recording=self.recording)
+        return _page(self.output_page)
+
+    def _tab_changed(self, row: int) -> None:
+        if TABS[row] == "Output":  # the banner follows the Stream tab's unsaved choices too
+            self.output_page.banner.setVisible(any(
+                o.enabled and o.service == "twitch" and o.enhanced for o in self.stream_page.outputs
+            ))
 
     def _audio_page(self, audio_devices: dict[str, list[str]]) -> QWidget:
         group = QGroupBox("Devices")
@@ -365,6 +374,7 @@ class SettingsWindow(QDialog):
             return False
         if not self.recording:
             self.recording_page.apply_to(self.collection.recording, self.default_recordings_folder)
+        self.output_page.apply_to(self.collection)
         self.collection.hotkeys = self.hotkeys_page.result_hotkeys()
         for source in self.collection.sources:
             combo = self.audio_combos.get(source.id)

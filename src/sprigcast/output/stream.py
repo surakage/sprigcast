@@ -107,9 +107,10 @@ class Streamer(Recorder):
         start_time: float,
         out_size: tuple[int, int] | None = None,
         bandwidth_test: bool = False,
+        encoder=None,
     ):
         super().__init__(
-            Path(f"stream {name}"), width, height, fps, bitrate_kbps, codec, start_time, "flv", out_size
+            Path(f"stream {name}"), width, height, fps, bitrate_kbps, codec, start_time, "flv", out_size, encoder
         )
         self.name = name
         self.bandwidth_test = bandwidth_test
@@ -210,12 +211,11 @@ class Streamer(Recorder):
 
         return av.open(self._url, "w", format="flv")
 
-    def _video_options(self) -> dict[str, str]:
-        k = self.bitrate_kbps
-        rate = {"maxrate": f"{k}k", "bufsize": f"{k}k"}  # constant bitrate, what Twitch and others ask for
-        if self.codec == "h264_nvenc":
-            return {"preset": "p5", "tune": "hq", "rc": "cbr", "profile": "high", "spatial-aq": "1", **rate}
-        return {"preset": "veryfast", "profile": "high", "nal-hrd": "cbr", **rate}
+    @staticmethod
+    def default_encoder():
+        from sprigcast.core.scene import EncoderSettings
+
+        return EncoderSettings()  # constant bitrate, what Twitch and others ask for
 
     # Sending: the encoder thread queues packets, a sender thread writes them to the network ----------
 
@@ -331,7 +331,7 @@ class StreamSession:
         self.started_at = time.monotonic()
 
     @classmethod
-    def start(cls, engine, targets: list[StreamTarget], codec: str) -> "StreamSession":
+    def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None) -> "StreamSession":
         from sprigcast.output.enhanced_stream import EnhancedStreamer
 
         start_time = time.perf_counter()
@@ -344,7 +344,7 @@ class StreamSession:
             else:
                 fps = min(t.fps or c.fps, c.fps)
                 st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
-                              t.size, t.bandwidth_test)
+                              t.size, t.bandwidth_test, encoder)
                 taps.append((c.id, st.push_frame))
             st.start()
             streamers.append((c.id, st))

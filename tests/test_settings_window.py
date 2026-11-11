@@ -102,3 +102,33 @@ def test_plugins_have_their_own_tab(app):
     rows = [w.plugin_list.item(i).text() for i in range(w.plugin_list.count())]
     assert any("countdown_example.py" in r for r in rows) and any("broken.py" in r for r in rows)
     assert not hasattr(w, "plugin_status")  # nothing about plugins left on General
+
+
+def test_output_tab_encoder_settings(app):
+    from sprigcast.core.scene import Output
+
+    col = _collection()
+    w = _window(col, tab="Recording")  # old name opens Output → Recording
+    assert w.current_tab() == "Output" and w.output_page.tabs.currentIndex() == 1
+    assert not w.output_page.banner.isVisibleTo(w)
+    f = w.output_page.stream_form
+    f.rate_control.setCurrentIndex(f.rate_control.findData("cqp"))
+    assert f.cq_level.isVisibleTo(f)
+    f.preset.setCurrentIndex(f.preset.findData("p7"))
+    f.multipass.setCurrentIndex(f.multipass.findData("qres"))
+    f.b_frames.setValue(0)
+    f.lookahead.setChecked(True)
+    w.output_page.record_form.keyint.setValue(4)
+    assert w.apply()
+    enc = col.stream_encoder
+    assert (enc.rate_control, enc.preset, enc.multipass, enc.b_frames, enc.lookahead) == ("cqp", "p7", "qres", 0, True)
+    assert col.recording.encoder.keyint_sec == 4 and col.recording.encoder.rate_control == "vbr"
+
+    col.outputs = [Output(id="t", type="stream", service="twitch", canvas="horizontal", enabled=True, enhanced=True)]
+    w = _window(col, tab="Output")
+    assert w.output_page.banner.isVisibleTo(w)
+
+
+def test_output_tab_locked_while_live(app):
+    w = _window(_collection(), tab="Output", streaming=True)
+    assert not w.output_page.stream_form.isEnabled() and w.output_page.record_form.isEnabled()

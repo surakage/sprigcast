@@ -517,6 +517,7 @@ class MainWindow(QMainWindow):
         settings_menu.addSeparator()
         for tab, label in (
             ("Stream", "Stream outputs…"),
+            ("Output", "Output (encoder)…"),
             ("Recording", "Recording…"),
             ("Audio", "Audio devices…"),
             ("Video", "Canvases…"),
@@ -1251,7 +1252,8 @@ class MainWindow(QMainWindow):
         self.record_status.setText("Starting…")
         try:
             self.recording = RecordingSession.start(
-                self.engine, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container
+                self.engine, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
+                encoder=settings.encoder,
             )
         except Exception as exc:
             self.recording = None
@@ -1359,7 +1361,8 @@ class MainWindow(QMainWindow):
                 problems.append(f"{service.label}: the {output.canvas} canvas is not available")
             else:
                 name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
-                target = StreamTarget(name, canvas, server, key, output.bitrate_kbps, output.size, output.fps,
+                kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
+                target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
                                       output.bandwidth_test and service.bandwidth_test)
                 if output.enhanced and output.service == "twitch":
                     target = self._enhanced_target(output, target)
@@ -1372,7 +1375,7 @@ class MainWindow(QMainWindow):
         self.live_button.setEnabled(False)
         self.stream_status.setText("Connecting…")
         try:
-            self.streaming = StreamSession.start(self.engine, targets, pick_codec())
+            self.streaming = StreamSession.start(self.engine, targets, pick_codec(), self.collection.stream_encoder)
         except Exception as exc:
             self.streaming = None
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
@@ -1404,6 +1407,7 @@ class MainWindow(QMainWindow):
             request = enhanced.build_request(
                 target.key, [enhanced.CanvasInfo(c.width, c.height, c.fps) for c in canvases], __version__,
                 max_tracks=output.enhanced_max_tracks or None,
+                max_bitrate_kbps=output.enhanced_max_kbps or None,
             )
             config = enhanced.parse_config(enhanced.fetch_config(request), target.key, pick_codec(),
                                            bandwidth_test=target.bandwidth_test)
