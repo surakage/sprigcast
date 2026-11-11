@@ -70,3 +70,19 @@ def test_three_channel_bgr_frames_render_opaque(compositor):
     scene = Scene(id="s", name="s", canvas="c3", items=[SceneItem(source="cam")])
     compositor.render(canvas, scene, {"cam": (6, 4)})
     assert tuple(pixels(compositor, canvas)[2, 5]) == (0, 0, 255, 255)
+
+
+def test_fade_blends_outgoing_scene_over_new_one(compositor):
+    canvas = Canvas(id="f", width=32, height=18)
+    compositor.upload("red", np.full((18, 32, 4), (255, 0, 0, 255), dtype=np.uint8))
+    compositor.upload("blue", np.full((18, 32, 4), (0, 0, 255, 255), dtype=np.uint8))
+    old = Scene(id="a", name="a", canvas="f", items=[SceneItem(source="red")])
+    new = Scene(id="b", name="b", canvas="f", items=[SceneItem(source="blue")])
+    sizes = {"red": (32, 18), "blue": (32, 18)}
+    compositor.render(canvas, new, sizes, previous=old, progress=0.25)
+    r, g, b, a = pixels(compositor, canvas)[9, 16]
+    assert abs(int(r) - 191) <= 2 and abs(int(b) - 64) <= 2 and a == 255
+    compositor.render(canvas, new, sizes, previous=old, progress=1.0)
+    assert tuple(pixels(compositor, canvas)[0, 31]) == (0, 0, 255, 255)
+    compositor.render(canvas, new, sizes, previous=old, progress=0.0)
+    assert tuple(pixels(compositor, canvas)[17, 0]) == (255, 0, 0, 255)  # orientation preserved at the corners

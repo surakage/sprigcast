@@ -39,6 +39,7 @@ class Engine:
         self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
+        self._transitions: dict[str, tuple] = {}  # canvas id -> (outgoing scene, start time, duration s)
 
     # Called from the UI thread ----------------------------------------------
 
@@ -127,10 +128,25 @@ class Engine:
             if isinstance(command, Shutdown):
                 return False
             if isinstance(command, ReplaceCollection):
+                self._start_transitions(self._collection, command.collection)
                 self._collection = command.collection
                 for canvas in self._collection.canvases:
                     self.frames.setdefault(canvas.id, Mailbox())
                 self._sync_sources(compositor)
+
+    def _start_transitions(self, old: SceneCollection, new: SceneCollection) -> None:
+        """When a canvas's active scene changes, fade from the scene it showed until now."""
+        transition = new.transition
+        for canvas in new.canvases:
+            before, after = old.active_scenes.get(canvas.id), new.active_scenes.get(canvas.id)
+            if before == after or before is None:
+                continue
+            if transition.kind != "fade" or transition.duration_ms <= 0:
+                self._transitions.pop(canvas.id, None)
+                continue
+            outgoing = next((s for s in old.scenes if s.id == before), None)
+            if outgoing is not None:
+                self._transitions[canvas.id] = (outgoing, time.perf_counter(), transition.duration_ms / 1000)
 
     def _sync_sources(self, compositor) -> None:
         """Create, update and remove source instances so they match the collection."""
@@ -165,7 +181,16 @@ class Engine:
         for canvas in self._collection.canvases:
             if not canvas.enabled:
                 continue
-            compositor.render(canvas, self._collection.active_scene(canvas.id), sizes)
+            previous, progress = None, 1.0
+            transition = self._transitions.get(canvas.id)
+            if transition is not None:
+                outgoing, began, duration = transition
+                progress = (now - began) / duration
+                if progress >= 1.0:
+                    del self._transitions[canvas.id]
+                else:
+                    previous, progress = outgoing, max(0.0, progress)
+            compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, previous, progress)
             data = compositor.read(canvas.id)
             frame = Frame(canvas.id, canvas.width, canvas.height, data, now)
             self.frames[canvas.id].put(frame)

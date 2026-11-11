@@ -12,6 +12,7 @@ from PySide6.QtCore import QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QColorDialog,
     QDockWidget,
     QDoubleSpinBox,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
@@ -37,8 +39,11 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
+from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app.hotkeys_dialog import HotkeysDialog
 from sprigcast.app.preview import Preview
 from sprigcast.app.recording_dialog import RecordingDialog
+from sprigcast.app.stats_panel import StatsPanel
 from sprigcast.app.stream_dialog import StreamDialog, output_label
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
@@ -93,6 +98,11 @@ class MainWindow(QMainWindow):
         self._build_properties_dock()
         self._build_audio_dock()
         self._build_output_dock()
+        self.stats_panel = StatsPanel()
+        self.stats_panel.setMinimumWidth(400)
+        self.stats_dock = self._dock("Stats", self.stats_panel, None, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.stats_dock.hide()
+        self._last_stats = None
         self._build_menu()
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
@@ -103,6 +113,10 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_engine)
         self.timer.start(33)  # about 30 preview updates per second
+
+        self.hotkeys = Hotkeys(self)
+        self.hotkeys.triggered.connect(self._on_hotkey)
+        self.hotkeys.apply(self.collection.hotkeys)
 
         self._refresh_all()
 
@@ -118,7 +132,34 @@ class MainWindow(QMainWindow):
         buttons.addWidget(_button("Add", self._add_scene))
         buttons.addWidget(_button("Rename", self._rename_scene))
         buttons.addWidget(_button("Remove", self._remove_scene))
-        self._dock("Scenes", self.scene_tree, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addWidget(self.scene_tree)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Transition"))
+        self.transition_kind = QComboBox()
+        self.transition_kind.addItem("Fade", "fade")
+        self.transition_kind.addItem("Cut", "cut")
+        self.transition_kind.setCurrentIndex(max(0, self.transition_kind.findData(self.collection.transition.kind)))
+        self.transition_kind.currentIndexChanged.connect(self._on_transition_changed)
+        row.addWidget(self.transition_kind, 1)
+        self.transition_ms = QSpinBox()
+        self.transition_ms.setRange(50, 5000)
+        self.transition_ms.setSingleStep(50)
+        self.transition_ms.setSuffix(" ms")
+        self.transition_ms.setValue(self.collection.transition.duration_ms)
+        self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
+        self.transition_ms.valueChanged.connect(self._on_transition_changed)
+        row.addWidget(self.transition_ms)
+        body_layout.addLayout(row)
+        self._dock("Scenes", body, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+
+    def _on_transition_changed(self) -> None:
+        self.collection.transition.kind = self.transition_kind.currentData()
+        self.collection.transition.duration_ms = self.transition_ms.value()
+        self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
+        self._changed()
 
     def _build_sources_dock(self) -> None:
         self.source_list = QListWidget()
@@ -217,7 +258,7 @@ class MainWindow(QMainWindow):
         buttons.addWidget(_button("Folder", self._open_recordings_folder))
         self._dock("Output", panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
 
-    def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> None:
+    def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> QDockWidget:
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -239,6 +280,7 @@ class MainWindow(QMainWindow):
         dock.setWidget(wrapper)
         dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
         self.addDockWidget(area, dock)
+        return dock
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -247,9 +289,17 @@ class MainWindow(QMainWindow):
             lambda: QMessageBox.information(self, "SprigCast", f"Scenes are saved to:\n{self.scenes_path}")
         )
         file_menu.addAction(open_folder)
+        hotkeys = QAction("Hotkeys…", self)
+        hotkeys.triggered.connect(self._edit_hotkeys)
+        file_menu.addAction(hotkeys)
         recordings = QAction("Open recordings folder", self)
         recordings.triggered.connect(self._open_recordings_folder)
         file_menu.addAction(recordings)
+        view_menu = self.menuBar().addMenu("&View")
+        stats_action = self.stats_dock.toggleViewAction()
+        stats_action.setText("Stats")
+        stats_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        view_menu.addAction(stats_action)
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -268,6 +318,9 @@ class MainWindow(QMainWindow):
             except queue.Empty:
                 break
             if isinstance(event, Stats):
+                self._last_stats = event
+                if self.stats_dock.isVisible():
+                    self._refresh_stats_panel()
                 self.status.setText(
                     f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
                 )
@@ -294,6 +347,7 @@ class MainWindow(QMainWindow):
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        self.hotkeys.stop()
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
@@ -1054,3 +1108,38 @@ class MainWindow(QMainWindow):
                 line += html.escape(st.status)
             lines.append(line)
         self.stream_status.setText("<br>".join(lines))
+
+    # Hotkeys -----------------------------------------------------------------
+
+    def _edit_hotkeys(self) -> None:
+        dialog = HotkeysDialog(self.collection, self)
+        if not dialog.exec():
+            return
+        self.collection.hotkeys = dialog.result_hotkeys()
+        self.collection.save(self.scenes_path)
+        self.hotkeys.apply(self.collection.hotkeys)
+        if self.collection.hotkeys and self.hotkeys.mode == "window":
+            self.statusBar().showMessage("Global hotkeys aren't available here; they work while SprigCast is focused.", 10000)
+
+    def _on_hotkey(self, action: str) -> None:
+        if action == TOGGLE_STREAM:
+            self._toggle_streaming()
+        elif action == TOGGLE_RECORD:
+            self._toggle_recording()
+        elif action.startswith(SCENE_PREFIX):
+            scene_id = action[len(SCENE_PREFIX):]
+            if any(s.id == scene_id for s in self.collection.scenes):
+                self.collection.set_active(scene_id)
+                self._changed()
+                self._refresh_scenes()
+                self._refresh_previews()
+
+    # Stats -----------------------------------------------------------------------
+
+    def _refresh_stats_panel(self) -> None:
+        outputs = []
+        if self.streaming is not None:
+            outputs += [(f"Stream: {st.name}", st) for _, st in self.streaming.streamers]
+        if self.recording is not None:
+            outputs += [(f"Recording: {canvas_id}", rec) for canvas_id, rec in self.recording.recorders]
+        self.stats_panel.refresh(self._last_stats, outputs, self._recordings_folder())

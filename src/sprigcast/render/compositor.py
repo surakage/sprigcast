@@ -26,10 +26,11 @@ void main() {
 FRAGMENT_SHADER = """
 #version 330
 uniform sampler2D tex;
+uniform float opacity;
 in vec2 uv;
 out vec4 color;
 void main() {
-    color = texture(tex, uv);
+    color = texture(tex, uv) * vec4(1.0, 1.0, 1.0, opacity);
 }
 """
 
@@ -40,13 +41,24 @@ SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1"}
 
 class _CanvasTarget:
     def __init__(self, ctx: moderngl.Context, canvas: Canvas):
+        self.ctx = ctx
         self.size = (canvas.width, canvas.height)
         self.color = ctx.texture(self.size, 4)
         self.fbo = ctx.framebuffer(color_attachments=[self.color])
+        self.aux_color: moderngl.Texture | None = None  # the outgoing scene during a transition
+        self.aux_fbo: moderngl.Framebuffer | None = None
+
+    def aux(self) -> moderngl.Framebuffer:
+        if self.aux_fbo is None:
+            self.aux_color = self.ctx.texture(self.size, 4)
+            self.aux_color.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            self.aux_fbo = self.ctx.framebuffer(color_attachments=[self.aux_color])
+        return self.aux_fbo
 
     def release(self) -> None:
-        self.fbo.release()
-        self.color.release()
+        for obj in (self.fbo, self.color, self.aux_fbo, self.aux_color):
+            if obj is not None:
+                obj.release()
 
 
 class Compositor:
@@ -96,18 +108,48 @@ class Compositor:
             self.targets[canvas.id] = target
         return target
 
-    def render(self, canvas: Canvas, scene: Scene | None, source_sizes: dict[str, tuple[int, int]]) -> None:
-        """Draw a scene's visible items back to front onto its canvas."""
+    def render(
+        self,
+        canvas: Canvas,
+        scene: Scene | None,
+        source_sizes: dict[str, tuple[int, int]],
+        previous: Scene | None = None,
+        progress: float = 1.0,
+    ) -> None:
+        """Draw a scene's visible items back to front onto its canvas.
+
+        During a fade, `previous` is the outgoing scene and `progress` runs from 0 to 1: the new
+        scene is drawn, then the old one on top at opacity 1 - progress.
+        """
         target = self._target(canvas)
+        self._draw_scene(target.fbo, canvas, scene, source_sizes)
+        if previous is None or progress >= 1.0:
+            return
+        aux = target.aux()
+        self._draw_scene(aux, canvas, previous, source_sizes)
         target.fbo.use()
+        self.ctx.viewport = (0, 0, canvas.width, canvas.height)
+        self._blend()
+        w, h = float(canvas.width), float(canvas.height)
+        self.vbo.write(np.array([(0, 0, 0, 0), (w, 0, 1, 0), (0, h, 0, 1), (w, h, 1, 1)], dtype="f4").tobytes())
+        self.program["opacity"].value = max(0.0, min(1.0, 1.0 - progress))
+        target.aux_color.use(location=0)
+        self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
+
+    def _blend(self) -> None:
+        self.ctx.enable(moderngl.BLEND)
+        self.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA, moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+
+    def _draw_scene(self, fbo, canvas: Canvas, scene: Scene | None, source_sizes: dict[str, tuple[int, int]]) -> None:
+        fbo.use()
         self.ctx.viewport = (0, 0, canvas.width, canvas.height)
         self.ctx.clear(0.0, 0.0, 0.0, 1.0)
         if scene is None:
             return
-        self.ctx.enable(moderngl.BLEND)
-        self.ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA, moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA)
+        self._blend()
         self.program["canvas_size"].value = (float(canvas.width), float(canvas.height))
         self.program["tex"].value = 0
+        self.program["opacity"].value = 1.0
         for item in scene.items:
             tex = self.textures.get(item.source)
             size = source_sizes.get(item.source)
