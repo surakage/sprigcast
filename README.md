@@ -47,7 +47,8 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
 
 - **Previews**: the horizontal canvas (1920x1080) on the left, the vertical canvas (1080x1920) on the right.
   Edit the scene shown on each canvas directly with the mouse:
-  - Click an item to select it, then drag to move it. Edges and centre snap to the canvas; hold Ctrl to stop snapping.
+  - Click an item to select it, then drag to move it. It snaps to the canvas edges and centre and to other
+    sources; *Settings → General → Source alignment snapping* changes this. Hold Ctrl to stop snapping.
   - Drag a corner handle to resize. Hold Alt while dragging a corner to crop instead.
   - Arrow keys nudge the selected item 1 px, or 10 px with Shift.
   - Right-click a background and pick *Lock*, so clicks pass through them to the items on top.
@@ -74,7 +75,8 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     click a source's name, then **⚙** pins it to one device or **−** removes it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
 - **Settings** (the *Settings* button in Controls, the *Settings* menu, or Ctrl+,): one window with tabs down the left.
-  - *General*: theme (Slothbloom dark or the plain Windows look), whether to ask before ending a stream or
+  - *General*: theme (Slothbloom dark or the plain Windows look), snapping (on/off, sensitivity, canvas edges,
+    other sources, centre lines), whether to ask before ending a stream or
     stopping a recording, and which plugins loaded.
   - *Stream*, *Recording*, *Hotkeys*: described below.
   - *Audio*: which device each mic and desktop audio source uses ("Default" follows Windows).
