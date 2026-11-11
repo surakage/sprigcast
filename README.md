@@ -91,6 +91,11 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     SprigCast) and fills in your stream key. With *Get the stream key from my Twitch account* ticked,
     SprigCast asks Twitch for the current key each time you go live, so resetting it on Twitch just works;
     if Twitch can't be reached it uses the saved key. Only the "read stream key" permission is requested.
+  - Twitch *Enhanced Broadcasting*: tick it and SprigCast asks Twitch which qualities suit your PC
+    (it sends your GPU, CPU, memory and Windows version, like OBS does), then encodes them all at once on
+    the GPU and sends them over one connection, so viewers get quality options without Twitch transcoding.
+    *Also send the vertical canvas* adds Twitch's dual-format vertical stream from the vertical canvas.
+    If Twitch can't set it up, SprigCast offers to go live with a single quality instead.
   - Twitch has a *Bandwidth test* option: the stream reaches Twitch so you can check it, but viewers never see it.
   - Tick the places to stream to and press *Go live*. Each one gets its own NVENC encoder (constant bitrate,
     keyframe every 2 s), so Twitch can take the horizontal canvas while TikTok takes the vertical one.

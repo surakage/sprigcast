@@ -85,6 +85,9 @@ class Output(BaseModel):
     fps: int | None = None  # None = the canvas fps
     bandwidth_test: bool = False  # Twitch only: stream reaches Twitch but viewers never see it
     twitch_account: bool = False  # Twitch only: fetch the key from the connected account at Go live
+    enhanced: bool = False  # Twitch only: Enhanced Broadcasting (several qualities, chosen by Twitch)
+    enhanced_vertical: bool = False  # with enhanced: also send the vertical canvas (Twitch dual format)
+    enhanced_max_tracks: int = 0  # with enhanced: most qualities to send; 0 = let Twitch decide
 
 
 class RecordingSettings(BaseModel):

@@ -26,6 +26,8 @@ from sprigcast.output.stream import SERVICES, preset_size, sizes_for
 def output_label(output: Output) -> str:
     service = SERVICES.get(output.service or "custom", SERVICES["custom"])
     label = f"{service.label}  ·  {output.canvas}"
+    if output.enhanced and output.service == "twitch":
+        return label + ("  ·  Enhanced + vertical" if output.enhanced_vertical else "  ·  Enhanced")
     if output.size:
         label += f" {output.size[0]}×{output.size[1]}"
     if output.fps:
@@ -114,6 +116,34 @@ class StreamPage(QWidget):
         self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
         self.use_account.toggled.connect(self._edited)
         form.addRow("", self.use_account)
+        # Twitch Enhanced Broadcasting: Twitch picks several qualities for this PC, all sent at once.
+        self.enhanced_box = QWidget()
+        enhanced = QVBoxLayout(self.enhanced_box)
+        enhanced.setContentsMargins(0, 0, 0, 0)
+        self.enhanced = QCheckBox("Enhanced Broadcasting: send several qualities, chosen by Twitch for your GPU")
+        self.enhanced.toggled.connect(self._edited)
+        enhanced.addWidget(self.enhanced)
+        self.enhanced_vertical = QCheckBox("Also send the vertical canvas (Twitch dual format)")
+        self.enhanced_vertical.toggled.connect(self._edited)
+        enhanced.addWidget(self.enhanced_vertical)
+        tracks_row = QHBoxLayout()
+        tracks_row.addWidget(QLabel("Most qualities"))
+        self.enhanced_tracks = QComboBox()
+        self.enhanced_tracks.addItem("Auto (Twitch decides)", 0)
+        for n in (2, 3, 4, 5):
+            self.enhanced_tracks.addItem(str(n), n)
+        self.enhanced_tracks.currentIndexChanged.connect(self._edited)
+        tracks_row.addWidget(self.enhanced_tracks)
+        tracks_row.addStretch(1)
+        enhanced.addLayout(tracks_row)
+        self.enhanced_note = QLabel(
+            "Twitch sets the resolutions and bitrates. The Resolution, Frame rate and Bitrate above are only "
+            "used if Twitch can't set up Enhanced Broadcasting. Needs an NVIDIA (or Intel Arc) GPU."
+        )
+        self.enhanced_note.setWordWrap(True)
+        self.enhanced_note.setStyleSheet("color: gray")
+        enhanced.addWidget(self.enhanced_note)
+        form.addRow("Enhanced", self.enhanced_box)
         self.bandwidth_test = QCheckBox("Bandwidth test: send to Twitch without going live (viewers see nothing)")
         self.bandwidth_test.toggled.connect(self._edited)
         form.addRow("", self.bandwidth_test)
@@ -181,6 +211,9 @@ class StreamPage(QWidget):
         self.bitrate.setValue(output.bitrate_kbps)
         self.bandwidth_test.setChecked(output.bandwidth_test)
         self.use_account.setChecked(output.twitch_account)
+        self.enhanced.setChecked(output.enhanced)
+        self.enhanced_vertical.setChecked(output.enhanced_vertical)
+        self.enhanced_tracks.setCurrentIndex(max(0, self.enhanced_tracks.findData(output.enhanced_max_tracks)))
         self.key.setText(self.keys.get(output.key_ref or "", ""))
         self._show_service(output)
         self._loading = False
@@ -217,6 +250,9 @@ class StreamPage(QWidget):
         self.bandwidth_test.setVisible(service.bandwidth_test)
         is_twitch = (output.service or "") == "twitch"
         self.twitch_row.setVisible(is_twitch)
+        self.enhanced_box.setVisible(is_twitch)
+        for widget in (self.enhanced_vertical, self.enhanced_tracks, self.enhanced_note):
+            widget.setEnabled(output.enhanced)
         account = twitch_auth.connected_account() if is_twitch else None
         self.use_account.setVisible(is_twitch and account is not None)
         if is_twitch:
@@ -260,6 +296,9 @@ class StreamPage(QWidget):
         output.bitrate_kbps = self.bitrate.value()
         output.bandwidth_test = service.bandwidth_test and self.bandwidth_test.isChecked()
         output.twitch_account = output.service == "twitch" and self.use_account.isChecked()
+        output.enhanced = output.service == "twitch" and self.enhanced.isChecked()
+        output.enhanced_vertical = output.enhanced and self.enhanced_vertical.isChecked()
+        output.enhanced_max_tracks = int(self.enhanced_tracks.currentData() or 0)
         if not output.key_ref:
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()

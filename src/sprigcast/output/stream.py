@@ -89,6 +89,8 @@ class StreamTarget:
     size: tuple[int, int] | None = None  # encoded size; None = canvas size
     fps: int | None = None  # None = canvas fps
     bandwidth_test: bool = False
+    enhanced: object | None = None  # output.enhanced.EnhancedConfig: several qualities over one connection
+    canvases: list | None = None  # with enhanced: the canvases its tracks come from (index = canvas_index)
 
 
 class Streamer(Recorder):
@@ -330,18 +332,27 @@ class StreamSession:
 
     @classmethod
     def start(cls, engine, targets: list[StreamTarget], codec: str) -> "StreamSession":
+        from sprigcast.output.enhanced_stream import EnhancedStreamer
+
         start_time = time.perf_counter()
-        streamers = []
+        streamers, taps = [], []
         for t in targets:
             c = t.canvas
-            fps = min(t.fps or c.fps, c.fps)
-            st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
-                          t.size, t.bandwidth_test)
+            if t.enhanced is not None:
+                st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
+                taps += [(canvas_id, st.push_for(canvas_id)) for canvas_id in st.canvas_ids()]
+            else:
+                fps = min(t.fps or c.fps, c.fps)
+                st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
+                              t.size, t.bandwidth_test)
+                taps.append((c.id, st.push_frame))
             st.start()
             streamers.append((c.id, st))
         session = cls(engine, streamers)
-        for canvas_id, st in streamers:
-            engine.add_frame_tap(canvas_id, st.push_frame)
+        session.taps = taps
+        for canvas_id, callback in taps:
+            engine.add_frame_tap(canvas_id, callback)
+        for _, st in streamers:
             engine.mixer.add_tap(st.push_audio)
         return session
 
@@ -350,8 +361,10 @@ class StreamSession:
         return time.monotonic() - self.started_at
 
     def stop(self) -> None:
-        for canvas_id, st in self.streamers:
-            self.engine.remove_frame_tap(canvas_id, st.push_frame)
+        taps = getattr(self, "taps", None) or [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
+        for canvas_id, callback in taps:
+            self.engine.remove_frame_tap(canvas_id, callback)
+        for _, st in self.streamers:
             self.engine.mixer.remove_tap(st.push_audio)
         for _, st in self.streamers:
             st.stop(timeout=5)

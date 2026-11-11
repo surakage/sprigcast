@@ -1333,10 +1333,13 @@ class MainWindow(QMainWindow):
                 problems.append(f"{service.label}: the {output.canvas} canvas is not available")
             else:
                 name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
-                targets.append(
-                    StreamTarget(name, canvas, server, key, output.bitrate_kbps, output.size, output.fps,
-                                 output.bandwidth_test and service.bandwidth_test)
-                )
+                target = StreamTarget(name, canvas, server, key, output.bitrate_kbps, output.size, output.fps,
+                                      output.bandwidth_test and service.bandwidth_test)
+                if output.enhanced and output.service == "twitch":
+                    target = self._enhanced_target(output, target)
+                    if target is None:
+                        return  # the user chose not to go live
+                targets.append(target)
         if problems:
             QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
             return
@@ -1357,6 +1360,46 @@ class MainWindow(QMainWindow):
             box.setEnabled(False)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
+
+    def _enhanced_target(self, output, target):
+        """Ask Twitch which qualities to send. Returns the target to use, or None to cancel going live."""
+        from sprigcast import __version__
+        from sprigcast.output import enhanced
+
+        canvases = [target.canvas]
+        if output.enhanced_vertical:
+            vertical = next((c for c in self.collection.canvases if c.enabled and c.height > c.width
+                             and c.id != target.canvas.id), None)
+            if vertical is not None:
+                canvases.append(vertical)
+        self.stream_status.setText("Asking Twitch for the Enhanced Broadcasting settings…")
+        self.stream_status.repaint()
+        try:
+            request = enhanced.build_request(
+                target.key, [enhanced.CanvasInfo(c.width, c.height, c.fps) for c in canvases], __version__,
+                max_tracks=output.enhanced_max_tracks or None,
+            )
+            config = enhanced.parse_config(enhanced.fetch_config(request), target.key, pick_codec(),
+                                           bandwidth_test=target.bandwidth_test)
+        except Exception as exc:
+            log.warning("Enhanced Broadcasting unavailable: %s", exc)
+            answer = QMessageBox.question(
+                self, "SprigCast",
+                f"Enhanced Broadcasting isn't available right now:\n\n{exc}\n\n"
+                "Go live with a single quality instead?",
+            )
+            self.stream_status.setText("Offline")
+            return target if answer == QMessageBox.StandardButton.Yes else None
+        if config.warning:
+            answer = QMessageBox.question(self, "SprigCast", f"Twitch says:\n\n{config.warning}\n\nGo live anyway?")
+            if answer != QMessageBox.StandardButton.Yes:
+                self.stream_status.setText("Offline")
+                return None
+        log.info("Enhanced Broadcasting: %s", config.describe())
+        vertical = any(t.canvas_index > 0 for t in config.tracks)
+        target.name = f"Twitch Enhanced ({len(config.tracks)} qualities{', + vertical' if vertical else ''})"
+        target.enhanced, target.canvases = config, canvases
+        return target
 
     def _fresh_twitch_key(self, output, saved: str | None) -> str | None:
         """Ask Twitch for the current key (it changes if you reset it); fall back to the saved one."""
