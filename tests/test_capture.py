@@ -84,7 +84,7 @@ def test_display_capture_delivers_contiguous_bgra_frames(fake_backend):
         assert frame.flags["C_CONTIGUOUS"] and frame.shape == (18, 32, 4)
         assert src.channel_order == "BGRA"
         assert fake_backend.instances[0].kwargs["monitor_index"] == 2
-        assert src.status == "capturing"
+        assert wait_for(lambda: src.status == "capturing")  # set just after start() returns, frames may come first
     finally:
         src.stop()
 

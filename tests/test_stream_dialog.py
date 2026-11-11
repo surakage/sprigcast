@@ -43,3 +43,23 @@ def test_dialog_saves_outputs_and_keys_only_to_keyring(fake_keyring):
     assert fake_keyring[("SprigCast", "sprigcast/twitch")] == "live_abc"
     assert fake_keyring[("SprigCast", col.outputs[1].key_ref)] == "tt_key"
     assert "live_abc" not in col.model_dump_json() and "tt_key" not in col.model_dump_json()
+
+
+def test_picking_tiktok_applies_its_preset(fake_keyring):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import StreamDialog
+
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)],
+    )
+    d = StreamDialog(col)
+    d._add()
+    d.service.setCurrentIndex(d.service.findData("tiktok"))
+    out = d.outputs[0]
+    assert (out.canvas, out.size, out.fps, out.bitrate_kbps) == ("vertical", (720, 1280), 30, 4000)
+    assert not d.bandwidth_test.isVisibleTo(d)
+    d.service.setCurrentIndex(d.service.findData("twitch"))
+    assert (out.canvas, out.size, out.fps, out.bitrate_kbps) == ("horizontal", None, None, 6000)
+    assert d.bandwidth_test.isVisibleTo(d)
+    d.bandwidth_test.setChecked(True)
+    assert out.bandwidth_test

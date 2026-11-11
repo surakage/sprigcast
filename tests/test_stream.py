@@ -96,3 +96,35 @@ def test_reconnects_when_server_appears_later(tmp_path, monkeypatch):
         if server is not None:
             server.wait(timeout=10)
     assert out.exists() and out.stat().st_size > 0
+
+
+class _C:
+    def __init__(self, w, h, fps=60):
+        self.width, self.height, self.fps = w, h, fps
+
+
+def test_presets_and_sizes():
+    from sprigcast.output.stream import SERVICES, preset_size, sizes_for
+
+    assert preset_size(SERVICES["twitch"], _C(1920, 1080)) == (1920, 1080)
+    assert preset_size(SERVICES["tiktok"], _C(1080, 1920)) == (720, 1280)
+    assert sizes_for(_C(1280, 720)) == [(1280, 720), (854, 480)]  # never upscales
+
+
+def test_bandwidth_test_url():
+    assert stream_url("rtmp://live.twitch.tv/app", "k", bandwidth_test=True) == "rtmp://live.twitch.tv/app/k?bandwidthtest=true"
+
+
+def test_health_levels():
+    st = Streamer("T", "rtmp://x/app", "k", 16, 16, 30, 1000, "libx264", 0.0)
+    assert st.health()[0] == "bad"  # not connected yet
+    st.connected = True
+    st.health()
+    st.frames += 30
+    time.sleep(0.01)
+    assert st.health() == ("good", "live")
+    st.frames += 20
+    st.dropped += 10
+    st.mux_seconds += 1.0  # mostly waiting on the network
+    level, reason = st.health()
+    assert level == "bad" and "upload" in reason

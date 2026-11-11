@@ -111,3 +111,22 @@ def test_session_records_both_canvases_and_detaches_on_stop(tmp_path):
     for path in session.paths:
         with av.open(str(path)) as f:
             assert sum(1 for _ in f.decode(video=0)) == 5
+
+
+def test_scales_and_halves_frame_rate(tmp_path):
+    """A 60 fps 320x180 canvas encoded at 160x90, 30 fps keeps every other frame, evenly."""
+    start = 100.0
+    rec = Recorder(tmp_path / "s.mkv", 320, 180, 30, 1000, "libx264", start, out_size=(160, 90))
+    rec.start()
+    data = bytes(320 * 180 * 4)
+    for i in range(60):  # one second at 60 fps, with a little jitter
+        rec.push_frame(Frame("h", 320, 180, data, start + i / 60 + (0.002 if i % 3 else -0.001)))
+        time.sleep(0.004)  # don't outrun the queue; this test is about timestamps
+    rec.stop()
+    assert rec.error is None and rec.dropped == 0 and rec.frames == 30
+    with av.open(str(tmp_path / "s.mkv")) as f:
+        v = f.streams.video[0].codec_context
+        assert (v.width, v.height) == (160, 90)
+        pts = [frame.pts for frame in f.decode(video=0)]
+    steps = {round(b - a) for a, b in zip(pts, pts[1:])}
+    assert max(steps) - min(steps) <= 1  # evenly spaced (MKV stores milliseconds: 33 or 34)

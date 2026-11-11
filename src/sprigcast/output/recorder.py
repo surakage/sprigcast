@@ -12,6 +12,7 @@ than ever making the render thread wait.
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import threading
 import time
@@ -92,9 +93,11 @@ class Recorder:
         codec: str,
         start_time: float,
         container: str = "mkv",
+        out_size: tuple[int, int] | None = None,
     ):
         self.path = path
-        self.width, self.height, self.fps = width, height, fps
+        self.width, self.height, self.fps = width, height, fps  # canvas size; fps of the output
+        self.out_width, self.out_height = out_size or (width, height)  # encoded size (scaled if different)
         self.bitrate_kbps = bitrate_kbps
         self.codec = codec
         self.container_kind = container
@@ -103,6 +106,7 @@ class Recorder:
         self.dropped = 0  # frames the encoder could not keep up with
         self.error: str | None = None
         self.bytes_out = 0  # bytes muxed so far, for the bitrate readout
+        self.mux_seconds = 0.0  # time spent handing packets to the file or network
         self._video: queue.Queue = queue.Queue(VIDEO_QUEUE)
         self._audio: queue.Queue = queue.Queue(AUDIO_QUEUE)
         self._stop = threading.Event()
@@ -167,7 +171,7 @@ class Recorder:
 
         container = self._open_container()
         video = container.add_stream(self.codec, rate=self.fps)
-        video.width, video.height = self.width, self.height
+        video.width, video.height = self.out_width, self.out_height
         video.pix_fmt = "nv12" if self.codec == "h264_nvenc" else "yuv420p"
         video.bit_rate = self.bitrate_kbps * 1000
         ctx = video.codec_context
@@ -220,21 +224,28 @@ class Recorder:
 
     def _mux(self, container, packets) -> None:
         for packet in packets:
+            began = time.perf_counter()
             container.mux(packet)
+            self.mux_seconds += time.perf_counter() - began
             self.bytes_out += packet.size
 
     def _write_video(self, container, stream, frame) -> None:
         import av
         from av.video.reformatter import ColorRange, Colorspace
 
-        pts = round((frame.time - self.start_time) * self.fps)
+        # floor(x + 0.25) rather than round(): at half the render rate (30 from 60) it keeps every
+        # other frame evenly instead of alternating, and still tolerates a tick arriving a little late.
+        pts = math.floor((frame.time - self.start_time) * self.fps + 0.25)
         if pts <= self._last_pts:
-            return  # rendered before the recording started, or two ticks in the same frame slot
+            return  # rendered before the start, or a second tick in the same output frame slot
         self._last_pts = pts
         rgba = np.frombuffer(frame.data, dtype=np.uint8).reshape(self.height, self.width, 4)
         vf = av.VideoFrame.from_ndarray(rgba, format="rgba")
         vf = self._reformatter.reformat(
             vf,
+            width=self.out_width,
+            height=self.out_height,
+            interpolation="BICUBIC",
             format=stream.pix_fmt,
             dst_colorspace=Colorspace.ITU709,
             dst_color_range=ColorRange.MPEG,

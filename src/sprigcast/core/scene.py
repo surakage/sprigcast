@@ -81,6 +81,9 @@ class Output(BaseModel):
     key_ref: str | None = None  # name of the secret in the OS keyring, never the key itself
     server: str = ""  # ingest URL for services without a fixed one (TikTok, Kick, custom)
     enabled: bool = False  # included when you press Go live
+    size: tuple[int, int] | None = None  # encoded size, e.g. (1280, 720); None = the canvas size
+    fps: int | None = None  # None = the canvas fps
+    bandwidth_test: bool = False  # Twitch only: stream reaches Twitch but viewers never see it
 
 
 class RecordingSettings(BaseModel):
