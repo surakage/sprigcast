@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -65,7 +66,12 @@ class StreamPage(QWidget):
 
         right = QVBoxLayout()
         self.form_widget = QWidget()
-        form = QFormLayout(self.form_widget)
+        groups = QVBoxLayout(self.form_widget)
+        groups.setContentsMargins(0, 0, 0, 0)
+
+        # Destination: where the stream goes and how SprigCast signs in.
+        destination = QGroupBox("Destination")
+        form = QFormLayout(destination)
         self.service = QComboBox()
         for key, service in SERVICES.items():
             self.service.addItem(service.label, key)
@@ -75,6 +81,43 @@ class StreamPage(QWidget):
         self.server.setPlaceholderText("rtmp://… or rtmps://…")
         self.server.textEdited.connect(self._edited)
         form.addRow("Server", self.server)
+        # Twitch: connect the account instead of pasting the key.
+        self.twitch_row = QWidget()
+        twitch = QHBoxLayout(self.twitch_row)
+        twitch.setContentsMargins(0, 0, 0, 0)
+        self.twitch_label = QLabel()
+        self.twitch_button = QPushButton()
+        self.twitch_button.clicked.connect(self._twitch_clicked)
+        twitch.addWidget(self.twitch_button)
+        twitch.addWidget(self.twitch_label, 1)
+        self.account_label = QLabel("Account")
+        form.addRow(self.account_label, self.twitch_row)
+        self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
+        self.use_account.toggled.connect(self._edited)
+        form.addRow("", self.use_account)
+        self.key_row = QWidget()
+        key_row = QHBoxLayout(self.key_row)
+        key_row.setContentsMargins(0, 0, 0, 0)
+        self.key = QLineEdit()
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.textEdited.connect(self._edited)
+        show = QCheckBox("Show")
+        show.toggled.connect(
+            lambda on: self.key.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
+        )
+        key_row.addWidget(self.key, 1)
+        key_row.addWidget(show)
+        self.key_label = QLabel("Stream key")
+        form.addRow(self.key_label, self.key_row)
+        self.help = QLabel()
+        self.help.setWordWrap(True)
+        self.help.setStyleSheet("color: gray")
+        form.addRow("", self.help)
+        groups.addWidget(destination)
+
+        # Video: what this destination gets from its canvas.
+        video = QGroupBox("Video")
+        form = QFormLayout(video)
         self.canvas = QComboBox()
         for canvas in collection.canvases:
             self.canvas.addItem(f"{canvas.id} ({canvas.width}×{canvas.height})", canvas.id)
@@ -92,74 +135,91 @@ class StreamPage(QWidget):
         self.bitrate.setSuffix(" kbps")
         self.bitrate.valueChanged.connect(self._edited)
         form.addRow("Video bitrate", self.bitrate)
-        key_row = QHBoxLayout()
-        self.key = QLineEdit()
-        self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key.textEdited.connect(self._edited)
-        show = QCheckBox("Show")
-        show.toggled.connect(
-            lambda on: self.key.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
-        )
-        key_row.addWidget(self.key, 1)
-        key_row.addWidget(show)
-        form.addRow("Stream key", key_row)
-        # Twitch: connect the account instead of pasting the key.
-        self.twitch_row = QWidget()
-        twitch = QHBoxLayout(self.twitch_row)
-        twitch.setContentsMargins(0, 0, 0, 0)
-        self.twitch_label = QLabel()
-        self.twitch_button = QPushButton()
-        self.twitch_button.clicked.connect(self._twitch_clicked)
-        twitch.addWidget(self.twitch_label, 1)
-        twitch.addWidget(self.twitch_button)
-        form.addRow("Account", self.twitch_row)
-        self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
-        self.use_account.toggled.connect(self._edited)
-        form.addRow("", self.use_account)
+        self.video_note = QLabel("Encoder settings (rate control, preset, keyframes…) are in Settings → Output.")
+        self.video_note.setWordWrap(True)
+        self.video_note.setStyleSheet("color: gray")
+        form.addRow("", self.video_note)
+        self.video_box = video
+        groups.addWidget(video)
+
         # Twitch Enhanced Broadcasting: Twitch picks several qualities for this PC, all sent at once.
-        self.enhanced_box = QWidget()
-        enhanced = QVBoxLayout(self.enhanced_box)
-        enhanced.setContentsMargins(0, 0, 0, 0)
-        self.enhanced = QCheckBox("Enhanced Broadcasting: send several qualities, chosen by Twitch for your GPU")
+        self.enhanced_box = QGroupBox("Multitrack Video")
+        form = QFormLayout(self.enhanced_box)
+        intro = QLabel(
+            "Enhanced Broadcasting automatically optimizes your stream settings, which may include encoding "
+            "multiple video qualities and/or canvas orientations. Selecting this option will send Twitch "
+            "information about your computer and software setup. "
+            '<a href="https://help.twitch.tv/s/article/multiple-encodes">Learn More</a>'
+        )
+        intro.setWordWrap(True)
+        intro.setOpenExternalLinks(True)
+        form.addRow(intro)
+        self.enhanced = QCheckBox("Enable Enhanced Broadcasting")
         self.enhanced.toggled.connect(self._edited)
-        enhanced.addWidget(self.enhanced)
-        self.enhanced_vertical = QCheckBox("Also send the vertical canvas (Twitch dual format)")
-        self.enhanced_vertical.toggled.connect(self._edited)
-        enhanced.addWidget(self.enhanced_vertical)
-        tracks_row = QHBoxLayout()
-        tracks_row.addWidget(QLabel("Most qualities"))
-        self.enhanced_tracks = QComboBox()
-        self.enhanced_tracks.addItem("Auto (Twitch decides)", 0)
-        for n in (2, 3, 4, 5):
-            self.enhanced_tracks.addItem(str(n), n)
-        self.enhanced_tracks.currentIndexChanged.connect(self._edited)
-        tracks_row.addWidget(self.enhanced_tracks)
-        tracks_row.addStretch(1)
-        enhanced.addLayout(tracks_row)
+        form.addRow("", self.enhanced)
+        self.enhanced_kbps_auto, self.enhanced_kbps = QCheckBox("Auto"), QSpinBox()
+        self.enhanced_kbps.setRange(0, 100000)
+        self.enhanced_kbps.setSingleStep(500)
+        self.enhanced_kbps.setSuffix(" Kbps")
+        form.addRow("Maximum streaming bandwidth", self._auto_row(self.enhanced_kbps_auto, self.enhanced_kbps, 8000))
+        self.enhanced_tracks_auto, self.enhanced_tracks = QCheckBox("Auto"), QSpinBox()
+        self.enhanced_tracks.setRange(0, 5)
+        form.addRow("Maximum video tracks", self._auto_row(self.enhanced_tracks_auto, self.enhanced_tracks, 3))
+        self.extra_canvas = QComboBox()
+        self.extra_canvas.addItem("None", "")
+        for canvas in collection.canvases:
+            if canvas.height > canvas.width:
+                self.extra_canvas.addItem(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})", canvas.id)
+        self.extra_canvas.currentIndexChanged.connect(self._edited)
+        form.addRow("Additional canvas", self.extra_canvas)
         self.enhanced_note = QLabel(
-            "Twitch sets the resolutions and bitrates. The Resolution, Frame rate and Bitrate above are only "
-            "used if Twitch can't set up Enhanced Broadcasting. Needs an NVIDIA (or Intel Arc) GPU."
+            "Twitch sets the resolutions and bitrates. The Video settings above are only used if Twitch can't "
+            "set up Enhanced Broadcasting. Needs an NVIDIA (or Intel Arc) GPU."
         )
         self.enhanced_note.setWordWrap(True)
         self.enhanced_note.setStyleSheet("color: gray")
-        enhanced.addWidget(self.enhanced_note)
-        form.addRow("Enhanced", self.enhanced_box)
-        self.bandwidth_test = QCheckBox("Bandwidth test: send to Twitch without going live (viewers see nothing)")
+        form.addRow("", self.enhanced_note)
+        groups.addWidget(self.enhanced_box)
+
+        # Advanced options.
+        advanced = QGroupBox("Advanced options")
+        form = QFormLayout(advanced)
+        self.bandwidth_test = QCheckBox("Enable bandwidth test mode (send to Twitch without going live)")
         self.bandwidth_test.toggled.connect(self._edited)
         form.addRow("", self.bandwidth_test)
-        self.help = QLabel()
-        self.help.setWordWrap(True)
-        self.help.setStyleSheet("color: gray")
-        form.addRow("", self.help)
+        self.ignore_recommendations = QCheckBox("Ignore streaming service setting recommendations")
+        self.ignore_recommendations.toggled.connect(self._edited)
+        form.addRow("", self.ignore_recommendations)
+        self.limits = QLabel()
+        form.addRow("", self.limits)
         note = QLabel("Keys are saved in Windows Credential Manager, never in the scenes file.")
         note.setWordWrap(True)
         note.setStyleSheet("color: gray")
         form.addRow("", note)
+        groups.addWidget(advanced)
+
         right.addWidget(self.form_widget)
         right.addStretch(1)
-        root.addLayout(right, 2)
+        root.addLayout(right, 3)
 
         self._refresh_list(0)
+
+    def _auto_row(self, auto: QCheckBox, spin: QSpinBox, start: int) -> QWidget:
+        """An "Auto" tick beside a number box, like OBS: ticked means 0 (let Twitch decide)."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(auto)
+        layout.addWidget(spin, 1)
+        def toggled(on: bool) -> None:
+            spin.setEnabled(not on)
+            if not on and not spin.value() and not self._loading:
+                spin.setValue(start)  # a sensible first value instead of 0 (which means Auto)
+
+        auto.toggled.connect(toggled)
+        auto.toggled.connect(self._edited)
+        spin.valueChanged.connect(self._edited)
+        return row
 
     # List ------------------------------------------------------------------------
 
@@ -212,8 +272,13 @@ class StreamPage(QWidget):
         self.bandwidth_test.setChecked(output.bandwidth_test)
         self.use_account.setChecked(output.twitch_account)
         self.enhanced.setChecked(output.enhanced)
-        self.enhanced_vertical.setChecked(output.enhanced_vertical)
-        self.enhanced_tracks.setCurrentIndex(max(0, self.enhanced_tracks.findData(output.enhanced_max_tracks)))
+        self.extra_canvas.setCurrentIndex(1 if output.enhanced_vertical and self.extra_canvas.count() > 1 else 0)
+        for auto, spin, value in ((self.enhanced_kbps_auto, self.enhanced_kbps, output.enhanced_max_kbps),
+                                  (self.enhanced_tracks_auto, self.enhanced_tracks, output.enhanced_max_tracks)):
+            auto.setChecked(not value)
+            spin.setValue(value)
+            spin.setEnabled(bool(value))
+        self.ignore_recommendations.setChecked(output.ignore_recommendations)
         self.key.setText(self.keys.get(output.key_ref or "", ""))
         self._show_service(output)
         self._loading = False
@@ -245,19 +310,29 @@ class StreamPage(QWidget):
         self.server.setText(service.server if fixed else output.server)
         tip = service.help
         if output.bitrate_kbps > service.max_kbps:
-            tip += f"  {service.label} accepts up to {service.max_kbps} kbps."
+            tip += (f"  {service.label} accepts up to {service.max_kbps} kbps"
+                    + (", so SprigCast sends that much." if not output.ignore_recommendations else "."))
         self.help.setText(tip)
+        self.limits.setText(f"Maximum video bitrate: {service.max_kbps} kbps\nMaximum audio bitrate: 320 kbps")
+        self.limits.setVisible(not output.ignore_recommendations)
         self.bandwidth_test.setVisible(service.bandwidth_test)
         is_twitch = (output.service or "") == "twitch"
         self.twitch_row.setVisible(is_twitch)
+        self.account_label.setVisible(is_twitch)
         self.enhanced_box.setVisible(is_twitch)
-        for widget in (self.enhanced_vertical, self.enhanced_tracks, self.enhanced_note):
+        for widget in (self.enhanced_kbps_auto, self.enhanced_tracks_auto, self.extra_canvas, self.enhanced_note):
             widget.setEnabled(output.enhanced)
+        self.enhanced_kbps.setEnabled(output.enhanced and bool(output.enhanced_max_kbps))
+        self.enhanced_tracks.setEnabled(output.enhanced and bool(output.enhanced_max_tracks))
         account = twitch_auth.connected_account() if is_twitch else None
         self.use_account.setVisible(is_twitch and account is not None)
+        # With the key fetched from the account there is nothing to paste, as in OBS.
+        hide_key = is_twitch and account is not None and output.twitch_account
+        self.key_row.setVisible(not hide_key)
+        self.key_label.setVisible(not hide_key)
         if is_twitch:
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
-            self.twitch_button.setText("Disconnect" if account else "Connect Twitch…")
+            self.twitch_button.setText("Disconnect Account" if account else "Connect Account (recommended)")
 
     def _service_changed(self) -> None:
         output = self._current()
@@ -297,8 +372,10 @@ class StreamPage(QWidget):
         output.bandwidth_test = service.bandwidth_test and self.bandwidth_test.isChecked()
         output.twitch_account = output.service == "twitch" and self.use_account.isChecked()
         output.enhanced = output.service == "twitch" and self.enhanced.isChecked()
-        output.enhanced_vertical = output.enhanced and self.enhanced_vertical.isChecked()
-        output.enhanced_max_tracks = int(self.enhanced_tracks.currentData() or 0)
+        output.enhanced_vertical = output.enhanced and bool(self.extra_canvas.currentData())
+        output.enhanced_max_tracks = 0 if self.enhanced_tracks_auto.isChecked() else self.enhanced_tracks.value()
+        output.enhanced_max_kbps = 0 if self.enhanced_kbps_auto.isChecked() else self.enhanced_kbps.value()
+        output.ignore_recommendations = self.ignore_recommendations.isChecked()
         if not output.key_ref:
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()

@@ -156,3 +156,30 @@ def test_surplus_renders_are_skipped_before_the_queue(tmp_path):
     assert rec.dropped == 0
     rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 1.0))  # a genuinely new frame with a full queue
     assert rec.dropped == 1
+
+
+def test_encoder_settings_map_to_ffmpeg_options():
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.output.recorder import video_options
+
+    nv = video_options("h264_nvenc", EncoderSettings(multipass="qres", lookahead=True, tuning="ll"), 6000)
+    assert nv["rc"] == "cbr" and nv["maxrate"] == "6000k" and nv["multipass"] == "qres"
+    assert nv["tune"] == "ll" and nv["rc-lookahead"] == "16" and nv["preset"] == "p5"
+    cq = video_options("h264_nvenc", EncoderSettings(rate_control="cqp", cq_level=18, adaptive_quant=False), 6000)
+    assert cq["rc"] == "constqp" and cq["qp"] == "18" and cq["spatial-aq"] == "0" and "maxrate" not in cq
+    x = video_options("libx264", EncoderSettings(preset="p7", tuning="ull"), 4000)
+    assert x["preset"] == "fast" and x["tune"] == "zerolatency" and x["nal-hrd"] == "cbr"
+
+
+def test_encoder_settings_reach_the_file(tmp_path):
+    import av
+
+    from sprigcast.core.scene import EncoderSettings
+
+    enc = EncoderSettings(rate_control="cqp", cq_level=30, keyint_sec=1, b_frames=0, audio_kbps=96)
+    rec = Recorder(tmp_path / "e.mkv", 64, 64, 30, 1000, "libx264", 0.0, encoder=enc)
+    assert rec._video_options()["crf"] == "30"
+    container, video, audio = rec._open()
+    assert video.codec_context.gop_size == 30 and video.codec_context.max_b_frames == 0
+    assert audio.bit_rate == 96000
+    container.close()

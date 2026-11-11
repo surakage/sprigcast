@@ -80,6 +80,38 @@ def recording_path(folder: Path, canvas_id: str, when: datetime, container: str)
     return path
 
 
+X264_PRESETS = {"p1": "ultrafast", "p2": "superfast", "p3": "veryfast", "p4": "veryfast", "p5": "veryfast",
+                "p6": "faster", "p7": "fast"}  # CPU encoding: keep it light, games need the CPU too
+LOOKAHEAD_FRAMES = 16
+
+
+def video_options(codec: str, enc, bitrate_kbps: int) -> dict[str, str]:
+    """FFmpeg encoder options for Settings → Output's choices (core.scene.EncoderSettings)."""
+    k = bitrate_kbps
+    if codec == "h264_nvenc":
+        opts = {"preset": enc.preset, "tune": enc.tuning, "profile": enc.profile,
+                "multipass": enc.multipass, "spatial-aq": "1" if enc.adaptive_quant else "0"}
+        if enc.rate_control == "cqp":
+            opts.update(rc="constqp", qp=str(enc.cq_level))
+        elif enc.rate_control == "cbr":
+            opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k")
+        else:
+            opts.update(rc="vbr", maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
+        if enc.lookahead:
+            opts["rc-lookahead"] = str(LOOKAHEAD_FRAMES)
+        return opts
+    opts = {"preset": X264_PRESETS.get(enc.preset, "veryfast"), "profile": enc.profile}
+    if enc.tuning in ("ll", "ull"):
+        opts["tune"] = "zerolatency"
+    if enc.rate_control == "cqp":
+        opts["crf"] = str(enc.cq_level)
+    elif enc.rate_control == "cbr":
+        opts.update({"nal-hrd": "cbr", "maxrate": f"{k}k", "bufsize": f"{k}k"})
+    if not enc.adaptive_quant:
+        opts["aq-mode"] = "0"
+    return opts
+
+
 class Recorder:
     """Encodes frames handed to push_frame() and audio handed to push_audio() into one file."""
 
@@ -94,7 +126,9 @@ class Recorder:
         start_time: float,
         container: str = "mkv",
         out_size: tuple[int, int] | None = None,
+        encoder=None,
     ):
+        self.encoder = encoder or self.default_encoder()
         self.path = path
         self.width, self.height, self.fps = width, height, fps  # canvas size; fps of the output
         self.out_width, self.out_height = out_size or (width, height)  # encoded size (scaled if different)
@@ -203,10 +237,14 @@ class Recorder:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind])
 
+    @staticmethod
+    def default_encoder():
+        from sprigcast.core.scene import EncoderSettings
+
+        return EncoderSettings(rate_control="vbr")
+
     def _video_options(self) -> dict[str, str]:
-        if self.codec == "h264_nvenc":
-            return {"preset": "p5", "tune": "hq", "rc": "vbr", "profile": "high", "spatial-aq": "1"}
-        return {"preset": "veryfast", "profile": "high"}
+        return video_options(self.codec, self.encoder, self.bitrate_kbps)
 
     def _open(self):
         from av.video.reformatter import VideoReformatter
@@ -218,14 +256,14 @@ class Recorder:
         video.bit_rate = self.bitrate_kbps * 1000
         ctx = video.codec_context
         ctx.time_base = Fraction(1, self.fps)
-        ctx.gop_size = self.fps * 2  # keyframe every 2 s, what streaming sites expect too
-        ctx.max_b_frames = 2
+        ctx.gop_size = self.fps * (self.encoder.keyint_sec or 2)  # 2 s is what streaming sites expect
+        ctx.max_b_frames = max(0, min(4, self.encoder.b_frames))
         # Tag the colours so players read them as HD video (BT.709, limited range).
         ctx.colorspace, ctx.color_primaries, ctx.color_trc, ctx.color_range = 1, 1, 1, 1
         video.options = self._video_options()
         audio = container.add_stream("aac", rate=SAMPLE_RATE)
         audio.layout = "stereo"
-        audio.bit_rate = 160_000
+        audio.bit_rate = self.encoder.audio_kbps * 1000
         self._reformatter = VideoReformatter()
         return container, video, audio
 
@@ -340,6 +378,7 @@ class RecordingSession:
         bitrate_kbps: int,
         container: str = "mkv",
         codec: str | None = None,
+        encoder=None,
     ) -> "RecordingSession":
         codec = codec or pick_codec()
         now = datetime.now()
@@ -347,7 +386,8 @@ class RecordingSession:
         recorders = []
         for canvas in canvases:
             path = recording_path(folder, canvas.id, now, container)
-            rec = Recorder(path, canvas.width, canvas.height, canvas.fps, bitrate_kbps, codec, start_time, container)
+            rec = Recorder(path, canvas.width, canvas.height, canvas.fps, bitrate_kbps, codec, start_time, container,
+                           encoder=encoder)
             rec.start()
             recorders.append((canvas.id, rec))
         session = cls(engine, recorders)

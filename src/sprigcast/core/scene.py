@@ -99,6 +99,24 @@ class Output(BaseModel):
     enhanced: bool = False  # Twitch only: Enhanced Broadcasting (several qualities, chosen by Twitch)
     enhanced_vertical: bool = False  # with enhanced: also send the vertical canvas (Twitch dual format)
     enhanced_max_tracks: int = 0  # with enhanced: most qualities to send; 0 = let Twitch decide
+    enhanced_max_kbps: int = 0  # with enhanced: most bandwidth for all qualities together; 0 = let Twitch decide
+    ignore_recommendations: bool = False  # allow a bitrate above what the service accepts
+
+
+class EncoderSettings(BaseModel):
+    """How video is encoded (Settings → Output), like OBS's NVENC options. x264 gets the closest match."""
+
+    rate_control: Literal["cbr", "vbr", "cqp"] = "cbr"
+    cq_level: int = 20  # with cqp: lower is better quality and bigger files
+    keyint_sec: int = 2  # seconds between keyframes; 0 = auto (2)
+    preset: Literal["p1", "p2", "p3", "p4", "p5", "p6", "p7"] = "p5"
+    tuning: Literal["hq", "ll", "ull"] = "hq"
+    multipass: Literal["disabled", "qres", "fullres"] = "disabled"
+    profile: Literal["high", "main", "baseline"] = "high"
+    lookahead: bool = False
+    adaptive_quant: bool = True
+    b_frames: int = 2
+    audio_kbps: int = 160
 
 
 class RecordingSettings(BaseModel):
@@ -106,6 +124,7 @@ class RecordingSettings(BaseModel):
     canvases: list[str] = Field(default_factory=lambda: ["horizontal", "vertical"])  # which canvases to record
     bitrate_kbps: int = 12000
     container: Literal["mkv", "mp4"] = "mkv"
+    encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192))
 
 
 class Transition(BaseModel):
@@ -123,6 +142,7 @@ class SceneCollection(BaseModel):
     active_scenes: dict[str, str] = Field(default_factory=dict)  # canvas id -> scene id
     outputs: list[Output] = Field(default_factory=list)
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
+    stream_encoder: EncoderSettings = Field(default_factory=EncoderSettings)
     transition: Transition = Field(default_factory=Transition)
     hotkeys: dict[str, str] = Field(default_factory=dict)  # action -> key combo, e.g. "scene:brb" -> "Ctrl+Alt+2"
 
