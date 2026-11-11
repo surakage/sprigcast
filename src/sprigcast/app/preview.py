@@ -13,6 +13,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from sprigcast.app import safe_zones
 from sprigcast.app.terms import PART, PART_MARK, a
 from sprigcast.core import edit
 from sprigcast.core.scene import Scene, SceneItem
@@ -60,6 +61,7 @@ class Preview(QWidget):
         self.inner_size: tuple[int, int] | None = None  # the part layout's own size
         self.inner_rect: tuple[float, float, float, float] | None = None  # visible part area, canvas pixels
         self._inner_image: QImage | None = None
+        self.safe_zones = "Off"  # see safe_zones.CHOICES; only portrait canvases draw them
         self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
         self._drag: tuple[str, int | None, QPointF, SceneItem] | None = None  # mode, corner, start, item copy
@@ -183,8 +185,36 @@ class Preview(QWidget):
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(rect, self._image)
         self._paint_inner(p)
+        self._paint_safe_zones(p)
         self._paint_selection(p)
         p.end()
+
+    def _paint_safe_zones(self, p: QPainter) -> None:
+        """Where the vertical apps put their buttons and captions: tinted boxes, and the clear middle outlined."""
+        w, h = self.aspect
+        found = safe_zones.zones(self.safe_zones, w, h)
+        if not found or self._image is None or self.inner is not None or not self.editable:
+            return
+        p.save()
+        font = p.font()
+        font.setPointSizeF(max(6.5, font.pointSizeF() * 0.8))
+        p.setFont(font)
+        for label, x, y, zw, zh in found:
+            a, b = self.to_widget(x, y), self.to_widget(x + zw, y + zh)
+            box = QRectF(a, b)
+            p.fillRect(box, QColor(255, 95, 162, 38))
+            p.setPen(QPen(QColor(255, 95, 162, 150), 1, Qt.PenStyle.DashLine))
+            p.drawRect(box)
+            if box.width() > 40 and box.height() > 12:
+                p.setPen(QColor(255, 220, 235))
+                p.drawText(box.adjusted(3, 2, -3, -2), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                           | Qt.TextFlag.TextWordWrap, label)
+        clear = safe_zones.clear_area(self.safe_zones, w, h)
+        if clear is not None:
+            x, y, cw, ch = clear
+            p.setPen(QPen(QColor(61, 220, 132, 200), 1.5, Qt.PenStyle.DashLine))
+            p.drawRect(QRectF(self.to_widget(x, y), self.to_widget(x + cw, y + ch)))
+        p.restore()
 
     _checker: QBrush | None = None
 

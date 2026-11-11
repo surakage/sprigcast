@@ -61,6 +61,7 @@ from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
 from sprigcast.app.hotkeys import SCENE_PREFIX, STATE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app import safe_zones
 from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.part_dialog import NewPartDialog
@@ -274,10 +275,29 @@ class MainWindow(QMainWindow):
         tabs_row.setContentsMargins(8, 4, 8, 0)
         tabs_row.addWidget(self.canvas_tabs)
         tabs_row.addStretch(1)
+        # Safe zones: where TikTok / Shorts / Reels draw their own buttons over a vertical stream.
+        self.safe_zone_button = QToolButton()
+        self.safe_zone_button.setToolTip("Show where TikTok, YouTube Shorts and Reels put their buttons and captions, "
+                                         "so faces and text stay clear of them. Approximate; not on the stream.")
+        self.safe_zone_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        zone_menu = QMenu(self)
+        zone_group = QActionGroup(self)
+        saved_zone = QSettings().value("preview/safe_zones", safe_zones.ALL)
+        if saved_zone not in safe_zones.CHOICES:
+            saved_zone = safe_zones.ALL
+        for choice in safe_zones.CHOICES:
+            action = zone_menu.addAction(choice)
+            action.setCheckable(True)
+            action.setChecked(choice == saved_zone)
+            zone_group.addAction(action)
+            action.triggered.connect(lambda _=False, c=choice: self._set_safe_zones(c))
+        self.safe_zone_button.setMenu(zone_menu)
+        tabs_row.addWidget(self.safe_zone_button)
         self.canvas_tabs_row = QWidget()
         self.canvas_tabs_row.setLayout(tabs_row)
         page_layout.addWidget(self.canvas_tabs_row)
         page_layout.addWidget(splitter, 1)
+        self._set_safe_zones(saved_zone)
         self.center = QStackedWidget()
         self.center.addWidget(canvas_page)
         self.center.addWidget(part_panel)
@@ -861,6 +881,15 @@ class MainWindow(QMainWindow):
             preview.setVisible(not build or canvas_id == self.build_canvas)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
+        canvas = self.collection.canvas(self.build_canvas)
+        self.safe_zone_button.setVisible(canvas.height > canvas.width)  # only vertical canvases get zones
+
+    def _set_safe_zones(self, choice: str) -> None:
+        for preview in self.previews.values():
+            preview.safe_zones = choice
+            preview.update()
+        self.safe_zone_button.setText(f"Safe zones: {choice}")
+        QSettings().setValue("preview/safe_zones", choice)
 
     def _on_canvas_tab(self, index: int) -> None:
         canvas_id = self.collection.canvases[index].id
