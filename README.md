@@ -68,6 +68,12 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     arrange it however that shape needs. Vertical shows use the vertical layout and horizontal shows the
     horizontal one. Without a second layout, both canvases use the one layout, scaled to fit.
     *Remove this layout* goes back to one layout. The Parts list shows which layouts a part has.
+  - **Edit in place**: double-click a part in a show's preview (or double-click it in the Sources dock, or
+    right-click → *Edit part in place*). The show stays on screen, dimmed, with the part drawn bright on top,
+    and the mouse, arrow keys and Sources dock now work on the part's own items. Changes land in the part,
+    so they show everywhere it's used. Press Esc or double-click outside the part to go back to the show.
+    You edit the layout for that canvas, so editing in the vertical show changes the part's vertical layout.
+    A rotated placement opens the part editor instead.
   - Sources **+ → Part** places a part in the selected show (or inside another part). Move, resize and crop it
     like any source. SprigCast won't let a part end up inside itself.
   - A part is drawn once per frame however many shows and canvases use it. Removing a part warns you where

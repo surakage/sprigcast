@@ -151,6 +151,8 @@ class MainWindow(QMainWindow):
         self.plugins_dir = plugins_dir
         self.plugin_report = None  # set by main.run() after loading plugins
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
+        # A part being edited in place inside a show: canvas id, show id, placement source id, layout id.
+        self.in_place: tuple[str, str, str, str] | None = None
         self._updating = False  # True while we fill widgets, so their signals do not echo back
         self.source_sizes: dict[str, tuple[int, int]] = {}
         self.source_statuses: dict[str, str] = {}
@@ -168,6 +170,7 @@ class MainWindow(QMainWindow):
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
             preview.selected.connect(self._on_preview_selected)
             preview.edited.connect(self._on_preview_edited)
+            preview.opened.connect(self._on_preview_opened)
             self.previews[canvas.id] = preview
             splitter.addWidget(preview)
             splitter.setStretchFactor(splitter.count() - 1, 3 if canvas.width >= canvas.height else 1)
@@ -370,6 +373,8 @@ class MainWindow(QMainWindow):
             menu.addMenu(self.add_source_menu).setText("Add")
         else:
             item = self._item()
+            if item is not None and self.collection.source(item.source).kind == PART_KIND:
+                menu.addAction("Edit part in place").triggered.connect(self._open_part_item)
             menu.addAction("Settings…").triggered.connect(self._edit_source_settings)
             menu.addAction("Filters…").triggered.connect(self._edit_filters)
             menu.addAction("Transform…").triggered.connect(self._show_transform)
@@ -592,6 +597,7 @@ class MainWindow(QMainWindow):
         if state is None or not self.restoreState(state, self.LAYOUT_VERSION):
             self._arrange_default_layout()
         editable = mode == "build"
+        self._exit_in_place()
         self._show_part_editor()
         for preview in self.previews.values():
             preview.editable = editable
@@ -730,6 +736,8 @@ class MainWindow(QMainWindow):
         part_frame = self.engine.part_frames.take()
         if part_frame is not None and part_frame.canvas_id == self.part_preview.canvas_id:
             self.part_preview.set_frame(part_frame.data, part_frame.width, part_frame.height)
+        elif part_frame is not None and self.in_place is not None and part_frame.canvas_id == f"part:{self.in_place[3]}":
+            self.previews[self.in_place[0]].set_inner_frame(part_frame.data, part_frame.width, part_frame.height)
         while True:
             try:
                 event = self.engine.events.get_nowait()
@@ -806,8 +814,17 @@ class MainWindow(QMainWindow):
         self._refresh_stream_boxes()
 
     def _refresh_previews(self) -> None:
+        in_place = self._in_place_state()
         for canvas_id, preview in self.previews.items():
             scene = self.collection.active_scene(canvas_id)
+            if in_place is not None and in_place[0] == canvas_id:
+                show, placement, layout, size = in_place[1:]
+                preview.subtitle = f"{show.name}  ›  ◇ {layout.name}   (editing in place: Esc or double-click outside to finish)"
+                preview.set_inner(placement, size)
+                preview.set_scene(layout, self._item_index() if layout.id == self.selected_scene_id else None)
+                continue
+            if preview.inner is not None:
+                preview.set_inner(None, None)
             preview.subtitle = scene.name if scene else "no scene"
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
             preview.set_scene(scene, index)
@@ -1029,7 +1046,12 @@ class MainWindow(QMainWindow):
 
     def _on_preview_selected(self, canvas_id: str, index: int) -> None:
         """A click in a preview selects that canvas's active scene and the item under the mouse."""
-        if canvas_id.startswith("part:"):
+        if self.in_place is not None and self.in_place[0] != canvas_id:
+            self._exit_in_place()
+        state = self._in_place_state()
+        if state is not None:
+            scene = state[3]  # the part layout being edited in place
+        elif canvas_id.startswith("part:"):
             scene = next((s for s in self.collection.part_scenes() if s.id == canvas_id[5:]), None)
         else:
             scene = self.collection.active_scene(canvas_id)
@@ -1066,6 +1088,10 @@ class MainWindow(QMainWindow):
         selected = self.scene_tree.selectedItems()
         scene_id = selected[0].data(0, ROLE_ID) if selected else None
         if scene_id:
+            if self.in_place is not None:
+                self.in_place = None
+                self.engine.editing_part = None
+                self._refresh_previews()
             self.selected_scene_id = scene_id
             self._refresh_sources()
             self._show_part_editor()
@@ -1138,7 +1164,7 @@ class MainWindow(QMainWindow):
     def _show_part_editor(self) -> None:
         """A selected part opens in place of the canvases (Build mode only); selecting a show closes it."""
         scene = self._scene()
-        if scene is None or scene.kind != "part" or self.mode != "build":
+        if scene is None or scene.kind != "part" or self.mode != "build" or self.in_place is not None:
             self.engine.editing_part = None
             self.part_preview.canvas_id = "part:"
             self.center.setCurrentIndex(0)
@@ -1204,6 +1230,98 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_all()
         self._show_part_editor()
+
+    # Editing a part in place -------------------------------------------------------
+
+    def _in_place_state(self):
+        """(canvas id, show, placement item, part layout, layout size) while editing in place, else None.
+
+        Drops the in-place edit when what it pointed at has gone (the show left the canvas, the
+        placement or part was removed, or the part got another layout for this canvas).
+        """
+        if self.in_place is None:
+            return None
+        canvas_id, show_id, placement_id, layout_id = self.in_place
+        show = self.collection.active_scene(canvas_id)
+        placement = next((i for i in show.items if i.source == placement_id), None) if show else None
+        part = self.collection.part_of(self.collection.source(placement_id)) if placement else None
+        layout = self.collection.shape_for(part, canvas_id) if part else None
+        if show is None or show.id != show_id or layout is None or layout.id != layout_id:
+            self.in_place = None
+            self.engine.editing_part = None
+            if self.selected_scene_id == layout_id:
+                self.selected_scene_id = show.id if show else None
+            return None
+        canvas = self.collection.canvas(layout.canvas)
+        return canvas_id, show, placement, layout, (canvas.width, canvas.height)
+
+    def _on_preview_opened(self, canvas_id: str, index: int) -> None:
+        """Double-click in a preview: on a part, edit it in place; outside the part being edited, finish."""
+        if self.in_place is not None:
+            if index < 0 or self.in_place[0] != canvas_id:
+                self._exit_in_place()
+            return
+        show = self.collection.active_scene(canvas_id)
+        if show is None or not 0 <= index < len(show.items):
+            return
+        self._enter_in_place(canvas_id, show, show.items[index])
+
+    def _open_part_item(self) -> None:
+        """Open the selected part placement: in place when its show is on a canvas, else in the part editor."""
+        scene, item = self._scene(), self._item()
+        if scene is None or item is None:
+            return
+        part = self.collection.part_of(self.collection.source(item.source))
+        if part is None:
+            return
+        if self.collection.active_scenes.get(scene.canvas) == scene.id:
+            self._enter_in_place(scene.canvas, scene, item)
+            return
+        self.selected_scene_id = self.collection.shape_for(part, scene.canvas).id
+        self._refresh_scenes()
+        self._refresh_sources()
+        self._show_part_editor()
+
+    def _enter_in_place(self, canvas_id: str, show: Scene, item: SceneItem) -> None:
+        part = self.collection.part_of(self.collection.source(item.source))
+        if part is None:
+            return
+        layout = self.collection.shape_for(part, canvas_id)
+        if item.rotation % 360 != 0:
+            # Editing through a rotated placement would turn every drag sideways: use the part editor.
+            self.selected_scene_id = layout.id
+            self._refresh_scenes()
+            self._refresh_sources()
+            self._show_part_editor()
+            return
+        self.in_place = (canvas_id, show.id, item.source, layout.id)
+        self.selected_scene_id = layout.id
+        self._show_part_editor()  # closes the part editor if it was open: the show stays on screen
+        self.engine.editing_part = layout.id  # read the part back alone, to draw it bright over the dimmed show
+        self._refresh_scenes()
+        self._refresh_sources()
+        self._refresh_previews()
+        self.previews[canvas_id].setFocus()
+        uses = len(self.collection.part_uses(part.id))
+        others = f" Changes also show in the {uses - 1} other place{'s' if uses != 2 else ''} it's used." if uses > 1 else ""
+        self.statusBar().showMessage(f"Editing {part.name!r} in place.{others} Esc to finish.", 8000)
+
+    def _exit_in_place(self) -> None:
+        """Finish editing in place: back to the show, with the part's placement selected."""
+        if self.in_place is None:
+            return
+        canvas_id, show_id, placement_id, _layout = self.in_place
+        self.in_place = None
+        self.engine.editing_part = None
+        show = next((s for s in self.collection.scenes if s.id == show_id), None)
+        row = None
+        if show is not None:
+            self.selected_scene_id = show.id
+            index = next((i for i, it in enumerate(show.items) if it.source == placement_id), None)
+            row = None if index is None else len(show.items) - 1 - index
+        self._refresh_scenes()
+        self._refresh_sources(keep_row=row)
+        self._refresh_previews()
 
     def _close_part(self) -> None:
         canvas_id = self.collection.canvases[0].id
@@ -1518,6 +1636,9 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         config = self.collection.source(item.source)
+        if config.kind == PART_KIND:
+            self._open_part_item()
+            return
         if config.kind == "color":
             current = QColor(str(config.settings.get("color", "#000000"))[:7])
             color = QColorDialog.getColor(current, self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)

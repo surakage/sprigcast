@@ -3,6 +3,8 @@
 - Click an item to select it; drag to move it (snapping options are in Settings → General).
 - Drag a corner handle to scale; hold Alt while dragging a handle to crop instead.
 - Arrow keys nudge the selected item by 1 px, or 10 px with Shift.
+- Double-click a part to edit it in place: the show stays on screen, dimmed around the part, and the
+  mouse edits the part's own items. Double-click outside it or press Esc to finish.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ class Preview(QWidget):
     selected = Signal(str, int)
     # canvas id, finished: False while dragging, True when the edit is done (save then)
     edited = Signal(str, bool)
+    # canvas id, item index: double-click on an item (a part opens in place), or -1 outside / Esc
+    opened = Signal(str, int)
 
     def __init__(self, canvas_id: str, title: str, aspect: tuple[int, int], parent: QWidget | None = None):
         super().__init__(parent)
@@ -50,6 +54,11 @@ class Preview(QWidget):
         self.selected_index: int | None = None
         self.transparent = False  # a part: show see-through areas as a checkerboard
         self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
+        # Editing a part in place: where its layout sits on this canvas (see set_inner).
+        self.inner: tuple[float, float, float, float, float] | None = None  # x, y, scale, crop left, crop top
+        self.inner_size: tuple[int, int] | None = None  # the part layout's own size
+        self.inner_rect: tuple[float, float, float, float] | None = None  # visible part area, canvas pixels
+        self._inner_image: QImage | None = None  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
         self._drag: tuple[str, int | None, QPointF, SceneItem] | None = None  # mode, corner, start, item copy
         self.setMinimumSize(160, 160)
@@ -66,9 +75,34 @@ class Preview(QWidget):
         self.aspect = (width, height)
         self.update()
 
+    def set_inner_frame(self, data: bytes, width: int, height: int) -> None:
+        """The part being edited in place, rendered alone (premultiplied RGBA)."""
+        if self.inner is None:
+            return
+        self._inner_image = QImage(data, width, height, width * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+        self.update()
+
     def set_scene(self, scene: Scene | None, selected_index: int | None) -> None:
         self.scene = scene
         self.selected_index = selected_index
+        self.update()
+
+    def set_inner(self, placement: SceneItem | None, part_size: tuple[int, int] | None) -> None:
+        """Edit a part in place: `placement` is the part's item in the show, `part_size` its layout's size.
+
+        Mouse and keyboard then work in the part's coordinates, and set_scene() takes the part layout.
+        None goes back to editing the show.
+        """
+        if placement is None or not part_size:
+            self.inner = self.inner_size = self.inner_rect = None
+            self._inner_image = None
+        else:
+            left, top, _r, _b = placement.crop
+            self.inner = (placement.x, placement.y, placement.scale, left, top)
+            self.inner_size = part_size
+            w, h = placement.cropped_size(part_size)
+            self.inner_rect = (placement.x, placement.y, w * placement.scale, h * placement.scale)
+        self._drag = None
         self.update()
 
     # Coordinates -------------------------------------------------------------------
@@ -82,16 +116,33 @@ class Preview(QWidget):
         w, h = aw * scale, ah * scale
         return QRectF((avail_w - w) / 2, top + (avail_h - h) / 2, w, h)
 
+    def _space(self) -> tuple[float, float, float]:
+        """Widget x, y of the editing space's origin and widget pixels per space pixel.
+
+        The space is the canvas, or the part's layout while a part is edited in place.
+        """
+        r = self.canvas_rect()
+        k = r.width() / self.aspect[0]
+        if self.inner is None:
+            return r.x(), r.y(), k
+        x, y, scale, left, top = self.inner
+        return r.x() + (x - left * scale) * k, r.y() + (y - top * scale) * k, k * scale
+
     def _scale(self) -> float:
-        return self.canvas_rect().width() / self.aspect[0]
+        return self._space()[2]
+
+    def _bounds(self) -> tuple[int, int]:
+        """Size of the editing space, for snapping to its edges."""
+        return self.inner_size or self.aspect
 
     def to_canvas(self, p: QPointF) -> tuple[float, float]:
-        r, s = self.canvas_rect(), self._scale()
-        return (p.x() - r.x()) / s, (p.y() - r.y()) / s
+        """A widget point in editing-space pixels (canvas pixels, or the part's while editing in place)."""
+        ox, oy, s = self._space()
+        return (p.x() - ox) / s, (p.y() - oy) / s
 
     def to_widget(self, x: float, y: float) -> QPointF:
-        r, s = self.canvas_rect(), self._scale()
-        return QPointF(r.x() + x * s, r.y() + y * s)
+        ox, oy, s = self._space()
+        return QPointF(ox + x * s, oy + y * s)
 
     def _other_rects(self, moving: SceneItem) -> list[tuple[float, float, float, float]]:
         """Screen-aligned boxes of the other visible items, for snapping to them."""
@@ -129,6 +180,7 @@ class Preview(QWidget):
                 self._paint_checker(p, rect)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(rect, self._image)
+        self._paint_inner(p)
         self._paint_selection(p)
         p.end()
 
@@ -145,6 +197,38 @@ class Preview(QWidget):
             tp.end()
             cls._checker = QBrush(tile)
         p.fillRect(rect, cls._checker)
+
+    def _paint_inner(self, p: QPainter) -> None:
+        """While a part is edited in place: dim the rest of the show and outline the part.
+
+        With the part's own image, the whole show dims and the part is drawn bright on top (so a part
+        that fills the canvas still stands out); until that arrives, only the area around it dims.
+        """
+        if self.inner_rect is None:
+            return
+        r = self.canvas_rect()
+        k = r.width() / self.aspect[0]
+        x, y, w, h = self.inner_rect
+        part = QRectF(r.x() + x * k, r.y() + y * k, w * k, h * k)
+        p.save()
+        p.setClipRect(r)
+        shade = QColor(0, 0, 0, 150)
+        image = self._inner_image
+        if image is not None and self.inner is not None and self.inner_size == (image.width(), image.height()):
+            p.fillRect(r, shade)
+            _x, _y, scale, left, top = self.inner
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.drawImage(part, image, QRectF(left, top, w / scale, h / scale))
+        else:
+            p.fillRect(QRectF(r.left(), r.top(), r.width(), max(0.0, part.top() - r.top())), shade)
+            p.fillRect(QRectF(r.left(), part.bottom(), r.width(), max(0.0, r.bottom() - part.bottom())), shade)
+            p.fillRect(QRectF(r.left(), part.top(), max(0.0, part.left() - r.left()), part.height()), shade)
+            p.fillRect(QRectF(part.right(), part.top(), max(0.0, r.right() - part.right()), part.height()), shade)
+        pen = QPen(ACCENT, 1.0, Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(part)
+        p.restore()
 
     def _paint_selection(self, p: QPainter) -> None:
         selected = self._selected_item() if self.editable else None
@@ -203,7 +287,7 @@ class Preview(QWidget):
             off = not prefs["enabled"] or event.modifiers() & Qt.KeyboardModifier.ControlModifier
             snap = 0.0 if off else prefs["distance"] / scale
             others = self._other_rects(item) if prefs["sources"] else []
-            edit.move(item, start_item, size, delta, self.aspect, snap,
+            edit.move(item, start_item, size, delta, self._bounds(), snap,
                       edges=prefs["edges"], center=prefs["center"], others=others)
         elif mode == "scale":
             edit.scale_from_corner(item, start_item, size, corner, point)
@@ -219,7 +303,19 @@ class Preview(QWidget):
             if moved:
                 self.edited.emit(self.canvas_id, True)
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton or self.scene is None or not self.editable:
+            return
+        index = edit.hit_test(self.scene.items, self.sizes, self.to_canvas(event.position()))
+        if self.inner is not None and index is not None:
+            return  # inside the part: an ordinary click
+        self._drag = None
+        self.opened.emit(self.canvas_id, -1 if index is None else index)
+
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape and self.inner is not None:
+            self.opened.emit(self.canvas_id, -1)
+            return
         selected = self._selected_item() if self.editable else None
         steps = {
             Qt.Key.Key_Left: (-1, 0),
