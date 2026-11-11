@@ -39,35 +39,42 @@ The key is typed at a hidden prompt and is never saved.
 
 ## Using the app
 
+The layout follows OBS: the previews on top, and along the bottom the *Scenes*, *Sources*, *Audio Mixer*,
+*Scene Transitions* and *Controls* docks. Every dock can be dragged to another edge, stacked into tabs,
+floated as its own window or closed; the *Docks* menu brings closed ones back, *Lock docks* stops accidental
+drags and *Reset layout* puts everything back. Under each list is a row of small buttons:
+**+** add, **−** remove, **⚙** settings, **▲ ▼** reorder. Right-click a scene or source for the same actions.
+
 - **Previews**: the horizontal canvas (1920x1080) on the left, the vertical canvas (1080x1920) on the right.
   Edit the scene shown on each canvas directly with the mouse:
   - Click an item to select it, then drag to move it. Edges and centre snap to the canvas; hold Ctrl to stop snapping.
   - Drag a corner handle to resize. Hold Alt while dragging a corner to crop instead.
   - Arrow keys nudge the selected item 1 px, or 10 px with Shift.
-  - Tick *Locked* in Properties for backgrounds, so clicks pass through them to the items on top.
-- **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *Show* to put it on its canvas.
+  - Right-click a background and pick *Lock*, so clicks pass through them to the items on top.
+- **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *▶ Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
-  Under the scene list, pick the *Transition*: *Fade* (crossfade, 300 ms by default) or *Cut*.
-- **Hotkeys** (*File → Hotkeys…*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
+- **Scene Transitions dock**: *Fade* (crossfade, 300 ms by default) or *Cut*.
+- **Hotkeys** (*Settings → Hotkeys…*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
   They work while a game has focus. Pick combos your games don't use.
-- **Stats** (*View → Stats*, Ctrl+Shift+S): render fps, CPU and memory, free disk space, and for every stream
+- **Stats** (*Docks → Stats*, Ctrl+Shift+S): render fps, CPU and memory, free disk space, and for every stream
   and recording the frames sent and dropped, encoding time per frame, and time spent waiting on the network.
-- **Sources dock**: add a display, window, color or image source to the selected scene, tick to show or hide,
-  and use *Up* and *Down* to change which item draws on top.
-  - *+ Display* captures a whole monitor, cursor included, and fits it to the canvas.
-  - *+ Window* captures one window even when other windows cover it. SprigCast remembers the window's
+- **Sources dock**: **+** adds a source to the selected scene (display, window, camera, image, color, text,
+  or a plugin). Tick to show or hide, **▲ ▼** change which item draws on top, double-click or **⚙** opens its
+  settings, and *Transform* opens the Properties dock.
+  - *Display capture* captures a whole monitor, cursor included, and fits it to the canvas.
+  - *Window capture* captures one window even when other windows cover it. SprigCast remembers the window's
     program and title, so a game that restarts or a browser that changes tabs is found again automatically.
-  - *+ Camera* adds a webcam or capture card as a facecam in the bottom-right corner. Pick the device,
+  - *Camera* adds a webcam or capture card as a facecam in the bottom-right corner. Pick the device,
     mode (for example 1920x1080 at 30 fps) and mirroring. Cameras are remembered by device, so
     replugging into another USB port is fine, and an unplugged camera reconnects on its own.
-- **Audio dock**: a level meter for every audio source plus the master mix.
-  - *+ Mic* adds a microphone, *+ Desktop* adds what your speakers or headphones play (WASAPI loopback).
+- **Audio Mixer dock**: a level meter for every audio source plus the master mix.
+  - **+ → Microphone** adds a mic, **+ → Desktop audio** adds what your speakers or headphones play (WASAPI loopback).
     Both default to whatever device Windows uses, so switching headsets in Windows just works.
   - Drag a slider to set the volume (-60 to +12 dB), click *Mute* to silence it,
-    and use *Device…* to pin a source to one device or *Remove* to delete it.
+    click a source's name, then **⚙** pins it to one device or **−** removes it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
-- **Output dock**: go live and record.
-  - *Stream…* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
+- **Controls dock**: *Go live*, *Start recording*, and a *Settings* menu (also in the menu bar).
+  - *Settings → Stream outputs…* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
     fills in its preset (Twitch: horizontal 1920×1080 60 fps 6000 kbps; TikTok: vertical 720×1280 30 fps
     4000 kbps), and you can change the canvas, resolution, frame rate and bitrate per output.
     Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
@@ -79,13 +86,13 @@ The key is typed at a hidden prompt and is never saved.
     A dropped connection reconnects on its own.
   - *Start recording* writes each ticked canvas to its own file at the same time,
     for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
-    *Recording…* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays playable
-    if the PC crashes. *Folder* opens your recordings. Streaming and recording can run together.
-- **Text sources** (*+ Text*): titles and labels with a font, size, colour and outline.
+    *Settings → Recording…* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays
+    playable if the PC crashes. *Settings → Open recordings folder* opens your recordings. Streaming and recording can run together.
+- **Text sources** (**+ → Text**): titles and labels with a font, size, colour and outline.
   `{time}`, `{time12}` and `{date}` in the text show a live clock. Set *File* to a text file and its
   contents are shown instead and follow its changes, handy for "now playing" tools.
-- **Properties dock**: name, position, scale and rotation of the selected item, its color, image, monitor or
-  window, *Fit to canvas*, and a status line (for example "waiting for target" while a game is closed).
+- **Properties dock** (hidden until you press *Transform* or right-click → *Transform…*): name, position,
+  scale and rotation of the selected item, *Fit to canvas*, *Locked*, and a status line (for example "waiting for target" while a game is closed).
 
 Capture uses Windows Graphics Capture. SprigCast hides the yellow capture border on Windows 11;
 Windows 10 always shows it.
@@ -100,7 +107,7 @@ Scenes save automatically to `scenes.json` in your AppData folder
 
 A plugin is a Python file that adds a new source type. *File → Open plugins folder* opens the folder
 (`%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`). Every `.py` file there loads at startup; files whose
-name starts with `_` are skipped. Plugin sources appear under *Sources → + More*.
+name starts with `_` are skipped. Plugin sources appear under *Sources → + → Plugins*.
 
 The first launch puts an example there, `countdown_example.py`, a "Starting in 4:59" countdown built on
 the text source. A minimal plugin looks like this:
@@ -111,7 +118,7 @@ from sprigcast.sources.text import TextSource
 
 @register("shout")
 class ShoutSource(TextSource):
-    label = "Shout"                                   # name in the + More menu
+    label = "Shout"                                   # name in Sources → + → Plugins
     defaults = {**TextSource.defaults, "text": "hi"}  # fields in its Settings dialog
 
     def _current_text(self):
