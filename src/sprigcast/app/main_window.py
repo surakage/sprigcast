@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QColorDialog,
@@ -56,6 +57,7 @@ from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.filters_dialog import FiltersDialog
 from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
 from sprigcast.app.live_panel import LivePanel
+from sprigcast.app.part_dialog import NewPartDialog
 from sprigcast.app.preview import Preview
 from sprigcast.app.settings_dialog import SettingsDialog
 from sprigcast.app.settings_window import (
@@ -203,6 +205,13 @@ class MainWindow(QMainWindow):
         done.clicked.connect(self._close_part)
         header.addWidget(done)
         part_layout.addLayout(header)
+        self.part_empty = QLabel(
+            "This part is empty. Add sources with Sources → + and they go into the part. "
+            "Tip: you can also select sources in a show, right-click and pick Turn into a part."
+        )
+        self.part_empty.setWordWrap(True)
+        self.part_empty.setStyleSheet("background: #3a3f36; color: #ece8e1; padding: 8px; border-radius: 4px; margin: 4px 8px;")
+        part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.center = QStackedWidget()
         self.center.addWidget(splitter)
@@ -322,6 +331,7 @@ class MainWindow(QMainWindow):
 
     def _build_sources_dock(self) -> None:
         self.source_list = QListWidget()
+        self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.source_list.itemSelectionChanged.connect(self._refresh_properties)
         self.source_list.itemChanged.connect(self._on_source_toggled)
         self.source_list.itemDoubleClicked.connect(lambda *_: self._edit_source_settings())
@@ -375,6 +385,11 @@ class MainWindow(QMainWindow):
             item = self._item()
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
                 menu.addAction("Edit part in place").triggered.connect(self._open_part_item)
+            count = len(self.source_list.selectedItems())
+            turn = menu.addAction("Turn into a part…" if count < 2 else f"Turn these {count} into a part…")
+            turn.setToolTip("Move the selected sources into a new reusable part, right where they are")
+            turn.triggered.connect(self._turn_into_part)
+            menu.addSeparator()
             menu.addAction("Settings…").triggered.connect(self._edit_source_settings)
             menu.addAction("Filters…").triggered.connect(self._edit_filters)
             menu.addAction("Transform…").triggered.connect(self._show_transform)
@@ -394,8 +409,20 @@ class MainWindow(QMainWindow):
     def _scene_context_menu(self, pos) -> None:
         menu = QMenu(self)
         if self.scene_tree.itemAt(pos) is not None and self._scene() is not None:
-            if self._scene().kind == "show":
+            scene = self._scene()
+            if scene.kind == "show":
                 menu.addAction("Show").triggered.connect(self._make_active)
+            else:
+                part = self.collection.main_part(scene)
+                for canvas in self.collection.canvases:
+                    show = self.collection.active_scene(canvas.id)
+                    if show is None:
+                        continue
+                    action = menu.addAction(f"Add to “{show.name}”  ({canvas.id})")
+                    if self.collection.contains(part, show.id):
+                        action.setEnabled(False)
+                    action.triggered.connect(lambda _=False, pid=part.id, sid=show.id: self._add_part_source(pid, sid))
+                menu.addSeparator()
             menu.addAction("Rename…").triggered.connect(self._rename_scene)
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
@@ -802,7 +829,9 @@ class MainWindow(QMainWindow):
 
     def _item(self) -> SceneItem | None:
         scene, index = self._scene(), self._item_index()
-        return None if scene is None or index is None else scene.items[index]
+        if scene is None or index is None or not 0 <= index < len(scene.items):
+            return None  # the list can briefly still show another scene's rows while it's rebuilt
+        return scene.items[index]
 
     # Refreshing widgets ------------------------------------------------------
 
@@ -815,7 +844,9 @@ class MainWindow(QMainWindow):
 
     def _refresh_previews(self) -> None:
         in_place = self._in_place_state()
+        part_names = {s.id: s.name for s in self.collection.sources if s.kind == PART_KIND}
         for canvas_id, preview in self.previews.items():
+            preview.part_names = part_names
             scene = self.collection.active_scene(canvas_id)
             if in_place is not None and in_place[0] == canvas_id:
                 show, placement, layout, size = in_place[1:]
@@ -831,6 +862,7 @@ class MainWindow(QMainWindow):
         part = self._scene()
         if part is not None and part.kind == "part" and self.part_preview.canvas_id == f"part:{part.id}":
             self.part_preview.set_scene(part, self._item_index())
+            self.part_empty.setVisible(not part.items)
         self.live_panel.show_scenes(self.collection)
 
     def _refresh_scenes(self) -> None:
@@ -892,7 +924,7 @@ class MainWindow(QMainWindow):
 
     def _source_label(self, source_id: str) -> str:
         config = self.collection.source(source_id)
-        label = f"{config.name}   [{config.kind}]"
+        label = f"◇ {config.name}   [part]" if config.kind == PART_KIND else f"{config.name}   [{config.kind}]"
         if any(f.enabled for f in config.filters):
             label += "   ✦ filters"
         status = self.source_statuses.get(source_id, "ok")
@@ -1131,22 +1163,28 @@ class MainWindow(QMainWindow):
         self._refresh_all()
 
     def _add_part(self) -> None:
-        canvases = [c.id for c in self.collection.canvases]
-        canvas_id, ok = QInputDialog.getItem(
-            self, "New part", "Lay it out on the size of which canvas?", canvases, 0, False)
-        if not ok:
+        scene = self._scene()
+        show = scene if scene is not None and scene.kind == "show" else None
+        answer = NewPartDialog.ask(self.collection, show, self)
+        if answer is None:
             return
-        name, ok = QInputDialog.getText(self, "New part", "Part name (for example Webcam frame):")
-        if not ok or not name.strip():
-            return
-        part = Scene(id=self.collection.new_id("part"), name=name.strip(), canvas=canvas_id, kind="part")
+        name, canvas_id, add_to_show = answer
+        part = Scene(id=self.collection.new_id("part"), name=name, canvas=canvas_id, kind="part")
         self.collection.scenes.append(part)
+        if add_to_show and show is not None:
+            self._add_part_source(part.id, show.id)
         self.selected_scene_id = part.id
         self._changed()
         self._refresh_all()
         self._show_part_editor()
 
-    def _add_part_source(self, part_id: str) -> None:
+    def _add_part_source(self, part_id: str, target_id: str | None = None) -> None:
+        """Place a part in the selected scene (or in `target_id`, which becomes the selected scene)."""
+        if target_id is not None:
+            self._exit_in_place()
+            self.selected_scene_id = target_id
+            self._show_part_editor()
+            self._refresh_sources()
         scene, part = self._scene(), self.collection.scene(part_id)
         if scene is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
@@ -1160,6 +1198,29 @@ class MainWindow(QMainWindow):
         canvas = self.collection.canvas(self.collection.shape_for(part, scene.canvas).canvas)
         self._fit_item(size=(canvas.width, canvas.height))  # a horizontal-only part fits a vertical show too
         self._refresh_scenes()
+
+    def _turn_into_part(self) -> None:
+        """Move the selected sources into a new part, placed where they were, so nothing moves on screen."""
+        scene = self._scene()
+        rows = sorted({self.source_list.row(r) for r in self.source_list.selectedItems()})
+        if scene is None or not rows:
+            return
+        indices = [len(scene.items) - 1 - row for row in rows]
+        first = self.collection.source(scene.items[indices[0]].source).name
+        name, ok = QInputDialog.getText(
+            self, "Turn into a part", "Name the new part (you can reuse it in any show):",
+            text=first if len(rows) == 1 else "")
+        if not ok or not name.strip():
+            return
+        part, placement = self.collection.make_part(scene, indices, name.strip())
+        self._changed()
+        index = next(i for i, it in enumerate(scene.items) if it.source == placement.id)
+        self._refresh_scenes()
+        self._refresh_sources(keep_row=len(scene.items) - 1 - index)
+        self._refresh_previews()
+        self.statusBar().showMessage(
+            f"Made the part {part.name!r}. Add it to other shows with Sources → + → Part; "
+            "double-click it to edit it in place.", 8000)
 
     def _show_part_editor(self) -> None:
         """A selected part opens in place of the canvases (Build mode only); selecting a show closes it."""

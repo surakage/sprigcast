@@ -201,7 +201,7 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
     """Make a part, place it in a show on each canvas, open it in the part editor, then remove it."""
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings
-    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    from PySide6.QtWidgets import QMessageBox
 
     from sprigcast.app.main import load_collection
     from sprigcast.app.main_window import MainWindow
@@ -210,9 +210,9 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
     QCoreApplication.setOrganizationName("SprigCastTests")
     QCoreApplication.setApplicationName("PartsTest")
     QSettings().clear()
-    answers = iter([("horizontal", True), ("Webcam frame", True)])
-    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *a, **k: next(answers)))
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: next(answers)))
+    from sprigcast.app.part_dialog import NewPartDialog
+
+    monkeypatch.setattr(NewPartDialog, "ask", staticmethod(lambda *a, **k: ("Webcam frame", "horizontal", False)))
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     col = load_collection(tmp_path / "scenes.json")
     w = MainWindow(col, tmp_path / "scenes.json")
@@ -283,8 +283,6 @@ def test_preview_maps_mouse_into_the_part_in_place(app):
 def test_main_window_edits_a_part_in_place(app, tmp_path, monkeypatch):
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings
-    from PySide6.QtWidgets import QInputDialog
-
     from sprigcast.app.main import load_collection
     from sprigcast.app.main_window import MainWindow
 
@@ -292,9 +290,9 @@ def test_main_window_edits_a_part_in_place(app, tmp_path, monkeypatch):
     QCoreApplication.setOrganizationName("SprigCastTests")
     QCoreApplication.setApplicationName("InPlaceTest")
     QSettings().clear()
-    answers = iter([("horizontal", True), ("Webcam frame", True)])
-    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *a, **k: next(answers)))
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: next(answers)))
+    from sprigcast.app.part_dialog import NewPartDialog
+
+    monkeypatch.setattr(NewPartDialog, "ask", staticmethod(lambda *a, **k: ("Webcam frame", "horizontal", False)))
     col = load_collection(tmp_path / "scenes.json")
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
@@ -337,6 +335,89 @@ def test_main_window_edits_a_part_in_place(app, tmp_path, monkeypatch):
         placement.rotation = 15
         w._on_preview_opened("horizontal", len(show.items) - 1)
         assert w.in_place is None and w._scene() is part and w.center.currentIndex() == 1
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_make_part_from_items_keeps_the_picture():
+    col = _collection()
+    col.sources += [SourceConfig(id=f"s{i}", kind="color", name=f"S{i}") for i in range(4)]
+    show = col.scene("show-h")
+    show.items = [SceneItem(source=f"s{i}", x=i * 10) for i in range(4)]
+    part, placement = col.make_part(show, [1, 2], "Webcam frame")
+    assert part.kind == "part" and part.canvas == "h" and [i.source for i in part.items] == ["s1", "s2"]
+    assert part.items[1].x == 20  # positions kept: the part is laid out on the same canvas
+    assert [i.source for i in show.items] == ["s0", placement.id, "s3"]  # in the moved items' place
+    placed = show.items[1]
+    assert (placed.x, placed.y, placed.scale) == (0, 0, 1)
+    assert col.part_of(placement) is part and col.part_uses(part.id) == [show]
+    SceneCollection.model_validate(col.model_dump())
+    with pytest.raises(ValueError):
+        col.make_part(show, [], "Nothing")
+
+
+def test_new_part_dialog(app):
+    from sprigcast.app.part_dialog import NewPartDialog
+
+    col = _collection()
+    dialog = NewPartDialog(col, col.scene("show-v"))
+    assert not dialog.ok.isEnabled()  # needs a name
+    dialog.name.setText("  Brand bar ")
+    assert dialog.ok.isEnabled()
+    assert dialog.values() == ("Brand bar", "v", True)  # the show's shape, and add it there
+    assert "Gaming (v)" in dialog.add_to_show.text()
+    dialog = NewPartDialog(col, None)
+    dialog.name.setText("x")
+    assert dialog.values() == ("x", "h", False) and not dialog.add_to_show.isVisibleTo(dialog)
+
+
+def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QInputDialog
+
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.app.part_dialog import NewPartDialog
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("FriendlyTest")
+    QSettings().clear()
+    col = load_collection(tmp_path / "scenes.json")
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        show = col.active_scene("horizontal")
+        w.selected_scene_id = show.id
+        w._refresh_sources()
+        # New part, added to the show in the same step; the part editor opens with the empty hint
+        monkeypatch.setattr(NewPartDialog, "ask", staticmethod(lambda *a, **k: ("Alerts box", "horizontal", True)))
+        w._add_part()
+        part = w._scene()
+        assert part.kind == "part" and [s.id for s in col.part_uses(part.id)] == [show.id]
+        assert w.center.currentIndex() == 1 and w.part_empty.isVisibleTo(w)
+        # select two sources in a show and turn them into a part: same picture, one placement
+        w.selected_scene_id = show.id
+        w._show_part_editor()
+        col.sources += [SourceConfig(id="a", kind="color", name="A"), SourceConfig(id="b", kind="color", name="B")]
+        show.items += [SceneItem(source="a", x=5), SceneItem(source="b", x=7)]
+        w._refresh_sources()
+        w.source_list.item(0).setSelected(True)  # top row: b
+        w.source_list.item(1).setSelected(True)  # a
+        monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Cam corner", True)))
+        w._turn_into_part()
+        made = next(s for s in col.parts() if s.name == "Cam corner")
+        assert [i.source for i in made.items] == ["a", "b"] and made.items[1].x == 7
+        assert col.part_of(col.source(show.items[-1].source)) is made
+        assert w._item() is show.items[-1]  # the new placement is selected
+        assert w.source_list.item(0).text().startswith("◇ Cam corner") and "[part]" in w.source_list.item(0).text()
+        # hovering a part in the preview names it
+        assert w.previews["horizontal"].part_names[show.items[-1].source] == "Cam corner"
+        # Scenes right-click on a part: "Add to <show>" places it there
+        w._add_part_source(made.id, col.active_scenes["vertical"])
+        assert w._scene().id == col.active_scenes["vertical"] and len(col.part_uses(made.id)) == 2
     finally:
         w.close()
         QSettings().clear()

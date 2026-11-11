@@ -58,8 +58,13 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   Gaming, Be right back). A *part* is a reusable piece, like a webcam frame, an alerts box or a brand bar,
   that you drop into shows. Build a part once and use it on both canvases: change it, and every show
   using it changes too.
-  - Scenes **+ → New part…** makes one (it asks which canvas size to lay it out on). Parts are listed
-    under *Parts* in the Scenes dock with where they're used, for example "◇ Webcam frame (horizontal · used in 2)".
+  - Scenes **+ → New part…** makes one: give it a name, pick its shape, and tick *Add it to "…" now* to drop
+    it straight into the show you're working on. Parts are listed under *Parts* in the Scenes dock with where
+    they're used, for example "◇ Webcam frame (horizontal + vertical · used in 2)". Right-click a part there
+    to add it to the show on either canvas.
+  - **Turn into a part**: already built something in a show? Select its sources in the Sources dock
+    (Ctrl-click or Shift-click for several), right-click and pick *Turn into a part…*. They move into a new
+    part right where they were, so nothing moves on screen, and the part is ready to reuse.
   - Select a part to open it in the *part editor* in place of the canvases. The see-through areas show as a
     checkerboard, and the header lists every show that uses it. *Done: back to the canvases* closes it.
   - **One part, two shapes.** A part starts with a layout for the canvas you picked. The buttons at the top of
@@ -74,7 +79,8 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     so they show everywhere it's used. Press Esc or double-click outside the part to go back to the show.
     You edit the layout for that canvas, so editing in the vertical show changes the part's vertical layout.
     A rotated placement opens the part editor instead.
-  - Sources **+ → Part** places a part in the selected show (or inside another part). Move, resize and crop it
+  - Sources **+ → Part** places a part in the selected show (or inside another part). Parts show as
+    "◇ name [part]" in the Sources dock, and hovering one in a preview says so. Move, resize and crop it
     like any source. SprigCast won't let a part end up inside itself.
   - A part is drawn once per frame however many shows and canvases use it. Removing a part warns you where
     it's used. Parts never appear in Live mode, which lists shows only.
