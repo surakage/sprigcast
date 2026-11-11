@@ -8,7 +8,7 @@ entry point. A plugin registers sources exactly like the built-in ones:
 
     @register("my_kind")
     class MySource(Source):
-        label = "My source"              # shown in the "+ More" menu
+        label = "My source"              # shown under Sources → + → Plugins
         defaults = {"text": "hello"}     # editable in the source's Settings dialog
         ...
 
@@ -67,7 +67,7 @@ def load_plugins(folder: Path | None) -> PluginReport:
 
 EXAMPLE = '''"""Example SprigCast plugin: a countdown timer source. Edit or copy it to make your own.
 
-Add it with Sources → + More → Countdown. Its settings (minutes, label) appear in Settings….
+Add it with Sources → + → Plugins → Countdown. Double-click it to change the minutes and label.
 """
 
 import time

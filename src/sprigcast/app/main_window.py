@@ -13,12 +13,12 @@ from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFrame,
     QColorDialog,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -29,9 +29,10 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
+    QScrollArea,
     QSpinBox,
     QSplitter,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -62,7 +63,7 @@ ROLE_ID = Qt.ItemDataRole.UserRole
 log = logging.getLogger(__name__)
 
 
-# Kinds that have their own button or dock; everything else with a `label` goes in "+ More".
+# Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
 BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output"}
 
 
@@ -72,6 +73,37 @@ def _name_from(settings: dict, fallback: str) -> str:
     if not first:
         return fallback
     return first[0] if len(first[0]) <= 30 else first[0][:29] + "…"
+
+
+def _toolbar(*entries) -> QWidget:
+    """A row of small buttons under a list, like OBS. Each entry is (text, tooltip, slot or QMenu); None is a gap."""
+    bar = QWidget()
+    row = QHBoxLayout(bar)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(2)
+    for entry in entries:
+        if entry is None:
+            row.addStretch(1)
+            continue
+        text, tip, target = entry
+        b = QToolButton()
+        b.setText(text)
+        b.setToolTip(tip)
+        b.setAutoRaise(True)
+        b.setMinimumSize(30, 28)
+        if len(text) <= 2:  # symbol buttons (+ − ⚙ ▲ ▼) read better a bit larger
+            font = b.font()
+            font.setPointSizeF(font.pointSizeF() * 1.35)
+            b.setFont(font)
+        if isinstance(target, QMenu):
+            b.setMenu(target)
+            b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        else:
+            b.clicked.connect(lambda _=False, f=target: f())
+        row.addWidget(b)
+    if entries and entries[-1] is not None and None not in entries:
+        row.addStretch(1)
+    return bar
 
 
 def _button(text: str, slot) -> QPushButton:
@@ -109,16 +141,22 @@ class MainWindow(QMainWindow):
             splitter.setStretchFactor(splitter.count() - 1, 3 if canvas.width >= canvas.height else 1)
         self.setCentralWidget(splitter)
 
+        self.setDockOptions(
+            QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks
+            | QMainWindow.DockOption.AnimatedDocks
+        )
+        self.docks: dict[str, QDockWidget] = {}
         self._build_scenes_dock()
         self._build_sources_dock()
-        self._build_properties_dock()
         self._build_audio_dock()
-        self._build_output_dock()
+        self._build_transitions_dock()
+        self._build_controls_dock()
+        self._build_properties_dock()
         self.stats_panel = StatsPanel()
-        self.stats_panel.setMinimumWidth(400)
-        self.stats_dock = self._dock("Stats", self.stats_panel, None, Qt.DockWidgetArea.RightDockWidgetArea)
-        self.stats_dock.hide()
+        self.stats_dock = self._dock("Stats", self.stats_panel)
         self._last_stats = None
+        self._arrange_default_layout()
         self._build_menu()
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
@@ -135,6 +173,7 @@ class MainWindow(QMainWindow):
         self.hotkeys.apply(self.collection.hotkeys)
 
         self._refresh_all()
+        self._restore_layout()
 
     # Building the UI ------------------------------------------------------
 
@@ -143,23 +182,27 @@ class MainWindow(QMainWindow):
         self.scene_tree.setHeaderHidden(True)
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
         self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
-        buttons = QHBoxLayout()
-        buttons.addWidget(_button("Show", self._make_active))
-        buttons.addWidget(_button("Add", self._add_scene))
-        buttons.addWidget(_button("Rename", self._rename_scene))
-        buttons.addWidget(_button("Remove", self._remove_scene))
-        body = QWidget()
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.addWidget(self.scene_tree)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Transition"))
+        self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.scene_tree.customContextMenuRequested.connect(self._scene_context_menu)
+        bar = _toolbar(
+            ("+", "Add a scene", self._add_scene),
+            ("−", "Remove the selected scene", self._remove_scene),
+            ("✎", "Rename the selected scene", self._rename_scene),
+            None,
+            ("▶ Show", "Show this scene on its canvas (or double-click it)", self._make_active),
+        )
+        self._dock("Scenes", self.scene_tree, bar)
+
+    def _build_transitions_dock(self) -> None:
+        panel = QWidget()
+        form = QFormLayout(panel)
+        form.setContentsMargins(0, 0, 0, 0)
         self.transition_kind = QComboBox()
         self.transition_kind.addItem("Fade", "fade")
         self.transition_kind.addItem("Cut", "cut")
         self.transition_kind.setCurrentIndex(max(0, self.transition_kind.findData(self.collection.transition.kind)))
         self.transition_kind.currentIndexChanged.connect(self._on_transition_changed)
-        row.addWidget(self.transition_kind, 1)
+        form.addRow("Type", self.transition_kind)
         self.transition_ms = QSpinBox()
         self.transition_ms.setRange(50, 5000)
         self.transition_ms.setSingleStep(50)
@@ -167,15 +210,18 @@ class MainWindow(QMainWindow):
         self.transition_ms.setValue(self.collection.transition.duration_ms)
         self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
         self.transition_ms.valueChanged.connect(self._on_transition_changed)
-        row.addWidget(self.transition_ms)
-        body_layout.addLayout(row)
-        self._dock("Scenes", body, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+        form.addRow("Duration", self.transition_ms)
+        wrapper = QWidget()
+        layout = QVBoxLayout(wrapper)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(panel)
+        layout.addStretch(1)
+        self._dock("Scene Transitions", wrapper)
 
     def _on_transition_changed(self) -> None:
         self.collection.transition.kind = self.transition_kind.currentData()
         self.collection.transition.duration_ms = self.transition_ms.value()
         self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
-        self._restore_layout()
         self._changed()
 
     # Window layout ---------------------------------------------------------------
@@ -188,35 +234,101 @@ class MainWindow(QMainWindow):
         if geometry is not None:
             self.restoreGeometry(geometry)
         if state is not None:
-            self.restoreState(state)
+            self.restoreState(state, self.LAYOUT_VERSION)
+        self._set_docks_locked(QSettings().value("window/locked", False, type=bool))
 
     def _save_layout(self) -> None:
         settings = QSettings()
         settings.setValue("window/geometry", self.saveGeometry())
-        settings.setValue("window/state", self.saveState())
+        settings.setValue("window/state", self.saveState(self.LAYOUT_VERSION))
 
     def _build_sources_dock(self) -> None:
         self.source_list = QListWidget()
         self.source_list.itemSelectionChanged.connect(self._refresh_properties)
         self.source_list.itemChanged.connect(self._on_source_toggled)
-        buttons = QHBoxLayout()
-        buttons.addWidget(_button("+ Display", self._add_display))
-        buttons.addWidget(_button("+ Window", self._add_window))
-        buttons.addWidget(_button("+ Camera", self._add_camera))
-        buttons.addWidget(_button("+ Color", self._add_color))
-        buttons.addWidget(_button("+ Image", self._add_image))
-        buttons.addWidget(_button("+ Text", self._add_text))
-        self.more_button = QPushButton("+ More")
-        self.more_menu = QMenu(self.more_button)
-        self.more_menu.aboutToShow.connect(self._fill_more_menu)
-        self.more_button.setMenu(self.more_menu)
-        buttons.addWidget(self.more_button)
-        buttons.addWidget(_button("Remove", self._remove_item))
-        buttons.addWidget(_button("Up", lambda: self._move_item(+1)))
-        buttons.addWidget(_button("Down", lambda: self._move_item(-1)))
-        self._dock("Sources", self.source_list, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.source_list.itemDoubleClicked.connect(lambda *_: self._edit_source_settings())
+        self.source_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.source_list.customContextMenuRequested.connect(self._source_context_menu)
+        self.add_source_menu = QMenu(self)
+        self.add_source_menu.aboutToShow.connect(self._fill_add_source_menu)
+        bar = _toolbar(
+            ("+", "Add a source", self.add_source_menu),
+            ("−", "Remove the selected source", self._remove_item),
+            ("⚙", "Source settings (or double-click it)", self._edit_source_settings),
+            ("▲", "Move up (in front)", lambda: self._move_item(+1)),
+            ("▼", "Move down (behind)", lambda: self._move_item(-1)),
+            None,
+            ("Transform", "Position, scale, rotation and lock", self._show_transform),
+        )
+        self._dock("Sources", self.source_list, bar)
+
+    def _fill_add_source_menu(self) -> None:
+        menu = self.add_source_menu
+        menu.clear()
+        for label, slot in (
+            ("Display capture", self._add_display),
+            ("Window capture", self._add_window),
+            ("Camera", self._add_camera),
+            ("Image", self._add_image),
+            ("Color", self._add_color),
+            ("Text", self._add_text),
+        ):
+            menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
+        plugins = menu.addMenu("Plugins")
+        self.more_menu = plugins
+        self._fill_more_menu()
+
+    def _source_context_menu(self, pos) -> None:
+        row = self.source_list.itemAt(pos)
+        menu = QMenu(self)
+        if row is None:
+            self._fill_add_source_menu()
+            menu.addMenu(self.add_source_menu).setText("Add")
+        else:
+            item = self._item()
+            menu.addAction("Settings…").triggered.connect(self._edit_source_settings)
+            menu.addAction("Transform…").triggered.connect(self._show_transform)
+            menu.addAction("Fit to canvas").triggered.connect(self._fit_item)
+            lock = menu.addAction("Lock")
+            lock.setCheckable(True)
+            lock.setChecked(bool(item and item.locked))
+            lock.toggled.connect(lambda on: self.prop_locked.setChecked(on))
+            menu.addAction("Rename…").triggered.connect(self._rename_item)
+            menu.addSeparator()
+            menu.addAction("Move up").triggered.connect(lambda: self._move_item(+1))
+            menu.addAction("Move down").triggered.connect(lambda: self._move_item(-1))
+            menu.addSeparator()
+            menu.addAction("Remove").triggered.connect(self._remove_item)
+        menu.exec(self.source_list.viewport().mapToGlobal(pos))
+
+    def _scene_context_menu(self, pos) -> None:
+        menu = QMenu(self)
+        if self.scene_tree.itemAt(pos) is not None and self._scene() is not None:
+            menu.addAction("Show").triggered.connect(self._make_active)
+            menu.addAction("Rename…").triggered.connect(self._rename_scene)
+            menu.addAction("Remove").triggered.connect(self._remove_scene)
+            menu.addSeparator()
+        menu.addAction("Add scene…").triggered.connect(self._add_scene)
+        menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+
+    def _rename_item(self) -> None:
+        item = self._item()
+        if item is None:
+            return
+        config = self.collection.source(item.source)
+        name, ok = QInputDialog.getText(self, "Rename source", "Name:", text=config.name)
+        if ok and name.strip():
+            config.name = name.strip()
+            self._changed()
+            self._refresh_sources(keep_row=self.source_list.currentRow())
+
+    def _show_transform(self) -> None:
+        dock = self.docks["Properties"]
+        dock.show()
+        dock.raise_()
 
     def _build_properties_dock(self) -> None:
+        """Name, position, scale, rotation and lock of the selected item. Hidden until asked for, like OBS."""
         panel = QWidget()
         form = QFormLayout(panel)
         self.prop_name = QLineEdit()
@@ -236,91 +348,152 @@ class MainWindow(QMainWindow):
             box.valueChanged.connect(lambda value, k=key: self._on_transform_edited(k, value))
             self.spin[key] = box
             form.addRow(key.capitalize(), box)
+        row = QHBoxLayout()
         self.prop_extra = _button("", self._edit_source_settings)
-        form.addRow("Source", self.prop_extra)
+        row.addWidget(self.prop_extra)
         self.prop_fit = _button("Fit to canvas", self._fit_item)
-        form.addRow("", self.prop_fit)
-        self.prop_status = QLabel("")
-        self.prop_status.setWordWrap(True)
-        form.addRow("Status", self.prop_status)
+        row.addWidget(self.prop_fit)
+        form.addRow("", row)
         self.prop_locked = QCheckBox("Locked (clicks in the preview pass through it)")
         self.prop_locked.toggled.connect(self._on_locked_toggled)
         form.addRow("", self.prop_locked)
-        self._dock("Properties", panel, None, Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.prop_status = QLabel("")
+        self.prop_status.setWordWrap(True)
+        form.addRow("Status", self.prop_status)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(panel)
+        self._dock("Properties", scroll)
 
     def _build_audio_dock(self) -> None:
         self.audio_panel = AudioPanel(self._on_audio_changed)
-        buttons = QHBoxLayout()
-        buttons.addWidget(_button("+ Mic", lambda: self._add_audio("audio_input")))
-        buttons.addWidget(_button("+ Desktop", lambda: self._add_audio("audio_output")))
-        buttons.addWidget(_button("Device…", self._change_audio_device))
-        buttons.addWidget(_button("Remove", self._remove_audio))
-        self._dock("Audio", self.audio_panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+        add_menu = QMenu(self)
+        add_menu.addAction("Microphone").triggered.connect(lambda: self._add_audio("audio_input"))
+        add_menu.addAction("Desktop audio").triggered.connect(lambda: self._add_audio("audio_output"))
+        bar = _toolbar(
+            ("+", "Add a microphone or desktop audio", add_menu),
+            ("−", "Remove the selected audio source (click its name first)", self._remove_audio),
+            ("⚙", "Change the selected source's device", self._change_audio_device),
+        )
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.audio_panel)
+        self._dock("Audio Mixer", scroll, bar)
 
-    def _build_output_dock(self) -> None:
+    def _build_controls_dock(self) -> None:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
         self.live_button = QPushButton("Go live")
-        self.live_button.setMinimumHeight(40)
+        self.live_button.setMinimumHeight(34)
         self.live_button.clicked.connect(self._toggle_streaming)
         layout.addWidget(self.live_button)
+        self.record_button = QPushButton("Start recording")
+        self.record_button.setMinimumHeight(34)
+        self.record_button.clicked.connect(self._toggle_recording)
+        layout.addWidget(self.record_button)
+
+        self.stream_settings_action = QAction("Stream outputs…", self)
+        self.stream_settings_action.triggered.connect(self._stream_settings)
+        self.record_settings_action = QAction("Recording…", self)
+        self.record_settings_action.triggered.connect(self._recording_settings)
+        self.hotkeys_action = QAction("Hotkeys…", self)
+        self.hotkeys_action.triggered.connect(self._edit_hotkeys)
+        self.settings_menu = QMenu(self)
+        self.settings_menu.addActions([self.stream_settings_action, self.record_settings_action, self.hotkeys_action])
+        self.settings_menu.addSeparator()
+        self.settings_menu.addAction("Open recordings folder").triggered.connect(self._open_recordings_folder)
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setMenu(self.settings_menu)
+        layout.addWidget(self.settings_button)
+
+        # Which outputs go live / which canvases record, then live status, folded away by default.
         self.stream_status = QLabel("Offline")
         self.stream_status.setWordWrap(True)
         layout.addWidget(self.stream_status)
         self.stream_boxes_layout = QVBoxLayout()
+        self.stream_boxes_layout.setSpacing(2)
         layout.addLayout(self.stream_boxes_layout)
         self.stream_boxes: dict[str, QCheckBox] = {}
         self._refresh_stream_boxes()
-        layout.addSpacing(10)
-
-        self.record_button = QPushButton("Start recording")
-        self.record_button.setMinimumHeight(40)
-        self.record_button.clicked.connect(self._toggle_recording)
-        layout.addWidget(self.record_button)
         self.record_status = QLabel("Not recording")
         self.record_status.setWordWrap(True)
         layout.addWidget(self.record_status)
         self.record_canvas_boxes: dict[str, QCheckBox] = {}
         for canvas in self.collection.canvases:
-            box = QCheckBox(f"Record {canvas.id} ({canvas.width}×{canvas.height})")
+            box = QCheckBox(f"Record {canvas.id}")
+            box.setToolTip(f"{canvas.width}×{canvas.height}")
             box.setChecked(canvas.id in self.collection.recording.canvases)
             box.toggled.connect(self._on_record_canvases_changed)
             self.record_canvas_boxes[canvas.id] = box
             layout.addWidget(box)
         layout.addStretch(1)
-        buttons = QHBoxLayout()
-        self.stream_settings_button = _button("Stream…", self._stream_settings)
-        buttons.addWidget(self.stream_settings_button)
-        self.record_settings_button = _button("Recording…", self._recording_settings)
-        buttons.addWidget(self.record_settings_button)
-        buttons.addWidget(_button("Folder", self._open_recordings_folder))
-        self._dock("Output", panel, buttons, Qt.DockWidgetArea.BottomDockWidgetArea)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(panel)
+        self._dock("Controls", scroll)
 
-    def _dock(self, title: str, body: QWidget, buttons: QHBoxLayout | None, area) -> QDockWidget:
+    def _dock(self, title: str, body: QWidget, toolbar: QWidget | None = None) -> QDockWidget:
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(body)
-        if buttons is not None:
-            # Lay the buttons out in a grid (2 or 4 per row) instead of one long row, so the docks
-            # side by side still fit a 1920 px wide screen, and smaller laptop screens too.
-            widgets = [buttons.itemAt(i).widget() for i in range(buttons.count())]
-            columns = len(widgets) if len(widgets) <= 3 else (2 if len(widgets) <= 4 else 4)
-            grid = QGridLayout()
-            grid.setSpacing(4)
-            for i, widget in enumerate(widgets):
-                widget.setMinimumWidth(0)
-                widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-                grid.addWidget(widget, i // columns, i % columns)
-            layout.addLayout(grid)
+        layout.setSpacing(2)
+        layout.addWidget(body, 1)
+        if toolbar is not None:
+            layout.addWidget(toolbar)
         dock = QDockWidget(title, self)
         dock.setObjectName(title)
         dock.setWidget(wrapper)
-        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
-        self.addDockWidget(area, dock)
+        dock.setMinimumWidth(160)
+        self.docks[title] = dock
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
         return dock
+
+    # Dock layout -----------------------------------------------------------------
+
+    LAYOUT_VERSION = 2  # bump when the set of docks changes, so an old saved layout is ignored
+
+    def _arrange_default_layout(self) -> None:
+        """OBS-style: Scenes | Sources | Audio Mixer | Scene Transitions | Controls along the bottom."""
+        order = ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Controls"]
+        for dock in self.docks.values():
+            dock.setFloating(False)
+            dock.show()
+            self.removeDockWidget(dock)
+        first = self.docks[order[0]]
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, first)
+        first.show()
+        for prev, name in zip(order, order[1:]):
+            self.splitDockWidget(self.docks[prev], self.docks[name], Qt.Orientation.Horizontal)
+            self.docks[name].show()
+        for name in ("Properties", "Stats"):
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.docks[name])
+            self.docks[name].hide()
+        self.resizeDocks([self.docks[n] for n in order], [220, 280, 360, 180, 220], Qt.Orientation.Horizontal)
+        self.resizeDocks([first], [300], Qt.Orientation.Vertical)
+
+    def _reset_layout(self) -> None:
+        self._set_docks_locked(False)
+        self._arrange_default_layout()
+
+    def _set_docks_locked(self, locked: bool) -> None:
+        features = QDockWidget.DockWidgetFeature.NoDockWidgetFeatures
+        if not locked:
+            features = (
+                QDockWidget.DockWidgetFeature.DockWidgetMovable
+                | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+                | QDockWidget.DockWidgetFeature.DockWidgetClosable
+            )
+        for dock in self.docks.values():
+            dock.setFeatures(features)
+        if self.lock_action.isChecked() != locked:
+            self.lock_action.setChecked(locked)
+        QSettings().setValue("window/locked", locked)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -329,9 +502,6 @@ class MainWindow(QMainWindow):
             lambda: QMessageBox.information(self, "SprigCast", f"Scenes are saved to:\n{self.scenes_path}")
         )
         file_menu.addAction(open_folder)
-        hotkeys = QAction("Hotkeys…", self)
-        hotkeys.triggered.connect(self._edit_hotkeys)
-        file_menu.addAction(hotkeys)
         recordings = QAction("Open recordings folder", self)
         recordings.triggered.connect(self._open_recordings_folder)
         file_menu.addAction(recordings)
@@ -339,15 +509,29 @@ class MainWindow(QMainWindow):
         plugins.triggered.connect(self._open_plugins_folder)
         plugins.setEnabled(self.plugins_dir is not None)
         file_menu.addAction(plugins)
-        view_menu = self.menuBar().addMenu("&View")
-        stats_action = self.stats_dock.toggleViewAction()
-        stats_action.setText("Stats")
-        stats_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        view_menu.addAction(stats_action)
+        file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+
+        settings_menu = self.menuBar().addMenu("&Settings")
+        settings_menu.addActions([self.stream_settings_action, self.record_settings_action, self.hotkeys_action])
+
+        docks_menu = self.menuBar().addMenu("&Docks")
+        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Controls", "Properties", "Stats"]:
+            action = self.docks[name].toggleViewAction()
+            if name == "Stats":
+                action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+            docks_menu.addAction(action)
+        docks_menu.addSeparator()
+        self.lock_action = QAction("Lock docks", self)
+        self.lock_action.setCheckable(True)
+        self.lock_action.toggled.connect(self._set_docks_locked)
+        docks_menu.addAction(self.lock_action)
+        reset = QAction("Reset layout", self)
+        reset.triggered.connect(self._reset_layout)
+        docks_menu.addAction(reset)
 
     # Engine link ------------------------------------------------------------
 
@@ -1053,7 +1237,7 @@ class MainWindow(QMainWindow):
         self.record_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
         for box in self.record_canvas_boxes.values():
             box.setEnabled(False)
-        self.record_settings_button.setEnabled(False)
+        self.record_settings_action.setEnabled(False)
         self._refresh_recording_status()
 
     def _stop_recording(self) -> None:
@@ -1067,7 +1251,7 @@ class MainWindow(QMainWindow):
         self.record_button.setStyleSheet("")
         for box in self.record_canvas_boxes.values():
             box.setEnabled(True)
-        self.record_settings_button.setEnabled(True)
+        self.record_settings_action.setEnabled(True)
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
         if errors:
@@ -1100,7 +1284,7 @@ class MainWindow(QMainWindow):
         self.stream_boxes = {}
         outputs = [o for o in self.collection.outputs if o.type == "stream"]
         if not outputs:
-            hint = QLabel("No stream outputs yet: press Stream… to add Twitch, YouTube or TikTok.")
+            hint = QLabel("No stream outputs yet: use Settings → Stream outputs… to add Twitch, YouTube or TikTok.")
             hint.setWordWrap(True)
             self.stream_boxes_layout.addWidget(hint)
         for output in outputs:
@@ -1169,7 +1353,7 @@ class MainWindow(QMainWindow):
         self.live_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
         for box in self.stream_boxes.values():
             box.setEnabled(False)
-        self.stream_settings_button.setEnabled(False)
+        self.stream_settings_action.setEnabled(False)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
 
@@ -1184,7 +1368,7 @@ class MainWindow(QMainWindow):
         self.live_button.setStyleSheet("")
         for box in self.stream_boxes.values():
             box.setEnabled(True)
-        self.stream_settings_button.setEnabled(True)
+        self.stream_settings_action.setEnabled(True)
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
