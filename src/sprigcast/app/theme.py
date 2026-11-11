@@ -1,13 +1,15 @@
 """The Slothbloom look: a dark moss-and-bark palette with a blossom-pink accent.
 
-Uses Qt's Fusion style so it looks the same on every Windows version. Set the environment
-variable SPRIGCAST_THEME=system to keep the plain system look instead.
+Uses Qt's Fusion style so it looks the same on every Windows version. Settings → General picks
+the theme (saved in QSettings "general/theme"); the environment variable SPRIGCAST_THEME=system
+overrides it.
 """
 
 from __future__ import annotations
 
 import os
 
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -46,9 +48,26 @@ QSplitter::handle {{ background: {LICHEN}; }}
 """
 
 
-def apply_theme(app: QApplication) -> bool:
-    """Apply the dark theme unless the user opted out. Returns True when applied."""
+THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
+_system_style: str | None = None
+
+
+def chosen_theme() -> str:
     if os.environ.get("SPRIGCAST_THEME", "").lower() == "system":
+        return "system"
+    name = str(QSettings().value("general/theme", "slothbloom"))
+    return name if name in THEMES else "slothbloom"
+
+
+def apply_theme(app: QApplication, name: str | None = None) -> bool:
+    """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
+    global _system_style
+    if _system_style is None:
+        _system_style = app.style().name()
+    if (name or chosen_theme()) == "system":
+        app.setStyleSheet("")
+        app.setStyle(_system_style)
+        app.setPalette(app.style().standardPalette())
         return False
     app.setStyle("Fusion")
     palette = QPalette()

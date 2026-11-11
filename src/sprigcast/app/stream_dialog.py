@@ -1,12 +1,10 @@
-"""Stream settings: one entry per place you go live (Twitch, YouTube, TikTok, ...)."""
+"""Stream settings page: one entry per place you go live (Twitch, YouTube, TikTok, ...)."""
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -36,13 +34,11 @@ def output_label(output: Output) -> str:
     return label
 
 
-class StreamDialog(QDialog):
+class StreamPage(QWidget):
     """Edits copies of the collection's stream outputs; apply_to() writes them back and saves keys."""
 
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Stream settings")
-        self.setMinimumWidth(720)
         self.collection = collection
         self.outputs = [o.model_copy() for o in collection.outputs if o.type == "stream"]
         self.keys = {o.key_ref: get_key(o.key_ref) or "" for o in self.outputs if o.key_ref}
@@ -50,6 +46,7 @@ class StreamDialog(QDialog):
         self._loading = False
 
         root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
         left = QVBoxLayout()
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self._load)
@@ -116,10 +113,6 @@ class StreamDialog(QDialog):
         form.addRow("", note)
         right.addWidget(self.form_widget)
         right.addStretch(1)
-        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        box.accepted.connect(self.accept)
-        box.rejected.connect(self.reject)
-        right.addWidget(box)
         root.addLayout(right, 2)
 
         self._refresh_list(0)
@@ -262,5 +255,5 @@ class StreamDialog(QDialog):
             QMessageBox.critical(self, "SprigCast", f"Could not save the stream key:\n{exc}")
             return False
         others = [o for o in collection.outputs if o.type != "stream"]
-        collection.outputs = others + self.outputs
+        collection.outputs = others + [o.model_copy() for o in self.outputs]  # copies: later edits wait for Apply
         return True

@@ -22,13 +22,13 @@ def fake_keyring(monkeypatch):
 
 def test_dialog_saves_outputs_and_keys_only_to_keyring(fake_keyring):
     app = QApplication.instance() or QApplication([])  # noqa: F841
-    from sprigcast.app.stream_dialog import StreamDialog
+    from sprigcast.app.stream_dialog import StreamPage
 
     col = SceneCollection(
         canvases=[Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)],
         outputs=[Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/twitch")],
     )
-    d = StreamDialog(col)
+    d = StreamPage(col)
     d.key.setText("live_abc")
     d.key.textEdited.emit("live_abc")
     d._add()
@@ -47,12 +47,12 @@ def test_dialog_saves_outputs_and_keys_only_to_keyring(fake_keyring):
 
 def test_picking_tiktok_applies_its_preset(fake_keyring):
     app = QApplication.instance() or QApplication([])  # noqa: F841
-    from sprigcast.app.stream_dialog import StreamDialog
+    from sprigcast.app.stream_dialog import StreamPage
 
     col = SceneCollection(
         canvases=[Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)],
     )
-    d = StreamDialog(col)
+    d = StreamPage(col)
     d._add()
     d.service.setCurrentIndex(d.service.findData("tiktok"))
     out = d.outputs[0]

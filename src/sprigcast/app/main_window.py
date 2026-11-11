@@ -12,6 +12,7 @@ from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
+    QApplication,
     QComboBox,
     QFrame,
     QColorDialog,
@@ -42,12 +43,11 @@ from PySide6.QtWidgets import (
 from sprigcast.app.audio_dock import AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.hotkeys import SCENE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
-from sprigcast.app.hotkeys_dialog import HotkeysDialog
 from sprigcast.app.preview import Preview
-from sprigcast.app.recording_dialog import RecordingDialog
 from sprigcast.app.settings_dialog import SettingsDialog
 from sprigcast.app.stats_panel import StatsPanel
-from sprigcast.app.stream_dialog import StreamDialog, output_label
+from sprigcast.app.settings_window import CONFIRM_RECORDING, CONFIRM_STREAM, SettingsWindow, confirm_enabled
+from sprigcast.app.stream_dialog import output_label
 from sprigcast.core.events import AudioLevels, EngineError, ReplaceCollection, SourceInfo, Stats
 from sprigcast.core.scene import Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.core.source import known_kinds, source_class
@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
         self.collection = collection
         self.scenes_path = scenes_path
         self.plugins_dir = plugins_dir
+        self.plugin_report = None  # set by main.run() after loading plugins
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
         self._updating = False  # True while we fill widgets, so their signals do not echo back
         self.source_sizes: dict[str, tuple[int, int]] = {}
@@ -390,25 +391,14 @@ class MainWindow(QMainWindow):
 
         self.live_button = QPushButton("Go live")
         self.live_button.setMinimumHeight(34)
-        self.live_button.clicked.connect(self._toggle_streaming)
+        self.live_button.clicked.connect(self._on_live_clicked)
         layout.addWidget(self.live_button)
         self.record_button = QPushButton("Start recording")
         self.record_button.setMinimumHeight(34)
-        self.record_button.clicked.connect(self._toggle_recording)
+        self.record_button.clicked.connect(self._on_record_clicked)
         layout.addWidget(self.record_button)
 
-        self.stream_settings_action = QAction("Stream outputs…", self)
-        self.stream_settings_action.triggered.connect(self._stream_settings)
-        self.record_settings_action = QAction("Recording…", self)
-        self.record_settings_action.triggered.connect(self._recording_settings)
-        self.hotkeys_action = QAction("Hotkeys…", self)
-        self.hotkeys_action.triggered.connect(self._edit_hotkeys)
-        self.settings_menu = QMenu(self)
-        self.settings_menu.addActions([self.stream_settings_action, self.record_settings_action, self.hotkeys_action])
-        self.settings_menu.addSeparator()
-        self.settings_menu.addAction("Open recordings folder").triggered.connect(self._open_recordings_folder)
-        self.settings_button = QPushButton("Settings")
-        self.settings_button.setMenu(self.settings_menu)
+        self.settings_button = _button("Settings", lambda: self._open_settings())
         layout.addWidget(self.settings_button)
 
         # Which outputs go live / which canvases record, then live status, folded away by default.
@@ -516,7 +506,18 @@ class MainWindow(QMainWindow):
         file_menu.addAction(quit_action)
 
         settings_menu = self.menuBar().addMenu("&Settings")
-        settings_menu.addActions([self.stream_settings_action, self.record_settings_action, self.hotkeys_action])
+        open_settings = settings_menu.addAction("Settings…")
+        open_settings.setShortcut(QKeySequence("Ctrl+,"))
+        open_settings.triggered.connect(lambda: self._open_settings())
+        settings_menu.addSeparator()
+        for tab, label in (
+            ("Stream", "Stream outputs…"),
+            ("Recording", "Recording…"),
+            ("Audio", "Audio devices…"),
+            ("Video", "Canvases…"),
+            ("Hotkeys", "Hotkeys…"),
+        ):
+            settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
 
         docks_menu = self.menuBar().addMenu("&Docks")
         for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Controls", "Properties", "Stats"]:
@@ -1196,17 +1197,17 @@ class MainWindow(QMainWindow):
         self.collection.recording.canvases = [cid for cid, box in self.record_canvas_boxes.items() if box.isChecked()]
         self.collection.save(self.scenes_path)
 
-    def _recording_settings(self) -> None:
-        default = self._default_recordings_folder()
-        dialog = RecordingDialog(self.collection.recording, default, codec_label(pick_codec()), self)
-        if dialog.exec():
-            dialog.apply_to(self.collection.recording, default)
-            self.collection.save(self.scenes_path)
-
     def _open_recordings_folder(self) -> None:
         folder = self._recordings_folder()
         folder.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _on_record_clicked(self) -> None:
+        if self.recording is not None and confirm_enabled(CONFIRM_RECORDING):
+            answer = QMessageBox.question(self, "SprigCast", "Stop recording?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._toggle_recording()
 
     def _toggle_recording(self) -> None:
         if self.recording is None:
@@ -1237,7 +1238,6 @@ class MainWindow(QMainWindow):
         self.record_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
         for box in self.record_canvas_boxes.values():
             box.setEnabled(False)
-        self.record_settings_action.setEnabled(False)
         self._refresh_recording_status()
 
     def _stop_recording(self) -> None:
@@ -1251,7 +1251,6 @@ class MainWindow(QMainWindow):
         self.record_button.setStyleSheet("")
         for box in self.record_canvas_boxes.values():
             box.setEnabled(True)
-        self.record_settings_action.setEnabled(True)
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
         if errors:
@@ -1300,11 +1299,12 @@ class MainWindow(QMainWindow):
                 output.enabled = on
         self.collection.save(self.scenes_path)
 
-    def _stream_settings(self) -> None:
-        dialog = StreamDialog(self.collection, self)
-        if dialog.exec() and dialog.apply_to(self.collection):
-            self.collection.save(self.scenes_path)
-            self._refresh_stream_boxes()
+    def _on_live_clicked(self) -> None:
+        if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
+            answer = QMessageBox.question(self, "SprigCast", "End the stream?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._toggle_streaming()
 
     def _toggle_streaming(self) -> None:
         if self.streaming is None:
@@ -1353,7 +1353,6 @@ class MainWindow(QMainWindow):
         self.live_button.setStyleSheet("background: #c0392b; color: white; font-weight: bold")
         for box in self.stream_boxes.values():
             box.setEnabled(False)
-        self.stream_settings_action.setEnabled(False)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
 
@@ -1368,7 +1367,6 @@ class MainWindow(QMainWindow):
         self.live_button.setStyleSheet("")
         for box in self.stream_boxes.values():
             box.setEnabled(True)
-        self.stream_settings_action.setEnabled(True)
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
@@ -1405,15 +1403,48 @@ class MainWindow(QMainWindow):
 
     # Hotkeys -----------------------------------------------------------------
 
-    def _edit_hotkeys(self) -> None:
-        dialog = HotkeysDialog(self.collection, self)
-        if not dialog.exec():
-            return
-        self.collection.hotkeys = dialog.result_hotkeys()
-        self.collection.save(self.scenes_path)
+    def _apply_hotkeys(self) -> None:
         self.hotkeys.apply(self.collection.hotkeys)
         if self.collection.hotkeys and self.hotkeys.mode == "window":
             self.statusBar().showMessage("Global hotkeys aren't available here; they work while SprigCast is focused.", 10000)
+
+    # Settings window -------------------------------------------------------------
+
+    def _open_settings(self, tab: str = "General") -> None:
+        devices = {
+            "audio_input": [d.name for d in list_audio_devices(loopback=False)],
+            "audio_output": [d.name for d in list_audio_devices(loopback=True)],
+        }
+        window = SettingsWindow(
+            self.collection,
+            default_recordings_folder=self._default_recordings_folder(),
+            encoder=codec_label(pick_codec()),
+            audio_devices=devices,
+            plugin_report=self.plugin_report,
+            open_plugins_folder=self._open_plugins_folder if self.plugins_dir is not None else None,
+            streaming=self.streaming is not None,
+            recording=self.recording is not None,
+            tab=tab,
+            parent=self,
+        )
+        window.applied.connect(self._after_settings)
+        window.exec()
+
+    def _after_settings(self) -> None:
+        """Settings were applied: save, and bring every dock up to date."""
+        from sprigcast.app.theme import apply_theme
+
+        apply_theme(QApplication.instance())
+        self._changed()
+        self._refresh_stream_boxes()
+        self._updating = True
+        for canvas_id, box in self.record_canvas_boxes.items():
+            box.blockSignals(True)
+            box.setChecked(canvas_id in self.collection.recording.canvases)
+            box.blockSignals(False)
+        self._updating = False
+        self._refresh_audio()
+        self._apply_hotkeys()
 
     def _on_hotkey(self, action: str) -> None:
         if action == TOGGLE_STREAM:

@@ -1,11 +1,10 @@
-"""Recording settings: folder, quality and file type."""
+"""Recording settings page: folder, quality, file type and which canvases to record."""
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -16,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.core.scene import RecordingSettings
+from sprigcast.core.scene import Canvas, RecordingSettings
 
 CONTAINER_LABELS = {
     "mkv": "MKV (recommended: still plays if SprigCast or Windows crashes)",
@@ -24,12 +23,18 @@ CONTAINER_LABELS = {
 }
 
 
-class RecordingDialog(QDialog):
-    def __init__(self, settings: RecordingSettings, default_folder: str, encoder: str, parent: QWidget | None = None):
+class RecordingPage(QWidget):
+    def __init__(
+        self,
+        settings: RecordingSettings,
+        default_folder: str,
+        encoder: str,
+        canvases: list[Canvas] = (),
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Recording settings")
-        self.setMinimumWidth(560)
         form = QFormLayout(self)
+        form.setContentsMargins(0, 0, 0, 0)
 
         self.folder = QLineEdit(settings.folder or default_folder)
         browse = QPushButton("Browse…")
@@ -57,10 +62,12 @@ class RecordingDialog(QDialog):
 
         form.addRow("Encoder", QLabel(encoder))
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        self.canvas_boxes: dict[str, QCheckBox] = {}
+        for i, canvas in enumerate(canvases):
+            box = QCheckBox(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})")
+            box.setChecked(canvas.id in settings.canvases)
+            self.canvas_boxes[canvas.id] = box
+            form.addRow("Record" if i == 0 else "", box)
 
     def _browse(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Recording folder", self.folder.text())
@@ -72,3 +79,5 @@ class RecordingDialog(QDialog):
         settings.folder = "" if folder == default_folder else folder
         settings.bitrate_kbps = self.bitrate.value()
         settings.container = self.container.currentData()
+        if self.canvas_boxes:
+            settings.canvases = [cid for cid, box in self.canvas_boxes.items() if box.isChecked()]
