@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.terms import PART, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.core.scene import Scene, SceneCollection
 
 EXAMPLES = "Webcam frame, Alerts box, Brand bar, Chat panel"
@@ -24,10 +25,11 @@ EXAMPLES = "Webcam frame, Alerts box, Brand bar, Chat panel"
 class NewPartDialog(QDialog):
     def __init__(self, collection: SceneCollection, show: Scene | None, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("New part")
+        self.setWindowTitle(f"New {PART}")
         intro = QLabel(
-            "A part is a reusable piece, like a webcam frame or a brand bar. Build it once, then add it "
-            "to any show on either canvas. Change it, and every show using it changes too."
+            f"{cap(a(PART))} is a reusable piece, like a webcam frame or a brand bar. Build it once, then add "
+            f"it to any {SHOW} on either canvas. Change it, and every {SHOW} using it changes too. "
+            f"({cap(SHOWS)} are the scenes that go on air; {PARTS} are the pieces inside them.)"
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #8d8a83")
@@ -45,7 +47,7 @@ class NewPartDialog(QDialog):
             self.shape_group.addButton(button)
             row.addWidget(button)
         row.addStretch(1)
-        shape_hint = QLabel("You can add the other shape later from the part editor.")
+        shape_hint = QLabel(f"You can add the other shape later from the {PART} editor.")
         shape_hint.setStyleSheet("color: #8d8a83")
         self.add_to_show = QCheckBox(f"Add it to “{show.name}” now" if show is not None else "")
         self.add_to_show.setChecked(show is not None)
@@ -56,7 +58,7 @@ class NewPartDialog(QDialog):
         form.addRow("", shape_hint)
         form.addRow("", self.add_to_show)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create part")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(f"Create {PART}")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.ok = buttons.button(QDialogButtonBox.StandardButton.Ok)

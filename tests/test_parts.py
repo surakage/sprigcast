@@ -312,7 +312,7 @@ def test_main_window_edits_a_part_in_place(app, tmp_path, monkeypatch):
         assert w.in_place == ("horizontal", show.id, placement.source, part.id)
         assert w._scene() is part and w.center.currentIndex() == 0  # the canvases stay; no part editor
         assert w.engine.editing_part == part.id  # read back alone, drawn bright over the dimmed show
-        assert preview.scene is part and preview.inner is not None and "›  ◇ Webcam frame" in preview.subtitle
+        assert preview.scene is part and preview.inner is not None and "›  ❧ Webcam frame" in preview.subtitle
         assert w.source_list.count() == 1  # the Sources dock lists the part's items
         # clicking an item selects it inside the part, and edits land in the part
         w._on_preview_selected("horizontal", 0)
@@ -412,7 +412,7 @@ def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):
         assert [i.source for i in made.items] == ["a", "b"] and made.items[1].x == 7
         assert col.part_of(col.source(show.items[-1].source)) is made
         assert w._item() is show.items[-1]  # the new placement is selected
-        assert w.source_list.item(0).text().startswith("◇ Cam corner") and "[part]" in w.source_list.item(0).text()
+        assert w.source_list.item(0).text().startswith("❧ Cam corner") and "[sprig]" in w.source_list.item(0).text()
         # hovering a part in the preview names it
         assert w.previews["horizontal"].part_names[show.items[-1].source] == "Cam corner"
         # Scenes right-click on a part: "Add to <show>" places it there

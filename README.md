@@ -54,36 +54,36 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - Right-click a background and pick *Lock*, so clicks pass through them to the items on top.
 - **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *▶ Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
-- **Shows and parts**: SprigCast has two kinds of scene. A *show* is what goes on air (Starting soon,
-  Gaming, Be right back). A *part* is a reusable piece, like a webcam frame, an alerts box or a brand bar,
-  that you drop into shows. Build a part once and use it on both canvases: change it, and every show
+- **Blooms and sprigs**: SprigCast has two kinds of scene. A *bloom* is what goes on air (Starting soon,
+  Gaming, Be right back). A *sprig* is a reusable piece, like a webcam frame, an alerts box or a brand bar,
+  that you drop into blooms. Build a sprig once and use it on both canvases: change it, and every bloom
   using it changes too.
-  - Scenes **+ → New part…** makes one: give it a name, pick its shape, and tick *Add it to "…" now* to drop
-    it straight into the show you're working on. Parts are listed under *Parts* in the Scenes dock with where
-    they're used, for example "◇ Webcam frame (horizontal + vertical · used in 2)". Right-click a part there
-    to add it to the show on either canvas.
-  - **Turn into a part**: already built something in a show? Select its sources in the Sources dock
-    (Ctrl-click or Shift-click for several), right-click and pick *Turn into a part…*. They move into a new
-    part right where they were, so nothing moves on screen, and the part is ready to reuse.
-  - Select a part to open it in the *part editor* in place of the canvases. The see-through areas show as a
-    checkerboard, and the header lists every show that uses it. *Done: back to the canvases* closes it.
-  - **One part, two shapes.** A part starts with a layout for the canvas you picked. The buttons at the top of
-    the part editor switch layouts: click *+ Vertical layout* (or *+ Horizontal layout*) and SprigCast copies
+  - Scenes **+ → New sprig…** makes one: give it a name, pick its shape, and tick *Add it to "…" now* to drop
+    it straight into the bloom you're working on. Sprigs are listed under *Sprigs* in the Scenes dock with where
+    they're used, for example "❧ Webcam frame (horizontal + vertical · used in 2)". Right-click a sprig there
+    to add it to the bloom on either canvas.
+  - **Turn into a sprig**: already built something in a bloom? Select its sources in the Sources dock
+    (Ctrl-click or Shift-click for several), right-click and pick *Turn into a sprig…*. They move into a new
+    sprig right where they were, so nothing moves on screen, and the sprig is ready to reuse.
+  - Select a sprig to open it in the *sprig editor* in place of the canvases. The see-through areas show as a
+    checkerboard, and the header lists every bloom that uses it. *Done: back to the canvases* closes it.
+  - **One sprig, two shapes.** A sprig starts with a layout for the canvas you picked. The buttons at the top of
+    the sprig editor switch layouts: click *+ Vertical layout* (or *+ Horizontal layout*) and SprigCast copies
     the layout over, scaled to fit and kept in the same spot (a top-right webcam frame stays top-right). Then
-    arrange it however that shape needs. Vertical shows use the vertical layout and horizontal shows the
+    arrange it however that shape needs. Vertical blooms use the vertical layout and horizontal blooms the
     horizontal one. Without a second layout, both canvases use the one layout, scaled to fit.
-    *Remove this layout* goes back to one layout. The Parts list shows which layouts a part has.
-  - **Edit in place**: double-click a part in a show's preview (or double-click it in the Sources dock, or
-    right-click → *Edit part in place*). The show stays on screen, dimmed, with the part drawn bright on top,
-    and the mouse, arrow keys and Sources dock now work on the part's own items. Changes land in the part,
-    so they show everywhere it's used. Press Esc or double-click outside the part to go back to the show.
-    You edit the layout for that canvas, so editing in the vertical show changes the part's vertical layout.
-    A rotated placement opens the part editor instead.
-  - Sources **+ → Part** places a part in the selected show (or inside another part). Parts show as
-    "◇ name [part]" in the Sources dock, and hovering one in a preview says so. Move, resize and crop it
-    like any source. SprigCast won't let a part end up inside itself.
-  - A part is drawn once per frame however many shows and canvases use it. Removing a part warns you where
-    it's used. Parts never appear in Live mode, which lists shows only.
+    *Remove this layout* goes back to one layout. The Sprigs list says which layouts a sprig has.
+  - **Edit in place**: double-click a sprig in a bloom's preview (or double-click it in the Sources dock, or
+    right-click → *Edit sprig in place*). The bloom stays on screen, dimmed, with the sprig drawn bright on top,
+    and the mouse, arrow keys and Sources dock now work on the sprig's own items. Changes land in the sprig,
+    so they appear everywhere it's used. Press Esc or double-click outside the sprig to go back to the bloom.
+    You edit the layout for that canvas, so editing in the vertical bloom changes the sprig's vertical layout.
+    A rotated placement opens the sprig editor instead.
+  - Sources **+ → Sprig** places a sprig in the selected bloom (or inside another sprig). Sprigs appear as
+    "❧ name [sprig]" in the Sources dock, and hovering one in a preview says so. Move, resize and crop it
+    like any source. SprigCast won't let a sprig end up inside itself.
+  - A sprig is drawn once per frame however many blooms and canvases use it. Removing a sprig warns you where
+    it's used. Sprigs never appear in Live mode, which lists blooms only.
 - **Scene Transitions dock**: *Fade* (crossfade, 300 ms by default) or *Cut*.
 - **Hotkeys** (*Settings → Hotkeys*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
   They work while a game has focus. Pick combos your games don't use.
@@ -120,7 +120,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - *Plugins*: which plugins loaded (and why any failed), what they added, and *Open plugins folder*.
   - Stream settings are locked while you're live, and recording settings while you record.
 - **Build and Live modes** (the buttons at the top left, or Ctrl+1 / Ctrl+2). *Build* is the editing layout above.
-  *Live* is for running the show: big buttons for each canvas's shows (linked scenes, marked ⇄, switch together),
+  *Live* is for running the show: big buttons for each canvas's blooms (linked scenes, marked ⇄, switch together),
   a large on-air clock, the Audio Mixer, Destinations and Controls; the previews can't be edited by a stray
   click. Each mode remembers its own dock layout, and SprigCast reopens in the mode you left it in.
 - **Destinations dock**: a card for every place you stream to, showing what it gets (canvas, size, fps,
@@ -208,7 +208,7 @@ as SprigCast, so only install ones you trust.
 src/sprigcast/
   core/      scene collection model (canvases, sources, scenes, outputs), Source base class, filters, mailbox, events
   render/    moderngl compositor and the render engine thread
-  sources/   built-in sources: color, image, text, display and window capture, camera, mic and desktop audio, parts
+  sources/   built-in sources: color, image, text, display and window capture, camera, mic and desktop audio, sprigs
   audio/     mixer that combines audio sources into one 48 kHz stereo stream
   output/    recorder (MKV/MP4) and RTMP streamer: H.264 (NVENC or x264) and AAC, stream keys via keyring
   app/       PySide6 main window, canvas previews, dialogs and theme
