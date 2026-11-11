@@ -111,3 +111,44 @@ def test_live_lists_only_live_folders():
     assert [s.id for s in col.live_scenes("horizontal")[0][1]] == ["h1", "h2"]
     other.live = True
     assert [f.id for f, _ in col.live_scenes("horizontal")] == [main.id, other.id]
+
+
+def test_dragging_blooms_reorders_and_files_them(tmp_path, monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("DragTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import ROLE_FOLDER, ROLE_ID, MainWindow
+
+    col = _collection()
+    folder = col.add_folder("horizontal", "Main Scenes")
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._refresh_scenes()
+        top = w.scene_tree.topLevelItem(0)
+        rows = {top.child(i).data(0, ROLE_ID) or top.child(i).data(0, ROLE_FOLDER): top.child(i)
+                for i in range(top.childCount())}
+        # What a drag does to the rows: Alerts into the folder, Gameplay to the top.
+        holder = rows[folder.id]
+        holder.addChild(top.takeChild(top.indexOfChild(rows["h3"])))
+        top.insertChild(0, top.takeChild(top.indexOfChild(rows["h2"])))
+        w._scenes_dropped()
+        assert [s.id for s in col.scenes_for("horizontal")] == ["h2", "h1", "h3"]
+        assert col.scene("h3").folder == folder.id and col.scene("h2").folder is None
+        # A drop onto a bloom (it would nest) is undone.
+        top = w.scene_tree.topLevelItem(0)
+        first, second = top.child(0), top.child(1)
+        first.addChild(top.takeChild(top.indexOfChild(second)))
+        w._scenes_dropped()
+        assert [s.id for s in col.scenes_for("horizontal")] == ["h2", "h1", "h3"]
+        assert w.scene_tree.topLevelItem(0).child(1).data(0, ROLE_ID) == "h1"  # list rebuilt as before
+    finally:
+        w.close()
+        QSettings().clear()

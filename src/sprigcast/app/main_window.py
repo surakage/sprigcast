@@ -8,7 +8,7 @@ import queue
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl
+from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -101,6 +101,26 @@ from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 ROLE_ID = Qt.ItemDataRole.UserRole
 ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1  # a folder row in the Scenes list
+BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
+FOLDER_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
+
+
+class SceneTree(QTreeWidget):
+    """The Scenes list. Blooms can be dragged to reorder them or into and out of folders;
+    after a drop, `dropped` fires and the main window reads the new order back from the rows."""
+
+    dropped = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setDropIndicatorShown(True)
+        self.invisibleRootItem().setFlags(Qt.ItemFlag.ItemIsEnabled)  # nothing lands at the very top level
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().dropEvent(event)
+        self.dropped.emit()
 COLOUR_NAMES = dict(zip(FOLDER_COLOURS, ("Pink", "Green", "Blue", "Yellow", "Orange", "Purple"), strict=True))
 
 
@@ -346,7 +366,8 @@ class MainWindow(QMainWindow):
     # Building the UI ------------------------------------------------------
 
     def _build_scenes_dock(self) -> None:
-        self.scene_tree = QTreeWidget()
+        self.scene_tree = SceneTree()
+        self.scene_tree.dropped.connect(lambda: QTimer.singleShot(0, self._scenes_dropped))
         self.scene_tree.setHeaderHidden(True)
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
         self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
@@ -644,6 +665,35 @@ class MainWindow(QMainWindow):
         scenes[i], scenes[j] = scenes[j], scenes[i]
         self._changed()
         self._refresh_scenes()
+
+    def _scenes_dropped(self) -> None:
+        """Read the order and folders back from the Scenes list after a drag. Anything odd is undone."""
+        top = next((self.scene_tree.topLevelItem(i) for i in range(self.scene_tree.topLevelItemCount())
+                    if self.scene_tree.topLevelItem(i).data(0, ROLE_FOLDER) == ""), None)
+        placed: list[tuple[str, str | None]] = []
+        if top is not None:
+            for i in range(top.childCount()):
+                row = top.child(i)
+                if row.data(0, ROLE_ID):
+                    placed.append((row.data(0, ROLE_ID), None))
+                elif row.data(0, ROLE_FOLDER):
+                    folder_id = row.data(0, ROLE_FOLDER)
+                    for j in range(row.childCount()):
+                        if row.child(j).data(0, ROLE_ID) and not row.child(j).childCount():
+                            placed.append((row.child(j).data(0, ROLE_ID), folder_id))
+        shows = self.collection.scenes_for(self.build_canvas)
+        if sorted(sid for sid, _ in placed) != sorted(s.id for s in shows):
+            self._refresh_scenes()  # dropped somewhere it can't go (onto a bloom, into Sprigs): put it back
+            return
+        slots = [i for i, s in enumerate(self.collection.scenes) if s in shows]
+        by_id = {s.id: s for s in shows}
+        for slot, (scene_id, folder_id) in zip(slots, placed, strict=True):
+            scene = by_id[scene_id]
+            scene.folder = folder_id
+            self.collection.scenes[slot] = scene
+        self._changed()
+        self._refresh_scenes()
+        self.live_panel.show_scenes(self.collection)
 
     def _folder_expanded(self, item: QTreeWidgetItem, expanded: bool) -> None:
         folder_id = item.data(0, ROLE_FOLDER)
@@ -1202,7 +1252,8 @@ class MainWindow(QMainWindow):
             if canvas.id != self.build_canvas:
                 continue  # the other shape has its own tab
             parent = QTreeWidgetItem([f"{cap(SHOWS)}  ·  {canvas.id}"])
-            parent.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            parent.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+            parent.setData(0, ROLE_FOLDER, "")  # the canvas's own list: blooms dropped here have no folder
             self.scene_tree.addTopLevelItem(parent)
             active = self.collection.active_scenes.get(canvas.id)
             folder_items = []
@@ -1211,6 +1262,7 @@ class MainWindow(QMainWindow):
                 if folder is not None:
                     holder = QTreeWidgetItem([f"{folder.name}   ({len(scenes)})" + ("   · Live" if folder.live else "")])
                     holder.setData(0, ROLE_FOLDER, folder.id)
+                    holder.setFlags(FOLDER_FLAGS)
                     holder.setIcon(0, _dot(folder.colour, 14))
                     holder.setFont(0, bold)
                     holder.setToolTip(0, f"Folder: right-click to rename, recolour or remove. {cap(SHOWS)} move in "
@@ -1223,6 +1275,7 @@ class MainWindow(QMainWindow):
                     label = scene.name + self._link_label(scene)
                     child = QTreeWidgetItem([label])
                     child.setData(0, ROLE_ID, scene.id)
+                    child.setFlags(BLOOM_FLAGS)
                     if folder is not None:
                         child.setIcon(0, _dot(folder.colour))
                     if scene.id == active:
@@ -1247,6 +1300,7 @@ class MainWindow(QMainWindow):
                 shapes = " + ".join(s.canvas for s in self.collection.shapes(part))
                 child = QTreeWidgetItem([f"{PART_MARK} {part.name}   ({shapes} · used in {uses})"])
                 child.setData(0, ROLE_ID, part.id)
+                child.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                 child.setToolTip(0, f"{cap(a(PART))}: add it to {SHOWS} with Sources → + → {cap(PART)}. Select it to edit it.")
                 group.addChild(child)
                 if part is selected_part:
