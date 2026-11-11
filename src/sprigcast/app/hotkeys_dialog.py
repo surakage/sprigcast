@@ -1,15 +1,12 @@
-"""Assign a key combo to scenes, Go live and recording."""
+"""Hotkeys page: assign a key combo to scenes, Go live and recording."""
 
 from __future__ import annotations
 
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
     QGridLayout,
     QKeySequenceEdit,
     QLabel,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -20,12 +17,11 @@ from sprigcast.app.hotkeys import actions, to_pynput
 from sprigcast.core.scene import SceneCollection
 
 
-class HotkeysDialog(QDialog):
+class HotkeysPage(QWidget):
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Hotkeys")
-        self.setMinimumSize(560, 420)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         intro = QLabel(
             "Click a box and press the keys, for example Ctrl+Alt+1. Hotkeys work while a game has focus. "
             "Pick combos your games don't use."
@@ -44,14 +40,11 @@ class HotkeysDialog(QDialog):
             clear.clicked.connect(edit.clear)
             grid.addWidget(clear, row, 2)
             self.edits[action] = edit
+        grid.setRowStretch(grid.rowCount(), 1)  # keep rows together at the top
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(grid_widget)
         layout.addWidget(scroll, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
 
     def result_hotkeys(self) -> dict[str, str]:
         out = {}
@@ -61,15 +54,13 @@ class HotkeysDialog(QDialog):
                 out[action] = combo
         return out
 
-    def _accept(self) -> None:
-        chosen = self.result_hotkeys()
+    def problem(self) -> str | None:
+        """Why the chosen hotkeys can't be saved, or None when they're fine."""
         seen: dict[str, str] = {}
-        for action, combo in chosen.items():
+        for action, combo in self.result_hotkeys().items():
             if to_pynput(combo) is None:
-                QMessageBox.warning(self, "Hotkeys", f"{combo} can't be used as a hotkey. Add a letter, number or F-key.")
-                return
+                return f"{combo} can't be used as a hotkey. Add a letter, number or F-key."
             if combo in seen:
-                QMessageBox.warning(self, "Hotkeys", f"{combo} is used twice.")
-                return
+                return f"{combo} is used twice."
             seen[combo] = action
-        self.accept()
+        return None

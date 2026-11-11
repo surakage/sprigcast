@@ -63,7 +63,12 @@ def run() -> None:
         QMessageBox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
         sys.exit(1)
 
+    from sprigcast.app.settings_window import apply_pending_video
+
+    if apply_pending_video(collection):  # canvas size / fps changed in Settings → Video last time
+        collection.save(scenes_path)
     window = MainWindow(collection, scenes_path, plugins_dir)
+    window.plugin_report = plugins
     window.show()
     if plugins.failed:
         names = ", ".join(plugins.failed)

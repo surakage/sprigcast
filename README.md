@@ -54,7 +54,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
 - **Scenes dock**: scenes grouped by canvas. Select one to edit it; double-click or press *▶ Show* to put it on its canvas.
   A scene linked to another switches together with it, so one click changes both canvases.
 - **Scene Transitions dock**: *Fade* (crossfade, 300 ms by default) or *Cut*.
-- **Hotkeys** (*Settings → Hotkeys…*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
+- **Hotkeys** (*Settings → Hotkeys*): give any scene, *Go live* or *Start recording* a key combo such as Ctrl+Alt+1.
   They work while a game has focus. Pick combos your games don't use.
 - **Stats** (*Docks → Stats*, Ctrl+Shift+S): render fps, CPU and memory, free disk space, and for every stream
   and recording the frames sent and dropped, encoding time per frame, and time spent waiting on the network.
@@ -73,8 +73,15 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
   - Drag a slider to set the volume (-60 to +12 dB), click *Mute* to silence it,
     click a source's name, then **⚙** pins it to one device or **−** removes it.
   - Audio sources belong to the whole collection, not one scene, so they keep playing when you switch scenes.
-- **Controls dock**: *Go live*, *Start recording*, and a *Settings* menu (also in the menu bar).
-  - *Settings → Stream outputs…* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
+- **Settings** (the *Settings* button in Controls, the *Settings* menu, or Ctrl+,): one window with tabs down the left.
+  - *General*: theme (Slothbloom dark or the plain Windows look), whether to ask before ending a stream or
+    stopping a recording, and which plugins loaded.
+  - *Stream*, *Recording*, *Hotkeys*: described below.
+  - *Audio*: which device each mic and desktop audio source uses ("Default" follows Windows).
+  - *Video*: size, frame rate and on/off for each canvas. These apply the next time SprigCast starts.
+  - Stream settings are locked while you're live, and recording settings while you record.
+- **Controls dock**: *Go live*, *Start recording* and *Settings*. The ticks choose which outputs go live and which canvases record.
+  - *Settings → Stream* sets up where you stream: Twitch, YouTube, Kick, TikTok or any RTMP server. Picking a service
     fills in its preset (Twitch: horizontal 1920×1080 60 fps 6000 kbps; TikTok: vertical 720×1280 30 fps
     4000 kbps), and you can change the canvas, resolution, frame rate and bitrate per output.
     Stream keys are saved in Windows Credential Manager, never in `scenes.json`.
@@ -86,8 +93,8 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
     A dropped connection reconnects on its own.
   - *Start recording* writes each ticked canvas to its own file at the same time,
     for example `SprigCast 2026-11-10 19-30-05 horizontal.mkv` and `... vertical.mkv`, both with the mixed audio.
-    *Settings → Recording…* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays
-    playable if the PC crashes. *Settings → Open recordings folder* opens your recordings. Streaming and recording can run together.
+    *Settings → Recording* picks the folder (default `Videos\SprigCast`), bitrate and MKV or MP4; MKV stays
+    playable if the PC crashes. *File → Open recordings folder* opens your recordings. Streaming and recording can run together.
 - **Text sources** (**+ → Text**): titles and labels with a font, size, colour and outline.
   `{time}`, `{time12}` and `{date}` in the text show a live clock. Set *File* to a text file and its
   contents are shown instead and follow its changes, handy for "now playing" tools.
@@ -98,7 +105,7 @@ Capture uses Windows Graphics Capture. SprigCast hides the yellow capture border
 Windows 10 always shows it.
 
 The window remembers its size and where you put the docks. SprigCast uses a dark Slothbloom theme;
-set the environment variable `SPRIGCAST_THEME=system` before launching to keep the plain Windows look.
+pick *System* under *Settings → General* to keep the plain Windows look.
 
 Scenes save automatically to `scenes.json` in your AppData folder
 (*File → Show scenes file location* shows the exact path).
