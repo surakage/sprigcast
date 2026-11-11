@@ -46,7 +46,8 @@ class LivePanel(QWidget):
         root.addStretch(1)
 
     def show_scenes(self, collection: SceneCollection) -> None:
-        signature = tuple((s.id, s.name, s.canvas, s.kind) for s in collection.scenes)
+        signature = (tuple((s.id, s.name, s.canvas, s.kind, s.folder, s.linked_to) for s in collection.scenes),
+                     tuple((f.id, f.name, f.colour) for f in collection.folders))
         if signature != self._signature:
             self._signature = signature
             self._rebuild(collection)
@@ -73,23 +74,33 @@ class LivePanel(QWidget):
             title = QLabel(f"{canvas.id.capitalize()}  ·  {canvas.width}×{canvas.height}")
             title.setStyleSheet("color: #8cc4a3")
             self.rows.addWidget(title)
-            grid_box = QWidget()
-            grid = QGridLayout(grid_box)
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(6)
-            for i, scene in enumerate(scenes):
-                button = QPushButton(scene.name + ("  ⇄" if scene.linked_to else ""))
-                if scene.linked_to:
-                    button.setToolTip("Linked: switches together with its partner on the other canvas")
-                button.setCheckable(True)
-                button.setMinimumHeight(52)
-                font = button.font()
-                font.setPointSizeF(font.pointSizeF() * 1.15)
-                button.setFont(font)
-                button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
-                self.buttons[scene.id] = button
-                grid.addWidget(button, i // COLUMNS, i % COLUMNS)
-            self.rows.addWidget(grid_box)
+            for folder, group in collection.grouped_scenes(canvas.id):
+                if not group:
+                    continue
+                if folder is not None:
+                    heading = QLabel(f"●  {folder.name}")
+                    heading.setStyleSheet(f"color: {folder.colour}; font-weight: bold; margin-top: 4px;")
+                    self.rows.addWidget(heading)
+                self._add_grid(group)
+
+    def _add_grid(self, scenes) -> None:
+        grid_box = QWidget()
+        grid = QGridLayout(grid_box)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(6)
+        for i, scene in enumerate(scenes):
+            button = QPushButton(scene.name + ("  ⇄" if scene.linked_to else ""))
+            if scene.linked_to:
+                button.setToolTip("Linked: switches together with its partner on the other canvas")
+            button.setCheckable(True)
+            button.setMinimumHeight(52)
+            font = button.font()
+            font.setPointSizeF(font.pointSizeF() * 1.15)
+            button.setFont(font)
+            button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
+            self.buttons[scene.id] = button
+            grid.addWidget(button, i // COLUMNS, i % COLUMNS)
+        self.rows.addWidget(grid_box)
 
     def set_clock(self, text: str, live: bool) -> None:
         self.clock.setText(text)

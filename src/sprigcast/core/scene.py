@@ -92,7 +92,24 @@ class Scene(BaseModel):
     kind: Literal["show", "part"] = "show"
     linked_to: str | None = None  # switching to that scene also switches to this one
     shape_of: str | None = None  # parts only: this is the layout of that part for another canvas
+    folder: str | None = None  # shows only: the SceneFolder it's listed under (just for tidiness)
     items: list[SceneItem] = Field(default_factory=list)  # index 0 draws first (bottom)
+
+
+FOLDER_COLOURS = ("#ff5fa2", "#3ddc84", "#4cc9f0", "#ffd23f", "#ff8c42", "#b388ff")
+
+
+class SceneFolder(BaseModel):
+    """A named group of shows on one canvas, like "Main Scenes" or "Browser Scenes".
+
+    Folders only organise the lists; they never change what's on air.
+    """
+
+    id: str
+    name: str
+    canvas: str
+    colour: str = FOLDER_COLOURS[0]
+    collapsed: bool = False
 
 
 PART_KIND = "scene"  # source kind that places a part inside another scene
@@ -189,6 +206,7 @@ class SceneCollection(BaseModel):
     canvases: list[Canvas]
     sources: list[SourceConfig] = Field(default_factory=list)
     scenes: list[Scene] = Field(default_factory=list)
+    folders: list[SceneFolder] = Field(default_factory=list)
     active_scenes: dict[str, str] = Field(default_factory=dict)  # canvas id -> scene id
     outputs: list[Output] = Field(default_factory=list)
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
@@ -202,7 +220,13 @@ class SceneCollection(BaseModel):
         canvas_ids = {c.id for c in self.canvases}
         source_ids = {s.id for s in self.sources}
         scene_ids = {s.id for s in self.scenes}
+        folder_canvas = {f.id: f.canvas for f in self.folders}
+        for folder in self.folders:
+            if folder.canvas not in canvas_ids:
+                raise ValueError(f"folder {folder.id!r} uses unknown canvas {folder.canvas!r}")
         for scene in self.scenes:
+            if scene.folder is not None and folder_canvas.get(scene.folder) != scene.canvas:
+                scene.folder = None  # a missing or other-canvas folder: just list it loose
             if scene.canvas not in canvas_ids:
                 raise ValueError(f"scene {scene.id!r} uses unknown canvas {scene.canvas!r}")
             if scene.shape_of is not None and scene.shape_of not in scene_ids:
@@ -232,6 +256,33 @@ class SceneCollection(BaseModel):
 
     def scene(self, scene_id: str) -> Scene:
         return next(s for s in self.scenes if s.id == scene_id)
+
+    def folders_for(self, canvas_id: str) -> list[SceneFolder]:
+        return [f for f in self.folders if f.canvas == canvas_id]
+
+    def folder(self, folder_id: str) -> SceneFolder:
+        return next(f for f in self.folders if f.id == folder_id)
+
+    def add_folder(self, canvas_id: str, name: str) -> SceneFolder:
+        used = len(self.folders_for(canvas_id))
+        folder = SceneFolder(id=self.new_id("folder"), name=name, canvas=canvas_id,
+                             colour=FOLDER_COLOURS[used % len(FOLDER_COLOURS)])
+        self.folders.append(folder)
+        return folder
+
+    def remove_folder(self, folder_id: str) -> None:
+        """The folder goes; its shows stay, listed loose."""
+        self.folders = [f for f in self.folders if f.id != folder_id]
+        for scene in self.scenes:
+            if scene.folder == folder_id:
+                scene.folder = None
+
+    def grouped_scenes(self, canvas_id: str) -> list[tuple[SceneFolder | None, list[Scene]]]:
+        """The shows on a canvas as (folder, shows): loose shows first (folder None), then each folder."""
+        shows = self.scenes_for(canvas_id)
+        groups: list[tuple[SceneFolder | None, list[Scene]]] = [(None, [s for s in shows if s.folder is None])]
+        groups += [(f, [s for s in shows if s.folder == f.id]) for f in self.folders_for(canvas_id)]
+        return groups
 
     def scenes_for(self, canvas_id: str) -> list[Scene]:
         """The shows on a canvas (parts are listed by parts())."""
@@ -439,6 +490,7 @@ class SceneCollection(BaseModel):
 
     def new_id(self, prefix: str) -> str:
         taken = {c.id for c in self.canvases} | {s.id for s in self.sources} | {s.id for s in self.scenes}
+        taken |= {f.id for f in self.folders}
         taken |= {o.id for o in self.outputs}
         n = 1
         while f"{prefix}-{n}" in taken:
