@@ -18,7 +18,7 @@ import time
 from fractions import Fraction
 
 from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock
-from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE
+from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE, encoder_hwaccel
 from sprigcast.output.stream import MAX_BACKLOG, RESUME_BACKLOG, Streamer
 
 log = logging.getLogger(__name__)
@@ -145,9 +145,9 @@ class EnhancedStreamer(Streamer):
         container = self._open_container()
         for track in self.tracks:
             cfg = track.cfg
-            stream = container.add_stream(cfg.encoder, rate=track.fps)
+            stream = container.add_stream(cfg.encoder, rate=track.fps, hwaccel=encoder_hwaccel(cfg.encoder))
             stream.width, stream.height = cfg.width, cfg.height
-            stream.pix_fmt = "nv12" if cfg.encoder == "h264_nvenc" else "yuv420p"
+            stream.pix_fmt = _sw_format(cfg.encoder)
             stream.bit_rate = cfg.bitrate_kbps * 1000
             ctx = stream.codec_context
             ctx.time_base = Fraction(1, track.fps)
@@ -274,7 +274,7 @@ class EnhancedStreamer(Streamer):
             vf = av.VideoFrame.from_ndarray(rgba, format="rgba")
         vf = track.reformatter.reformat(
             vf, width=track.cfg.width, height=track.cfg.height, interpolation="BICUBIC",
-            format=track.stream.pix_fmt, dst_colorspace=Colorspace.ITU709, dst_color_range=ColorRange.MPEG,
+            format=_sw_format(track.cfg.encoder), dst_colorspace=Colorspace.ITU709, dst_color_range=ColorRange.MPEG,
         )
         vf.pts = pts
         group = pts // (track.cfg.keyint_sec * track.fps)
@@ -318,3 +318,9 @@ class EnhancedStreamer(Streamer):
         if track.index == 0:
             self.frames = track.frames
         self._mux(container, out)
+
+
+def _sw_format(encoder: str) -> str:
+    """The pixel format frames are converted to for this encoder. (Once open, an NVENC stream with a
+    shared GPU context reports "cuda" as its format, so this can't be read back from the stream.)"""
+    return "nv12" if encoder == "h264_nvenc" else "yuv420p"
