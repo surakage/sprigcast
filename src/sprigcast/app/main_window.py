@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app import doctor
+from sprigcast.app.palette import Command, CommandPalette
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
@@ -974,6 +975,12 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
+        self.palette_button = QToolButton()
+        self.palette_button.setText("🔍  Search commands   Ctrl+K")
+        self.palette_button.setToolTip("Find any action, scene, setting or dock by typing")
+        self.palette_button.setAutoRaise(True)
+        self.palette_button.clicked.connect(lambda: self._open_palette())
+        bar.addWidget(self.palette_button)
         self.mode_clock = QLabel("")
         bar.addWidget(self.mode_clock)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
@@ -1208,6 +1215,11 @@ class MainWindow(QMainWindow):
         doctor_action = settings_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
+        palette_action = QAction("Command palette…", self)
+        palette_action.setShortcuts([QKeySequence("Ctrl+K"), QKeySequence("Ctrl+Shift+P")])
+        palette_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        palette_action.triggered.connect(lambda: self._open_palette())
+        settings_menu.addAction(palette_action)
 
         docks_menu = self.menuBar().addMenu("&Docks")
         for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Live",
@@ -2710,6 +2722,71 @@ class MainWindow(QMainWindow):
         self._updating = False
         self._refresh_audio()
         self._apply_hotkeys()
+
+    # Command palette -------------------------------------------------------------
+
+    def _palette_commands(self) -> list[Command]:
+        """Everything the palette offers: scenes, hotkey actions, modes, menus and the Add source menu."""
+        hotkeys = self.collection.hotkeys
+        commands: list[Command] = []
+        for canvas in self.collection.canvases:
+            for scene in self.collection.scenes_for(canvas.id):
+                if scene.kind == "show":
+                    commands.append(Command(scene.name if canvas.id in scene.name.lower() else f"{scene.name}  ·  {canvas.id}", "Scene",
+                                            lambda sid=scene.id: self._switch_to_scene(sid),
+                                            hotkeys.get(SCENE_PREFIX + scene.id, ""),
+                                            scene.id == self.collection.active_scenes.get(canvas.id)))
+        live = self.streaming is not None
+        recording = self.recording is not None
+        commands += [
+            Command("End stream" if live else "Go live", "Action", self._on_live_clicked, hotkeys.get(TOGGLE_STREAM, "")),
+            Command("Stop recording" if recording else "Start recording", "Action", self._on_record_clicked,
+                    hotkeys.get(TOGGLE_RECORD, "")),
+            Command("Studio mode", "Action", lambda: self.live_panel.studio.toggle(), checked=self.studio),
+            Command("Studio mode: Go", "Action", self._studio_go, hotkeys.get(STUDIO_GO, "")),
+            Command("Replay buffer", "Action", self.replay_button.toggle, checked=self.replay_button.isChecked()),
+            Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
+            Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
+        ]
+        for part in self.collection.parts():
+            if part.states:
+                commands.append(Command(f"{part.name}: as built", "Sprig",
+                                        lambda pid=part.id: self._set_sprig_state(pid, None), checked=not part.state))
+            for state in part.states:
+                commands.append(Command(f"{part.name}: {state.name}", "Sprig",
+                                        lambda pid=part.id, n=state.name: self._set_sprig_state(pid, n),
+                                        hotkeys.get(f"{STATE_PREFIX}{part.id}:{state.name}", ""),
+                                        part.state == state.name))
+        for mode, action in self.mode_actions.items():
+            commands.append(Command(f"Go to {action.text().strip()}", "Mode", action.trigger,
+                                    action.shortcut().toString(), self.mode == mode))
+        self._fill_add_source_menu()
+        commands += self._menu_commands(self.add_source_menu, "Add")
+        for menu_action in self.menuBar().actions():
+            group = menu_action.text().replace("&", "")
+            group = {"Docks": "Dock"}.get(group, group)
+            commands += self._menu_commands(menu_action.menu(), group)
+        return [c for c in commands if c.title and "Command palette" not in c.title]
+
+    def _menu_commands(self, menu, group: str, prefix: str = "") -> list[Command]:
+        out = []
+        if menu is None:
+            return out
+        for action in menu.actions():
+            if action.isSeparator() or not action.isVisible():
+                continue
+            text = prefix + action.text().replace("&", "").rstrip("…").strip()
+            if action.menu() is not None:
+                out += self._menu_commands(action.menu(), group, text + ": ")
+            elif action.isEnabled():
+                out.append(Command(text, group, action.trigger, action.shortcut().toString(),
+                                   action.isChecked() if action.isCheckable() else None))
+        return out
+
+    def _open_palette(self) -> CommandPalette:
+        palette = CommandPalette(self._palette_commands(), self)
+        palette.open()
+        return palette
 
     def _on_hotkey(self, action: str) -> None:
         if action == STUDIO_GO:

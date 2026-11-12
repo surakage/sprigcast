@@ -241,3 +241,34 @@ def test_engine_renders_the_staged_scene_to_its_own_frame():
     engine._render_staged(fake, canvas, {}, 1.0)
     assert fake.rendered == [("next:horizontal", "h2")]
     assert engine.frames["next:horizontal"].take().data == b"x"
+
+
+def test_command_palette_lists_scenes_menus_and_switches(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("PaletteTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        palette = w._open_palette()
+        groups = {c.group for c in palette.commands}
+        assert {"Scene", "Action", "Mode", "Add", "Settings", "Dock", "File"} <= groups
+        titles = [c.title for c in palette.commands]
+        assert "Go live" in titles and "Dock: Scenes" not in titles and "Scenes" in titles
+        palette.search.setText("brb")
+        assert palette.shown()[0].group == "Scene"
+        palette._run(palette.list.currentItem())
+        assert col.active_scenes["horizontal"] == "h2"
+        palette = w._open_palette()
+        palette.search.setText("go to live")
+        palette._run(palette.list.currentItem())
+        assert w.mode == "live"
+    finally:
+        w.close()
+        QSettings().clear()

@@ -140,6 +140,7 @@ drags and *Reset layout* puts everything back. Under each list is a row of small
 - **Replay buffer** (Controls dock): turn it on and **Save replay** (or its hotkey) writes the last few seconds of each recorded canvas into your recordings folder. Set the length in Settings → Output → Recording.
 - **Stream doctor** (🩺 in Controls, or Ctrl+Shift+D): listens to your mics for a few seconds, then checks stream keys, how your last stream's upload went, the GPU and encoder, audio levels and sources, and says in one sentence what to fix. Going live runs a quick check and only asks first if something is seriously wrong.
 - **Auto-pilot bitrate** (on by default, per destination in its ⚙): when your upload can't keep up, the bitrate steps down instead of frames being dropped, then climbs back to what you set once the upload recovers. The Destinations card and Stats show when it is lowered.
+- **Command palette** (Ctrl+K, or 🔍 in the top bar): type a few letters to switch scenes, go live, open any setting, show a dock, add a source or change a sprig state. Recent commands come first.
   *Live* is for running the show: big buttons for each canvas's blooms (linked scenes, marked ⇄, switch together),
   a large on-air clock, the Audio Mixer, Destinations and Controls; the previews can't be edited by a stray
   click. Each mode remembers its own dock layout, and SprigCast reopens in the mode you left it in.
