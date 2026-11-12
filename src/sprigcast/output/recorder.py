@@ -42,13 +42,45 @@ def nvenc_works() -> bool:
     return _nvenc_ok
 
 
-def _try_encoder(codec_name: str) -> bool:
+_shared_gpu_ok: bool | None = None
+
+
+def nvenc_hwaccel():
+    """Settings that make an NVENC encoder use CUDA's one shared ("primary") context, or None.
+
+    Left to itself, each h264_nvenc encoder creates its own CUDA context, and on Windows each one
+    costs about 250 MB of RAM. Recording both canvases plus the replay buffer is four encoders, so
+    sharing one context saves most of a gigabyte. The frames are uploaded to the GPU once per encoder
+    either way. Checked once per run by encoding a test frame; if that fails (old driver, an FFmpeg
+    build without CUDA) every encoder falls back to its own context as before.
+    Set SPRIGCAST_NVENC_OWN_CONTEXT=1 to turn this off.
+    """
+    global _shared_gpu_ok
+    if os.environ.get("SPRIGCAST_NVENC_OWN_CONTEXT"):
+        return None
+    if _shared_gpu_ok is None:
+        _shared_gpu_ok = nvenc_works() and _try_encoder("h264_nvenc", _make_hwaccel())
+    return _make_hwaccel() if _shared_gpu_ok else None
+
+
+def _make_hwaccel():
+    from av.codec.hwaccel import HWAccel
+
+    return HWAccel("cuda", options={"primary_ctx": "1"})
+
+
+def encoder_hwaccel(codec: str):
+    """The hwaccel to pass to add_stream() for this codec (only NVENC uses one)."""
+    return nvenc_hwaccel() if codec == "h264_nvenc" else None
+
+
+def _try_encoder(codec_name: str, hwaccel=None) -> bool:
     import av
 
     if codec_name not in av.codecs_available:
         return False
     try:
-        ctx = av.CodecContext.create(codec_name, "w")
+        ctx = av.CodecContext.create(codec_name, "w", hwaccel=hwaccel)
         ctx.width, ctx.height = 256, 256
         ctx.pix_fmt = "nv12" if "nvenc" in codec_name else "yuv420p"
         ctx.time_base = Fraction(1, 30)
@@ -58,7 +90,7 @@ def _try_encoder(codec_name: str) -> bool:
         ctx.encode(None)
         return True
     except Exception as exc:  # no NVIDIA GPU, old driver, encoder sessions all in use, ...
-        log.info("%s unavailable: %s", codec_name, exc)
+        log.info("%s unavailable%s: %s", codec_name, " with a shared GPU context" if hwaccel else "", exc)
         return False
 
 
@@ -266,7 +298,7 @@ class Recorder:
         from av.video.reformatter import VideoReformatter
 
         container = self._open_container()
-        video = container.add_stream(self.codec, rate=self.fps)
+        video = container.add_stream(self.codec, rate=self.fps, hwaccel=encoder_hwaccel(self.codec))
         video.width, video.height = self.out_width, self.out_height
         video.pix_fmt = "nv12"  # what the GPU hands over (render/compositor.py read_nv12); x264 takes it too
         video.bit_rate = self.bitrate_kbps * 1000
@@ -383,7 +415,7 @@ class Recorder:
             width=self.out_width,
             height=self.out_height,
             interpolation="BICUBIC",
-            format=stream.pix_fmt,
+            format="nv12",  # not stream.pix_fmt: with a shared GPU context that reads "cuda" once open
             dst_colorspace=Colorspace.ITU709,
             dst_color_range=ColorRange.MPEG,
         )

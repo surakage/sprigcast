@@ -95,9 +95,11 @@ def main() -> None:
 
         wait(WAIT["window"])
         meter.take("Window open, sources running")
-        from sprigcast.output.recorder import codec_label, pick_codec
+        from sprigcast.output.recorder import codec_label, nvenc_hwaccel, pick_codec
 
-        print(f"  (recording with {codec_label(pick_codec())}, canvases: {', '.join(collection.recording.canvases)}, "
+        codec = pick_codec()
+        shared = ", one shared GPU context" if codec == "h264_nvenc" and nvenc_hwaccel() is not None else ""
+        print(f"  (recording with {codec_label(codec)}{shared}, canvases: {', '.join(collection.recording.canvases)}, "
               f"{collection.recording.bitrate_kbps} kbps)", flush=True)
         window._start_recording()
         wait(WAIT["recording"])

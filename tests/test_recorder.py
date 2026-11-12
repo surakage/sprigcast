@@ -184,3 +184,18 @@ def test_encoder_settings_reach_the_file(tmp_path):
     assert video.codec_context.gop_size == 30 and video.codec_context.max_b_frames == 0
     assert audio.bit_rate == 96000
     container.close()
+
+
+def test_nvenc_shared_context_is_optional(monkeypatch):
+    from sprigcast.output import recorder
+
+    assert recorder.encoder_hwaccel("libx264") is None  # only NVENC uses a GPU context
+    monkeypatch.setenv("SPRIGCAST_NVENC_OWN_CONTEXT", "1")
+    assert recorder.nvenc_hwaccel() is None
+    monkeypatch.delenv("SPRIGCAST_NVENC_OWN_CONTEXT")
+    monkeypatch.setattr(recorder, "_shared_gpu_ok", None)
+    monkeypatch.setattr(recorder, "nvenc_works", lambda: False)
+    assert recorder.nvenc_hwaccel() is None and recorder._shared_gpu_ok is False  # no NVENC: nothing to share
+    monkeypatch.setattr(recorder, "_shared_gpu_ok", True)
+    accel = recorder.nvenc_hwaccel()
+    assert accel is not None and accel.options == {"primary_ctx": "1"}
