@@ -13,7 +13,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from sprigcast.output.recorder import Recorder
+from sprigcast.output.autopilot import Autopilot
+from sprigcast.output.recorder import Recorder, rate_limits, video_options
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class StreamTarget:
     enhanced: object | None = None  # output.enhanced.EnhancedConfig: several qualities over one connection
     canvases: list | None = None  # with enhanced: the canvases its tracks come from (index = canvas_index)
     output_id: str | None = None  # the scene collection Output this target came from
+    auto_bitrate: bool = False  # lower the bitrate when the upload struggles (output/autopilot.py)
 
 
 class Streamer(Recorder):
@@ -109,6 +111,7 @@ class Streamer(Recorder):
         out_size: tuple[int, int] | None = None,
         bandwidth_test: bool = False,
         encoder=None,
+        auto_bitrate: bool = False,
     ):
         super().__init__(
             Path(f"stream {name}"), width, height, fps, bitrate_kbps, codec, start_time, "flv", out_size, encoder
@@ -128,6 +131,10 @@ class Streamer(Recorder):
         self._congested = False
         self._sender: threading.Thread | None = None
         self._connected_at = 0.0
+        # Auto-pilot needs a target bitrate to steer; constant-quality encoding has none.
+        self.autopilot = Autopilot(bitrate_kbps) if auto_bitrate and self.encoder.rate_control != "cqp" else None
+        self._want_kbps = self._applied_kbps = bitrate_kbps
+        self._autopilot_at = 0.0
 
     def health(self) -> tuple[str, str]:
         """("good" | "warning" | "bad", short reason), comparing against the previous call (about 1 s ago).
@@ -185,6 +192,9 @@ class Streamer(Recorder):
         )
         if self.reconnects:
             line += f"; {self.reconnects} reconnects"
+        if self.autopilot and self.autopilot.steps_down:
+            line += (f"; auto-pilot lowered the bitrate {self.autopilot.steps_down} times"
+                     f" (lowest {self.autopilot.lowest_kbps} kbps)")
         if loss > 0.01:
             if waiting > 0.5:
                 line += ". Your upload can't keep up: lower this output's bitrate."
@@ -220,12 +230,41 @@ class Streamer(Recorder):
 
     # Sending: the encoder thread queues packets, a sender thread writes them to the network ----------
 
+    @property
+    def current_kbps(self) -> int:
+        return self.autopilot.current_kbps if self.autopilot else self.bitrate_kbps
+
     def backlog_seconds(self) -> float:
-        return self._backlog_bytes * 8 / (self.bitrate_kbps * 1000)
+        return self._backlog_bytes * 8 / (self.current_kbps * 1000)
+
+    def _video_options(self) -> dict[str, str]:
+        return video_options(self.codec, self.encoder, self.bitrate_kbps, hrd=self.autopilot is None)
+
+    def _steer(self, backlog: float) -> None:
+        """About once a second: let auto-pilot pick the bitrate; the encoder thread applies it."""
+        now = time.monotonic()
+        if self.autopilot is None or now - self._autopilot_at < 1.0 or now - self._connected_at < GRACE_SECONDS:
+            return
+        self._autopilot_at = now
+        kbps = self.autopilot.update(now, backlog)
+        if kbps is not None:
+            log.info("stream %s: auto-pilot bitrate %d kbps", self.name, kbps)
+            self._want_kbps = kbps
+
+    def _write_video(self, container, stream, frame) -> None:
+        if self._want_kbps != self._applied_kbps:
+            ctx, k = stream.codec_context, self._want_kbps
+            ctx.bit_rate = k * 1000
+            peak, buffer = rate_limits(self.codec, self.encoder, k)
+            if peak:
+                ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
+            self._applied_kbps = k
+        super()._write_video(container, stream, frame)
 
     def push_frame(self, frame) -> None:
         if self.connected:
             backlog = self.backlog_seconds()
+            self._steer(backlog)
             if self._congested and backlog < RESUME_BACKLOG:
                 self._congested = False
             elif backlog > MAX_BACKLOG:
@@ -239,6 +278,7 @@ class Streamer(Recorder):
 
     def _open(self):
         container, video, audio = super()._open()
+        self._applied_kbps = self.bitrate_kbps  # a fresh encoder starts at the set bitrate; _write_video steers it
         self._send_q = queue.Queue()
         self._send_error = None
         self._backlog_bytes = 0
@@ -345,7 +385,7 @@ class StreamSession:
             else:
                 fps = min(t.fps or c.fps, c.fps)
                 st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
-                              t.size, t.bandwidth_test, encoder)
+                              t.size, t.bandwidth_test, encoder, auto_bitrate=t.auto_bitrate)
                 taps.append((c.id, st.push_frame))
             st.output_id = t.output_id or t.name
             st.start()

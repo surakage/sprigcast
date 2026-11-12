@@ -169,6 +169,7 @@ class Output(BaseModel):
     enhanced_max_tracks: int = 0  # with enhanced: most qualities to send; 0 = let Twitch decide
     enhanced_max_kbps: int = 0  # with enhanced: most bandwidth for all qualities together; 0 = let Twitch decide
     ignore_recommendations: bool = False  # allow a bitrate above what the service accepts
+    auto_bitrate: bool = True  # lower the bitrate when the upload struggles, climb back after (not with enhanced)
 
 
 class EncoderSettings(BaseModel):

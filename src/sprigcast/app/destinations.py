@@ -180,6 +180,9 @@ def live_line(st) -> tuple[str, str]:
     text = f"{st.measure_kbps():.0f} kbps · {st.out_width}×{st.out_height} {st.fps} fps"
     if reason != "live":
         text += f" · {reason}"
+    pilot = getattr(st, "autopilot", None)
+    if pilot is not None and pilot.lowered:
+        text += f" · auto-pilot {pilot.current_kbps} of {pilot.target_kbps} kbps"
     if st.dropped:
         text += f" · {st.dropped} dropped"
     if st.reconnects:
