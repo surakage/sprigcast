@@ -28,6 +28,7 @@ class Stats:
     fps: float
     render_ms: float  # average time to draw and read back all canvases in one tick
     dropped_ticks: int  # ticks that started late because the previous one ran long
+    readbacks: float = 0.0  # canvases copied from the GPU per second (previews + outputs)
 
 
 @dataclass

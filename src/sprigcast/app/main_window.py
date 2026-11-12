@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import logging
+import os
 import queue
 import time
 from pathlib import Path
@@ -59,6 +60,7 @@ from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app import doctor
 from sprigcast.app.palette import Command, CommandPalette
+from sprigcast.app.resources import ResourceMeter, describe
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
@@ -371,6 +373,14 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
+        self.meter = ResourceMeter(gpu=not os.environ.get("SPRIGCAST_NO_GPU_METER"))
+        self.meter_label = QLabel("")
+        self.meter_label.setToolTip("What SprigCast uses right now: its share of the whole CPU, its memory, "
+                                    "and how busy the graphics card is (all apps)")
+        self.statusBar().addPermanentWidget(self.meter_label)
+        self.meter_timer = QTimer(self)
+        self.meter_timer.timeout.connect(self._refresh_meter)
+        self.meter_timer.start(2000)
 
         # Engine --------------------------------------------------------------
         self.engine = Engine(collection)
@@ -1239,7 +1249,24 @@ class MainWindow(QMainWindow):
 
     # Engine link ------------------------------------------------------------
 
+    def _refresh_meter(self) -> None:
+        self.last_resources = self.meter.sample()
+        self.meter_label.setText(describe(self.last_resources))
+
+    def _watched_previews(self) -> frozenset[str]:
+        """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
+        if self.isMinimized() or not self.isVisible():
+            return frozenset()
+        keys = {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
+        keys |= {f"next:{cid}" for cid, p in self.next_previews.items() if p.isVisible()}
+        if self.part_preview.isVisible() or self.in_place is not None:
+            keys.add("part")
+        return frozenset(keys)
+
     def _poll_engine(self) -> None:
+        watched = self._watched_previews()
+        if watched != self.engine.previews:
+            self.engine.previews = watched
         for canvas_id, mailbox in list(self.engine.frames.items()):
             frame = mailbox.take()
             if frame is None:
@@ -1291,6 +1318,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         self._save_layout()
         self.hotkeys.stop()
+        self.meter.stop()
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
