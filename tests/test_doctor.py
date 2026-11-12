@@ -31,14 +31,15 @@ def _checkup(**kw):
 def test_all_clear():
     findings = examine(_checkup())
     assert findings[0].level == "good"
-    assert headline(findings) == "You're ready to go live."
+    assert headline(findings) == "Ready to go live"
 
 
 def test_missing_key_is_the_headline():
     findings = examine(_checkup(has_key=lambda ref: False, statuses={"cam": "camera not found, retrying"}))
     assert findings[0].level == "bad" and findings[0].area == "Keys" and "stream key" in findings[0].text
-    assert "Webcam: camera not found" in " ".join(f.text for f in findings)
-    assert headline(findings).endswith("(+1 more below)")
+    webcam = next(f for f in findings if f.area == "Sources")
+    assert webcam.title == "Webcam isn't working (camera not found, retrying)" and webcam.fix.startswith("Check")
+    assert headline(findings) == "2 things to fix"
 
 
 def test_slow_upload_suggests_a_lower_bitrate_until_lowered():
@@ -102,4 +103,5 @@ def test_dialog_shows_findings():
     dialog = DoctorDialog(lambda: _checkup(has_key=lambda ref: False), listen=0)
     assert "Checking" in dialog.headline.text()
     dialog.finish()
-    assert "stream key" in dialog.headline.text() and dialog.rows.count() == len(dialog.findings)
+    assert dialog.headline.text().endswith("to fix") and dialog.badge.text() == "✕"
+    assert not dialog.busy.isVisibleTo(dialog)
