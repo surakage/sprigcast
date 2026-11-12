@@ -61,6 +61,7 @@ class Preview(QWidget):
         self.inner_size: tuple[int, int] | None = None  # the part layout's own size
         self.inner_rect: tuple[float, float, float, float] | None = None  # visible part area, canvas pixels
         self._inner_image: QImage | None = None
+        self.empty_text = "Waiting for the renderer…"  # shown until the first frame arrives
         self.safe_zones = "Off"  # see safe_zones.CHOICES; only portrait canvases draw them
         self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
@@ -178,7 +179,7 @@ class Preview(QWidget):
         rect = self.canvas_rect()
         if self._image is None:
             p.fillRect(rect, QColor("#000000"))
-            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Waiting for the renderer…")
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.empty_text)
         else:
             if self.transparent:
                 self._paint_checker(p, rect)

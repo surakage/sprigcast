@@ -53,7 +53,10 @@ class Engine:
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
         self._transitions: dict[str, tuple] = {}  # canvas id -> (outgoing scene, start time, duration s)
-        self._state_fades: dict[str, tuple] = {}  # sprig id -> (start time, hidden before, hidden after)
+        self._state_fades: dict[str, tuple] = {}
+        # Studio mode: canvas id -> the scene lined up to go on air next. Rendered to "next:<canvas>".
+        # The UI replaces the whole dict, so the render thread always sees a consistent one.
+        self.staged: dict[str, str] = {}  # sprig id -> (start time, hidden before, hidden after)
 
     # Called from the UI thread ----------------------------------------------
 
@@ -322,6 +325,19 @@ class Engine:
                         f"{part.id}~{source.id}", size, tweaked, sizes, fades)
         compositor.parts = self._part_sources(textures)
 
+    def _render_staged(self, compositor, canvas, sizes, now: float) -> None:
+        """Studio mode: draw the scene lined up next on this canvas, for the Next preview (not for outputs)."""
+        scene_id = self.staged.get(canvas.id)
+        if scene_id is None or scene_id == self._collection.active_scenes.get(canvas.id):
+            return
+        scene = next((s for s in self._collection.scenes if s.id == scene_id), None)
+        if scene is None:
+            return
+        target = canvas.model_copy(update={"id": f"next:{canvas.id}"})
+        compositor.render(target, scene, sizes)
+        mailbox = self.frames.setdefault(target.id, Mailbox())
+        mailbox.put(Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now))
+
     def _part_sources(self, textures: dict) -> dict:
         """(placement source id, canvas id) -> texture of the part's layout for that canvas."""
         collection = self._collection
@@ -366,6 +382,7 @@ class Engine:
             data = compositor.read(canvas.id)
             frame = Frame(canvas.id, canvas.width, canvas.height, data, now)
             self.frames[canvas.id].put(frame)
+            self._render_staged(compositor, canvas, sizes, now)
             for callback in taps.get(canvas.id, ()):
                 try:
                     callback(frame)

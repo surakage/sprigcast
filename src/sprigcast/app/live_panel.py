@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -24,10 +25,12 @@ COLUMNS = 4
 
 
 class LivePanel(QWidget):
-    def __init__(self, on_scene: Callable[[str], None], on_state: Callable[[str, str | None], None] | None = None):
+    def __init__(self, on_scene: Callable[[str], None], on_state: Callable[[str, str | None], None] | None = None,
+                 on_studio: Callable[[bool], None] | None = None, on_go: Callable[[], None] | None = None):
         super().__init__()
         self.on_scene = on_scene
         self.on_state = on_state or (lambda part_id, name: None)
+        self.staged: set[str] = set()
         self.buttons: dict[str, QPushButton] = {}
         self.state_buttons: dict[tuple[str, str | None], QPushButton] = {}  # (sprig id, state name or None)
         self._signature: tuple = ()
@@ -43,6 +46,23 @@ class LivePanel(QWidget):
         top.addWidget(self.clock, 1)
         top.addWidget(self.rec)
         root.addLayout(top)
+        studio_row = QHBoxLayout()
+        self.studio = QCheckBox("Studio mode")
+        self.studio.setToolTip("Click a scene to line it up in the Next preview, then press Go to send it on air")
+        self.studio.toggled.connect(lambda on: (on_studio or (lambda _on: None))(on))
+        self.go = QPushButton("Go  ▶")
+        self.go.setToolTip("Send the lined-up scenes on air (with the transition)")
+        self.go.setMinimumHeight(40)
+        self.go.setStyleSheet(
+            "QPushButton { font-weight: bold; padding: 6px 28px; }"
+            "QPushButton:enabled { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff8fc4, stop:1 #f23f8f);"
+            " color: #0c1d14; border: 1px solid #c02670; }")
+        self.go.clicked.connect(lambda: (on_go or (lambda: None))())
+        self.go.setVisible(False)
+        studio_row.addWidget(self.studio)
+        studio_row.addStretch(1)
+        studio_row.addWidget(self.go)
+        root.addLayout(studio_row)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(8)
         root.addLayout(self.rows)
@@ -68,6 +88,10 @@ class LivePanel(QWidget):
                     continue  # not in a Live folder
                 button.blockSignals(True)
                 button.setChecked(scene.id == active)
+                staged = scene.id in self.staged and scene.id != active
+                if button.property("staged") != staged:
+                    button.setProperty("staged", staged)
+                    button.setStyleSheet("QPushButton { border: 2px dashed #ffd23f; }" if staged else "")
                 button.blockSignals(False)
 
     def _rebuild(self, collection: SceneCollection) -> None:

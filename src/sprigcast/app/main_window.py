@@ -60,7 +60,7 @@ from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
-from sprigcast.app.hotkeys import SCENE_PREFIX, STATE_PREFIX, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app.hotkeys import SCENE_PREFIX, STATE_PREFIX, STUDIO_GO, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
 from sprigcast.app import safe_zones
 from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.live_panel import LivePanel
@@ -223,6 +223,11 @@ class MainWindow(QMainWindow):
 
         # Previews ------------------------------------------------------------
         self.previews: dict[str, Preview] = {}
+        # Studio mode (Live): a Next preview above each canvas shows the scene lined up to go on air.
+        self.next_previews: dict[str, Preview] = {}
+        self.canvas_columns: dict[str, QSplitter] = {}
+        self.studio = False
+        self.staged: dict[str, str] = {}  # canvas id -> scene id lined up next
         splitter = QSplitter(Qt.Orientation.Horizontal)
         for canvas in collection.canvases:
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
@@ -230,7 +235,16 @@ class MainWindow(QMainWindow):
             preview.edited.connect(self._on_preview_edited)
             preview.opened.connect(self._on_preview_opened)
             self.previews[canvas.id] = preview
-            splitter.addWidget(preview)
+            upcoming = Preview(f"next:{canvas.id}", f"Next · {canvas.id.capitalize()}", (canvas.width, canvas.height))
+            upcoming.editable = False
+            upcoming.empty_text = "Click a scene in Live to line it up here, then press Go"
+            upcoming.hide()
+            self.next_previews[canvas.id] = upcoming
+            column = QSplitter(Qt.Orientation.Vertical)
+            column.addWidget(upcoming)
+            column.addWidget(preview)
+            self.canvas_columns[canvas.id] = column
+            splitter.addWidget(column)
             splitter.setStretchFactor(splitter.count() - 1, 3 if canvas.width >= canvas.height else 1)
         # While a part is open in Build mode, the canvases make way for the part, edited in place.
         self.part_preview = Preview("part:", "Part", (16, 9))
@@ -362,6 +376,7 @@ class MainWindow(QMainWindow):
         self._restore_layout()
         self._apply_canvas_view()
         self._show_part_editor()
+        self.live_panel.studio.setChecked(QSettings().value("live/studio", False, type=bool))
 
     # Building the UI ------------------------------------------------------
 
@@ -842,14 +857,60 @@ class MainWindow(QMainWindow):
         self._open_settings("Stream", output_id=output_id or "new")
 
     def _build_live_dock(self) -> None:
-        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state)
+        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self.live_panel)
         self._dock("Live", scroll)
 
+    # Studio mode -----------------------------------------------------------------------
+
+    def _set_studio(self, on: bool) -> None:
+        """Studio mode: Live's scene buttons line scenes up in the Next previews; Go sends them on air."""
+        self.studio = on
+        QSettings().setValue("live/studio", on)
+        self.live_panel.go.setVisible(on)
+        if not on:
+            self._stage({})
+        self._apply_canvas_view()
+
+    def _stage(self, staged: dict[str, str]) -> None:
+        self.staged = staged
+        self.engine.staged = dict(staged)  # a fresh dict: the render thread reads it without a lock
+        self.live_panel.staged = set(staged.values())
+        self.live_panel.go.setEnabled(bool(staged))
+        for canvas_id, upcoming in self.next_previews.items():
+            scene_id = staged.get(canvas_id)
+            upcoming.subtitle = self.collection.scene(scene_id).name if scene_id else ""
+            if scene_id is None:
+                upcoming._image = None
+            upcoming.update()
+        self.live_panel.show_scenes(self.collection)
+
+    def _studio_go(self) -> None:
+        """Send everything lined up on air at once (each canvas fades with the transition)."""
+        if not self.staged:
+            self.statusBar().showMessage("Nothing lined up: click a scene in Live first.", 4000)
+            return
+        for canvas_id, scene_id in self.staged.items():
+            self.collection.active_scenes[canvas_id] = scene_id
+        self._stage({})
+        self._changed()
+        self._refresh_scenes()
+        self._refresh_previews()
+
     def _switch_to_scene(self, scene_id: str) -> None:
+        if self.studio and self.mode == "live":
+            # Line it up (and the scenes linked to it on the other canvases) instead of switching now.
+            staged = dict(self.staged)
+            for scene in self.collection.linked_with(scene_id):
+                if scene.id == self.collection.active_scenes.get(scene.canvas):
+                    staged.pop(scene.canvas, None)
+                else:
+                    staged[scene.canvas] = scene.id
+            self._stage(staged)
+            return
         self.selected_scene_id = scene_id
         self._make_active()
         self._refresh_sources()
@@ -927,8 +988,9 @@ class MainWindow(QMainWindow):
         """Build shows only the canvas of the current tab; Live shows every canvas side by side."""
         build = self.mode == "build"
         self.canvas_tabs_row.setVisible(build)
-        for canvas_id, preview in self.previews.items():
-            preview.setVisible(not build or canvas_id == self.build_canvas)
+        for canvas_id, column in self.canvas_columns.items():
+            column.setVisible(not build or canvas_id == self.build_canvas)
+            self.next_previews[canvas_id].setVisible(not build and self.studio)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
         canvas = self.collection.canvas(self.build_canvas)
@@ -1134,10 +1196,14 @@ class MainWindow(QMainWindow):
     # Engine link ------------------------------------------------------------
 
     def _poll_engine(self) -> None:
-        for canvas_id, mailbox in self.engine.frames.items():
+        for canvas_id, mailbox in list(self.engine.frames.items()):
             frame = mailbox.take()
-            if frame is not None and canvas_id in self.previews:
+            if frame is None:
+                continue
+            if canvas_id in self.previews:
                 self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height)
+            elif canvas_id.startswith("next:") and canvas_id[5:] in self.staged:
+                self.next_previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height)
         part_frame = self.engine.part_frames.take()
         if part_frame is not None and part_frame.canvas_id == self.part_preview.canvas_id:
             self.part_preview.set_frame(part_frame.data, part_frame.width, part_frame.height)
@@ -2567,7 +2633,9 @@ class MainWindow(QMainWindow):
         self._apply_hotkeys()
 
     def _on_hotkey(self, action: str) -> None:
-        if action == TOGGLE_STREAM:
+        if action == STUDIO_GO:
+            self._studio_go()
+        elif action == TOGGLE_STREAM:
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:
             self._toggle_recording()

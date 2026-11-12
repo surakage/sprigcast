@@ -180,3 +180,64 @@ def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_studio_mode_lines_up_then_goes(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("StudioTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    col.scenes.append(Scene(id="v2", name="BRB (vertical)", canvas="vertical", linked_to="h2"))
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._set_mode("live")
+        w.live_panel.studio.setChecked(True)
+        assert w.live_panel.go.isVisible() and w.next_previews["horizontal"].isVisible()
+        w.live_panel.buttons["h2"].click()  # lines up BRB and its linked vertical scene
+        assert col.active_scenes == {"horizontal": "h1", "vertical": "v1"}  # nothing on air changed yet
+        assert w.staged == {"horizontal": "h2", "vertical": "v2"} and w.engine.staged == w.staged
+        assert w.live_panel.buttons["h2"].property("staged")
+        w._on_hotkey("studio_go")
+        assert col.active_scenes == {"horizontal": "h2", "vertical": "v2"} and w.staged == {}
+        w.live_panel.studio.setChecked(False)
+        assert not w.next_previews["horizontal"].isVisible()
+        w.live_panel.buttons["h1"].click()  # studio off: switches straight away again
+        assert col.active_scenes["horizontal"] == "h1"
+        assert QSettings().value("live/studio", type=bool) is False
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_engine_renders_the_staged_scene_to_its_own_frame():
+    from sprigcast.render.engine import Engine
+
+    class Fake:
+        def __init__(self):
+            self.rendered = []
+
+        def render(self, canvas, scene, sizes, previous=None, progress=1.0):
+            self.rendered.append((canvas.id, scene.id))
+
+        def read(self, key):
+            return b"x"
+
+    col = _collection()
+    engine = Engine(col)
+    fake = Fake()
+    canvas = col.canvases[0]
+    engine._render_staged(fake, canvas, {}, 1.0)
+    assert fake.rendered == []  # nothing lined up
+    engine.staged = {"horizontal": "h1"}
+    engine._render_staged(fake, canvas, {}, 1.0)
+    assert fake.rendered == []  # already on air: no Next to show
+    engine.staged = {"horizontal": "h2"}
+    engine._render_staged(fake, canvas, {}, 1.0)
+    assert fake.rendered == [("next:horizontal", "h2")]
+    assert engine.frames["next:horizontal"].take().data == b"x"
