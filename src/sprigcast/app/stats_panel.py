@@ -43,6 +43,8 @@ class StatsPanel(QWidget):
         if engine_stats is not None:
             rows.append(_row("Render", f"{engine_stats.fps:.0f} fps, {engine_stats.render_ms:.1f} ms per tick"))
             rows.append(_row("Late render ticks", str(engine_stats.dropped_ticks), engine_stats.dropped_ticks > 0))
+            rows.append(_row("GPU → CPU copies", f"{getattr(engine_stats, 'readbacks', 0):.0f} per second "
+                             "(previews you can see + outputs)"))
         if self._process is not None:
             cpu = self._process.cpu_percent() / max(1, psutil.cpu_count() or 1)
             rows.append(_row("SprigCast CPU", f"{cpu:.0f}% of the whole PC"))

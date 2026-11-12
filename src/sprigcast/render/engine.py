@@ -27,6 +27,9 @@ from sprigcast.core.source import Source, create_source
 log = logging.getLogger(__name__)
 
 
+PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
+
+
 class Frame:
     """One finished canvas image: RGBA bytes, top row first."""
 
@@ -57,6 +60,12 @@ class Engine:
         # Studio mode: canvas id -> the scene lined up to go on air next. Rendered to "next:<canvas>".
         # The UI replaces the whole dict, so the render thread always sees a consistent one.
         self.staged: dict[str, str] = {}  # sprig id -> (start time, hidden before, hidden after)
+        # Which previews the UI is showing ("horizontal", "next:horizontal", "part"); None = all of them.
+        # A canvas nobody watches and nothing records is not drawn or copied back at all; a watched one
+        # is copied back at most PREVIEW_FPS times a second. The UI replaces the whole set.
+        self.previews: frozenset[str] | None = None
+        self._preview_at: dict[str, float] = {}
+        self.readbacks = 0  # canvases copied from the GPU, for Stats
 
     # Called from the UI thread ----------------------------------------------
 
@@ -103,6 +112,7 @@ class Engine:
         next_tick = time.perf_counter()
         render_times: deque[float] = deque(maxlen=fps)
         ticks, dropped, stats_at = 0, 0, time.perf_counter()
+        readbacks_at = 0
 
         try:
             while True:
@@ -120,13 +130,14 @@ class Engine:
                     dropped += 1
                     next_tick = now
                 else:
-                    time.sleep(max(0.0, next_tick - now - 0.001))
-                    while time.perf_counter() < next_tick:  # spin the last millisecond for accurate pacing
-                        pass
+                    # Python 3.11+ sleeps with a high-resolution timer on Windows: no need to spin.
+                    time.sleep(next_tick - now)
 
                 if now - stats_at >= 1.0:
                     avg_ms = 1000 * sum(render_times) / max(1, len(render_times))
-                    self.events.put(Stats(fps=ticks / (now - stats_at), render_ms=avg_ms, dropped_ticks=dropped))
+                    self.events.put(Stats(fps=ticks / (now - stats_at), render_ms=avg_ms, dropped_ticks=dropped,
+                                           readbacks=(self.readbacks - readbacks_at) / (now - stats_at)))
+                    readbacks_at = self.readbacks
                     self.events.put(
                         SourceInfo(
                             sizes={sid: src.size for sid, src in self._sources.items()},
@@ -313,7 +324,8 @@ class Engine:
             else:
                 view, fades = self._state_view(collection, part)
             textures[part.id] = compositor.render_part(part.id, size, view, sizes, fades)
-            if part.id == self.editing_part:
+            if part.id == self.editing_part and self._preview_due("part", now):
+                self.readbacks += 1
                 data = compositor.read(f"part:{part.id}")
                 self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, now))
             # Placements of this layout with their own tweaks (hidden items) get their own copy.
@@ -330,6 +342,8 @@ class Engine:
         scene_id = self.staged.get(canvas.id)
         if scene_id is None or scene_id == self._collection.active_scenes.get(canvas.id):
             return
+        if not self._preview_due(f"next:{canvas.id}", now):
+            return
         scene = next((s for s in self._collection.scenes if s.id == scene_id), None)
         if scene is None:
             return
@@ -337,6 +351,17 @@ class Engine:
         compositor.render(target, scene, sizes)
         mailbox = self.frames.setdefault(target.id, Mailbox())
         mailbox.put(Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now))
+        self.readbacks += 1
+
+    def _preview_due(self, key: str, now: float) -> bool:
+        """True when the UI shows this preview and its last copy is at least 1/PREVIEW_FPS old."""
+        wanted = self.previews
+        if wanted is not None and key not in wanted:
+            return False
+        if now - self._preview_at.get(key, -1.0) < 1.0 / PREVIEW_FPS - 0.002:
+            return False
+        self._preview_at[key] = now
+        return True
 
     def _part_sources(self, textures: dict) -> dict:
         """(placement source id, canvas id) -> texture of the part's layout for that canvas."""
@@ -378,12 +403,18 @@ class Engine:
                     del self._transitions[canvas.id]
                 else:
                     previous, progress = outgoing, max(0.0, progress)
+            outputs = taps.get(canvas.id, ())
+            preview = self._preview_due(canvas.id, now)
+            self._render_staged(compositor, canvas, sizes, now)
+            if not outputs and not preview:
+                continue  # nobody is watching or recording this canvas right now
             compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, previous, progress)
             data = compositor.read(canvas.id)
+            self.readbacks += 1
             frame = Frame(canvas.id, canvas.width, canvas.height, data, now)
-            self.frames[canvas.id].put(frame)
-            self._render_staged(compositor, canvas, sizes, now)
-            for callback in taps.get(canvas.id, ()):
+            if preview:
+                self.frames[canvas.id].put(frame)
+            for callback in outputs:
                 try:
                     callback(frame)
                 except Exception:
