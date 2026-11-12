@@ -24,7 +24,8 @@ def _record(path: Path, container: str, seconds: float = 1.0, fps: int = 30) -> 
         rec.push_frame(Frame("horizontal", w, h, rgba.tobytes(), start + i / fps))
         if i % 2 == 0:  # roughly real-time audio: 30 blocks of 1024 per second ≈ 0.64 s here, fine
             rec.push_audio(np.full((1024, 2), 0.1, dtype=np.float32))
-        time.sleep(0.001)
+        while rec._video.qsize() > VIDEO_QUEUE // 2:  # faster than real time: let the encoder keep up
+            time.sleep(0.001)
     rec.stop()
     return rec
 
