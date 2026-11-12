@@ -421,3 +421,30 @@ def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_sprigs_of_blooms_not_on_air_are_not_rendered():
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    col.scenes.append(Scene(id="brb", name="BRB", canvas="h"))
+    col.scenes.append(Scene(id="brb-v", name="BRB (v)", canvas="v"))
+    col.active_scenes = {"h": "brb", "v": "brb-v"}
+    engine = Engine(col)
+
+    class Fake:
+        parts: dict = {}
+
+        def __init__(self):
+            self.rendered = []
+
+        def render_part(self, part_id, *a, **k):
+            self.rendered.append(part_id)
+            return object()
+
+    fake = Fake()
+    engine._render_parts(fake, {}, 1.0)
+    assert fake.rendered == []  # nothing on air uses a sprig
+    engine.staged = {"h": "show-h"}  # Studio mode lines up a bloom that does
+    engine._render_parts(fake, {}, 1.0)
+    assert fake.rendered == ["p-badge", "p-cam"]
