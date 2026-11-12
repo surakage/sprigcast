@@ -37,8 +37,11 @@ class C:
 CANVASES = [C("horizontal", 64, 36), C("vertical", 36, 64)]
 
 
-def _feed(engine, start, frames, first=0):
+def _feed(engine, start, frames, first=0, pool=None):
     for i in range(first, first + frames):
+        # Faster than real time, so let the encoders keep up: these tests are about what lands in files.
+        while pool is not None and any(enc._video.qsize() > 5 for enc in list(pool.encoders.values())):
+            time.sleep(0.002)
         for c in CANVASES:
             for cb in engine.taps.get(c.id, []):
                 cb(Frame(c.id, c.width, c.height, bytes(c.width * c.height * 4), start + 0.01 + i / 30))
@@ -58,13 +61,13 @@ def test_recording_and_replay_share_one_encoder_per_canvas(tmp_path):
     pool = EncoderPool(engine)
     t = time.perf_counter()
     replay = SharedReplay.start(pool, CANVASES, tmp_path, 10, 800, codec="libx264")
-    _feed(engine, t, 30)
+    _feed(engine, t, 30, pool=pool)
     rec = SharedRecording.start(pool, CANVASES, tmp_path, 800, codec="libx264")
     # Still one encoder (and one tap) per canvas
     assert len(pool.encoders) == 2 and all(len(engine.taps[c.id]) == 1 for c in CANVASES) and len(engine.audio) == 2
-    _feed(engine, t, 45, first=30)
+    _feed(engine, t, 45, first=30, pool=pool)
     # The replay buffer keeps the encoder running, so frames keep coming while the file finishes
-    feeder = threading.Thread(target=_feed, args=(engine, t, 60, 75))
+    feeder = threading.Thread(target=_feed, args=(engine, t, 60, 75, pool))
     feeder.start()
     rec.stop()
     feeder.join()
@@ -83,11 +86,11 @@ def test_recording_alone_then_again(tmp_path):
     pool = EncoderPool(engine)
     t = time.perf_counter()
     rec = SharedRecording.start(pool, CANVASES, tmp_path / "a", 800, codec="libx264")
-    _feed(engine, t, 20)
+    _feed(engine, t, 20, pool=pool)
     rec.stop()
     assert pool.encoders == {}
     assert all(_frames(p) == 20 for p in rec.paths)
     rec2 = SharedRecording.start(pool, CANVASES[:1], tmp_path / "b", 800, codec="libx264")
-    _feed(engine, time.perf_counter(), 10)
+    _feed(engine, time.perf_counter(), 10, pool=pool)
     rec2.stop()
     assert rec2.errors == [] and _frames(rec2.paths[0]) == 10

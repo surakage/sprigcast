@@ -88,3 +88,24 @@ def test_gpu_frames_record_with_the_right_colours(compositor, tmp_path):
     with av.open(str(tmp_path / "gpu.mkv")) as f:
         pixel = next(f.decode(video=0)).to_ndarray(format="rgb24")[32, 32]
     assert np.allclose(pixel, (232, 164, 184), atol=4)
+
+
+def test_scaled_preview_matches_the_canvas_shrunk(compositor):
+    canvas = _picture(compositor, 128, 72)
+    full = np.frombuffer(compositor.read("c"), np.uint8).reshape(72, 128, 4).astype(float)
+    small = np.frombuffer(compositor.read_scaled("c", (32, 18)), np.uint8).reshape(18, 32, 4).astype(float)
+    box = full.reshape(18, 4, 32, 4, 4).mean(axis=(1, 3))  # the same picture averaged 4x4
+    # Same orientation and colours (top-left red, bottom-right light blue); the noisy quarter averages out
+    assert abs(small[2, 2] - (255, 40, 40, 255)).max() < 2 and abs(small[15, 29] - (40, 200, 255, 255)).max() < 2
+    assert np.abs(small - box).mean() < 25
+    assert canvas.width == 128
+
+
+def test_engine_picks_preview_sizes():
+    from sprigcast.render.engine import Engine
+
+    eng = Engine.__new__(Engine)
+    eng.preview_sizes = {"horizontal": (600, 338), "vertical": (1080, 1920)}
+    assert eng._preview_size("horizontal", (1920, 1080)) == (720, 405)  # rounded up in 1/16 steps
+    assert eng._preview_size("vertical", (1080, 1920)) is None  # shown at full size: no shrinking
+    assert eng._preview_size("next:horizontal", (1920, 1080)) is None  # size unknown

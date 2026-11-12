@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import threading
 import time
@@ -33,12 +34,14 @@ PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more 
 class Frame:
     """One finished canvas image, top row first: RGBA bytes, or NV12 (Y plane then CbCr) at an output's size."""
 
-    __slots__ = ("canvas_id", "width", "height", "data", "time", "fmt")
+    __slots__ = ("canvas_id", "width", "height", "data", "time", "fmt", "canvas_size")
 
-    def __init__(self, canvas_id: str, width: int, height: int, data: bytes, time: float = 0.0, fmt: str = "rgba"):
+    def __init__(self, canvas_id: str, width: int, height: int, data: bytes, time: float = 0.0, fmt: str = "rgba",
+                 canvas_size: tuple[int, int] | None = None):
         self.canvas_id, self.width, self.height, self.data = canvas_id, width, height, data
         self.time = time  # perf_counter() at the start of the tick that drew it
         self.fmt = fmt
+        self.canvas_size = canvas_size or (width, height)  # the canvas it shows (a preview may be smaller)
 
 
 class Engine:
@@ -65,6 +68,9 @@ class Engine:
         # A canvas nobody watches and nothing records is not drawn or copied back at all; a watched one
         # is copied back at most PREVIEW_FPS times a second. The UI replaces the whole set.
         self.previews: frozenset[str] | None = None
+        # How big each preview is on screen, in physical pixels: previews are shrunk on the GPU to that,
+        # so a 1080p canvas shown at 600x340 copies 0.8 MB per frame instead of 8 MB.
+        self.preview_sizes: dict[str, tuple[int, int]] = {}
         self._preview_at: dict[str, float] = {}
         self.readbacks = 0  # canvases copied from the GPU, for Stats
 
@@ -371,8 +377,7 @@ class Engine:
         target = canvas.model_copy(update={"id": f"next:{canvas.id}"})
         compositor.render(target, scene, sizes)
         mailbox = self.frames.setdefault(target.id, Mailbox())
-        mailbox.put(Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now))
-        self.readbacks += 1
+        mailbox.put(self._preview_frame(compositor, target.id, (canvas.width, canvas.height), now))
 
     def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame:
         frame = made.get(nv12_size)
@@ -385,6 +390,25 @@ class Engine:
                 frame = Frame(canvas.id, nv12_size[0], nv12_size[1], data, now, "nv12")
             made[nv12_size] = frame
         return frame
+
+    def _preview_size(self, key: str, canvas_size: tuple[int, int]) -> tuple[int, int] | None:
+        """The size to copy a preview at, or None for full size (shown big, or size unknown)."""
+        want = self.preview_sizes.get(key)
+        if not want:
+            return None
+        cw, ch = canvas_size
+        scale = max(want[0] / cw, want[1] / ch)
+        if scale >= 0.85:
+            return None
+        scale = math.ceil(scale * 16) / 16  # steps of 1/16, so resizing the window doesn't churn GPU targets
+        return max(16, round(cw * scale)), max(16, round(ch * scale))
+
+    def _preview_frame(self, compositor, target_id: str, canvas_size: tuple[int, int], now: float) -> Frame:
+        self.readbacks += 1
+        size = self._preview_size(target_id, canvas_size)
+        if size is None:
+            return Frame(target_id, *canvas_size, compositor.read(target_id), now)
+        return Frame(target_id, size[0], size[1], compositor.read_scaled(target_id, size), now, canvas_size=canvas_size)
 
     def _preview_due(self, key: str, now: float) -> bool:
         """True when the UI shows this preview and its last copy is at least 1/PREVIEW_FPS old."""
@@ -444,7 +468,11 @@ class Engine:
             compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, previous, progress)
             frames: dict = {}  # nv12 size (None = RGBA) -> Frame, so outputs of one size share one readback
             if preview:
-                self.frames[canvas.id].put(self._frame(compositor, canvas, None, now, frames))
+                size = self._preview_size(canvas.id, (canvas.width, canvas.height))
+                if size is None:  # full size: shares the RGBA copy with any output that wants one
+                    self.frames[canvas.id].put(self._frame(compositor, canvas, None, now, frames))
+                else:
+                    self.frames[canvas.id].put(self._preview_frame(compositor, canvas.id, (canvas.width, canvas.height), now))
             for callback, nv12_size in outputs:
                 frame = self._frame(compositor, canvas, nv12_size, now, frames)
                 try:
