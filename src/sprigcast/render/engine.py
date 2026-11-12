@@ -299,12 +299,28 @@ class Engine:
             if key[5:] not in alive:
                 compositor.forget_part(key[5:])
 
+    def _drawn_scenes(self, collection: SceneCollection) -> list:
+        drawn = []
+        for canvas in collection.canvases:
+            if not canvas.enabled:
+                continue
+            for scene_id in (collection.active_scenes.get(canvas.id), self.staged.get(canvas.id)):
+                scene = next((s for s in collection.scenes if s.id == scene_id), None)
+                if scene is not None and scene not in drawn:
+                    drawn.append(scene)
+            transition = self._transitions.get(canvas.id)
+            if transition is not None and transition[0] is not None and transition[0] not in drawn:
+                drawn.append(transition[0])
+        return drawn
+
     def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
         """Render every part layout in use once (inner ones first), then point each placement at its texture."""
         collection = self._collection
-        # Only layouts that something on screen (or the Part editor) shows, however deep.
+        # Only layouts that something drawn this tick shows, however deep: what is on air, the scene a
+        # transition fades out of, what Studio mode has lined up, and the Part editor. The other blooms'
+        # sprigs cost nothing until they are switched to.
         used: set[str] = set()
-        stack = [s for s in collection.scenes if s.kind == "show"]
+        stack = self._drawn_scenes(collection)
         if self.editing_part:
             stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
             used.add(self.editing_part)
