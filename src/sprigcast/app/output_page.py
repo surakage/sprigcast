@@ -163,6 +163,16 @@ class OutputPage(QWidget):
         self.record_form = EncoderForm("Encoder settings", collection.recording.encoder, encoder_name)
         self.record_form.setEnabled(not recording)
         box.addWidget(self.record_form)
+        replay_group = QGroupBox("Replay buffer")
+        replay_form = QFormLayout(replay_group)
+        self.replay_seconds = QSpinBox()
+        self.replay_seconds.setRange(5, 300)
+        self.replay_seconds.setSuffix(" s")
+        self.replay_seconds.setValue(collection.recording.replay_seconds)
+        self.replay_seconds.setToolTip("How much Save replay keeps. Longer uses more memory (about 1 MB per second "
+                                       "per canvas at 8 Mbps).")
+        replay_form.addRow("Keep the last", self.replay_seconds)
+        box.addWidget(replay_group)
         box.addStretch(1)
         self.tabs.addTab(record_tab, "Recording")
         self.streaming, self.recording = streaming, recording
@@ -175,6 +185,7 @@ class OutputPage(QWidget):
             collection.stream_encoder = self.stream_form.values()
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
+        collection.recording.replay_seconds = self.replay_seconds.value()
 
 
 def enhanced_in_use(collection: SceneCollection) -> bool:

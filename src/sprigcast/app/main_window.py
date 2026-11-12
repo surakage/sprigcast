@@ -60,7 +60,15 @@ from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
-from sprigcast.app.hotkeys import SCENE_PREFIX, STATE_PREFIX, STUDIO_GO, TOGGLE_RECORD, TOGGLE_STREAM, Hotkeys
+from sprigcast.app.hotkeys import (
+    SAVE_REPLAY,
+    SCENE_PREFIX,
+    STATE_PREFIX,
+    STUDIO_GO,
+    TOGGLE_RECORD,
+    TOGGLE_STREAM,
+    Hotkeys,
+)
 from sprigcast.app import safe_zones
 from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.live_panel import LivePanel
@@ -93,6 +101,7 @@ from sprigcast.core.scene import (
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key
 from sprigcast.output.recorder import RecordingSession, codec_label, pick_codec
+from sprigcast.output.replay import ReplaySession
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
 from sprigcast.sources.audio import list_audio_devices
@@ -208,6 +217,7 @@ class MainWindow(QMainWindow):
         self.source_sizes: dict[str, tuple[int, int]] = {}
         self.source_statuses: dict[str, str] = {}
         self.recording: RecordingSession | None = None
+        self.replay: ReplaySession | None = None
         self.streaming: StreamSession | None = None
         self._stream_status_at = 0.0
         # Build mode edits one canvas at a time, picked with the Horizontal / Vertical tabs.
@@ -807,6 +817,19 @@ class MainWindow(QMainWindow):
         self.record_button.setMinimumHeight(34)
         self.record_button.clicked.connect(self._on_record_clicked)
         layout.addWidget(self.record_button)
+        replay_row = QHBoxLayout()
+        replay_row.setSpacing(4)
+        self.replay_button = QPushButton("Replay buffer")
+        self.replay_button.setCheckable(True)
+        self.replay_button.setToolTip("Keep the last seconds of every recorded canvas in memory, ready to save as a clip")
+        self.replay_button.toggled.connect(self._toggle_replay)
+        self.save_replay_button = QPushButton("Save replay")
+        self.save_replay_button.setToolTip("Save the last seconds as clips in your recordings folder (one per canvas)")
+        self.save_replay_button.setEnabled(False)
+        self.save_replay_button.clicked.connect(self._save_replay)
+        replay_row.addWidget(self.replay_button, 1)
+        replay_row.addWidget(self.save_replay_button, 1)
+        layout.addLayout(replay_row)
 
         self.settings_button = _button("Settings", lambda: self._open_settings())
         layout.addWidget(self.settings_button)
@@ -1250,6 +1273,9 @@ class MainWindow(QMainWindow):
             self._stop_streaming()
         if self.recording is not None:
             self._stop_recording()
+        if self.replay is not None:
+            self.replay.stop()
+            self.replay = None
         self.timer.stop()
         self.engine.stop()
         super().closeEvent(event)
@@ -2371,6 +2397,45 @@ class MainWindow(QMainWindow):
             box.setEnabled(False)
         self._refresh_recording_status()
 
+    # Replay buffer ---------------------------------------------------------------------
+
+    def _toggle_replay(self, on: bool) -> None:
+        if on and self.replay is None:
+            settings = self.collection.recording
+            canvases = [c for c in self.collection.canvases if c.enabled and c.id in settings.canvases]
+            if not canvases:
+                QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
+                self.replay_button.setChecked(False)
+                return
+            try:
+                self.replay = ReplaySession.start(
+                    self.engine, canvases, self._recordings_folder(), settings.replay_seconds,
+                    settings.bitrate_kbps, settings.container, encoder=settings.encoder,
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, "SprigCast", f"Could not start the replay buffer:\n{exc}")
+                self.replay_button.setChecked(False)
+                return
+            self.replay_button.setStyleSheet(ON_AIR_STYLE)
+            self.statusBar().showMessage(f"Replay buffer on: keeping the last {settings.replay_seconds} s.", 4000)
+        elif not on and self.replay is not None:
+            self.replay.stop()
+            self.replay = None
+            self.replay_button.setStyleSheet("")
+        self.save_replay_button.setEnabled(self.replay is not None)
+
+    def _save_replay(self) -> None:
+        if self.replay is None:
+            self.statusBar().showMessage("Turn on the replay buffer first (Controls → Replay buffer).", 4000)
+            return
+        try:
+            paths = self.replay.save()
+        except Exception as exc:
+            self.statusBar().showMessage(f"Couldn't save the replay: {exc}", 6000)
+            return
+        names = ", ".join(p.name for p in paths)
+        self.statusBar().showMessage(f"Saved replay: {names}", 8000)
+
     def _stop_recording(self) -> None:
         session, self.recording = self.recording, None
         if session is None:
@@ -2635,6 +2700,8 @@ class MainWindow(QMainWindow):
     def _on_hotkey(self, action: str) -> None:
         if action == STUDIO_GO:
             self._studio_go()
+        elif action == SAVE_REPLAY:
+            self._save_replay()
         elif action == TOGGLE_STREAM:
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:

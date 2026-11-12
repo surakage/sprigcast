@@ -192,6 +192,7 @@ class RecordingSettings(BaseModel):
     canvases: list[str] = Field(default_factory=lambda: ["horizontal", "vertical"])  # which canvases to record
     bitrate_kbps: int = 12000
     container: Literal["mkv", "mp4"] = "mkv"
+    replay_seconds: int = 30  # replay buffer length; saved clips land in the recordings folder
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192))
 
 

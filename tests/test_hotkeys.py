@@ -33,7 +33,7 @@ def test_actions_list_every_scene_and_the_toggles():
         scenes=[Scene(id="a", name="Live", canvas="horizontal"), Scene(id="b", name="Live V", canvas="vertical")],
     )
     ids = [a for a, _ in actions(col)]
-    assert ids == ["toggle_stream", "toggle_record", "studio_go", "scene:a", "scene:b"]
+    assert ids == ["toggle_stream", "toggle_record", "studio_go", "save_replay", "scene:a", "scene:b"]
 
 
 def test_falls_back_to_window_shortcuts_without_a_global_hook(monkeypatch):
