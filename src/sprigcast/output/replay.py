@@ -65,14 +65,21 @@ class ReplayBuffer(Recorder):
 
     def save(self, path: Path, timeout: float = 20.0) -> Path:
         """Write the buffered seconds to `path`. Blocks until written; raises if it couldn't be."""
+        self._ask(lambda: self._write_clip(path), timeout)
+        return path
+
+    def _ask(self, job, timeout: float = 20.0):
+        """Run job() on the encoder thread, between frames, and wait for it. Raises what it raised."""
         done: dict = {}
         finished = threading.Event()
-        self._requests.put((path, done, finished))
+        if not self.running:
+            raise RuntimeError(self.error or "the encoder has stopped")
+        self._requests.put((job, done, finished))
         if not finished.wait(timeout):
-            raise TimeoutError("the replay buffer did not answer in time")
+            raise TimeoutError("the encoder did not answer in time")
         if "error" in done:
             raise RuntimeError(done["error"])
-        return path
+        return done.get("result")
 
     @property
     def buffered_seconds(self) -> float:
@@ -99,10 +106,15 @@ class ReplayBuffer(Recorder):
         video, audio = self._templates
         for packet in packets:
             kind = "video" if packet.stream is video else "audio"
-            self._packets.append(_Packet(kind, bytes(packet), packet.pts, packet.dts,
-                                         packet.time_base or packet.stream.time_base, bool(packet.is_keyframe)))
+            p = _Packet(kind, bytes(packet), packet.pts, packet.dts,
+                        packet.time_base or packet.stream.time_base, bool(packet.is_keyframe))
+            self._packets.append(p)
             self.bytes_out += packet.size
+            self._on_packet(p)
         self._trim()
+
+    def _on_packet(self, p: _Packet) -> None:
+        """Hook: each packet as it comes out of the encoder (output/shared.py also writes it to a file)."""
 
     def _trim(self) -> None:
         """Keep the last `seconds`, starting at a video keyframe so the clip plays from its first frame.
@@ -126,40 +138,59 @@ class ReplayBuffer(Recorder):
         super()._write_audio(container, stream)
         while True:  # saving happens here, on the encoder thread, between frames
             try:
-                path, done, finished = self._requests.get_nowait()
+                job, done, finished = self._requests.get_nowait()
             except queue.Empty:
                 return
             try:
-                self._write_clip(path)
+                done["result"] = job()
             except Exception as exc:
-                log.exception("saving replay %s failed", path)
+                log.exception("%s: request failed", self.canvas_id)
                 done["error"] = str(exc) or exc.__class__.__name__
             finished.set()
 
     def _write_clip(self, path: Path) -> None:
-        import av
-
         packets = list(self._packets)
         start = next((p for p in packets if p.kind == "video" and p.keyframe), None)
         if start is None or self._templates is None:
             raise RuntimeError("nothing buffered yet")
         packets = packets[packets.index(start):]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        video_t, audio_t = self._templates
-        with av.open(str(path), "w", format=CONTAINERS[self.container_kind]) as out:
-            streams = {"video": out.add_stream_from_template(video_t), "audio": out.add_stream_from_template(audio_t)}
-            zero = start.seconds
+        out = PacketFile(path, self.container_kind, self._templates, start.seconds)
+        try:
             for p in packets:
-                offset = round(zero / p.time_base)
-                if p.pts is not None and p.pts < offset:
-                    continue  # audio from just before the first keyframe
-                packet = av.Packet(p.data)
-                packet.pts = None if p.pts is None else p.pts - offset
-                packet.dts = None if p.dts is None else p.dts - offset
-                packet.time_base = p.time_base
-                packet.is_keyframe = p.keyframe
-                packet.stream = streams[p.kind]
-                out.mux(packet)
+                out.write(p)
+        finally:
+            out.close()
+
+
+class PacketFile:
+    """A video file written from already-encoded packets, with time 0 at `zero` seconds."""
+
+    def __init__(self, path: Path, container: str, templates, zero: float):
+        import av
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path, self.zero = path, zero
+        self._out = av.open(str(path), "w", format=CONTAINERS[container])
+        video_t, audio_t = templates
+        self._streams = {"video": self._out.add_stream_from_template(video_t),
+                         "audio": self._out.add_stream_from_template(audio_t)}
+
+    def write(self, p: _Packet) -> None:
+        import av
+
+        offset = round(self.zero / p.time_base)
+        if p.pts is not None and p.pts < offset:
+            return  # audio from just before the first keyframe
+        packet = av.Packet(p.data)
+        packet.pts = None if p.pts is None else p.pts - offset
+        packet.dts = None if p.dts is None else p.dts - offset
+        packet.time_base = p.time_base
+        packet.is_keyframe = p.keyframe
+        packet.stream = self._streams[p.kind]
+        self._out.mux(packet)
+
+    def close(self) -> None:
+        self._out.close()
 
 
 class ReplaySession:

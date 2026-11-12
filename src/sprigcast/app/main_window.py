@@ -104,8 +104,8 @@ from sprigcast.core.scene import (
 )
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key
-from sprigcast.output.recorder import RecordingSession, codec_label, pick_codec
-from sprigcast.output.replay import ReplaySession
+from sprigcast.output.recorder import codec_label, pick_codec
+from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
 from sprigcast.sources.audio import list_audio_devices
@@ -220,8 +220,8 @@ class MainWindow(QMainWindow):
         self._updating = False  # True while we fill widgets, so their signals do not echo back
         self.source_sizes: dict[str, tuple[int, int]] = {}
         self.source_statuses: dict[str, str] = {}
-        self.recording: RecordingSession | None = None
-        self.replay: ReplaySession | None = None
+        self.recording: SharedRecording | None = None
+        self.replay: SharedReplay | None = None
         self.streaming: StreamSession | None = None
         self._stream_status_at = 0.0
         # Build mode edits one canvas at a time, picked with the Horizontal / Vertical tabs.
@@ -385,6 +385,7 @@ class MainWindow(QMainWindow):
         # Engine --------------------------------------------------------------
         self.engine = Engine(collection)
         self.engine.start()
+        self.encoders = EncoderPool(self.engine)  # one encoder per canvas, shared by recording and replay
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_engine)
         self.timer.start(33)  # about 30 preview updates per second
@@ -2452,8 +2453,8 @@ class MainWindow(QMainWindow):
         self.record_button.setEnabled(False)
         self.record_status.setText("Starting…")
         try:
-            self.recording = RecordingSession.start(
-                self.engine, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
+            self.recording = SharedRecording.start(
+                self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
                 encoder=settings.encoder,
             )
         except Exception as exc:
@@ -2480,8 +2481,8 @@ class MainWindow(QMainWindow):
                 self.replay_button.setChecked(False)
                 return
             try:
-                self.replay = ReplaySession.start(
-                    self.engine, canvases, self._recordings_folder(), settings.replay_seconds,
+                self.replay = SharedReplay.start(
+                    self.encoders, canvases, self._recordings_folder(), settings.replay_seconds,
                     settings.bitrate_kbps, settings.container, encoder=settings.encoder,
                 )
             except Exception as exc:

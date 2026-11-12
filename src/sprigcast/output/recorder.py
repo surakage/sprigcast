@@ -198,6 +198,7 @@ class Recorder:
         self._last_pts = -1
         self._last_queued = -1
         self._samples = 0
+        self._force_key = False  # make the next video frame a keyframe (set on the encoder thread)
         self._thread = threading.Thread(target=self._run, name=f"sprigcast-{path.stem}", daemon=True)
 
     # Called from other threads ---------------------------------------------------
@@ -400,7 +401,7 @@ class Recorder:
         if getattr(frame, "fmt", "rgba") == "nv12" and (frame.width, frame.height) == (self.out_width, self.out_height):
             vf = self._nv12_frame(frame)  # already converted and scaled on the GPU: nothing to do here
             vf.pts = pts
-            self._mux(container, stream.encode(vf))
+            self._mux(container, self._encode_video(stream, vf))
             self.frames += 1
             self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
             return
@@ -420,10 +421,18 @@ class Recorder:
             dst_color_range=ColorRange.MPEG,
         )
         vf.pts = pts
-        self._mux(container, stream.encode(vf))
+        self._mux(container, self._encode_video(stream, vf))
         self.frames += 1
         # Time spent converting and encoding this frame, not counting waiting on the file or network.
         self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
+
+    def _encode_video(self, stream, vf):
+        if self._force_key:
+            from av.video.frame import PictureType
+
+            vf.pict_type = PictureType.I
+            self._force_key = False
+        return stream.encode(vf)
 
     def _write_audio(self, container, stream) -> None:
         import av
