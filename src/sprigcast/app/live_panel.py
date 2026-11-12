@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
-    QGridLayout,
+    QLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -21,7 +23,76 @@ from PySide6.QtWidgets import (
 from sprigcast.app.terms import PART_MARK, PARTS, cap
 from sprigcast.core.scene import SceneCollection
 
-COLUMNS = 4
+BUTTON_HEIGHT = 30
+BUTTON_WIDTH = (96, 190)  # each button fits its name between these, then wraps onto the next line
+
+
+class FlowLayout(QLayout):
+    """Lays widgets out left to right and wraps to a new line when the row is full, like words."""
+
+    def __init__(self, parent: QWidget | None = None, spacing: int = 6):
+        super().__init__(parent)
+        self._items: list = []
+        self._spacing = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item) -> None:  # noqa: N802
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, i):  # noqa: N802
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):  # noqa: N802
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):  # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._place(QRect(0, 0, width, 0), move=False)
+
+    def setGeometry(self, rect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._place(rect, move=True)
+
+    def sizeHint(self):  # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self):  # noqa: N802
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def _place(self, rect, move: bool) -> int:
+        x, y, line = rect.x(), rect.y(), 0
+        for item in self._items:
+            hint = item.sizeHint()
+            if x + hint.width() > rect.right() + 1 and line > 0:
+                x, y, line = rect.x(), y + line + self._spacing, 0
+            if move:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._spacing
+            line = max(line, hint.height())
+        return y + line - rect.y()
+
+
+def _compact(button: QPushButton, text: str) -> QPushButton:
+    """A small button sized to its name (long names are shortened, the full name is in the tooltip)."""
+    metrics = QFontMetrics(button.font())
+    shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, BUTTON_WIDTH[1] - 24)
+    button.setText(shown)
+    if shown != text:
+        button.setToolTip(text + ("\n" + button.toolTip() if button.toolTip() else ""))
+    width = min(BUTTON_WIDTH[1], max(BUTTON_WIDTH[0], metrics.horizontalAdvance(shown) + 28))
+    button.setFixedSize(width, BUTTON_HEIGHT)
+    return button
 
 
 class LivePanel(QWidget):
@@ -132,36 +203,34 @@ class LivePanel(QWidget):
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
             name = QLabel(f"{PART_MARK} {part.name}")
-            name.setMinimumWidth(110)
-            row.addWidget(name)
+            name.setFixedWidth(110)
+            row.addWidget(name, 0, Qt.AlignmentFlag.AlignTop)
+            flow_box = QWidget()
+            flow = FlowLayout(flow_box)
             for state in [None, *(s.name for s in part.states)]:
-                button = QPushButton("As built" if state is None else state)
+                button = QPushButton()
                 button.setCheckable(True)
-                button.setMinimumHeight(36)
                 button.setToolTip("Switches with a quick fade, on every bloom that uses it")
+                _compact(button, "As built" if state is None else state)
                 button.clicked.connect(lambda _=False, pid=part.id, st=state: self.on_state(pid, st))
                 self.state_buttons[(part.id, state)] = button
-                row.addWidget(button, 1)
+                flow.addWidget(button)
+            row.addWidget(flow_box, 1)
             self.rows.addWidget(row_box)
 
     def _add_grid(self, scenes) -> None:
-        grid_box = QWidget()
-        grid = QGridLayout(grid_box)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(6)
-        for i, scene in enumerate(scenes):
-            button = QPushButton(scene.name + ("  ⇄" if scene.linked_to else ""))
+        flow_box = QWidget()
+        flow = FlowLayout(flow_box)
+        for scene in scenes:
+            button = QPushButton()
             if scene.linked_to:
                 button.setToolTip("Linked: switches together with its partner on the other canvas")
             button.setCheckable(True)
-            button.setMinimumHeight(52)
-            font = button.font()
-            font.setPointSizeF(font.pointSizeF() * 1.15)
-            button.setFont(font)
+            _compact(button, scene.name + ("  ⇄" if scene.linked_to else ""))
             button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
             self.buttons[scene.id] = button
-            grid.addWidget(button, i // COLUMNS, i % COLUMNS)
-        self.rows.addWidget(grid_box)
+            flow.addWidget(button)
+        self.rows.addWidget(flow_box)
 
     def set_clock(self, text: str, live: bool) -> None:
         self.clock.setText(text)
