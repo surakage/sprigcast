@@ -16,7 +16,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from sprigcast.app.destinations import problem
 from sprigcast.core.scene import SceneCollection
@@ -36,6 +48,18 @@ class Finding:
     level: str  # "bad" | "warning" | "info" | "good"
     area: str  # "Keys", "Upload", "Encoder", "GPU", "Audio", "Sources", "Disk"
     text: str  # one sentence: what is wrong and what to do
+
+    @property
+    def title(self) -> str:
+        """What's wrong, short: the part before the first colon."""
+        head, _, _ = self.text.partition(": ")
+        return head
+
+    @property
+    def fix(self) -> str:
+        """What to do about it: the part after the first colon, capitalised (empty if none)."""
+        _, _, tail = self.text.partition(": ")
+        return tail[:1].upper() + tail[1:]
 
 
 @dataclass
@@ -105,17 +129,24 @@ def examine(c: Checkup) -> list[Finding]:
         found.append(Finding("warning", "Disk", f"Only {c.free_gb:.1f} GB free for recordings: "
                                                 "clear some space or pick another folder in Settings → Output."))
     if not any(f.level in ("bad", "warning") for f in found):
-        found.insert(0, Finding("good", "All", "Everything checks out."))
+        found.insert(0, Finding("good", "All", "Everything checks out: keys, upload, GPU, audio and sources look good."))
     return sorted(found, key=lambda f: LEVELS[f.level])
 
 
 def headline(findings: list[Finding]) -> str:
-    """The one sentence to read: the worst problem, or the all-clear."""
-    worst = findings[0] if findings else None
-    if worst is None or worst.level in ("good", "info"):
-        return "You're ready to go live."
-    more = sum(1 for f in findings if f.level in ("bad", "warning")) - 1
-    return worst.text + (f" (+{more} more below)" if more > 0 else "")
+    """The verdict in a few words: ready, or how many things to fix or check."""
+    bad = sum(1 for f in findings if f.level == "bad")
+    warn = sum(1 for f in findings if f.level == "warning")
+    if bad:
+        return f"{bad} thing{'s' * (bad > 1)} to fix" + (f", {warn} to check" if warn else "")
+    if warn:
+        return f"{warn} thing{'s' * (warn > 1)} to check"
+    return "Ready to go live"
+
+
+def overall(findings: list[Finding]) -> str:
+    worst = findings[0].level if findings else "good"
+    return "good" if worst == "info" else worst
 
 
 def _label(output) -> str:
@@ -130,11 +161,11 @@ def _keys(c: Checkup) -> list[Finding]:
     for o in outputs:
         why = problem(o, c.collection, c.has_key)
         if why:
-            found.append(Finding("bad", "Keys", f"{_label(o)}: {why.lower()}. Fix it with ⚙ on its Destinations card."))
+            found.append(Finding("bad", "Keys", f"{_label(o)} {why.lower()}: fix it with ⚙ on its Destinations card."))
         service = SERVICES.get(o.service or "custom", SERVICES["custom"])
         if not o.ignore_recommendations and not o.enhanced and o.bitrate_kbps > service.max_kbps:
-            found.append(Finding("info", "Keys", f"{service.label} accepts up to {service.max_kbps} kbps, "
-                                                 f"so {o.bitrate_kbps} kbps will be capped."))
+            found.append(Finding("info", "Keys", f"{service.label} caps the bitrate at {service.max_kbps} kbps: "
+                                                 f"your {o.bitrate_kbps} kbps will be lowered to that."))
     return found
 
 
@@ -207,8 +238,8 @@ def _sources(c: Checkup) -> list[Finding]:
     for s in c.collection.sources:
         status = c.statuses.get(s.id)
         if status and not status.startswith(OK_STATUSES):
-            found.append(Finding("bad", "Sources", f"{s.name}: {status}. Check it's plugged in or open, "
-                                                   "or edit it in Sources."))
+            found.append(Finding("bad", "Sources", f"{s.name} isn't working ({status}): "
+                                                   "check it's plugged in or open, or edit it in Sources."))
     return found
 
 
@@ -258,80 +289,188 @@ def load_last_streams(settings) -> dict[str, LastStream]:
 # Dialog -------------------------------------------------------------------------
 
 
+AREA_ICONS = {"Keys": "🔑", "Upload": "📶", "Encoder": "⚙", "GPU": "🖥", "Audio": "🎙", "Sources": "🎥",
+              "Disk": "💾", "All": "🌿"}
+BADGES = {"bad": "✕", "warning": "!", "good": "✓", "checking": "…"}
+SUBTITLES = {
+    "bad": "Fix the red ones before you go live.",
+    "warning": "You can go live, but these may cause trouble.",
+    "good": "Keys, upload, GPU, audio and sources all look good.",
+    "checking": "Say something into your mic so the doctor can hear it.",
+}
+STYLE = """
+QDialog#doctor { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #143f2b, stop:1 #0d2a1d); }
+QFrame#doctorHeader { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.09);
+                      border-radius: 14px; }
+QFrame#doctorCard { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08);
+                    border-radius: 12px; }
+QLabel#doctorTitle { font-size: 17pt; font-weight: 700; }
+QLabel#doctorSub, QLabel#cardFix { color: #a9c9b7; }
+QLabel#cardTitle { font-weight: 600; font-size: 10.5pt; }
+QLabel#chip { color: #cfe8da; background: rgba(255,255,255,0.08); border-radius: 9px; padding: 2px 9px;
+              font-size: 8pt; }
+QLabel#sectionLabel { color: #8fb3a0; font-size: 8.5pt; font-weight: 600; letter-spacing: 1px; }
+QProgressBar { background: rgba(255,255,255,0.08); border: none; border-radius: 2px; max-height: 4px; }
+QProgressBar::chunk { background: #ff5fa2; border-radius: 2px; }
+"""
+
+
+def _shadow(widget: QWidget, blur: int = 18, dy: int = 4, alpha: int = 150) -> None:
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(blur)
+    effect.setOffset(0, dy)
+    effect.setColor(QColor(0, 0, 0, alpha))
+    widget.setGraphicsEffect(effect)
+
+
 class DoctorDialog(QDialog):
-    """Listens for a few seconds, then shows the headline and every finding with a coloured dot."""
+    """Listens for a few seconds, then shows a verdict header and a card per finding."""
 
     def __init__(self, gather: Callable[[], Checkup], parent: QWidget | None = None, listen: float = LISTEN_SECONDS):
         super().__init__(parent)
+        self.setObjectName("doctor")
         self.setWindowTitle("Stream doctor")
-        self.setMinimumWidth(520)
+        self.setStyleSheet(STYLE)
+        self.setMinimumWidth(560)
         self._gather, self._listen = gather, listen
         self.findings: list[Finding] = []
         root = QVBoxLayout(self)
-        root.setSpacing(8)
+        root.setContentsMargins(18, 18, 18, 16)
+        root.setSpacing(12)
+
+        header = QFrame()
+        header.setObjectName("doctorHeader")
+        _shadow(header, 24, 6)
+        top = QHBoxLayout(header)
+        top.setContentsMargins(16, 14, 16, 14)
+        top.setSpacing(14)
+        self.badge = QLabel()
+        self.badge.setFixedSize(56, 56)
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignTop)
+        words = QVBoxLayout()
+        words.setSpacing(4)
         self.headline = QLabel()
-        self.headline.setWordWrap(True)
-        font = self.headline.font()
-        font.setPointSizeF(font.pointSizeF() * 1.25)
-        font.setBold(True)
-        self.headline.setFont(font)
-        root.addWidget(self.headline)
-        self.rows = QVBoxLayout()
-        self.rows.setSpacing(4)
-        root.addLayout(self.rows)
-        root.addStretch(1)
+        self.headline.setObjectName("doctorTitle")
+        self.subtitle = QLabel()
+        self.subtitle.setObjectName("doctorSub")
+        self.subtitle.setWordWrap(True)
+        self.busy = QProgressBar()
+        self.busy.setRange(0, 0)
+        self.busy.setTextVisible(False)
+        words.addWidget(self.headline)
+        words.addWidget(self.subtitle)
+        words.addWidget(self.busy)
+        top.addLayout(words, 1)
+        root.addWidget(header)
+
+        holder = QWidget()
+        holder.setStyleSheet("background: transparent")
+        self.rows = QVBoxLayout(holder)
+        self.rows.setContentsMargins(2, 0, 2, 2)
+        self.rows.setSpacing(8)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.scroll.viewport().setStyleSheet("background: transparent")
+        self.scroll.setWidget(holder)
+        root.addWidget(self.scroll, 1)
+
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        self.again = QPushButton("Check again")
+        self.again = QPushButton("↻  Check again")
         self.again.clicked.connect(self.start)
-        close = QPushButton("Close")
-        close.clicked.connect(self.accept)
+        done = QPushButton("Done")
+        done.setDefault(True)
+        done.clicked.connect(self.accept)
         buttons.addWidget(self.again)
-        buttons.addWidget(close)
+        buttons.addWidget(done)
         root.addLayout(buttons)
         self.start()
 
+    def _set_verdict(self, level: str, title: str) -> None:
+        colour = COLOURS.get(level, "#ff5fa2")
+        self.badge.setText(BADGES[level])
+        self.badge.setStyleSheet(
+            f"background: qradialgradient(cx:0.35, cy:0.3, radius:0.9, stop:0 {QColor(colour).lighter(125).name()},"
+            f" stop:1 {colour}); color: #0d2a1d; border-radius: 28px; font-size: 24pt; font-weight: 800;"
+        )
+        self.headline.setText(title)
+        self.headline.setStyleSheet(f"color: {colour if level != 'checking' else '#f0f7f2'}")
+        self.subtitle.setText(SUBTITLES[level])
+        self.busy.setVisible(level == "checking")
+
     def start(self) -> None:
         self.again.setEnabled(False)
-        self.headline.setStyleSheet("")
-        self.headline.setText("Checking… say something into your mic.")
+        self.scroll.setVisible(False)
+        self._set_verdict("checking", "Checking…")
         self._clear_rows()
         QTimer.singleShot(int(self._listen * 1000), self.finish)
 
     def finish(self) -> None:
         self.findings = examine(self._gather())
-        worst = self.findings[0].level
-        self.headline.setText(headline(self.findings))
-        self.headline.setStyleSheet(f"color: {COLOURS['good' if worst == 'info' else worst]}")
+        self._set_verdict(overall(self.findings), headline(self.findings))
         self._clear_rows()
-        for f in self.findings:
-            self.rows.addWidget(_finding_row(f))
+        problems = [f for f in self.findings if f.level in ("bad", "warning")]  # the header covers all-clear
+        tips = [f for f in self.findings if f.level == "info"]
+        for f in problems:
+            self.rows.addWidget(_finding_card(f))
+        if tips:
+            label = QLabel("GOOD TO KNOW")
+            label.setObjectName("sectionLabel")
+            self.rows.addSpacing(4)
+            self.rows.addWidget(label)
+            for f in tips:
+                self.rows.addWidget(_finding_card(f))
+        self.rows.addStretch(1)
+        self.scroll.setVisible(bool(problems or tips))
         self.again.setEnabled(True)
-        self.layout().activate()
-        self.resize(self.width(), max(self.height(), self.layout().totalHeightForWidth(self.width())))
+        holder = self.scroll.widget()
+        holder.adjustSize()
+        wanted = min(520, holder.layout().totalHeightForWidth(max(500, self.scroll.viewport().width())))
+        self.scroll.setMinimumHeight(max(80, wanted))
+        self.adjustSize()
 
     def _clear_rows(self) -> None:
         while self.rows.count():
-            widget = self.rows.takeAt(0).widget()
-            if widget is not None:
-                widget.deleteLater()
+            item = self.rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
 
 
-def _finding_row(f: Finding) -> QWidget:
-    row = QFrame()
-    row.setObjectName("doctorRow")
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(6, 2, 6, 2)
-    dot = QLabel("●")
-    dot.setStyleSheet(f"color: {COLOURS[f.level]}")
-    area = QLabel(f.area)
-    area.setFixedWidth(70)
-    area.setStyleSheet("color: gray")
-    text = QLabel(f.text)
-    text.setWordWrap(True)
-    text.setMinimumWidth(360)  # so wrapped lines get their full height
-    text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    layout.addWidget(dot, 0, Qt.AlignmentFlag.AlignTop)
-    layout.addWidget(area, 0, Qt.AlignmentFlag.AlignTop)
-    layout.addWidget(text, 1)
-    return row
+def _finding_card(f: Finding) -> QWidget:
+    colour = COLOURS[f.level]
+    card = QFrame()
+    card.setObjectName("doctorCard")
+    card.setStyleSheet(f"QFrame#doctorCard {{ border-left: 4px solid {colour}; }}")
+    _shadow(card, 14, 3, 120)
+    layout = QHBoxLayout(card)
+    layout.setContentsMargins(14, 10, 12, 10)
+    layout.setSpacing(12)
+    icon = QLabel(AREA_ICONS.get(f.area, "•"))
+    icon.setFixedSize(34, 34)
+    icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    icon.setStyleSheet(f"background: {QColor(colour).darker(260).name()}; border: 1px solid {colour};"
+                       " border-radius: 17px; font-size: 13pt;")
+    layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+    words = QVBoxLayout()
+    words.setSpacing(2)
+    title = QLabel(f.title)
+    title.setObjectName("cardTitle")
+    title.setWordWrap(True)
+    title.setMinimumWidth(340)  # so wrapped lines get their full height
+    title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    words.addWidget(title)
+    if f.fix:
+        fix = QLabel(f.fix)
+        fix.setObjectName("cardFix")
+        fix.setWordWrap(True)
+        fix.setMinimumWidth(340)
+        fix.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        words.addWidget(fix)
+    layout.addLayout(words, 1)
+    chip = QLabel(f.area if f.area != "All" else "All clear")
+    chip.setObjectName("chip")
+    layout.addWidget(chip, 0, Qt.AlignmentFlag.AlignTop)
+    return card
