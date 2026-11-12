@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import priority
 from sprigcast.app.hotkeys_dialog import HotkeysPage
 from sprigcast.app.output_page import OutputPage
 from sprigcast.app.recording_dialog import RecordingPage
@@ -224,7 +225,18 @@ class SettingsWindow(QDialog):
         self.confirm_recording.setChecked(confirm_enabled(CONFIRM_RECORDING))
         box.addWidget(self.confirm_recording)
 
-        return _page(look, snapping, safety)
+        performance = QGroupBox("Running next to games and other apps")
+        perf_form = QFormLayout(performance)
+        self.priority = QComboBox()
+        for key, label in priority.LEVELS.items():
+            self.priority.addItem(label, key)
+        self.priority.setCurrentIndex(max(0, self.priority.findData(priority.chosen())))
+        perf_form.addRow("Process priority", self.priority)
+        perf_form.addRow("", _hint(
+            "Above normal keeps the stream smooth while a game uses the CPU. SprigCast also asks Windows to put "
+            "its GPU work first; that works best when SprigCast runs as administrator."))
+
+        return _page(look, snapping, safety, performance)
 
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
         files = QGroupBox("Installed plugins")
@@ -391,6 +403,10 @@ class SettingsWindow(QDialog):
         settings.setValue("editing/snap_sources", self.snap_sources.isChecked())
         settings.setValue("editing/snap_center", self.snap_center.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
+        level = self.priority.currentData()
+        if level != priority.chosen():
+            settings.setValue(priority.SETTING, level)
+            priority.set_cpu_priority(level)
         if not (self.streaming or self.recording):
             changes = {}
             for canvas in self.collection.canvases:

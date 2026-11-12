@@ -60,7 +60,7 @@ from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app import custom_docks, doctor
 from sprigcast.app.palette import Command, CommandPalette
-from sprigcast.app.resources import ResourceMeter, describe
+from sprigcast.app.resources import ResourceMeter, describe, ram_warning
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
@@ -374,9 +374,11 @@ class MainWindow(QMainWindow):
         self.status = QLabel("Starting renderer…")
         self.statusBar().addPermanentWidget(self.status)
         self.meter = ResourceMeter(gpu=not os.environ.get("SPRIGCAST_NO_GPU_METER"))
+        self._warned_ram = False
         self.meter_label = QLabel("")
-        self.meter_label.setToolTip("What SprigCast uses right now: its share of the whole CPU, its memory, "
-                                    "and how busy the graphics card is (all apps)")
+        self._meter_tip = ("What SprigCast uses right now: its share of the whole CPU, its memory, "
+                           "and how busy the graphics card is (all apps)")
+        self.meter_label.setToolTip(self._meter_tip)
         self.statusBar().addPermanentWidget(self.meter_label)
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._refresh_meter)
@@ -1275,6 +1277,13 @@ class MainWindow(QMainWindow):
     def _refresh_meter(self) -> None:
         self.last_resources = self.meter.sample()
         self.meter_label.setText(describe(self.last_resources))
+        warning = ram_warning(self.last_resources)
+        self.meter_label.setStyleSheet("color: #f0a040" if warning else "")
+        self.meter_label.setToolTip(warning or self._meter_tip)
+        if warning and not self._warned_ram:
+            log.warning(warning)
+            self.statusBar().showMessage(warning, 15000)
+        self._warned_ram = bool(warning)
 
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
