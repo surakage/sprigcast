@@ -130,3 +130,96 @@ def test_missing_camera_waits(fake_cv2, monkeypatch):
         assert FakeCapture.opened == []
     finally:
         src.stop()
+
+
+class FakeAvFrame:
+    def to_ndarray(self, format):
+        assert format == "bgr24"
+        frame = np.zeros((36, 64, 3), dtype=np.uint8)
+        frame[:, 0] = (255, 0, 0)
+        return frame
+
+
+class FakeAvContainer:
+    def __init__(self):
+        cc = types.SimpleNamespace(width=64, height=36)
+        self.streams = types.SimpleNamespace(video=[types.SimpleNamespace(codec_context=cc, average_rate=30, base_rate=30)])
+        self.closed = False
+
+    def demux(self, stream):
+        while not self.closed:
+            time.sleep(0.005)
+            yield types.SimpleNamespace(decode=lambda: [FakeAvFrame()])
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def fake_av(monkeypatch, fake_cv2):
+    import av
+
+    opened = []
+
+    def fake_open(name, format, options):
+        assert format == "dshow"
+        opened.append((name, dict(options)))
+        if fake_av_fail:
+            raise OSError("no such device")
+        return FakeAvContainer()
+
+    fake_av_fail = []
+    monkeypatch.setattr(av, "formats_available", set(av.formats_available) | {"dshow"})
+    monkeypatch.setattr(av, "open", fake_open)
+    return types.SimpleNamespace(opened=opened, fail=fake_av_fail)
+
+
+def test_ffmpeg_is_used_first_and_opencv_is_not_touched(fake_av):
+    sys.modules["cv2_enumerate_cameras"].devices[1].path = "\\\\?\\usb#b"  # a real DirectShow device path
+    src = create_source("camera", "c", {"name": "Cam B", "path": "\\\\?\\usb#b", "width": 64, "height": 36, "fps": 30,
+                                         "mirror": True})
+    src.start()
+    try:
+        assert wait_for(lambda: src._frames.peek() is not None)
+        frame = src.video_frame()
+        assert tuple(frame[0, -1]) == (255, 0, 0) and frame.flags["C_CONTIGUOUS"]  # mirrored
+        assert src.status == "capturing 64x36 @ 30"
+        name, options = fake_av.opened[0]
+        assert name == "video=@device_pnp_\\\\?\\usb#b"  # opened by its device path, not its index
+        assert options["video_size"] == "64x36" and options["vcodec"] == "mjpeg"
+        assert FakeCapture.opened == []  # OpenCV never used
+    finally:
+        src.stop()
+
+
+def test_falls_back_to_opencv_when_ffmpeg_cannot_open(fake_av):
+    fake_av.fail.append(True)
+    src = create_source("camera", "c", {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 30})
+    src.start()
+    try:
+        assert wait_for(lambda: src._frames.peek() is not None)
+        assert len(FakeCapture.opened) == 1 and len(fake_av.opened) == 3  # each mode tried by name first
+    finally:
+        src.stop()
+
+
+def test_lists_cameras_on_windows_without_loading_opencv(monkeypatch):
+    from sprigcast.sources import camera
+
+    seen = {}
+    pkg = types.ModuleType("cv2_enumerate_cameras")
+    pkg.__path__ = []
+    backend = types.ModuleType("cv2_enumerate_cameras._windows_backend")
+
+    def listing():
+        seen["cv2"] = sys.modules.get("cv2", "absent")
+        return [("Cam A", "\\\\?\\usb#a"), ("Cam B", "")]
+
+    backend.DSHOW_enumerate_cameras = listing
+    monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras", pkg)
+    monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras._windows_backend", backend)
+    monkeypatch.delitem(sys.modules, "cv2", raising=False)
+    monkeypatch.setattr(camera.sys, "platform", "win32")
+    cams = camera.list_cameras()
+    assert [(c.index, c.name, c.path) for c in cams] == [(0, "Cam A", "\\\\?\\usb#a"), (1, "Cam B", "")]
+    assert "cv2" not in sys.modules

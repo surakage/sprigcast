@@ -8,6 +8,7 @@ overrides it.
 from __future__ import annotations
 
 import os
+import sys
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QSettings
 from PySide6.QtGui import QColor, QPalette
@@ -120,11 +121,25 @@ def chosen_theme() -> str:
     return name if name in THEMES else "slothbloom"
 
 
+def _set_symbol_fallbacks(app: QApplication) -> None:
+    """Point Qt straight at Windows' symbol and emoji fonts for icons like ● ⚙ ▲ 🩺.
+
+    Without this, Qt looks for a missing glyph through its generic fallback list, which loads large
+    Chinese and Japanese fonts (SimSun, MingLiU, Microsoft YaHei, ~120 MB of RAM) on the way.
+    """
+    if sys.platform != "win32":
+        return
+    font = app.font()
+    font.setFamilies([font.family(), "Segoe UI Symbol", "Segoe UI Emoji"])
+    app.setFont(font)
+
+
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
     global _system_style, _pop_in
     if _system_style is None:
         _system_style = app.style().name()
+        _set_symbol_fallbacks(app)
     if (name or chosen_theme()) == "system":
         app.setStyleSheet("")
         if _pop_in is not None:
