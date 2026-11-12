@@ -346,7 +346,8 @@ class Recorder:
         w, h = frame.width, frame.height
         vf = av.VideoFrame(w, h, "nv12")
         y_size = w * h
-        for plane, data, rows in ((vf.planes[0], frame.data[:y_size], h), (vf.planes[1], frame.data[y_size:], h // 2)):
+        data = memoryview(frame.data)  # slices of a memoryview don't copy
+        for plane, data, rows in ((vf.planes[0], data[:y_size], h), (vf.planes[1], data[y_size:], h // 2)):
             if plane.line_size == w:
                 plane.update(data)
             else:

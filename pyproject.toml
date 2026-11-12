@@ -26,6 +26,7 @@ dependencies = [
 sprigcast = "sprigcast.app.main:run"
 sprigcast-check = "sprigcast.tools.check:main"
 sprigcast-teststream = "sprigcast.tools.teststream:main"
+sprigcast-memcheck = "sprigcast.tools.memcheck:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]

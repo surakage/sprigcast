@@ -350,7 +350,7 @@ class Compositor:
         """Return the canvas as tightly packed RGBA rows, top row first."""
         return self.targets[canvas_id].fbo.read(components=4, alignment=1)
 
-    def read_nv12(self, canvas_id: str, size: tuple[int, int]) -> bytes:
+    def read_nv12(self, canvas_id: str, size: tuple[int, int]) -> bytearray:
         """The canvas scaled to size (even width and height) as NV12: Y rows, then CbCr rows, top first."""
         source = self.targets[canvas_id]
         target = self.nv12_targets.get((canvas_id, size))
@@ -368,7 +368,11 @@ class Compositor:
             program["out_size"].value = plane
             program["chroma"].value = chroma
             self.nv12_vao.render(moderngl.TRIANGLES, vertices=3)
-        return target.y_fbo.read(components=1, alignment=1) + target.uv_fbo.read(components=2, alignment=1)
+        # Both planes land in one buffer: one allocation per frame instead of three (Y, CbCr, joined).
+        data = bytearray(w * h * 3 // 2)
+        target.y_fbo.read_into(data, components=1, alignment=1)
+        target.uv_fbo.read_into(data, components=2, alignment=1, write_offset=w * h)
+        return data
 
     def release(self) -> None:
         for tex in self.textures.values():
