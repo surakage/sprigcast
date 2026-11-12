@@ -8,7 +8,7 @@ import sys
 from importlib import resources
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths
+from PySide6.QtCore import QCoreApplication, QStandardPaths, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sprigcast import __version__
@@ -38,6 +38,15 @@ def load_collection(path: Path) -> SceneCollection:
 def run() -> None:
     faulthandler.enable()  # if a native library crashes, print where instead of closing silently
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    QCoreApplication.setApplicationName("SprigCast")
+    QCoreApplication.setOrganizationName("Slothbloom")
+    # Web docks (app/custom_docks.py) need these set before the app exists. Qt WebEngine is only
+    # loaded when you have custom docks, so without any it costs no memory.
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    from sprigcast.app import custom_docks
+
+    if custom_docks.load():
+        custom_docks.web_engine_available()  # imports Qt WebEngine before the QApplication
     app = QApplication(sys.argv)
     app.setApplicationName("SprigCast")
     app.setOrganizationName("Slothbloom")
