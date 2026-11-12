@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 TOGGLE_STREAM = "toggle_stream"
 TOGGLE_RECORD = "toggle_record"
 STUDIO_GO = "studio_go"  # Studio mode: send the lined-up scenes on air
+SAVE_REPLAY = "save_replay"  # save the replay buffer's last seconds as clips
 SCENE_PREFIX = "scene:"
 STATE_PREFIX = "state:"  # "state:<sprig id>:<state name>"; an empty name goes back to as built
 
@@ -36,7 +37,7 @@ _NAMED = {
 def actions(collection: SceneCollection) -> list[tuple[str, str]]:
     """(action id, label) for everything a hotkey can do."""
     items = [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording"),
-             (STUDIO_GO, "Studio mode: Go (send Next on air)")]
+             (STUDIO_GO, "Studio mode: Go (send Next on air)"), (SAVE_REPLAY, "Save replay")]
     for canvas in collection.canvases:
         for scene in collection.scenes_for(canvas.id):
             items.append((SCENE_PREFIX + scene.id, f"Show scene: {scene.name} ({canvas.id})"))
