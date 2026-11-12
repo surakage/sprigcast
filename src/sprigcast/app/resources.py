@@ -63,3 +63,15 @@ def describe(sample: dict) -> str:
     if sample.get("gpu") is not None:
         text += f" · GPU {sample['gpu']:.0f}%"
     return text
+
+
+HIGH_RAM_MB = 2000  # SprigCast normally sits well under this, even recording both canvases with replay on
+
+
+def ram_warning(sample: dict) -> str:
+    """A short warning when SprigCast's memory is unusually high, else ""."""
+    ram = sample.get("ram_mb") if sample else None
+    if ram is None or ram < HIGH_RAM_MB:
+        return ""
+    return (f"SprigCast is using {ram / 1000:.1f} GB of memory, more than usual. If it keeps climbing, "
+            "please save the log and tell us what was running.")

@@ -52,7 +52,10 @@ def run() -> None:
     app.setOrganizationName("Slothbloom")
     app.setApplicationVersion(__version__)
 
+    from sprigcast.app import priority
     from sprigcast.app.theme import apply_theme
+
+    priority.apply()  # stay smooth next to games: CPU priority from Settings, GPU work scheduled first
     from sprigcast.plugins import ensure_example, load_plugins
 
     apply_theme(app)
