@@ -60,3 +60,25 @@ def test_meter_text():
     assert describe({}) == ""
     assert describe({"cpu": 3.6, "ram_mb": 311.8, "gpu": None}) == "CPU 4% · RAM 312 MB"
     assert describe({"cpu": 3.6, "ram_mb": 311.8, "gpu": 18.2}).endswith("· GPU 18%")
+
+
+def test_outputs_of_one_size_share_one_nv12_conversion():
+    class Nv12Fake(FakeCompositor):
+        def __init__(self):
+            super().__init__()
+            self.converted = []
+
+        def read_nv12(self, key, size):
+            self.converted.append(size)
+            return b"y" * (size[0] * size[1] * 3 // 2)
+
+    engine, fake = _engine(), Nv12Fake()
+    engine.previews = frozenset()
+    a, b, c = [], [], []
+    engine.add_frame_tap("h", a.append, (32, 18))
+    engine.add_frame_tap("h", b.append, (32, 18))
+    engine.add_frame_tap("h", c.append, (16, 8))
+    engine._tick(fake, 10.0)
+    assert fake.converted == [(32, 18), (16, 8)] and a[0] is b[0] and a[0].fmt == "nv12"
+    engine.remove_frame_tap("h", b.append)
+    assert len(engine._taps["h"]) == 2

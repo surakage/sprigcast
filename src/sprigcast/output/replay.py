@@ -180,7 +180,7 @@ class ReplaySession:
             buf.start()
             buffers.append(buf)
         for buf in buffers:
-            engine.add_frame_tap(buf.canvas_id, buf.push_frame)
+            engine.add_frame_tap(buf.canvas_id, buf.push_frame, buf.gpu_size)
             engine.mixer.add_tap(buf.push_audio)
         return cls(engine, buffers, folder, container)
 

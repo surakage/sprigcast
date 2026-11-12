@@ -31,13 +31,14 @@ PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more 
 
 
 class Frame:
-    """One finished canvas image: RGBA bytes, top row first."""
+    """One finished canvas image, top row first: RGBA bytes, or NV12 (Y plane then CbCr) at an output's size."""
 
-    __slots__ = ("canvas_id", "width", "height", "data", "time")
+    __slots__ = ("canvas_id", "width", "height", "data", "time", "fmt")
 
-    def __init__(self, canvas_id: str, width: int, height: int, data: bytes, time: float = 0.0):
+    def __init__(self, canvas_id: str, width: int, height: int, data: bytes, time: float = 0.0, fmt: str = "rgba"):
         self.canvas_id, self.width, self.height, self.data = canvas_id, width, height, data
         self.time = time  # perf_counter() at the start of the tick that drew it
+        self.fmt = fmt
 
 
 class Engine:
@@ -76,16 +77,20 @@ class Engine:
     def send(self, command) -> None:
         self.commands.put(command)
 
-    def add_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
-        """Hand every finished frame of a canvas to callback, on the render thread. It must not block."""
+    def add_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None],
+                      nv12_size: tuple[int, int] | None = None) -> None:
+        """Hand every finished frame of a canvas to callback, on the render thread. It must not block.
+
+        With nv12_size the frame arrives already scaled and converted to NV12 on the GPU (what encoders
+        want); outputs sharing a size share one conversion. Without it, the frame is RGBA at canvas size.
+        """
         with self._taps_lock:
-            self._taps.setdefault(canvas_id, []).append(callback)
+            self._taps.setdefault(canvas_id, []).append((callback, nv12_size))
 
     def remove_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
         with self._taps_lock:
             taps = self._taps.get(canvas_id, [])
-            if callback in taps:
-                taps.remove(callback)
+            taps[:] = [t for t in taps if t[0] != callback]
 
     def stop(self, timeout: float = 2.0) -> None:
         self.commands.put(Shutdown())
@@ -353,6 +358,18 @@ class Engine:
         mailbox.put(Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now))
         self.readbacks += 1
 
+    def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame:
+        frame = made.get(nv12_size)
+        if frame is None:
+            self.readbacks += 1
+            if nv12_size is None:
+                frame = Frame(canvas.id, canvas.width, canvas.height, compositor.read(canvas.id), now)
+            else:
+                data = compositor.read_nv12(canvas.id, nv12_size)
+                frame = Frame(canvas.id, nv12_size[0], nv12_size[1], data, now, "nv12")
+            made[nv12_size] = frame
+        return frame
+
     def _preview_due(self, key: str, now: float) -> bool:
         """True when the UI shows this preview and its last copy is at least 1/PREVIEW_FPS old."""
         wanted = self.previews
@@ -409,12 +426,11 @@ class Engine:
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
             compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, previous, progress)
-            data = compositor.read(canvas.id)
-            self.readbacks += 1
-            frame = Frame(canvas.id, canvas.width, canvas.height, data, now)
+            frames: dict = {}  # nv12 size (None = RGBA) -> Frame, so outputs of one size share one readback
             if preview:
-                self.frames[canvas.id].put(frame)
-            for callback in outputs:
+                self.frames[canvas.id].put(self._frame(compositor, canvas, None, now, frames))
+            for callback, nv12_size in outputs:
+                frame = self._frame(compositor, canvas, nv12_size, now, frames)
                 try:
                     callback(frame)
                 except Exception:

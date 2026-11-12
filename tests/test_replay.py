@@ -17,7 +17,8 @@ def _feed(buf, start, seconds, fps=30, w=160, h=90):
         rgba[..., 3] = 255
         buf.push_frame(Frame("horizontal", w, h, rgba.tobytes(), start + i / fps))
         buf.push_audio(np.full((1600, 2), 0.05, dtype=np.float32))  # 1/30 s of audio per frame: real time
-        time.sleep(0.002)
+        while buf._video.qsize() > 10:  # faster than real time, so let the encoder keep up: no drops
+            time.sleep(0.001)
 
 
 def test_buffer_keeps_only_the_last_seconds_and_saves_a_playable_clip(tmp_path):
@@ -26,7 +27,7 @@ def test_buffer_keeps_only_the_last_seconds_and_saves_a_playable_clip(tmp_path):
     buf.start()
     _feed(buf, start, 6.0)
     time.sleep(0.3)
-    assert 1.0 <= buf.buffered_seconds <= 4.1  # older seconds dropped; may run one 2 s keyframe interval long
+    assert 1.9 <= buf.buffered_seconds <= 4.1  # older seconds dropped; may run one 2 s keyframe interval long
     path = buf.save(tmp_path / "clip.mkv")
     first = path.stat().st_size
     buf.save(tmp_path / "again.mkv")  # saving twice works: the buffer isn't used up
@@ -52,7 +53,7 @@ class FakeEngine:
         self.taps = {}
         self.mixer = self
 
-    def add_frame_tap(self, cid, cb):
+    def add_frame_tap(self, cid, cb, nv12_size=None):
         self.taps.setdefault(cid, []).append(cb)
 
     def remove_frame_tap(self, cid, cb):

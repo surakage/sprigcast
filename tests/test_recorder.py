@@ -81,7 +81,7 @@ class FakeEngine:
         self.mixer = FakeMixer()
         self.taps = {}
 
-    def add_frame_tap(self, canvas_id, cb):
+    def add_frame_tap(self, canvas_id, cb, nv12_size=None):
         self.taps.setdefault(canvas_id, []).append(cb)
 
     def remove_frame_tap(self, canvas_id, cb):
