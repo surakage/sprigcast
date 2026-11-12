@@ -534,6 +534,12 @@ class SceneCollection(BaseModel):
 
     # Changes -------------------------------------------------------------
 
+    def linked_with(self, scene_id: str) -> list[Scene]:
+        """The scene and the scenes on other canvases that switch together with it."""
+        scene = self.scene(scene_id)
+        return [scene] + [o for o in self.scenes if o is not scene and o.kind == "show"
+                          and o.canvas != scene.canvas and (o.linked_to == scene.id or scene.linked_to == o.id)]
+
     def set_active(self, scene_id: str) -> None:
         """Make a scene active on its canvas, and switch any scenes linked to it (in either direction)."""
         scene = self.scene(scene_id)
