@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.core.mailbox import Mailbox
+from sprigcast.core.mailbox import FrameRing
 from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ class _CaptureSource(Source):
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
-        self._frames: Mailbox[np.ndarray] = Mailbox()
+        self._frames = FrameRing()
         self._size = (0, 0)
         self._stop = threading.Event()
         self._restart = threading.Event()
@@ -75,10 +75,9 @@ class _CaptureSource(Source):
 
     def _on_frame(self, frame) -> None:
         # frame.frame_buffer is a view into memory the capture library reuses, and its rows may be
-        # padded, so take a contiguous copy before handing it to the render thread.
-        image = np.ascontiguousarray(frame.frame_buffer)
+        # padded, so copy it (into one of three reused buffers) before handing it to the render thread.
         self._size = (int(frame.width), int(frame.height))
-        self._frames.put(image)
+        self._frames.put(frame.frame_buffer)
 
     def _supervise(self) -> None:
         try:
