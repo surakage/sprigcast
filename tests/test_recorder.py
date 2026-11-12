@@ -6,7 +6,7 @@ import av
 import numpy as np
 import pytest
 
-from sprigcast.output.recorder import Recorder, RecordingSession, recording_path
+from sprigcast.output.recorder import VIDEO_QUEUE, Recorder, RecordingSession, recording_path
 from sprigcast.render.engine import Frame
 
 pytestmark = pytest.mark.skipif("libx264" not in av.codecs_available, reason="needs libx264 in PyAV")
@@ -150,11 +150,11 @@ def test_colours_survive_encoding(tmp_path):
 def test_surplus_renders_are_skipped_before_the_queue(tmp_path):
     """A 60 fps canvas into a 30 fps output: half the renders are skipped, never counted as drops."""
     rec = Recorder(tmp_path / "q.mkv", 16, 16, 30, 500, "libx264", 0.0)  # not started: nothing drains the queue
-    for i in range(60):
+    for i in range(2 * VIDEO_QUEUE):  # exactly fills the queue at 30 fps
         rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), i / 60))
-    assert rec._video.qsize() == 30
+    assert rec._video.qsize() == VIDEO_QUEUE
     assert rec.dropped == 0
-    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 1.0))  # a genuinely new frame with a full queue
+    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), VIDEO_QUEUE / 30))  # a genuinely new frame with a full queue
     assert rec.dropped == 1
 
 
