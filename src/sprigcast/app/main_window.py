@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
+from sprigcast.app import doctor
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
@@ -364,6 +365,7 @@ class MainWindow(QMainWindow):
         self.stats_panel = StatsPanel()
         self.stats_dock = self._dock("Stats", self.stats_panel)
         self._last_stats = None
+        self.peak_watch = doctor.PeakWatch()
         self._arrange_default_layout()
         self._build_menu()
         self.status = QLabel("Starting renderer…")
@@ -817,6 +819,9 @@ class MainWindow(QMainWindow):
         self.record_button.setMinimumHeight(34)
         self.record_button.clicked.connect(self._on_record_clicked)
         layout.addWidget(self.record_button)
+        self.doctor_button = _button("🩺 Stream doctor", lambda: self._open_doctor())
+        self.doctor_button.setToolTip("Check keys, upload, GPU, mics and sources before going live")
+        layout.addWidget(self.doctor_button)
         replay_row = QHBoxLayout()
         replay_row.setSpacing(4)
         self.replay_button = QPushButton("Replay buffer")
@@ -1199,6 +1204,10 @@ class MainWindow(QMainWindow):
             ("Plugins", "Plugins…"),
         ):
             settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
+        settings_menu.addSeparator()
+        doctor_action = settings_menu.addAction("Stream doctor…")
+        doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        doctor_action.triggered.connect(lambda: self._open_doctor())
 
         docks_menu = self.menuBar().addMenu("&Docks")
         for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Live",
@@ -1246,6 +1255,7 @@ class MainWindow(QMainWindow):
                 )
             elif isinstance(event, AudioLevels):
                 self.audio_panel.set_levels(event.levels)
+                self.peak_watch.feed(event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
                 for preview in [*self.previews.values(), self.part_preview]:
@@ -2529,6 +2539,8 @@ class MainWindow(QMainWindow):
         if problems:
             QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
             return
+        if not self._doctor_says_go():
+            return
         self.live_button.setEnabled(False)
         self.stream_status.setText("Connecting…")
         try:
@@ -2623,6 +2635,7 @@ class MainWindow(QMainWindow):
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
+        doctor.save_last_streams(QSettings(), session.streamers)
         self.stream_status.setText("\n".join(lines))
         self.stream_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         for line in lines[1:]:
@@ -2720,6 +2733,50 @@ class MainWindow(QMainWindow):
                 self._refresh_previews()
 
     # Stats -----------------------------------------------------------------------
+
+    def _has_key(self, ref) -> bool:
+        try:
+            return bool(ref and get_key(ref))
+        except Exception:
+            return False
+
+    def _checkup(self) -> doctor.Checkup:
+        """What the stream doctor looks at, gathered now."""
+        stats = self._last_stats
+        return doctor.Checkup(
+            collection=self.collection,
+            has_key=self._has_key,
+            codec=pick_codec(),
+            render_fps=stats.fps if stats else None,
+            render_ms=stats.render_ms if stats else None,
+            gpu_pct=doctor.gpu_load(),
+            loudest=self.peak_watch.loudest(),
+            statuses=dict(self.source_statuses),
+            last_streams=doctor.load_last_streams(QSettings()),
+            free_gb=doctor.free_space_gb(self._recordings_folder()),
+            recording_planned=bool(self.collection.recording.canvases),
+        )
+
+    def _doctor_says_go(self) -> bool:
+        """Quick check when going live: only serious problems ask first."""
+        checkup = self._checkup()
+        checkup.gpu_pct = None  # nvidia-smi can take a moment; the full doctor checks it
+        bad = [f for f in doctor.examine(checkup) if f.level == "bad"]
+        if not bad:
+            return True
+        box = QMessageBox(QMessageBox.Icon.Warning, "Stream doctor", "\n\n".join(f.text for f in bad), parent=self)
+        go = box.addButton("Go live anyway", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Open doctor", QMessageBox.ButtonRole.HelpRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is go:
+            return True
+        if box.buttonRole(box.clickedButton()) == QMessageBox.ButtonRole.HelpRole:
+            self._open_doctor()
+        return False
+
+    def _open_doctor(self) -> None:
+        doctor.DoctorDialog(self._checkup, self).exec()
 
     def _refresh_stats_panel(self) -> None:
         outputs = []

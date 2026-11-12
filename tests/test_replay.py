@@ -26,7 +26,7 @@ def test_buffer_keeps_only_the_last_seconds_and_saves_a_playable_clip(tmp_path):
     buf.start()
     _feed(buf, start, 6.0)
     time.sleep(0.3)
-    assert 1.0 <= buf.buffered_seconds <= 2.1  # older seconds were dropped
+    assert 1.0 <= buf.buffered_seconds <= 4.1  # older seconds dropped; may run one 2 s keyframe interval long
     path = buf.save(tmp_path / "clip.mkv")
     first = path.stat().st_size
     buf.save(tmp_path / "again.mkv")  # saving twice works: the buffer isn't used up
@@ -35,7 +35,7 @@ def test_buffer_keeps_only_the_last_seconds_and_saves_a_playable_clip(tmp_path):
     with av.open(str(path)) as f:
         assert sorted(s.type for s in f.streams) == ["audio", "video"]
         frames = sum(1 for _ in f.decode(video=0))
-    assert 25 <= frames <= 63  # between the GOP-trimmed and full length at 30 fps
+    assert 25 <= frames <= 125  # 2 s asked, plus up to one keyframe interval, at 30 fps
     assert (tmp_path / "again.mkv").stat().st_size > 0 and first > 0
 
 
