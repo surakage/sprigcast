@@ -138,6 +138,11 @@ class StreamPage(QWidget):
         self.video_note = QLabel("Encoder settings (rate control, preset, keyframes…) are in Settings → Output.")
         self.video_note.setWordWrap(True)
         self.video_note.setStyleSheet("color: gray")
+        self.auto_bitrate = QCheckBox("Auto-pilot bitrate")
+        self.auto_bitrate.setToolTip("When your upload can't keep up, lower the bitrate smoothly instead of "
+                                     "dropping frames, then climb back to this bitrate once it recovers")
+        self.auto_bitrate.toggled.connect(self._edited)
+        form.addRow("", self.auto_bitrate)
         form.addRow("", self.video_note)
         self.video_box = video
         groups.addWidget(video)
@@ -285,6 +290,7 @@ class StreamPage(QWidget):
             spin.setValue(value)
             spin.setEnabled(bool(value))
         self.ignore_recommendations.setChecked(output.ignore_recommendations)
+        self.auto_bitrate.setChecked(output.auto_bitrate)
         self.key.setText(self.keys.get(output.key_ref or "", ""))
         self._show_service(output)
         self._loading = False
@@ -382,6 +388,7 @@ class StreamPage(QWidget):
         output.enhanced_max_tracks = 0 if self.enhanced_tracks_auto.isChecked() else self.enhanced_tracks.value()
         output.enhanced_max_kbps = 0 if self.enhanced_kbps_auto.isChecked() else self.enhanced_kbps.value()
         output.ignore_recommendations = self.ignore_recommendations.isChecked()
+        output.auto_bitrate = self.auto_bitrate.isChecked()
         if not output.key_ref:
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()

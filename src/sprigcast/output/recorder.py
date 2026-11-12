@@ -85,8 +85,21 @@ X264_PRESETS = {"p1": "ultrafast", "p2": "superfast", "p3": "veryfast", "p4": "v
 LOOKAHEAD_FRAMES = 16
 
 
-def video_options(codec: str, enc, bitrate_kbps: int) -> dict[str, str]:
-    """FFmpeg encoder options for Settings → Output's choices (core.scene.EncoderSettings)."""
+def rate_limits(codec: str, enc, bitrate_kbps: int) -> tuple[int, int]:
+    """(max rate, buffer size) in kbps that video_options() sets for this bitrate; (0, 0) when none."""
+    k = bitrate_kbps
+    if enc.rate_control == "cbr":
+        return k, k
+    if enc.rate_control == "vbr" and codec == "h264_nvenc":
+        return int(k * 1.5), k * 2
+    return 0, 0
+
+
+def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[str, str]:
+    """FFmpeg encoder options for Settings → Output's choices (core.scene.EncoderSettings).
+
+    hrd=False leaves out x264's strict CBR signalling, which would stop the bitrate changing mid-stream.
+    """
     k = bitrate_kbps
     if codec == "h264_nvenc":
         opts = {"preset": enc.preset, "tune": enc.tuning, "profile": enc.profile,
@@ -106,7 +119,9 @@ def video_options(codec: str, enc, bitrate_kbps: int) -> dict[str, str]:
     if enc.rate_control == "cqp":
         opts["crf"] = str(enc.cq_level)
     elif enc.rate_control == "cbr":
-        opts.update({"nal-hrd": "cbr", "maxrate": f"{k}k", "bufsize": f"{k}k"})
+        opts.update({"maxrate": f"{k}k", "bufsize": f"{k}k"})
+        if hrd:
+            opts["nal-hrd"] = "cbr"
     if not enc.adaptive_quant:
         opts["aq-mode"] = "0"
     return opts

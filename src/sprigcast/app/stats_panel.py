@@ -65,6 +65,10 @@ class StatsPanel(QWidget):
             rows.append(_row("Waiting on file/network", f"{st['network_pct']:.0f}% of the time, longest {st['longest_stall_s']:.2f} s",
                              st["longest_stall_s"] > 1.0))
             rows.append(_row("Data written", f"{st['megabytes']:.0f} MB"))
+            pilot = getattr(job, "autopilot", None)
+            if pilot is not None:
+                rows.append(_row("Auto-pilot bitrate", f"{pilot.current_kbps} of {pilot.target_kbps} kbps"
+                                 + (f", lowered {pilot.steps_down}×" if pilot.steps_down else ""), pilot.lowered))
             if "backlog_s" in st and label.startswith("Stream"):
                 rows.append(_row("Send buffer", f"{st['backlog_s']:.1f} s waiting to upload", st["backlog_s"] > 1.0))
         if not outputs:

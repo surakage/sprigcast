@@ -2530,7 +2530,8 @@ class MainWindow(QMainWindow):
                 name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
                 kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
                 target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
-                                      output.bandwidth_test and service.bandwidth_test, output_id=output.id)
+                                      output.bandwidth_test and service.bandwidth_test, output_id=output.id,
+                                      auto_bitrate=output.auto_bitrate)
                 if output.enhanced and output.service == "twitch":
                     target = self._enhanced_target(output, target)
                     if target is None:
