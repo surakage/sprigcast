@@ -58,7 +58,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
-from sprigcast.app import doctor
+from sprigcast.app import custom_docks, doctor
 from sprigcast.app.palette import Command, CommandPalette
 from sprigcast.app.resources import ResourceMeter, describe
 from sprigcast.app.destinations import DestinationsPanel, live_line
@@ -396,6 +396,7 @@ class MainWindow(QMainWindow):
         self.mode = "build"
         self._build_mode_bar()
         self._refresh_all()
+        custom_docks.apply(self, custom_docks.load(), self._fill_docks_menu)  # before the layout puts them back
         self._restore_layout()
         self._apply_canvas_view()
         self._show_part_editor()
@@ -1231,21 +1232,42 @@ class MainWindow(QMainWindow):
         palette_action.triggered.connect(lambda: self._open_palette())
         settings_menu.addAction(palette_action)
 
-        docks_menu = self.menuBar().addMenu("&Docks")
-        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Live",
-                     "Properties", "Stats"]:
-            action = self.docks[name].toggleViewAction()
-            if name == "Stats":
-                action.setShortcut(QKeySequence("Ctrl+Shift+S"))
-            docks_menu.addAction(action)
-        docks_menu.addSeparator()
+        self.docks_menu = self.menuBar().addMenu("&Docks")
+        self.docks["Stats"].toggleViewAction().setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.lock_action = QAction("Lock docks", self)
         self.lock_action.setCheckable(True)
         self.lock_action.toggled.connect(self._set_docks_locked)
-        docks_menu.addAction(self.lock_action)
-        reset = QAction("Reset layout", self)
-        reset.triggered.connect(self._reset_layout)
-        docks_menu.addAction(reset)
+        self.reset_layout_action = QAction("Reset layout", self)
+        self.reset_layout_action.triggered.connect(self._reset_layout)
+        self.custom_docks_action = QAction("Custom docks…", self)
+        self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
+        self._fill_docks_menu()
+
+    def _fill_docks_menu(self) -> None:
+        """Built-in docks, then your custom ones, then the layout actions. Rebuilt when custom docks change."""
+        menu = self.docks_menu
+        menu.clear()
+        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Live",
+                     "Properties", "Stats"]:
+            menu.addAction(self.docks[name].toggleViewAction())
+        custom = [d for n, d in self.docks.items() if n.startswith(custom_docks.PREFIX)]
+        if custom:
+            menu.addSeparator()
+            for dock in custom:
+                menu.addAction(dock.toggleViewAction())
+        menu.addSeparator()
+        menu.addAction(self.custom_docks_action)
+        menu.addAction(self.lock_action)
+        menu.addAction(self.reset_layout_action)
+
+    def _edit_custom_docks(self) -> None:
+        if not custom_docks.web_engine_available():
+            QMessageBox.warning(self, "SprigCast", "Custom docks need Qt WebEngine, which isn't installed.")
+            return
+        dialog = custom_docks.CustomDocksDialog(custom_docks.load(), self)
+        if dialog.exec():
+            custom_docks.apply(self, dialog.result_docks(), self._fill_docks_menu)
+            self._set_docks_locked(self.lock_action.isChecked())
 
     # Engine link ------------------------------------------------------------
 
