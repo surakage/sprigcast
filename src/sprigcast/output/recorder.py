@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -26,7 +27,7 @@ from sprigcast.sources.audio import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
-VIDEO_QUEUE = 30  # frames waiting for the encoder (half a second at 60 fps)
+VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
 
@@ -267,7 +268,7 @@ class Recorder:
         container = self._open_container()
         video = container.add_stream(self.codec, rate=self.fps)
         video.width, video.height = self.out_width, self.out_height
-        video.pix_fmt = "nv12" if self.codec == "h264_nvenc" else "yuv420p"
+        video.pix_fmt = "nv12"  # what the GPU hands over (render/compositor.py read_nv12); x264 takes it too
         video.bit_rate = self.bitrate_kbps * 1000
         ctx = video.codec_context
         ctx.time_base = Fraction(1, self.fps)
@@ -330,6 +331,30 @@ class Recorder:
             self.longest_stall = max(self.longest_stall, waited)
             self.bytes_out += packet.size
 
+    @property
+    def gpu_size(self) -> tuple[int, int] | None:
+        """The size to ask the engine for NV12 frames at (converted and scaled on the GPU); None = RGBA."""
+        if os.environ.get("SPRIGCAST_CPU_CONVERT"):
+            return None  # escape hatch: convert on the CPU as before, in case a driver gets NV12 wrong
+        w, h = self.out_width, self.out_height
+        return (w, h) if w % 2 == 0 and h % 2 == 0 else None
+
+    def _nv12_frame(self, frame):
+        """An av.VideoFrame from the GPU's NV12 bytes, copying row by row only if the planes are padded."""
+        import av
+
+        w, h = frame.width, frame.height
+        vf = av.VideoFrame(w, h, "nv12")
+        y_size = w * h
+        for plane, data, rows in ((vf.planes[0], frame.data[:y_size], h), (vf.planes[1], frame.data[y_size:], h // 2)):
+            if plane.line_size == w:
+                plane.update(data)
+            else:
+                padded = np.zeros((rows, plane.line_size), dtype=np.uint8)
+                padded[:, :w] = np.frombuffer(data, dtype=np.uint8).reshape(rows, w)
+                plane.update(padded.tobytes())
+        return vf
+
     def _write_video(self, container, stream, frame) -> None:
         import av
         from av.video.reformatter import ColorRange, Colorspace
@@ -339,6 +364,13 @@ class Recorder:
             return  # rendered before the start, or a second tick in the same output frame slot
         self._last_pts = pts
         began, muxed = time.perf_counter(), self.mux_seconds
+        if getattr(frame, "fmt", "rgba") == "nv12" and (frame.width, frame.height) == (self.out_width, self.out_height):
+            vf = self._nv12_frame(frame)  # already converted and scaled on the GPU: nothing to do here
+            vf.pts = pts
+            self._mux(container, stream.encode(vf))
+            self.frames += 1
+            self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
+            return
         vf = av.VideoFrame(self.width, self.height, "rgba")
         if vf.planes[0].line_size == self.width * 4:
             vf.planes[0].update(frame.data)  # one memcpy: about 3x faster than going through NumPy at 1080p
@@ -407,7 +439,7 @@ class RecordingSession:
             recorders.append((canvas.id, rec))
         session = cls(engine, recorders)
         for canvas_id, rec in recorders:
-            engine.add_frame_tap(canvas_id, rec.push_frame)
+            engine.add_frame_tap(canvas_id, rec.push_frame, rec.gpu_size)
             engine.mixer.add_tap(rec.push_audio)
         return session
 

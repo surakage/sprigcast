@@ -386,14 +386,14 @@ class StreamSession:
                 fps = min(t.fps or c.fps, c.fps)
                 st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
                               t.size, t.bandwidth_test, encoder, auto_bitrate=t.auto_bitrate)
-                taps.append((c.id, st.push_frame))
+                taps.append((c.id, st.push_frame, st.gpu_size))
             st.output_id = t.output_id or t.name
             st.start()
             streamers.append((c.id, st))
         session = cls(engine, streamers)
         session.taps = taps
-        for canvas_id, callback in taps:
-            engine.add_frame_tap(canvas_id, callback)
+        for canvas_id, callback, *size in taps:
+            engine.add_frame_tap(canvas_id, callback, *size)
         for _, st in streamers:
             engine.mixer.add_tap(st.push_audio)
         return session
@@ -404,7 +404,7 @@ class StreamSession:
 
     def stop(self) -> None:
         taps = getattr(self, "taps", None) or [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
-        for canvas_id, callback in taps:
+        for canvas_id, callback, *_ in taps:
             self.engine.remove_frame_tap(canvas_id, callback)
         for _, st in self.streamers:
             self.engine.mixer.remove_tap(st.push_audio)

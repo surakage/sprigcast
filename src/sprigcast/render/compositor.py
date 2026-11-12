@@ -99,6 +99,60 @@ void main() {
 """
 
 
+# Encoders want NV12 (a full-size luma plane, then half-size interleaved chroma), BT.709 limited range.
+# Converting and scaling here, on the GPU, means each output reads back 1.5 bytes per pixel at its own
+# size instead of 4 bytes per canvas pixel, and the CPU does no colour conversion or scaling at all.
+NV12_VERTEX = """
+#version 330
+void main() {
+    // One triangle that covers the whole target.
+    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+NV12_FRAGMENT = """
+#version 330
+uniform sampler2D canvas;
+uniform vec2 out_size;      // size of the plane being drawn, in pixels
+uniform bool chroma;        // false: Y plane, true: interleaved CbCr at half size
+uniform vec2 texel;         // one output pixel of the full-size picture, in canvas uv
+out vec4 color;
+
+vec3 rgb_at(vec2 uv) {
+    return texture(canvas, uv).rgb;  // already composited over black (alpha is dropped)
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / out_size;  // row 0 of the target = top of the canvas
+    if (!chroma) {
+        vec3 c = rgb_at(uv);
+        color = vec4((16.0 + 219.0 * dot(c, vec3(0.2126, 0.7152, 0.0722))) / 255.0, 0.0, 0.0, 1.0);
+    } else {
+        // Average the 2x2 block of full-size pixels this chroma sample covers.
+        vec3 c = 0.25 * (rgb_at(uv + texel * vec2(-0.5, -0.5)) + rgb_at(uv + texel * vec2(0.5, -0.5))
+                       + rgb_at(uv + texel * vec2(-0.5, 0.5)) + rgb_at(uv + texel * vec2(0.5, 0.5)));
+        float cb = 128.0 + 224.0 * dot(c, vec3(-0.1146, -0.3854, 0.5));
+        float cr = 128.0 + 224.0 * dot(c, vec3(0.5, -0.4542, -0.0458));
+        color = vec4(cb / 255.0, cr / 255.0, 0.0, 1.0);
+    }
+}
+"""
+
+
+class _Nv12Target:
+    def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
+        w, h = size
+        self.size = size
+        self.y = ctx.texture((w, h), 1)
+        self.uv = ctx.texture((w // 2, h // 2), 2)
+        self.y_fbo = ctx.framebuffer(color_attachments=[self.y])
+        self.uv_fbo = ctx.framebuffer(color_attachments=[self.uv])
+
+    def release(self) -> None:
+        for obj in (self.y_fbo, self.uv_fbo, self.y, self.uv):
+            obj.release()
+
+
 # How to read each source byte order as RGBA when sampling ("1" = fully opaque).
 SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1"}
 
@@ -136,6 +190,9 @@ class Compositor:
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
         self.textures: dict[str, moderngl.Texture] = {}
         self.targets: dict[str, _CanvasTarget] = {}
+        self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
+        self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
+        self.nv12_targets: dict[tuple[str, tuple[int, int]], _Nv12Target] = {}
         # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
         self.parts: dict[tuple[str, str], moderngl.Texture] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
@@ -293,11 +350,33 @@ class Compositor:
         """Return the canvas as tightly packed RGBA rows, top row first."""
         return self.targets[canvas_id].fbo.read(components=4, alignment=1)
 
+    def read_nv12(self, canvas_id: str, size: tuple[int, int]) -> bytes:
+        """The canvas scaled to size (even width and height) as NV12: Y rows, then CbCr rows, top first."""
+        source = self.targets[canvas_id]
+        target = self.nv12_targets.get((canvas_id, size))
+        if target is None:
+            target = self.nv12_targets[(canvas_id, size)] = _Nv12Target(self.ctx, size)
+        w, h = size
+        self.ctx.disable(moderngl.BLEND)
+        source.color.use(0)
+        program = self.nv12_program
+        program["canvas"].value = 0
+        program["texel"].value = (1.0 / w, 1.0 / h)
+        for fbo, plane, chroma in ((target.y_fbo, (w, h), False), (target.uv_fbo, (w // 2, h // 2), True)):
+            fbo.use()
+            self.ctx.viewport = (0, 0, *plane)
+            program["out_size"].value = plane
+            program["chroma"].value = chroma
+            self.nv12_vao.render(moderngl.TRIANGLES, vertices=3)
+        return target.y_fbo.read(components=1, alignment=1) + target.uv_fbo.read(components=2, alignment=1)
+
     def release(self) -> None:
         for tex in self.textures.values():
             tex.release()
         for target in self.targets.values():
             target.release()
+        for nv12 in self.nv12_targets.values():
+            nv12.release()
         self.vao.release()
         self.vbo.release()
         self.program.release()
