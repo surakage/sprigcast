@@ -73,11 +73,12 @@ class Preview(QWidget):
 
     # Data from the main window -------------------------------------------------
 
-    def set_frame(self, data: bytes, width: int, height: int) -> None:
+    def set_frame(self, data: bytes, width: int, height: int, canvas_size: tuple[int, int] | None = None) -> None:
+        """An image of the canvas; it may be smaller than the canvas (shrunk to fit on screen)."""
         # copy() detaches the image from the bytes object, which the engine may drop at any time.
         fmt = QImage.Format.Format_RGBA8888_Premultiplied if self.transparent else QImage.Format.Format_RGBA8888
         self._image = QImage(data, width, height, width * 4, fmt).copy()
-        self.aspect = (width, height)
+        self.aspect = canvas_size or (width, height)  # editing works in canvas pixels, whatever the image size
         self.update()
 
     def set_inner_frame(self, data: bytes, width: int, height: int) -> None:

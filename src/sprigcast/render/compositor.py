@@ -139,6 +139,32 @@ void main() {
 """
 
 
+SCALE_FRAGMENT = """
+#version 330
+uniform sampler2D canvas;
+uniform vec2 out_size;
+out vec4 color;
+
+void main() {
+    // Four bilinear taps around each output pixel: a clean downscale up to about 4x, alpha included.
+    vec2 uv = gl_FragCoord.xy / out_size;
+    vec2 q = 0.25 / out_size;
+    color = 0.25 * (texture(canvas, uv + vec2(-q.x, -q.y)) + texture(canvas, uv + vec2(q.x, -q.y))
+                  + texture(canvas, uv + vec2(-q.x, q.y)) + texture(canvas, uv + vec2(q.x, q.y)));
+}
+"""
+
+
+class _ScaledTarget:
+    def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
+        self.color = ctx.texture(size, 4)
+        self.fbo = ctx.framebuffer(color_attachments=[self.color])
+
+    def release(self) -> None:
+        self.fbo.release()
+        self.color.release()
+
+
 class _Nv12Target:
     def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
         w, h = size
@@ -193,6 +219,9 @@ class Compositor:
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
         self.nv12_targets: dict[tuple[str, tuple[int, int]], _Nv12Target] = {}
+        self.scale_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=SCALE_FRAGMENT)
+        self.scale_vao = self.ctx.vertex_array(self.scale_program, [])
+        self.scaled_targets: dict[tuple[str, tuple[int, int]], _ScaledTarget] = {}
         # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
         self.parts: dict[tuple[str, str], moderngl.Texture] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
@@ -350,6 +379,23 @@ class Compositor:
         """Return the canvas as tightly packed RGBA rows, top row first."""
         return self.targets[canvas_id].fbo.read(components=4, alignment=1)
 
+    def read_scaled(self, canvas_id: str, size: tuple[int, int]) -> bytes:
+        """The canvas shrunk to size on the GPU, as RGBA rows top first: what a small preview needs."""
+        source = self.targets[canvas_id]
+        target = self.scaled_targets.get((canvas_id, size))
+        if target is None:
+            for key in [k for k in self.scaled_targets if k[0] == canvas_id]:  # the preview was resized
+                self.scaled_targets.pop(key).release()
+            target = self.scaled_targets[(canvas_id, size)] = _ScaledTarget(self.ctx, size)
+        self.ctx.disable(moderngl.BLEND)
+        source.color.use(0)
+        self.scale_program["canvas"].value = 0
+        self.scale_program["out_size"].value = size
+        target.fbo.use()
+        self.ctx.viewport = (0, 0, *size)
+        self.scale_vao.render(moderngl.TRIANGLES, vertices=3)
+        return target.fbo.read(components=4, alignment=1)
+
     def read_nv12(self, canvas_id: str, size: tuple[int, int]) -> bytearray:
         """The canvas scaled to size (even width and height) as NV12: Y rows, then CbCr rows, top first."""
         source = self.targets[canvas_id]
@@ -381,6 +427,8 @@ class Compositor:
             target.release()
         for nv12 in self.nv12_targets.values():
             nv12.release()
+        for scaled in self.scaled_targets.values():
+            scaled.release()
         self.vao.release()
         self.vbo.release()
         self.program.release()

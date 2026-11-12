@@ -56,16 +56,29 @@ def nvenc_hwaccel():
     Set SPRIGCAST_NVENC_OWN_CONTEXT=1 to turn this off.
     """
     global _shared_gpu_ok
-    if os.environ.get("SPRIGCAST_NVENC_OWN_CONTEXT"):
+    if nvenc_device() == "own":
         return None
     if _shared_gpu_ok is None:
         _shared_gpu_ok = nvenc_works() and _try_encoder("h264_nvenc", _make_hwaccel())
     return _make_hwaccel() if _shared_gpu_ok else None
 
 
+def nvenc_device() -> str:
+    """How NVENC encoders reach the GPU (SPRIGCAST_NVENC_DEVICE):
+    "cuda" (default): CUDA's one shared context; "d3d11": a Direct3D 11 device, like OBS, no CUDA at all;
+    "own": FFmpeg's default, a CUDA context per encoder. `sprigcast-memcheck --encoders` compares them.
+    """
+    if os.environ.get("SPRIGCAST_NVENC_OWN_CONTEXT"):
+        return "own"
+    choice = os.environ.get("SPRIGCAST_NVENC_DEVICE", "cuda").strip().lower()
+    return choice if choice in ("cuda", "d3d11", "own") else "cuda"
+
+
 def _make_hwaccel():
     from av.codec.hwaccel import HWAccel
 
+    if nvenc_device() == "d3d11":
+        return HWAccel("d3d11va")
     return HWAccel("cuda", options={"primary_ctx": "1"})
 
 

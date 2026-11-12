@@ -1295,18 +1295,30 @@ class MainWindow(QMainWindow):
             keys.add("part")
         return frozenset(keys)
 
+    def _preview_pixel_sizes(self) -> dict[str, tuple[int, int]]:
+        """How many physical pixels each preview's canvas area covers, so the engine copies no more."""
+        sizes = {}
+        for key, preview in [*self.previews.items(), *((f"next:{c}", p) for c, p in self.next_previews.items())]:
+            if preview.isVisible():
+                r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
+                sizes[key] = (int(r.width() * dpr), int(r.height() * dpr))
+        return sizes
+
     def _poll_engine(self) -> None:
         watched = self._watched_previews()
         if watched != self.engine.previews:
             self.engine.previews = watched
+        sizes = self._preview_pixel_sizes()
+        if sizes != self.engine.preview_sizes:
+            self.engine.preview_sizes = sizes
         for canvas_id, mailbox in list(self.engine.frames.items()):
             frame = mailbox.take()
             if frame is None:
                 continue
             if canvas_id in self.previews:
-                self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height)
+                self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
             elif canvas_id.startswith("next:") and canvas_id[5:] in self.staged:
-                self.next_previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height)
+                self.next_previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
         part_frame = self.engine.part_frames.take()
         if part_frame is not None and part_frame.canvas_id == self.part_preview.canvas_id:
             self.part_preview.set_frame(part_frame.data, part_frame.width, part_frame.height)
