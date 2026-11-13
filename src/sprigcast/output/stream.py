@@ -253,7 +253,7 @@ class Streamer(Recorder):
             log.info("stream %s: auto-pilot bitrate %d kbps", self.name, kbps)
             self._want_kbps = kbps
 
-    def _write_video(self, container, stream, frame) -> None:
+    def _write_video(self, container, stream, frame, pts: int | None = None) -> None:
         if self._want_kbps != self._applied_kbps:
             ctx, k = stream.codec_context, self._want_kbps
             ctx.bit_rate = k * 1000
@@ -261,7 +261,7 @@ class Streamer(Recorder):
             if peak:
                 ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
             self._applied_kbps = k
-        super()._write_video(container, stream, frame)
+        super()._write_video(container, stream, frame, pts)
 
     def push_frame(self, frame) -> None:
         if self.connected:
@@ -272,8 +272,7 @@ class Streamer(Recorder):
             elif backlog > MAX_BACKLOG:
                 self._congested = True
             if self._congested:
-                if self._slot(frame) > self._last_queued:  # a frame we would have sent
-                    self._last_queued = self._slot(frame)
+                if self._assign_pts(frame) is not None:  # a frame we would have sent
                     self.dropped += 1
                 return
         super().push_frame(frame)
