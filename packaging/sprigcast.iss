@@ -20,6 +20,10 @@ UninstallDisplayIcon={app}\sprigcast.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; SprigCast holds this mutex while it runs (app/main.py): Setup and Uninstall ask you to close it first,
+; so files aren't left behind and a running copy doesn't outlive its uninstall.
+AppMutex=SprigCastAppMutex
+CloseApplications=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
