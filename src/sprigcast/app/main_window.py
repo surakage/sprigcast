@@ -1282,6 +1282,8 @@ class MainWindow(QMainWindow):
             shown_group.addAction(action)
             action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
             self.canvas_choice_actions[key] = action
+        settings_menu.addAction("Light settings for a slower PC…").triggered.connect(
+            lambda: self.use_light_settings())
         settings_menu.addSeparator()
         doctor_action = settings_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
@@ -2915,6 +2917,45 @@ class MainWindow(QMainWindow):
                 out.append(Command(text, group, action.trigger, action.shortcut().toString(),
                                    action.isChecked() if action.isCheckable() else None))
         return out
+
+    def use_light_settings(self, why: str = "") -> bool:
+        """Offer the light settings (720p, 30 fps, fast encoder). True if they were applied."""
+        from sprigcast.app import lowend
+
+        if self.streaming is not None or self.recording is not None or self.replay_button.isChecked():
+            QMessageBox.information(self, "Light settings", "Stop streaming, recording and the replay buffer first.")
+            return False
+        lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps())
+        if not lines:
+            QMessageBox.information(self, "Light settings", "You're already on light settings.")
+            return False
+        text = (why + "\n\n" if why else "") + "Light settings keep streaming smooth on a slower PC:\n\n"
+        text += "\n".join(f"•  {line}" for line in lines)
+        text += "\n\nYou can change any of it back in Settings."
+        box = QMessageBox(QMessageBox.Icon.Question, "Light settings", text, parent=self)
+        use = box.addButton("Use light settings", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not use:
+            return False
+        _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps())
+        lowend.store_fps(fps)
+        self.collection.save(self.scenes_path)
+        self.statusBar().showMessage(
+            "Light settings are on." + (" Restart SprigCast for 30 fps." if fps else ""), 15000)
+        return True
+
+    def suggest_light_settings(self) -> None:
+        """Once, on a PC with little to spare: offer the light settings."""
+        from sprigcast.app import lowend
+
+        settings = QSettings()
+        if settings.value(lowend.SUGGESTED, False, type=bool):
+            return
+        settings.setValue(lowend.SUGGESTED, True)
+        reasons = lowend.weak_reasons(lowend.pc_facts())
+        if reasons and lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps())[0]:
+            self.use_light_settings(f"This PC is on the light side ({', '.join(reasons)}).")
 
     def _open_palette(self) -> CommandPalette:
         palette = CommandPalette(self._palette_commands(), self)

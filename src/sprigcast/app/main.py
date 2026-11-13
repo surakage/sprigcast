@@ -143,6 +143,9 @@ def run() -> None:
         window.showMinimized()
     else:
         window.show()
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(1500, window.suggest_light_settings)  # once, and only on a slower PC
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
