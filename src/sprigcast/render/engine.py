@@ -137,9 +137,13 @@ class Engine:
                 next_tick += interval
                 now = time.perf_counter()
                 if now > next_tick:
-                    # Running behind: count it and resynchronise instead of rendering a burst to catch up.
-                    dropped += 1
-                    next_tick = now
+                    # Running behind. A little late: render the next tick straight away and stay on the
+                    # grid, so recordings get evenly spaced frames. A whole tick or more late: skip the
+                    # missed ticks (no burst to catch up) and count them, still keeping the grid's phase.
+                    missed = int((now - next_tick) / interval)
+                    if missed:
+                        dropped += missed
+                        next_tick += missed * interval
                 else:
                     # Python 3.11+ sleeps with a high-resolution timer on Windows: no need to spin.
                     time.sleep(next_tick - now)

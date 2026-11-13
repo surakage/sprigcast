@@ -327,6 +327,27 @@ class Recorder:
         """
         return math.floor((frame.time - self.start_time) * self.fps + 0.25)
 
+    def _assign_pts(self, frame) -> int | None:
+        """The output frame number for this render, or None when it isn't needed (call once per render).
+
+        Renders are numbered one after another while they arrive roughly on time. Going by the clock
+        alone left a hole now and then: a tick a millisecond late could land just past a slot boundary
+        and skip a number (2-3% of frames in the user's recordings). Only a render that's really late
+        (most of a frame) leaves a gap and puts the numbering back on the clock, so the video stays in
+        step with the audio. A render well before its slot (the spare ones when a 60 fps canvas feeds
+        a 30 fps output, or renders from before the start) is skipped.
+        """
+        x = (frame.time - self.start_time) * self.fps
+        expected = self._last_queued + 1
+        if x < expected - 0.4:
+            return None
+        if self._last_queued < 0:
+            pts = max(0, round(x))  # the first frame sets the phase: later ticks sit near whole numbers
+        else:
+            pts = expected if x < expected + 0.9 else round(x)
+        self._last_queued = pts
+        return pts
+
     def push_frame(self, frame) -> None:
         """frame has .data (RGBA bytes, top row first) and .time (perf_counter when rendered).
 
@@ -335,12 +356,11 @@ class Recorder:
         """
         if self.error is not None or self._stop.is_set():
             return
-        slot = self._slot(frame)
-        if slot <= self._last_queued:
+        pts = self._assign_pts(frame)
+        if pts is None:
             return
-        self._last_queued = slot
         try:
-            self._video.put_nowait(frame)
+            self._video.put_nowait((pts, frame))
             self.peak_queue = max(self.peak_queue, self._video.qsize())
         except queue.Full:
             if self._counts_drops():
@@ -467,12 +487,12 @@ class Recorder:
                 stopping = self._stop.is_set()
                 self._write_audio(container, audio)
                 try:
-                    frame = self._video.get(timeout=0.05)
+                    pts, frame = self._video.get(timeout=0.05)
                 except queue.Empty:
                     if stopping:
                         break
                     continue
-                self._write_video(container, video, frame)
+                self._write_video(container, video, frame, pts)
             self._write_audio(container, audio)
             if self._direct is None:  # SprigCast's own encoder holds nothing back (no B-frames)
                 self._mux(container, video.encode(None))
@@ -527,11 +547,12 @@ class Recorder:
                 plane.update(padded.tobytes())
         return vf
 
-    def _write_video(self, container, stream, frame) -> None:
+    def _write_video(self, container, stream, frame, pts: int | None = None) -> None:
         import av
         from av.video.reformatter import ColorRange, Colorspace
 
-        pts = self._slot(frame)
+        if pts is None:
+            pts = self._slot(frame)
         if pts <= self._last_pts:
             return  # rendered before the start, or a second tick in the same output frame slot
         self._last_pts = pts

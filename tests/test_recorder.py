@@ -210,3 +210,36 @@ def test_nvenc_without_b_frames_keeps_two_surfaces_and_no_delay():
     for enc in (EncoderSettings(b_frames=2), EncoderSettings(b_frames=0, lookahead=True)):
         opts = video_options("h264_nvenc", enc, 6000)
         assert "delay" not in opts and "surfaces" not in opts
+
+
+def test_timer_jitter_leaves_no_holes_but_real_lateness_does(tmp_path):
+    import random
+
+    class F:
+        def __init__(self, t):
+            self.time = t
+
+    def numbers(fps, render_fps, times):
+        rec = Recorder(tmp_path / "x.mkv", 64, 64, fps, 1000, "libx264", 0.0)
+        out = []
+        for t in times:
+            pts = rec._assign_pts(F(t))
+            if pts is not None:
+                out.append(pts)
+        return out
+
+    rng = random.Random(1)
+    # 60 fps ticks sitting right on a slot boundary (phase 0.74), each up to 1 ms early or late
+    ticks = [(i + 0.74) / 60 + rng.uniform(-0.001, 0.001) for i in range(600)]
+    got = numbers(60, 60, ticks)
+    assert got == list(range(got[0], got[0] + len(got)))  # no gaps, no repeats
+    # a 60 fps canvas into a 30 fps output keeps every other render, evenly
+    halved = numbers(30, 60, [i / 60 + rng.uniform(-0.001, 0.001) for i in range(120)])
+    assert halved == list(range(60))
+    # a tick that's really late (a whole frame) leaves one gap, and the numbering stays on the clock
+    late = [i / 60 for i in range(10)] + [(i + 1) / 60 for i in range(10, 20)]
+    got = numbers(60, 60, late)
+    assert got[-1] == 20 and len(got) == 20
+    # a render loop running a bit slow (59.5 fps) skips a render now and then instead of drifting
+    slow = numbers(60, 60, [i / 59.5 for i in range(595)])
+    assert abs(slow[-1] - 594 / 59.5 * 60) < 1
