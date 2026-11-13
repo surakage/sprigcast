@@ -17,6 +17,7 @@ LIGHT_SHORT_SIDE = 720  # 1280x720 for a horizontal canvas, 720x1280 for a verti
 LIGHT_STREAM_KBPS = 4000
 LIGHT_RECORDING_KBPS = 8000
 LIGHT_PRESET = "p3"
+CPU_PRESET = "p2"  # x264 on the CPU: superfast, a third less work than veryfast
 SUGGESTED = "general/light_suggested"  # QSettings: the one-time suggestion was shown
 
 
@@ -55,17 +56,15 @@ def weak_reasons(facts: PcFacts) -> list[str]:
 
 def light_size(width: int, height: int) -> tuple[int, int] | None:
     """The size to encode at, or None when it is already 720p or smaller."""
-    short = min(width, height)
-    if short <= LIGHT_SHORT_SIDE:
-        return None
-    scale = LIGHT_SHORT_SIDE / short
-    return max(2, round(width * scale / 2) * 2), max(2, round(height * scale / 2) * 2)
+    from sprigcast.output.recorder import shrink_to
+
+    return shrink_to(width, height, LIGHT_SHORT_SIDE)
 
 
-def _light_encoder(enc: EncoderSettings, apply: bool) -> bool:
+def _light_encoder(enc: EncoderSettings, apply: bool, preset: str = LIGHT_PRESET) -> bool:
     wanted = {"multipass": "disabled", "lookahead": False, "b_frames": 0}
-    if int(enc.preset[1:]) > int(LIGHT_PRESET[1:]):
-        wanted["preset"] = LIGHT_PRESET
+    if int(enc.preset[1:]) > int(preset[1:]):
+        wanted["preset"] = preset
     differs = any(getattr(enc, name) != value for name, value in wanted.items())
     if differs and apply:
         for name, value in wanted.items():
@@ -73,8 +72,8 @@ def _light_encoder(enc: EncoderSettings, apply: bool) -> bool:
     return differs
 
 
-def light_changes(collection: SceneCollection, apply: bool = False,
-                  pending_fps: dict[str, int] | None = None) -> tuple[list[str], dict[str, int]]:
+def light_changes(collection: SceneCollection, apply: bool = False, pending_fps: dict[str, int] | None = None,
+                  cpu_encoding: bool = False) -> tuple[list[str], dict[str, int]]:
     """What light settings would change, as short lines, and the canvas frame rates to switch to.
 
     With ``apply`` the collection is changed too, except the canvas frame rates: those change at the
@@ -108,14 +107,22 @@ def light_changes(collection: SceneCollection, apply: bool = False,
         lines.append(f"Streams sent at {' and '.join(dict.fromkeys(sized))} (your scenes stay as they are)")
     if capped:
         lines.append(f"Stream bitrate {LIGHT_STREAM_KBPS} kbps")
+    recorded = [c for c in collection.canvases if c.enabled and c.id in collection.recording.canvases]
+    if any(light_size(c.width, c.height) for c in recorded) and (
+            not collection.recording.short_side or collection.recording.short_side > LIGHT_SHORT_SIDE):
+        lines.append(f"Recordings and replays saved at {LIGHT_SHORT_SIDE}p")
+        if apply:
+            collection.recording.short_side = LIGHT_SHORT_SIDE
     if collection.recording.bitrate_kbps > LIGHT_RECORDING_KBPS:
         lines.append(f"Recording bitrate {LIGHT_RECORDING_KBPS} kbps")
         if apply:
             collection.recording.bitrate_kbps = LIGHT_RECORDING_KBPS
-    stream = _light_encoder(collection.stream_encoder, apply)
-    recording = _light_encoder(collection.recording.encoder, apply)
+    preset = CPU_PRESET if cpu_encoding else LIGHT_PRESET
+    stream = _light_encoder(collection.stream_encoder, apply, preset)
+    recording = _light_encoder(collection.recording.encoder, apply, preset)
     if stream or recording:
-        lines.append("Fastest encoder settings: fast preset, no look-ahead, multipass or B-frames")
+        lines.append("Fastest encoder settings: " + ("superfast preset" if cpu_encoding else "fast preset")
+                     + ", no look-ahead, multipass or B-frames")
     return lines, fps
 
 

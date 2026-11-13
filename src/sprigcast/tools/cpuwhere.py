@@ -14,6 +14,16 @@ import threading
 import time
 
 
+def usable_cpus() -> int:
+    """CPU threads this process may run on (fewer than the PC has when memcheck --weak limits it)."""
+    try:
+        import psutil
+
+        return len(psutil.Process().cpu_affinity()) or 1
+    except Exception:
+        return os.cpu_count() or 1
+
+
 class CpuWatch:
     def __init__(self) -> None:
         self._at = 0.0
@@ -48,7 +58,7 @@ class CpuWatch:
             if spent > 0:
                 name = names.get(tid, "other library threads")
                 used[name] = used.get(name, 0.0) + spent
-        whole = 100.0 * sum(used.values()) / seconds / (os.cpu_count() or 1)
+        whole = 100.0 * sum(used.values()) / seconds / usable_cpus()
         return whole, sorted(((name, 100.0 * spent / seconds) for name, spent in used.items()), key=lambda u: -u[1])
 
     def report(self, when: str, top: int = 8) -> None:
@@ -60,7 +70,7 @@ class CpuWatch:
             return
         if not threads:
             return
-        print(f"  CPU {when}: {whole:.1f}% of the whole CPU ({os.cpu_count() or 1} threads). "
+        print(f"  CPU {when}: {whole:.1f}% of the whole CPU ({usable_cpus()} threads). "
               "By thread, in % of one core:", flush=True)
         for name, share in threads[:top]:
             if share >= 0.05:

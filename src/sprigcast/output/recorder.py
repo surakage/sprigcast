@@ -270,6 +270,15 @@ def codec_short(codec: str) -> str:
     return CODEC_SHORT.get(codec, codec)
 
 
+def shrink_to(width: int, height: int, short_side: int | None) -> tuple[int, int] | None:
+    """The size with the short side at `short_side`, same shape, even numbers; None when no smaller."""
+    short = min(width, height)
+    if not short_side or short <= short_side:
+        return None
+    scale = short_side / short
+    return max(2, round(width * scale / 2) * 2), max(2, round(height * scale / 2) * 2)
+
+
 def recording_path(folder: Path, canvas_id: str, when: datetime, container: str) -> Path:
     """`SprigCast 2026-11-10 19-30-05 horizontal.mkv`, with a counter if that name is taken."""
     base = f"SprigCast {when:%Y-%m-%d %H-%M-%S} {canvas_id}"

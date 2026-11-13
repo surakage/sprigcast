@@ -94,3 +94,18 @@ def test_recording_alone_then_again(tmp_path):
     _feed(engine, time.perf_counter(), 10, pool=pool)
     rec2.stop()
     assert rec2.errors == [] and _frames(rec2.paths[0]) == 10, _frames(rec2.paths[0])
+
+
+def test_recording_can_be_saved_smaller_than_the_canvas(tmp_path):
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    rec = SharedRecording.start(pool, CANVASES, tmp_path, 800, codec="libx264", short_side=18)
+    assert {cid: (e.out_width, e.out_height) for cid, e in pool.encoders.items()} == {
+        "horizontal": (32, 18), "vertical": (18, 32)}
+    _feed(engine, time.perf_counter(), 10, pool=pool)
+    rec.stop()
+    assert rec.errors == []
+    for path in rec.paths:
+        with av.open(str(path)) as f:
+            stream = f.streams.video[0]
+            assert sorted((stream.width, stream.height)) == [18, 32]

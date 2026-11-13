@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from sprigcast.output.recorder import pick_codec, recording_path
+from sprigcast.output.recorder import pick_codec, recording_path, shrink_to
 from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, replay_path
 
 log = logging.getLogger(__name__)
@@ -26,8 +26,10 @@ log = logging.getLogger(__name__)
 class CanvasEncoder(ReplayBuffer):
     """A canvas's encoder: keeps `seconds` of packets for replays (0 = replay off) and can write a file."""
 
-    def __init__(self, canvas_id, width, height, fps, bitrate_kbps, codec, start_time, container="mkv", encoder=None):
-        super().__init__(canvas_id, width, height, fps, bitrate_kbps, codec, start_time, 0.0, container, encoder)
+    def __init__(self, canvas_id, width, height, fps, bitrate_kbps, codec, start_time, container="mkv", encoder=None,
+                 out_size=None):
+        super().__init__(canvas_id, width, height, fps, bitrate_kbps, codec, start_time, 0.0, container, encoder,
+                         out_size)
         self.file: PacketFile | None = None  # the recording being written, on the encoder thread
         self.file_path: Path | None = None  # asked for; the file opens at the next keyframe
         self.file_error: str | None = None
@@ -120,14 +122,16 @@ class EncoderPool:
         self.encoders: dict[str, CanvasEncoder] = {}
         self._users: dict[str, set[str]] = {}
 
-    def acquire(self, user: str, canvas, bitrate_kbps: int, container: str, codec: str, encoder) -> CanvasEncoder:
+    def acquire(self, user: str, canvas, bitrate_kbps: int, container: str, codec: str, encoder,
+                short_side: int | None = None) -> CanvasEncoder:
         enc = self.encoders.get(canvas.id)
         if enc is not None and not enc.running:  # it failed: start a fresh one
             self._drop(canvas.id)
             enc = None
         if enc is None:
             enc = CanvasEncoder(canvas.id, canvas.width, canvas.height, canvas.fps, bitrate_kbps, codec,
-                                time.perf_counter(), container, encoder)
+                                time.perf_counter(), container, encoder,
+                                shrink_to(canvas.width, canvas.height, short_side))
             enc.start()
             self.encoders[canvas.id] = enc
             self._users[canvas.id] = set()
@@ -167,13 +171,13 @@ class SharedRecording:
 
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, bitrate_kbps: int, container: str = "mkv",
-              codec: str | None = None, encoder=None) -> SharedRecording:
+              codec: str | None = None, encoder=None, short_side: int | None = None) -> SharedRecording:
         codec = codec or pick_codec()
         now = datetime.now()
         encoders, paths = [], []
         try:
             for canvas in canvases:
-                enc = pool.acquire("recording", canvas, bitrate_kbps, container, codec, encoder)
+                enc = pool.acquire("recording", canvas, bitrate_kbps, container, codec, encoder, short_side)
                 encoders.append((canvas.id, enc))
                 path = recording_path(folder, canvas.id, now, container)
                 enc.start_file(path)
@@ -220,11 +224,12 @@ class SharedReplay:
 
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, seconds: float, bitrate_kbps: int,
-              container: str = "mkv", codec: str | None = None, encoder=None) -> SharedReplay:
+              container: str = "mkv", codec: str | None = None, encoder=None,
+              short_side: int | None = None) -> SharedReplay:
         codec = codec or pick_codec()
         encoders = []
         for canvas in canvases:
-            enc = pool.acquire("replay", canvas, bitrate_kbps, container, codec, encoder)
+            enc = pool.acquire("replay", canvas, bitrate_kbps, container, codec, encoder, short_side)
             enc.seconds = seconds
             encoders.append(enc)
         return cls(pool, encoders, folder, container)

@@ -17,6 +17,11 @@ from PySide6.QtWidgets import (
 
 from sprigcast.core.scene import Canvas, RecordingSettings
 
+SIZE_LABELS = {
+    None: "Canvas size (best quality)",
+    1080: "1080p at most",
+    720: "720p (lighter: for slower PCs)",
+}
 CONTAINER_LABELS = {
     "mkv": "MKV (recommended: still plays if SprigCast or Windows crashes)",
     "mp4": "MP4 (plays everywhere, but the file is lost if recording is cut off)",
@@ -60,6 +65,14 @@ class RecordingPage(QWidget):
         self.container.setCurrentIndex(list(CONTAINER_LABELS).index(settings.container))
         form.addRow("File type", self.container)
 
+        self.size = QComboBox()
+        for short, label in SIZE_LABELS.items():
+            self.size.addItem(label, short)
+        if self.size.findData(settings.short_side) < 0:
+            self.size.addItem(f"{settings.short_side}p", settings.short_side)
+        self.size.setCurrentIndex(self.size.findData(settings.short_side))
+        form.addRow("Size", self.size)
+
 
         self.canvas_boxes: dict[str, QCheckBox] = {}
         for i, canvas in enumerate(canvases):
@@ -78,5 +91,6 @@ class RecordingPage(QWidget):
         settings.folder = "" if folder == default_folder else folder
         settings.bitrate_kbps = self.bitrate.value()
         settings.container = self.container.currentData()
+        settings.short_side = self.size.currentData()
         if self.canvas_boxes:
             settings.canvases = [cid for cid, box in self.canvas_boxes.items() if box.isChecked()]
