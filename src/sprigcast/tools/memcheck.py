@@ -156,6 +156,64 @@ def _encoder_probe(variant: str, settings: dict | None = None, extra: dict | Non
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _direct_probe(canvases: int) -> None:
+    """Child process: SprigCast's own Direct3D 11 NVENC encoders for 4 s at 60 fps; print what they add."""
+    import json
+
+    import psutil
+
+    process = psutil.Process()
+
+    def task_manager() -> int:
+        try:
+            return process.memory_full_info().uss
+        except Exception:
+            return process.memory_info().rss
+
+    import av  # loaded before measuring, as in the app (decoding the result back needs it anyway)
+
+    from sprigcast.output.nvenc_d3d11 import D3D11Encoder, NvencError
+
+    sizes = [(1920, 1080), (1080, 1920)][:canvases]
+    frames = {size: bytes(size[0] * size[1] * 3 // 2) for size in sizes}
+    before = (process.memory_info().rss, task_manager())
+    encoders, outputs, spent, count = [], [bytearray() for _ in sizes], 0.0, 0
+    try:
+        encoders = [D3D11Encoder(w, h, 60) for w, h in sizes]
+        start = time.perf_counter()
+        for n in range(240):
+            while time.perf_counter() < start + n / 60:
+                time.sleep(0.001)
+            for enc, size, out in zip(encoders, sizes, outputs):
+                began = time.perf_counter()
+                out += enc.encode(frames[size])
+                spent += time.perf_counter() - began
+                count += 1
+        during = (process.memory_info().rss, task_manager())
+        for enc in encoders:
+            enc.encode(None)
+    except (NvencError, OSError) as exc:
+        print(json.dumps({"error": str(exc)}))
+        return
+    finally:
+        for enc in encoders:
+            enc.close()
+    decoded = 0
+    try:
+        codec = av.CodecContext.create("h264", "r")
+        for packet in codec.parse(bytes(outputs[0])):
+            decoded += len(codec.decode(packet))
+    except Exception as exc:  # the memory numbers still count; say the output didn't decode
+        print(json.dumps({"error": f"encoded, but the output didn't decode: {exc}"}))
+        return
+    print(json.dumps({
+        "ram": (during[0] - before[0]) / 1e6,
+        "task_manager": (during[1] - before[1]) / 1e6,
+        "frames": decoded,
+        "ms": spent / max(count, 1) * 1000,
+    }))
+
+
 def _why_not(variant: str) -> str:
     """The error a test frame gives with this setup, for the report."""
     from fractions import Fraction
@@ -208,6 +266,18 @@ def compare_encoders() -> None:
     print("Today's settings (no B-frames, delay 0, 2 surfaces), other ways to reach the GPU:")
     for name, (label, settings, extra, env) in GPU_VARIANTS.items():
         run(name, label, settings, extra, env)
+    print("SprigCast's own NVENC over Direct3D 11 (no FFmpeg, no CUDA; how OBS does it):")
+    for canvases, label in ((1, "one encoder"), (2, "two encoders")):
+        code = f"from sprigcast.tools.memcheck import _direct_probe; _direct_probe({canvases})"
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+        lines = [line for line in out.stdout.splitlines() if line.startswith("{")]
+        result = json.loads(lines[-1]) if lines else {"error": (out.stderr.strip().splitlines() or ["no output"])[-1]}
+        name = f"direct{canvases}"
+        if result.get("error"):
+            print(f"  {name:<7} {label:<44} failed: {result['error']}", flush=True)
+        else:
+            print(f"  {name:<7} {label:<44} +{result['ram']:5.0f} MB  Task Manager +{result['task_manager']:5.0f} MB"
+                  f"  {result['frames']} frames decoded back, {result['ms']:.1f} ms per frame", flush=True)
 
 
 def _window_steps(meter):
