@@ -320,17 +320,100 @@ def _window_steps(meter):
         if name.startswith("_build_") or name == "_refresh_all":
             wrap(mw.MainWindow, name, name.strip("_").replace("_", " "))
     original_start = Engine.start
+    inner = _renderer_steps(meter)
 
     def start_and_settle(self):
         mark("(other window setup)")
         original_start(self)
         time.sleep(3)  # the renderer sets up on its own thread: give it time so its memory lands here
         mark("renderer start")
+        label, added, what = steps[-1]
+        steps[-1] = (label, added, [*inner(), *(f"(all together) {line}" for line in what)])
     Engine.start = start_and_settle
     wrap(mw.Hotkeys, "__init__", "global hotkeys")
     wrap(mw.ResourceMeter, "__init__", "resource meter")
     steps.append(("start", 0.0, []))
     return steps, mark
+
+
+def _renderer_steps(meter):
+    """Measure the pieces of the renderer's start-up on its own thread. Returns a function giving the lines.
+
+    The pieces run next to each other (the camera opens on its own thread while the first frames are
+    drawn), so a piece can be charged for a neighbour's memory; the big ones still stand out.
+    """
+    import contextlib
+    import functools
+    import threading
+
+    from sprigcast.audio import mixer as mixer_module
+    from sprigcast.render import compositor as compositor_module
+    from sprigcast.render import engine as engine_module
+    from sprigcast.tools import memwhere
+
+    found: dict[str, list] = {}  # label -> [bytes, what grew]
+    lock = threading.Lock()
+
+    @contextlib.contextmanager
+    def measured(label: str):
+        before, snap = meter.private(), memwhere.snapshot()
+        try:
+            yield
+        finally:
+            added = meter.private() - before
+            grew = memwhere.grown(snap, memwhere.snapshot(), top=3) if abs(added) >= 4e6 else []
+            with lock:
+                entry = found.setdefault(label, [0, []])
+                entry[0] += added
+                entry[1] = grew or entry[1]
+
+    def wrap(owner, name: str, label) -> None:
+        original = getattr(owner, name)
+
+        @functools.wraps(original)
+        def wrapped(*args, **kwargs):
+            with measured(label(*args) if callable(label) else label):
+                return original(*args, **kwargs)
+        setattr(owner, name, wrapped)
+
+    wrap(compositor_module, "create_context", "OpenGL context alone (included in graphics context and shaders)")
+    wrap(compositor_module.Compositor, "__init__", "graphics context and shaders")
+    wrap(mixer_module.Mixer, "start", "audio mixer thread")
+    original_create = engine_module.create_source
+
+    def create_measured(kind, source_id, settings):
+        with measured(f"{kind}: created"):
+            source = original_create(kind, source_id, settings)
+        start = source.start
+
+        def start_measured():
+            with measured(f"{kind}: started"):
+                start()
+        source.start = start_measured
+        return source
+    engine_module.create_source = create_measured
+    original_tick = engine_module.Engine._tick
+    ticks = [0]
+
+    def tick_measured(self, compositor, now):
+        ticks[0] += 1
+        if ticks[0] > 5:
+            return original_tick(self, compositor, now)
+        with measured("first five frames (textures uploaded, canvases made)"):
+            return original_tick(self, compositor, now)
+    engine_module.Engine._tick = tick_measured
+
+    def lines() -> list[str]:
+        with lock:
+            rows = sorted(found.items(), key=lambda kv: -abs(kv[1][0]))
+        out = []
+        for label, (added, grew) in rows:
+            if abs(added) >= 1e6:
+                out.append(f"{label}: {'+' if added >= 0 else '-'}{abs(added) / 1e6:.0f} MB"
+                           + (f"  [{'; '.join(grew)}]" if grew else ""))
+        out.append("(the rest arrives afterwards: the camera opening, later frames)")
+        return out
+    return lines
 
 
 def _encoder_queues(window) -> None:
