@@ -1313,6 +1313,7 @@ class MainWindow(QMainWindow):
             shown_group.addAction(action)
             action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
             self.canvas_choice_actions[key] = action
+        settings_menu.addAction("Optimize for this PC…").triggered.connect(lambda: self.open_optimizer())
         settings_menu.addAction("Light settings for a slower PC…").triggered.connect(
             lambda: self.use_light_settings())
         settings_menu.addSeparator()
@@ -2978,18 +2979,36 @@ class MainWindow(QMainWindow):
             "Light settings are on." + (" Restart SprigCast for 30 fps." if fps else ""), 15000)
         return True
 
-    def suggest_light_settings(self) -> None:
-        """Once, on a PC with little to spare: offer the light settings."""
+    def open_optimizer(self, first_run: bool = False) -> bool:
+        """The Optimize for this PC wizard: check the PC, suggest settings. True if any were applied."""
         from sprigcast.app import lowend
+        from PySide6.QtWidgets import QDialog
+
+        from sprigcast.app.wizard import OptimizeWizard
+
+        if self.streaming is not None or self.recording is not None or self.replay_button.isChecked():
+            QMessageBox.information(self, "Optimize for this PC", "Stop streaming, recording and the replay buffer first.")
+            return False
+        wizard = OptimizeWizard(self.collection, lowend.waiting_fps(), first_run=first_run, parent=self)
+        if wizard.exec() != QDialog.DialogCode.Accepted or not wizard.chosen:
+            return False
+        fps = wizard.plan.apply(wizard.chosen)
+        lowend.store_fps(fps)
+        self.collection.save(self.scenes_path)
+        self._after_settings()
+        self.statusBar().showMessage(
+            "Optimized for this PC." + (" Restart SprigCast for the new frame rate." if fps else ""), 15000)
+        return True
+
+    def first_run_optimizer(self) -> None:
+        """Once: offer the Optimize for this PC wizard (it also covers the old light-settings suggestion)."""
+        from sprigcast.app import optimize
 
         settings = QSettings()
-        if settings.value(lowend.SUGGESTED, False, type=bool):
+        if settings.value(optimize.DONE, False, type=bool):
             return
-        settings.setValue(lowend.SUGGESTED, True)
-        reasons = lowend.weak_reasons(lowend.pc_facts())
-        cpu = pick_codec() == "libx264"
-        if reasons and lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu)[0]:
-            self.use_light_settings(f"This PC is on the light side ({', '.join(reasons)}).")
+        settings.setValue(optimize.DONE, True)
+        self.open_optimizer(first_run=True)
 
     def _open_palette(self) -> CommandPalette:
         palette = CommandPalette(self._palette_commands(), self)

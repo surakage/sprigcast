@@ -77,35 +77,6 @@ def test_frame_rate_waits_for_the_next_start():
     QSettings().clear()
 
 
-def test_the_suggestion_shows_once_and_only_on_a_slower_pc(tmp_path, monkeypatch):
-    import keyring
-    from PySide6.QtCore import QCoreApplication, QSettings
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
-    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
-    QCoreApplication.setOrganizationName("SprigCastTests")
-    QCoreApplication.setApplicationName("LowEndWindowTest")
-    QSettings().clear()
-    from sprigcast.app.main_window import MainWindow
-
-    w = MainWindow(_collection(), tmp_path / "scenes.json")
-    try:
-        asked = []
-        monkeypatch.setattr(w, "use_light_settings", lambda why="": asked.append(why))
-        monkeypatch.setattr(lowend, "pc_facts", lambda: lowend.PcFacts(16, 32.0, "h264_nvenc"))
-        w.suggest_light_settings()
-        assert asked == []  # a strong PC is never asked
-        QSettings().remove(lowend.SUGGESTED)
-        monkeypatch.setattr(lowend, "pc_facts", lambda: lowend.PcFacts(4, 8.0, "libx264"))
-        w.suggest_light_settings()
-        w.suggest_light_settings()
-        assert len(asked) == 1 and "4 CPU threads" in asked[0]
-    finally:
-        w.close()
-        QSettings().clear()
-
-
 def test_recordings_shrink_and_cpu_encoding_gets_superfast():
     from sprigcast.output.recorder import shrink_to
 
