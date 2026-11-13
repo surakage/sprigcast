@@ -17,7 +17,8 @@ _MISSING = (64, 64)
 class ImageSource(Source):
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
-        self._frame: np.ndarray | None = None
+        self._frame: np.ndarray | None = None  # only held until the compositor has it on the GPU
+        self._size = _MISSING
         self._pending = True
         self._load()
 
@@ -41,17 +42,17 @@ class ImageSource(Source):
             frame[..., 3] = 255
             frame[checker] = (255, 0, 255, 255)
             self._frame = frame
+        h, w = self._frame.shape[:2]
+        self._size = (w, h)
         self._pending = True
 
     @property
     def size(self) -> tuple[int, int]:
-        if self._frame is None:
-            return _MISSING
-        h, w = self._frame.shape[:2]
-        return w, h
+        return self._size
 
     def video_frame(self) -> np.ndarray | None:
         if not self._pending:
             return None
         self._pending = False
-        return self._frame
+        frame, self._frame = self._frame, None  # the GPU texture keeps the pixels; no second copy in RAM
+        return frame

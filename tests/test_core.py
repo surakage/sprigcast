@@ -73,3 +73,16 @@ def test_teststream_command_never_logs_key():
     cmd = build_command("rtmp://example/app/KEY", "h264_nvenc", "1280x720", 30, 3000)
     assert cmd[-1] == "rtmp://example/app/KEY"
     assert "-loglevel" in cmd and "h264_nvenc" in cmd
+
+
+def test_image_source_lets_go_of_pixels_after_upload(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "big.png"
+    Image.new("RGBA", (40, 20), (0, 0, 255, 255)).save(path)
+    src = create_source("image", "i", {"path": str(path)})
+    assert src.video_frame().shape == (20, 40, 4)
+    assert src._frame is None and src.size == (40, 20)  # the GPU texture holds it now
+    assert src.video_frame() is None
+    src.update({"path": str(tmp_path / "gone.png")})
+    assert src.video_frame().shape == (64, 64, 4) and src.size == (64, 64)

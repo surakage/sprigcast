@@ -201,7 +201,7 @@ class CameraSource(Source):
         for name in names:
             for mode in modes:
                 try:
-                    return av.open(name, format="dshow", options={**mode, "rtbufsize": "32M"})
+                    return av.open(name, format="dshow", options={**mode, "rtbufsize": "16M"})
                 except Exception as exc:  # busy, mode not supported, name not found, ...
                     log.debug("%s: dshow %s %s failed: %s", self.id, name, mode, exc)
         log.info("%s: FFmpeg couldn't open %r, trying OpenCV", self.id, device.name)
@@ -213,6 +213,9 @@ class CameraSource(Source):
             return False
         try:
             stream = container.streams.video[0]
+            # FFmpeg's default is a decoder thread per CPU core, each holding its own full-size frames
+            # (tens of MB on a 16-core PC). Two threads decode 1080p60 MJPEG easily.
+            stream.codec_context.thread_count = 2
             rate = stream.average_rate or stream.base_rate
             fps = f" @ {float(rate):.0f}" if rate else ""
             self.status = f"capturing {stream.codec_context.width}x{stream.codec_context.height}{fps}"
