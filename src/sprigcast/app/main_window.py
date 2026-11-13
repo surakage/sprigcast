@@ -56,14 +56,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import custom_docks, doctor, safe_zones
 from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
-from sprigcast.app import custom_docks, doctor
-from sprigcast.app.palette import Command, CommandPalette
-from sprigcast.app.resources import ResourceMeter, describe, ram_warning
 from sprigcast.app.destinations import DestinationsPanel, live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
+from sprigcast.app.fit import AdaptiveRow, FitButton
 from sprigcast.app.hotkeys import (
     SAVE_REPLAY,
     SCENE_PREFIX,
@@ -73,11 +72,11 @@ from sprigcast.app.hotkeys import (
     TOGGLE_STREAM,
     Hotkeys,
 )
-from sprigcast.app import safe_zones
-from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.live_panel import LivePanel
+from sprigcast.app.palette import Command, CommandPalette
 from sprigcast.app.part_dialog import NewPartDialog
 from sprigcast.app.preview import Preview
+from sprigcast.app.resources import ResourceMeter, describe, ram_warning
 from sprigcast.app.settings_dialog import SettingsDialog
 from sprigcast.app.settings_window import (
     CONFIRM_RECORDING,
@@ -85,6 +84,7 @@ from sprigcast.app.settings_window import (
     SettingsWindow,
     confirm_enabled,
 )
+from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.stats_panel import StatsPanel
 from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.core.events import (
@@ -196,7 +196,7 @@ def _toolbar(*entries) -> QWidget:
 
 
 def _button(text: str, slot) -> QPushButton:
-    b = QPushButton(text)
+    b = FitButton(text)
     b.clicked.connect(slot)
     return b
 
@@ -826,30 +826,26 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self.live_button = QPushButton("Go live")
+        self.live_button = FitButton("Go live")
         self.live_button.setMinimumHeight(34)
         self.live_button.clicked.connect(self._on_live_clicked)
         layout.addWidget(self.live_button)
-        self.record_button = QPushButton("Start recording")
+        self.record_button = FitButton("Start recording")
         self.record_button.setMinimumHeight(34)
         self.record_button.clicked.connect(self._on_record_clicked)
         layout.addWidget(self.record_button)
         self.doctor_button = _button("🩺 Stream doctor", lambda: self._open_doctor())
         self.doctor_button.setToolTip("Check keys, upload, GPU, mics and sources before going live")
         layout.addWidget(self.doctor_button)
-        replay_row = QHBoxLayout()
-        replay_row.setSpacing(4)
-        self.replay_button = QPushButton("Replay buffer")
+        self.replay_button = FitButton("Replay buffer")
         self.replay_button.setCheckable(True)
         self.replay_button.setToolTip("Keep the last seconds of every recorded canvas in memory, ready to save as a clip")
         self.replay_button.toggled.connect(self._toggle_replay)
-        self.save_replay_button = QPushButton("Save replay")
+        self.save_replay_button = FitButton("Save replay")
         self.save_replay_button.setToolTip("Save the last seconds as clips in your recordings folder (one per canvas)")
         self.save_replay_button.setEnabled(False)
         self.save_replay_button.clicked.connect(self._save_replay)
-        replay_row.addWidget(self.replay_button, 1)
-        replay_row.addWidget(self.save_replay_button, 1)
-        layout.addLayout(replay_row)
+        layout.addWidget(AdaptiveRow(self.replay_button, self.save_replay_button))  # stacks when the dock is narrow
 
         self.settings_button = _button("Settings", lambda: self._open_settings())
         layout.addWidget(self.settings_button)
@@ -1126,6 +1122,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(body, 1)
         if toolbar is not None:
             layout.addWidget(toolbar)
+        if isinstance(body, QScrollArea):
+            # Contents shrink to the dock's width (see app/fit.py); only scroll up and down.
+            body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         dock = QDockWidget(title, self)
         dock.setObjectName(title)
         dock.setWidget(wrapper)

@@ -35,6 +35,21 @@ def load_collection(path: Path) -> SceneCollection:
     return collection
 
 
+def app_icon():
+    """The sloth-and-sprig logo (data/logo.svg) as the window and taskbar icon."""
+    from PySide6.QtGui import QIcon
+
+    if sys.platform == "win32":
+        try:  # without its own ID Windows groups SprigCast under python.exe and shows Python's icon
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Slothbloom.SprigCast")
+        except Exception:
+            pass
+    with resources.as_file(resources.files("sprigcast.data").joinpath("logo.svg")) as path:
+        return QIcon(str(path))
+
+
 LEAN_RECORDING = "migrations/recording_no_b_frames"
 
 
@@ -73,6 +88,7 @@ def run() -> None:
     app.setApplicationName("SprigCast")
     app.setOrganizationName("Slothbloom")
     app.setApplicationVersion(__version__)
+    app.setWindowIcon(app_icon())
 
     from sprigcast.app import priority
     from sprigcast.app.theme import apply_theme

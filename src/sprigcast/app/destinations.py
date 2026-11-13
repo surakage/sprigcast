@@ -15,12 +15,13 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from sprigcast.app.fit import FitButton
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output.stream import SERVICES
 
@@ -79,12 +80,14 @@ class DestinationCard(QFrame):
         edit.setToolTip("Edit this destination")
         edit.clicked.connect(lambda: on_edit(self.output_id))
         top.addWidget(self.dot)
+        self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # may shrink
         top.addWidget(self.name, 1)
         top.addWidget(self.switch)
         top.addWidget(edit)
         root.addLayout(top)
         self.what = QLabel()
         self.what.setStyleSheet("color: #8cc4a3")
+        self.what.setWordWrap(True)  # wraps in a narrow dock instead of being cut off
         root.addWidget(self.what)
         self.state = QLabel()
         self.state.setWordWrap(True)
@@ -134,7 +137,7 @@ class DestinationsPanel(QWidget):
         self.empty = QLabel("Nowhere to stream yet. Add Twitch, YouTube, TikTok or any RTMP server.")
         self.empty.setWordWrap(True)
         self._cards_box.addWidget(self.empty)
-        self.add_button = QPushButton("+ Add destination")
+        self.add_button = FitButton("+ Add destination")
         self.add_button.clicked.connect(lambda: self.on_edit(None))
         self._layout.addWidget(self.add_button)
         self._layout.addStretch(1)
