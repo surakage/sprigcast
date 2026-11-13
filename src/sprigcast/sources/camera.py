@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -198,6 +199,7 @@ class CameraSource(Source):
         modes = [  # MJPG at the size asked first (what most webcams need for 1080p30 / 720p60), then looser
             {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
             {"video_size": f"{w}x{h}", "framerate": str(fps)},
+            {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
             {},
         ]
         for name in names:
@@ -222,9 +224,21 @@ class CameraSource(Source):
             rate = stream.average_rate or stream.base_rate
             fps = f" @ {float(rate):.0f}" if rate else ""
             self.status = f"capturing {stream.codec_context.width}x{stream.codec_context.height}{fps}"
+            # Cameras that only offer a faster mode (a Facecam at 120 fps) are paced down to the fps you
+            # chose. MJPEG and raw frames stand alone, so the extra ones are skipped before decoding.
+            skippable = stream.codec_context.name in ("mjpeg", "rawvideo")
+            wanted = max(1, self._mode()[2])
+            gap, last = 0.95 / wanted, 0.0
+            if skippable and rate and float(rate) > wanted * 1.1:
+                self.status += f", using {wanted}"
             for packet in container.demux(stream):
                 if self._stop.is_set() or self._restart.is_set():
                     break
+                if skippable and packet.size:
+                    now = time.monotonic()
+                    if now - last < gap:
+                        continue
+                    last = now
                 for frame in packet.decode():
                     self._deliver(frame.to_ndarray(format="bgr24"))
             else:
