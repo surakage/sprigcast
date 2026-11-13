@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PIL import Image
 
 from sprigcast.core.source import Source, register
 
@@ -31,6 +30,8 @@ class ImageSource(Source):
     def _load(self) -> None:
         path = Path(str(self.settings.get("path", "")))
         try:
+            from PIL import Image  # loaded on first use: Pillow costs a few MB
+
             with Image.open(path) as img:
                 self._frame = np.asarray(img.convert("RGBA"), dtype=np.uint8).copy()
         except (OSError, ValueError):

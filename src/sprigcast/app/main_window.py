@@ -877,15 +877,9 @@ class MainWindow(QMainWindow):
         self._dock("Controls", scroll)
 
     def _build_destinations_dock(self) -> None:
-        from sprigcast.output.keys import get_key
+        from sprigcast.output.keys import probably_has_key
 
-        def has_key(ref):
-            try:
-                return bool(ref and get_key(ref))
-            except Exception:
-                return False
-
-        self.destinations = DestinationsPanel(self._on_stream_toggled, self._edit_destination, has_key)
+        self.destinations = DestinationsPanel(self._on_stream_toggled, self._edit_destination, probably_has_key)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
