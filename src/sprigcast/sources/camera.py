@@ -124,11 +124,13 @@ _MODE_LINE = re.compile(r"(vcodec|pixel_format)=(\S+)\s+min s=(\d+)x(\d+) fps=([
 
 
 def parse_dshow_modes(lines) -> list[tuple[str, str, int, int, float, float]]:
-    """(kind, name, width, height, min fps, max fps) from FFmpeg's `list_options` output."""
+    """(kind, name, width, height, min fps, max fps) from FFmpeg's `list_options` output.
+
+    Newer FFmpeg prints the format and its sizes on separate log lines, so they're read as one text.
+    """
     modes = []
-    for line in lines:
-        m = _MODE_LINE.search(line)
-        if m and m.group(3, 4) == m.group(6, 7):
+    for m in _MODE_LINE.finditer(" ".join(str(line).strip() for line in lines)):
+        if m.group(3, 4) == m.group(6, 7):
             modes.append((m.group(1), m.group(2), int(m.group(3)), int(m.group(4)), float(m.group(5)),
                           float(m.group(8))))
     return modes
@@ -164,20 +166,39 @@ def _rate(value: float) -> str:
     return f"{value:g}"
 
 
+_FORMAT_ORDER = {"mjpeg": 0, "nv12": 1, "yuyv422": 2}  # least data per frame first
+
+
 def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
-    """dshow options to try, best first: MJPEG at the size and rate asked, then raw frames at it, then
-    the slowest mode of that size at or above the rate (frames beyond it are skipped later)."""
-    size = [m for m in modes if (m[2], m[3]) == (w, h) and (m[0] == "pixel_format" or m[1] == "mjpeg")]
-    exact = [m for m in size if m[4] - 0.01 <= fps <= m[5] + 0.01]
-    above = sorted((m for m in size if m[5] > fps and m not in exact), key=lambda m: m[5])
+    """dshow options to try, best first.
+
+    At the size asked if the camera has it, else the smallest size above it (frames are shrunk to the
+    size asked as they arrive), else whatever it has. Within that: the rate asked before faster ones
+    (extra frames are skipped later), and MJPEG before NV12 before other raw formats.
+    """
+    usable = [m for m in modes if m[0] == "pixel_format" or m[1] == "mjpeg"]
+    sizes = sorted({(m[2], m[3]) for m in usable}, key=lambda s: s[0] * s[1])
+    size = ((w, h) if (w, h) in sizes else next((s for s in sizes if s[0] >= w and s[1] >= h), None)
+            or (sizes[-1] if sizes else None))
+    at_size = [m for m in usable if (m[2], m[3]) == size]
+    exact = [m for m in at_size if m[4] - 0.01 <= fps <= m[5] + 0.01]
+    others = sorted((m for m in at_size if m not in exact), key=lambda m: (m[5] < fps, abs(m[5] - fps)))
     out: list[dict[str, str]] = []
-    for group, rate in ((exact, lambda m: str(fps)), (above, lambda m: _rate(m[5]))):
-        for m in sorted(group, key=lambda m: m[1] != "mjpeg"):  # MJPEG before raw
-            option = {"video_size": f"{w}x{h}", "framerate": rate(m)}
+    for group, rate in ((exact, lambda m: str(fps)), (others, lambda m: _rate(m[5]))):
+        for m in sorted(group, key=lambda m: _FORMAT_ORDER.get(m[1], 9)):
+            option = {"video_size": f"{size[0]}x{size[1]}", "framerate": rate(m)}
             option["vcodec" if m[0] == "vcodec" else "pixel_format"] = m[1]
             if option not in out:
                 out.append(option)
     return out
+
+
+def shrunk_size(src: tuple[int, int], want: tuple[int, int]) -> tuple[int, int] | None:
+    """The size to shrink camera frames to so they fit `want` (aspect kept, even numbers), or None."""
+    scale = min(want[0] / src[0], want[1] / src[1])
+    if scale >= 0.95:
+        return None
+    return max(2, round(src[0] * scale / 2) * 2), max(2, round(src[1] * scale / 2) * 2)
 
 
 @register("camera")
@@ -308,6 +329,13 @@ class CameraSource(Source):
             gap, last = 0.95 / wanted, 0.0
             if skippable and rate and float(rate) > wanted * 1.1:
                 self.status += f", using {wanted}"
+            # A camera bigger than the size you chose (it offers nothing smaller) is shrunk as each frame
+            # is converted: less to copy, keep in memory and send to the GPU.
+            target = shrunk_size((stream.codec_context.width, stream.codec_context.height), self._mode()[:2])
+            convert = {"format": "bgr24"}
+            if target is not None:
+                convert.update(width=target[0], height=target[1], interpolation="BILINEAR")
+                self.status += f", shrunk to {target[0]}x{target[1]}"
             for packet in container.demux(stream):
                 if self._stop.is_set() or self._restart.is_set():
                     break
@@ -317,7 +345,7 @@ class CameraSource(Source):
                         continue
                     last = now
                 for frame in packet.decode():
-                    self._deliver(frame.to_ndarray(format="bgr24"))
+                    self._deliver(frame.to_ndarray(**convert))
             else:
                 self.status = "camera disconnected, retrying"
         except Exception as exc:  # unplugged mid-stream
