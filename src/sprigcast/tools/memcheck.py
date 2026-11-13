@@ -549,6 +549,11 @@ def main() -> None:
 
         codec = pick_codec()
         shared = ", one shared GPU context" if codec == "h264_nvenc" and nvenc_hwaccel() is not None else ""
+        from sprigcast.output.recorder import direct_nvenc_ok
+
+        lean = not collection.recording.encoder.b_frames and not collection.recording.encoder.lookahead
+        if codec == "h264_nvenc" and lean and direct_nvenc_ok():
+            shared = ", SprigCast's own Direct3D 11 encoder (no CUDA)"
         print(f"  (recording with {codec_label(codec)}{shared}, canvases: {', '.join(collection.recording.canvases)}, "
               f"{collection.recording.bitrate_kbps} kbps)", flush=True)
         window._start_recording()

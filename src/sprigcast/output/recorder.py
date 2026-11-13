@@ -70,8 +70,101 @@ def nvenc_device() -> str:
     """
     if os.environ.get("SPRIGCAST_NVENC_OWN_CONTEXT"):
         return "own"
-    choice = os.environ.get("SPRIGCAST_NVENC_DEVICE", "cuda").strip().lower()
-    return choice if choice in ("cuda", "d3d11", "own") else "cuda"
+    choice = os.environ.get("SPRIGCAST_NVENC_DEVICE", "direct").strip().lower()
+    return choice if choice in ("direct", "cuda", "d3d11", "own") else "direct"
+
+
+_direct_ok: bool | None = None
+
+
+def direct_nvenc_ok() -> bool:
+    """True when SprigCast's own Direct3D 11 NVENC encoder (output/nvenc_d3d11.py) works here.
+
+    It skips FFmpeg's CUDA context, the bulk of what NVENC costs in RAM (one encoder: ~26 MB instead of
+    ~117 MB on the user's RTX card). Used for encoders without B-frames or lookahead (recording and the
+    replay buffer by default); everything else stays on FFmpeg. Checked once per run with a test frame.
+    SPRIGCAST_NVENC_DEVICE=cuda goes back to FFmpeg for everything.
+    """
+    global _direct_ok
+    if _direct_ok is None:
+        _direct_ok = False
+        if nvenc_device() == "direct":
+            try:
+                from sprigcast.output.nvenc_d3d11 import D3D11Encoder
+
+                enc = D3D11Encoder(256, 256, 30)
+                try:
+                    _direct_ok = bool(enc.encode(bytes(256 * 256 * 3 // 2), keyframe=True))
+                finally:
+                    enc.close()
+            except Exception as exc:  # not Windows, no NVIDIA driver, old driver, sessions in use, ...
+                log.info("direct NVENC unavailable, using FFmpeg's: %s", exc)
+    return _direct_ok
+
+
+class DirectVideo:
+    """Video for a Recorder from SprigCast's own NVENC encoder instead of an FFmpeg one.
+
+    FFmpeg still writes the file (or keeps the replay packets): the output stream is copied from a
+    template that a tiny probe container reads off the encoder's first keyframe, which gives it the
+    size and the SPS/PPS headers. Packets come out in Annex B form; the MKV, MP4 and FLV muxers
+    convert those themselves.
+    """
+
+    def __init__(self, width: int, height: int, fps: int, bitrate_kbps: int, enc):
+        import io
+
+        import av
+
+        from sprigcast.output.nvenc_d3d11 import D3D11Encoder
+
+        max_kbps, buffer_kbits = rate_limits("h264_nvenc", enc, bitrate_kbps)
+        self.width, self.height = width, height
+        self.time_base = Fraction(1, fps)
+        self.encoder = D3D11Encoder(
+            width, height, fps, enc.preset, bitrate_kbps=bitrate_kbps, rate_control=enc.rate_control,
+            max_kbps=max_kbps, buffer_kbits=buffer_kbits, cq_level=enc.cq_level,
+            gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning,
+        )
+        try:
+            black = bytes(width * height) + bytes([128]) * (width * height // 2)
+            first = self.encoder.encode(black, keyframe=True)  # only read for its headers, never written
+            self._probe = av.open(io.BytesIO(first), "r", format="h264")
+            self.template = self._probe.streams.video[0]
+            if not self.template.codec_context.extradata:
+                raise RuntimeError("the encoder's first frame had no SPS/PPS headers")
+        except Exception:
+            self.encoder.close()
+            raise
+
+    def encode(self, nv12, pts: int, keyframe: bool) -> list:
+        import av
+
+        data, is_key = self.encoder.encode_frame(nv12, keyframe)
+        if not data:
+            return []
+        packet = av.Packet(data)
+        packet.pts = packet.dts = pts
+        packet.time_base = self.time_base
+        packet.is_keyframe = is_key
+        return [packet]
+
+    def close(self) -> None:
+        self.encoder.close()
+        self._probe.close()
+
+
+def nv12_bytes(vf) -> bytes:
+    """An NV12 av.VideoFrame's pixels without row padding (Y rows, then interleaved UV rows)."""
+    w, h = vf.width, vf.height
+    parts = []
+    for plane, rows in ((vf.planes[0], h), (vf.planes[1], h // 2)):
+        if plane.line_size == w:
+            parts.append(bytes(plane)[: w * rows])
+        else:
+            arr = np.frombuffer(plane, dtype=np.uint8).reshape(rows, plane.line_size)
+            parts.append(arr[:, :w].tobytes())
+    return b"".join(parts)
 
 
 def _make_hwaccel():
@@ -218,6 +311,7 @@ class Recorder:
         self._last_queued = -1
         self._samples = 0
         self._force_key = False  # make the next video frame a keyframe (set on the encoder thread)
+        self._direct: DirectVideo | None = None  # SprigCast's own NVENC encoder, when used (see _open)
         self._thread = threading.Thread(target=self._run, name=f"sprigcast-{path.stem}", daemon=True)
 
     # Called from other threads ---------------------------------------------------
@@ -315,10 +409,32 @@ class Recorder:
     def _video_options(self) -> dict[str, str]:
         return video_options(self.codec, self.encoder, self.bitrate_kbps)
 
+    allow_direct = True  # Streamer turns this off: it changes the bitrate mid-stream through FFmpeg
+
+    def uses_direct(self) -> bool:
+        """Whether this recorder's video goes through SprigCast's own NVENC encoder (see DirectVideo)."""
+        enc = self.encoder
+        return (self.allow_direct and self.codec == "h264_nvenc" and not enc.b_frames and not enc.lookahead
+                and direct_nvenc_ok())
+
     def _open(self):
         from av.video.reformatter import VideoReformatter
 
         container = self._open_container()
+        self._reformatter = VideoReformatter()
+        if self.uses_direct():
+            try:
+                self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps, self.encoder)
+            except Exception as exc:  # fall back to FFmpeg's encoder for this recording
+                log.warning("direct NVENC failed to start (%s); using FFmpeg's", exc)
+                self._direct = None
+        if self._direct is not None:
+            video = container.add_stream_from_template(self._direct.template)
+            self._force_key = True  # the file starts with a keyframe
+            audio = container.add_stream("aac", rate=SAMPLE_RATE)
+            audio.layout = "stereo"
+            audio.bit_rate = self.encoder.audio_kbps * 1000
+            return container, video, audio
         video = container.add_stream(self.codec, rate=self.fps, hwaccel=encoder_hwaccel(self.codec))
         video.width, video.height = self.out_width, self.out_height
         video.pix_fmt = "nv12"  # what the GPU hands over (render/compositor.py read_nv12); x264 takes it too
@@ -333,7 +449,6 @@ class Recorder:
         audio = container.add_stream("aac", rate=SAMPLE_RATE)
         audio.layout = "stereo"
         audio.bit_rate = self.encoder.audio_kbps * 1000
-        self._reformatter = VideoReformatter()
         return container, video, audio
 
     def _run(self) -> None:
@@ -359,10 +474,13 @@ class Recorder:
                     continue
                 self._write_video(container, video, frame)
             self._write_audio(container, audio)
-            for stream in (video, audio):
-                self._mux(container, stream.encode(None))
+            if self._direct is None:  # SprigCast's own encoder holds nothing back (no B-frames)
+                self._mux(container, video.encode(None))
+            self._mux(container, audio.encode(None))
             finished = True
         finally:
+            if self._direct is not None:
+                self._direct.close()
             if container is not None and self._before_close(container):
                 try:
                     container.close()
@@ -419,6 +537,11 @@ class Recorder:
         self._last_pts = pts
         began, muxed = time.perf_counter(), self.mux_seconds
         if getattr(frame, "fmt", "rgba") == "nv12" and (frame.width, frame.height) == (self.out_width, self.out_height):
+            if self._direct is not None:  # straight from the GPU readback into the encoder's buffer
+                self._mux(container, self._encode_direct(stream, frame.data, pts))
+                self.frames += 1
+                self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
+                return
             vf = self._nv12_frame(frame)  # already converted and scaled on the GPU: nothing to do here
             vf.pts = pts
             self._mux(container, self._encode_video(stream, vf))
@@ -446,7 +569,16 @@ class Recorder:
         # Time spent converting and encoding this frame, not counting waiting on the file or network.
         self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
 
+    def _encode_direct(self, stream, nv12, pts: int) -> list:
+        key, self._force_key = self._force_key, False
+        packets = self._direct.encode(nv12, pts, key)
+        for packet in packets:
+            packet.stream = stream
+        return packets
+
     def _encode_video(self, stream, vf):
+        if self._direct is not None:
+            return self._encode_direct(stream, nv12_bytes(vf), vf.pts)
         if self._force_key:
             from av.video.frame import PictureType
 
