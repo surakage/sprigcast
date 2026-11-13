@@ -736,6 +736,13 @@ def _soak(window, collection, meter, wait, minutes: float, work: Path) -> None:
         stream_mod.stream_url = original_url
     window._start_recording()
     window._toggle_replay(True)
+    wait(2.0)  # let the encoders open before saying which path they took
+    for line in encoder_lines(list(window.encoders.encoders.values()) + [st for _, st in streaming.streamers]):
+        print(line, flush=True)
+    switching = "--soak-still" not in sys.argv
+    if not switching:
+        print("  (--soak-still: staying on one scene, so only the encoders change memory)", flush=True)
+    names = {s.id: s.name for s in collection.scenes}
     cpu = CpuWatch()
     began = time.monotonic()
     end = began + minutes * 60
@@ -747,7 +754,8 @@ def _soak(window, collection, meter, wait, minutes: float, work: Path) -> None:
         rec = sum(enc.dropped for enc in window.encoders.encoders.values())
         return rec, sum(st.dropped for _, st in streaming.streamers)
 
-    print("   min   Task Manager   recording/replay dropped   stream dropped   CPU", flush=True)
+    print("   min   Task Manager   recording/replay dropped   stream dropped   CPU    awake  replay RAM  scene",
+          flush=True)
     while time.monotonic() < end:
         wait(1.0)
         now = time.monotonic()
@@ -755,7 +763,7 @@ def _soak(window, collection, meter, wait, minutes: float, work: Path) -> None:
         samples.append((now - began, private))
         if private > peak[1]:
             peak = (now - began, private)
-        if now >= next_switch and len(shows) > 1:
+        if switching and now >= next_switch and len(shows) > 1:
             turn += 1
             window._switch_to_scene(shows[turn % len(shows)].id)
             next_switch = now + SOAK_SWITCH_EVERY
@@ -770,8 +778,10 @@ def _soak(window, collection, meter, wait, minutes: float, work: Path) -> None:
             whole, _ = cpu.busiest()
             cpu.restart()
             rec_dropped, stream_dropped = dropped()
+            scene = names.get(window.collection.active_scenes.get(canvas.id), "?")
             print(f"  {(now - began) / 60:5.1f}   {private:9.0f} MB   {rec_dropped:>24}   {stream_dropped:>14}   "
-                  f"{whole:4.1f}%", flush=True)
+                  f"{whole:4.1f}%   {awake_sources(window.engine):>5}  {replay_megabytes(window):7.0f} MB  {scene}",
+                  flush=True)
             next_line = now + 60.0
     rec_dropped, stream_dropped = dropped()  # before stopping: the encoders go away with their counts
     window._toggle_replay(False)
@@ -783,6 +793,33 @@ def _soak(window, collection, meter, wait, minutes: float, work: Path) -> None:
           f"(under +10 is noise; a leak shows as a steady climb).", flush=True)
     print(f"  Dropped frames: {rec_dropped} recording/replay, {stream_dropped} stream. "
           f"Scene switches: {turn}.", flush=True)
+
+
+def encoder_lines(encoders) -> list[str]:
+    """One line per running encoder: which encoder path it took, its size, rate and B-frames."""
+    lines = []
+    for enc in encoders:
+        name = getattr(enc, "name", None) or getattr(enc, "canvas_id", "?")
+        kind = "stream" if hasattr(enc, "current_kbps") else "recording/replay"
+        path = "SprigCast's own NVENC" if getattr(enc, "_direct", None) is not None else f"FFmpeg {enc.codec}"
+        settings = enc.encoder
+        lines.append(f"  {kind} {name}: {path}, {enc.out_width}x{enc.out_height} @ {enc.fps}, "
+                     f"{enc.bitrate_kbps} kbps, B-frames {settings.b_frames}, lookahead {settings.lookahead}")
+    return lines
+
+
+def awake_sources(engine) -> int:
+    """How many sources are running (not asleep because no scene on screen shows them)."""
+    return sum(1 for src in getattr(engine, "_sources", {}).values() if not getattr(src, "asleep", False))
+
+
+def replay_megabytes(window) -> float:
+    """Packet bytes the replay buffers hold in RAM (the rest is spooled to disk)."""
+    total = 0
+    for enc in window.encoders.encoders.values():
+        for packet in list(getattr(enc, "_packets", ())):
+            total += len(packet.data or b"")
+    return total / 1e6
 
 
 WEAK_THREADS = 4  # a bare-minimum PC: four CPU threads
