@@ -126,3 +126,23 @@ def test_burst_bigger_than_the_ring_drops_the_oldest_packets(tmp_path, monkeypat
     assert spooled and all(p.at >= p.spool.oldest_kept() for p in spooled)  # nothing points at lost bytes
     buf.stop()
     assert buf.error is None
+
+
+def test_trim_keeps_from_the_last_keyframe_before_the_cutoff_and_stays_cheap():
+    from fractions import Fraction
+
+    from sprigcast.output.replay import _Packet
+
+    buf = ReplayBuffer("horizontal", 160, 90, 60, 1000, "libx264", 0.0, seconds=30.0)
+    tb = Fraction(1, 60)
+    began = time.perf_counter()
+    for i in range(60 * 120):  # two minutes at 60 fps, a keyframe every 2 s, audio in between
+        buf._keep(_Packet("video", b"x", i, i, tb, i % 120 == 0))
+        buf._keep(_Packet("audio", b"a", i, i, tb, False))
+        buf._trim()
+    elapsed = time.perf_counter() - began
+    first = buf._packets[0]
+    assert first.kind == "video" and first.keyframe
+    assert 30.0 <= buf._newest - first.seconds < 32.0
+    assert list(buf._keys) == [p for p in buf._packets if p.kind == "video" and p.keyframe]
+    assert elapsed < 2.0  # scanning the whole buffer each frame took far longer

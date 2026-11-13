@@ -21,6 +21,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
+from functools import cached_property
 from pathlib import Path
 
 from sprigcast.output.recorder import CONTAINERS, Recorder, pick_codec
@@ -40,8 +41,8 @@ class _Packet:
     at: int = 0  # position in the spool (always growing; see Spool)
     size: int = 0
 
-    @property
-    def seconds(self) -> float:
+    @cached_property
+    def seconds(self) -> float:  # cached: Fraction maths is slow and the buffer asks often
         return float((self.pts if self.pts is not None else self.dts or 0) * self.time_base)
 
     def payload(self) -> bytes:
@@ -115,6 +116,8 @@ class ReplayBuffer(Recorder):
         self.canvas_id = canvas_id
         self.seconds = seconds
         self._packets: deque[_Packet] = deque()
+        self._keys: deque[_Packet] = deque()  # the video keyframes among _packets, oldest first
+        self._newest = float("-inf")  # time of the newest video packet
         self._spool: Spool | None = None
         self._spool_failed = False
         self._templates = None  # (video stream, audio stream) of the in-memory container
@@ -167,7 +170,7 @@ class ReplayBuffer(Recorder):
             kind = "video" if packet.stream is video else "audio"
             p = _Packet(kind, bytes(packet), packet.pts, packet.dts,
                         packet.time_base or packet.stream.time_base, bool(packet.is_keyframe))
-            self._packets.append(p)
+            self._keep(p)
             self.bytes_out += packet.size
             began = time.perf_counter()
             self._on_packet(p)  # a recording file gets the bytes straight away
@@ -177,8 +180,8 @@ class ReplayBuffer(Recorder):
             self.mux_seconds += waited
             self.longest_stall = max(self.longest_stall, waited)
         self._trim()
-        if self.seconds <= 0 and self._spool is not None and not any(p.spool for p in self._packets):
-            self._spool.close()  # replay turned off: the ring file goes
+        if self.seconds <= 0 and self._spool is not None and not (self._packets and self._packets[0].spool):
+            self._spool.close()  # replay turned off and spooled packets (always the oldest) are gone
             self._spool = None
 
     def _to_spool(self, p: _Packet) -> None:
@@ -191,7 +194,7 @@ class ReplayBuffer(Recorder):
             at = spool.place(len(p.data))
             limit = at + len(p.data) - spool.capacity
             while self._packets and self._packets[0].spool is spool and self._packets[0].at < limit:
-                self._packets.popleft()  # a burst bigger than the ring: give up the oldest moments
+                self._pop_oldest()  # a burst bigger than the ring: give up the oldest moments
             spool.write(at, p.data)
         except (OSError, ValueError) as exc:  # temp folder full or unwritable: keep packets in memory
             log.warning("%s: replay spool unavailable (%s), keeping packets in memory", self.canvas_id, exc)
@@ -208,17 +211,31 @@ class ReplayBuffer(Recorder):
         The clip starts at the latest keyframe at or before the cutoff, so it can run up to one
         keyframe interval longer than asked, never shorter (unless less has been recorded).
         """
-        keys = [i for i, p in enumerate(self._packets) if p.kind == "video" and p.keyframe]
+        # Runs after every encoded frame, so it only looks at the oldest keyframes rather than the
+        # whole buffer (a 30 s buffer holds thousands of packets; scanning them all slowed the encoder
+        # until frames piled up).
+        keys = self._keys
         if not keys:
             return
-        newest = max(p.seconds for p in self._packets if p.kind == "video")
-        cutoff = newest - self.seconds
-        start = keys[0]
-        for i in keys:
-            if self._packets[i].seconds <= cutoff:
-                start = i
-        for _ in range(start):
-            self._packets.popleft()
+        cutoff = self._newest - self.seconds
+        while len(keys) > 1 and keys[1].seconds <= cutoff:
+            keys.popleft()
+        first = keys[0]
+        while self._packets and self._packets[0] is not first:
+            self._pop_oldest()
+
+    def _keep(self, p: _Packet) -> None:
+        self._packets.append(p)
+        if p.kind == "video":
+            self._newest = max(self._newest, p.seconds)
+            if p.keyframe:
+                self._keys.append(p)
+
+    def _pop_oldest(self) -> _Packet:
+        p = self._packets.popleft()
+        if self._keys and self._keys[0] is p:
+            self._keys.popleft()
+        return p
 
     def _write_audio(self, container, stream) -> None:
         super()._write_audio(container, stream)
