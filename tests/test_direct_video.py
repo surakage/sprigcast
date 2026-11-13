@@ -68,6 +68,9 @@ def direct(monkeypatch):
 
 
 def _nv12_frames(rec, w, h, n, fps=30, start=1000.0):
+    # Frames pushed while the encoder is still opening are trimmed to the newest few (on purpose, see
+    # Recorder.push_frame); on a busy machine that made the frame counts below come up one short.
+    assert rec._opened.wait(10), "the encoder never opened"
     for i in range(n):
         data = bytes([(i * 8) % 256]) * (w * h) + bytes([128]) * (w * h // 2)
         rec.push_frame(Frame("horizontal", w, h, data, start + i / fps, "nv12"))
