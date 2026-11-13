@@ -609,8 +609,8 @@ def _source_costs(window, collection, meter, wait) -> None:
 
 
 TEXT_VARIANTS = {
-    "today": ("as SprigCast starts now", {}),
-    "gdi": ("Qt's older GDI font engine", {"QT_QPA_PLATFORM": "windows:fontengine=gdi"}),
+    "today": ("as SprigCast starts now (GDI)", {}),
+    "directwrite": ("Qt's default DirectWrite engine", {"SPRIGCAST_FONT_ENGINE": "directwrite"}),
     "freetype": ("FreeType font engine", {"QT_QPA_PLATFORM": "windows:fontengine=freetype"}),
     "nosymbols": ("without the symbol-font list", {"SPRIGCAST_NO_SYMBOL_FONTS": "1"}),
 }
@@ -634,6 +634,9 @@ def _text_probe() -> None:
 
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
+    from sprigcast.app.theme import use_light_font_engine
+
+    use_light_font_engine()  # as the app does, unless the variant set its own
     app = QApplication.instance() or QApplication([])
     meter = _Meter()
     from sprigcast.app.theme import apply_theme
@@ -699,6 +702,9 @@ def main() -> None:
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     from PySide6.QtWidgets import QApplication
 
+    from sprigcast.app.theme import use_light_font_engine
+
+    use_light_font_engine()  # as the app does
     app = QApplication(sys.argv)
     import av  # noqa: F401
     import moderngl  # noqa: F401

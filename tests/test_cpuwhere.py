@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 
@@ -55,3 +56,24 @@ def test_text_probe_reports_each_step(capsys):
     _text_probe()
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert [step for step, _ in result["steps"]] == [*(s[0] for s in TEXT_STEPS), "styled tab bar"]
+
+
+def test_light_font_engine_only_on_windows_and_never_over_a_hand_set_platform(monkeypatch):
+    from sprigcast.app import theme
+
+    monkeypatch.setattr(theme.sys, "platform", "win32")
+    monkeypatch.delenv("QT_QPA_PLATFORM", raising=False)
+    monkeypatch.delenv(theme.FONT_ENGINE, raising=False)
+    theme.use_light_font_engine()
+    assert os.environ["QT_QPA_PLATFORM"] == "windows:fontengine=gdi"
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    theme.use_light_font_engine()
+    assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+    monkeypatch.delenv("QT_QPA_PLATFORM")
+    monkeypatch.setenv(theme.FONT_ENGINE, "directwrite")
+    theme.use_light_font_engine()
+    assert "QT_QPA_PLATFORM" not in os.environ
+    monkeypatch.setattr(theme.sys, "platform", "linux")
+    monkeypatch.delenv(theme.FONT_ENGINE)
+    theme.use_light_font_engine()
+    assert "QT_QPA_PLATFORM" not in os.environ

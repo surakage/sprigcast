@@ -99,6 +99,9 @@ def run() -> None:
 
     if custom_docks.load():
         custom_docks.web_engine_available()  # imports Qt WebEngine before the QApplication
+    from sprigcast.app.theme import use_light_font_engine
+
+    use_light_font_engine()  # 16 MB less than Qt's default on Windows
     app = QApplication(sys.argv)
     app.setApplicationName("SprigCast")
     app.setOrganizationName("Slothbloom")
