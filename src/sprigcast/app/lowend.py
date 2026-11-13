@@ -18,7 +18,6 @@ LIGHT_STREAM_KBPS = 4000
 LIGHT_RECORDING_KBPS = 8000
 LIGHT_PRESET = "p3"
 CPU_PRESET = "p2"  # x264 on the CPU: superfast, a third less work than veryfast
-SUGGESTED = "general/light_suggested"  # QSettings: the one-time suggestion was shown
 
 
 @dataclass
