@@ -1,4 +1,5 @@
 import os
+import pytest
 import threading
 import time
 
@@ -96,3 +97,20 @@ def test_weak_pc_flag_and_light_copy(monkeypatch, capsys):
     memcheck._make_light(col)
     assert col.canvases[0].fps == 30 and col.outputs[0].size == (1280, 720)
     assert "light settings" in capsys.readouterr().out
+
+
+def test_soak_flag_and_trend(monkeypatch):
+    import sys
+
+    from sprigcast.tools import memcheck
+
+    monkeypatch.setattr(sys, "argv", ["memcheck"])
+    assert memcheck.soak_minutes() is None
+    monkeypatch.setattr(sys, "argv", ["memcheck", "--soak"])
+    assert memcheck.soak_minutes() == 60
+    monkeypatch.setattr(sys, "argv", ["memcheck", "--soak=2"])
+    assert memcheck.soak_minutes() == 2
+    flat = [(t, 200.0 + (1 if t % 2 else -1)) for t in range(0, 600)]
+    assert abs(memcheck.trend(flat)) < 1
+    leak = [(t, 200.0 + t / 360) for t in range(0, 600)]  # +10 MB per hour
+    assert memcheck.trend(leak) == pytest.approx(10.0)

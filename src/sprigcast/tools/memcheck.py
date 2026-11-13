@@ -685,6 +685,106 @@ def compare_text() -> None:
         print(f"  {name:<9} {label:<32} total {result['total']:4.0f} MB ({result['font']}): {parts}", flush=True)
 
 
+SOAK_SWITCH_EVERY = 30.0  # seconds between scene switches in a soak
+SOAK_NEW_FILE_EVERY = 600.0  # a fresh recording file this often (the old one is deleted: no full disk)
+
+
+def soak_minutes() -> float | None:
+    """memcheck --soak[=minutes]: how long to run (60 by default), or None."""
+    for arg in sys.argv:
+        if arg == "--soak":
+            return 60.0
+        if arg.startswith("--soak="):
+            return float(arg.split("=", 1)[1] or 60)
+    return None
+
+
+def trend(samples: list[tuple[float, float]]) -> float:
+    """Least-squares slope of (seconds, MB) samples, in MB per hour. Positive = memory creeping up."""
+    if len(samples) < 2:
+        return 0.0
+    n = len(samples)
+    mean_t = sum(t for t, _ in samples) / n
+    mean_m = sum(m for _, m in samples) / n
+    spread = sum((t - mean_t) ** 2 for t, _ in samples)
+    if spread == 0:
+        return 0.0
+    return 3600.0 * sum((t - mean_t) * (m - mean_m) for t, m in samples) / spread
+
+
+def _soak(window, collection, meter, wait, minutes: float, work: Path) -> None:
+    """Record, keep a replay buffer and stream (to nowhere) for `minutes`, switching scenes; print the trend."""
+    from sprigcast.output import stream as stream_mod
+    from sprigcast.output.recorder import codec_label, pick_codec
+    from sprigcast.tools.cpuwhere import CpuWatch
+
+    canvas = next(c for c in collection.canvases if c.enabled)
+    shows = [s for s in collection.scenes_for(canvas.id) if s.kind == "show"] or collection.scenes_for(canvas.id)
+    codec = pick_codec()
+    print(f"\nSoak: {minutes:g} min on {canvas.id} with {codec_label(codec)}: recording (new file every "
+          f"{SOAK_NEW_FILE_EVERY / 60:.0f} min), replay buffer, a stream to nowhere, and a scene switch every "
+          f"{SOAK_SWITCH_EVERY:.0f} s across {len(shows)} scene(s).", flush=True)
+    original_url = stream_mod.stream_url
+    stream_mod.stream_url = lambda server, key, bandwidth_test=False: os.devnull  # nothing leaves the PC
+    try:
+        out = next((o for o in collection.outputs if o.type == "stream" and o.canvas == canvas.id), None)
+        target = stream_mod.StreamTarget(
+            "soak stream", canvas, "", "soak", out.bitrate_kbps if out else 6000,
+            size=out.size if out else None, fps=out.fps if out else None)
+        streaming = stream_mod.StreamSession.start(window.engine, [target], codec, collection.stream_encoder)
+    finally:
+        stream_mod.stream_url = original_url
+    window._start_recording()
+    window._toggle_replay(True)
+    cpu = CpuWatch()
+    began = time.monotonic()
+    end = began + minutes * 60
+    next_switch, next_file, next_line, turn = began + SOAK_SWITCH_EVERY, began + SOAK_NEW_FILE_EVERY, began, 0
+    samples: list[tuple[float, float]] = []
+    peak = (0.0, 0.0)
+
+    def dropped() -> tuple[int, int]:
+        rec = sum(enc.dropped for enc in window.encoders.encoders.values())
+        return rec, sum(st.dropped for _, st in streaming.streamers)
+
+    print("   min   Task Manager   recording/replay dropped   stream dropped   CPU", flush=True)
+    while time.monotonic() < end:
+        wait(1.0)
+        now = time.monotonic()
+        private = meter.private() / 1e6
+        samples.append((now - began, private))
+        if private > peak[1]:
+            peak = (now - began, private)
+        if now >= next_switch and len(shows) > 1:
+            turn += 1
+            window._switch_to_scene(shows[turn % len(shows)].id)
+            next_switch = now + SOAK_SWITCH_EVERY
+        if now >= next_file:
+            old = list(window.recording.paths) if window.recording is not None else []
+            window._stop_recording()
+            window._start_recording()
+            for path in old:
+                path.unlink(missing_ok=True)
+            next_file = now + SOAK_NEW_FILE_EVERY
+        if now >= next_line:
+            whole, _ = cpu.busiest()
+            cpu.restart()
+            rec_dropped, stream_dropped = dropped()
+            print(f"  {(now - began) / 60:5.1f}   {private:9.0f} MB   {rec_dropped:>24}   {stream_dropped:>14}   "
+                  f"{whole:4.1f}%", flush=True)
+            next_line = now + 60.0
+    rec_dropped, stream_dropped = dropped()  # before stopping: the encoders go away with their counts
+    window._toggle_replay(False)
+    window._stop_recording()
+    streaming.stop()
+    later = [s for s in samples if s[0] >= samples[-1][0] / 3] if samples else []
+    print(f"  Memory: started {samples[0][1]:.0f} MB, ended {samples[-1][1]:.0f} MB, highest {peak[1]:.0f} MB "
+          f"at {peak[0] / 60:.1f} min. Trend after the first third: {trend(later):+.1f} MB per hour "
+          f"(under +10 is noise; a leak shows as a steady climb).", flush=True)
+    print(f"  Dropped frames: {rec_dropped} recording/replay, {stream_dropped} stream. "
+          f"Scene switches: {turn}.", flush=True)
+
+
 WEAK_THREADS = 4  # a bare-minimum PC: four CPU threads
 
 
@@ -813,6 +913,14 @@ def main() -> None:
             for number, text, added in slow_lines:
                 print(f"    line {number:<5} +{added / 1e6:.0f} MB  {text[:90]}", flush=True)
         _report_sources(window, collection)
+        minutes = soak_minutes()
+        if minutes:
+            _soak(window, collection, meter, wait, minutes, work)
+            window.hotkeys.stop()
+            window.meter.stop()
+            window.timer.stop()
+            window.engine.stop()
+            return
         from sprigcast.tools import cpuwhere, memwhere
 
         cpu = cpuwhere.CpuWatch()
