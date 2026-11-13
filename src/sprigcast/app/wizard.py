@@ -12,8 +12,10 @@ import threading
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -144,15 +146,47 @@ class OptimizeWizard(QDialog):
         self.upload_row = QWidget()
         self.upload_row.setLayout(upload)
         upload.setContentsMargins(0, 0, 0, 0)
+
+        card = QFrame()
+        card.setObjectName("qualityCard")
+        card.setStyleSheet(f"#qualityCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE};"
+                           " border-radius: 10px; }")
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(16, 14, 16, 14)
+        inner.setSpacing(6)
+        inner.addWidget(_label("Quality", f"color: {theme.MUTED};"))
+        self.quality = QComboBox()
+        self.quality.setStyleSheet("font-size: 13pt; padding: 6px 10px;")
+        self.quality.currentIndexChanged.connect(self._quality_changed)
+        inner.addWidget(self.quality)
+        self.follows = _label("", f"color: {theme.MUTED};")
+        inner.addWidget(self.follows)
+        box.addWidget(card)
         box.addWidget(self.upload_row)
+
+        self.details_button = QPushButton("Show details")
+        self.details_button.setCheckable(True)
+        self.details_button.toggled.connect(self._toggle_details)
+        details_row = QHBoxLayout()
+        details_row.addWidget(self.details_button)
+        details_row.addStretch(1)
+        box.addLayout(details_row)
         self.change_list = QListWidget()
         self.change_list.setWordWrap(True)
         self.change_list.setSpacing(4)
         self.change_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.change_list.setVisible(False)
         box.addWidget(self.change_list, 1)
         self.notes = _label("", f"{theme.NOTE_STYLE} padding: 8px 10px;")
         box.addWidget(self.notes)
+        self._spacer = QWidget()
+        box.addWidget(self._spacer, 1)
         return page
+
+    def _toggle_details(self, shown: bool) -> None:
+        self.change_list.setVisible(shown)
+        self._spacer.setVisible(not shown)
+        self.details_button.setText("Hide details" if shown else "Show details")
 
     # Flow ------------------------------------------------------------------------------
 
@@ -224,6 +258,7 @@ class OptimizeWizard(QDialog):
         self.upload.blockSignals(True)
         self.upload.setValue((self.profile.upload_kbps or 0) / 1000)
         self.upload.blockSignals(False)
+        self.profile.extra.pop(optimize.QUALITY, None)
         self._fill_plan()
         self.pages.setCurrentIndex(2)
         self._show_buttons()
@@ -233,8 +268,44 @@ class OptimizeWizard(QDialog):
         self._fill_plan()
         self._show_buttons()
 
+    def _quality_changed(self, index: int) -> None:
+        if index < 0 or self.plan is None:
+            return
+        step = self.quality.itemData(index)
+        if step == self.plan.recommended:
+            self.profile.extra.pop(optimize.QUALITY, None)  # back on the suggestion: it follows the upload again
+        else:
+            self.profile.extra[optimize.QUALITY] = step
+        self._fill_plan()
+        self._show_buttons()
+
+    def _fill_quality(self) -> None:
+        self.quality.blockSignals(True)
+        self.quality.clear()
+        for step in optimize.LADDER:
+            text = f"{optimize.step_text(step)} · {optimize.STEP_KBPS[step]} kbps"
+            if step == self.plan.recommended:
+                text += "   (suggested)"
+            self.quality.addItem(text, step)
+        self.quality.setCurrentIndex(optimize.LADDER.index(self.plan.quality))
+        self.quality.blockSignals(False)
+        stream, record = self.profile.wants_stream, self.profile.wants_record
+        same = record and self.plan.recording == self.plan.quality
+        if not stream:
+            follows = "Used for recordings."
+        else:
+            follows = "Used for every stream and recording." if same else "Used for every stream."
+            if self.plan.limits:
+                follows += " Except " + "; ".join(self.plan.limits) + "."
+            if record and not same:
+                follows += f" Recordings: {optimize.step_text(self.plan.recording)} (they don't need upload)."
+        if not self.plan.changes:
+            follows += " Your settings already match."
+        self.follows.setText(follows)
+
     def _fill_plan(self) -> None:
         self.plan = optimize.plan(self.profile, self.collection, self.waiting_fps)
+        self._fill_quality()
         self.headline.setText(self.plan.headline)
         self.change_list.clear()
         for change in self.plan.changes:
