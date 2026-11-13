@@ -40,7 +40,7 @@ def test_parse_color():
 def test_color_source_emits_one_frame_until_changed():
     src = create_source("color", "c", {"color": "#00ff00", "width": 8, "height": 4})
     frame = src.video_frame()
-    assert frame.shape == (4, 8, 4)
+    assert frame.shape == (2, 2, 4) and src.size == (8, 4)  # a tiny texture, stretched to the source's size
     assert tuple(frame[0, 0]) == (0, 255, 0, 255)
     assert src.video_frame() is None
     src.update({"color": "#0000ff", "width": 8, "height": 4})

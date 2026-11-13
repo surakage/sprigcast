@@ -36,9 +36,9 @@ class ColorSource(Source):
         if not self._dirty:
             return None
         self._dirty = False
-        # A colour source is a single colour, so a tiny texture stretched by the compositor would do,
-        # but uploading at full size keeps crop maths identical to every other source.
-        w, h = self.size
-        frame = np.empty((h, w, 4), dtype=np.uint8)
+        # One colour needs no more than a few pixels: the compositor stretches the texture over the
+        # source's size (crop and position work in fractions of it). A full-size texture cost 8 MB of
+        # RAM in the graphics driver for every 1080p background.
+        frame = np.empty((2, 2, 4), dtype=np.uint8)
         frame[:] = parse_color(str(self.settings.get("color", "#000000")))
         return frame

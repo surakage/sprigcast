@@ -100,3 +100,19 @@ def test_fade_from_a_half_empty_scene_keeps_new_scene_visible_in_the_gap(composi
     assert tuple(img[10, 50]) == (255, 0, 0, 255)  # right half: only the new scene
     r, g, b, a = (int(v) for v in img[10, 10])
     assert abs(r - 128) <= 2 and abs(b - 128) <= 2 and a == 255  # left half: half and half
+
+
+def test_colour_source_fills_its_size_from_a_tiny_texture(compositor):
+    from sprigcast.core.source import create_source
+
+    canvas = Canvas(id="h", width=64, height=36)
+    src = create_source("color", "panel", {"color": "#3ddc84", "width": 32, "height": 18})
+    compositor.upload("panel", src.video_frame())
+    assert compositor.textures["panel"].size == (2, 2)
+    item = SceneItem(source="panel", x=16, y=9, crop=(8, 0, 0, 0))  # 8 px cut off the left
+    compositor.render(canvas, Scene(id="s", name="s", canvas="h", items=[item]), {"panel": src.size})
+    img = pixels(compositor, canvas)
+    for row, col in ((9, 16), (26, 39), (17, 28)):  # corners and middle of the 24x18 box: full colour to the edge
+        assert tuple(img[row, col]) == (0x3D, 0xDC, 0x84, 255)
+    for row, col in ((8, 20), (27, 20), (17, 15), (17, 40)):  # just outside it
+        assert tuple(img[row, col]) == (0, 0, 0, 0)
