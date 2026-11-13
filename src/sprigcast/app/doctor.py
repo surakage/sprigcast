@@ -246,8 +246,55 @@ def _sources(c: Checkup) -> list[Finding]:
 # Gathering ---------------------------------------------------------------------
 
 
+_nvml = None  # (library, device handles) once NVML is up; False if it can't be used
+
+
+def _nvml_load() -> float | None:
+    """GPU busy % straight from the NVIDIA driver's NVML library, in this process. None if unavailable.
+
+    Much cheaper than starting nvidia-smi (a whole new process, which itself loads NVML) every few seconds.
+    """
+    global _nvml
+    import ctypes
+
+    if _nvml is None:
+        _nvml = False
+        try:
+            lib = ctypes.WinDLL("nvml.dll") if sys.platform == "win32" else ctypes.CDLL("libnvidia-ml.so.1")
+            if lib.nvmlInit_v2() != 0:
+                return None
+            count = ctypes.c_uint()
+            if lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0:
+                return None
+            handles = []
+            for i in range(count.value):
+                h = ctypes.c_void_p()
+                if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(h)) == 0:
+                    handles.append(h)
+            if handles:
+                _nvml = (lib, handles)
+        except (OSError, AttributeError):
+            return None
+    if not _nvml:
+        return None
+
+    class Utilization(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+    lib, handles = _nvml
+    best = None
+    for h in handles:
+        u = Utilization()
+        if lib.nvmlDeviceGetUtilizationRates(h, ctypes.byref(u)) == 0:
+            best = max(best or 0.0, float(u.gpu))
+    return best
+
+
 def gpu_load() -> float | None:
-    """NVIDIA GPU utilisation in percent, or None when nvidia-smi isn't available."""
+    """NVIDIA GPU utilisation in percent, or None when neither NVML nor nvidia-smi is available."""
+    load = _nvml_load()
+    if load is not None or _nvml:
+        return load
     exe = shutil.which("nvidia-smi")
     if exe is None:
         return None
