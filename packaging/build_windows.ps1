@@ -4,6 +4,7 @@
 #
 # Needs: uv and Inno Setup 6 (iscc) on PATH. Output: packaging\out\SprigCast-Setup-<version>.exe
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true  # a failing uv or iscc stops the build too
 $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $PSScriptRoot "build"
 $out = Join-Path $PSScriptRoot "out"
@@ -13,7 +14,13 @@ New-Item -ItemType Directory -Force $build, $out | Out-Null
 # 1. A standalone Python 3.12 (the same builds uv uses), copied to build\python.
 $pyRoot = Join-Path $build "pythons"
 uv python install 3.12 --install-dir $pyRoot
-$home312 = Get-ChildItem $pyRoot -Directory | Where-Object { $_.Name -like "cpython-3.12*" } | Select-Object -First 1
+# uv also makes a "cpython-3.12-..." junction pointing at the real "cpython-3.12.N-..." folder: take the folder.
+$home312 = Get-ChildItem $pyRoot -Directory |
+    Where-Object { $_.Name -like "cpython-3.12.*" -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+    Select-Object -First 1
+if (-not $home312 -or -not (Test-Path (Join-Path $home312.FullName "python.exe"))) {
+    throw "No standalone Python 3.12 found in $pyRoot"
+}
 Move-Item $home312.FullName (Join-Path $build "python")
 Remove-Item -Recurse -Force $pyRoot
 $python = Join-Path $build "python\python.exe"

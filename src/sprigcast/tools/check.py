@@ -41,13 +41,15 @@ def main() -> int:
         return 1
     print(f"PyAV        {av.__version__} (FFmpeg {'.'.join(map(str, av.library_versions['libavcodec']))} libavcodec)")
 
-    from sprigcast.output.recorder import HARDWARE_CODECS, codec_label, pick_codec
+    from sprigcast.output.recorder import HARDWARE_CODECS, codec_label, encoder_works, pick_codec
 
     for name in (*HARDWARE_CODECS, "libx264"):  # every encoder SprigCast can use, best first
         if name not in av.codecs_available:
             print(f"{name:<11} not in this PyAV build")
             continue
         error = _try_open_encoder(name)
+        if error is None and name in HARDWARE_CODECS and not encoder_works(name):
+            error = "only its software fallback works here, so SprigCast skips it"  # e.g. Media Foundation, no GPU
         print(f"{name:<11} {'encoded a test frame: OK' if error is None else f'not usable here ({error})'}")
     picked = pick_codec()
     print(f"Encoder     SprigCast will use {codec_label(picked)}")
