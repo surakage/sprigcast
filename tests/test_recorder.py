@@ -199,3 +199,14 @@ def test_nvenc_shared_context_is_optional(monkeypatch):
     monkeypatch.setattr(recorder, "_shared_gpu_ok", True)
     accel = recorder.nvenc_hwaccel()
     assert accel is not None and accel.options == {"primary_ctx": "1"}
+
+
+def test_nvenc_without_b_frames_keeps_two_surfaces_and_no_delay():
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.output.recorder import video_options
+
+    lean = video_options("h264_nvenc", EncoderSettings(b_frames=0), 6000)
+    assert lean["delay"] == "0" and lean["surfaces"] == "2"
+    for enc in (EncoderSettings(b_frames=2), EncoderSettings(b_frames=0, lookahead=True)):
+        opts = video_options("h264_nvenc", enc, 6000)
+        assert "delay" not in opts and "surfaces" not in opts
