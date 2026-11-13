@@ -243,59 +243,99 @@ def _report_sources(window, collection) -> None:
         print(f"  OpenCV: loaded ({lazy_cv2.loaded_by or 'by the camera fallback or a library'})", flush=True)
 
 
-def gpu_costs() -> None:
-    """What the OpenGL driver adds to SprigCast's own memory for the GPU work the renderer does."""
+GPU_EXPERIMENTS = {
+    "targets": "8 x 1080p canvases drawn on the GPU",
+    "images": "8 x 1080p images uploaded at once",
+    "images-finish": "8 x 1080p images, waiting after each",
+    "images-pbo": "8 x 1080p images through one upload buffer",
+    "rgba": "screen capture: 1080p RGBA, 120 frames",
+    "rgba-pbo": "screen capture through an upload buffer",
+    "bgr": "webcam: 1080p BGR (3 bytes), 120 frames",
+    "bgra": "webcam as BGRA (4 bytes), 120 frames",
+    "readback": "1080p canvas read back 120 times",
+}
+
+
+def _gpu_probe(name: str) -> None:
+    """Child process: one GPU experiment in a fresh OpenGL context; prints the private memory it added."""
+    import json
+
     import numpy as np
+    import psutil
 
     from sprigcast.render.compositor import create_context
 
-    meter = _Meter()
-    meter.take("Python started")
+    process = psutil.Process()
+
+    def private() -> int:
+        try:
+            return process.memory_full_info().uss
+        except Exception:
+            return process.memory_info().rss
+
     ctx = create_context()
-    meter.take("OpenGL context")
     w, h = 1920, 1080
+    rgba = np.full((h, w, 4), 128, np.uint8)
     keep = []
-    for _ in range(8):  # canvases, sprig layers, transition buffers: drawn into on the GPU
+    ctx.finish()
+    before = private()
+    if name == "targets":
+        for _ in range(8):
+            tex = ctx.texture((w, h), 4)
+            fbo = ctx.framebuffer(color_attachments=[tex])
+            fbo.use()
+            fbo.clear(0.1, 0.2, 0.3, 1.0)
+            keep.append((tex, fbo))
+    elif name.startswith("images"):
+        pbo = ctx.buffer(reserve=rgba.nbytes, dynamic=True) if name == "images-pbo" else None
+        for _ in range(8):
+            tex = ctx.texture((w, h), 4, alignment=1)
+            if pbo is not None:
+                pbo.write(rgba)
+                tex.write(pbo)
+            else:
+                tex.write(rgba)
+            if name == "images-finish":
+                ctx.finish()
+            keep.append(tex)
+    elif name in ("rgba", "rgba-pbo", "bgr", "bgra"):
+        components = 3 if name == "bgr" else 4
+        frame = np.full((h, w, components), 64, np.uint8)
+        tex = ctx.texture((w, h), components, alignment=1)
+        pbo = ctx.buffer(reserve=frame.nbytes, dynamic=True) if name == "rgba-pbo" else None
+        for i in range(120):
+            frame[0, 0, 0] = i
+            if pbo is not None:
+                pbo.orphan()
+                pbo.write(frame)
+                tex.write(pbo)
+            else:
+                tex.write(frame)
+            if i % 2:
+                ctx.finish()  # a frame tick: the renderer waits for the GPU every frame
+    elif name == "readback":
         tex = ctx.texture((w, h), 4)
         fbo = ctx.framebuffer(color_attachments=[tex])
-        fbo.use()
-        fbo.clear(0.1, 0.2, 0.3, 1.0)
-        keep.append((tex, fbo))
+        for _ in range(120):
+            fbo.read(components=4, alignment=1)
     ctx.finish()
-    meter.take("8 x 1080p render targets")
-    rgba = np.full((h, w, 4), 128, np.uint8)
-    for _ in range(8):  # still images: uploaded once
-        tex = ctx.texture((w, h), 4, alignment=1)
-        tex.write(rgba)
-        keep.append((tex, None))
-    ctx.finish()
-    meter.take("8 x 1080p uploaded images")
-    live = ctx.texture((w, h), 4, alignment=1)
-    for i in range(120):  # screen capture: a new frame every tick
-        rgba[0, 0, 0] = i
-        live.write(rgba)
-    ctx.finish()
-    meter.take("1080p RGBA uploaded 120 times")
-    bgr = np.full((h, w, 3), 64, np.uint8)
-    cam = ctx.texture((w, h), 3, alignment=1)
-    for i in range(120):  # webcam: 3 bytes per pixel
-        bgr[0, 0, 0] = i
-        cam.write(bgr)
-    ctx.finish()
-    meter.take("1080p BGR uploaded 120 times")
-    target = keep[0][1]
-    for _ in range(120):  # canvases read back for the encoder and previews
-        target.read(components=4, alignment=1)
-    meter.take("1080p read back 120 times")
-    for tex, fbo in keep:
-        if fbo is not None:
-            fbo.release()
-        tex.release()
-    live.release()
-    cam.release()
-    ctx.finish()
-    meter.take("all released")
-    meter.biggest_files(6)
+    print(json.dumps({"added": (private() - before) / 1e6}))
+
+
+def gpu_costs() -> None:
+    """Each GPU experiment in its own process: what the graphics driver adds to SprigCast's private memory."""
+    import json
+    import subprocess
+
+    print("RAM the graphics driver adds (Task Manager), each test in a fresh process:")
+    for name, label in GPU_EXPERIMENTS.items():
+        code = f"from sprigcast.tools.memcheck import _gpu_probe; _gpu_probe({name!r})"
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+        lines = [line for line in out.stdout.splitlines() if line.startswith("{")]
+        if lines:
+            print(f"  {label:<46} +{json.loads(lines[-1])['added']:5.0f} MB", flush=True)
+        else:
+            print(f"  {label:<46} failed: {(out.stderr.strip().splitlines() or ['no output'])[-1]}", flush=True)
 
 
 def _source_costs(window, collection, meter, wait) -> None:
@@ -400,7 +440,17 @@ def main() -> None:
         print(f"  (Task Manager every 2 s while recording: {', '.join(samples)} MB)", flush=True)
         meter.take("+ recording")
         window._toggle_replay(True)
-        wait(WAIT["replay"])
+        samples = []
+        for _ in range(int(WAIT["replay"] // 2)):
+            wait(2.0)
+            samples.append(f"{meter.private() / 1e6:.0f}")
+        print(f"  (Task Manager every 2 s with replay on: {', '.join(samples)} MB)", flush=True)
+        for enc in window.encoders.encoders.values():
+            packets = list(enc._packets)
+            in_ram = sum(len(p.data) for p in packets if p.data is not None)
+            on_disk = sum(p.size for p in packets if p.data is None)
+            print(f"  ({enc.canvas_id}: {len(packets)} packets, {in_ram / 1e6:.1f} MB in RAM, "
+                  f"{on_disk / 1e6:.1f} MB in the replay file)", flush=True)
         meter.take(f"+ replay buffer ({collection.recording.replay_seconds} s)")
         window._toggle_replay(False)
         window._stop_recording()
