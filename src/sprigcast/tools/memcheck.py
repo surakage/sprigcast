@@ -290,8 +290,8 @@ def _window_steps(meter):
     from sprigcast.tools import memwhere
 
     steps: list[tuple[str, float, list[str]]] = []
-    last = [meter.private()]
     seen = [memwhere.snapshot()]
+    last = [meter.private()]  # after the snapshot, so its own working memory isn't charged to the window
 
     def mark(label: str) -> None:
         now = meter.private()
@@ -334,6 +334,41 @@ def _window_steps(meter):
     wrap(mw.ResourceMeter, "__init__", "resource meter")
     steps.append(("start", 0.0, []))
     return steps, mark
+
+
+def _trace_lines(meter, function, least: float = 3e6):
+    """Charge memory growth to single lines of `function` while it runs. Returns (stop, lines).
+
+    Only that one function is followed line by line (cheap: one memory reading per line), so a block
+    that appears during the main window's set-up can be pinned on the statement that caused it.
+    """
+    import linecache
+
+    code = function.__code__
+    found: list[tuple[int, str, float]] = []
+    state = {"line": 0, "private": 0.0}
+
+    def settle() -> None:
+        now = meter.private()
+        if state["line"] and now - state["private"] >= least:
+            text = linecache.getline(code.co_filename, state["line"]).strip()
+            found.append((state["line"], text, now - state["private"]))
+        state["private"] = now
+
+    def local(frame, event, arg):
+        if event in ("line", "return"):
+            settle()
+            state["line"] = frame.f_lineno if event == "line" else 0
+        return local
+
+    def tracer(frame, event, arg):
+        if frame.f_code is code:
+            state["private"], state["line"] = meter.private(), frame.f_lineno
+            return local
+        return None
+
+    sys.settrace(tracer)
+    return (lambda: sys.settrace(None)), found
 
 
 def _renderer_steps(meter):
@@ -617,7 +652,11 @@ def main() -> None:
         print(f"  ({len(collection.scenes)} scenes, {len(collection.sources)} sources: "
               f"{', '.join(sorted({s.kind for s in collection.sources}))})", flush=True)
         steps, mark = _window_steps(meter)
-        window = MainWindow(collection, scenes, None)
+        stop_tracing, slow_lines = _trace_lines(meter, MainWindow.__init__)
+        try:
+            window = MainWindow(collection, scenes, None)
+        finally:
+            stop_tracing()
         mark("(other window setup)")
         window._save_layout = lambda: None  # keep your saved dock layout as it is
         window._recordings_folder = lambda: work
@@ -640,8 +679,16 @@ def main() -> None:
                 print(f"    {label:<30} {'+' if added >= 0 else '-'}{abs(added) / 1e6:.0f} MB", flush=True)
                 for line in what:
                     print(f"        {line}", flush=True)
+        if slow_lines:
+            print("  set-up lines that took 3 MB or more (main_window.py):", flush=True)
+            for number, text, added in slow_lines:
+                print(f"    line {number:<5} +{added / 1e6:.0f} MB  {text[:90]}", flush=True)
         _report_sources(window, collection)
-        from sprigcast.tools import memwhere
+        from sprigcast.tools import cpuwhere, memwhere
+
+        cpu = cpuwhere.CpuWatch()
+        wait(6.0)
+        cpu.report("with the window open, nothing recording")
 
         memwhere.report("window open, nothing recording")
         from sprigcast.output.recorder import codec_label, nvenc_hwaccel, pick_codec
@@ -656,21 +703,25 @@ def main() -> None:
         print(f"  (recording with {codec_label(codec)}{shared}, canvases: {', '.join(collection.recording.canvases)}, "
               f"{collection.recording.bitrate_kbps} kbps)", flush=True)
         window._start_recording()
+        cpu.restart()
         samples = []
         for _ in range(int(WAIT["recording"] // 2)):
             wait(2.0)
             samples.append(f"{meter.private() / 1e6:.0f}")
         print(f"  (Task Manager every 2 s while recording: {', '.join(samples)} MB)", flush=True)
         _encoder_queues(window)
+        cpu.report("while recording")
         meter.take("+ recording")
         memwhere.report("while recording")
         window._toggle_replay(True)
+        cpu.restart()
         samples = []
         for _ in range(int(WAIT["replay"] // 2)):
             wait(2.0)
             samples.append(f"{meter.private() / 1e6:.0f}")
         print(f"  (Task Manager every 2 s with replay on: {', '.join(samples)} MB)", flush=True)
         _encoder_queues(window)
+        cpu.report("while recording with the replay buffer on")
         for enc in window.encoders.encoders.values():
             packets = list(enc._packets)
             in_ram = sum(len(p.data) for p in packets if p.data is not None)
