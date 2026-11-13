@@ -382,8 +382,10 @@ class SceneCollection(BaseModel):
     def parts_inside(self, scene: Scene) -> list[Scene]:
         """Parts placed directly in a scene (as main parts)."""
         out = []
+        sources = {s.id: s for s in self.sources}
         for item in scene.items:
-            part = self.part_of(self.source(item.source))
+            source = sources.get(item.source)  # an item can outlive its source for a moment while it is removed
+            part = self.part_of(source) if source is not None else None
             if part is not None and part not in out:
                 out.append(part)
         return out

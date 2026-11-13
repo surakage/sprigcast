@@ -243,3 +243,25 @@ def test_timer_jitter_leaves_no_holes_but_real_lateness_does(tmp_path):
     # a render loop running a bit slow (59.5 fps) skips a render now and then instead of drifting
     slow = numbers(60, 60, [i / 59.5 for i in range(595)])
     assert abs(slow[-1] - 594 / 59.5 * 60) < 1
+
+
+def test_frames_arriving_while_the_encoder_opens_dont_pile_up(tmp_path):
+    from sprigcast.output.recorder import OPENING_QUEUE
+
+    rec = Recorder(tmp_path / "o.mkv", 16, 16, 60, 500, "libx264", 0.0)
+    rec.opening_queue = OPENING_QUEUE
+    rec._opening = True  # as after start(), before the encoder is ready
+    for i in range(40):
+        rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), i / 60))
+    assert rec._video.qsize() == OPENING_QUEUE and rec.dropped == 0 and rec.skipped_opening == 38
+    assert [pts for pts, _ in rec._video.queue] == [38, 39]  # the newest ones
+
+
+def test_an_item_whose_source_is_gone_is_ignored():
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+
+    col = SceneCollection(canvases=[Canvas(id="h", width=64, height=36)],
+                          sources=[SourceConfig(id="gone", kind="color", name="Gone")],
+                          scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="gone")])])
+    col.sources.clear()  # removed while a scene still places it
+    assert col.parts_inside(col.scenes[0]) == [] and col.inner_shapes(col.scenes[0]) == []

@@ -128,6 +128,7 @@ class Engine:
         next_tick = time.perf_counter()
         render_times: deque[float] = deque(maxlen=fps)
         ticks, dropped, stats_at = 0, 0, time.perf_counter()
+        last_problem = None
         readbacks_at = 0
 
         try:
@@ -135,7 +136,14 @@ class Engine:
                 if not self._drain_commands(compositor):
                     break
                 started = time.perf_counter()
-                self._tick(compositor, started)
+                try:
+                    self._tick(compositor, started)
+                except Exception as exc:  # one bad frame must not end rendering for the whole session
+                    problem = f"{type(exc).__name__}: {exc}"
+                    if problem != last_problem:
+                        last_problem = problem
+                        log.exception("a frame failed to render")
+                        self.events.put(EngineError(f"A frame failed to render: {problem}"))
                 render_times.append(time.perf_counter() - started)
                 ticks += 1
 

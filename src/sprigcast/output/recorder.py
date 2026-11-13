@@ -27,6 +27,7 @@ from sprigcast.sources.audio import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
+OPENING_QUEUE = 2  # frames kept while the encoder is still opening
 VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
@@ -298,6 +299,9 @@ class Recorder:
         self.frames = 0  # frames written
         self.dropped = 0  # frames the encoder could not keep up with
         self.peak_queue = 0  # most frames ever waiting at once (each one is a full frame in RAM)
+        self.skipped_opening = 0  # frames let go while the encoder was still opening (not drops)
+        self._opening = False  # True from start() until the encoder is open
+        self._opened = threading.Event()
         self.error: str | None = None
         self.bytes_out = 0  # bytes muxed so far, for the bitrate readout
         self.mux_seconds = 0.0  # time spent handing packets to the file or network
@@ -316,8 +320,15 @@ class Recorder:
 
     # Called from other threads ---------------------------------------------------
 
+    opening_queue = OPENING_QUEUE  # tests feed frames faster than real time and raise this
+
     def start(self) -> None:
+        self._opening = True
         self._thread.start()
+
+    def wait_open(self, timeout: float = 10.0) -> bool:
+        """Wait until the encoder is open (or failed to open). For tests and tools."""
+        return self._opened.wait(timeout)
 
     def _slot(self, frame) -> int:
         """The output frame number this render belongs to.
@@ -359,6 +370,16 @@ class Recorder:
         pts = self._assign_pts(frame)
         if pts is None:
             return
+        if self._opening:
+            # The encoder is still opening (up to half a second for a GPU encoder): keep only the
+            # newest couple of frames instead of filling the queue (~45 MB at 1080p) and then
+            # dropping what no longer fits. These never count as drops: nothing was running yet.
+            while self._video.qsize() >= self.opening_queue:
+                try:
+                    self._video.get_nowait()
+                    self.skipped_opening += 1
+                except queue.Empty:
+                    break
         try:
             self._video.put_nowait((pts, frame))
             self.peak_queue = max(self.peak_queue, self._video.qsize())
@@ -482,7 +503,12 @@ class Recorder:
         """Open the output, encode until stop() is called, then flush and close. Raises on failure."""
         container, finished = None, False
         try:
-            container, video, audio = self._open()
+            self._opening = True
+            try:
+                container, video, audio = self._open()
+            finally:
+                self._opening = False
+                self._opened.set()
             while True:
                 stopping = self._stop.is_set()
                 self._write_audio(container, audio)
