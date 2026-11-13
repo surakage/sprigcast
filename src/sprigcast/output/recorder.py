@@ -1,6 +1,7 @@
 """Records one canvas plus the mixed audio to a video file.
 
-Video is H.264 from NVENC on the GPU, or x264 on the CPU when NVENC is unavailable.
+Video is H.264 from the graphics card's own encoder (NVIDIA NVENC, AMD AMF, Intel Quick Sync, or
+whatever Windows Media Foundation offers), or x264 on the CPU when none of them works.
 Audio is AAC, 48 kHz stereo, from the mixer. MKV is the default container because a
 crash or power cut still leaves a playable file; MP4 is lost if the app dies mid-recording.
 
@@ -181,7 +182,7 @@ def encoder_hwaccel(codec: str):
     return nvenc_hwaccel() if codec == "h264_nvenc" else None
 
 
-def _try_encoder(codec_name: str, hwaccel=None) -> bool:
+def _try_encoder(codec_name: str, hwaccel=None, options: dict[str, str] | None = None) -> bool:
     import av
 
     if codec_name not in av.codecs_available:
@@ -189,9 +190,12 @@ def _try_encoder(codec_name: str, hwaccel=None) -> bool:
     try:
         ctx = av.CodecContext.create(codec_name, "w", hwaccel=hwaccel)
         ctx.width, ctx.height = 256, 256
-        ctx.pix_fmt = "nv12" if "nvenc" in codec_name else "yuv420p"
+        ctx.pix_fmt = "yuv420p" if codec_name == "libx264" else "nv12"
         ctx.time_base = Fraction(1, 30)
         ctx.framerate = 30
+        if options is not None:
+            ctx.bit_rate = 2_000_000
+            ctx.options = options
         frame = av.VideoFrame.from_ndarray(np.zeros((256, 256, 3), dtype=np.uint8), format="rgb24")
         ctx.encode(frame.reformat(format=ctx.pix_fmt))
         ctx.encode(None)
@@ -201,12 +205,69 @@ def _try_encoder(codec_name: str, hwaccel=None) -> bool:
         return False
 
 
+# Graphics-card encoders, best first. NVIDIA, then AMD, then Intel, then whatever Windows itself offers
+# (Media Foundation reaches the same chips through the vendor's driver, a little less tunable).
+HARDWARE_CODECS = ("h264_nvenc", "h264_amf", "h264_qsv", "h264_mf")
+CODEC_LABELS = {
+    "h264_nvenc": "NVIDIA NVENC (GPU)",
+    "h264_amf": "AMD AMF (GPU)",
+    "h264_qsv": "Intel Quick Sync (GPU)",
+    "h264_mf": "Windows Media Foundation (GPU)",
+    "libx264": "x264 (CPU, no GPU encoder found)",
+}
+CODEC_SHORT = {"h264_nvenc": "NVENC", "h264_amf": "AMF", "h264_qsv": "Quick Sync", "h264_mf": "Media Foundation",
+               "libx264": "x264 (CPU)"}
+_works: dict[str, bool] = {}  # codec -> it opened and encoded a frame (checked once per run)
+_plain: set[str] = set()  # codecs that only open without our options: video_options() gives them none
+_picked: str | None = None
+
+
+def is_hardware(codec: str) -> bool:
+    return codec in HARDWARE_CODECS
+
+
+def encoder_works(codec: str) -> bool:
+    """True when this encoder opens and encodes a frame here, with the options SprigCast would give it."""
+    if codec == "h264_nvenc":
+        return nvenc_works()
+    if codec not in _works:
+        from sprigcast.core.scene import EncoderSettings
+
+        if codec == "libx264":
+            _works[codec] = _try_encoder(codec)
+        elif _try_encoder(codec, options=video_options(codec, EncoderSettings(b_frames=0), 2000)):
+            _works[codec] = True
+        elif _try_encoder(codec, options=BASE_OPTIONS.get(codec, {})):
+            log.info("%s only opens without SprigCast's options: using its defaults", codec)
+            _plain.add(codec)
+            _works[codec] = True
+        else:
+            _works[codec] = False
+    return _works[codec]
+
+
 def pick_codec() -> str:
-    return "h264_nvenc" if nvenc_works() else "libx264"
+    """The encoder to use on this PC: the first graphics-card encoder that works, else x264 on the CPU.
+
+    SPRIGCAST_ENCODER=libx264 (or any name above) puts that one first, for testing or a misbehaving driver.
+    """
+    global _picked
+    if not nvenc_works() and _picked == "h264_nvenc":
+        _picked = None
+    if _picked is None:
+        forced = os.environ.get("SPRIGCAST_ENCODER", "").strip()
+        order = ([forced] if forced in CODEC_LABELS else []) + list(HARDWARE_CODECS)
+        _picked = next((c for c in order if encoder_works(c)), "libx264")
+        log.info("video encoder: %s", codec_label(_picked))
+    return _picked
 
 
 def codec_label(codec: str) -> str:
-    return "NVIDIA NVENC (GPU)" if codec == "h264_nvenc" else "x264 (CPU, NVENC not available)"
+    return CODEC_LABELS.get(codec, codec)
+
+
+def codec_short(codec: str) -> str:
+    return CODEC_SHORT.get(codec, codec)
 
 
 def recording_path(folder: Path, canvas_id: str, when: datetime, container: str) -> Path:
@@ -223,6 +284,51 @@ def recording_path(folder: Path, canvas_id: str, when: datetime, container: str)
 X264_PRESETS = {"p1": "ultrafast", "p2": "superfast", "p3": "veryfast", "p4": "veryfast", "p5": "veryfast",
                 "p6": "faster", "p7": "fast"}  # CPU encoding: keep it light, games need the CPU too
 LOOKAHEAD_FRAMES = 16
+AMF_QUALITY = {"p1": "speed", "p2": "speed", "p3": "speed", "p4": "balanced", "p5": "balanced",
+               "p6": "quality", "p7": "quality"}
+QSV_PRESETS = {"p1": "veryfast", "p2": "veryfast", "p3": "faster", "p4": "fast", "p5": "medium",
+               "p6": "slow", "p7": "slower"}
+# What a codec needs whatever the settings: Media Foundation must use the chip, never its software encoder.
+BASE_OPTIONS = {"h264_mf": {"hw_encoding": "1"}}
+
+
+def _amf_options(enc, k: int) -> dict[str, str]:
+    opts = {"usage": "lowlatency" if enc.tuning in ("ll", "ull") else "transcoding",
+            "quality": AMF_QUALITY.get(enc.preset, "balanced"),
+            "profile": "constrained_baseline" if enc.profile == "baseline" else enc.profile,
+            "vbaq": "1" if enc.adaptive_quant else "0"}
+    if enc.rate_control == "cqp":
+        opts.update(rc="cqp", qp_i=str(enc.cq_level), qp_p=str(enc.cq_level))
+    elif enc.rate_control == "cbr":
+        opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k")
+    else:
+        opts.update(rc="vbr_peak", maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
+    return opts
+
+
+def _qsv_options(enc, k: int) -> dict[str, str]:
+    opts = {"preset": QSV_PRESETS.get(enc.preset, "medium"), "profile": enc.profile,
+            "look_ahead": "1" if enc.lookahead else "0"}
+    if enc.tuning in ("ll", "ull"):
+        opts["async_depth"] = "1"  # hand each frame back as soon as it's done
+    if enc.rate_control == "cqp":
+        opts["global_quality"] = str(enc.cq_level)  # Quick Sync's quality-based mode
+    elif enc.rate_control == "cbr":
+        opts.update(maxrate=f"{k}k", bufsize=f"{k}k")  # max rate equal to the bitrate selects CBR
+    else:
+        opts.update(maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
+    return opts
+
+
+def _mf_options(enc, k: int) -> dict[str, str]:
+    opts = dict(BASE_OPTIONS["h264_mf"])
+    if enc.rate_control == "cqp":
+        opts.update(rate_control="quality", quality=str(max(1, min(100, 100 - 2 * enc.cq_level))))
+    elif enc.rate_control == "cbr":
+        opts.update(rate_control="cbr", scenario="live_streaming")
+    else:
+        opts.update(rate_control="u_vbr")
+    return opts
 
 
 def rate_limits(codec: str, enc, bitrate_kbps: int) -> tuple[int, int]:
@@ -230,7 +336,7 @@ def rate_limits(codec: str, enc, bitrate_kbps: int) -> tuple[int, int]:
     k = bitrate_kbps
     if enc.rate_control == "cbr":
         return k, k
-    if enc.rate_control == "vbr" and codec == "h264_nvenc":
+    if enc.rate_control == "vbr" and codec in ("h264_nvenc", "h264_amf", "h264_qsv"):
         return int(k * 1.5), k * 2
     return 0, 0
 
@@ -258,6 +364,14 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
             # RTX card: 26 MB less for two 1080p60 encoders, no extra dropped frames.
             opts.update(delay="0", surfaces="2")
         return opts
+    if codec in _plain:
+        return dict(BASE_OPTIONS.get(codec, {}))
+    if codec == "h264_amf":
+        return _amf_options(enc, k)
+    if codec == "h264_qsv":
+        return _qsv_options(enc, k)
+    if codec == "h264_mf":
+        return _mf_options(enc, k)
     opts = {"preset": X264_PRESETS.get(enc.preset, "veryfast"), "profile": enc.profile}
     if enc.tuning in ("ll", "ull"):
         opts["tune"] = "zerolatency"

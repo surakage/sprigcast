@@ -1,4 +1,4 @@
-"""M0 check: `uv run sprigcast-check`. Confirms Python, PyAV, FFmpeg and NVENC are ready."""
+"""M0 check: `uv run sprigcast-check`. Confirms Python, PyAV, FFmpeg and a video encoder are ready."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _try_open_encoder(codec_name: str) -> str | None:
     try:
         ctx = av.CodecContext.create(codec_name, "w")
         ctx.width, ctx.height = 256, 256
-        ctx.pix_fmt = "nv12" if "nvenc" in codec_name else "yuv420p"
+        ctx.pix_fmt = "yuv420p" if codec_name == "libx264" else "nv12"
         ctx.time_base = Fraction(1, 30)
         ctx.framerate = 30
         frame = av.VideoFrame.from_ndarray(np.zeros((256, 256, 3), dtype=np.uint8), format="rgb24")
@@ -41,20 +41,23 @@ def main() -> int:
         return 1
     print(f"PyAV        {av.__version__} (FFmpeg {'.'.join(map(str, av.library_versions['libavcodec']))} libavcodec)")
 
-    has_nvenc = "h264_nvenc" in av.codecs_available
-    print(f"h264_nvenc  {'listed' if has_nvenc else 'NOT in this PyAV build'}")
-    if has_nvenc:
-        error = _try_open_encoder("h264_nvenc")
-        if error is None:
-            print("            encoded a test frame on your NVIDIA GPU: OK")
-        else:
+    from sprigcast.output.recorder import HARDWARE_CODECS, codec_label, pick_codec
+
+    for name in (*HARDWARE_CODECS, "libx264"):  # every encoder SprigCast can use, best first
+        if name not in av.codecs_available:
+            print(f"{name:<11} not in this PyAV build")
+            continue
+        error = _try_open_encoder(name)
+        print(f"{name:<11} {'encoded a test frame: OK' if error is None else f'not usable here ({error})'}")
+    picked = pick_codec()
+    print(f"Encoder     SprigCast will use {codec_label(picked)}")
+    if picked == "libx264":
+        if "libx264" not in av.codecs_available or _try_open_encoder("libx264") is not None:
             ok = False
-            print(f"            listed but could not encode: {error}")
-            print("            -> update the NVIDIA driver, then run this again")
-    else:
-        ok = False
-    fallback = _try_open_encoder("libx264") if "libx264" in av.codecs_available else "not in this build"
-    print(f"libx264     {'OK (CPU fallback)' if fallback is None else fallback}")
+            print("            -> no video encoder works at all: run `uv sync`, then this again")
+        else:
+            print("            -> your CPU does the encoding. That works, but a graphics-card encoder is lighter:")
+            print("               update the graphics driver (NVIDIA, AMD or Intel), then run this again")
 
     ffmpeg = shutil.which("ffmpeg")
     print(f"ffmpeg CLI  {ffmpeg or 'not found (only needed for sprigcast-teststream)'}")

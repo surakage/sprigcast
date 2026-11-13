@@ -95,8 +95,11 @@ class EncoderForm(QGroupBox):
             self.audio.addItem(f"{kbps} kbps", kbps)
         self.audio.setCurrentIndex(self.audio.findData(settings.audio_kbps))
         form.addRow("Audio bitrate", self.audio)
-        if "nvenc" not in encoder_name.lower():
-            form.addRow("", _hint("No NVIDIA encoder: using x264 (CPU). Multipass and look-ahead are ignored."))
+        if "x264" in encoder_name.lower():
+            form.addRow("", _hint("No graphics-card encoder found: using x264 (CPU). "
+                                  "Multipass and look-ahead are ignored."))
+        elif "nvenc" not in encoder_name.lower():
+            form.addRow("", _hint("Multipass is NVIDIA-only and is ignored with this encoder."))
         self.rate_control.currentIndexChanged.connect(self._rate_changed)
         self._rate_changed()
 

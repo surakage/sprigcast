@@ -104,7 +104,7 @@ from sprigcast.core.scene import (
 )
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key
-from sprigcast.output.recorder import codec_label, pick_codec
+from sprigcast.output.recorder import codec_label, codec_short, pick_codec
 from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
@@ -2615,7 +2615,7 @@ class MainWindow(QMainWindow):
             return
         seconds = int(session.elapsed)
         clock = f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
-        codec = "NVENC" if session.recorders and session.recorders[0][1].codec == "h264_nvenc" else "x264 (CPU)"
+        codec = codec_short(session.recorders[0][1].codec) if session.recorders else codec_short(pick_codec())
         dropped = session.dropped
         text = f"● REC {clock}  ·  {codec}"
         if dropped:

@@ -195,9 +195,9 @@ def _upload(c: Checkup) -> list[Finding]:
 
 def _encoder(c: Checkup) -> list[Finding]:
     found = []
-    if c.codec != "h264_nvenc":
-        found.append(Finding("warning", "Encoder", "The NVIDIA encoder isn't working, so your CPU encodes: "
-                                                   "update the NVIDIA driver and restart SprigCast."))
+    if c.codec == "libx264":
+        found.append(Finding("warning", "Encoder", "No graphics-card encoder is working, so your CPU encodes: "
+                                                   "update the graphics driver and restart SprigCast."))
     target = max((cv.fps for cv in c.collection.canvases if cv.enabled), default=60)
     if c.render_fps is not None and c.render_fps < 0.9 * target:
         found.append(Finding("bad", "GPU", f"The preview runs at {c.render_fps:.0f} of {target} fps: "

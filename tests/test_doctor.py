@@ -55,8 +55,10 @@ def test_gpu_and_encoder_and_audio_warnings():
     findings = examine(_checkup(codec="libx264", render_fps=41, gpu_pct=97, loudest={"mic": -70, "desk": 0}))
     text = " ".join(f.text for f in findings)
     assert findings[0].area == "GPU" and "41 of 60 fps" in findings[0].text
-    assert "NVIDIA encoder" in text and "97% busy" in text
+    assert "No graphics-card encoder" in text and "97% busy" in text
     assert "Mic heard nothing" in text and "Desktop audio is clipping" in text
+    other_card = " ".join(f.text for f in examine(_checkup(codec="h264_amf")))
+    assert "graphics-card encoder" not in other_card  # an AMD or Intel encoder is not a problem
 
 
 def test_muted_mic_and_no_destination():
