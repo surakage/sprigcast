@@ -1,8 +1,12 @@
-"""Replay buffer: keep the last N seconds of each canvas encoded in memory, and save it as a clip on demand.
+"""Replay buffer: keep the last N seconds of each canvas encoded, and save it as a clip on demand.
 
 It encodes exactly like a recording (same encoder settings, NVENC when available), but instead of
-writing packets to a file it keeps their bytes in a rolling buffer. Saving copies the buffer, starting
-at a keyframe, into a new file on the encoder's own thread, so the live encode never waits for the disk.
+writing packets to a file it keeps them in a rolling buffer. Saving copies the buffer, starting at a
+keyframe, into a new file on the encoder's own thread, so the live encode never waits for the disk.
+
+The packets' bytes go to a temporary ring file rather than RAM (30 s of two 12 Mbps canvases would
+be ~100 MB of memory). Windows keeps recently written file data in its file cache, which isn't
+counted against SprigCast and is given back whenever games or other apps need the memory.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ from __future__ import annotations
 import io
 import logging
 import queue
+import tempfile
 import threading
 import time
 from collections import deque
@@ -26,15 +31,67 @@ log = logging.getLogger(__name__)
 @dataclass
 class _Packet:
     kind: str  # "video" or "audio"
-    data: bytes
+    data: bytes | None  # None once the bytes are in `spool`
     pts: int | None
     dts: int | None
     time_base: Fraction
     keyframe: bool
+    spool: Spool | None = None
+    at: int = 0  # position in the spool (always growing; see Spool)
+    size: int = 0
 
     @property
     def seconds(self) -> float:
         return float((self.pts if self.pts is not None else self.dts or 0) * self.time_base)
+
+    def payload(self) -> bytes:
+        return self.data if self.data is not None else self.spool.read(self.at, self.size)
+
+
+class Spool:
+    """A fixed-size ring of packet bytes in a temporary file (deleted when closed).
+
+    Positions only ever grow; the byte in the file is at position % capacity. A packet never wraps
+    around the end, so it may skip ahead to the next lap. Packets more than one lap behind the write
+    position have been overwritten (`oldest_kept`). Used from the encoder thread only.
+    """
+
+    def __init__(self, capacity: int, folder: str | None = None):
+        self.capacity = capacity
+        self.file = tempfile.TemporaryFile(prefix="sprigcast-replay-", dir=folder)
+        self.end = 0
+
+    def place(self, size: int) -> int:
+        """Where a packet of `size` bytes will go (call write() next)."""
+        if size > self.capacity:
+            raise ValueError("packet larger than the replay spool")
+        at = self.end
+        if at % self.capacity + size > self.capacity:
+            at += self.capacity - at % self.capacity  # start the next lap rather than wrap mid-packet
+        return at
+
+    def write(self, at: int, data: bytes) -> None:
+        self.file.seek(at % self.capacity)
+        self.file.write(data)
+        self.end = at + len(data)
+
+    def oldest_kept(self) -> int:
+        return self.end - self.capacity
+
+    def read(self, at: int, size: int) -> bytes:
+        if at < self.oldest_kept():
+            raise RuntimeError("replay data was overwritten")
+        self.file.flush()
+        self.file.seek(at % self.capacity)
+        return self.file.read(size)
+
+    def close(self) -> None:
+        self.file.close()
+
+
+def spool_capacity(bitrate_kbps: int, seconds: float) -> int:
+    """Room for `seconds` plus a keyframe interval, twice over for VBR peaks and audio; at least 16 MB."""
+    return max(16 << 20, int(bitrate_kbps * 1000 / 8 * (seconds + 10) * 2))
 
 
 def replay_path(folder: Path, canvas_id: str, when: datetime, container: str) -> Path:
@@ -58,6 +115,8 @@ class ReplayBuffer(Recorder):
         self.canvas_id = canvas_id
         self.seconds = seconds
         self._packets: deque[_Packet] = deque()
+        self._spool: Spool | None = None
+        self._spool_failed = False
         self._templates = None  # (video stream, audio stream) of the in-memory container
         self._requests: queue.Queue = queue.Queue()
 
@@ -110,8 +169,31 @@ class ReplayBuffer(Recorder):
                         packet.time_base or packet.stream.time_base, bool(packet.is_keyframe))
             self._packets.append(p)
             self.bytes_out += packet.size
-            self._on_packet(p)
+            self._on_packet(p)  # a recording file gets the bytes straight away
+            if self.seconds > 0 and not self._spool_failed:
+                self._to_spool(p)
         self._trim()
+        if self.seconds <= 0 and self._spool is not None and not any(p.spool for p in self._packets):
+            self._spool.close()  # replay turned off: the ring file goes
+            self._spool = None
+
+    def _to_spool(self, p: _Packet) -> None:
+        """Move a packet's bytes out of memory into the ring file."""
+        wanted = spool_capacity(self.bitrate_kbps, self.seconds)
+        try:
+            if self._spool is None or self._spool.capacity < wanted:
+                self._spool = Spool(wanted)  # longer replay asked for: new ring (older packets keep the old one)
+            spool = self._spool
+            at = spool.place(len(p.data))
+            limit = at + len(p.data) - spool.capacity
+            while self._packets and self._packets[0].spool is spool and self._packets[0].at < limit:
+                self._packets.popleft()  # a burst bigger than the ring: give up the oldest moments
+            spool.write(at, p.data)
+        except (OSError, ValueError) as exc:  # temp folder full or unwritable: keep packets in memory
+            log.warning("%s: replay spool unavailable (%s), keeping packets in memory", self.canvas_id, exc)
+            self._spool_failed = True
+            return
+        p.spool, p.at, p.size, p.data = spool, at, len(p.data), None
 
     def _on_packet(self, p: _Packet) -> None:
         """Hook: each packet as it comes out of the encoder (output/shared.py also writes it to a file)."""
@@ -181,7 +263,7 @@ class PacketFile:
         offset = round(self.zero / p.time_base)
         if p.pts is not None and p.pts < offset:
             return  # audio from just before the first keyframe
-        packet = av.Packet(p.data)
+        packet = av.Packet(p.payload())
         packet.pts = None if p.pts is None else p.pts - offset
         packet.dts = None if p.dts is None else p.dts - offset
         packet.time_base = p.time_base

@@ -38,6 +38,7 @@ def test_buffer_keeps_only_the_last_seconds_and_saves_a_playable_clip(tmp_path):
         frames = sum(1 for _ in f.decode(video=0))
     assert 25 <= frames <= 125  # 2 s asked, plus up to one keyframe interval, at 30 fps
     assert (tmp_path / "again.mkv").stat().st_size > 0 and first > 0
+    assert all(p.data is None and p.spool is not None for p in buf._packets)  # bytes on disk, not in RAM
 
 
 def test_save_before_anything_is_buffered_says_so(tmp_path):
@@ -88,3 +89,40 @@ def test_session_saves_one_clip_per_canvas_and_detaches(tmp_path):
     assert sorted(p.name.split()[-1] for p in paths) == ["horizontal.mkv", "vertical.mkv"]
     assert all(p.name.startswith("SprigCast Replay ") for p in paths)
     assert session.errors == [] and all(not taps for taps in engine.taps.values()) and engine.audio == []
+
+
+def test_spool_ring_reuses_its_file_and_knows_what_was_overwritten():
+    from sprigcast.output.replay import Spool
+
+    spool = Spool(100)
+    try:
+        a = spool.place(60)
+        spool.write(a, b"a" * 60)
+        b = spool.place(60)  # doesn't fit before the end: starts the next lap
+        assert (a, b) == (0, 100)
+        spool.write(b, b"b" * 60)
+        assert spool.read(b, 60) == b"b" * 60
+        assert a < spool.oldest_kept()  # overwritten by b
+        with pytest.raises(RuntimeError):
+            spool.read(a, 60)
+        c = spool.place(30)
+        spool.write(c, b"c" * 30)
+        assert spool.read(c, 30) == b"c" * 30 and spool.read(b, 60) == b"b" * 60
+        with pytest.raises(ValueError):
+            spool.place(101)
+    finally:
+        spool.close()
+
+
+def test_burst_bigger_than_the_ring_drops_the_oldest_packets(tmp_path, monkeypatch):
+    from sprigcast.output import replay
+
+    monkeypatch.setattr(replay, "spool_capacity", lambda kbps, seconds: 4096)
+    buf = ReplayBuffer("horizontal", 160, 90, 30, 1000, "libx264", 500.0, seconds=60.0)
+    buf.start()
+    _feed(buf, 500.0, 3.0)
+    time.sleep(0.3)
+    spooled = [p for p in buf._packets if p.spool is not None]
+    assert spooled and all(p.at >= p.spool.oldest_kept() for p in spooled)  # nothing points at lost bytes
+    buf.stop()
+    assert buf.error is None

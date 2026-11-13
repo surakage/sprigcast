@@ -38,10 +38,17 @@ class _Meter:
         except Exception:
             task_manager = None
         self.rows.append((label, info.rss, task_manager))
+        self._last_label = label
         last = self.rows[-2][1] if len(self.rows) > 1 else 0
         extra = f"  Task Manager {_mb(task_manager)}" if task_manager is not None else ""
         print(f"{label:<34}{_mb(info.rss)}  ({'+' if info.rss >= last else '-'}{_mb(abs(info.rss - last)).strip()}){extra}",
               flush=True)
+
+    def private(self) -> float:
+        try:
+            return self.process.memory_full_info().uss
+        except Exception:
+            return self.process.memory_info().rss
 
     def biggest_files(self, count: int = 12) -> None:
         """The DLLs / libraries taking the most memory: GPU drivers, Qt, FFmpeg."""
@@ -176,6 +183,50 @@ def compare_encoders() -> None:
         run(name, label, settings, extra)
 
 
+def _window_steps(meter):
+    """Wrap the main window's build steps so their memory can be listed. Returns the list it fills."""
+    import functools
+
+    from sprigcast.app import main_window as mw
+    from sprigcast.render.engine import Engine
+
+    steps: list[tuple[str, float]] = []
+    last = [meter.private()]
+
+    def mark(label: str) -> None:
+        now = meter.private()
+        steps.append((label, now - last[0]))
+        last[0] = now
+
+    def wrap(owner, name: str, label: str) -> None:
+        original = getattr(owner, name)
+
+        @functools.wraps(original)
+        def wrapped(*args, **kwargs):
+            mark("(other window setup)")
+            try:
+                return original(*args, **kwargs)
+            finally:
+                mark(label)
+        setattr(owner, name, wrapped)
+
+    for name in dir(mw.MainWindow):
+        if name.startswith("_build_") or name == "_refresh_all":
+            wrap(mw.MainWindow, name, name.strip("_").replace("_", " "))
+    original_start = Engine.start
+
+    def start_and_settle(self):
+        mark("(other window setup)")
+        original_start(self)
+        time.sleep(3)  # the renderer sets up on its own thread: give it time so its memory lands here
+        mark("renderer start")
+    Engine.start = start_and_settle
+    wrap(mw.Hotkeys, "__init__", "global hotkeys")
+    wrap(mw.ResourceMeter, "__init__", "resource meter")
+    steps.append(("start", 0.0))
+    return steps, mark
+
+
 def _report_sources(window, collection) -> None:
     """Each source's state, which camera path is in use, and whether (and why) OpenCV got loaded."""
     from sprigcast.core import lazy_cv2
@@ -253,10 +304,14 @@ def main() -> None:
         renderer.stop()
         time.sleep(1)
         meter.take("Renderer stopped")
+        steps, mark = _window_steps(meter)
         window = MainWindow(collection, scenes, None)
+        mark("(other window setup)")
         window._save_layout = lambda: None  # keep your saved dock layout as it is
         window._recordings_folder = lambda: work
         window.show()
+        app.processEvents()
+        mark("showing the window")
 
         def wait(seconds: float) -> None:
             end = time.monotonic() + seconds
@@ -265,7 +320,12 @@ def main() -> None:
                 time.sleep(0.01)
 
         wait(WAIT["window"])
+        mark("first seconds running")
         meter.take("Window open, sources running")
+        print("  where it went (Task Manager):", flush=True)
+        for label, added in steps[1:]:
+            if abs(added) >= 2e6:
+                print(f"    {label:<30} {'+' if added >= 0 else '-'}{abs(added) / 1e6:.0f} MB", flush=True)
         _report_sources(window, collection)
         from sprigcast.output.recorder import codec_label, nvenc_hwaccel, pick_codec
 
