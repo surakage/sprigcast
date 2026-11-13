@@ -389,6 +389,9 @@ class MainWindow(QMainWindow):
         from sprigcast.app.settings_window import sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
+        # Nothing is on screen yet: don't copy full-size frames back until _poll_engine says which
+        # previews are showing and how big they are (each early one was an 8 MB frame).
+        self.engine.previews = frozenset()
         self.engine.start()
         self.encoders = EncoderPool(self.engine)  # one encoder per canvas, shared by recording and replay
         self.timer = QTimer(self)

@@ -93,6 +93,11 @@ class Preview(QWidget):
         self.selected_index = selected_index
         self.update()
 
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """A preview that isn't showing keeps no picture (up to 8 MB); a new one arrives when it is shown."""
+        self._image = self._inner_image = None
+        super().hideEvent(event)
+
     def set_inner(self, placement: SceneItem | None, part_size: tuple[int, int] | None) -> None:
         """Edit a part in place: `placement` is the part's item in the show, `part_size` its layout's size.
 
