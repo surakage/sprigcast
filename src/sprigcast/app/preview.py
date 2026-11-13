@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -44,6 +44,8 @@ class Preview(QWidget):
     edited = Signal(str, bool)
     # canvas id, item index: double-click on an item (a part opens in place), or -1 outside / Esc
     opened = Signal(str, int)
+    # canvas id, item index (-1 = empty canvas), where on screen: right-click asks for a menu there
+    menu_requested = Signal(str, int, QPoint)
 
     def __init__(self, canvas_id: str, title: str, aspect: tuple[int, int], parent: QWidget | None = None):
         super().__init__(parent)
@@ -290,6 +292,15 @@ class Preview(QWidget):
     # Mouse and keyboard --------------------------------------------------------------------
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.RightButton and self.scene is not None and self.editable:
+            index = edit.hit_test(self.scene.items, self.sizes, self.to_canvas(event.position()))
+            if index != self.selected_index:
+                self.selected_index = index
+                self.selected.emit(self.canvas_id, -1 if index is None else index)
+                self.update()
+            self.menu_requested.emit(self.canvas_id, -1 if index is None else index,
+                                     event.globalPosition().toPoint())
+            return
         if event.button() != Qt.MouseButton.LeftButton or self.scene is None or not self.editable:
             return
         point = self.to_canvas(event.position())
