@@ -240,6 +240,14 @@ def _report_sources(window, collection) -> None:
             print(f"    opened with: {source.opened_with}", flush=True)
             seen = sorted({f"{m[1]} {m[2]}x{m[3]} {m[4]:g}-{m[5]:g} fps" for m in source.modes_seen})
             print(f"    the camera offers ({len(seen)}): {'; '.join(seen) or 'nothing listed'}", flush=True)
+            from sprigcast.sources import camera as cam
+
+            print(f"    listing: {len(cam.listing_lines)} log lines, error: {'; '.join(cam.listing_errors)[:200]}",
+                  flush=True)
+            for line in cam.listing_lines[:12]:
+                print(f"      | {line.rstrip()[:110]}", flush=True)
+            for err in source.open_errors[:8]:
+                print(f"    tried {err[:150]}", flush=True)
     cv2 = sys.modules.get("cv2")
     if cv2 is None or isinstance(cv2, lazy_cv2._LazyCv2):
         print("  OpenCV: not loaded", flush=True)

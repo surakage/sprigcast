@@ -134,6 +134,10 @@ def parse_dshow_modes(lines) -> list[tuple[str, str, int, int, float, float]]:
     return modes
 
 
+listing_errors: list[str] = []  # the last listing's error and captured lines, for memcheck
+listing_lines: list[str] = []
+
+
 def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
     """Ask DirectShow which formats, sizes and frame rates a camera offers (empty if it can't say)."""
     try:
@@ -142,16 +146,18 @@ def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
     except ImportError:
         return []
     old = avlog.get_level()
+    listing_errors.clear()
     avlog.set_level(avlog.INFO)  # the list comes as log lines, which PyAV drops by default
     try:
-        with avlog.Capture() as logs:
+        with avlog.Capture(False) as logs:  # FFmpeg may log from its own threads too
             try:
                 av.open(name, format="dshow", options={"list_options": "true"}).close()
-            except Exception:
-                pass  # listing always "fails": there is nothing to open
+            except Exception as exc:  # listing always "fails": there is nothing to open
+                listing_errors.append(str(exc))
     finally:
         avlog.set_level(old)
-    return parse_dshow_modes(str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs)
+    listing_lines[:] = [str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs]
+    return parse_dshow_modes(listing_lines)
 
 
 def _rate(value: float) -> str:
@@ -186,6 +192,7 @@ class CameraSource(Source):
         self.backend = ""  # "FFmpeg" or "OpenCV" once a camera opened: memcheck reports it
         self.modes_seen: list = []  # what DirectShow said the camera offers (for memcheck)
         self.opened_with: dict | None = None  # the dshow options that worked
+        self.open_errors: list[str] = []  # why the other options didn't (for memcheck)
         self._size = (int(settings.get("width", 1280)), int(settings.get("height", 720)))
         self._stop = threading.Event()
         self._restart = threading.Event()
@@ -256,6 +263,7 @@ class CameraSource(Source):
         # The camera's own list of modes first: it says exactly which format gives the size and rate
         # asked for (MJPEG is ~10x less data than raw frames; a raw mode at 30 fps beats one at 120).
         listed = []
+        self.open_errors = []
         for name in names:
             self.modes_seen = dshow_modes(name)
             listed = choose_modes(self.modes_seen, w, h, fps)
@@ -272,6 +280,7 @@ class CameraSource(Source):
                     container = av.open(name, format="dshow", options={**mode, "rtbufsize": "16M"})
                 except Exception as exc:  # busy, mode not supported, name not found, ...
                     log.debug("%s: dshow %s %s failed: %s", self.id, name, mode, exc)
+                    self.open_errors.append(f"{name[:24]}… {mode}: {exc}")
                     continue
                 log.info("%s: opened %s with %s", self.id, name, mode or "the camera's default mode")
                 self.opened_with = mode
