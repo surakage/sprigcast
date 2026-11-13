@@ -1,0 +1,30 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Inno Setup on PATH
+        shell: pwsh
+        run: echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build
+        shell: pwsh
+        run: ./packaging/build_windows.ps1
+      - name: Check the installed copy starts
+        shell: pwsh
+        run: |
+          $py = "packaging\build\python\python.exe"
+          & $py -c "import sprigcast, av, moderngl, PySide6.QtWidgets, numpy; print('imports OK', sprigcast.__file__)"
+          & $py -m sprigcast.tools.check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SprigCast-Setup
+          path: packaging/out/*.exe
+          retention-days: 14

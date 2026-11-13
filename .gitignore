@@ -21,3 +21,7 @@ recordings/
 *.mkv
 *.mp4
 *.log
+
+# Installer build output
+packaging/build/
+packaging/out/
