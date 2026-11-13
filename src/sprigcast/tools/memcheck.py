@@ -244,6 +244,7 @@ def _report_sources(window, collection) -> None:
 
 
 GPU_EXPERIMENTS = {
+    "context": "the OpenGL context itself",
     "targets": "8 x 1080p canvases drawn on the GPU",
     "images": "8 x 1080p images uploaded at once",
     "images-finish": "8 x 1080p images, waiting after each",
@@ -273,6 +274,12 @@ def _gpu_probe(name: str) -> None:
         except Exception:
             return process.memory_info().rss
 
+    if name == "context":
+        before = private()
+        ctx = create_context()
+        ctx.finish()
+        print(json.dumps({"added": (private() - before) / 1e6}))
+        return
     ctx = create_context()
     w, h = 1920, 1080
     rgba = np.full((h, w, 4), 128, np.uint8)
@@ -378,11 +385,6 @@ def main() -> None:
     from sprigcast.app.theme import apply_theme
 
     meter.take("Qt, FFmpeg and SprigCast loaded")
-    from sprigcast.render.compositor import create_context
-
-    probe = create_context()  # what the graphics driver alone costs (the engine makes its own below)
-    meter.take("OpenGL context (driver)")
-    probe.release()
     apply_theme(app)
     work = Path(tempfile.mkdtemp(prefix="sprigcast-memcheck-"))
     try:
@@ -394,15 +396,6 @@ def main() -> None:
         lean_recording(collection, remember=False)  # what the app will do on its next start
         print(f"  ({len(collection.scenes)} scenes, {len(collection.sources)} sources: "
               f"{', '.join(sorted({s.kind for s in collection.sources}))})", flush=True)
-        from sprigcast.render.engine import Engine
-
-        renderer = Engine(collection.model_copy(update={"sources": []}, deep=True))
-        renderer.start()  # renderer on its own: GL context, canvases, previews at full size, no sources or UI
-        time.sleep(4)
-        meter.take("Renderer alone (no sources/UI)")
-        renderer.stop()
-        time.sleep(1)
-        meter.take("Renderer stopped")
         steps, mark = _window_steps(meter)
         window = MainWindow(collection, scenes, None)
         mark("(other window setup)")
