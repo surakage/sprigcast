@@ -28,7 +28,66 @@ def _try_open_encoder(codec_name: str) -> str | None:
         return str(exc) or exc.__class__.__name__
 
 
+def _direct_try(label: str) -> None:
+    from sprigcast.output.nvenc_d3d11 import D3D11Encoder
+
+    try:
+        enc = D3D11Encoder(1280, 720, 30, bitrate_kbps=4000)
+        try:
+            size = len(enc.encode(bytes(1280 * 720 * 3 // 2), keyframe=True))
+        finally:
+            enc.close()
+        print(f"  {label:<44} OK ({size} bytes)")
+    except Exception as exc:
+        print(f"  {label:<44} FAILED: {exc}")
+
+
+def nvenc_order() -> int:
+    """sprigcast-check --nvenc-order: does SprigCast's own NVENC still open once FFmpeg's NVENC is running?
+
+    The soak test (stream + recording) saw our encoder fail with INVALID_VERSION after the stream had
+    opened FFmpeg's NVENC. This runs the same order in a fresh process to see if that order is the cause.
+    """
+    import ctypes
+    import gc
+
+    import av
+
+    print(f"PyAV {av.__version__}, libavcodec {'.'.join(map(str, av.library_versions['libavcodec']))}")
+    try:
+        lib = ctypes.WinDLL("nvEncodeAPI64.dll")
+        supported = ctypes.c_uint32()
+        lib.NvEncodeAPIGetMaxSupportedVersion(ctypes.byref(supported))
+        print(f"Driver supports NVENC API {supported.value >> 4}.{supported.value & 0xF}")
+    except Exception as exc:
+        print(f"No NVENC driver here ({exc})")
+        return 1
+    _direct_try("1. SprigCast NVENC, nothing else open")
+    ctx = av.CodecContext.create("h264_nvenc", "w")
+    ctx.width, ctx.height, ctx.pix_fmt = 1280, 720, "nv12"
+    ctx.time_base, ctx.framerate = Fraction(1, 30), 30
+    frame = av.VideoFrame(1280, 720, "nv12")
+    for plane in frame.planes:
+        plane.update(bytes(plane.buffer_size))
+    try:
+        ctx.encode(frame)
+        print(f"  {'2. FFmpeg NVENC opened and kept open':<44} OK")
+    except Exception as exc:
+        print(f"  {'2. FFmpeg NVENC opened and kept open':<44} FAILED: {exc}")
+    _direct_try("3. SprigCast NVENC while FFmpeg's is open")
+    try:
+        ctx.encode(None)
+    except Exception:
+        pass
+    del ctx, frame
+    gc.collect()
+    _direct_try("4. SprigCast NVENC after FFmpeg's closed")
+    return 0
+
+
 def main() -> int:
+    if "--nvenc-order" in sys.argv:
+        return nvenc_order()
     ok = True
     print(f"Python      {sys.version.split()[0]} ({platform.architecture()[0]}) on {platform.system()} {platform.release()}")
     if sys.version_info[:2] != (3, 12):
