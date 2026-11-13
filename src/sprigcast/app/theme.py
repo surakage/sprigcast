@@ -127,7 +127,7 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
     Without this, Qt looks for a missing glyph through its generic fallback list, which loads large
     Chinese and Japanese fonts (SimSun, MingLiU, Microsoft YaHei, ~120 MB of RAM) on the way.
     """
-    if sys.platform != "win32":
+    if sys.platform != "win32" or os.environ.get("SPRIGCAST_NO_SYMBOL_FONTS"):
         return
     font = app.font()
     font.setFamilies([font.family(), "Segoe UI Symbol", "Segoe UI Emoji"])

@@ -608,7 +608,82 @@ def _source_costs(window, collection, meter, wait) -> None:
         meter.take(f"  - {source.name[:20]} ({source.kind})")
 
 
+TEXT_VARIANTS = {
+    "today": ("as SprigCast starts now", {}),
+    "gdi": ("Qt's older GDI font engine", {"QT_QPA_PLATFORM": "windows:fontengine=gdi"}),
+    "freetype": ("FreeType font engine", {"QT_QPA_PLATFORM": "windows:fontengine=freetype"}),
+    "nosymbols": ("without the symbol-font list", {"SPRIGCAST_NO_SYMBOL_FONTS": "1"}),
+}
+TEXT_STEPS = [
+    ("first words", "Starting renderer", False),
+    ("bold words", "Starting renderer", True),
+    ("× sign", "1920×1080", True),
+    ("symbols ● ⚙ ▲", "● ⚙ ▲", False),
+    ("emoji 🩺", "🩺", False),
+    ("Chinese/Japanese text", "直播 配信", False),
+]
+
+
+def _text_probe() -> None:
+    """In this fresh process: what drawing each kind of text costs the first time. Prints one JSON line."""
+    import json
+
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QFont, QImage, QPainter
+    from PySide6.QtWidgets import QApplication, QTabBar
+
+    QCoreApplication.setApplicationName("SprigCast")
+    QCoreApplication.setOrganizationName("Slothbloom")
+    app = QApplication.instance() or QApplication([])
+    meter = _Meter()
+    from sprigcast.app.theme import apply_theme
+
+    apply_theme(app)
+    steps = []
+    last = meter.private()
+    canvas = QImage(400, 60, QImage.Format.Format_ARGB32_Premultiplied)
+    for label, text, bold in TEXT_STEPS:
+        painter = QPainter(canvas)
+        font = QFont(app.font())
+        font.setBold(bold)
+        painter.setFont(font)
+        painter.drawText(4, 40, text)
+        painter.end()
+        now = meter.private()
+        steps.append((label, (now - last) / 1e6))
+        last = now
+    tabs = QTabBar()
+    tabs.setStyleSheet("QTabBar::tab { padding: 6px 16px; } QTabBar::tab:selected { font-weight: bold; }")
+    tabs.addTab("Horizontal   1920×1080")
+    tabs.sizeHint()
+    now = meter.private()
+    steps.append(("styled tab bar", (now - last) / 1e6))
+    print(json.dumps({"steps": steps, "total": now / 1e6, "font": app.font().family()}), flush=True)
+
+
+def compare_text() -> None:
+    """Run the text probe once per font set-up, each in its own process."""
+    import json
+    import subprocess
+
+    print("What drawing text costs the first time (Task Manager MB), per font set-up:")
+    for name, (label, env) in TEXT_VARIANTS.items():
+        code = "from sprigcast.tools.memcheck import _text_probe; _text_probe()"
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120,
+                             env={**os.environ, **env}, encoding="utf-8", errors="replace")
+        lines = [line for line in out.stdout.splitlines() if line.startswith("{")]
+        if not lines:
+            print(f"  {name:<9} {label:<32} failed: {(out.stderr.strip().splitlines() or ['no output'])[-1]}")
+            continue
+        result = json.loads(lines[-1])
+        parts = ", ".join(f"{step} +{mb:.0f}" for step, mb in result["steps"] if abs(mb) >= 0.5) or "nothing over 0.5"
+        print(f"  {name:<9} {label:<32} total {result['total']:4.0f} MB ({result['font']}): {parts}", flush=True)
+
+
 def main() -> None:
+    if "--text" in sys.argv:
+        compare_text()
+        return
     if "--encoders" in sys.argv:
         compare_encoders()
         return
