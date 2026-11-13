@@ -206,6 +206,7 @@ class CameraSource(Source):
     """Settings: name, path, width, height, fps, mirror (bool)."""
 
     channel_order = "BGR"  # OpenCV delivers 3-channel BGR; the compositor swizzles on the GPU
+    sleeps = True  # only used when "Sources that aren't on screen" is set to pause cameras too
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
@@ -221,6 +222,8 @@ class CameraSource(Source):
         self.status = "starting"
 
     def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():  # still closing the camera after sleep()
+            self._thread.join(timeout=3)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name=f"camera-{self.id}", daemon=True)
         self._thread.start()
@@ -230,6 +233,16 @@ class CameraSource(Source):
         self._restart.set()
         if self._thread is not None:
             self._thread.join(timeout=3)
+
+    def sleep(self) -> None:
+        self._stop.set()  # the camera thread closes the device on its own; don't wait for it here
+        self._restart.set()
+        self._frames = Mailbox()
+        self.status = "paused (not on screen)"
+
+    def wake(self) -> None:
+        self.status = "starting"
+        self.start()
 
     def update(self, settings: dict[str, Any]) -> None:
         reopen = {k: v for k, v in settings.items() if k != "mirror"} != {

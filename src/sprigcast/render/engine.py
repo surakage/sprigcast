@@ -28,6 +28,7 @@ from sprigcast.core.source import Source, create_source
 log = logging.getLogger(__name__)
 
 
+SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing it left the screen
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 
 
@@ -73,6 +74,10 @@ class Engine:
         self.preview_sizes: dict[str, tuple[int, int]] = {}
         self._preview_at: dict[str, float] = {}
         self.readbacks = 0  # canvases copied from the GPU, for Stats
+        # Sources nothing on screen shows rest: "not_cameras" (cameras stay ready, they take a second
+        # to open), "all", or "off". Set by the UI from Settings → General.
+        self.sleep_policy = "not_cameras"
+        self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
 
     # Called from the UI thread ----------------------------------------------
 
@@ -227,13 +232,18 @@ class Engine:
         for source_id in list(self._sources):
             if source_id not in wanted or self._sources[source_id].kind != wanted[source_id].kind:
                 self._sources.pop(source_id).stop()
+                self._last_shown.pop(source_id, None)
                 compositor.forget(source_id)
         for source_id, config in wanted.items():
             existing = self._sources.get(source_id)
             if existing is None:
                 try:
                     source = create_source(config.kind, config.id, config.settings)
-                    source.start()
+                    if self._may_sleep(source) and source_id not in self._shown_sources():
+                        source.asleep = True  # not on screen: don't even start it until it is
+                        source.sleep()
+                    else:
+                        source.start()
                 except Exception as exc:
                     log.warning("source %s (%s) failed to start: %s", config.name, config.kind, exc)
                     self.events.put(EngineError(f"Source {config.name!r} failed to start: {exc}"))
@@ -308,6 +318,48 @@ class Engine:
         for key in [k for k in compositor.targets if k.startswith("part:")]:
             if key[5:] not in alive:
                 compositor.forget_part(key[5:])
+
+    def _may_sleep(self, source) -> bool:
+        if not source.sleeps or self.sleep_policy == "off":
+            return False
+        return self.sleep_policy == "all" or source.kind != "camera"
+
+    def _shown_sources(self) -> set[str]:
+        """Sources placed in anything drawn right now: on air, fading out, staged, the sprig being edited,
+        and every sprig inside those. Hidden items count too, so showing one is instant."""
+        collection = self._collection
+        stack = self._drawn_scenes(collection)
+        if self.editing_part:
+            stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
+        seen = {scene.id for scene in stack}
+        shown: set[str] = set()
+        while stack:
+            scene = stack.pop()
+            shown.update(item.source for item in scene.items)
+            for inner in collection.inner_shapes(scene):
+                if inner.id not in seen:
+                    seen.add(inner.id)
+                    stack.append(inner)
+        return shown
+
+    def _rest_sources(self, compositor, now: float) -> None:
+        """Put sources nothing has shown for a while to sleep, and wake the ones that are shown again.
+
+        A sleeping capture or camera stops and frees its frames, a clock stops redrawing, and every
+        sleeper's texture is dropped, so scenes you aren't using cost neither memory nor CPU. The
+        short wait keeps flicking between two scenes from stopping and starting things each time.
+        """
+        shown = self._shown_sources()
+        for source_id, source in self._sources.items():
+            if source_id in shown or not self._may_sleep(source):
+                self._last_shown[source_id] = now
+                if source.asleep:
+                    source.asleep = False
+                    source.wake()
+            elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= SLEEP_AFTER:
+                source.asleep = True
+                source.sleep()
+                compositor.forget(source_id)
 
     def _drawn_scenes(self, collection: SceneCollection) -> list:
         drawn = []
@@ -441,7 +493,10 @@ class Engine:
 
     def _tick(self, compositor, now: float) -> None:
         compositor.time = now
+        self._rest_sources(compositor, now)
         for source_id, source in self._sources.items():
+            if source.asleep:
+                continue
             frame = source.video_frame()
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)

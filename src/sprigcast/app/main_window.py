@@ -386,6 +386,9 @@ class MainWindow(QMainWindow):
 
         # Engine --------------------------------------------------------------
         self.engine = Engine(collection)
+        from sprigcast.app.settings_window import sleep_policy
+
+        self.engine.sleep_policy = sleep_policy()
         self.engine.start()
         self.encoders = EncoderPool(self.engine)  # one encoder per canvas, shared by recording and replay
         self.timer = QTimer(self)
@@ -2835,6 +2838,9 @@ class MainWindow(QMainWindow):
         from sprigcast.app.theme import apply_theme
 
         apply_theme(QApplication.instance())
+        from sprigcast.app.settings_window import sleep_policy
+
+        self.engine.sleep_policy = sleep_policy()
         self._sync_canvas_choice()  # Settings → Video may have switched a canvas on or off
         self._changed()
         self._refresh_stream_boxes()

@@ -70,6 +70,7 @@ def render_text(text: str, font: ImageFont.ImageFont, color, outline_color, outl
 @register("text")
 class TextSource(Source):
     defaults = DEFAULTS  # tells the settings dialog which fields to show
+    sleeps = True  # a hidden clock isn't redrawn every second
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
@@ -82,6 +83,10 @@ class TextSource(Source):
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
+        self._next_check = 0.0
+
+    def wake(self) -> None:
+        self._shown = None  # the texture was dropped: render and send it again
         self._next_check = 0.0
 
     def _get(self, key: str):
