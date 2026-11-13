@@ -236,6 +236,10 @@ def _report_sources(window, collection) -> None:
     for source in list(window.engine._sources.values()):
         backend = getattr(source, "backend", "")
         print(f"  {names.get(source.id, source.id)[:28]:<28} {source.status}{f' (via {backend})' if backend else ''}", flush=True)
+        if hasattr(source, "modes_seen"):
+            print(f"    opened with: {source.opened_with}", flush=True)
+            seen = sorted({f"{m[1]} {m[2]}x{m[3]} {m[4]:g}-{m[5]:g} fps" for m in source.modes_seen})
+            print(f"    the camera offers ({len(seen)}): {'; '.join(seen) or 'nothing listed'}", flush=True)
     cv2 = sys.modules.get("cv2")
     if cv2 is None or isinstance(cv2, lazy_cv2._LazyCv2):
         print("  OpenCV: not loaded", flush=True)

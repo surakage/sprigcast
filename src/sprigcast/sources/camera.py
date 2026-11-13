@@ -184,6 +184,8 @@ class CameraSource(Source):
         super().__init__(source_id, settings)
         self._frames: Mailbox[np.ndarray] = Mailbox()
         self.backend = ""  # "FFmpeg" or "OpenCV" once a camera opened: memcheck reports it
+        self.modes_seen: list = []  # what DirectShow said the camera offers (for memcheck)
+        self.opened_with: dict | None = None  # the dshow options that worked
         self._size = (int(settings.get("width", 1280)), int(settings.get("height", 720)))
         self._stop = threading.Event()
         self._restart = threading.Event()
@@ -255,8 +257,9 @@ class CameraSource(Source):
         # asked for (MJPEG is ~10x less data than raw frames; a raw mode at 30 fps beats one at 120).
         listed = []
         for name in names:
-            listed = choose_modes(dshow_modes(name), w, h, fps)
-            if listed:
+            self.modes_seen = dshow_modes(name)
+            listed = choose_modes(self.modes_seen, w, h, fps)
+            if self.modes_seen:
                 break
         modes = [*listed,  # then guesses, from strict to loose
                  {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
@@ -271,6 +274,7 @@ class CameraSource(Source):
                     log.debug("%s: dshow %s %s failed: %s", self.id, name, mode, exc)
                     continue
                 log.info("%s: opened %s with %s", self.id, name, mode or "the camera's default mode")
+                self.opened_with = mode
                 return container
         log.info("%s: FFmpeg couldn't open %r, trying OpenCV", self.id, device.name)
         return None
