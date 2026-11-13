@@ -121,6 +121,24 @@ def chosen_theme() -> str:
     return name if name in THEMES else "slothbloom"
 
 
+FONT_ENGINE = "SPRIGCAST_FONT_ENGINE"  # "directwrite" keeps Qt's default font engine
+
+
+def use_light_font_engine() -> None:
+    """Windows: draw text with Qt's GDI font engine. Call before the QApplication is made.
+
+    Qt's default DirectWrite engine took 16 MB more on first use (memcheck --text: 40 MB against
+    24 MB for the same text). GDI draws the same fonts; emoji come out in one colour instead of
+    full colour, which suits SprigCast's small icons. SPRIGCAST_FONT_ENGINE=directwrite opts out,
+    and a QT_QPA_PLATFORM set by hand always wins.
+    """
+    if sys.platform != "win32" or os.environ.get("QT_QPA_PLATFORM"):
+        return
+    if os.environ.get(FONT_ENGINE, "").strip().lower() == "directwrite":
+        return
+    os.environ["QT_QPA_PLATFORM"] = "windows:fontengine=gdi"
+
+
 def _set_symbol_fallbacks(app: QApplication) -> None:
     """Point Qt straight at Windows' symbol and emoji fonts for icons like ● ⚙ ▲ 🩺.
 
