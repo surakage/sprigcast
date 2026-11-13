@@ -24,6 +24,9 @@ RETRY_SECONDS = 2.0
 
 def _load_backend():
     """Import windows-capture lazily so the app still starts on machines without it."""
+    from sprigcast.core import lazy_cv2
+
+    lazy_cv2.install()  # windows-capture imports OpenCV but never needs it here: don't load 90 MB for nothing
     try:
         from windows_capture import WindowsCapture
     except ImportError as exc:

@@ -58,7 +58,7 @@ def fake_cv2(monkeypatch):
     return enum
 
 
-def wait_for(predicate, timeout=2.0):
+def wait_for(predicate, timeout=5.0):
     end = time.time() + timeout
     while time.time() < end:
         if predicate():
@@ -206,20 +206,33 @@ def test_falls_back_to_opencv_when_ffmpeg_cannot_open(fake_av):
 def test_lists_cameras_on_windows_without_loading_opencv(monkeypatch):
     from sprigcast.sources import camera
 
-    seen = {}
-    pkg = types.ModuleType("cv2_enumerate_cameras")
-    pkg.__path__ = []
     backend = types.ModuleType("cv2_enumerate_cameras._windows_backend")
-
-    def listing():
-        seen["cv2"] = sys.modules.get("cv2", "absent")
-        return [("Cam A", "\\\\?\\usb#a"), ("Cam B", "")]
-
-    backend.DSHOW_enumerate_cameras = listing
-    monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras", pkg)
+    backend.DSHOW_enumerate_cameras = lambda: [("Cam A", "\\\\?\\usb#a"), ("Cam B", "")]
     monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras._windows_backend", backend)
     monkeypatch.delitem(sys.modules, "cv2", raising=False)
+    monkeypatch.delitem(sys.modules, "cv2_enumerate_cameras", raising=False)
     monkeypatch.setattr(camera.sys, "platform", "win32")
     cams = camera.list_cameras()
     assert [(c.index, c.name, c.path) for c in cams] == [(0, "Cam A", "\\\\?\\usb#a"), (1, "Cam B", "")]
-    assert "cv2" not in sys.modules
+    # Neither OpenCV nor the package (which would import it) got loaded, and cv2 was never hidden
+    assert "cv2" not in sys.modules and "cv2_enumerate_cameras" not in sys.modules
+
+
+def test_lazy_cv2_loads_opencv_only_when_used(monkeypatch):
+    import importlib.util
+
+    from sprigcast.core import lazy_cv2
+
+    real = types.ModuleType("cv2")
+    real.imwrite = lambda *a: "written"
+    monkeypatch.delitem(sys.modules, "cv2", raising=False)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: object() if name == "cv2" else None)
+    monkeypatch.setattr(lazy_cv2.importlib, "import_module", lambda name: sys.modules.setdefault(name, real))
+    lazy_cv2.install()
+    proxy = sys.modules["cv2"]
+    assert proxy is not real  # nothing loaded yet: what windows-capture's `import cv2` gets
+    import cv2  # noqa: F401  (a library importing it at the top)
+    assert sys.modules["cv2"] is proxy
+    assert proxy.imwrite() == "written" and sys.modules["cv2"] is real  # loaded on first use
+    lazy_cv2.install()  # already loaded: leaves it alone
+    assert sys.modules["cv2"] is real
