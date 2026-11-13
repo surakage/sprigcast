@@ -231,6 +231,18 @@ def _window_steps(meter):
     return steps, mark
 
 
+def _encoder_queues(window) -> None:
+    """Frames waiting for each encoder: a full queue holds ~3 MB per 1080p frame, so it shows up in RAM."""
+    parts = []
+    for enc in window.encoders.encoders.values():
+        size = enc.out_width * enc.out_height * 3 // 2
+        parts.append(f"{enc.canvas_id}: {enc._video.qsize()} waiting (peak {enc.peak_queue}, "
+                     f"~{enc.peak_queue * size / 1e6:.0f} MB), {enc.dropped} dropped, "
+                     f"longest write stall {enc.longest_stall * 1000:.0f} ms")
+    if parts:
+        print(f"  (encoder queues: {'; '.join(parts)})", flush=True)
+
+
 def _report_sources(window, collection) -> None:
     """Each source's state, which camera path is in use, and whether (and why) OpenCV got loaded."""
     from sprigcast.core import lazy_cv2
@@ -446,6 +458,7 @@ def main() -> None:
             wait(2.0)
             samples.append(f"{meter.private() / 1e6:.0f}")
         print(f"  (Task Manager every 2 s while recording: {', '.join(samples)} MB)", flush=True)
+        _encoder_queues(window)
         meter.take("+ recording")
         window._toggle_replay(True)
         samples = []
@@ -453,6 +466,7 @@ def main() -> None:
             wait(2.0)
             samples.append(f"{meter.private() / 1e6:.0f}")
         print(f"  (Task Manager every 2 s with replay on: {', '.join(samples)} MB)", flush=True)
+        _encoder_queues(window)
         for enc in window.encoders.encoders.values():
             packets = list(enc._packets)
             in_ram = sum(len(p.data) for p in packets if p.data is not None)

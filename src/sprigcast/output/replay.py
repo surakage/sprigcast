@@ -169,9 +169,13 @@ class ReplayBuffer(Recorder):
                         packet.time_base or packet.stream.time_base, bool(packet.is_keyframe))
             self._packets.append(p)
             self.bytes_out += packet.size
+            began = time.perf_counter()
             self._on_packet(p)  # a recording file gets the bytes straight away
             if self.seconds > 0 and not self._spool_failed:
                 self._to_spool(p)
+            waited = time.perf_counter() - began
+            self.mux_seconds += waited
+            self.longest_stall = max(self.longest_stall, waited)
         self._trim()
         if self.seconds <= 0 and self._spool is not None and not any(p.spool for p in self._packets):
             self._spool.close()  # replay turned off: the ring file goes
