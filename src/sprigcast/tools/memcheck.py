@@ -76,6 +76,9 @@ SETTING_VARIANTS = {
     "ll": ("low-latency tuning", {"tuning": "ll"}, {}),
     "surf4": ("4 input surfaces", {}, {"surfaces": "4"}),
     "lean": ("no B-frames + p4 + 4 surfaces", {"b_frames": 0, "preset": "p4"}, {"surfaces": "4"}),
+    "delay0": ("no B-frames, no output delay", {"b_frames": 0}, {"delay": "0"}),
+    "min": ("no B-frames, delay 0, 2 surfaces", {"b_frames": 0}, {"delay": "0", "surfaces": "2"}),
+    "no-aq": ("no B-frames, no adaptive quant", {"b_frames": 0, "adaptive_quant": False}, {}),
 }
 
 

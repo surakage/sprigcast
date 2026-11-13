@@ -33,13 +33,16 @@ class Mailbox(Generic[T]):
 
 
 class FrameRing:
-    """A mailbox for big image frames that reuses three buffers instead of allocating one per frame.
+    """A mailbox for big image frames that reuses two buffers instead of allocating one per frame.
 
     Screen capture can deliver a full-screen image at the monitor's refresh rate. Copying each one into
     a fresh array means the OS hands out and zeroes megabytes of new memory every few milliseconds.
-    Here the writer copies into a buffer that is neither waiting to be read nor still held by the reader
-    (who is done with a frame once it asks for the next one), so three buffers are always enough.
+    One buffer is lent to the reader (who is done with it once it asks for the next frame); the writer
+    fills the other. If that one still holds an unread frame, the writer overwrites it under the lock
+    (a newer frame replaces an unread one anyway), so a 1080p capture keeps 16 MB, not 24 MB.
     """
+
+    BUFFERS = 2
 
     def __init__(self) -> None:
         self._buffers: list[np.ndarray] = []
@@ -50,14 +53,16 @@ class FrameRing:
     def put(self, image: np.ndarray) -> None:
         """Copy image (any strides) into a free buffer and make it the newest frame. One writer thread."""
         with self._lock:
-            busy = (self._ready, self._lent)
             fits = [b for b in self._buffers if b.shape == image.shape and b.dtype == image.dtype]
             if len(fits) < len(self._buffers):  # the size changed: let the old buffers go
                 self._buffers = fits
-            target = next((b for b in fits if not any(b is x for x in busy)), None)
-            if target is None:
+            target = next((b for b in fits if b is not self._ready and b is not self._lent), None)
+            if target is None and len(fits) < self.BUFFERS:
                 target = np.empty(image.shape, image.dtype)
                 self._buffers.append(target)
+            if target is None:  # both in use: replace the unread frame while the reader waits
+                np.copyto(self._ready, image)
+                return
         np.copyto(target, image)  # outside the lock: the reader can't see this buffer yet
         with self._lock:
             self._ready = target

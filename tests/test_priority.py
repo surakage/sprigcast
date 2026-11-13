@@ -23,3 +23,10 @@ def test_saved_level_falls_back_to_default(tmp_path):
         assert priority.chosen() == priority.DEFAULT
     finally:
         QSettings().remove(priority.SETTING)
+
+
+def test_gpu_meter_without_nvidia_is_quiet():
+    from sprigcast.app import doctor
+
+    doctor._nvml = None
+    assert doctor._nvml_load() is None or isinstance(doctor._nvml_load(), float)

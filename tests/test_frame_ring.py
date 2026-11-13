@@ -13,7 +13,7 @@ def test_newest_frame_wins_and_buffers_are_reused():
             frame = ring.take()
             assert frame[0, 0, 0] == i
             seen.add(id(frame))
-    assert len(ring._buffers) <= 3 and len(seen) <= 3
+    assert len(ring._buffers) <= 2 and len(seen) <= 2
     assert ring.take()[0, 0, 0] == 19 and ring.take() is None
 
 
