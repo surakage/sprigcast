@@ -58,35 +58,56 @@ class _Meter:
 
 
 ENCODER_VARIANTS = {
-    "own": "FFmpeg default (a CUDA context per encoder)",
-    "cuda": "one shared CUDA context (current default)",
-    "d3d11": "Direct3D 11, no CUDA (like OBS)",
+    "own": ("FFmpeg default (a CUDA context per encoder)", {}, {}),
+    "cuda": ("one shared CUDA context (current default)", {}, {}),
+}
+# Same shared context, different NVENC settings: which ones cost memory?
+SETTING_VARIANTS = {
+    "no-b": ("no B-frames", {"b_frames": 0}, {}),
+    "p1": ("fastest preset (p1)", {"preset": "p1"}, {}),
+    "ll": ("low-latency tuning", {"tuning": "ll"}, {}),
+    "surf4": ("4 input surfaces", {}, {"surfaces": "4"}),
+    "lean": ("no B-frames + p4 + 4 surfaces", {"b_frames": 0, "preset": "p4"}, {"surfaces": "4"}),
 }
 
 
-def _encoder_probe(variant: str) -> None:
+def _encoder_probe(variant: str, settings: dict | None = None, extra: dict | None = None) -> None:
     """Child process: run two NVENC encoders (both canvases) for a few seconds; print the memory they add."""
     import json
 
-    os.environ["SPRIGCAST_NVENC_DEVICE"] = variant
+    os.environ["SPRIGCAST_NVENC_DEVICE"] = "own" if variant == "own" else "cuda"
     import psutil
 
     from sprigcast.output.recorder import Recorder, nvenc_hwaccel, nvenc_works
     from sprigcast.render.engine import Frame
 
     process = psutil.Process()
+
+    def task_manager() -> int:
+        try:
+            return process.memory_full_info().uss
+        except Exception:
+            return process.memory_info().rss
+
     if not nvenc_works():
         print(json.dumps({"error": "NVENC not available"}))
         return
     if variant != "own" and nvenc_hwaccel() is None:
         print(json.dumps({"error": _why_not(variant)}))
         return
-    before = process.memory_info()
+
+    class Probe(Recorder):
+        def _video_options(self):
+            return {**super()._video_options(), **(extra or {})}
+
+    encoder = Recorder.default_encoder().model_copy(update=settings or {})
+    before = (process.memory_info().rss, task_manager())
     work = Path(tempfile.mkdtemp(prefix="sprigcast-enc-"))
     try:
         start = time.perf_counter()
         sizes = [(1920, 1080), (1080, 1920)]
-        recs = [Recorder(work / f"{i}.mkv", w, h, 60, 12000, "h264_nvenc", start) for i, (w, h) in enumerate(sizes)]
+        recs = [Probe(work / f"{i}.mkv", w, h, 60, 12000, "h264_nvenc", start, encoder=encoder)
+                for i, (w, h) in enumerate(sizes)]
         for rec in recs:
             rec.start()
         frames = {size: bytes(size[0] * size[1] * 3 // 2) for size in sizes}
@@ -96,13 +117,13 @@ def _encoder_probe(variant: str) -> None:
                 time.sleep(0.001)
             for rec, size in zip(recs, sizes):
                 rec.push_frame(Frame("c", size[0], size[1], frames[size], t, "nv12"))
-        during = process.memory_info()
+        during = (process.memory_info().rss, task_manager())
         for rec in recs:
             rec.stop()
         errors = [rec.error for rec in recs if rec.error]
         print(json.dumps({
-            "ram": (during.rss - before.rss) / 1e6,
-            "private": (getattr(during, "private", 0) - getattr(before, "private", 0)) / 1e6,
+            "ram": (during[0] - before[0]) / 1e6,
+            "task_manager": (during[1] - before[1]) / 1e6,
             "dropped": sum(rec.dropped for rec in recs),
             "error": "; ".join(errors),
         }))
@@ -136,17 +157,37 @@ def compare_encoders() -> None:
     import json
     import subprocess
 
-    print("Two NVENC encoders (1080p60 horizontal + vertical), memory they add:")
-    for variant, label in ENCODER_VARIANTS.items():
-        out = subprocess.run([sys.executable, "-c", f"from sprigcast.tools.memcheck import _encoder_probe; _encoder_probe({variant!r})"],
-                             capture_output=True, text=True, timeout=120)
+    def run(name: str, label: str, settings: dict, extra: dict) -> None:
+        code = f"from sprigcast.tools.memcheck import _encoder_probe; _encoder_probe({name!r}, {settings!r}, {extra!r})"
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
         lines = [line for line in out.stdout.splitlines() if line.startswith("{")]
         result = json.loads(lines[-1]) if lines else {"error": (out.stderr.strip().splitlines() or ["no output"])[-1]}
         if result.get("error"):
-            print(f"  {variant:<6} {label:<45} failed: {result['error']}")
+            print(f"  {name:<6} {label:<45} failed: {result['error']}", flush=True)
         else:
-            print(f"  {variant:<6} {label:<45} +{result['ram']:5.0f} MB  private +{result['private']:5.0f} MB"
+            print(f"  {name:<6} {label:<45} +{result['ram']:5.0f} MB  Task Manager +{result['task_manager']:5.0f} MB"
                   f"  dropped {result['dropped']}", flush=True)
+
+    print("Two NVENC encoders (1080p60 horizontal + vertical), memory they add:")
+    for name, (label, settings, extra) in ENCODER_VARIANTS.items():
+        run(name, label, settings, extra)
+    print("With the shared context, by setting:")
+    for name, (label, settings, extra) in SETTING_VARIANTS.items():
+        run(name, label, settings, extra)
+
+
+def _source_costs(window, collection, meter, wait) -> None:
+    """Switch the sources off one at a time (in the engine only) and show what each frees."""
+    from sprigcast.core.events import ReplaceCollection
+
+    print("\nSwitching sources off one at a time (your scenes aren't changed):", flush=True)
+    order = ["camera", "display_capture", "window_capture", "image", "text", "audio_input", "audio_output"]
+    remaining = list(collection.sources)
+    for source in sorted(collection.sources, key=lambda s: order.index(s.kind) if s.kind in order else 99):
+        remaining = [s for s in remaining if s.id != source.id]
+        window.engine.send(ReplaceCollection(collection.model_copy(update={"sources": remaining}, deep=True)))
+        wait(2.5)
+        meter.take(f"  - {source.name[:20]} ({source.kind})")
 
 
 def main() -> None:
@@ -211,6 +252,7 @@ def main() -> None:
         window._stop_recording()
         wait(WAIT["stopped"])
         meter.take("Recording and replay stopped")
+        _source_costs(window, collection, meter, wait)
         meter.biggest_files()
         window.hotkeys.stop()
         window.meter.stop()
