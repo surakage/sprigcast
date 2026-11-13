@@ -344,7 +344,8 @@ def _report_sources(window, collection) -> None:
     names = {s.id: s.name for s in collection.sources}
     for source in list(window.engine._sources.values()):
         backend = getattr(source, "backend", "")
-        print(f"  {names.get(source.id, source.id)[:28]:<28} {source.status}{f' (via {backend})' if backend else ''}", flush=True)
+        print(f"  {names.get(source.id, source.id)[:28]:<28} {source.status}{f' (via {backend})' if backend else ''}"
+              f"{' [one open camera shared with another source]' if getattr(source, 'shared', False) else ''}", flush=True)
         if hasattr(source, "modes_seen"):
             print(f"    opened with: {source.opened_with}", flush=True)
             seen = sorted({f"{m[1]} {m[2]}x{m[3]} {m[4]:g}-{m[5]:g} fps" for m in source.modes_seen})

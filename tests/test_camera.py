@@ -339,3 +339,49 @@ def test_bigger_camera_frames_are_shrunk_to_the_chosen_size(fake_av, monkeypatch
         assert src.status.endswith("shrunk to 32x18")
     finally:
         src.stop()
+
+
+def test_two_sources_on_one_camera_share_one_open_device(fake_cv2):
+    from sprigcast.sources import camera
+
+    settings = {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 30}
+    wide = create_source("camera", "wide", settings)
+    crop = create_source("camera", "crop", {**settings, "mirror": True})  # mirroring is per source
+    wide.start()
+    crop.start()
+    try:
+        assert wait_for(lambda: wide._frames.peek() is not None and crop._frames.peek() is not None)
+        assert len(FakeCapture.opened) == 1 and wide.shared and crop.shared
+        assert tuple(wide.video_frame()[0, 0]) == (255, 0, 0) and tuple(crop.video_frame()[0, -1]) == (255, 0, 0)
+        assert wide.status == crop.status and wide.status.startswith("capturing")
+
+        wide.sleep()  # one goes off screen: the other keeps the camera
+        crop.video_frame()
+        assert wait_for(lambda: crop._frames.peek() is not None)
+        assert wide.status == "paused (not on screen)" and not crop.shared and wide.video_frame() is None
+        wide.wake()
+        assert wait_for(lambda: wide._frames.peek() is not None) and len(FakeCapture.opened) == 1
+
+        crop.update({**settings, "width": 32, "height": 18})  # a different mode: its own feed
+        assert wait_for(lambda: len(FakeCapture.opened) == 2)
+        assert not wide.shared and len(camera._feeds) == 2
+    finally:
+        wide.stop()
+        crop.stop()
+    assert camera._feeds == {}
+
+
+def test_changing_the_mode_of_an_unshared_camera_reopens_on_the_same_thread(fake_cv2):
+    from sprigcast.sources import camera
+
+    settings = {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 30}
+    src = create_source("camera", "c", settings)
+    src.start()
+    try:
+        assert wait_for(lambda: src._frames.peek() is not None)
+        feed = src._feed
+        src.update({**settings, "width": 32, "height": 18})
+        assert wait_for(lambda: len(FakeCapture.opened) == 2 and FakeCapture.opened[1].props["W"] == 32)
+        assert src._feed is feed and list(camera._feeds.values()) == [feed]
+    finally:
+        src.stop()

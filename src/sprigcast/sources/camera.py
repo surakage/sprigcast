@@ -201,63 +201,45 @@ def shrunk_size(src: tuple[int, int], want: tuple[int, int]) -> tuple[int, int] 
     return max(2, round(src[0] * scale / 2) * 2), max(2, round(src[1] * scale / 2) * 2)
 
 
-@register("camera")
-class CameraSource(Source):
-    """Settings: name, path, width, height, fps, mirror (bool)."""
+class _Feed:
+    """One open camera, shared by every camera source set to the same device and mode.
 
-    channel_order = "BGR"  # OpenCV delivers 3-channel BGR; the compositor swizzles on the GPU
-    sleeps = True  # only used when "Sources that aren't on screen" is set to pause cameras too
+    Two sources showing the same webcam (a wide shot in one scene, a cropped one in another) used to
+    open the device twice: two capture threads, two decoders, two sets of frames. Now they subscribe
+    to one feed and each gets the same frame.
+    """
 
-    def __init__(self, source_id: str, settings: dict[str, Any]):
-        super().__init__(source_id, settings)
-        self._frames: Mailbox[np.ndarray] = Mailbox()
+    def __init__(self, feed_id: str, settings: dict[str, Any]):
+        self.id = feed_id  # for log lines: the first source that asked for it
+        self.settings = dict(settings)
+        self.subscribers: list[CameraSource] = []
         self.backend = ""  # "FFmpeg" or "OpenCV" once a camera opened: memcheck reports it
         self.modes_seen: list = []  # what DirectShow said the camera offers (for memcheck)
         self.opened_with: dict | None = None  # the dshow options that worked
         self.open_errors: list[str] = []  # why the other options didn't (for memcheck)
-        self._size = (int(settings.get("width", 1280)), int(settings.get("height", 720)))
+        self.status = "starting"
         self._stop = threading.Event()
         self._restart = threading.Event()
         self._thread: threading.Thread | None = None
-        self.status = "starting"
 
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():  # still closing the camera after sleep()
-            self._thread.join(timeout=3)
-        self._stop.clear()
         self._thread = threading.Thread(target=self._run, name=f"camera-{self.id}", daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = True) -> None:
         self._stop.set()
         self._restart.set()
-        if self._thread is not None:
+        if wait:
+            self.join()
+
+    def join(self) -> None:
+        if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=3)
 
-    def sleep(self) -> None:
-        self._stop.set()  # the camera thread closes the device on its own; don't wait for it here
+    def retune(self, settings: dict[str, Any]) -> None:
+        """New device or mode for the same (only) subscriber: close and reopen on the capture thread."""
+        self.settings = dict(settings)
         self._restart.set()
-        self._frames = Mailbox()
-        self.status = "paused (not on screen)"
-
-    def wake(self) -> None:
-        self.status = "starting"
-        self.start()
-
-    def update(self, settings: dict[str, Any]) -> None:
-        reopen = {k: v for k, v in settings.items() if k != "mirror"} != {
-            k: v for k, v in self.settings.items() if k != "mirror"
-        }
-        super().update(settings)
-        if reopen:
-            self._restart.set()
-
-    @property
-    def size(self) -> tuple[int, int]:
-        return self._size
-
-    def video_frame(self) -> np.ndarray | None:
-        return self._frames.take()
 
     # Capture thread ------------------------------------------------------------------
 
@@ -276,10 +258,9 @@ class CameraSource(Source):
             self._restart.wait(RETRY_SECONDS)
 
     def _deliver(self, frame: np.ndarray) -> None:
-        if self.settings.get("mirror"):
-            frame = frame[:, ::-1]
-        self._size = (frame.shape[1], frame.shape[0])
-        self._frames.put(np.ascontiguousarray(frame))
+        frame = np.ascontiguousarray(frame)
+        for source in list(self.subscribers):
+            source._receive(frame)
 
     # FFmpeg (PyAV) DirectShow: the default ---------------------------------------------
 
@@ -402,3 +383,138 @@ class CameraSource(Source):
         finally:
             cap.release()
         return True
+
+
+_feeds: dict[tuple, _Feed] = {}  # device + mode -> the feed sources share
+_closing: dict[tuple, _Feed] = {}  # feeds told to stop without waiting (a source went to sleep)
+_feeds_lock = threading.Lock()
+
+
+def _feed_key(settings: dict[str, Any]) -> tuple:
+    """Sources with the same device, size and rate share a feed; mirroring is done per source."""
+    return tuple(sorted((k, repr(v)) for k, v in settings.items() if k != "mirror"))
+
+
+@register("camera")
+class CameraSource(Source):
+    """Settings: name, path, width, height, fps, mirror (bool)."""
+
+    channel_order = "BGR"  # OpenCV delivers 3-channel BGR; the compositor swizzles on the GPU
+    sleeps = True  # only used when "Sources that aren't on screen" is set to pause cameras too
+
+    def __init__(self, source_id: str, settings: dict[str, Any]):
+        self._feed: _Feed | None = None  # the last feed this source used, attached or not
+        self._attached = False
+        self._status = "starting"
+        super().__init__(source_id, settings)
+        self._frames: Mailbox[np.ndarray] = Mailbox()
+        self._size = (int(settings.get("width", 1280)), int(settings.get("height", 720)))
+        self.status = "starting"
+
+    # What the camera is doing comes from the shared feed while this source is attached to one.
+    @property
+    def status(self) -> str:
+        return self._feed.status if self._attached and self._feed is not None else self._status
+
+    @status.setter
+    def status(self, value: str) -> None:
+        self._status = value
+
+    @property
+    def backend(self) -> str:
+        return self._feed.backend if self._feed is not None else ""
+
+    @property
+    def modes_seen(self) -> list:
+        return self._feed.modes_seen if self._feed is not None else []
+
+    @property
+    def opened_with(self) -> dict | None:
+        return self._feed.opened_with if self._feed is not None else None
+
+    @property
+    def open_errors(self) -> list[str]:
+        return self._feed.open_errors if self._feed is not None else []
+
+    @property
+    def shared(self) -> bool:
+        """True while another source uses the same open camera."""
+        return self._attached and self._feed is not None and len(self._feed.subscribers) > 1
+
+    def start(self) -> None:
+        if self._attached:
+            return
+        key = _feed_key(self.settings)
+        with _feeds_lock:
+            feed = _feeds.get(key)
+            new = feed is None
+            if new:
+                old = _closing.pop(key, None)
+                feed = _feeds[key] = _Feed(self.id, self.settings)
+            feed.subscribers.append(self)
+            self._feed, self._attached = feed, True
+        if new:
+            if old is not None:
+                old.join()  # still closing the device after a sleep(): let it finish before reopening
+            feed.start()
+
+    def _leave(self, wait: bool) -> None:
+        if not self._attached or self._feed is None:
+            return
+        feed = self._feed
+        with _feeds_lock:
+            self._attached = False
+            if self in feed.subscribers:
+                feed.subscribers.remove(self)
+            last = not feed.subscribers
+            if last:
+                key = next((k for k, f in _feeds.items() if f is feed), None)
+                if key is not None:
+                    del _feeds[key]
+                    if not wait:
+                        _closing[key] = feed
+        if last:
+            feed.stop(wait)
+
+    def stop(self) -> None:
+        self._leave(wait=True)
+
+    def sleep(self) -> None:
+        self._leave(wait=False)  # the camera thread closes the device on its own; don't wait for it here
+        self._frames = Mailbox()
+        self.status = "paused (not on screen)"
+
+    def wake(self) -> None:
+        self.status = "starting"
+        self.start()
+
+    def update(self, settings: dict[str, Any]) -> None:
+        reopen = _feed_key(settings) != _feed_key(self.settings)
+        super().update(settings)
+        if not (reopen and self._attached):
+            return
+        feed = self._feed
+        with _feeds_lock:
+            alone = feed.subscribers == [self] and _feed_key(settings) not in _feeds
+            if alone:  # keep the thread: it closes the camera and opens the new mode in order
+                for key in [k for k, f in _feeds.items() if f is feed]:
+                    del _feeds[key]
+                _feeds[_feed_key(settings)] = feed
+                feed.retune(settings)
+        if not alone:
+            self._leave(wait=False)
+            self.start()
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return self._size
+
+    def video_frame(self) -> np.ndarray | None:
+        return self._frames.take()
+
+    def _receive(self, frame: np.ndarray) -> None:
+        """A frame from the feed's capture thread. The array is shared with other sources: read only."""
+        if self.settings.get("mirror"):
+            frame = np.ascontiguousarray(frame[:, ::-1])
+        self._size = (frame.shape[1], frame.shape[0])
+        self._frames.put(frame)
