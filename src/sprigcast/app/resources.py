@@ -64,13 +64,47 @@ def _private_working_set(process) -> int:
 
     RSS also counts shared files such as GPU driver DLLs and fonts, which other apps share and Windows
     can drop at any time, so it reads higher than Task Manager.
+
+    Windows keeps this number ready (GetProcessMemoryInfo), so reading it is instant. psutil's USS
+    walks every page of the process instead, which held up the render thread long enough to leave
+    an empty frame in recordings every time the meter refreshed (every two seconds).
     """
     if sys.platform == "win32":
+        fast = windows_private_working_set()
+        if fast is not None:
+            return fast
         try:
             return process.memory_full_info().uss
         except (psutil.Error, OSError):
             pass
     return process.memory_info().rss
+
+
+def windows_private_working_set() -> int | None:
+    """This process's private working set in bytes from PROCESS_MEMORY_COUNTERS_EX2, or None."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):  # PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later)
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (name, ctypes.c_size_t)
+            for name in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                         "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage",
+                         "PeakPagefileUsage", "PrivateUsage", "PrivateWorkingSetSize", "SharedCommitUsage")
+        ]
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        get_info = kernel32.K32GetProcessMemoryInfo
+        get_info.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        get_info.restype = wintypes.BOOL
+        counters = Counters(cb=ctypes.sizeof(Counters))
+        if not get_info(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            return None  # older Windows without the EX2 layout
+        return int(counters.PrivateWorkingSetSize)
+    except (AttributeError, OSError):
+        return None
 
 
 def describe(sample: dict) -> str:
