@@ -331,6 +331,7 @@ def _encoder_queues(window) -> None:
         size = enc.out_width * enc.out_height * 3 // 2
         parts.append(f"{enc.canvas_id}: {enc._video.qsize()} waiting (peak {enc.peak_queue}, "
                      f"~{enc.peak_queue * size / 1e6:.0f} MB), {enc.dropped} dropped, "
+                     f"{enc.skipped_opening} skipped while the encoder opened, "
                      f"longest write stall {enc.longest_stall * 1000:.0f} ms")
     if parts:
         print(f"  (encoder queues: {'; '.join(parts)})", flush=True)
