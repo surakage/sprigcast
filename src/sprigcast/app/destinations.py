@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -79,6 +81,9 @@ class DestinationCard(QFrame):
         edit.setAutoRaise(True)
         edit.setToolTip("Edit this destination")
         edit.clicked.connect(lambda: on_edit(self.output_id))
+        self._on_edit = on_edit
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(lambda pos: self.context_menu().exec(self.mapToGlobal(pos)))
         top.addWidget(self.dot)
         self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # may shrink
         top.addWidget(self.name, 1)
@@ -92,6 +97,16 @@ class DestinationCard(QFrame):
         self.state = QLabel()
         self.state.setWordWrap(True)
         root.addWidget(self.state)
+
+    def context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        here = menu.addAction("Go live here")
+        here.setCheckable(True)
+        here.setChecked(self.switch.isChecked())
+        here.setEnabled(self.switch.isEnabled())
+        here.toggled.connect(self.switch.setChecked)
+        menu.addAction("Edit…").triggered.connect(lambda: self._on_edit(self.output_id))
+        return menu
 
     def show_output(self, output: Output, collection: SceneCollection, issue: str | None) -> None:
         service = SERVICES.get(output.service or "custom", SERVICES["custom"])

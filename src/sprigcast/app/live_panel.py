@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -97,9 +98,11 @@ def _compact(button: QPushButton, text: str) -> QPushButton:
 
 class LivePanel(QWidget):
     def __init__(self, on_scene: Callable[[str], None], on_state: Callable[[str, str | None], None] | None = None,
-                 on_studio: Callable[[bool], None] | None = None, on_go: Callable[[], None] | None = None):
+                 on_studio: Callable[[bool], None] | None = None, on_go: Callable[[], None] | None = None,
+                 on_edit: Callable[[str], None] | None = None):
         super().__init__()
         self.on_scene = on_scene
+        self.on_edit = on_edit  # open a scene in Build mode (right-click menu)
         self.on_state = on_state or (lambda part_id, name: None)
         self.staged: set[str] = set()
         self.buttons: dict[str, QPushButton] = {}
@@ -231,9 +234,20 @@ class LivePanel(QWidget):
             button.setCheckable(True)
             _compact(button, scene.name + ("  ⇄" if scene.linked_to else ""))
             button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, sid=scene.id, b=button: self.scene_menu(sid).exec(b.mapToGlobal(pos)))
             self.buttons[scene.id] = button
             flow.addWidget(button)
         self.rows.addWidget(flow_box)
+
+    def scene_menu(self, scene_id: str) -> QMenu:
+        menu = QMenu(self)
+        label = "Line up next" if self.studio.isChecked() else "Show now"
+        menu.addAction(label).triggered.connect(lambda: self.on_scene(scene_id))
+        if self.on_edit is not None:
+            menu.addAction("Edit in Build mode").triggered.connect(lambda: self.on_edit(scene_id))
+        return menu
 
     def set_clock(self, text: str, live: bool) -> None:
         self.clock.setText(text)

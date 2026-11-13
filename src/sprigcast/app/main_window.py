@@ -248,6 +248,7 @@ class MainWindow(QMainWindow):
             preview.selected.connect(self._on_preview_selected)
             preview.edited.connect(self._on_preview_edited)
             preview.opened.connect(self._on_preview_opened)
+            preview.menu_requested.connect(self._on_preview_menu)
             self.previews[canvas.id] = preview
             upcoming = Preview(f"next:{canvas.id}", f"Next · {canvas.id.capitalize()}", (canvas.width, canvas.height))
             upcoming.editable = False
@@ -264,6 +265,7 @@ class MainWindow(QMainWindow):
         self.part_preview = Preview("part:", "Part", (16, 9))
         self.part_preview.selected.connect(self._on_preview_selected)
         self.part_preview.edited.connect(self._on_preview_edited)
+        self.part_preview.menu_requested.connect(self._on_preview_menu)
         part_panel = QWidget()
         part_layout = QVBoxLayout(part_panel)
         part_layout.setContentsMargins(0, 0, 0, 0)
@@ -544,9 +546,23 @@ class MainWindow(QMainWindow):
         self._fill_more_menu()
 
     def _source_context_menu(self, pos) -> None:
-        row = self.source_list.itemAt(pos)
+        on_item = self.source_list.itemAt(pos) is not None
+        self._source_menu(on_item).exec(self.source_list.viewport().mapToGlobal(pos))
+
+    def _on_preview_menu(self, canvas_id: str, index: int, where) -> None:
+        self._preview_menu(canvas_id, index).exec(where)
+
+    def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
+        """Right-click in a preview: the same menu as the Sources list for what's under the mouse."""
+        menu = self._source_menu(index >= 0 and self._item() is not None)
+        if index < 0 and not canvas_id.startswith("part:"):
+            menu.addSeparator()
+            menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
+        return menu
+
+    def _source_menu(self, on_item: bool) -> QMenu:
         menu = QMenu(self)
-        if row is None:
+        if not on_item:
             self._fill_add_source_menu()
             menu.addMenu(self.add_source_menu).setText("Add")
         else:
@@ -573,7 +589,7 @@ class MainWindow(QMainWindow):
             menu.addAction("Move down").triggered.connect(lambda: self._move_item(-1))
             menu.addSeparator()
             menu.addAction("Remove").triggered.connect(self._remove_item)
-        menu.exec(self.source_list.viewport().mapToGlobal(pos))
+        return menu
 
     def _scene_context_menu(self, pos) -> None:
         menu = QMenu(self)
@@ -896,7 +912,8 @@ class MainWindow(QMainWindow):
         self._open_settings("Stream", output_id=output_id or "new")
 
     def _build_live_dock(self) -> None:
-        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go)
+        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
+                                    self._edit_in_build)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -953,6 +970,20 @@ class MainWindow(QMainWindow):
         self.selected_scene_id = scene_id
         self._make_active()
         self._refresh_sources()
+
+    def _edit_in_build(self, scene_id: str) -> None:
+        """From Live: open this scene in Build mode, on its own canvas tab."""
+        scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
+        if scene is None:
+            return
+        self._set_mode("build")
+        ids = [c.id for c in self.collection.canvases]
+        if scene.kind == "show" and scene.canvas in ids:
+            self.canvas_tabs.setCurrentIndex(ids.index(scene.canvas))
+        self.selected_scene_id = scene.id
+        self._refresh_scenes()
+        self._refresh_sources()
+        self._show_part_editor()
 
     # Modes -------------------------------------------------------------------------
 
