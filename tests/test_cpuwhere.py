@@ -43,3 +43,15 @@ def test_memory_growth_is_pinned_on_the_line():
     finally:
         stop()
     assert len(lines) == 1 and lines[0][1] == "meter.value += 5e6" and lines[0][2] == 5e6
+
+
+def test_text_probe_reports_each_step(capsys):
+    import json
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from sprigcast.tools.memcheck import TEXT_STEPS, _text_probe
+
+    _text_probe()
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert [step for step, _ in result["steps"]] == [*(s[0] for s in TEXT_STEPS), "styled tab bar"]
