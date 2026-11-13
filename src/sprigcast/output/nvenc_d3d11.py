@@ -43,14 +43,30 @@ def _guid(d1, d2, d3, d4) -> GUID:
 
 
 H264 = _guid(0x6BC82762, 0x4E63, 0x4CA4, (0xAA, 0x85, 0x1E, 0x50, 0xF3, 0x21, 0xF6, 0xBF))
-PRESET_P1 = _guid(0xFC0A8D3E, 0x45F8, 0x4CF8, (0x80, 0xC7, 0x29, 0x88, 0x71, 0x59, 0x0E, 0xBF))
-PRESET_P4 = _guid(0x90A7B826, 0xDF06, 0x4862, (0xB9, 0xD2, 0xCD, 0x6D, 0x73, 0xA0, 0x86, 0x81))
+PRESETS = {
+    "p1": _guid(0xFC0A8D3E, 0x45F8, 0x4CF8, (0x80, 0xC7, 0x29, 0x88, 0x71, 0x59, 0x0E, 0xBF)),
+    "p2": _guid(0xF581CFB8, 0x88D6, 0x4381, (0x93, 0xF0, 0xDF, 0x13, 0xF9, 0xC2, 0x7D, 0xAB)),
+    "p3": _guid(0x36850110, 0x3A07, 0x441F, (0x94, 0xD5, 0x36, 0x70, 0x63, 0x1F, 0x91, 0xF6)),
+    "p4": _guid(0x90A7B826, 0xDF06, 0x4862, (0xB9, 0xD2, 0xCD, 0x6D, 0x73, 0xA0, 0x86, 0x81)),
+    "p5": _guid(0x21C6E6B4, 0x297A, 0x4CBA, (0x99, 0x8F, 0xB6, 0xCB, 0xDE, 0x72, 0xAD, 0xE3)),
+    "p6": _guid(0x8E75C279, 0x6299, 0x4AB6, (0x83, 0x02, 0x0B, 0x21, 0x5A, 0x33, 0x5C, 0xF5)),
+    "p7": _guid(0x84848C12, 0x6F71, 0x4C13, (0x93, 0x1B, 0x53, 0xE2, 0x83, 0xF5, 0x79, 0x74)),
+}
+PRESET_P1, PRESET_P4 = PRESETS["p1"], PRESETS["p4"]
+TUNINGS = {"hq": 1, "ll": 2, "ull": 3}
+RATE_CONTROL = {"cqp": 0, "vbr": 1, "cbr": 2}
 
 DEVICE_TYPE_DIRECTX = 0
 BUFFER_FORMAT_NV12 = 1
 TUNING_LOW_LATENCY = 2
 PIC_STRUCT_FRAME = 1
-PIC_FLAG_EOS = 0x8
+PIC_FLAG_FORCEIDR, PIC_FLAG_OUTPUT_SPSPPS, PIC_FLAG_EOS = 0x2, 0x4, 0x8
+PIC_TYPE_IDR = 3
+# Byte offsets in NV_ENC_PRESET_CONFIG (5128 bytes) from nvEncodeAPI.h 12.1, checked in tests/test_nvenc_d3d11.py.
+PRESET_CONFIG_SIZE, CONFIG_AT = 5128, 8
+CFG_GOP, CFG_FRAME_INTERVAL_P, CFG_RC, CFG_H264 = 20, 24, 40, 168
+RC_MODE, RC_CONST_QP, RC_AVG_BITRATE, RC_MAX_BITRATE, RC_VBV_SIZE, RC_VBV_DELAY = 4, 8, 20, 24, 28, 32
+H264_IDR_PERIOD = 8
 STATUS_NAMES = [
     "SUCCESS", "NO_ENCODE_DEVICE", "UNSUPPORTED_DEVICE", "INVALID_ENCODERDEVICE", "INVALID_DEVICE",
     "DEVICE_NOT_EXIST", "INVALID_PTR", "INVALID_EVENT", "INVALID_PARAM", "INVALID_CALL", "OUT_OF_MEMORY",
@@ -68,7 +84,7 @@ class FunctionList(Structure):
 # Positions in FunctionList.fn (the order of NV_ENCODE_API_FUNCTION_LIST).
 F_INITIALIZE, F_CREATE_INPUT, F_DESTROY_INPUT, F_CREATE_BITSTREAM, F_DESTROY_BITSTREAM = 11, 12, 13, 14, 15
 F_ENCODE, F_LOCK_BITSTREAM, F_UNLOCK_BITSTREAM, F_LOCK_INPUT, F_UNLOCK_INPUT = 16, 17, 18, 19, 20
-F_DESTROY_ENCODER, F_OPEN_SESSION_EX, F_LAST_ERROR = 27, 29, 37
+F_DESTROY_ENCODER, F_OPEN_SESSION_EX, F_LAST_ERROR, F_PRESET_CONFIG_EX = 27, 29, 37, 39
 
 
 class OpenSessionParams(Structure):
@@ -203,31 +219,44 @@ def _release(com: c_void_p) -> None:
 
 
 class D3D11Encoder:
-    """One H.264 encoder on its own Direct3D 11 device. encode() takes NV12 bytes, returns packets."""
+    """One H.264 encoder on its own Direct3D 11 device. encode() takes NV12 bytes, returns packets.
 
-    def __init__(self, width: int, height: int, fps: int, preset: GUID = PRESET_P4):
+    Never uses B-frames, so every packet comes out as soon as its frame went in, in order.
+    """
+
+    def __init__(self, width: int, height: int, fps: int, preset: GUID | str = PRESET_P4, *,
+                 bitrate_kbps: int = 0, rate_control: str = "vbr", max_kbps: int = 0, buffer_kbits: int = 0,
+                 cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll"):
         self.width, self.height = width, height
         self.device = c_void_p()
-        _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
-        self.device = d3d11_device()
         self.encoder = c_void_p()
         self.input = self.output = None
         self.frame = 0
+        _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
+        preset = PRESETS.get(preset, PRESET_P4) if isinstance(preset, str) else preset
+        tuning_info = TUNINGS.get(tuning, TUNINGS["ll"])
+        self.device = d3d11_device()
         try:
             params = OpenSessionParams(version=_struct_version(1), deviceType=DEVICE_TYPE_DIRECTX,
                                        device=self.device, apiVersion=API_VERSION)
-            self._check(_fn(F_OPEN_SESSION_EX, c_void_p, c_void_p)(ctypes.addressof(params), ctypes.addressof(self.encoder)),
+            self._check(_fn(F_OPEN_SESSION_EX, c_void_p, c_void_p)(ctypes.addressof(params),
+                                                                   ctypes.addressof(self.encoder)),
                         "opening the session")
+            config = None
+            if bitrate_kbps or gop_frames or rate_control == "cqp":
+                config = self._config(preset, tuning_info, bitrate_kbps, rate_control, max_kbps, buffer_kbits,
+                                      cq_level, gop_frames)
             init = InitializeParams(
                 version=_struct_version(6, True), encodeGUID=H264, presetGUID=preset,
                 encodeWidth=width, encodeHeight=height, darWidth=width, darHeight=height,
-                frameRateNum=fps, frameRateDen=1, enableEncodeAsync=0, enablePTD=1,
-                tuningInfo=TUNING_LOW_LATENCY,  # low latency presets never use B-frames
+                frameRateNum=fps, frameRateDen=1, enableEncodeAsync=0, enablePTD=1, tuningInfo=tuning_info,
+                encodeConfig=ctypes.addressof(config) + CONFIG_AT if config is not None else None,
             )
             self._check(_fn(F_INITIALIZE, c_void_p, c_void_p)(self.encoder, ctypes.addressof(init)), "initialising")
             buf = CreateInputBuffer(version=_struct_version(1), width=width, height=height,
                                     bufferFmt=BUFFER_FORMAT_NV12)
-            self._check(_fn(F_CREATE_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(buf)), "making an input buffer")
+            self._check(_fn(F_CREATE_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(buf)),
+                        "making an input buffer")
             self.input = buf.inputBuffer
             out = CreateBitstreamBuffer(version=_struct_version(1))
             self._check(_fn(F_CREATE_BITSTREAM, c_void_p, c_void_p)(self.encoder, ctypes.addressof(out)),
@@ -236,6 +265,32 @@ class D3D11Encoder:
         except Exception:
             self.close()
             raise
+
+    def _config(self, preset, tuning_info, kbps, rate_control, max_kbps, buffer_kbits, cq_level, gop_frames):
+        """The preset's own settings with ours on top: rate control, bitrate, keyframe interval, no B-frames."""
+        import struct
+
+        buf = (c_uint8 * PRESET_CONFIG_SIZE)()
+        struct.pack_into("<I", buf, 0, _struct_version(4, True))  # NV_ENC_PRESET_CONFIG_VER
+        struct.pack_into("<I", buf, CONFIG_AT, _struct_version(8, True))  # NV_ENC_CONFIG_VER
+        get = _fn(F_PRESET_CONFIG_EX, c_void_p, GUID, GUID, c_int, c_void_p)
+        self._check(get(self.encoder, H264, preset, tuning_info, ctypes.addressof(buf)), "reading the preset")
+        cfg = CONFIG_AT
+        struct.pack_into("<i", buf, cfg + CFG_FRAME_INTERVAL_P, 1)  # 1 = I and P frames only
+        if gop_frames:
+            struct.pack_into("<I", buf, cfg + CFG_GOP, gop_frames)
+            struct.pack_into("<I", buf, cfg + CFG_H264 + H264_IDR_PERIOD, gop_frames)
+        rc = cfg + CFG_RC
+        struct.pack_into("<I", buf, rc + RC_MODE, RATE_CONTROL.get(rate_control, 1))
+        if rate_control == "cqp":
+            struct.pack_into("<III", buf, rc + RC_CONST_QP, cq_level, cq_level, cq_level)
+        elif kbps:
+            struct.pack_into("<I", buf, rc + RC_AVG_BITRATE, kbps * 1000)
+            struct.pack_into("<I", buf, rc + RC_MAX_BITRATE, (max_kbps or kbps) * 1000)
+            if buffer_kbits:
+                struct.pack_into("<I", buf, rc + RC_VBV_SIZE, buffer_kbits * 1000)
+                struct.pack_into("<I", buf, rc + RC_VBV_DELAY, buffer_kbits * 1000)
+        return buf
 
     def _check(self, status: int, what: str) -> None:
         if status == 0:
@@ -249,8 +304,13 @@ class D3D11Encoder:
                 pass
         raise NvencError(f"NVENC {what} failed: {_status_name(status)}{detail}")
 
-    def encode(self, nv12: bytes | memoryview | None) -> bytes:
+    def encode(self, nv12: bytes | memoryview | None, keyframe: bool = False) -> bytes:
         """Encode one NV12 frame (width*height*3/2 bytes); None flushes at the end. Returns Annex B bytes."""
+        data, _ = self.encode_frame(nv12, keyframe)
+        return data
+
+    def encode_frame(self, nv12: bytes | memoryview | None, keyframe: bool = False) -> tuple[bytes, bool]:
+        """Like encode(), and also says whether the output is a keyframe (IDR)."""
         pic = PicParams()
         pic.head.version = _struct_version(6, True)
         pic.head.inputWidth, pic.head.inputHeight = self.width, self.height
@@ -262,14 +322,17 @@ class D3D11Encoder:
             pic.head.inputBuffer, pic.head.outputBitstream = self.input, self.output
             pic.head.bufferFmt, pic.head.pictureStruct = BUFFER_FORMAT_NV12, PIC_STRUCT_FRAME
             pic.head.frameIdx = pic.head.inputTimeStamp = self.frame
+            if keyframe:
+                pic.head.encodePicFlags = PIC_FLAG_FORCEIDR | PIC_FLAG_OUTPUT_SPSPPS
             self.frame += 1
         self._check(_fn(F_ENCODE, c_void_p, c_void_p)(self.encoder, ctypes.addressof(pic)), "encoding")
         if nv12 is None:
-            return b""
+            return b"", False
         lock = LockBitstream(version=_struct_version(1, True), outputBitstream=self.output)
-        self._check(_fn(F_LOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)), "reading the output")
+        self._check(_fn(F_LOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)),
+                    "reading the output")
         try:
-            return ctypes.string_at(lock.bitstreamBufferPtr, lock.bitstreamSizeInBytes)
+            return ctypes.string_at(lock.bitstreamBufferPtr, lock.bitstreamSizeInBytes), lock.pictureType == PIC_TYPE_IDR
         finally:
             _fn(F_UNLOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, self.output)
 
@@ -277,15 +340,15 @@ class D3D11Encoder:
         lock = LockInputBuffer(version=_struct_version(1), inputBuffer=self.input)
         self._check(_fn(F_LOCK_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)), "locking the input")
         try:
-            src = memoryview(nv12).cast("B")
+            src = nv12 if isinstance(nv12, bytes) else bytes(nv12)  # memmove reads bytes in place, no copy
             w, pitch, dst = self.width, lock.pitch, lock.bufferDataPtr
             rows = self.height * 3 // 2  # Y rows then interleaved UV rows, each `w` bytes wide
             if pitch == w:
-                ctypes.memmove(dst, (c_uint8 * len(src)).from_buffer_copy(src), len(src))
+                ctypes.memmove(dst, src, min(len(src), w * rows))
             else:
+                base = ctypes.cast(ctypes.c_char_p(src), c_void_p).value
                 for row in range(rows):
-                    chunk = src[row * w:(row + 1) * w]
-                    ctypes.memmove(dst + row * pitch, (c_uint8 * w).from_buffer_copy(chunk), w)
+                    ctypes.memmove(dst + row * pitch, base + row * w, w)
             return pitch
         finally:
             _fn(F_UNLOCK_INPUT, c_void_p, c_void_p)(self.encoder, self.input)

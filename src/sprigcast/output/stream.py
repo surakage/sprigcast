@@ -97,6 +97,8 @@ class StreamTarget:
 
 
 class Streamer(Recorder):
+    allow_direct = False  # bitrate changes mid-stream (auto-pilot) go through FFmpeg's encoder
+
     def __init__(
         self,
         name: str,
