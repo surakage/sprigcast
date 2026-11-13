@@ -133,7 +133,7 @@ def test_missing_camera_waits(fake_cv2, monkeypatch):
 
 
 class FakeAvFrame:
-    def to_ndarray(self, format):
+    def to_ndarray(self, format, **kwargs):
         assert format == "bgr24"
         frame = np.zeros((36, 64, 3), dtype=np.uint8)
         frame[:, 0] = (255, 0, 0)
@@ -297,7 +297,45 @@ def test_picks_the_lightest_mode_that_gives_what_was_asked():
     assert choose_modes(modes, 1920, 1080, 30)[0] == {"video_size": "1920x1080", "framerate": "30",
                                                        "pixel_format": "yuyv422"}
     # 1080p50 isn't offered: the slowest faster mode (60) before 120
-    assert [m["framerate"] for m in choose_modes(modes, 1920, 1080, 50)] == ["60", "120"]
+    assert [m["framerate"] for m in choose_modes(modes, 1920, 1080, 50)] == ["60", "120", "30"]  # slower last
     # MJPEG wins when it has the size and rate
     assert choose_modes(modes, 1280, 720, 60) == [{"video_size": "1280x720", "framerate": "60", "vcodec": "mjpeg"}]
     assert choose_modes([], 1920, 1080, 30) == []
+
+
+def test_facecam_that_only_does_1080p120():
+    """FFmpeg 7 prints the format and the sizes on separate lines; the camera has no 720p mode."""
+    from sprigcast.sources.camera import choose_modes, parse_dshow_modes, shrunk_size
+
+    lines = ["DirectShow video device options (from video devices)",
+             ' Pin "Capture" (alternative pin name "Capture")',
+             "  pixel_format=yuyv422", "  min s=1920x1080 fps=120 max s=1920x1080 fps=120", "",
+             "  pixel_format=nv12", "  min s=1920x1080 fps=120 max s=1920x1080 fps=120", ""]
+    modes = parse_dshow_modes(lines)
+    assert modes == [("pixel_format", "yuyv422", 1920, 1080, 120.0, 120.0),
+                     ("pixel_format", "nv12", 1920, 1080, 120.0, 120.0)]
+    # 720p30 asked: the 1080p mode it has, NV12 (less data) first
+    assert choose_modes(modes, 1280, 720, 30) == [
+        {"video_size": "1920x1080", "framerate": "120", "pixel_format": "nv12"},
+        {"video_size": "1920x1080", "framerate": "120", "pixel_format": "yuyv422"}]
+    assert shrunk_size((1920, 1080), (1280, 720)) == (1280, 720)
+    assert shrunk_size((1920, 1080), (640, 480)) == (640, 360)  # aspect kept
+    assert shrunk_size((1280, 720), (1280, 720)) is None
+
+
+def test_bigger_camera_frames_are_shrunk_to_the_chosen_size(fake_av, monkeypatch):
+    calls = []
+    original = FakeAvFrame.to_ndarray
+
+    def record(self, format, **kwargs):
+        calls.append(kwargs)
+        return original(self, format)
+    monkeypatch.setattr(FakeAvFrame, "to_ndarray", record)
+    src = create_source("camera", "c", {"name": "Cam A", "path": "usb#a", "width": 32, "height": 18, "fps": 30})
+    src.start()
+    try:
+        assert wait_for(lambda: calls)
+        assert calls[0] == {"width": 32, "height": 18, "interpolation": "BILINEAR"}
+        assert src.status.endswith("shrunk to 32x18")
+    finally:
+        src.stop()
