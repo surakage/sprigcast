@@ -132,3 +132,14 @@ def test_output_tab_encoder_settings(app):
 def test_output_tab_locked_while_live(app):
     w = _window(_collection(), tab="Output", streaming=True)
     assert not w.output_page.stream_form.isEnabled() and w.output_page.record_form.isEnabled()
+
+
+def test_startup_options_are_saved(app):
+    from sprigcast.app import autostart
+
+    w = _window(_collection())
+    assert not w.start_minimized.isChecked()
+    assert w.start_with_windows.isEnabled() == autostart.supported()
+    w.start_minimized.setChecked(True)
+    assert w.apply()
+    assert autostart.start_minimized(["sprigcast"])

@@ -72,11 +72,26 @@ def lean_recording(collection: SceneCollection, remember: bool = True) -> bool:
     return changed
 
 
+def _quiet_start_log() -> None:
+    """Started without a console (pythonw, e.g. from "Start with Windows"): keep messages in a file."""
+    if sys.stderr is not None:
+        return
+    try:
+        folder = config_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        log = open(folder / "sprigcast.log", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+        sys.stdout = sys.stderr = log
+    except OSError:
+        pass
+
+
 def run() -> None:
-    faulthandler.enable()  # if a native library crashes, print where instead of closing silently
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
+    _quiet_start_log()
+    if sys.stderr is not None:
+        faulthandler.enable()  # if a native library crashes, print where instead of closing silently
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # Web docks (app/custom_docks.py) need these set before the app exists. Qt WebEngine is only
     # loaded when you have custom docks, so without any it costs no memory.
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
@@ -121,7 +136,13 @@ def run() -> None:
         collection.save(scenes_path)
     window = MainWindow(collection, scenes_path, plugins_dir)
     window.plugin_report = plugins
-    window.show()
+    from sprigcast.app import autostart
+
+    autostart.refresh()
+    if autostart.start_minimized(sys.argv):
+        window.showMinimized()
+    else:
+        window.show()
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)

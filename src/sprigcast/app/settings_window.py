@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import priority
+from sprigcast.app import autostart, priority
 from sprigcast.app.hotkeys_dialog import HotkeysPage
 from sprigcast.app.output_page import OutputPage
 from sprigcast.app.recording_dialog import RecordingPage
@@ -236,7 +236,18 @@ class SettingsWindow(QDialog):
             "Above normal keeps the stream smooth while a game uses the CPU. SprigCast also asks Windows to put "
             "its GPU work first; that works best when SprigCast runs as administrator."))
 
-        return _page(look, snapping, safety, performance)
+        startup = QGroupBox("Startup")
+        start_box = QVBoxLayout(startup)
+        self.start_with_windows = QCheckBox("Start SprigCast when Windows starts")
+        self.start_with_windows.setChecked(autostart.enabled())
+        self.start_with_windows.setEnabled(autostart.supported())
+        start_box.addWidget(self.start_with_windows)
+        self.start_minimized = QCheckBox("Start minimised")
+        self.start_minimized.setChecked(q.value(autostart.START_MINIMIZED, False, type=bool))
+        start_box.addWidget(self.start_minimized)
+        start_box.addWidget(_hint("When Windows starts it, SprigCast always opens minimised to the taskbar."))
+
+        return _page(look, startup, snapping, safety, performance)
 
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
         files = QGroupBox("Installed plugins")
@@ -405,6 +416,12 @@ class SettingsWindow(QDialog):
         settings.setValue("editing/snap_sources", self.snap_sources.isChecked())
         settings.setValue("editing/snap_center", self.snap_center.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
+        settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
+        if autostart.supported() and self.start_with_windows.isChecked() != autostart.enabled():
+            try:
+                autostart.set_enabled(self.start_with_windows.isChecked())
+            except OSError as exc:
+                QMessageBox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
         level = self.priority.currentData()
         if level != priority.chosen():
             settings.setValue(priority.SETTING, level)
