@@ -204,6 +204,7 @@ class Recorder:
         self.start_time = start_time  # perf_counter() value that becomes timestamp 0
         self.frames = 0  # frames written
         self.dropped = 0  # frames the encoder could not keep up with
+        self.peak_queue = 0  # most frames ever waiting at once (each one is a full frame in RAM)
         self.error: str | None = None
         self.bytes_out = 0  # bytes muxed so far, for the bitrate readout
         self.mux_seconds = 0.0  # time spent handing packets to the file or network
@@ -246,6 +247,7 @@ class Recorder:
         self._last_queued = slot
         try:
             self._video.put_nowait(frame)
+            self.peak_queue = max(self.peak_queue, self._video.qsize())
         except queue.Full:
             if self._counts_drops():
                 self.dropped += 1
