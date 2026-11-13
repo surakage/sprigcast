@@ -265,3 +265,69 @@ def test_an_item_whose_source_is_gone_is_ignored():
                           scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="gone")])])
     col.sources.clear()  # removed while a scene still places it
     assert col.parts_inside(col.scenes[0]) == [] and col.inner_shapes(col.scenes[0]) == []
+
+
+def _fresh_pick(monkeypatch, working):
+    """pick_codec() on a PC where only the encoders in `working` open."""
+    from sprigcast.output import recorder
+
+    monkeypatch.setattr(recorder, "_picked", None)
+    monkeypatch.setattr(recorder, "encoder_works", lambda codec: codec in working)
+    monkeypatch.setattr(recorder, "nvenc_works", lambda: "h264_nvenc" in working)
+    return recorder.pick_codec()
+
+
+def test_the_best_working_encoder_is_picked(monkeypatch):
+    monkeypatch.delenv("SPRIGCAST_ENCODER", raising=False)
+    assert _fresh_pick(monkeypatch, {"h264_nvenc", "h264_qsv", "libx264"}) == "h264_nvenc"
+    assert _fresh_pick(monkeypatch, {"h264_amf", "h264_mf", "libx264"}) == "h264_amf"  # AMD card
+    assert _fresh_pick(monkeypatch, {"h264_qsv", "h264_mf", "libx264"}) == "h264_qsv"  # Intel graphics
+    assert _fresh_pick(monkeypatch, {"h264_mf", "libx264"}) == "h264_mf"
+    assert _fresh_pick(monkeypatch, {"libx264"}) == "libx264"  # no card encoder: the CPU does it
+    monkeypatch.setenv("SPRIGCAST_ENCODER", "libx264")
+    assert _fresh_pick(monkeypatch, {"h264_nvenc", "libx264"}) == "libx264"  # asked for by name
+    monkeypatch.setenv("SPRIGCAST_ENCODER", "h264_qsv")
+    assert _fresh_pick(monkeypatch, {"h264_nvenc", "libx264"}) == "h264_nvenc"  # asked for one that doesn't work
+
+
+def test_amd_intel_and_windows_encoders_get_their_own_options(monkeypatch):
+    from sprigcast.output import recorder
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.output.recorder import codec_label, codec_short, rate_limits, video_options
+
+    cbr = EncoderSettings(rate_control="cbr", tuning="ll", preset="p2", profile="baseline")
+    amf = video_options("h264_amf", cbr, 4500)
+    assert amf["rc"] == "cbr" and amf["maxrate"] == "4500k" and amf["usage"] == "lowlatency"
+    assert amf["quality"] == "speed" and amf["profile"] == "constrained_baseline"
+    assert video_options("h264_amf", EncoderSettings(rate_control="cqp", cq_level=20), 4500)["qp_p"] == "20"
+    qsv = video_options("h264_qsv", cbr, 4500)
+    assert qsv["maxrate"] == qsv["bufsize"] == "4500k" and qsv["async_depth"] == "1" and qsv["preset"] == "veryfast"
+    assert video_options("h264_qsv", EncoderSettings(rate_control="cqp", cq_level=20), 4500)["global_quality"] == "20"
+    mf = video_options("h264_mf", cbr, 4500)
+    assert mf == {"hw_encoding": "1", "rate_control": "cbr", "scenario": "live_streaming"}
+    assert rate_limits("h264_amf", EncoderSettings(rate_control="vbr"), 4000) == (6000, 8000)
+    assert not {"nal-hrd", "crf", "multipass"} & (set(amf) | set(qsv) | set(mf))  # nothing from x264 or NVENC
+    assert codec_short("h264_qsv") == "Quick Sync" and "AMD" in codec_label("h264_amf")
+    assert recorder.is_hardware("h264_mf") and not recorder.is_hardware("libx264")
+    monkeypatch.setattr(recorder, "_plain", {"h264_mf", "h264_amf"})  # a driver that refuses our options
+    assert video_options("h264_mf", cbr, 4500) == {"hw_encoding": "1"} and video_options("h264_amf", cbr, 4500) == {}
+
+
+def test_an_encoder_that_refuses_the_options_is_used_plain(monkeypatch):
+    from sprigcast.output import recorder
+
+    monkeypatch.setattr(recorder, "_works", {})
+    monkeypatch.setattr(recorder, "_plain", set())
+    monkeypatch.setattr(recorder, "_try_encoder", lambda codec, hwaccel=None, options=None: not options)
+    assert recorder.encoder_works("h264_amf") and "h264_amf" in recorder._plain
+    monkeypatch.setattr(recorder, "_try_encoder", lambda codec, hwaccel=None, options=None: False)
+    assert not recorder.encoder_works("h264_qsv")
+
+
+def test_enhanced_broadcasting_options_follow_the_encoder():
+    from sprigcast.output.enhanced import encoder_options
+    from sprigcast.output.enhanced_stream import _sw_format
+
+    amf = encoder_options("h264_amf", {"profile": "main"}, 3000)
+    assert amf["rc"] == "cbr" and amf["profile"] == "main" and amf["maxrate"] == "3000k"
+    assert _sw_format("h264_qsv") == "nv12" and _sw_format("libx264") == "yuv420p"

@@ -38,6 +38,8 @@ class CanvasEncoder(ReplayBuffer):
         opts = super()._video_options()
         if self.codec == "h264_nvenc":
             opts["forced-idr"] = "1"  # a keyframe asked for (a recording starting) is a clean IDR frame
+        elif self.codec in ("h264_amf", "h264_qsv") and "profile" in opts:  # same for AMD and Intel
+            opts["forced_idr"] = "1"
         return opts
 
     # Called from other threads ----------------------------------------------------------

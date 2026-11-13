@@ -265,6 +265,14 @@ def encoder_options(encoder: str, settings: dict, bitrate_kbps: int) -> dict[str
         if settings.get("psycho_aq", True):
             options["spatial-aq"] = "1"
         return options
+    if encoder != "libx264":  # AMD, Intel or Media Foundation: SprigCast's own CBR options for that encoder
+        from sprigcast.core.scene import EncoderSettings
+        from sprigcast.output.recorder import video_options
+
+        profile = str(settings.get("profile") or "high")
+        enc = EncoderSettings(rate_control="cbr", b_frames=0,
+                              profile=profile if profile in ("high", "main", "baseline") else "high")
+        return video_options(encoder, enc, bitrate_kbps)
     return {"preset": "veryfast", "profile": str(settings.get("profile") or "high"), "nal-hrd": "cbr",
             "sc_threshold": "0", **rate}
 

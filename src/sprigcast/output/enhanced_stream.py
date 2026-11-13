@@ -323,4 +323,4 @@ class EnhancedStreamer(Streamer):
 def _sw_format(encoder: str) -> str:
     """The pixel format frames are converted to for this encoder. (Once open, an NVENC stream with a
     shared GPU context reports "cuda" as its format, so this can't be read back from the stream.)"""
-    return "nv12" if encoder == "h264_nvenc" else "yuv420p"
+    return "yuv420p" if encoder == "libx264" else "nv12"  # every graphics-card encoder takes NV12
