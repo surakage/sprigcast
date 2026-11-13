@@ -33,10 +33,13 @@ class _Meter:
 
     def take(self, label: str) -> None:
         info = self.process.memory_info()
-        private = getattr(info, "private", None)  # Windows: memory only SprigCast uses (no shared DLLs)
-        self.rows.append((label, info.rss, private))
+        try:
+            task_manager = self.process.memory_full_info().uss  # Windows: private working set, Task Manager's "Memory"
+        except Exception:
+            task_manager = None
+        self.rows.append((label, info.rss, task_manager))
         last = self.rows[-2][1] if len(self.rows) > 1 else 0
-        extra = f"  private {_mb(private)}" if private is not None else ""
+        extra = f"  Task Manager {_mb(task_manager)}" if task_manager is not None else ""
         print(f"{label:<34}{_mb(info.rss)}  ({'+' if info.rss >= last else '-'}{_mb(abs(info.rss - last)).strip()}){extra}",
               flush=True)
 
@@ -76,7 +79,7 @@ def _encoder_probe(variant: str) -> None:
         print(json.dumps({"error": "NVENC not available"}))
         return
     if variant != "own" and nvenc_hwaccel() is None:
-        print(json.dumps({"error": "this setup doesn't work on this PC"}))
+        print(json.dumps({"error": _why_not(variant)}))
         return
     before = process.memory_info()
     work = Path(tempfile.mkdtemp(prefix="sprigcast-enc-"))
@@ -105,6 +108,27 @@ def _encoder_probe(variant: str) -> None:
         }))
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _why_not(variant: str) -> str:
+    """The error a test frame gives with this setup, for the report."""
+    from fractions import Fraction
+
+    import av
+    import numpy as np
+
+    from sprigcast.output.recorder import _make_hwaccel
+
+    try:
+        ctx = av.CodecContext.create("h264_nvenc", "w", hwaccel=_make_hwaccel())
+        ctx.width, ctx.height, ctx.pix_fmt = 256, 256, "nv12"
+        ctx.time_base, ctx.framerate = Fraction(1, 30), 30
+        frame = av.VideoFrame.from_ndarray(np.zeros((256, 256, 3), dtype=np.uint8), format="rgb24").reformat(format="nv12")
+        ctx.encode(frame)
+        ctx.encode(None)
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return "the test frame failed"
 
 
 def compare_encoders() -> None:

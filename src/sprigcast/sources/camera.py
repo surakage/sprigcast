@@ -51,21 +51,40 @@ def _cv2():
 
 
 def _dshow_list():
-    """DirectShow's camera list as (name, device path) pairs, without importing OpenCV, or None."""
+    """DirectShow's camera list as (name, device path) pairs, without importing OpenCV, or None.
+
+    cv2_enumerate_cameras' package imports OpenCV just for a few constants, so its native DirectShow
+    lister is loaded on its own, straight from its file.
+    """
     if sys.platform != "win32":
         return None
-    # cv2_enumerate_cameras imports cv2 if it can, only for some constants; keep it from loading it.
-    blocked = "cv2" not in sys.modules
-    if blocked:
-        sys.modules["cv2"] = None
+    name = "cv2_enumerate_cameras._windows_backend"
+    module = sys.modules.get(name)
+    if module is not None:
+        return module.DSHOW_enumerate_cameras() or []
+    import glob
+    import importlib.machinery
+    import importlib.util
+    import os
+
     try:
-        from cv2_enumerate_cameras._windows_backend import DSHOW_enumerate_cameras
-    except ImportError:
+        spec = importlib.util.find_spec("cv2_enumerate_cameras")
+    except (ImportError, ValueError):
         return None
-    finally:
-        if blocked:
-            sys.modules.pop("cv2", None)
-    return DSHOW_enumerate_cameras() or []
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    folder = list(spec.submodule_search_locations)[0]
+    files = glob.glob(os.path.join(folder, "_windows_backend*.pyd"))
+    if not files:
+        return None
+    libs = os.path.join(os.path.dirname(folder), "cv2_enumerate_cameras.libs")  # its bundled C++ runtime
+    if os.path.isdir(libs):
+        os.add_dll_directory(libs)
+    loader = importlib.machinery.ExtensionFileLoader(name, files[0])
+    module = importlib.util.module_from_spec(importlib.util.spec_from_file_location(name, files[0], loader=loader))
+    loader.exec_module(module)
+    sys.modules[name] = module
+    return module.DSHOW_enumerate_cameras() or []
 
 
 def list_cameras() -> list[CameraDevice]:

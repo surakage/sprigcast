@@ -59,8 +59,8 @@ def _frames(path):
 def test_recording_and_replay_share_one_encoder_per_canvas(tmp_path):
     engine = FakeEngine()
     pool = EncoderPool(engine)
-    t = time.perf_counter()
     replay = SharedReplay.start(pool, CANVASES, tmp_path, 10, 800, codec="libx264")
+    t = time.perf_counter()  # after the start: frames stamped before an encoder starts are skipped
     _feed(engine, t, 30, pool=pool)
     rec = SharedRecording.start(pool, CANVASES, tmp_path, 800, codec="libx264")
     # Still one encoder (and one tap) per canvas
@@ -84,13 +84,13 @@ def test_recording_and_replay_share_one_encoder_per_canvas(tmp_path):
 def test_recording_alone_then_again(tmp_path):
     engine = FakeEngine()
     pool = EncoderPool(engine)
-    t = time.perf_counter()
     rec = SharedRecording.start(pool, CANVASES, tmp_path / "a", 800, codec="libx264")
+    t = time.perf_counter()  # after the start: frames stamped before an encoder starts are skipped
     _feed(engine, t, 20, pool=pool)
     rec.stop()
     assert pool.encoders == {}
-    assert all(_frames(p) == 20 for p in rec.paths)
+    assert [_frames(p) for p in rec.paths] == [20, 20]
     rec2 = SharedRecording.start(pool, CANVASES[:1], tmp_path / "b", 800, codec="libx264")
     _feed(engine, time.perf_counter(), 10, pool=pool)
     rec2.stop()
-    assert rec2.errors == [] and _frames(rec2.paths[0]) == 10
+    assert rec2.errors == [] and _frames(rec2.paths[0]) == 10, _frames(rec2.paths[0])

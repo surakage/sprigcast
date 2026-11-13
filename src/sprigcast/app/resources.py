@@ -8,6 +8,7 @@ take a moment; without an NVIDIA card it is simply left out.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 
@@ -43,16 +44,33 @@ class ResourceMeter:
     def stop(self) -> None:
         self._stop.set()
 
+    def _ram_bytes(self) -> int:
+        return _private_working_set(self._process)
+
     def sample(self) -> dict:
         """{"cpu": % of the whole PC, "ram_mb": resident memory, "gpu": % or None}; {} without psutil."""
         if self._process is None:
             return {}
         try:
             cpu = self._process.cpu_percent() / self._cores
-            ram = self._process.memory_info().rss / 1e6
+            ram = self._ram_bytes() / 1e6
         except (psutil.Error, OSError):
             return {}
         return {"cpu": cpu, "ram_mb": ram, "gpu": self.gpu_pct, "at": time.monotonic()}
+
+
+def _private_working_set(process) -> int:
+    """What Task Manager's "Memory" column shows on Windows (private working set); RSS elsewhere.
+
+    RSS also counts shared files such as GPU driver DLLs and fonts, which other apps share and Windows
+    can drop at any time, so it reads higher than Task Manager.
+    """
+    if sys.platform == "win32":
+        try:
+            return process.memory_full_info().uss
+        except (psutil.Error, OSError):
+            pass
+    return process.memory_info().rss
 
 
 def describe(sample: dict) -> str:
