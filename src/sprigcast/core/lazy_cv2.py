@@ -14,10 +14,22 @@ import threading
 import types
 
 _lock = threading.Lock()
+loaded_by: str = ""  # where the real OpenCV was first asked for, for `sprigcast-memcheck`
 
 
 class _LazyCv2(types.ModuleType):
     def __getattr__(self, name: str):
+        if name.startswith("__") and name.endswith("__"):
+            # Tools that walk sys.modules (inspect, warnings, debuggers) look up __file__, __path__,
+            # __version__ and the like; answering "not here" keeps them from loading 90 MB.
+            raise AttributeError(name)
+        global loaded_by
+        if not loaded_by:
+            import traceback
+
+            loaded_by = f"cv2.{name} from " + " <- ".join(
+                f"{f.name}:{f.lineno} {f.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}"
+                for f in reversed(traceback.extract_stack(limit=8)[:-1]))
         with _lock:
             if sys.modules.get("cv2") is self:
                 del sys.modules["cv2"]

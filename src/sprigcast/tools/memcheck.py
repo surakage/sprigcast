@@ -176,6 +176,21 @@ def compare_encoders() -> None:
         run(name, label, settings, extra)
 
 
+def _report_sources(window, collection) -> None:
+    """Each source's state, which camera path is in use, and whether (and why) OpenCV got loaded."""
+    from sprigcast.core import lazy_cv2
+
+    names = {s.id: s.name for s in collection.sources}
+    for source in list(window.engine._sources.values()):
+        backend = getattr(source, "backend", "")
+        print(f"  {names.get(source.id, source.id)[:28]:<28} {source.status}{f' (via {backend})' if backend else ''}", flush=True)
+    cv2 = sys.modules.get("cv2")
+    if cv2 is None or isinstance(cv2, lazy_cv2._LazyCv2):
+        print("  OpenCV: not loaded", flush=True)
+    else:
+        print(f"  OpenCV: loaded ({lazy_cv2.loaded_by or 'by the camera fallback or a library'})", flush=True)
+
+
 def _source_costs(window, collection, meter, wait) -> None:
     """Switch the sources off one at a time (in the engine only) and show what each frees."""
     from sprigcast.core.events import ReplaceCollection
@@ -213,6 +228,11 @@ def main() -> None:
     from sprigcast.app.theme import apply_theme
 
     meter.take("Qt, FFmpeg and SprigCast loaded")
+    from sprigcast.render.compositor import create_context
+
+    probe = create_context()  # what the graphics driver alone costs (the engine makes its own below)
+    meter.take("OpenGL context (driver)")
+    probe.release()
     apply_theme(app)
     work = Path(tempfile.mkdtemp(prefix="sprigcast-memcheck-"))
     try:
@@ -237,6 +257,7 @@ def main() -> None:
 
         wait(WAIT["window"])
         meter.take("Window open, sources running")
+        _report_sources(window, collection)
         from sprigcast.output.recorder import codec_label, nvenc_hwaccel, pick_codec
 
         codec = pick_codec()

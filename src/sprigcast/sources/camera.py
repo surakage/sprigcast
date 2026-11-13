@@ -43,6 +43,7 @@ class CameraDevice:
 
 
 def _cv2():
+    log.info("loading OpenCV (camera fallback)")
     try:
         import cv2
     except ImportError as exc:
@@ -126,6 +127,7 @@ class CameraSource(Source):
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
         self._frames: Mailbox[np.ndarray] = Mailbox()
+        self.backend = ""  # "FFmpeg" or "OpenCV" once a camera opened: memcheck reports it
         self._size = (int(settings.get("width", 1280)), int(settings.get("height", 720)))
         self._stop = threading.Event()
         self._restart = threading.Event()
@@ -216,6 +218,7 @@ class CameraSource(Source):
             # FFmpeg's default is a decoder thread per CPU core, each holding its own full-size frames
             # (tens of MB on a 16-core PC). Two threads decode 1080p60 MJPEG easily.
             stream.codec_context.thread_count = 2
+            self.backend = "FFmpeg"
             rate = stream.average_rate or stream.base_rate
             fps = f" @ {float(rate):.0f}" if rate else ""
             self.status = f"capturing {stream.codec_context.width}x{stream.codec_context.height}{fps}"
@@ -242,6 +245,7 @@ class CameraSource(Source):
             self.status = str(exc)
             return False
         cap = cv2.VideoCapture(device.index, cv2.CAP_DSHOW)
+        self.backend = "OpenCV"
         if not cap.isOpened():
             cap.release()
             self.status = "camera busy or not available, retrying"

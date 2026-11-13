@@ -233,6 +233,10 @@ def test_lazy_cv2_loads_opencv_only_when_used(monkeypatch):
     assert proxy is not real  # nothing loaded yet: what windows-capture's `import cv2` gets
     import cv2  # noqa: F401  (a library importing it at the top)
     assert sys.modules["cv2"] is proxy
+    assert not hasattr(proxy, "__file__") and getattr(proxy, "__version__", None) is None  # module walkers
+    assert sys.modules["cv2"] is proxy
+    monkeypatch.setattr(lazy_cv2, "loaded_by", "")
     assert proxy.imwrite() == "written" and sys.modules["cv2"] is real  # loaded on first use
+    assert lazy_cv2.loaded_by.startswith("cv2.imwrite from ")
     lazy_cv2.install()  # already loaded: leaves it alone
     assert sys.modules["cv2"] is real
