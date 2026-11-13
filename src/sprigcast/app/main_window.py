@@ -401,7 +401,7 @@ class MainWindow(QMainWindow):
         self._refresh_all()
         custom_docks.apply(self, custom_docks.load(), self._fill_docks_menu)  # before the layout puts them back
         self._restore_layout()
-        self._apply_canvas_view()
+        self._sync_canvas_choice()
         self._show_part_editor()
         self.live_panel.studio.setChecked(QSettings().value("live/studio", False, type=bool))
 
@@ -1027,13 +1027,59 @@ class MainWindow(QMainWindow):
         """Build shows only the canvas of the current tab; Live shows every canvas side by side."""
         build = self.mode == "build"
         self.canvas_tabs_row.setVisible(build)
-        for canvas_id, column in self.canvas_columns.items():
-            column.setVisible(not build or canvas_id == self.build_canvas)
-            self.next_previews[canvas_id].setVisible(not build and self.studio)
+        for canvas in self.collection.canvases:
+            column = self.canvas_columns[canvas.id]
+            column.setVisible(canvas.enabled and (not build or canvas.id == self.build_canvas))
+            self.next_previews[canvas.id].setVisible(not build and self.studio)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
         canvas = self.collection.canvas(self.build_canvas)
         self.safe_zone_button.setVisible(canvas.height > canvas.width)  # only vertical canvases get zones
+
+    # One canvas or both ----------------------------------------------------------------
+
+    def canvas_choice(self) -> str:
+        """"both", or the id of the only canvas switched on."""
+        on = [c.id for c in self.collection.canvases if c.enabled]
+        return on[0] if len(on) == 1 else "both"
+
+    def show_canvases(self, choice: str) -> bool:
+        """Keep "both" canvases, or just one (by id). A canvas switched off isn't rendered, previewed,
+        recorded or streamed, and leaves Build's tabs and the Live dock until it's switched back on."""
+        for canvas in self.collection.canvases:
+            wanted = choice == "both" or canvas.id == choice
+            if canvas.enabled and not wanted and (self.streaming is not None or canvas.id in self.encoders.encoders):
+                QMessageBox.information(self, "SprigCast", f"The {canvas.id} canvas is recording or live. "
+                                        "Stop that first, then switch it off.")
+                self._sync_canvas_choice()
+                return False
+        changed = False
+        for canvas in self.collection.canvases:
+            wanted = choice == "both" or canvas.id == choice
+            changed |= canvas.enabled != wanted
+            canvas.enabled = wanted
+        self._sync_canvas_choice()
+        if changed:
+            self._changed()
+            self._refresh_scenes()
+            self._refresh_stream_boxes()
+        return True
+
+    def _sync_canvas_choice(self) -> None:
+        """Bring tabs, previews, the record boxes and the menu in line with which canvases are on."""
+        for i, canvas in enumerate(self.collection.canvases):
+            self.canvas_tabs.setTabVisible(i, canvas.enabled)
+            box = self.record_canvas_boxes.get(canvas.id)
+            if box is not None:
+                box.setEnabled(canvas.enabled)
+        if not self.collection.canvas(self.build_canvas).enabled:
+            first = next((i for i, c in enumerate(self.collection.canvases) if c.enabled), None)
+            if first is not None:
+                self.canvas_tabs.setCurrentIndex(first)  # moves Build to a canvas that's on
+        choice = self.canvas_choice()
+        for key, action in getattr(self, "canvas_choice_actions", {}).items():
+            action.setChecked(key == choice)
+        self._apply_canvas_view()
 
     def _set_safe_zones(self, choice: str) -> None:
         for preview in self.previews.values():
@@ -1218,6 +1264,18 @@ class MainWindow(QMainWindow):
             ("Plugins", "Plugins…"),
         ):
             settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
+        shown = settings_menu.addMenu("Show canvases")
+        shown_group = QActionGroup(self)
+        self.canvas_choice_actions: dict[str, QAction] = {}
+        labels = [("both", "Horizontal and vertical")]
+        labels += [(c.id, f"{c.id.capitalize()} only") for c in self.collection.canvases]
+        for key, label in labels:
+            action = shown.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == self.canvas_choice())
+            shown_group.addAction(action)
+            action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
+            self.canvas_choice_actions[key] = action
         settings_menu.addSeparator()
         doctor_action = settings_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
@@ -2777,6 +2835,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.theme import apply_theme
 
         apply_theme(QApplication.instance())
+        self._sync_canvas_choice()  # Settings → Video may have switched a canvas on or off
         self._changed()
         self._refresh_stream_boxes()
         self._updating = True

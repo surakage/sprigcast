@@ -272,3 +272,36 @@ def test_command_palette_lists_scenes_menus_and_switches(app, tmp_path, monkeypa
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_show_one_canvas_at_a_time(app, tmp_path, monkeypatch):
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("OneCanvasTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        assert w.canvas_choice() == "both"
+        w.canvas_tabs.setCurrentIndex(1)  # editing the vertical canvas
+        assert w.show_canvases("horizontal")
+        assert [c.enabled for c in col.canvases] == [True, False] and w.canvas_choice() == "horizontal"
+        assert w.build_canvas == "horizontal" and not w.canvas_tabs.isTabVisible(1)
+        assert w.canvas_columns["horizontal"].isVisible() and not w.canvas_columns["vertical"].isVisible()
+        assert not w.record_canvas_boxes["vertical"].isEnabled()
+        assert w.canvas_choice_actions["horizontal"].isChecked()
+        w._set_mode("live")
+        assert not w.canvas_columns["vertical"].isVisible()
+        assert "v1" not in w.live_panel.buttons and "h1" in w.live_panel.buttons
+        assert w.show_canvases("vertical")
+        assert w.canvas_columns["vertical"].isVisible() and not w.canvas_columns["horizontal"].isVisible()
+        assert "v1" in w.live_panel.buttons and "h1" not in w.live_panel.buttons
+        w._set_mode("build")
+        assert w.build_canvas == "vertical"
+        assert w.show_canvases("both")
+        assert all(c.enabled for c in col.canvases) and w.canvas_tabs.isTabVisible(0)
+    finally:
+        w.close()
+        QSettings().clear()

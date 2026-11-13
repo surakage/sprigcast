@@ -330,6 +330,7 @@ class SettingsWindow(QDialog):
         for canvas in self.collection.canvases:
             values = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps, "enabled": canvas.enabled}
             values.update(pending.get(canvas.id, {}))
+            values["enabled"] = canvas.enabled  # on/off applies right away, never waits for a restart
             enabled = QCheckBox("On")
             enabled.setChecked(bool(values["enabled"]))
             width, height = QSpinBox(), QSpinBox()
@@ -355,7 +356,8 @@ class SettingsWindow(QDialog):
             if self.streaming or self.recording:
                 for widget in (enabled, width, height, fps):
                     widget.setEnabled(False)
-        note = "Canvas size and frame rate change the next time SprigCast starts."
+        note = ("Untick a canvas to work with just one: it stops rendering and leaves the window right away "
+                "(also in Settings → Show canvases). Size and frame rate change the next time SprigCast starts.")
         if pending:
             note += " Changes are waiting for a restart."
         if self.streaming or self.recording:
@@ -408,6 +410,10 @@ class SettingsWindow(QDialog):
             settings.setValue(priority.SETTING, level)
             priority.set_cpu_priority(level)
         if not (self.streaming or self.recording):
+            on = {cid for cid, fields in self.video_fields.items() if fields[0].isChecked()}
+            if on:  # switching a canvas on or off happens right away; at least one stays on
+                for canvas in self.collection.canvases:
+                    canvas.enabled = canvas.id in on
             changes = {}
             for canvas in self.collection.canvases:
                 enabled, width, height, fps = self.video_fields[canvas.id]
@@ -415,9 +421,8 @@ class SettingsWindow(QDialog):
                     "width": width.value(),
                     "height": height.value(),
                     "fps": fps.currentData(),
-                    "enabled": enabled.isChecked(),
                 }
-                current = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps, "enabled": canvas.enabled}
+                current = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps}
                 if wanted != current:
                     changes[canvas.id] = wanted
             if changes:

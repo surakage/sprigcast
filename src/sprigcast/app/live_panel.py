@@ -142,7 +142,8 @@ class LivePanel(QWidget):
     def show_scenes(self, collection: SceneCollection) -> None:
         signature = (tuple((s.id, s.name, s.canvas, s.kind, s.folder, s.linked_to) for s in collection.scenes),
                      tuple((f.id, f.name, f.colour, f.live) for f in collection.folders),
-                     tuple((p.id, p.name, tuple(s.name for s in p.states)) for p in collection.parts()))
+                     tuple((p.id, p.name, tuple(s.name for s in p.states)) for p in collection.parts()),
+                     tuple(c.id for c in collection.canvases if c.enabled))
         if signature != self._signature:
             self._signature = signature
             self._rebuild(collection)
@@ -175,6 +176,8 @@ class LivePanel(QWidget):
         self.buttons = {}
         self.state_buttons = {}
         for canvas in collection.canvases:
+            if not canvas.enabled:
+                continue  # switched off with Settings → Show canvases
             groups = [(f, shows) for f, shows in collection.live_scenes(canvas.id) if shows]
             if not groups:
                 continue
