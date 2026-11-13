@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import autostart, priority
+from sprigcast.app import autostart, priority, theme
 from sprigcast.app.hotkeys_dialog import HotkeysPage
 from sprigcast.app.output_page import OutputPage
 from sprigcast.app.recording_dialog import RecordingPage
@@ -281,7 +281,7 @@ class SettingsWindow(QDialog):
                 QListWidgetItem(f"✓  {name}", self.plugin_list)
             for name, error in plugin_report.failed.items():
                 item = QListWidgetItem(f"✗  {name}: {error}", self.plugin_list)
-                item.setForeground(QColor("#e06c60"))
+                item.setForeground(QColor(theme.BAD))
         if not self.plugin_list.count():
             QListWidgetItem("No plugins loaded.", self.plugin_list)
         box.addWidget(self.plugin_list)

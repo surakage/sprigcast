@@ -25,10 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.app.fit import AdaptiveRow, FitRadio
 
 FLOOR_DB = -60.0
-GREEN, YELLOW, RED = QColor("#3ddc84"), QColor("#ffd23f"), QColor("#ff6b6b")
+GREEN, YELLOW, RED = QColor(theme.ACCENT), QColor(theme.WARN), QColor(theme.LIVE)
 HORIZONTAL, VERTICAL = "horizontal", "vertical"
 
 
@@ -78,7 +79,7 @@ class LevelMeter(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#08170f"))
+        p.fillRect(self.rect(), QColor(theme.CHROME))
         # Zones: green to -20 dB, yellow to -9 dB, red above.
         for start, end, colour in ((FLOOR_DB, -20.0, GREEN), (-20.0, -9.0, YELLOW), (-9.0, 0.0, RED)):
             if self.rms > start:
@@ -86,7 +87,7 @@ class LevelMeter(QWidget):
         if self.peak > FLOOR_DB:
             f = self._frac(self.peak)
             thin = 2 / max(1, self.width() if self.orientation == HORIZONTAL else self.height())
-            p.fillRect(self._span(f - thin, f), RED if self.peak > -9 else QColor("#f0f0f0"))
+            p.fillRect(self._span(f - thin, f), RED if self.peak > -9 else QColor(theme.TEXT_BRIGHT))
         p.end()
 
 
@@ -128,7 +129,7 @@ class AudioRow(QWidget):
         else:
             self._lay_out_strip()
         if info.hidden:
-            self.setStyleSheet("color: #8cc4a3")
+            self.setStyleSheet(theme.MUTED_STYLE)
             self.select.setText(f"{info.name} (hidden)")
         self._update_labels()
 
@@ -199,7 +200,7 @@ class AudioPanel(QWidget):
         master.addWidget(self.master, 1)
         self.ducking = QLabel()
         self.ducking.setToolTip("Your voice is lowering the other sounds")
-        self.ducking.setStyleSheet("color: #ffd23f")
+        self.ducking.setStyleSheet(f"color: {theme.WARN}")
         master.addWidget(self.ducking)
         self._layout.addLayout(master)
         self._rows_box = QBoxLayout(QBoxLayout.Direction.TopToBottom)
@@ -210,8 +211,8 @@ class AudioPanel(QWidget):
         self.hidden_button = QPushButton()
         self.hidden_button.setFlat(True)
         self.hidden_button.setStyleSheet(
-            "QPushButton { border: none; background: transparent; color: #8cc4a3; padding: 2px; }"
-            "QPushButton:hover { color: #f0fff5; }")
+            f"QPushButton {{ border: none; background: transparent; color: {theme.MUTED}; padding: 2px; }}"
+            f"QPushButton:hover {{ color: {theme.TEXT_BRIGHT}; }}")
         self.hidden_button.clicked.connect(lambda: self.set_show_hidden(not self.show_hidden))
         self._layout.addWidget(self.hidden_button)
         self._stretch = self._layout.addStretch(0)

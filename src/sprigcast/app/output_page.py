@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.core.scene import EncoderSettings, SceneCollection
 
 RATE_CONTROLS = {"cbr": "Constant Bitrate (CBR)", "vbr": "Variable Bitrate (VBR)", "cqp": "Constant Quality (CQP)"}
@@ -134,7 +135,7 @@ class OutputPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         self.banner = QLabel("Twitch Enhanced Broadcasting controls some of these settings")
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background: #1f5236; color: #f0fff5; padding: 10px; border-radius: 8px;")
+        self.banner.setStyleSheet(theme.NOTE_STYLE + " padding: 10px;")
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.banner.setToolTip("Twitch picks the resolutions, bitrates, keyframes and B-frames of the Twitch "
                                "output. The settings below still apply to your other streams.")

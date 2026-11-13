@@ -12,15 +12,16 @@ from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
-    QLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.app.terms import PART_MARK, PARTS, cap
 from sprigcast.core.scene import SceneCollection
 
@@ -127,10 +128,7 @@ class LivePanel(QWidget):
         self.go = QPushButton("Go  ▶")
         self.go.setToolTip("Send the lined-up scenes on air (with the transition)")
         self.go.setMinimumHeight(40)
-        self.go.setStyleSheet(
-            "QPushButton { font-weight: bold; padding: 6px 28px; }"
-            "QPushButton:enabled { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff8fc4, stop:1 #f23f8f);"
-            " color: #0c1d14; border: 1px solid #c02670; }")
+        self.go.setStyleSheet(theme.PRIMARY_STYLE)
         self.go.clicked.connect(lambda: (on_go or (lambda: None))())
         self.go.setVisible(False)
         studio_row.addWidget(self.studio)
@@ -166,7 +164,7 @@ class LivePanel(QWidget):
                 staged = scene.id in self.staged and scene.id != active
                 if button.property("staged") != staged:
                     button.setProperty("staged", staged)
-                    button.setStyleSheet("QPushButton { border: 2px dashed #ffd23f; }" if staged else "")
+                    button.setStyleSheet(f"QPushButton {{ border: 2px dashed {theme.ACCENT}; }}" if staged else "")
                 button.blockSignals(False)
 
     def _rebuild(self, collection: SceneCollection) -> None:
@@ -185,7 +183,7 @@ class LivePanel(QWidget):
             if not groups:
                 continue
             title = QLabel(f"{canvas.id.capitalize()}  ·  {canvas.width}×{canvas.height}")
-            title.setStyleSheet("color: #8cc4a3")
+            title.setStyleSheet(theme.MUTED_STYLE)
             self.rows.addWidget(title)
             for folder, group in groups:
                 if folder is not None and len(groups) > 1:  # one Live folder needs no heading
@@ -201,7 +199,7 @@ class LivePanel(QWidget):
         if not parts:
             return
         title = QLabel(f"{cap(PARTS)}")
-        title.setStyleSheet("color: #8cc4a3; margin-top: 6px;")
+        title.setStyleSheet(theme.MUTED_STYLE + "; margin-top: 6px;")
         self.rows.addWidget(title)
         for part in parts:
             row_box = QWidget()
@@ -251,7 +249,7 @@ class LivePanel(QWidget):
 
     def set_clock(self, text: str, live: bool) -> None:
         self.clock.setText(text)
-        self.clock.setStyleSheet("color: #ff5fa2" if live else "")
+        self.clock.setStyleSheet(f"color: {theme.LIVE}" if live else "")
 
     def set_recording(self, text: str) -> None:
         self.rec.setText(text)

@@ -13,7 +13,7 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from sprigcast.app import safe_zones
+from sprigcast.app import safe_zones, theme
 from sprigcast.app.terms import PART, PART_MARK, a
 from sprigcast.core import edit
 from sprigcast.core.scene import Scene, SceneItem
@@ -34,7 +34,7 @@ def snap_settings() -> dict:
         "sources": q.value("editing/snap_sources", True, type=bool),
         "center": q.value("editing/snap_center", True, type=bool),
     }
-ACCENT = QColor("#ff5fa2")
+ACCENT = QColor(theme.ACCENT)
 
 
 class Preview(QWidget):
@@ -180,8 +180,8 @@ class Preview(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#141414"))
-        p.setPen(QColor("#d8d8d8"))
+        p.fillRect(self.rect(), QColor(theme.PANEL))
+        p.setPen(QColor(theme.MUTED))
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
         p.drawText(8, 17, label)
         rect = self.canvas_rect()
