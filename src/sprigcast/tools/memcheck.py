@@ -82,12 +82,25 @@ SETTING_VARIANTS = {
     "no-aq": ("no B-frames, no adaptive quant", {"b_frames": 0, "adaptive_quant": False}, {}),
 }
 
+# What does the GPU connection itself cost? OBS talks to NVENC through Direct3D 11, with no CUDA at all.
+GPU_VARIANTS = {
+    "one": ("one encoder only (horizontal)", {"b_frames": 0}, {"_canvases": "1"}, {}),
+    "lazy": ("CUDA loads its modules lazily", {"b_frames": 0}, {}, {"CUDA_MODULE_LOADING": "LAZY"}),
+    "d3d11": ("Direct3D 11 like OBS (no CUDA)", {"b_frames": 0}, {}, {"SPRIGCAST_NVENC_DEVICE": "d3d11"}),
+    "d3d1x": ("Direct3D 11, one encoder", {"b_frames": 0}, {"_canvases": "1"}, {"SPRIGCAST_NVENC_DEVICE": "d3d11"}),
+}
+
 
 def _encoder_probe(variant: str, settings: dict | None = None, extra: dict | None = None) -> None:
     """Child process: run two NVENC encoders (both canvases) for a few seconds; print the memory they add."""
     import json
 
-    os.environ["SPRIGCAST_NVENC_DEVICE"] = "own" if variant == "own" else "cuda"
+    if variant == "own":
+        os.environ["SPRIGCAST_NVENC_DEVICE"] = "own"
+    else:
+        os.environ.setdefault("SPRIGCAST_NVENC_DEVICE", "cuda")
+    extra = dict(extra or {})
+    canvases = int(extra.pop("_canvases", 2))
     import psutil
 
     from sprigcast.output.recorder import Recorder, nvenc_hwaccel, nvenc_works
@@ -117,7 +130,7 @@ def _encoder_probe(variant: str, settings: dict | None = None, extra: dict | Non
     work = Path(tempfile.mkdtemp(prefix="sprigcast-enc-"))
     try:
         start = time.perf_counter()
-        sizes = [(1920, 1080), (1080, 1920)]
+        sizes = [(1920, 1080), (1080, 1920)][:canvases]
         recs = [Probe(work / f"{i}.mkv", w, h, 60, 12000, "h264_nvenc", start, encoder=encoder)
                 for i, (w, h) in enumerate(sizes)]
         for rec in recs:
@@ -148,20 +161,25 @@ def _why_not(variant: str) -> str:
     from fractions import Fraction
 
     import av
+    import av.logging
     import numpy as np
 
     from sprigcast.output.recorder import _make_hwaccel
 
-    try:
-        ctx = av.CodecContext.create("h264_nvenc", "w", hwaccel=_make_hwaccel())
-        ctx.width, ctx.height, ctx.pix_fmt = 256, 256, "nv12"
-        ctx.time_base, ctx.framerate = Fraction(1, 30), 30
-        frame = av.VideoFrame.from_ndarray(np.zeros((256, 256, 3), dtype=np.uint8), format="rgb24").reformat(format="nv12")
-        ctx.encode(frame)
-        ctx.encode(None)
-    except Exception as exc:
-        return f"{type(exc).__name__}: {exc}"
-    return "the test frame failed"
+    av.logging.set_level(av.logging.VERBOSE)
+    with av.logging.Capture(False) as logs:  # FFmpeg's own explanation is usually in its log, not the error
+        try:
+            ctx = av.CodecContext.create("h264_nvenc", "w", hwaccel=_make_hwaccel())
+            ctx.width, ctx.height, ctx.pix_fmt = 256, 256, "nv12"
+            ctx.time_base, ctx.framerate = Fraction(1, 30), 30
+            frame = av.VideoFrame.from_ndarray(np.zeros((256, 256, 3), dtype=np.uint8), format="rgb24")
+            ctx.encode(frame.reformat(format="nv12"))
+            ctx.encode(None)
+            why = "the test frame failed"
+        except Exception as exc:
+            why = f"{type(exc).__name__}: {exc}"
+    said = [str(line[2]).strip() for line in logs if line[0] <= av.logging.WARNING and str(line[2]).strip()]
+    return why + (" | FFmpeg: " + " / ".join(said[-4:]) if said else "")
 
 
 def compare_encoders() -> None:
@@ -169,9 +187,10 @@ def compare_encoders() -> None:
     import json
     import subprocess
 
-    def run(name: str, label: str, settings: dict, extra: dict) -> None:
+    def run(name: str, label: str, settings: dict, extra: dict, env: dict | None = None) -> None:
         code = f"from sprigcast.tools.memcheck import _encoder_probe; _encoder_probe({name!r}, {settings!r}, {extra!r})"
-        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120,
+                             env={**os.environ, **(env or {})})
         lines = [line for line in out.stdout.splitlines() if line.startswith("{")]
         result = json.loads(lines[-1]) if lines else {"error": (out.stderr.strip().splitlines() or ["no output"])[-1]}
         if result.get("error"):
@@ -186,6 +205,9 @@ def compare_encoders() -> None:
     print("With the shared context, by setting:")
     for name, (label, settings, extra) in SETTING_VARIANTS.items():
         run(name, label, settings, extra)
+    print("Today's settings (no B-frames, delay 0, 2 surfaces), other ways to reach the GPU:")
+    for name, (label, settings, extra, env) in GPU_VARIANTS.items():
+        run(name, label, settings, extra, env)
 
 
 def _window_steps(meter):
