@@ -10,13 +10,15 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 
 from sprigcast.core.source import Source, register
 from sprigcast.sources.color import parse_color
+
+if TYPE_CHECKING:  # Pillow loads only once a text source draws (it costs a few MB)
+    from PIL import ImageFont
 
 DEFAULTS = {
     "text": "SprigCast",
@@ -31,6 +33,8 @@ FALLBACK_FONTS = ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"]
 
 
 def load_font(name: str, size: int) -> ImageFont.ImageFont:
+    from PIL import ImageFont
+
     for candidate in [name, *FALLBACK_FONTS]:
         if not candidate:
             continue
@@ -51,6 +55,8 @@ def fill_tokens(text: str, now: datetime) -> str:
 
 def render_text(text: str, font: ImageFont.ImageFont, color, outline_color, outline_width: int) -> np.ndarray:
     """RGBA image just big enough for the text (at least 1x1), transparent elsewhere."""
+    from PIL import Image, ImageDraw
+
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     left, top, right, bottom = probe.multiline_textbbox((0, 0), text or " ", font=font, stroke_width=outline_width)
     w, h = max(1, right - left), max(1, bottom - top)
