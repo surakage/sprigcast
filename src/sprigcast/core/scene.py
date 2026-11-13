@@ -184,7 +184,7 @@ class EncoderSettings(BaseModel):
     profile: Literal["high", "main", "baseline"] = "high"
     lookahead: bool = False
     adaptive_quant: bool = True
-    b_frames: int = 2
+    b_frames: int = 0  # none: SprigCast's own lighter NVENC path needs none (2 was the old default)
     audio_kbps: int = 160
 
 
@@ -197,7 +197,7 @@ class RecordingSettings(BaseModel):
     short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,
-    # and at recording bitrates the quality difference is invisible. Streams keep 2.
+    # and at recording bitrates the quality difference is invisible. Streams skip them too since 2026-11.
 
 
 class AudioSettings(BaseModel):

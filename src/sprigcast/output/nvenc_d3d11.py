@@ -35,9 +35,12 @@ from ctypes import (
 
 # Struct version numbers for each API version we speak (NV_ENC_*_VER in nvEncodeAPI.h), newest first.
 API_LAYOUTS: dict[tuple[int, int], dict[str, int]] = {
-    (13, 0): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2},
-    (12, 2): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2},
-    (12, 1): {"init": 6, "config": 8, "preset": 4, "pic": 6, "lock_bitstream": 1, "create_input": 1},
+    (13, 0): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2,
+              "reconfigure": 2, "init_size": 1800},
+    (12, 2): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2,
+              "reconfigure": 2, "init_size": 1800},
+    (12, 1): {"init": 6, "config": 8, "preset": 4, "pic": 6, "lock_bitstream": 1, "create_input": 1,
+              "reconfigure": 1, "init_size": 1808},
 }
 API_MAJOR, API_MINOR = min(API_LAYOUTS)  # the oldest we can speak: the driver must support at least this
 API_VERSION = API_MAJOR | (API_MINOR << 24)
@@ -84,6 +87,9 @@ PIC_TYPE_IDR = 3
 PRESET_CONFIG_SIZE, CONFIG_AT = 5128, 8
 CFG_GOP, CFG_FRAME_INTERVAL_P, CFG_RC, CFG_H264 = 20, 24, 40, 168
 RC_MODE, RC_CONST_QP, RC_AVG_BITRATE, RC_MAX_BITRATE, RC_VBV_SIZE, RC_VBV_DELAY = 4, 8, 20, 24, 28, 32
+RC_FLAGS, RC_FLAG_AQ, RC_MULTIPASS = 36, 0x8, 100  # the enableAQ bit; NV_ENC_MULTI_PASS (0 off, 1 quarter, 2 full)
+MULTIPASS = {"disabled": 0, "qres": 1, "fullres": 2}
+RECONFIGURE_INIT_AT = 8  # NV_ENC_RECONFIGURE_PARAMS: version, then the initialise params, then the flag bits
 H264_IDR_PERIOD = 8
 STATUS_NAMES = [
     "SUCCESS", "NO_ENCODE_DEVICE", "UNSUPPORTED_DEVICE", "INVALID_ENCODERDEVICE", "INVALID_DEVICE",
@@ -102,7 +108,7 @@ class FunctionList(Structure):
 # Positions in FunctionList.fn (the order of NV_ENCODE_API_FUNCTION_LIST).
 F_INITIALIZE, F_CREATE_INPUT, F_DESTROY_INPUT, F_CREATE_BITSTREAM, F_DESTROY_BITSTREAM = 11, 12, 13, 14, 15
 F_ENCODE, F_LOCK_BITSTREAM, F_UNLOCK_BITSTREAM, F_LOCK_INPUT, F_UNLOCK_INPUT = 16, 17, 18, 19, 20
-F_DESTROY_ENCODER, F_OPEN_SESSION_EX, F_LAST_ERROR, F_PRESET_CONFIG_EX = 27, 29, 37, 39
+F_DESTROY_ENCODER, F_OPEN_SESSION_EX, F_RECONFIGURE, F_LAST_ERROR, F_PRESET_CONFIG_EX = 27, 29, 32, 37, 39
 
 
 class OpenSessionParams(Structure):
@@ -271,11 +277,13 @@ class D3D11Encoder:
 
     def __init__(self, width: int, height: int, fps: int, preset: GUID | str = PRESET_P4, *,
                  bitrate_kbps: int = 0, rate_control: str = "vbr", max_kbps: int = 0, buffer_kbits: int = 0,
-                 cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll"):
+                 cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll", adaptive_quant: bool = False,
+                 multipass: str = "disabled"):
         self.width, self.height = width, height
         self.device = c_void_p()
         self.encoder = c_void_p()
         self.input = self.output = None
+        self._settings = self._init = None
         self.frame = 0
         self.api = (API_MAJOR, API_MINOR)
         _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
@@ -285,10 +293,11 @@ class D3D11Encoder:
         try:
             self._open_session()
             config = None
-            if bitrate_kbps or gop_frames or rate_control == "cqp":
+            if bitrate_kbps or gop_frames or rate_control == "cqp" or adaptive_quant or multipass != "disabled":
                 config = self._config(preset, tuning_info, bitrate_kbps, rate_control, max_kbps, buffer_kbits,
-                                      cq_level, gop_frames)
-            init = InitializeParams(
+                                      cq_level, gop_frames, adaptive_quant, multipass)
+            self._settings = config  # kept: the encoder reads it again on reconfigure (set_bitrate)
+            self._init = init = InitializeParams(
                 version=self._v("init", True), encodeGUID=H264, presetGUID=preset,
                 encodeWidth=width, encodeHeight=height, darWidth=width, darHeight=height,
                 frameRateNum=fps, frameRateDen=1, enableEncodeAsync=0, enablePTD=1, tuningInfo=tuning_info,
@@ -336,7 +345,8 @@ class D3D11Encoder:
         """The version tag of struct `name` for this session's API version."""
         return _struct_version(API_LAYOUTS[self.api][name], high_bit, self.api)
 
-    def _config(self, preset, tuning_info, kbps, rate_control, max_kbps, buffer_kbits, cq_level, gop_frames):
+    def _config(self, preset, tuning_info, kbps, rate_control, max_kbps, buffer_kbits, cq_level, gop_frames,
+                adaptive_quant=False, multipass="disabled"):
         """The preset's own settings with ours on top: rate control, bitrate, keyframe interval, no B-frames."""
         import struct
 
@@ -360,7 +370,31 @@ class D3D11Encoder:
             if buffer_kbits:
                 struct.pack_into("<I", buf, rc + RC_VBV_SIZE, buffer_kbits * 1000)
                 struct.pack_into("<I", buf, rc + RC_VBV_DELAY, buffer_kbits * 1000)
+        if adaptive_quant:
+            flags = struct.unpack_from("<I", buf, rc + RC_FLAGS)[0]
+            struct.pack_into("<I", buf, rc + RC_FLAGS, flags | RC_FLAG_AQ)
+        struct.pack_into("<I", buf, rc + RC_MULTIPASS, MULTIPASS.get(multipass, 0))
         return buf
+
+    def set_bitrate(self, kbps: int, max_kbps: int = 0, buffer_kbits: int = 0) -> None:
+        """Change the bitrate mid-stream (NvEncReconfigureEncoder), without a keyframe or a new session."""
+        import struct
+
+        if self._settings is None:
+            raise NvencError("this encoder was opened without its own settings, so its bitrate can't change")
+        rc = CONFIG_AT + CFG_RC
+        struct.pack_into("<I", self._settings, rc + RC_AVG_BITRATE, kbps * 1000)
+        struct.pack_into("<I", self._settings, rc + RC_MAX_BITRATE, (max_kbps or kbps) * 1000)
+        if buffer_kbits:
+            struct.pack_into("<I", self._settings, rc + RC_VBV_SIZE, buffer_kbits * 1000)
+            struct.pack_into("<I", self._settings, rc + RC_VBV_DELAY, buffer_kbits * 1000)
+        layout = API_LAYOUTS[self.api]
+        params = (c_uint8 * (RECONFIGURE_INIT_AT + layout["init_size"] + 4))()
+        struct.pack_into("<I", params, 0, self._v("reconfigure", True))
+        ctypes.memmove(ctypes.addressof(params) + RECONFIGURE_INIT_AT, ctypes.addressof(self._init),
+                       layout["init_size"])  # flag bits after it stay 0: no reset, no forced keyframe
+        self._check(_fn(F_RECONFIGURE, c_void_p, c_void_p)(self.encoder, ctypes.addressof(params)),
+                    "changing the bitrate")
 
     def _check(self, status: int, what: str) -> None:
         if status == 0:

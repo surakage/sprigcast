@@ -52,6 +52,9 @@ class StandInEncoder:
     def encode(self, nv12, keyframe=False):
         return self.encode_frame(nv12, keyframe)[0]
 
+    def set_bitrate(self, kbps, max_kbps=0, buffer_kbits=0):
+        self.settings.setdefault("bitrate_changes", []).append((kbps, max_kbps, buffer_kbits))
+
     def close(self):
         self.closed = True
 
@@ -98,9 +101,8 @@ def test_recording_through_the_direct_encoder_plays_back(tmp_path, direct, conta
         assert sum(1 for _ in f.decode(video=0)) == 45
 
 
-def test_b_frames_lookahead_and_streams_stay_on_ffmpeg(tmp_path, direct):
+def test_b_frames_and_lookahead_stay_on_ffmpeg(tmp_path, direct):
     from sprigcast.core.scene import EncoderSettings
-    from sprigcast.output.stream import Streamer
 
     assert not Recorder(tmp_path / "a.mkv", 64, 64, 30, 1000, "h264_nvenc", 0.0,
                         encoder=EncoderSettings(b_frames=2)).uses_direct()
@@ -108,7 +110,30 @@ def test_b_frames_lookahead_and_streams_stay_on_ffmpeg(tmp_path, direct):
                         encoder=EncoderSettings(b_frames=0, lookahead=True)).uses_direct()
     assert not Recorder(tmp_path / "c.mkv", 64, 64, 30, 1000, "libx264", 0.0,
                         encoder=EncoderSettings(b_frames=0)).uses_direct()
-    assert Streamer.allow_direct is False
+
+
+def test_streams_use_the_direct_encoder_and_change_bitrate_in_place(tmp_path, direct, monkeypatch):
+    """A stream with no B-frames goes through SprigCast's own NVENC; auto-pilot reconfigures it."""
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.output import stream as stream_mod
+
+    out = tmp_path / "s.flv"
+    monkeypatch.setattr(stream_mod, "stream_url", lambda server, key, bandwidth_test=False: str(out))
+    st = stream_mod.Streamer("test", "", "key", 320, 180, 30, 3000, "h264_nvenc", 1000.0,
+                             encoder=EncoderSettings(rate_control="cbr", b_frames=0))
+    assert st.uses_direct()
+    st.start()
+    _nv12_frames(st, 320, 180, 15)
+    st._want_kbps = 2000  # what auto-pilot asks for when the upload struggles
+    _nv12_frames(st, 320, 180, 15, start=1000.5)
+    st.stop()
+    assert st.error is None
+    assert direct.made[0].settings["bitrate_changes"] == [(2000, 2000, 2000)]  # CBR: max and buffer follow
+    with av.open(str(out)) as f:
+        assert sum(1 for _ in f.decode(video=0)) == 30
+    stream_b = stream_mod.Streamer("b", "", "key", 64, 64, 30, 1000, "h264_nvenc", 0.0,
+                                   encoder=EncoderSettings(b_frames=2))
+    assert not stream_b.uses_direct()  # B-frames still need FFmpeg's encoder
 
 
 def test_shared_recording_and_replay_through_the_direct_encoder(tmp_path, direct):
