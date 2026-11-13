@@ -291,7 +291,16 @@ def _nvml_load() -> float | None:
 
 
 def gpu_load() -> float | None:
-    """NVIDIA GPU utilisation in percent, or None when neither NVML nor nvidia-smi is available."""
+    """GPU utilisation in percent, or None when it can't be read.
+
+    Windows' own counters first (any card, almost free); NVIDIA's NVML and nvidia-smi only if those
+    aren't there.
+    """
+    from sprigcast.app.gpu_usage import windows_gpu_load
+
+    load = windows_gpu_load()
+    if load is not None:
+        return load
     load = _nvml_load()
     if load is not None or _nvml:
         return load

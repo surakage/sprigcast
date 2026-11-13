@@ -102,6 +102,31 @@ def private_pages() -> dict:
     }
 
 
+def snapshot() -> dict | None:
+    """What holds private memory right now, to compare with a later snapshot. None when it can't be read."""
+    try:
+        found = private_pages()
+    except Exception:
+        return None
+    owners = {f"block {base:#x}": (reserved, used) for reserved, used, base in found["blocks"]}
+    owners.update({name: (0, used) for name, used in found["libraries"].items()})
+    return owners
+
+
+def grown(before: dict | None, after: dict | None, top: int = 6, least: int = 2_000_000) -> list[str]:
+    """What got bigger between two snapshots, biggest first, as short descriptions."""
+    if before is None or after is None:
+        return []
+    changes = []
+    for owner, (reserved, used) in after.items():
+        delta = used - before.get(owner, (0, 0))[1]
+        if delta >= least:
+            what = owner if not owner.startswith("block ") else (
+                f"{'new ' if owner not in before else ''}{reserved / 1e6:.0f} MB block")
+            changes.append((delta, f"{what} +{delta / 1e6:.0f} MB"))
+    return [text for _, text in sorted(changes, reverse=True)[:top]]
+
+
 def size_buckets(blocks: list[tuple[int, int, int]]) -> list[tuple[str, int, int]]:
     """Private blocks grouped by how big the block is: (label, how many, bytes in RAM), biggest group first."""
     edges = [(1 << 20, "under 1 MB"), (4 << 20, "1-4 MB"), (16 << 20, "4-16 MB"), (64 << 20, "16-64 MB"),
