@@ -4,7 +4,14 @@ This is how OBS reaches NVENC: a Direct3D 11 device instead of a CUDA context. F
 can only use CUDA here, and a CUDA context costs about 100 MB of RAM on Windows. For now this is a
 measuring tool (`sprigcast-memcheck --encoders`); if it proves much leaner it becomes an encoder path.
 
-The structures follow nvEncodeAPI.h from NVIDIA's Video Codec SDK 12.1 (driver 531 or newer).
+The structures follow nvEncodeAPI.h from NVIDIA's Video Codec SDK 12.1 and 13.0: every field we touch
+sits at the same place in both, only the version tags differ (see API_LAYOUTS).
+
+One process can only speak one NVENC version: the driver keeps the version of the most recent
+NvEncodeAPICreateInstance call. FFmpeg 8 (PyAV 19) speaks 13.0, so once a stream had opened FFmpeg's
+NVENC, our 12.1 sessions failed with INVALID_VERSION. We now speak the newest version the driver has
+(13.0, 12.2, 12.1) and try the next one (calling CreateInstance again) when a session open says
+INVALID_VERSION. The 12.2 and 13.0 struct layouts match 12.1 for every field used here.
 Frames go in as NV12 bytes and come out as H.264 Annex B packets. Synchronous mode, no B-frames.
 """
 
@@ -12,6 +19,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import threading
 from ctypes import (
     POINTER,
     Structure,
@@ -25,12 +33,22 @@ from ctypes import (
     c_void_p,
 )
 
-API_MAJOR, API_MINOR = 12, 1
+# Struct version numbers for each API version we speak (NV_ENC_*_VER in nvEncodeAPI.h), newest first.
+API_LAYOUTS: dict[tuple[int, int], dict[str, int]] = {
+    (13, 0): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2},
+    (12, 2): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2},
+    (12, 1): {"init": 6, "config": 8, "preset": 4, "pic": 6, "lock_bitstream": 1, "create_input": 1},
+}
+API_MAJOR, API_MINOR = min(API_LAYOUTS)  # the oldest we can speak: the driver must support at least this
 API_VERSION = API_MAJOR | (API_MINOR << 24)
 
 
-def _struct_version(ver: int, high_bit: bool = False) -> int:
-    v = API_VERSION | (ver << 16) | (0x7 << 28)
+def _api_version(api: tuple[int, int]) -> int:
+    return api[0] | (api[1] << 24)
+
+
+def _struct_version(ver: int, high_bit: bool = False, api: tuple[int, int] = (API_MAJOR, API_MINOR)) -> int:
+    v = _api_version(api) | (ver << 16) | (0x7 << 28)
     return v | (1 << 31) if high_bit else v
 
 
@@ -159,14 +177,46 @@ class NvencError(RuntimeError):
     pass
 
 
-_api = None
+_api = None  # the function list from the latest NvEncodeAPICreateInstance
+_api_for: tuple[int, int] | None = None  # ... and the API version it was made for
+_lib = None
+_supported: tuple[int, int] | None = None
+_preferred: tuple[int, int] | None = None  # the version that last opened a session
+_opening = threading.Lock()  # one session open (and CreateInstance switch) at a time
 
 
-def _load():
-    """The NVENC entry points, loaded once. Raises NvencError where NVENC can't be used."""
-    global _api
-    if _api is not None:
+def speakable() -> list[tuple[int, int]]:
+    """The API versions to try, best first: the one that worked last, then newest to oldest."""
+    _load()
+    order = [api for api in API_LAYOUTS if api <= (_supported or (0, 0))]
+    if _preferred in order:
+        order.remove(_preferred)
+        order.insert(0, _preferred)
+    return order
+
+
+def _load(api: tuple[int, int] | None = None):
+    """The NVENC entry points. Raises NvencError where NVENC can't be used.
+
+    With `api`, (re)creates the function list for that version, which also tells the driver which
+    version this process speaks from now on.
+    """
+    global _api, _api_for, _lib, _supported
+    if _api is not None and (api is None or api == _api_for):
         return _api
+    if _lib is None:
+        _lib, _supported = _open_library()
+    if api is None:
+        api = next(a for a in API_LAYOUTS if a <= _supported)
+    functions = FunctionList(version=_struct_version(2, api=api))
+    status = _lib.NvEncodeAPICreateInstance(byref(functions))
+    if status != 0:
+        raise NvencError(f"NvEncodeAPICreateInstance failed: {_status_name(status)}")
+    _api, _api_for = functions, api
+    return _api
+
+
+def _open_library():
     if sys.platform != "win32":
         raise NvencError("needs Windows")
     try:
@@ -179,12 +229,7 @@ def _load():
     if (supported.value >> 4, supported.value & 0xF) < (API_MAJOR, API_MINOR):
         raise NvencError(f"driver supports NVENC {supported.value >> 4}.{supported.value & 0xF}, "
                          f"needs {API_MAJOR}.{API_MINOR} (update the NVIDIA driver)")
-    functions = FunctionList(version=_struct_version(2))
-    status = lib.NvEncodeAPICreateInstance(byref(functions))
-    if status != 0:
-        raise NvencError(f"NvEncodeAPICreateInstance failed: {_status_name(status)}")
-    _api = functions
-    return _api
+    return lib, (supported.value >> 4, supported.value & 0xF)
 
 
 def _status_name(status: int) -> str:
@@ -232,33 +277,30 @@ class D3D11Encoder:
         self.encoder = c_void_p()
         self.input = self.output = None
         self.frame = 0
+        self.api = (API_MAJOR, API_MINOR)
         _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
         preset = PRESETS.get(preset, PRESET_P4) if isinstance(preset, str) else preset
         tuning_info = TUNINGS.get(tuning, TUNINGS["ll"])
         self.device = d3d11_device()
         try:
-            params = OpenSessionParams(version=_struct_version(1), deviceType=DEVICE_TYPE_DIRECTX,
-                                       device=self.device, apiVersion=API_VERSION)
-            self._check(_fn(F_OPEN_SESSION_EX, c_void_p, c_void_p)(ctypes.addressof(params),
-                                                                   ctypes.addressof(self.encoder)),
-                        "opening the session")
+            self._open_session()
             config = None
             if bitrate_kbps or gop_frames or rate_control == "cqp":
                 config = self._config(preset, tuning_info, bitrate_kbps, rate_control, max_kbps, buffer_kbits,
                                       cq_level, gop_frames)
             init = InitializeParams(
-                version=_struct_version(6, True), encodeGUID=H264, presetGUID=preset,
+                version=self._v("init", True), encodeGUID=H264, presetGUID=preset,
                 encodeWidth=width, encodeHeight=height, darWidth=width, darHeight=height,
                 frameRateNum=fps, frameRateDen=1, enableEncodeAsync=0, enablePTD=1, tuningInfo=tuning_info,
                 encodeConfig=ctypes.addressof(config) + CONFIG_AT if config is not None else None,
             )
             self._check(_fn(F_INITIALIZE, c_void_p, c_void_p)(self.encoder, ctypes.addressof(init)), "initialising")
-            buf = CreateInputBuffer(version=_struct_version(1), width=width, height=height,
+            buf = CreateInputBuffer(version=self._v("create_input"), width=width, height=height,
                                     bufferFmt=BUFFER_FORMAT_NV12)
             self._check(_fn(F_CREATE_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(buf)),
                         "making an input buffer")
             self.input = buf.inputBuffer
-            out = CreateBitstreamBuffer(version=_struct_version(1))
+            out = CreateBitstreamBuffer(version=_struct_version(1, api=self.api))
             self._check(_fn(F_CREATE_BITSTREAM, c_void_p, c_void_p)(self.encoder, ctypes.addressof(out)),
                         "making an output buffer")
             self.output = out.bitstreamBuffer
@@ -266,13 +308,41 @@ class D3D11Encoder:
             self.close()
             raise
 
+    def _open_session(self) -> None:
+        """Open the session in a version the driver accepts in this process (see the module notes)."""
+        with _opening:
+            self._open_session_locked()
+
+    def _open_session_locked(self) -> None:
+        global _preferred
+        failure = None
+        for api in speakable():
+            if _api_for != api:
+                _load(api)
+            params = OpenSessionParams(version=_struct_version(1, api=api), deviceType=DEVICE_TYPE_DIRECTX,
+                                       device=self.device, apiVersion=_api_version(api))
+            status = _fn(F_OPEN_SESSION_EX, c_void_p, c_void_p)(ctypes.addressof(params),
+                                                               ctypes.addressof(self.encoder))
+            if status == 0:
+                self.api = _preferred = api
+                return
+            failure = status
+            self.encoder = c_void_p()
+            if _status_name(status) != "INVALID_VERSION":
+                break
+        self._check(failure if failure is not None else 1, "opening the session")
+
+    def _v(self, name: str, high_bit: bool = False) -> int:
+        """The version tag of struct `name` for this session's API version."""
+        return _struct_version(API_LAYOUTS[self.api][name], high_bit, self.api)
+
     def _config(self, preset, tuning_info, kbps, rate_control, max_kbps, buffer_kbits, cq_level, gop_frames):
         """The preset's own settings with ours on top: rate control, bitrate, keyframe interval, no B-frames."""
         import struct
 
         buf = (c_uint8 * PRESET_CONFIG_SIZE)()
-        struct.pack_into("<I", buf, 0, _struct_version(4, True))  # NV_ENC_PRESET_CONFIG_VER
-        struct.pack_into("<I", buf, CONFIG_AT, _struct_version(8, True))  # NV_ENC_CONFIG_VER
+        struct.pack_into("<I", buf, 0, self._v("preset", True))  # NV_ENC_PRESET_CONFIG_VER
+        struct.pack_into("<I", buf, CONFIG_AT, self._v("config", True))  # NV_ENC_CONFIG_VER
         get = _fn(F_PRESET_CONFIG_EX, c_void_p, GUID, GUID, c_int, c_void_p)
         self._check(get(self.encoder, H264, preset, tuning_info, ctypes.addressof(buf)), "reading the preset")
         cfg = CONFIG_AT
@@ -312,7 +382,7 @@ class D3D11Encoder:
     def encode_frame(self, nv12: bytes | memoryview | None, keyframe: bool = False) -> tuple[bytes, bool]:
         """Like encode(), and also says whether the output is a keyframe (IDR)."""
         pic = PicParams()
-        pic.head.version = _struct_version(6, True)
+        pic.head.version = self._v("pic", True)
         pic.head.inputWidth, pic.head.inputHeight = self.width, self.height
         if nv12 is None:
             pic.head.encodePicFlags = PIC_FLAG_EOS
@@ -328,7 +398,7 @@ class D3D11Encoder:
         self._check(_fn(F_ENCODE, c_void_p, c_void_p)(self.encoder, ctypes.addressof(pic)), "encoding")
         if nv12 is None:
             return b"", False
-        lock = LockBitstream(version=_struct_version(1, True), outputBitstream=self.output)
+        lock = LockBitstream(version=self._v("lock_bitstream", True), outputBitstream=self.output)
         self._check(_fn(F_LOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)),
                     "reading the output")
         try:
@@ -337,7 +407,7 @@ class D3D11Encoder:
             _fn(F_UNLOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, self.output)
 
     def _fill(self, nv12) -> int:
-        lock = LockInputBuffer(version=_struct_version(1), inputBuffer=self.input)
+        lock = LockInputBuffer(version=_struct_version(1, api=self.api), inputBuffer=self.input)
         self._check(_fn(F_LOCK_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)), "locking the input")
         try:
             src = nv12 if isinstance(nv12, bytes) else bytes(nv12)  # memmove reads bytes in place, no copy

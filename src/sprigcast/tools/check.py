@@ -37,7 +37,7 @@ def _direct_try(label: str) -> None:
             size = len(enc.encode(bytes(1280 * 720 * 3 // 2), keyframe=True))
         finally:
             enc.close()
-        print(f"  {label:<44} OK ({size} bytes)")
+        print(f"  {label:<44} OK ({size} bytes, NVENC API {enc.api[0]}.{enc.api[1]})")
     except Exception as exc:
         print(f"  {label:<44} FAILED: {exc}")
 
