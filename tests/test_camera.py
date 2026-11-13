@@ -213,7 +213,7 @@ def test_faster_camera_is_paced_to_the_chosen_fps(fake_av, monkeypatch):
         decoded = fake_av.containers[0].decoded
         assert 5 <= decoded <= 16  # ~20 per second, not one per packet (~100 in that time)
         assert src.status == "capturing 64x36 @ 120, using 20"
-        assert fake_av.containers[0].streams.video[0].codec_context.thread_count == 2
+        assert fake_av.containers[0].streams.video[0].codec_context.thread_count == 1
     finally:
         src.stop()
 

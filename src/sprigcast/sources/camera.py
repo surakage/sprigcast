@@ -218,9 +218,9 @@ class CameraSource(Source):
         try:
             stream = container.streams.video[0]
             # FFmpeg's default is a decoder thread per CPU core, each holding its own full-size frames
-            # (tens of MB on a 16-core PC). Two threads decode 1080p60 MJPEG easily.
-            stream.codec_context.thread_count = 2
-            self.backend = "FFmpeg"
+            # (tens of MB on a 16-core PC). One thread decodes 1080p60 MJPEG in a few ms per frame.
+            stream.codec_context.thread_count = 1
+            self.backend = f"FFmpeg, {stream.codec_context.name}"
             rate = stream.average_rate or stream.base_rate
             fps = f" @ {float(rate):.0f}" if rate else ""
             self.status = f"capturing {stream.codec_context.width}x{stream.codec_context.height}{fps}"
