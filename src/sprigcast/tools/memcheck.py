@@ -6,6 +6,7 @@ step added. Nothing in your scenes, settings or recordings folder is changed. Pa
 so we can see where the memory goes on your PC.
 
 `uv run sprigcast-memcheck --encoders` instead compares the ways NVENC can reach the GPU.
+`uv run sprigcast-memcheck --gpu` shows what the graphics driver keeps in RAM for each kind of texture.
 """
 
 from __future__ import annotations
@@ -242,6 +243,61 @@ def _report_sources(window, collection) -> None:
         print(f"  OpenCV: loaded ({lazy_cv2.loaded_by or 'by the camera fallback or a library'})", flush=True)
 
 
+def gpu_costs() -> None:
+    """What the OpenGL driver adds to SprigCast's own memory for the GPU work the renderer does."""
+    import numpy as np
+
+    from sprigcast.render.compositor import create_context
+
+    meter = _Meter()
+    meter.take("Python started")
+    ctx = create_context()
+    meter.take("OpenGL context")
+    w, h = 1920, 1080
+    keep = []
+    for _ in range(8):  # canvases, sprig layers, transition buffers: drawn into on the GPU
+        tex = ctx.texture((w, h), 4)
+        fbo = ctx.framebuffer(color_attachments=[tex])
+        fbo.use()
+        fbo.clear(0.1, 0.2, 0.3, 1.0)
+        keep.append((tex, fbo))
+    ctx.finish()
+    meter.take("8 x 1080p render targets")
+    rgba = np.full((h, w, 4), 128, np.uint8)
+    for _ in range(8):  # still images: uploaded once
+        tex = ctx.texture((w, h), 4, alignment=1)
+        tex.write(rgba)
+        keep.append((tex, None))
+    ctx.finish()
+    meter.take("8 x 1080p uploaded images")
+    live = ctx.texture((w, h), 4, alignment=1)
+    for i in range(120):  # screen capture: a new frame every tick
+        rgba[0, 0, 0] = i
+        live.write(rgba)
+    ctx.finish()
+    meter.take("1080p RGBA uploaded 120 times")
+    bgr = np.full((h, w, 3), 64, np.uint8)
+    cam = ctx.texture((w, h), 3, alignment=1)
+    for i in range(120):  # webcam: 3 bytes per pixel
+        bgr[0, 0, 0] = i
+        cam.write(bgr)
+    ctx.finish()
+    meter.take("1080p BGR uploaded 120 times")
+    target = keep[0][1]
+    for _ in range(120):  # canvases read back for the encoder and previews
+        target.read(components=4, alignment=1)
+    meter.take("1080p read back 120 times")
+    for tex, fbo in keep:
+        if fbo is not None:
+            fbo.release()
+        tex.release()
+    live.release()
+    cam.release()
+    ctx.finish()
+    meter.take("all released")
+    meter.biggest_files(6)
+
+
 def _source_costs(window, collection, meter, wait) -> None:
     """Switch the sources off one at a time (in the engine only) and show what each frees."""
     from sprigcast.core.events import ReplaceCollection
@@ -259,6 +315,9 @@ def _source_costs(window, collection, meter, wait) -> None:
 def main() -> None:
     if "--encoders" in sys.argv:
         compare_encoders()
+        return
+    if "--gpu" in sys.argv:
+        gpu_costs()
         return
     from PySide6.QtCore import QCoreApplication, Qt
 
@@ -334,7 +393,11 @@ def main() -> None:
         print(f"  (recording with {codec_label(codec)}{shared}, canvases: {', '.join(collection.recording.canvases)}, "
               f"{collection.recording.bitrate_kbps} kbps)", flush=True)
         window._start_recording()
-        wait(WAIT["recording"])
+        samples = []
+        for _ in range(int(WAIT["recording"] // 2)):
+            wait(2.0)
+            samples.append(f"{meter.private() / 1e6:.0f}")
+        print(f"  (Task Manager every 2 s while recording: {', '.join(samples)} MB)", flush=True)
         meter.take("+ recording")
         window._toggle_replay(True)
         wait(WAIT["replay"])
