@@ -547,6 +547,9 @@ def main() -> None:
             if abs(added) >= 2e6:
                 print(f"    {label:<30} {'+' if added >= 0 else '-'}{abs(added) / 1e6:.0f} MB", flush=True)
         _report_sources(window, collection)
+        from sprigcast.tools import memwhere
+
+        memwhere.report("window open, nothing recording")
         from sprigcast.output.recorder import codec_label, nvenc_hwaccel, pick_codec
 
         codec = pick_codec()
@@ -566,6 +569,7 @@ def main() -> None:
         print(f"  (Task Manager every 2 s while recording: {', '.join(samples)} MB)", flush=True)
         _encoder_queues(window)
         meter.take("+ recording")
+        memwhere.report("while recording")
         window._toggle_replay(True)
         samples = []
         for _ in range(int(WAIT["replay"] // 2)):
