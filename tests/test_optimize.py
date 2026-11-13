@@ -143,6 +143,13 @@ def test_wizard_runs_checks_and_applies_ticked_changes(monkeypatch):
     w.upload.setValue(6.0)  # retyped: the suggestions follow
     assert any("2000 kbps" in w.change_list.item(i).text() for i in range(w.change_list.count()))
     w.change_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    assert w.plan.recommended == (720, 30) and w.quality.currentData() == (720, 30)
+    w.quality.setCurrentIndex(0)  # 1080p60 picked by hand: every stream follows, TikTok keeps its limit
+    assert w.plan.quality == (1080, 60) and any("dropped frames" in n for n in w.plan.notes)
+    assert "TikTok: 720p · 30 fps (its limit)" in w.follows.text()
+    assert any("Twitch: 1920×1080, 60 fps, 6000 kbps" in w.change_list.item(i).text()
+               for i in range(w.change_list.count()))
+    w.change_list.item(0).setCheckState(Qt.CheckState.Unchecked)
     w._apply()
     assert w.result() == w.DialogCode.Accepted
     assert len(w.chosen) == w.change_list.count() - 1

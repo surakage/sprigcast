@@ -76,6 +76,10 @@ class Plan:
     headline: str
     changes: list[Change]
     notes: list[str] = field(default_factory=list)
+    quality: tuple[int, int] = LADDER[0]  # the one quality every stream and recording follows
+    recommended: tuple[int, int] = LADDER[0]  # what fits this PC and upload
+    limits: list[str] = field(default_factory=list)  # streams a site holds below the quality: "TikTok: 720p · 30 fps"
+    recording: tuple[int, int] = LADDER[0]  # recordings use no upload, so they can sit above the stream quality
 
     def apply(self, chosen: list[Change] | None = None) -> dict[str, int]:
         """Apply the chosen changes (all by default); returns canvas frame rates to queue for the next start."""
@@ -259,7 +263,17 @@ def _cpu_cost(ms_720: float, step: tuple[int, int]) -> float:
     return ms_720 * (short / 720) ** 2 * fps / 1000
 
 
+QUALITY = "quality"  # PcProfile.extra key: the quality picked by hand in the wizard, overriding the suggestion
+
+
 def target(p: PcProfile, encodes: int = 1) -> Target:
+    """The quality to use: picked by hand (PcProfile.extra["quality"]), else what the PC can carry."""
+    t = pc_target(p, encodes)
+    chosen = p.extra.get(QUALITY)
+    return Target(tuple(chosen), t.preset, t.light) if chosen else t
+
+
+def pc_target(p: PcProfile, encodes: int = 1) -> Target:
     """What one PC can carry for `encodes` encodes at once (streams plus recordings)."""
     from sprigcast.app.lowend import CPU_PRESET, LIGHT_PRESET
 
@@ -295,6 +309,27 @@ def _encodes(p: PcProfile, c: SceneCollection) -> int:
     return n
 
 
+def _budget(p: PcProfile, c: SceneCollection, honour_choice: bool = True) -> float:
+    """Upload per stream for video, in kbps. Unlimited when untested, or when a quality was picked by hand."""
+    outputs = _stream_outputs(c)
+    if not p.upload_kbps or not outputs or (honour_choice and p.extra.get(QUALITY)):
+        return float("inf")
+    return p.upload_kbps * UPLOAD_SHARE / len(outputs) - c.stream_encoder.audio_kbps
+
+
+class _Canvas1080:
+    width, height = 1920, 1080
+
+
+def recommended_step(p: PcProfile, c: SceneCollection) -> tuple[int, int]:
+    """The one quality that fits this PC and upload, before any site's own limit."""
+    from sprigcast.output.stream import SERVICES
+
+    t = pc_target(p, _encodes(p, c))
+    budget = _budget(p, c, honour_choice=False) if p.wants_stream else float("inf")
+    return _best_step(t, SERVICES["custom"], _Canvas1080, budget)
+
+
 def _best_step(t: Target, service, canvas, budget_kbps: float) -> tuple[int, int]:
     service_short = min(service.long_side * 9 // 16, min(canvas.width, canvas.height))
     for step in LADDER:
@@ -319,9 +354,7 @@ def stream_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
         return []
     t = target(p, _encodes(p, c))
     optimize_top = Target(LADDER[0], t.preset, False)
-    budget = float("inf")
-    if p.upload_kbps:
-        budget = p.upload_kbps * UPLOAD_SHARE / len(outputs) - c.stream_encoder.audio_kbps
+    budget = _budget(p, c)
     canvases = {cv.id: cv for cv in c.canvases}
     changes = []
     for o in outputs:
@@ -360,9 +393,7 @@ def _canvas_fps(p: PcProfile, c: SceneCollection, canvas_id: str) -> int:
     t = target(p, _encodes(p, c))
     streams = [o for o in _stream_outputs(c) if o.canvas == canvas_id] if p.wants_stream else []
     canvas = next(cv for cv in c.canvases if cv.id == canvas_id)
-    budget = float("inf")
-    if p.upload_kbps and _stream_outputs(c):
-        budget = p.upload_kbps * UPLOAD_SHARE / len(_stream_outputs(c))
+    budget = _budget(p, c)
     steps = [_best_step(t, SERVICES.get(o.service or "custom", SERVICES["custom"]), canvas, budget) for o in streams]
     if p.wants_record and canvas_id in c.recording.canvases:
         steps.append(t.step)
@@ -464,8 +495,7 @@ for _rule in (video_rule, stream_rule, recording_rule, encoder_rule):
 def headline(p: PcProfile, c: SceneCollection) -> str:
     from sprigcast.output.recorder import codec_short
 
-    t = target(p, _encodes(p, c))
-    short, fps = t.step
+    short, fps = recommended_step(p, c)
     what = f"{short}p at {fps} fps on {codec_short(p.codec)}"
     if p.weak_reasons:
         return f"This PC is on the light side ({', '.join(p.weak_reasons)}). Best fit: {what}."
@@ -487,4 +517,32 @@ def plan(p: PcProfile, c: SceneCollection, waiting_fps: dict[str, int] | None = 
         notes.append("No stream set up yet. Add one in Settings → Stream, then run this again.")
     if any(o.enhanced for o in c.outputs if o.type == "stream"):
         notes.append("Enhanced Broadcasting streams are left alone: Twitch picks their settings.")
-    return Plan(headline(p, c), changes, notes)
+    recommended = recommended_step(p, c)
+    quality = tuple(p.extra.get(QUALITY) or recommended)
+    if LADDER.index(quality) < LADDER.index(recommended):
+        notes.insert(0, "That's more than this PC or upload suits: watch for dropped frames.")
+    return Plan(headline(p, c), changes, notes, quality, recommended, site_limits(p, c, quality),
+                target(p, _encodes(p, c)).step)
+
+
+def step_text(step: tuple[int, int]) -> str:
+    return f"{step[0]}p · {step[1]} fps"
+
+
+def site_limits(p: PcProfile, c: SceneCollection, quality: tuple[int, int]) -> list[str]:
+    """Streams that a site keeps below the chosen quality, e.g. "TikTok: 720p · 30 fps (its limit)"."""
+    from sprigcast.output.stream import SERVICES
+
+    if not p.wants_stream:
+        return []
+    canvases = {cv.id: cv for cv in c.canvases}
+    t = target(p, _encodes(p, c))
+    lines = []
+    for o in _stream_outputs(c):
+        if o.canvas not in canvases:
+            continue
+        service = SERVICES.get(o.service or "custom", SERVICES["custom"])
+        step = _best_step(t, service, canvases[o.canvas], _budget(p, c))
+        if step != quality:
+            lines.append(f"{service.label}: {step_text(step)} (its limit)")
+    return list(dict.fromkeys(lines))
