@@ -23,11 +23,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.app.fit import FitButton
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output.stream import SERVICES
 
-HEALTH_COLORS = {"good": "#3ddc84", "warning": "#ffd23f", "bad": "#ff5a5a", "idle": "#5f9c7c", "off": "#1f5236"}
+HEALTH_COLORS = {"good": theme.ACCENT, "warning": theme.WARN, "bad": theme.BAD, "idle": "#5d6b64", "off": theme.EDGE_STRONG}
 
 
 def what_goes(output: Output, collection: SceneCollection) -> str:
@@ -91,7 +92,7 @@ class DestinationCard(QFrame):
         top.addWidget(edit)
         root.addLayout(top)
         self.what = QLabel()
-        self.what.setStyleSheet("color: #8cc4a3")
+        self.what.setStyleSheet(theme.MUTED_STYLE)
         self.what.setWordWrap(True)  # wraps in a narrow dock instead of being cut off
         root.addWidget(self.what)
         self.state = QLabel()
@@ -140,8 +141,8 @@ class DestinationsPanel(QWidget):
         self.cards: dict[str, DestinationCard] = {}
         self.live = False
         self.setStyleSheet(
-            "#destinationCard { border: 1px solid #1f5236; border-top-color: #2c7a4f; border-radius: 10px;"
-            " background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #173d28, stop:1 #10291b); }"
+            f"#destinationCard {{ border: 1px solid {theme.EDGE}; border-top-color: {theme.HIGHLIGHT}; border-radius: 10px;"
+            f" background: {theme.PANEL}; }}"
         )
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.app.terms import PART, SHOWS
 from sprigcast.core.scene import Scene, SceneCollection
 
@@ -30,7 +31,7 @@ class NewPartDialog(QDialog):
             f"A reusable piece for your {SHOWS}, like a webcam frame. Edit it once and it updates everywhere."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #8cc4a3")
+        intro.setStyleSheet(theme.MUTED_STYLE)
         self.name = QLineEdit()
         self.name.setPlaceholderText(EXAMPLES)
         shapes = QWidget()
@@ -46,7 +47,7 @@ class NewPartDialog(QDialog):
             row.addWidget(button)
         row.addStretch(1)
         shape_hint = QLabel("You can add the other shape later.")
-        shape_hint.setStyleSheet("color: #8cc4a3")
+        shape_hint.setStyleSheet(theme.MUTED_STYLE)
         self.add_to_show = QCheckBox(f"Add it to “{show.name}” now" if show is not None else "")
         self.add_to_show.setChecked(show is not None)
         self.add_to_show.setVisible(show is not None)

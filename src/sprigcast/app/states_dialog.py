@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.app.terms import PART
 from sprigcast.core.scene import Scene, SceneCollection, SprigState
 
@@ -35,7 +36,7 @@ class StatesDialog(QDialog):
         intro = QLabel(f"Looks for this {PART} that you switch between in Live, with a quick fade. "
                        "Tick what each state shows.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #8cc4a3")
+        intro.setStyleSheet(theme.MUTED_STYLE)
         self.state_list = QListWidget()
         self.state_list.currentRowChanged.connect(self._show_state)
         add = QPushButton("+ State")

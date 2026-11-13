@@ -25,6 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
+
 RECENT_KEY = "palette/recent"
 RECENT_MAX = 8
 RECENT_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -84,19 +86,19 @@ def rank(commands: list[Command], query: str, recent: list[str] | None = None) -
     return [c for *_, c in sorted(scored)]
 
 
-STYLE = """
-QDialog#palette { background: transparent; }
-QFrame#paletteCard { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #17462f, stop:1 #0f2f20);
-                     border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; }
-QLineEdit#paletteSearch { background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.10);
-                          border-radius: 10px; padding: 10px 14px; font-size: 13pt; color: #f0f7f2; }
-QLineEdit#paletteSearch:focus { border: 1px solid #ff5fa2; }
-QListWidget#paletteList { background: transparent; border: none; outline: none; }
-QLabel#paletteHint { color: #8fb3a0; font-size: 8pt; }
-QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
-QScrollBar::handle:vertical { background: rgba(255,255,255,0.18); border-radius: 3px; min-height: 30px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+STYLE = f"""
+QDialog#palette {{ background: transparent; }}
+QFrame#paletteCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};
+                     border-top-color: {theme.HIGHLIGHT}; border-radius: 16px; }}
+QLineEdit#paletteSearch {{ background: {theme.CHROME}; border: 1px solid {theme.EDGE_STRONG};
+                          border-radius: 10px; padding: 10px 14px; font-size: 13pt; color: {theme.TEXT_BRIGHT}; }}
+QLineEdit#paletteSearch:focus {{ border: 1px solid {theme.ACCENT}; }}
+QListWidget#paletteList {{ background: transparent; border: none; outline: none; }}
+QLabel#paletteHint {{ color: {theme.MUTED}; font-size: 8pt; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {theme.EDGE_STRONG}; border-radius: 3px; min-height: 30px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 """
 
 
@@ -213,33 +215,33 @@ class _RowPainter(QStyledItemDelegate):
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
         if selected or hovered:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(61, 220, 132, 46) if selected else QColor(255, 255, 255, 13))
+            painter.setBrush(QColor(79, 216, 143, 34) if selected else QColor(255, 255, 255, 13))
             painter.drawRoundedRect(QRectF(rect), 9, 9)
         if selected:
-            painter.setBrush(QColor("#3ddc84"))
+            painter.setBrush(QColor(theme.ACCENT))
             painter.drawRoundedRect(QRectF(rect.left(), rect.top() + 8, 3, rect.height() - 16), 1.5, 1.5)
         font = QFont(option.font)
         if command is None:
-            painter.setPen(QColor("#8fb3a0"))
+            painter.setPen(QColor(theme.MUTED))
             painter.drawText(rect.adjusted(14, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, index.data())
             painter.restore()
             return
         x = rect.left() + 12
         painter.setFont(font)
-        painter.setPen(QColor("#f0f7f2"))
+        painter.setPen(QColor(theme.TEXT))
         painter.drawText(QRectF(x, rect.top(), 24, rect.height()), Qt.AlignmentFlag.AlignCenter,
                          GROUP_ICONS.get(command.group, "•"))
         x += 34
         right = rect.right() - 10
         small = QFont(font)
         small.setPointSizeF(max(7.0, font.pointSizeF() * 0.8))
-        right = self._pill(painter, small, command.group, right, rect, QColor(255, 255, 255, 18), QColor("#a9c9b7"))
+        right = self._pill(painter, small, command.group, right, rect, QColor(255, 255, 255, 18), QColor(theme.MUTED))
         if command.shortcut:
             right = self._pill(painter, small, command.shortcut, right - 6, rect, QColor(0, 0, 0, 0),
-                               QColor("#cfe8da"), QColor(255, 255, 255, 50))
+                               QColor(theme.TEXT), QColor(255, 255, 255, 50))
         if index.data(RECENT_ROLE):
             painter.setFont(small)
-            painter.setPen(QColor("#8fb3a0"))
+            painter.setPen(QColor(theme.MUTED))
             width = QFontMetrics(small).horizontalAdvance("recent")
             painter.drawText(QRectF(right - 8 - width, rect.top(), width, rect.height()),
                              Qt.AlignmentFlag.AlignVCenter, "recent")
@@ -252,7 +254,7 @@ class _RowPainter(QStyledItemDelegate):
         title = ("✓  " if command.checked else "") + command.title
         room = right - 12 - x
         title = QFontMetrics(title_font).elidedText(title, Qt.TextElideMode.ElideRight, room)
-        painter.setPen(QColor("#ffffff" if selected else "#e6f2eb"))
+        painter.setPen(QColor(theme.SELECT_TEXT if selected else theme.TEXT))
         painter.drawText(QRectF(x, rect.top(), room, rect.height()), Qt.AlignmentFlag.AlignVCenter, title)
         painter.restore()
 

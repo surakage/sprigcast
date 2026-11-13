@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.core.scene import AudioSettings, SceneCollection
 
 AUDIO_KINDS = ("audio_input", "audio_output")
@@ -49,7 +50,7 @@ class DuckingDialog(QDialog):
         self.enabled.setChecked(audio.ducking)
         intro = QLabel("Your voice stays clear; game and music dip, then come back when you stop.")
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #8cc4a3")
+        intro.setStyleSheet(theme.MUTED_STYLE)
 
         voices = QGroupBox("Voices (these do the lowering)")
         voice_box = QVBoxLayout(voices)

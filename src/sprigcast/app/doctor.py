@@ -30,12 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.app.destinations import problem
 from sprigcast.core.scene import SceneCollection
 from sprigcast.output.stream import SERVICES
 
 LEVELS = {"bad": 0, "warning": 1, "info": 2, "good": 3}
-COLOURS = {"bad": "#ff5a5a", "warning": "#ffd23f", "info": "#7fb8ff", "good": "#3ddc84"}
+COLOURS = {"bad": theme.BAD, "warning": theme.WARN, "info": theme.INFO, "good": theme.ACCENT}
 LISTEN_SECONDS = 3.0
 SILENT_DB = -50.0  # a mic that never peaks above this while you talk is probably the wrong device
 CLIPPING_DB = -1.0
@@ -354,20 +355,19 @@ SUBTITLES = {
     "good": "Keys, upload, GPU, audio and sources all look good.",
     "checking": "Say something into your mic so the doctor can hear it.",
 }
-STYLE = """
-QDialog#doctor { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #143f2b, stop:1 #0d2a1d); }
-QFrame#doctorHeader { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.09);
-                      border-radius: 14px; }
-QFrame#doctorCard { background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08);
-                    border-radius: 12px; }
-QLabel#doctorTitle { font-size: 17pt; font-weight: 700; }
-QLabel#doctorSub, QLabel#cardFix { color: #a9c9b7; }
-QLabel#cardTitle { font-weight: 600; font-size: 10.5pt; }
-QLabel#chip { color: #cfe8da; background: rgba(255,255,255,0.08); border-radius: 9px; padding: 2px 9px;
-              font-size: 8pt; }
-QLabel#sectionLabel { color: #8fb3a0; font-size: 8.5pt; font-weight: 600; letter-spacing: 1px; }
-QProgressBar { background: rgba(255,255,255,0.08); border: none; border-radius: 2px; max-height: 4px; }
-QProgressBar::chunk { background: #ff5fa2; border-radius: 2px; }
+STYLE = f"""
+QDialog#doctor {{ background: {theme.BG}; }}
+QFrame#doctorHeader {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE}; border-top-color: {theme.HIGHLIGHT};
+                      border-radius: 14px; }}
+QFrame#doctorCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE}; border-radius: 12px; }}
+QLabel#doctorTitle {{ font-size: 17pt; font-weight: 700; }}
+QLabel#doctorSub, QLabel#cardFix {{ color: {theme.MUTED}; }}
+QLabel#cardTitle {{ font-weight: 600; font-size: 10.5pt; }}
+QLabel#chip {{ color: {theme.TEXT}; background: {theme.RAISED}; border-radius: 9px; padding: 2px 9px;
+              font-size: 8pt; }}
+QLabel#sectionLabel {{ color: {theme.MUTED}; font-size: 8.5pt; font-weight: 600; letter-spacing: 1px; }}
+QProgressBar {{ background: {theme.RAISED}; border: none; border-radius: 2px; max-height: 4px; }}
+QProgressBar::chunk {{ background: {theme.ACCENT}; border-radius: 2px; }}
 """
 
 
@@ -446,14 +446,14 @@ class DoctorDialog(QDialog):
         self.start()
 
     def _set_verdict(self, level: str, title: str) -> None:
-        colour = COLOURS.get(level, "#ff5fa2")
+        colour = COLOURS.get(level, theme.ACCENT)
         self.badge.setText(BADGES[level])
         self.badge.setStyleSheet(
             f"background: qradialgradient(cx:0.35, cy:0.3, radius:0.9, stop:0 {QColor(colour).lighter(125).name()},"
-            f" stop:1 {colour}); color: #0d2a1d; border-radius: 28px; font-size: 24pt; font-weight: 800;"
+            f" stop:1 {colour}); color: {theme.ACCENT_TEXT}; border-radius: 28px; font-size: 24pt; font-weight: 800;"
         )
         self.headline.setText(title)
-        self.headline.setStyleSheet(f"color: {colour if level != 'checking' else '#f0f7f2'}")
+        self.headline.setStyleSheet(f"color: {colour if level != 'checking' else theme.TEXT_BRIGHT}")
         self.subtitle.setText(SUBTITLES[level])
         self.busy.setVisible(level == "checking")
 

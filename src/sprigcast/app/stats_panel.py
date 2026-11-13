@@ -9,6 +9,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
+from sprigcast.app import theme
+
 try:
     import psutil
 except ImportError:  # optional: the panel just leaves out CPU and memory
@@ -16,7 +18,7 @@ except ImportError:  # optional: the panel just leaves out CPU and memory
 
 
 def _row(label: str, value: str, warn: bool = False) -> str:
-    color = "#e74c3c" if warn else "inherit"
+    color = theme.BAD if warn else "inherit"
     return f"<tr><td>{html.escape(label)}</td><td style='padding-left:12px; color:{color}'>{value}</td></tr>"
 
 

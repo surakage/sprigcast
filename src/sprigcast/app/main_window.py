@@ -56,7 +56,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import custom_docks, doctor, safe_zones
+from sprigcast.app import custom_docks, doctor, safe_zones, theme
 from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import DestinationsPanel, live_line
@@ -87,6 +87,7 @@ from sprigcast.app.settings_window import (
 from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.stats_panel import StatsPanel
 from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
+from sprigcast.app.theme import GO_LIVE_STYLE, ON_AIR_STYLE
 from sprigcast.core.events import (
     AudioLevels,
     EngineError,
@@ -201,10 +202,6 @@ def _button(text: str, slot) -> QPushButton:
     return b
 
 
-ON_AIR_STYLE = (
-    "background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e0604f, stop:1 #a93226);"
-    " color: white; font-weight: bold; border: 1px solid #7d2219; border-top-color: #f08a7c; border-radius: 8px;"
-)
 
 
 class MainWindow(QMainWindow):
@@ -299,7 +296,7 @@ class MainWindow(QMainWindow):
             f"Empty {PART}: add sources with Sources → +, or right-click sources in {a(SHOW)} → Turn into {a(PART)}."
         )
         self.part_empty.setWordWrap(True)
-        self.part_empty.setStyleSheet("background: #1f5236; color: #f0fff5; padding: 8px 12px; border-radius: 8px; margin: 4px 8px;")
+        self.part_empty.setStyleSheet(theme.NOTE_STYLE + " padding: 8px 12px; margin: 4px 8px;")
         part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
@@ -307,10 +304,11 @@ class MainWindow(QMainWindow):
         self.canvas_tabs.setDrawBase(False)
         self.canvas_tabs.setExpanding(False)
         self.canvas_tabs.setStyleSheet(
-            "QTabBar::tab { padding: 6px 16px; margin-right: 4px; border: 1px solid #2c7a4f; border-bottom: none;"
-            " border-top-left-radius: 8px; border-top-right-radius: 8px; background: #10291b; color: #8cc4a3; }"
-            "QTabBar::tab:selected { background: #1f5a3a; color: #f0fff5; font-weight: bold;"
-            " border-top: 3px solid #ff5fa2; }"
+            f"QTabBar::tab {{ padding: 6px 16px; margin-right: 4px; border: none; border-radius: 7px 7px 0 0;"
+            f" background: transparent; color: {theme.MUTED}; }}"
+            f"QTabBar::tab:hover {{ color: {theme.TEXT}; }}"
+            f"QTabBar::tab:selected {{ background: {theme.PANEL}; color: {theme.TEXT_BRIGHT}; font-weight: bold;"
+            f" border-top: 2px solid {theme.ACCENT}; }}"
         )
         for canvas in collection.canvases:
             self.canvas_tabs.addTab(f"{canvas.id.capitalize()}   {canvas.width}×{canvas.height}")
@@ -850,6 +848,7 @@ class MainWindow(QMainWindow):
 
         self.live_button = FitButton("Go live")
         self.live_button.setMinimumHeight(34)
+        self.live_button.setStyleSheet(GO_LIVE_STYLE)
         self.live_button.clicked.connect(self._on_live_clicked)
         layout.addWidget(self.live_button)
         self.record_button = FitButton("Start recording")
@@ -995,9 +994,10 @@ class MainWindow(QMainWindow):
         bar.setObjectName("modeBar")
         bar.setMovable(False)
         bar.setStyleSheet(
-            "QToolButton { padding: 5px 18px; border-radius: 8px; margin: 2px; }"
-            "QToolButton:checked { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff8fc4, stop:1 #f23f8f);"
-            " color: #0c1d14; font-weight: bold; border: 1px solid #c02670; }"
+            f"QToolButton {{ padding: 5px 18px; border-radius: 8px; margin: 2px; color: {theme.MUTED}; }}"
+            f"QToolButton:hover {{ color: {theme.TEXT}; }}"
+            f"QToolButton:checked {{ background: {theme.RAISED_HOVER}; color: {theme.TEXT_BRIGHT}; font-weight: bold;"
+            f" border: 1px solid {theme.EDGE_STRONG}; border-top-color: {theme.HIGHLIGHT}; }}"
         )
         group = QActionGroup(self)
         group.setExclusive(True)
@@ -1368,7 +1368,7 @@ class MainWindow(QMainWindow):
         self.last_resources = self.meter.sample()
         self.meter_label.setText(describe(self.last_resources))
         warning = ram_warning(self.last_resources)
-        self.meter_label.setStyleSheet("color: #f0a040" if warning else "")
+        self.meter_label.setStyleSheet(f"color: {theme.WARN}" if warning else "")
         self.meter_label.setToolTip(warning or self._meter_tip)
         if warning and not self._warned_ram:
             log.warning(warning)
@@ -2246,11 +2246,11 @@ class MainWindow(QMainWindow):
         scene = self._scene()
         if scene is None:
             return
-        color = QColorDialog.getColor(QColor("#3ddc84"), self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        color = QColorDialog.getColor(QColor(theme.ACCENT), self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)
         if not color.isValid():
             return
         canvas = self.collection.canvas(scene.canvas)
-        hex_color = "#{:02x}{:02x}{:02x}{:02x}".format(color.red(), color.green(), color.blue(), color.alpha())
+        hex_color = f"#{color.red():02x}{color.green():02x}{color.blue():02x}{color.alpha():02x}"
         self._add_item(
             SourceConfig(
                 id=self.collection.new_id("color"),
@@ -2483,7 +2483,7 @@ class MainWindow(QMainWindow):
                 return
             config.settings = {
                 **config.settings,
-                "color": "#{:02x}{:02x}{:02x}{:02x}".format(color.red(), color.green(), color.blue(), color.alpha()),
+                "color": f"#{color.red():02x}{color.green():02x}{color.blue():02x}{color.alpha():02x}",
             }
         elif config.kind == "image":
             path, _ = QFileDialog.getOpenFileName(self, "Choose image", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)")
@@ -2803,7 +2803,7 @@ class MainWindow(QMainWindow):
         self.stream_status.repaint()
         session.stop()
         self.live_button.setText("Go live")
-        self.live_button.setStyleSheet("")
+        self.live_button.setStyleSheet(GO_LIVE_STYLE)
         self.destinations.set_live(False)
         self._refresh_stream_boxes()
         self.live_panel.set_clock("Offline", False)
