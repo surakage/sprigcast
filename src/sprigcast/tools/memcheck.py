@@ -208,7 +208,7 @@ def main() -> None:
     import moderngl  # noqa: F401
     import numpy  # noqa: F401
 
-    from sprigcast.app.main import config_dir, load_collection
+    from sprigcast.app.main import config_dir, lean_recording, load_collection
     from sprigcast.app.main_window import MainWindow
     from sprigcast.app.theme import apply_theme
 
@@ -221,6 +221,7 @@ def main() -> None:
         if real.exists():
             shutil.copy(real, scenes)  # the window may save its copy; your real file is never touched
         collection = load_collection(scenes)
+        lean_recording(collection, remember=False)  # what the app will do on its next start
         print(f"  ({len(collection.scenes)} scenes, {len(collection.sources)} sources: "
               f"{', '.join(sorted({s.kind for s in collection.sources}))})", flush=True)
         window = MainWindow(collection, scenes, None)

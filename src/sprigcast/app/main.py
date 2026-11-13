@@ -35,6 +35,28 @@ def load_collection(path: Path) -> SceneCollection:
     return collection
 
 
+LEAN_RECORDING = "migrations/recording_no_b_frames"
+
+
+def lean_recording(collection: SceneCollection, remember: bool = True) -> bool:
+    """Once: switch recordings from the old default of 2 B-frames to none (saves ~50 MB per canvas).
+
+    Only the old default is changed; a value you picked yourself in Settings → Output is kept, and
+    so is anything you set after this ran. True if the collection changed.
+    """
+    from PySide6.QtCore import QSettings
+
+    settings = QSettings()
+    if remember and settings.value(LEAN_RECORDING, False, type=bool):
+        return False
+    changed = collection.recording.encoder.b_frames == 2
+    if changed:
+        collection.recording.encoder.b_frames = 0
+    if remember:
+        settings.setValue(LEAN_RECORDING, True)
+    return changed
+
+
 def run() -> None:
     faulthandler.enable()  # if a native library crashes, print where instead of closing silently
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -77,7 +99,9 @@ def run() -> None:
 
     from sprigcast.app.settings_window import apply_pending_video
 
-    if apply_pending_video(collection):  # canvas size / fps changed in Settings → Video last time
+    changed = apply_pending_video(collection)  # canvas size / fps changed in Settings → Video last time
+    changed = lean_recording(collection) or changed
+    if changed:
         collection.save(scenes_path)
     window = MainWindow(collection, scenes_path, plugins_dir)
     window.plugin_report = plugins
