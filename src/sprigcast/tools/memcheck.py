@@ -5,6 +5,7 @@ seconds each (into a temporary folder that is deleted afterwards), and prints ho
 step added. Nothing in your scenes, settings or recordings folder is changed. Paste the output back
 so we can see where the memory goes on your PC.
 
+`uv run sprigcast-memcheck --one-canvas` keeps only the first canvas (to compare with a one-canvas OBS).
 `uv run sprigcast-memcheck --encoders` instead compares the ways NVENC can reach the GPU.
 `uv run sprigcast-memcheck --gpu` shows what the graphics driver keeps in RAM for each kind of texture.
 """
@@ -421,6 +422,12 @@ def main() -> None:
             shutil.copy(real, scenes)  # the window may save its copy; your real file is never touched
         collection = load_collection(scenes)
         lean_recording(collection, remember=False)  # what the app will do on its next start
+        if "--one-canvas" in sys.argv:  # like OBS: only the first canvas exists, rendered and recorded
+            first = next(c for c in collection.canvases if c.enabled)
+            for canvas in collection.canvases:
+                canvas.enabled = canvas is first
+            collection.recording.canvases = [first.id]
+            print(f"  (one canvas only: {first.id}; the others are switched off in this copy)", flush=True)
         print(f"  ({len(collection.scenes)} scenes, {len(collection.sources)} sources: "
               f"{', '.join(sorted({s.kind for s in collection.sources}))})", flush=True)
         steps, mark = _window_steps(meter)
