@@ -18,13 +18,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QRadioButton,
     QSizePolicy,
     QSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
+
+from sprigcast.app.fit import AdaptiveRow, FitRadio
 
 FLOOR_DB = -60.0
 GREEN, YELLOW, RED = QColor("#3ddc84"), QColor("#ffd23f"), QColor("#ff6b6b")
@@ -99,10 +100,10 @@ class AudioRow(QWidget):
         self._on_change = on_change
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(lambda pos: on_menu(self.source_id, self.mapToGlobal(pos)))
-        self.select = QRadioButton(info.name)
+        self.select = FitRadio(info.name)  # long device names shorten with "…" in a narrow mixer
         self.select.setToolTip(info.name)
         self.db_label = QLabel()
-        self.db_label.setMinimumWidth(56)
+        self.db_label.setMinimumWidth(48)
         self.mute = QToolButton()
         self.mute.setCheckable(True)
         self.mute.setChecked(info.muted)
@@ -135,13 +136,16 @@ class AudioRow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(2)
-        top = QHBoxLayout()
-        top.addWidget(self.select, 1)
+        controls = QWidget()
+        buttons = QHBoxLayout(controls)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.addStretch(1)
         self.db_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        top.addWidget(self.db_label)
-        top.addWidget(self.monitor)
-        top.addWidget(self.mute)
-        layout.addLayout(top)
+        buttons.addWidget(self.db_label)
+        buttons.addWidget(self.monitor)
+        buttons.addWidget(self.mute)
+        controls.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        layout.addWidget(AdaptiveRow(self.select, controls))  # the buttons drop under the name when narrow
         layout.addWidget(self.meter)
         layout.addWidget(self.slider)
 
