@@ -144,7 +144,7 @@ class FakeAvContainer:
     rate = 30
 
     def __init__(self):
-        cc = types.SimpleNamespace(width=64, height=36, name="mjpeg", thread_count=0)
+        cc = types.SimpleNamespace(width=64, height=36, name="mjpeg", thread_count=0, pix_fmt="yuvj422p")
         self.streams = types.SimpleNamespace(video=[types.SimpleNamespace(codec_context=cc, average_rate=self.rate,
                                                                           base_rate=self.rate)])
         self.closed = False
@@ -171,6 +171,8 @@ def fake_av(monkeypatch, fake_cv2):
 
     def fake_open(name, format, options):
         assert format == "dshow"
+        if options.get("list_options"):
+            raise OSError("listed")  # what real dshow does after printing the modes
         opened.append((name, dict(options)))
         if fake_av_fail:
             raise OSError("no such device")
@@ -266,3 +268,36 @@ def test_lazy_cv2_loads_opencv_only_when_used(monkeypatch):
     assert lazy_cv2.loaded_by.startswith("cv2.imwrite from ")
     lazy_cv2.install()  # already loaded: leaves it alone
     assert sys.modules["cv2"] is real
+
+
+FACECAM_LINES = [
+    "DirectShow video device options (from video devices)",
+    " Pin \"Capture\" (alternative pin name \"0\")",
+    "  pixel_format=nv12  min s=1920x1080 fps=120 max s=1920x1080 fps=120 (tv, bt709/unknown/unknown, topleft)",
+    "  pixel_format=nv12  min s=1920x1080 fps=60 max s=1920x1080 fps=60",
+    "  pixel_format=yuyv422  min s=1920x1080 fps=30 max s=1920x1080 fps=30",
+    "  vcodec=mjpeg  min s=1280x720 fps=30 max s=1280x720 fps=60",
+    "  vcodec=h264  min s=1920x1080 fps=30 max s=1920x1080 fps=30",
+]
+
+
+def test_reads_the_cameras_mode_list():
+    from sprigcast.sources.camera import parse_dshow_modes
+
+    modes = parse_dshow_modes(FACECAM_LINES)
+    assert modes[0] == ("pixel_format", "nv12", 1920, 1080, 120.0, 120.0)
+    assert ("vcodec", "mjpeg", 1280, 720, 30.0, 60.0) in modes and len(modes) == 5
+
+
+def test_picks_the_lightest_mode_that_gives_what_was_asked():
+    from sprigcast.sources.camera import choose_modes, parse_dshow_modes
+
+    modes = parse_dshow_modes(FACECAM_LINES)
+    # 1080p30: the raw 30 fps mode, not the 120 fps one the camera falls back to
+    assert choose_modes(modes, 1920, 1080, 30)[0] == {"video_size": "1920x1080", "framerate": "30",
+                                                       "pixel_format": "yuyv422"}
+    # 1080p50 isn't offered: the slowest faster mode (60) before 120
+    assert [m["framerate"] for m in choose_modes(modes, 1920, 1080, 50)] == ["60", "120"]
+    # MJPEG wins when it has the size and rate
+    assert choose_modes(modes, 1280, 720, 60) == [{"video_size": "1280x720", "framerate": "60", "vcodec": "mjpeg"}]
+    assert choose_modes([], 1920, 1080, 30) == []

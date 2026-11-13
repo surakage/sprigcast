@@ -11,6 +11,7 @@ if the camera is unplugged it keeps the last picture and tries to reopen it ever
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import threading
 import time
@@ -119,6 +120,60 @@ def find_camera(name: str, path: str) -> CameraDevice | None:
     return None
 
 
+_MODE_LINE = re.compile(r"(vcodec|pixel_format)=(\S+)\s+min s=(\d+)x(\d+) fps=([\d.]+)\s+max s=(\d+)x(\d+) fps=([\d.]+)")
+
+
+def parse_dshow_modes(lines) -> list[tuple[str, str, int, int, float, float]]:
+    """(kind, name, width, height, min fps, max fps) from FFmpeg's `list_options` output."""
+    modes = []
+    for line in lines:
+        m = _MODE_LINE.search(line)
+        if m and m.group(3, 4) == m.group(6, 7):
+            modes.append((m.group(1), m.group(2), int(m.group(3)), int(m.group(4)), float(m.group(5)),
+                          float(m.group(8))))
+    return modes
+
+
+def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
+    """Ask DirectShow which formats, sizes and frame rates a camera offers (empty if it can't say)."""
+    try:
+        import av
+        import av.logging as avlog
+    except ImportError:
+        return []
+    old = avlog.get_level()
+    avlog.set_level(avlog.INFO)  # the list comes as log lines, which PyAV drops by default
+    try:
+        with avlog.Capture() as logs:
+            try:
+                av.open(name, format="dshow", options={"list_options": "true"}).close()
+            except Exception:
+                pass  # listing always "fails": there is nothing to open
+    finally:
+        avlog.set_level(old)
+    return parse_dshow_modes(str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs)
+
+
+def _rate(value: float) -> str:
+    return f"{value:g}"
+
+
+def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
+    """dshow options to try, best first: MJPEG at the size and rate asked, then raw frames at it, then
+    the slowest mode of that size at or above the rate (frames beyond it are skipped later)."""
+    size = [m for m in modes if (m[2], m[3]) == (w, h) and (m[0] == "pixel_format" or m[1] == "mjpeg")]
+    exact = [m for m in size if m[4] - 0.01 <= fps <= m[5] + 0.01]
+    above = sorted((m for m in size if m[5] > fps and m not in exact), key=lambda m: m[5])
+    out: list[dict[str, str]] = []
+    for group, rate in ((exact, lambda m: str(fps)), (above, lambda m: _rate(m[5]))):
+        for m in sorted(group, key=lambda m: m[1] != "mjpeg"):  # MJPEG before raw
+            option = {"video_size": f"{w}x{h}", "framerate": rate(m)}
+            option["vcodec" if m[0] == "vcodec" else "pixel_format"] = m[1]
+            if option not in out:
+                out.append(option)
+    return out
+
+
 @register("camera")
 class CameraSource(Source):
     """Settings: name, path, width, height, fps, mirror (bool)."""
@@ -196,18 +251,27 @@ class CameraSource(Source):
         w, h, fps = self._mode()
         names = [f"video=@device_pnp_{device.path}"] if device.path.startswith("\\\\?\\") else []
         names.append(f"video={device.name}")
-        modes = [  # MJPG at the size asked first (what most webcams need for 1080p30 / 720p60), then looser
-            {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
-            {"video_size": f"{w}x{h}", "framerate": str(fps)},
-            {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
-            {},
-        ]
+        # The camera's own list of modes first: it says exactly which format gives the size and rate
+        # asked for (MJPEG is ~10x less data than raw frames; a raw mode at 30 fps beats one at 120).
+        listed = []
+        for name in names:
+            listed = choose_modes(dshow_modes(name), w, h, fps)
+            if listed:
+                break
+        modes = [*listed,  # then guesses, from strict to loose
+                 {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
+                 {"video_size": f"{w}x{h}", "framerate": str(fps)},
+                 {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
+                 {}]
         for name in names:
             for mode in modes:
                 try:
-                    return av.open(name, format="dshow", options={**mode, "rtbufsize": "16M"})
+                    container = av.open(name, format="dshow", options={**mode, "rtbufsize": "16M"})
                 except Exception as exc:  # busy, mode not supported, name not found, ...
                     log.debug("%s: dshow %s %s failed: %s", self.id, name, mode, exc)
+                    continue
+                log.info("%s: opened %s with %s", self.id, name, mode or "the camera's default mode")
+                return container
         log.info("%s: FFmpeg couldn't open %r, trying OpenCV", self.id, device.name)
         return None
 
@@ -220,7 +284,7 @@ class CameraSource(Source):
             # FFmpeg's default is a decoder thread per CPU core, each holding its own full-size frames
             # (tens of MB on a 16-core PC). One thread decodes 1080p60 MJPEG in a few ms per frame.
             stream.codec_context.thread_count = 1
-            self.backend = f"FFmpeg, {stream.codec_context.name}"
+            self.backend = f"FFmpeg, {stream.codec_context.name} {stream.codec_context.pix_fmt or ''}".strip()
             rate = stream.average_rate or stream.base_rate
             fps = f" @ {float(rate):.0f}" if rate else ""
             self.status = f"capturing {stream.codec_context.width}x{stream.codec_context.height}{fps}"
