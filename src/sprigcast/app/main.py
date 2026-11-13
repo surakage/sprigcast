@@ -72,6 +72,28 @@ def lean_recording(collection: SceneCollection, remember: bool = True) -> bool:
     return changed
 
 
+LEAN_STREAM = "migrations/stream_no_b_frames"
+
+
+def lean_stream(collection: SceneCollection, remember: bool = True) -> bool:
+    """Once: switch streams from the old default of 2 B-frames to none.
+
+    Without B-frames a stream runs on SprigCast's own NVENC encoder instead of FFmpeg's, about 150 MB
+    less while live (soak test, 2026-11-13). A value picked by hand in Settings → Output is kept.
+    """
+    from PySide6.QtCore import QSettings
+
+    settings = QSettings()
+    if remember and settings.value(LEAN_STREAM, False, type=bool):
+        return False
+    changed = collection.stream_encoder.b_frames == 2
+    if changed:
+        collection.stream_encoder.b_frames = 0
+    if remember:
+        settings.setValue(LEAN_STREAM, True)
+    return changed
+
+
 def _quiet_start_log() -> None:
     """Started without a console (pythonw, e.g. from "Start with Windows"): keep messages in a file."""
     if sys.stderr is not None:
@@ -152,6 +174,7 @@ def run() -> None:
 
     changed = apply_pending_video(collection)  # canvas size / fps changed in Settings → Video last time
     changed = lean_recording(collection) or changed
+    changed = lean_stream(collection) or changed
     if changed:
         collection.save(scenes_path)
     window = MainWindow(collection, scenes_path, plugins_dir)

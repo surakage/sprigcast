@@ -97,7 +97,6 @@ class StreamTarget:
 
 
 class Streamer(Recorder):
-    allow_direct = False  # bitrate changes mid-stream (auto-pilot) go through FFmpeg's encoder
 
     def __init__(
         self,
@@ -255,11 +254,18 @@ class Streamer(Recorder):
 
     def _write_video(self, container, stream, frame, pts: int | None = None) -> None:
         if self._want_kbps != self._applied_kbps:
-            ctx, k = stream.codec_context, self._want_kbps
-            ctx.bit_rate = k * 1000
-            peak, buffer = rate_limits(self.codec, self.encoder, k)
-            if peak:
-                ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
+            k = self._want_kbps
+            if self._direct is not None:  # SprigCast's own NVENC: reconfigured in place
+                try:
+                    self._direct.set_bitrate(k)
+                except Exception as exc:  # keep streaming at the old bitrate rather than stop
+                    log.warning("stream %s: couldn't change the bitrate to %d kbps: %s", self.name, k, exc)
+            else:
+                ctx = stream.codec_context
+                ctx.bit_rate = k * 1000
+                peak, buffer = rate_limits(self.codec, self.encoder, k)
+                if peak:
+                    ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
             self._applied_kbps = k
         super()._write_video(container, stream, frame, pts)
 

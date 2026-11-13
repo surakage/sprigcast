@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QSettings  # noqa: E402
 
-from sprigcast.app.main import lean_recording  # noqa: E402
+from sprigcast.app.main import lean_recording, lean_stream  # noqa: E402
 from sprigcast.core.scene import RecordingSettings, SceneCollection  # noqa: E402
 
 
@@ -33,4 +33,17 @@ def test_own_choice_kept(tmp_path):
     c = SceneCollection(canvases=[])
     c.recording.encoder.b_frames = 3
     assert not lean_recording(c) and c.recording.encoder.b_frames == 3
-    assert c.stream_encoder.b_frames == 2
+
+
+def test_streams_switched_once_and_own_choice_kept(tmp_path):
+    _settings(tmp_path)
+    assert SceneCollection(canvases=[]).stream_encoder.b_frames == 0  # new setups: the light encoder
+    c = SceneCollection(canvases=[])
+    c.stream_encoder.b_frames = 2  # the old default
+    assert lean_stream(c) and c.stream_encoder.b_frames == 0
+    c.stream_encoder.b_frames = 2  # turned back on afterwards
+    assert not lean_stream(c) and c.stream_encoder.b_frames == 2
+    _settings(tmp_path / "other")
+    own = SceneCollection(canvases=[])
+    own.stream_encoder.b_frames = 4
+    assert not lean_stream(own) and own.stream_encoder.b_frames == 4

@@ -126,8 +126,10 @@ class DirectVideo:
         self.encoder = D3D11Encoder(
             width, height, fps, enc.preset, bitrate_kbps=bitrate_kbps, rate_control=enc.rate_control,
             max_kbps=max_kbps, buffer_kbits=buffer_kbits, cq_level=enc.cq_level,
-            gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning,
+            gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning, adaptive_quant=enc.adaptive_quant,
+            multipass=enc.multipass,
         )
+        self._enc = enc
         try:
             black = bytes(width * height) + bytes([128]) * (width * height // 2)
             first = self.encoder.encode(black, keyframe=True)  # only read for its headers, never written
@@ -138,6 +140,10 @@ class DirectVideo:
         except Exception:
             self.encoder.close()
             raise
+
+    def set_bitrate(self, kbps: int) -> None:
+        max_kbps, buffer_kbits = rate_limits("h264_nvenc", self._enc, kbps)
+        self.encoder.set_bitrate(kbps, max_kbps, buffer_kbits)
 
     def encode(self, nv12, pts: int, keyframe: bool) -> list:
         import av
@@ -573,7 +579,7 @@ class Recorder:
     def _video_options(self) -> dict[str, str]:
         return video_options(self.codec, self.encoder, self.bitrate_kbps)
 
-    allow_direct = True  # Streamer turns this off: it changes the bitrate mid-stream through FFmpeg
+    allow_direct = True  # SprigCast's own NVENC where the settings allow it (see uses_direct)
 
     def uses_direct(self) -> bool:
         """Whether this recorder's video goes through SprigCast's own NVENC encoder (see DirectVideo)."""

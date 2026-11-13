@@ -28,9 +28,11 @@ def test_versions():
     assert n._struct_version(7, True, (13, 0)) == (13 | 0 << 24 | 7 << 16 | 7 << 28 | 1 << 31)
     # NV_ENC_*_VER from nvEncodeAPI.h 12.1 / 12.2 / 13.0
     assert n.API_LAYOUTS[(12, 1)] == {"init": 6, "config": 8, "preset": 4, "pic": 6, "lock_bitstream": 1,
-                                      "create_input": 1}
+                                      "create_input": 1, "reconfigure": 1, "init_size": 1808}
     assert n.API_LAYOUTS[(13, 0)] == n.API_LAYOUTS[(12, 2)] == {
-        "init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2}
+        "init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2,
+        "reconfigure": 2, "init_size": 1800}
+    assert 8 + 8 * n.F_RECONFIGURE == 264  # nvEncReconfigureEncoder in NV_ENCODE_API_FUNCTION_LIST
     assert list(n.API_LAYOUTS) == sorted(n.API_LAYOUTS, reverse=True)  # newest first
 
 

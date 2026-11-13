@@ -856,7 +856,7 @@ def main() -> None:
     import moderngl  # noqa: F401
     import numpy  # noqa: F401
 
-    from sprigcast.app.main import config_dir, lean_recording, load_collection
+    from sprigcast.app.main import config_dir, lean_recording, lean_stream, load_collection
     from sprigcast.app.main_window import MainWindow
     from sprigcast.app.theme import apply_theme
 
@@ -870,6 +870,7 @@ def main() -> None:
             shutil.copy(real, scenes)  # the window may save its copy; your real file is never touched
         collection = load_collection(scenes)
         lean_recording(collection, remember=False)  # what the app will do on its next start
+        lean_stream(collection, remember=False)
         if "--one-canvas" in sys.argv:  # like OBS: only the first canvas exists, rendered and recorded
             first = next(c for c in collection.canvases if c.enabled)
             for canvas in collection.canvases:
