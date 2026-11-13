@@ -85,9 +85,26 @@ def _quiet_start_log() -> None:
         pass
 
 
+APP_MUTEX = "SprigCastAppMutex"  # the installer's AppMutex: Setup and Uninstall wait while this exists
+_mutex = None
+
+
+def _announce_running() -> None:
+    """Windows: hold a named mutex while SprigCast runs, so Setup and Uninstall can ask you to close it."""
+    global _mutex
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    _mutex = kernel32.CreateMutexW(None, False, APP_MUTEX)  # released by Windows when the process ends
+
+
 def run() -> None:
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
+    _announce_running()
     _quiet_start_log()
     if sys.stderr is not None:
         faulthandler.enable()  # if a native library crashes, print where instead of closing silently
