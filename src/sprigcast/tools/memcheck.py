@@ -244,6 +244,15 @@ def main() -> None:
         lean_recording(collection, remember=False)  # what the app will do on its next start
         print(f"  ({len(collection.scenes)} scenes, {len(collection.sources)} sources: "
               f"{', '.join(sorted({s.kind for s in collection.sources}))})", flush=True)
+        from sprigcast.render.engine import Engine
+
+        renderer = Engine(collection.model_copy(update={"sources": []}, deep=True))
+        renderer.start()  # renderer on its own: GL context, canvases, previews at full size, no sources or UI
+        time.sleep(4)
+        meter.take("Renderer alone (no sources/UI)")
+        renderer.stop()
+        time.sleep(1)
+        meter.take("Renderer stopped")
         window = MainWindow(collection, scenes, None)
         window._save_layout = lambda: None  # keep your saved dock layout as it is
         window._recordings_folder = lambda: work

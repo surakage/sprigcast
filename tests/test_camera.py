@@ -141,15 +141,23 @@ class FakeAvFrame:
 
 
 class FakeAvContainer:
+    rate = 30
+
     def __init__(self):
-        cc = types.SimpleNamespace(width=64, height=36)
-        self.streams = types.SimpleNamespace(video=[types.SimpleNamespace(codec_context=cc, average_rate=30, base_rate=30)])
+        cc = types.SimpleNamespace(width=64, height=36, name="mjpeg", thread_count=0)
+        self.streams = types.SimpleNamespace(video=[types.SimpleNamespace(codec_context=cc, average_rate=self.rate,
+                                                                          base_rate=self.rate)])
         self.closed = False
+        self.decoded = 0
+
+    def _decode(self):
+        self.decoded += 1
+        return [FakeAvFrame()]
 
     def demux(self, stream):
         while not self.closed:
             time.sleep(0.005)
-            yield types.SimpleNamespace(decode=lambda: [FakeAvFrame()])
+            yield types.SimpleNamespace(size=1000, decode=self._decode)
 
     def close(self):
         self.closed = True
@@ -166,12 +174,15 @@ def fake_av(monkeypatch, fake_cv2):
         opened.append((name, dict(options)))
         if fake_av_fail:
             raise OSError("no such device")
-        return FakeAvContainer()
+        container = FakeAvContainer()
+        containers.append(container)
+        return container
 
     fake_av_fail = []
+    containers = []
     monkeypatch.setattr(av, "formats_available", set(av.formats_available) | {"dshow"})
     monkeypatch.setattr(av, "open", fake_open)
-    return types.SimpleNamespace(opened=opened, fail=fake_av_fail)
+    return types.SimpleNamespace(opened=opened, fail=fake_av_fail, containers=containers)
 
 
 def test_ffmpeg_is_used_first_and_opencv_is_not_touched(fake_av):
@@ -192,13 +203,28 @@ def test_ffmpeg_is_used_first_and_opencv_is_not_touched(fake_av):
         src.stop()
 
 
+def test_faster_camera_is_paced_to_the_chosen_fps(fake_av, monkeypatch):
+    monkeypatch.setattr(FakeAvContainer, "rate", 120)  # a camera that only gives its fast mode
+    src = create_source("camera", "c", {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 20})
+    src.start()
+    try:
+        assert wait_for(lambda: src._frames.peek() is not None)
+        time.sleep(0.5)
+        decoded = fake_av.containers[0].decoded
+        assert 5 <= decoded <= 16  # ~20 per second, not one per packet (~100 in that time)
+        assert src.status == "capturing 64x36 @ 120, using 20"
+        assert fake_av.containers[0].streams.video[0].codec_context.thread_count == 2
+    finally:
+        src.stop()
+
+
 def test_falls_back_to_opencv_when_ffmpeg_cannot_open(fake_av):
     fake_av.fail.append(True)
     src = create_source("camera", "c", {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 30})
     src.start()
     try:
         assert wait_for(lambda: src._frames.peek() is not None)
-        assert len(FakeCapture.opened) == 1 and len(fake_av.opened) == 3  # each mode tried by name first
+        assert len(FakeCapture.opened) == 1 and len(fake_av.opened) == 4  # each mode tried by name first
     finally:
         src.stop()
 
