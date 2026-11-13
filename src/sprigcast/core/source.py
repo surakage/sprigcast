@@ -16,6 +16,7 @@ class Source(ABC):
         self.id = source_id
         self.settings = dict(settings)
         self.status = "ok"  # short human-readable state shown in the UI
+        self.asleep = False  # set by the renderer while nothing on screen shows this source
 
     def start(self) -> None:
         """Open devices or spawn capture threads. Called on the render thread."""
@@ -25,6 +26,17 @@ class Source(ABC):
 
     def update(self, settings: dict[str, Any]) -> None:
         self.settings = dict(settings)
+
+    # Sources nothing on screen shows are put to sleep by the renderer (see Engine._rest_sources): a
+    # sleeping source does no work and holds no frames, and its texture is dropped. Kinds that can
+    # come back quickly set `sleeps = True`. A sleeping source may never have been started.
+    sleeps = False
+
+    def sleep(self) -> None:
+        """Stop working and let go of frames. Must not block: called on the render thread."""
+
+    def wake(self) -> None:
+        """Start again and send a fresh frame. Called on the render thread."""
 
     @property
     @abstractmethod

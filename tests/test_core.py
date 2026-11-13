@@ -1,5 +1,6 @@
 import threading
 
+import numpy as np
 import pytest
 
 from sprigcast.core.mailbox import Mailbox
@@ -82,7 +83,7 @@ def test_image_source_lets_go_of_pixels_after_upload(tmp_path):
     Image.new("RGBA", (40, 20), (0, 0, 255, 255)).save(path)
     src = create_source("image", "i", {"path": str(path)})
     assert src.video_frame().shape == (20, 40, 4)
-    assert src._frame is None and src.size == (40, 20)  # the GPU texture holds it now
+    assert src.size == (40, 20) and not any(isinstance(v, np.ndarray) for v in vars(src).values())  # only the GPU holds it
     assert src.video_frame() is None
     src.update({"path": str(tmp_path / "gone.png")})
     assert src.video_frame().shape == (64, 64, 4) and src.size == (64, 64)

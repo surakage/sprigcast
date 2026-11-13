@@ -65,6 +65,20 @@ def pending_video() -> dict[str, dict[str, Any]]:
         return {}
 
 
+SLEEP_SETTING = "general/sleep_sources"
+SLEEP_CHOICES = {
+    "not_cameras": "Pause, but keep cameras ready",
+    "all": "Pause everything (lowest memory)",
+    "off": "Keep running",
+}
+
+
+def sleep_policy() -> str:
+    """What to do with sources no scene on screen shows (Engine.sleep_policy)."""
+    value = QSettings().value(SLEEP_SETTING, "not_cameras")
+    return value if value in SLEEP_CHOICES else "not_cameras"
+
+
 def apply_pending_video(collection: SceneCollection) -> bool:
     """At startup, move canvas changes from Settings → Video into the collection. True if any applied."""
     pending = pending_video()
@@ -232,6 +246,14 @@ class SettingsWindow(QDialog):
             self.priority.addItem(label, key)
         self.priority.setCurrentIndex(max(0, self.priority.findData(priority.chosen())))
         perf_form.addRow("Process priority", self.priority)
+        self.sleep_sources = QComboBox()
+        for key, label in SLEEP_CHOICES.items():
+            self.sleep_sources.addItem(label, key)
+        self.sleep_sources.setCurrentIndex(max(0, self.sleep_sources.findData(sleep_policy())))
+        perf_form.addRow("Sources not on screen", self.sleep_sources)
+        perf_form.addRow("", _hint(
+            "Paused sources use no memory or CPU and start again when their scene is shown. "
+            "A paused camera takes about a second to come back."))
         perf_form.addRow("", _hint(
             "Above normal keeps the stream smooth while a game uses the CPU. SprigCast also asks Windows to put "
             "its GPU work first; that works best when SprigCast runs as administrator."))
@@ -422,6 +444,7 @@ class SettingsWindow(QDialog):
                 autostart.set_enabled(self.start_with_windows.isChecked())
             except OSError as exc:
                 QMessageBox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
+        settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
         level = self.priority.currentData()
         if level != priority.chosen():
             settings.setValue(priority.SETTING, level)

@@ -36,6 +36,7 @@ def _load_backend():
 
 class _CaptureSource(Source):
     channel_order = "BGRA"  # Windows Graphics Capture delivers BGRA; the compositor swizzles on the GPU
+    sleeps = True  # a capture session restarts in a moment, and a hidden one costs a copy per frame
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
@@ -51,6 +52,8 @@ class _CaptureSource(Source):
         raise NotImplementedError
 
     def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():  # still winding down after sleep()
+            self._thread.join(timeout=3)
         self._stop.clear()
         self._thread = threading.Thread(target=self._supervise, name=f"capture-{self.id}", daemon=True)
         self._thread.start()
@@ -60,6 +63,16 @@ class _CaptureSource(Source):
         self._restart.set()
         if self._thread is not None:
             self._thread.join(timeout=3)
+
+    def sleep(self) -> None:
+        self._stop.set()  # the supervisor ends the session on its own; don't wait for it here
+        self._restart.set()
+        self._frames = FrameRing()  # let the frame buffers go
+        self.status = "paused (not on screen)"
+
+    def wake(self) -> None:
+        self.status = "starting"
+        self.start()
 
     def update(self, settings: dict[str, Any]) -> None:
         changed = settings != self.settings
