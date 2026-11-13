@@ -104,3 +104,18 @@ def test_the_suggestion_shows_once_and_only_on_a_slower_pc(tmp_path, monkeypatch
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_recordings_shrink_and_cpu_encoding_gets_superfast():
+    from sprigcast.output.recorder import shrink_to
+
+    assert shrink_to(1920, 1080, 720) == (1280, 720) and shrink_to(1080, 1920, None) is None
+    assert shrink_to(1280, 720, 1080) is None
+    col = _collection()
+    col.recording.canvases = ["horizontal"]
+    lines, _ = lowend.light_changes(col, apply=True, cpu_encoding=True)
+    assert "Recordings and replays saved at 720p" in lines and col.recording.short_side == 720
+    assert col.stream_encoder.preset == "p2" and col.recording.encoder.preset == "p2"
+    assert "superfast" in " ".join(lines)
+    again, _ = lowend.light_changes(col, pending_fps={"horizontal": 30, "vertical": 30}, cpu_encoding=True)
+    assert again == []

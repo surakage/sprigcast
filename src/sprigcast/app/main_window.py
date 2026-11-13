@@ -2566,7 +2566,7 @@ class MainWindow(QMainWindow):
         try:
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
-                encoder=settings.encoder,
+                encoder=settings.encoder, short_side=settings.short_side,
             )
         except Exception as exc:
             self.recording = None
@@ -2595,6 +2595,7 @@ class MainWindow(QMainWindow):
                 self.replay = SharedReplay.start(
                     self.encoders, canvases, self._recordings_folder(), settings.replay_seconds,
                     settings.bitrate_kbps, settings.container, encoder=settings.encoder,
+                    short_side=settings.short_side,
                 )
             except Exception as exc:
                 QMessageBox.critical(self, "SprigCast", f"Could not start the replay buffer:\n{exc}")
@@ -2956,7 +2957,8 @@ class MainWindow(QMainWindow):
         if self.streaming is not None or self.recording is not None or self.replay_button.isChecked():
             QMessageBox.information(self, "Light settings", "Stop streaming, recording and the replay buffer first.")
             return False
-        lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps())
+        cpu = pick_codec() == "libx264"
+        lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu)
         if not lines:
             QMessageBox.information(self, "Light settings", "You're already on light settings.")
             return False
@@ -2969,7 +2971,7 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not use:
             return False
-        _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps())
+        _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu)
         lowend.store_fps(fps)
         self.collection.save(self.scenes_path)
         self.statusBar().showMessage(
@@ -2985,7 +2987,8 @@ class MainWindow(QMainWindow):
             return
         settings.setValue(lowend.SUGGESTED, True)
         reasons = lowend.weak_reasons(lowend.pc_facts())
-        if reasons and lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps())[0]:
+        cpu = pick_codec() == "libx264"
+        if reasons and lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu)[0]:
             self.use_light_settings(f"This PC is on the light side ({', '.join(reasons)}).")
 
     def _open_palette(self) -> CommandPalette:

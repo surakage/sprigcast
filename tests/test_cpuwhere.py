@@ -77,3 +77,22 @@ def test_light_font_engine_only_on_windows_and_never_over_a_hand_set_platform(mo
     monkeypatch.delenv(theme.FONT_ENGINE)
     theme.use_light_font_engine()
     assert "QT_QPA_PLATFORM" not in os.environ
+
+
+def test_weak_pc_flag_and_light_copy(monkeypatch, capsys):
+    import sys
+
+    from sprigcast.core.scene import Canvas, Output, SceneCollection
+    from sprigcast.tools import memcheck
+
+    monkeypatch.setattr(sys, "argv", ["memcheck"])
+    assert memcheck.weak_pc() is None
+    monkeypatch.setattr(sys, "argv", ["memcheck", "--weak"])
+    assert memcheck.weak_pc() == "libx264"
+    monkeypatch.setattr(sys, "argv", ["memcheck", "--weak=h264_mf"])
+    assert memcheck.weak_pc() == "h264_mf"
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080, fps=60)],
+                          outputs=[Output(id="tw", type="stream", service="twitch", canvas="horizontal")])
+    memcheck._make_light(col)
+    assert col.canvases[0].fps == 30 and col.outputs[0].size == (1280, 720)
+    assert "light settings" in capsys.readouterr().out

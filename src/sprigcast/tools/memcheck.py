@@ -459,7 +459,9 @@ def _encoder_queues(window) -> None:
         parts.append(f"{enc.canvas_id}: {enc._video.qsize()} waiting (peak {enc.peak_queue}, "
                      f"~{enc.peak_queue * size / 1e6:.0f} MB), {enc.dropped} dropped, "
                      f"{enc.skipped_opening} skipped while the encoder opened, "
-                     f"longest write stall {enc.longest_stall * 1000:.0f} ms")
+                     f"longest write stall {enc.longest_stall * 1000:.0f} ms, "
+                     f"{1000 * enc.encode_seconds / max(1, enc.frames):.1f} ms per frame "
+                     f"of {1000 / max(1, enc.fps):.0f} available")
     if parts:
         print(f"  (encoder queues: {'; '.join(parts)})", flush=True)
 
@@ -683,7 +685,51 @@ def compare_text() -> None:
         print(f"  {name:<9} {label:<32} total {result['total']:4.0f} MB ({result['font']}): {parts}", flush=True)
 
 
+WEAK_THREADS = 4  # a bare-minimum PC: four CPU threads
+
+
+def weak_pc() -> str | None:
+    """memcheck --weak[=encoder]: the encoder to pretend with (x264 by default), or None."""
+    for arg in sys.argv:
+        if arg == "--weak":
+            return "libx264"
+        if arg.startswith("--weak="):
+            return arg.split("=", 1)[1] or "libx264"
+    return None
+
+
+def _pretend_weak(codec: str) -> None:
+    """Before anything picks an encoder: use `codec` and only the first four CPU threads."""
+    os.environ["SPRIGCAST_ENCODER"] = codec
+    try:
+        import psutil
+
+        process = psutil.Process()
+        process.cpu_affinity(process.cpu_affinity()[:WEAK_THREADS])
+    except Exception as exc:  # not every system lets a process limit itself
+        print(f"  (couldn't limit the CPU threads: {exc})", flush=True)
+
+
+def _make_light(collection) -> None:
+    """The settings SprigCast offers a weak PC, applied to memcheck's own copy (canvases at 30 fps now)."""
+    from sprigcast.app import lowend
+
+    lines, fps = lowend.light_changes(collection, apply=True, cpu_encoding=os.environ.get("SPRIGCAST_ENCODER") == "libx264")
+    for canvas in collection.canvases:
+        if canvas.id in fps:
+            canvas.fps = fps[canvas.id]
+    for line in lines:
+        print(f"  (light settings: {line})", flush=True)
+
+
 def main() -> None:
+    weak = weak_pc()
+    if weak:
+        _pretend_weak(weak)
+        from sprigcast.tools.cpuwhere import usable_cpus
+
+        print(f"Pretending to be a bare-minimum PC: {usable_cpus()} CPU threads, encoder {weak}, light settings",
+              flush=True)
     if "--text" in sys.argv:
         compare_text()
         return
@@ -730,6 +776,8 @@ def main() -> None:
                 canvas.enabled = canvas is first
             collection.recording.canvases = [first.id]
             print(f"  (one canvas only: {first.id}; the others are switched off in this copy)", flush=True)
+        if weak:
+            _make_light(collection)
         print(f"  ({len(collection.scenes)} scenes, {len(collection.sources)} sources: "
               f"{', '.join(sorted({s.kind for s in collection.sources}))})", flush=True)
         steps, mark = _window_steps(meter)

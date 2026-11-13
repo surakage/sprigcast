@@ -194,6 +194,7 @@ class RecordingSettings(BaseModel):
     bitrate_kbps: int = 12000
     container: Literal["mkv", "mp4"] = "mkv"
     replay_seconds: int = 30  # replay buffer length; saved clips land in the recordings folder
+    short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,
     # and at recording bitrates the quality difference is invisible. Streams keep 2.
