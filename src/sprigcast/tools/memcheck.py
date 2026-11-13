@@ -287,12 +287,21 @@ def _window_steps(meter):
     from sprigcast.app import main_window as mw
     from sprigcast.render.engine import Engine
 
-    steps: list[tuple[str, float]] = []
+    from sprigcast.tools import memwhere
+
+    steps: list[tuple[str, float, list[str]]] = []
     last = [meter.private()]
+    seen = [memwhere.snapshot()]
 
     def mark(label: str) -> None:
         now = meter.private()
-        steps.append((label, now - last[0]))
+        added = now - last[0]
+        what: list[str] = []
+        if abs(added) >= 8e6:  # a big step: say which blocks and libraries grew
+            snap = memwhere.snapshot()
+            what, seen[0] = memwhere.grown(seen[0], snap), snap
+            now = meter.private()
+        steps.append((label, added, what))
         last[0] = now
 
     def wrap(owner, name: str, label: str) -> None:
@@ -320,7 +329,7 @@ def _window_steps(meter):
     Engine.start = start_and_settle
     wrap(mw.Hotkeys, "__init__", "global hotkeys")
     wrap(mw.ResourceMeter, "__init__", "resource meter")
-    steps.append(("start", 0.0))
+    steps.append(("start", 0.0, []))
     return steps, mark
 
 
@@ -543,9 +552,11 @@ def main() -> None:
         mark("first seconds running")
         meter.take("Window open, sources running")
         print("  where it went (Task Manager):", flush=True)
-        for label, added in steps[1:]:
+        for label, added, what in steps[1:]:
             if abs(added) >= 2e6:
                 print(f"    {label:<30} {'+' if added >= 0 else '-'}{abs(added) / 1e6:.0f} MB", flush=True)
+                for line in what:
+                    print(f"        {line}", flush=True)
         _report_sources(window, collection)
         from sprigcast.tools import memwhere
 
