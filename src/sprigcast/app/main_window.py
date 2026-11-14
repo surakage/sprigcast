@@ -395,6 +395,7 @@ class MainWindow(QMainWindow):
         self._build_controls_dock()
         self._build_live_stage()
         self.live_side.panel_slot.addWidget(self.panels.cards["live"])
+        self.panels.cards["live"].setMinimumHeight(240)  # a long Sound list scrolls before Chat gets squeezed
         self._build_properties_dock()
         self._build_item_actions()
         self._fill_bloom_tools()

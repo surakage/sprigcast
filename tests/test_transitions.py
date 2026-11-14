@@ -342,3 +342,25 @@ def test_rules_table_adds_edits_and_removes():
     assert rule.from_scene == "b" and row.from_pick.text().startswith("B")
     table.remove(rule)
     assert col.transition_rules == [] and table.rows.count() == 0
+
+
+def test_a_long_sound_list_scrolls_instead_of_pushing_panels_away():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.live_stage import FitScroll
+
+    body = QWidget()
+    rows = QVBoxLayout(body)
+    rows.addWidget(QLabel("one"))
+    scroll = FitScroll(body)
+    short = scroll.maximumHeight()
+    for i in range(30):
+        rows.addWidget(QLabel(f"sound {i}"))
+    app.processEvents()
+    assert scroll.maximumHeight() > short  # grows with the list...
+    assert scroll.minimumSizeHint().height() <= FitScroll.SHORTEST  # ...but can shrink and scroll
