@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -110,7 +111,29 @@ def root_processes(processes: list[tuple[int, int, str]], names: set[str]) -> di
     return roots
 
 
+SHARE_SECONDS = 1.0  # every App sound row scans every 2 s; within this they share one list
+_shared: tuple[float, list[tuple[int, int, str]]] | None = None
+_shared_lock = threading.Lock()
+
+
 def running_processes() -> list[tuple[int, int, str]]:
+    """(pid, parent pid, exe name) of everything running, shared by every App sound row for a second."""
+    global _shared
+    with _shared_lock:
+        now = time.monotonic()
+        if _shared is None or now - _shared[0] > SHARE_SECONDS:
+            _shared = (now, _list_processes())
+        return _shared[1]
+
+
+def _list_processes() -> list[tuple[int, int, str]]:
+    if sys.platform == "win32":
+        try:
+            return _toolhelp_processes()
+        except OSError as exc:
+            log.info("process snapshot failed, asking psutil: %s", exc)
+    # psutil finds each parent with its own walk over every process on Windows (17 ms with the GIL
+    # held, times ~450 processes: 8 s per scan), so it's only the fallback there.
     import psutil
 
     out = []
@@ -118,6 +141,41 @@ def running_processes() -> list[tuple[int, int, str]]:
         info = proc.info
         if info.get("name"):
             out.append((int(info["pid"]), int(info.get("ppid") or 0), str(info["name"])))
+    return out
+
+
+def _toolhelp_processes() -> list[tuple[int, int, str]]:
+    """Every process with its parent and exe name from one Windows snapshot (about a millisecond)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", wintypes.WCHAR * 260)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Process32FirstW.argtypes = kernel32.Process32NextW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot in (None, wintypes.HANDLE(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    out = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.szExeFile:
+                out.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID), entry.szExeFile))
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
     return out
 
 
