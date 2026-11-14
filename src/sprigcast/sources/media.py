@@ -37,6 +37,44 @@ MAX_SIZE = (1920, 1920)  # bigger videos are shrunk while decoding: no canvas ne
 STATES = ("playing", "paused", "stopped", "ended")
 
 
+COLOR_MATRICES = {1: "709", 5: "601", 6: "601", 9: "2020", 10: "2020"}  # FFmpeg AVColorSpace -> ours
+
+
+def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
+    """A decoded 4:2:0 picture as one 1-channel array for the GPU to convert (render/compositor.py src()):
+    Y rows, then rows of U | V side by side, then the alpha rows. ("I420A/709/tv", ...) says how to read it.
+
+    About 40% of the RGBA picture it replaces (1080p: 5 MB with alpha instead of 8), and the CPU skips
+    the colour conversion. None when it doesn't fit (another pixel format, an odd size, a shrink needed).
+    """
+    kind = {"yuv420p": "I420", "yuva420p": "I420A"}.get(frame.format.name)
+    w, h = frame.width, frame.height
+    if kind is None or (w, h) != tuple(size) or w % 2 or h % 2:
+        return None
+    cw, ch = w // 2, h // 2
+    out = np.empty((h + ch + (h if kind == "I420A" else 0), w), dtype=np.uint8)
+
+    def plane(i: int, width: int, rows: int) -> np.ndarray:
+        p = frame.planes[i]
+        return np.frombuffer(p, dtype=np.uint8).reshape(-1, p.line_size)[:rows, :width]
+
+    out[:h] = plane(0, w, h)
+    out[h:h + ch, :cw] = plane(1, cw, ch)
+    out[h:h + ch, cw:] = plane(2, cw, ch)
+    if kind == "I420A":
+        out[h + ch:] = plane(3, w, h)
+    # Untagged video is read as BT.601 TV range, as FFmpeg's own conversion did before.
+    matrix = COLOR_MATRICES.get(int(frame.colorspace or 2), "601")
+    return out, f"{kind}/{matrix}/{'pc' if int(frame.color_range or 0) == 2 else 'tv'}"
+
+
+def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:
+    packed = pack_i420(frame, size)
+    if packed is not None:
+        return packed
+    return frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray(), "RGBA"
+
+
 def is_sound_file(path: str) -> bool:
     return Path(str(path)).suffix.lower() in AUDIO_EXTS
 
@@ -60,7 +98,8 @@ class MediaSource(Source):
         super().__init__(source_id, settings)
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
-        self._frames: deque[tuple[float, np.ndarray]] = deque()
+        self._frames: deque[tuple[float, np.ndarray, str]] = deque()  # (time, picture, its channel_order)
+        self.channel_order = "RGBA"  # of the picture video_frame() last returned (see pack_i420)
         self._audio: deque[tuple[float, np.ndarray]] = deque()  # (time of first sample, samples)
         self._audio_s = 0.0
         self._state = "playing"  # a sound file waits for play unless play_on_start (set below)
@@ -255,6 +294,7 @@ class MediaSource(Source):
         with self._lock:
             if self._blank is not None:
                 blank, self._blank = self._blank, None
+                self.channel_order = "RGBA"
                 return blank
             if self._state != "playing" and self._shown is not None:
                 return None
@@ -264,12 +304,13 @@ class MediaSource(Source):
                 self._frames.popleft()
                 self._wake.notify_all()
             if self._frames and self._frames[0][0] <= now + 0.005 or (self._shown is None and self._frames):
-                t, picture = self._frames[0]
+                t, picture, order = self._frames[0]
                 if len(self._frames) == 1:
                     self._frames.popleft()  # the last one decoded: hand it over and make room
                     self._wake.notify_all()
                 if t != self._shown:
                     self._shown = t
+                    self.channel_order = order
                     return picture
             self._check_end()
             return None
@@ -411,8 +452,7 @@ class MediaSource(Source):
                         at = t - origin
                         if at < skip_to - 0.001:
                             continue
-                        picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
-                        if not self._push_frame(offset + at, picture, generation):
+                        if not self._push_frame(offset + at, _picture(frame, size), generation):
                             return
                 if decoder is not None:
                     try:
@@ -420,9 +460,8 @@ class MediaSource(Source):
                     except EOFError:  # already flushed
                         tail = []
                     for frame in tail:
-                        picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
                         at = float((frame.pts or 0) * video.time_base) - origin
-                        self._push_frame(offset + at, picture, generation)
+                        self._push_frame(offset + at, _picture(frame, size), generation)
             length = self.duration or 0.0
             if not self.settings.get("loop") or length <= 0.05:
                 with self._lock:
@@ -432,12 +471,13 @@ class MediaSource(Source):
                 return
             offset += length
 
-    def _push_frame(self, t: float, picture: np.ndarray, generation: int) -> bool:
+    def _push_frame(self, t: float, picture: tuple[np.ndarray, str], generation: int) -> bool:
+        pixels, order = picture
         with self._wake:
             self._wake.wait_for(lambda: not self._current(generation) or len(self._frames) < AHEAD_FRAMES)
             if not self._current(generation):
                 return False
-            self._frames.append((t, np.ascontiguousarray(picture)))
+            self._frames.append((t, np.ascontiguousarray(pixels), order))
         return True
 
     def _push_audio(self, t: float, samples: np.ndarray, generation: int) -> bool:

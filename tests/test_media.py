@@ -69,6 +69,13 @@ def _play(source, seconds, frames=None):
     return heard
 
 
+def _grey(picture):
+    """The top-left level of a picture as RGBA would show it (videos now arrive as packed YUV planes)."""
+    if picture.ndim == 2:  # pack_i420: Y rows first, TV range
+        return round((int(picture[0, 0]) - 16) * 255 / 219)
+    return int(picture[0, 0, 0])
+
+
 def _until(check, timeout=3.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -86,9 +93,10 @@ def test_a_video_plays_picture_and_sound_then_ends(tmp_path):
         heard = _play(source, 1.4, frames)
         info = source.info()
         assert info["state"] == "ended" and info["video"] and info["duration"] == pytest.approx(1.0, abs=0.1)
-        assert source.size == (64, 36) and frames[0].shape == (36, 64, 4)
+        assert source.size == (64, 36) and frames[0].shape == (36 + 18, 64)  # Y, then U|V rows
+        assert source.channel_order == "I420/601/tv"
         assert len(frames) >= 20  # most of the 30 frames, in order
-        levels = [int(f[0, 0, 0]) for f in frames]
+        levels = [_grey(f) for f in frames]
         assert levels == sorted(levels)
         assert 70 <= heard <= 110  # about a second of sound in 10 ms blocks
         assert source.read_block(480).max() == 0  # nothing after the end
@@ -108,7 +116,7 @@ def test_pause_seek_restart_and_stop(tmp_path):
         assert source.state == "paused" and source.position == pytest.approx(1.5)
         frames = []
         _play(source, 0.1, frames)  # paused: shows the picture at 1.5 s, once
-        assert len(frames) == 1 and int(frames[0][0, 0, 0]) >= 200
+        assert len(frames) == 1 and _grey(frames[0]) >= 200
         source.play()
         _play(source, 0.8)
         assert source.state == "ended"
