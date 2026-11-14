@@ -48,6 +48,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   While the delay runs, the Go live card says "Going out in N s" instead of Connecting (#215).
   Stopping a delayed stream sends its last seconds instead of dropping them (#216).
 - Number fields have room inside so numbers don't touch the edge (#224).
+- Names with & (like "SFX & alerts") show as typed in tick boxes and menus (#231).
 
 ### Sound
 
@@ -59,6 +60,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Source record: a second recording without the sources you pick, like alerts (#209).
 - Capture sound: right-click a game or window capture → Sound to bring the app's own sound, or any output, as its own row (#225).
 - Elgato Wave Link channels and mixes are offered first for desktop sound, named like "Game · Elgato Wave Link" (#223, #225).
+- Starter kit By type: every row offers the full output list, and a Show desktop audio switch brings back the old app choices (#230).
+- Cheaper app sound: one process snapshot shared by every row (#228).
 - Browser sources can play sound (#147).
 - Cheaper level meters (#199).
 
@@ -93,6 +96,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Media source: video and sound files, with play and pause from menus, hotkeys and the API (#198).
 - SprigCast Camera: a Windows 11 virtual camera, set up in Output → Virtual camera (#208).
 - Virtual camera Shows list: match the app, a whole canvas, one bloom or one source; fixed the camera not starting in TikTok LIVE Studio (#224).
+- When an older camera fails to start, SprigCast points you to Update (#227).
 - Media files no longer loop with Loop off, and .webm files end cleanly (#220, #222).
 
 ### Chat
@@ -120,6 +124,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 ### Installer
 
 - Windows installer built on GitHub (#103, #104), which asks to close SprigCast first (#105).
+- Each installer build is scanned by Microsoft Defender and comes with SHA256 fingerprints (#229).
 
 ### Tests
 

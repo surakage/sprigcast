@@ -161,7 +161,10 @@ sound device you use.
 ## Already tried on Windows
 
 An hour-long Twitch stream, Twitch, YouTube and Kick chat together, the installer, and the full test
-suite (528 passed).
+suite (558 passed on Windows 11).
+
+**Not covered by Claude's run on your PC (14 Nov):** game and window capture sound (test 7) and moving
+and resizing in Build (test 2, steps 3 and 4). These need you at the keyboard.
 
 ## Worth another look when you have time
 
