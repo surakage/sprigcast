@@ -186,8 +186,10 @@ class Streamer(Recorder):
         encode_ms = 1000 * self.encode_seconds / max(1, self.frames)
         budget_ms = 1000 / self.fps
         waiting = self.mux_seconds / max(1e-6, time.monotonic() - self.started_at)
+        live_s = max(1e-6, time.monotonic() - (self._connected_at or self.started_at))
+        average = f"averaged {self.bytes_out * 8 / 1000 / live_s:.0f} kbps (set {self.bitrate_kbps})"
         line = (
-            f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}). "
+            f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), {average}. "
             f"Encoding took {encode_ms:.1f} ms per frame (budget {budget_ms:.1f} ms); "
             f"waiting on the network {waiting:.0%} of the time, longest stall {self.longest_stall:.1f} s"
         )
