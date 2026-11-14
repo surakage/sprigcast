@@ -851,6 +851,39 @@ class MainWindow(QMainWindow):
         if projector in self.projectors:
             self.projectors.remove(projector)
 
+    def _fill_capture_sound_menu(self, menu: QMenu, capture_id: str) -> None:
+        """A capture's own sound, like OBS's Capture audio: none, the app's own, or an output such as
+        Elgato Wave Link's Game channel."""
+        from sprigcast.core.capture_sound import APP, sound_choice
+        from sprigcast.sources.audio import device_label
+
+        current = sound_choice(self.collection, capture_id)
+        group = QActionGroup(menu)
+        choices = [(None, "No sound of its own"), (APP, "The app's own sound")]
+        devices = [d.name for d in list_audio_devices(loopback=True, rescan=False)]
+        if current not in (None, APP) and current not in devices:
+            devices.append(current)  # not plugged in right now: still shown, ticked
+        for i, (value, text) in enumerate(choices + [(d, device_label(d)) for d in devices]):
+            if i == 2:
+                menu.addSeparator()
+                note = menu.addAction("From an output")
+                note.setEnabled(False)
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setChecked(value == current)
+            group.addAction(act)
+            act.triggered.connect(lambda _=False, v=value: self._set_capture_sound(capture_id, v))
+
+    def _set_capture_sound(self, capture_id: str, choice: str | None) -> None:
+        from sprigcast.core.capture_sound import set_capture_sound
+
+        capture = self.collection.source(capture_id)
+        sound = set_capture_sound(self.collection, capture, choice)
+        self._changed()
+        self._refresh_audio()
+        if sound is not None:
+            self.statusBar().showMessage(f"{sound.name!r} is in Sound now, with its own volume and tracks.", 6000)
+
     def _source_menu(self, on_item: bool) -> QMenu:
         menu = QMenu(self)
         if not on_item:
@@ -861,6 +894,8 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
                 menu.addAction(f"Open {PART}").triggered.connect(self._open_part_item)
                 self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
+            if item is not None and self.collection.source(item.source).kind == "window_capture":
+                self._fill_capture_sound_menu(menu.addMenu("Sound"), item.source)
             if item is not None and self.collection.source(item.source).kind == "browser" and self.browser_host:
                 menu.addAction("Refresh page").triggered.connect(
                     lambda _=False, sid=item.source: self.browser_host.reload(sid))
@@ -4073,6 +4108,9 @@ class MainWindow(QMainWindow):
             config.settings = {**config.settings, "title": window.title, "process": window.process}
             if config.name in (old, old_title, old_title[:37] + "…"):  # a name you chose stays
                 config.name = window_name(window.title, window.process)
+            from sprigcast.core.capture_sound import follow_capture
+
+            follow_capture(self.collection, config)  # its own app sound follows the new window
         else:
             cls = source_class(config.kind)
             defaults = getattr(cls, "defaults", None) if cls is not None else None

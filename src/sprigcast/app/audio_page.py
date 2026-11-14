@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.audio.mixer import is_monitor_only, source_tracks
 from sprigcast.core.scene import AUDIO_DEVICE_KINDS, AUDIO_TRACKS, TRACK_NAMES, SceneCollection, SourceConfig
+from sprigcast.sources.audio import device_label as nice_device_name
 from sprigcast.sources.audio import is_mixer_app_device
 
 TRACK_TIPS = (
@@ -152,7 +153,7 @@ class AudioPage(QWidget):
         combo = QComboBox()
         combo.addItem("Default (follows Windows)", "default")
         for name in names:
-            combo.addItem(name, name)
+            combo.addItem(nice_device_name(name), name)
         current = str(source.settings.get("device", "default"))
         if combo.findData(current) < 0:
             combo.addItem(f"{current} (not connected)", current)
@@ -184,9 +185,9 @@ class AudioPage(QWidget):
             form.addRow(_hint("No global devices. Add a mic or desktop sound in Build → + Add."))
         box.addLayout(form)
         if any(is_mixer_app_device(n) for n in audio_devices.get("audio_output", [])):
-            box.addWidget(_hint("Elgato Wave Link is here. For Desktop audio, pick Wave Link Stream to take your "
-                                "stream mix as it is, or one channel (Game, Music…) for just that. The Stream mix "
-                                "already holds your mic, so turn the separate Mic off to hear it only once."))
+            box.addWidget(_hint("Elgato Wave Link is here: its channels (Game, Music, System…) are at the top of "
+                                "each list. A game or window capture can take its own sound too: right-click it → "
+                                "Sound. If you use a Wave Link mix that holds your mic, turn the separate Mic off."))
         own = [s for s in c.sources if s.kind in AUDIO_DEVICE_KINDS and s.id not in global_ids]
         if own:
             box.addSpacing(6)
