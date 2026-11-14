@@ -16,12 +16,12 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -53,6 +53,16 @@ MATTES = [("none", "No matte"), ("right", "Matte on the right"), ("below", "Matt
 
 CHOICE_STYLE = theme.SMALL_PILL_STYLE + (
     f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+)
+
+# Number boxes as soft pills, like the choices above: the number sits centred with
+# room on both sides instead of hugging the left edge. No arrow buttons (type, scroll or use the arrow
+# keys); setButtonSymbols(NoButtons) can't be used, the app stylesheet then shrinks the text to 1 px.
+FIELD_STYLE = (
+    f"QSpinBox {{ background: {theme.PANEL}; color: {theme.TEXT}; border: none; border-radius: 13px;"
+    f" padding: 6px 14px; min-height: 14px; }}"
+    f"QSpinBox:hover, QSpinBox:focus {{ background: {theme.RAISED}; }}"
+    "QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px; border: none; }"
 )
 
 
@@ -204,8 +214,9 @@ class TransitionsPanel(QWidget):
         self.probe = probe
         self._updating = False
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(10)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(12)
+        self.setStyleSheet(FIELD_STYLE)
 
         grid = QGridLayout()
         grid.setSpacing(6)
@@ -235,6 +246,7 @@ class TransitionsPanel(QWidget):
         self.form = form
 
         self.length = QSpinBox()
+        self.length.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.length.setRange(50, 5000)
         self.length.setSingleStep(50)
         self.length.setSuffix(" ms")
@@ -275,7 +287,10 @@ class TransitionsPanel(QWidget):
         cut_row = QWidget()
         cut_layout = QHBoxLayout(cut_row)
         cut_layout.setContentsMargins(0, 0, 0, 0)
+        cut_layout.setSpacing(10)
         self.cut_at = QSpinBox()
+        self.cut_at.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cut_at.setMinimumWidth(96)
         self.cut_at.setRange(0, 20000)
         self.cut_at.setSingleStep(50)
         self.cut_at.setSuffix(" ms")
@@ -286,11 +301,10 @@ class TransitionsPanel(QWidget):
         cut_layout.addWidget(self.cut_at)
         cut_layout.addWidget(self.clip_length, 1)
         form.addRow("Swap at", cut_row)
-        self.matte = QComboBox()
-        for value, label in MATTES:
-            self.matte.addItem(label, value)
+        self.matte = QPushButton()  # a pill with a little menu, like the other choices
+        self.matte.setStyleSheet(theme.SMALL_PILL_STYLE)
         self.matte.setToolTip("A track matte clip: picture in one half, black and white matte in the other")
-        self.matte.currentIndexChanged.connect(self._edit)
+        self._build_matte_menu()
         form.addRow("Matte", self.matte)
         self.matte_only = QCheckBox("Hide picture")
         self.matte_only.setToolTip("Swap through the matte without showing the picture half")
@@ -311,6 +325,20 @@ class TransitionsPanel(QWidget):
         root.addLayout(form)
         root.addStretch(1)
         self.load(transition)
+
+    def _build_matte_menu(self) -> None:
+        menu = QMenu(self.matte)
+        for value, label in MATTES:
+            menu.addAction(label, lambda v=value: self._set_matte(v))
+        self.matte.setMenu(menu)
+
+    def _show_matte(self, value: str) -> None:
+        self.matte.setText(dict(MATTES).get(value, MATTES[0][1]) + "  ▾")
+
+    def _set_matte(self, value: str) -> None:
+        self.transition.stinger.matte = value
+        self._show_matte(value)
+        self._edit()
 
     def _file_row(self, file_filter: str, empty: str, chosen: Callable[[str], None]) -> QWidget:
         row = QWidget()
@@ -354,7 +382,7 @@ class TransitionsPanel(QWidget):
         self.length.setValue(t.duration_ms)
         self.softness.setValue(round(t.softness * 100))
         self.cut_at.setValue(s.cut_ms)
-        self.matte.setCurrentIndex(max(0, self.matte.findData(s.matte)))
+        self._show_matte(s.matte)
         self.matte_only.setChecked(s.matte_only)
         self.volume.setValue(round(s.volume_db))
         self.mute.setChecked(s.muted)
@@ -405,7 +433,6 @@ class TransitionsPanel(QWidget):
         t.duration_ms = self.length.value()
         t.softness = self.softness.value() / 100
         s.cut_ms = self.cut_at.value()
-        s.matte = self.matte.currentData()
         s.matte_only = self.matte_only.isChecked()
         s.volume_db = float(self.volume.value())
         s.muted = self.mute.isChecked()
