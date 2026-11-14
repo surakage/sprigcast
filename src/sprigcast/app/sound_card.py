@@ -22,7 +22,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -90,6 +91,72 @@ class Sound:
     tracks: tuple[str, ...] = ("stream", "recording", "clips")  # the named tracks it goes to
 
 
+class VolumeMeter(ThinMeter):
+    """A sound row's level bar with a volume knob on it: drag the knob (or anywhere on the bar) to set
+    the volume right there, double-click for 0 dB. The bar still shows how loud it is."""
+
+    LOW, HIGH = -60, 12  # the Tune page's range
+
+    def __init__(self, db: float, changed: Callable[[float], None]):
+        super().__init__()
+        self.db = db
+        self.changed = changed
+        self.setFixedHeight(14)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self.setToolTip("Drag to set the volume (double-click: 0 dB)")
+
+    def _x(self) -> float:
+        span = self.width() - 12
+        return 6 + span * (self.db - self.LOW) / (self.HIGH - self.LOW)
+
+    def _set_from(self, x: float) -> None:
+        span = max(1, self.width() - 12)
+        db = round(self.LOW + (x - 6) / span * (self.HIGH - self.LOW))
+        db = max(self.LOW, min(self.HIGH, 0 if abs(db) <= 1 else db))  # 0 dB is easy to land on
+        if db != self.db:
+            self.db = db
+            self.update()
+            self.changed(float(db))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._set_from(event.position().x())
+        event.accept()  # not the row's click (that opens Tune)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._set_from(event.position().x())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if self.db != 0:
+            self.db = 0
+            self.update()
+            self.changed(0.0)
+        event.accept()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        bar = QRectF(0, self.height() / 2 - 2, self.width(), 4)
+        p.setBrush(QColor(theme.TRACK))
+        p.drawRoundedRect(bar, 2, 2)
+        if self.level > 0 and not self.muted:
+            colour = self.colour or theme.ACCENT
+            if self.level >= 0.85:
+                colour = theme.LIVE
+            p.setBrush(QColor(colour))
+            p.drawRoundedRect(QRectF(0, bar.top(), max(4.0, bar.width() * self.level), 4), 2, 2)
+        p.setBrush(QColor(theme.TEXT_BRIGHT if not self.muted else theme.MUTED))
+        p.setPen(QPen(QColor(self.colour or theme.ACCENT), 2))
+        p.drawEllipse(QPointF(self._x(), self.height() / 2), 5, 5)
+        p.end()
+
+
 class ClickRow(QWidget):
     """A sound's row: name, volume and a thin meter; a click opens its Tune page."""
 
@@ -140,6 +207,7 @@ class SoundCard(QWidget):
         self.heard: dict[str, float] = {}
         self.open_groups: set[str] = set()  # groups showing their sounds
         self.meters: dict[str, ThinMeter] = {}
+        self.notes: dict[str, QLabel] = {}  # each sound row's "+3 dB" / "muted"
         self.group_meters: dict[str, ThinMeter] = {}
         self.rows: dict[str, QWidget] = {}
         self.parts: dict[str, dict] = {}
@@ -210,10 +278,18 @@ class SoundCard(QWidget):
         """Sound items (or old-style (id, name, muted) tuples)."""
         items = [s if isinstance(s, Sound) else Sound(s[0], s[1], bool(s[2])) for s in sounds]
         self.sounds = {s.id: s for s in items}
-        shape = tuple((s.id, s.name, s.group, s.muted, s.pinned, s.volume_db) for s in items)
+        shape = tuple((s.id, s.name, s.group, s.muted, s.pinned) for s in items)
         if shape != self._shape:
             self._shape = shape
             self._build()
+        for sid, sound in self.sounds.items():  # volume changes in place: a drag isn't cut off by a rebuild
+            note = self.notes.get(sid)
+            if note is not None:
+                note.setText("muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else "")
+            meter = self.meters.get(sid)
+            if isinstance(meter, VolumeMeter) and meter.db != sound.volume_db:
+                meter.db = sound.volume_db
+                meter.update()
         if self.tuning in self.sounds:
             self.tune.show_sound(self.sounds[self.tuning])
         elif self.tuning is not None:
@@ -247,7 +323,7 @@ class SoundCard(QWidget):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        self.meters, self.group_meters, self.rows, self.parts = {}, {}, {}, {}
+        self.meters, self.group_meters, self.rows, self.parts, self.notes = {}, {}, {}, {}, {}
         self._lit = {}
         if not self.sounds:
             from sprigcast.app.empty import EmptyState
@@ -333,14 +409,22 @@ class SoundCard(QWidget):
         line.addWidget(name, 1)
         line.addWidget(right)
         col.addLayout(line)
-        meter = ThinMeter()
-        meter.setFixedHeight(3)
+        self.notes[sound.id] = right
+        meter = VolumeMeter(sound.volume_db, lambda db, sid=sound.id: self._drag_volume(sid, db))
         meter.colour = colour
         meter.muted = sound.muted
-        meter.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.meters[sound.id] = meter
         col.addWidget(meter)
         return row
+
+    def _drag_volume(self, sound_id: str, db: float) -> None:
+        sound = self.sounds.get(sound_id)
+        if sound is not None:
+            sound.volume_db = db
+        note = self.notes.get(sound_id)
+        if note is not None and not (sound and sound.muted):
+            note.setText(f"{db:+.0f} dB" if db else "")
+        self.on_change(sound_id, {"volume_db": db})
 
     # Calm by default ----------------------------------------------------------------------
 

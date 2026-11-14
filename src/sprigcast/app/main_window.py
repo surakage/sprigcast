@@ -1416,6 +1416,9 @@ class MainWindow(QMainWindow):
             places.append(Destination(output.id, name, output.enabled, note, output.canvas,
                                       output.bandwidth_test if service.bandwidth_test else None))
         self.live_side.show_destinations(places, levels or {})
+        if self.streaming is None and hasattr(self, "mode_clock"):
+            ready = sum(1 for p in places if p.on and p.note == "Ready")
+            self._set_header_clock(f"Offline  ·  {ready} ready to go live" if ready else "Offline", False)
 
     # Studio mode -----------------------------------------------------------------------
 
@@ -2041,9 +2044,7 @@ class MainWindow(QMainWindow):
                 self._last_stats = event
                 if self.stats_strip.is_open():
                     self._refresh_stats_panel()
-                self.status.setText(
-                    f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
-                )
+                self._show_render_health(event)
             elif isinstance(event, AudioLevels):
                 if self.mode == "live":
                     self.live_side.set_levels(event.levels)
@@ -3904,6 +3905,7 @@ class MainWindow(QMainWindow):
         self._refresh_stream_boxes()
         self.live_panel.set_clock("Offline", False)
         self._set_header_clock("Offline", False)
+        self._live_destinations()  # "Offline · N ready to go live"
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
@@ -3945,7 +3947,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 log.exception("stream report")
         self.live_panel.set_clock(clock, True)
-        self._set_header_clock(clock.replace("● LIVE", "● Live") + ("" if worst == "good" else "  ·  check Destinations"), True)
+        import re
+
+        sending = [int(m.group(1)) for _level, text in states.values() if (m := re.match(r"(\d+) kbps", text))]
+        line = clock.replace("● LIVE", "● Live")
+        if sending:
+            # How many places are getting the stream, and the upload they add up to.
+            line += f"  ·  {len(sending)} of {len(states)} sending  ·  {sum(sending) / 1000:.1f} Mbps up"
+        self._set_header_clock(line + ("" if worst == "good" else "  ·  check Destinations"), True)
 
     # Hotkeys -----------------------------------------------------------------
 
@@ -4007,6 +4016,24 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import apply_settings
 
         apply_settings(self.control, self)
+
+    def _show_render_health(self, event) -> None:
+        """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""
+        target = max((c.fps for c in self.collection.canvases), default=60)
+        late = max(0, event.dropped_ticks - getattr(self, "_late_before", 0))  # the engine counts them up
+        self._late_before = event.dropped_ticks
+        budget = 1000 / target
+        if event.fps < target * 0.85 or late > target * 0.05:
+            word, colour = "Struggling", theme.BAD
+        elif event.fps < target * 0.95 or late or event.render_ms > budget * 0.6:
+            word, colour = "Busy", theme.WARN
+        else:
+            word, colour = "Smooth", theme.ACCENT
+        self.status.setText(f'<span style="color:{colour}">●</span>'
+                            f'<span style="color:{theme.MUTED}">&nbsp;&nbsp;{word}</span>')
+        self.stats_strip.setToolTip(f"{event.fps:.0f} of {target} frames a second  ·  each frame takes "
+                                    f"{event.render_ms:.1f} ms of {budget:.1f}  ·  {late} late this second\n"
+                                    "Click for all the numbers (Ctrl+Shift+S)")
 
     # Command palette -------------------------------------------------------------
 
