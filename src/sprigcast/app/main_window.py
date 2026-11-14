@@ -1762,7 +1762,10 @@ class MainWindow(QMainWindow):
         QSettings().setValue("window/locked", locked)
 
     def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("&File")
+        """File · Edit · View · Docks · Tools · Help."""
+        bar = self.menuBar()
+
+        file_menu = bar.addMenu("&File")
         open_folder = QAction("Show scenes file location", self)
         open_folder.triggered.connect(
             lambda: QMessageBox.information(self, "SprigCast", f"Scenes are saved to:\n{self.scenes_path}")
@@ -1775,13 +1778,78 @@ class MainWindow(QMainWindow):
         plugins.triggered.connect(self._open_plugins_folder)
         plugins.setEnabled(self.plugins_dir is not None)
         file_menu.addAction(plugins)
+        file_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
         file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        settings_menu = self.menuBar().addMenu("&Tools")  # "Settings…" is inside, and ⚙ sits by Go live
+        # Edit: the selected thing in Build (the same actions and shortcuts as its right-click menu).
+        edit_menu = bar.addMenu("&Edit")
+        a = self.item_actions
+        for key in ("rename", "settings", "filters"):
+            edit_menu.addAction(a[key])
+        edit_menu.addSeparator()
+        size = edit_menu.addMenu("Size and place")
+        for key in ("fit", "stretch", "center", "reset", "uncrop"):
+            size.addAction(a[key])
+        order = edit_menu.addMenu("Order")
+        for key in ("front", "up", "down", "back"):
+            order.addAction(a[key])
+        edit_menu.addSeparator()
+        for key in ("hide", "lock", "remove"):
+            edit_menu.addAction(a[key])
+
+        # View: which screen, which canvases, projectors.
+        view_menu = bar.addMenu("&View")
+        live = view_menu.addAction("Live")
+        live.setShortcut(QKeySequence("Ctrl+1"))
+        live.triggered.connect(lambda: self._set_mode("live"))
+        build = view_menu.addAction("Build")
+        build.setShortcut(QKeySequence("Ctrl+2"))
+        build.triggered.connect(lambda: self._set_mode("build"))
+        studio = view_menu.addAction("Studio mode (line up, then Go)")
+        studio.setCheckable(True)
+        studio.setChecked(self.studio)
+        studio.toggled.connect(lambda on: self.live_panel.studio.setChecked(on))
+        self.live_panel.studio.toggled.connect(lambda on: studio.setChecked(on) if studio.isChecked() != on else None)
+        view_menu.addSeparator()
+        shown = view_menu.addMenu("Show canvases")
+        shown_group = QActionGroup(self)
+        self.canvas_choice_actions: dict[str, QAction] = {}
+        labels = [("both", "Horizontal and vertical")]
+        labels += [(c.id, f"{c.id.capitalize()} only") for c in self.collection.canvases]
+        for key, label in labels:
+            action = shown.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == self.canvas_choice())
+            shown_group.addAction(action)
+            action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
+            self.canvas_choice_actions[key] = action
+        projectors = view_menu.addMenu("Full screen projector")
+        projectors.aboutToShow.connect(lambda: self._fill_projectors_menu(projectors))
+        self._fill_projectors_menu(projectors)
+        view_menu.addSeparator()
+        palette_action = QAction("Command palette…", self)
+        palette_action.setShortcuts([QKeySequence("Ctrl+K"), QKeySequence("Ctrl+Shift+P")])
+        palette_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        palette_action.triggered.connect(lambda: self._open_palette())
+        view_menu.addAction(palette_action)
+
+        self.docks_menu = bar.addMenu("&Docks")
+        self.docks["Stats"].toggleViewAction().setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.lock_action = QAction("Lock docks", self)
+        self.lock_action.setCheckable(True)
+        self.lock_action.toggled.connect(self._set_docks_locked)
+        self.reset_layout_action = QAction("Reset layout", self)
+        self.reset_layout_action.triggered.connect(self._reset_layout)
+        self.custom_docks_action = QAction("Add or edit custom docks…", self)
+        self.custom_docks_action.setToolTip("A web page as a dock: chat, alerts, Streamer.bot, TikFinity…")
+        self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
+        self._fill_docks_menu()
+
+        settings_menu = bar.addMenu("&Tools")
         open_settings = settings_menu.addAction("Settings…")
         open_settings.setShortcut(QKeySequence("Ctrl+,"))
         open_settings.triggered.connect(lambda: self._open_settings())
@@ -1796,42 +1864,66 @@ class MainWindow(QMainWindow):
             ("Plugins", "Plugins…"),
         ):
             settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
-        shown = settings_menu.addMenu("Show canvases")
-        shown_group = QActionGroup(self)
-        self.canvas_choice_actions: dict[str, QAction] = {}
-        labels = [("both", "Horizontal and vertical")]
-        labels += [(c.id, f"{c.id.capitalize()} only") for c in self.collection.canvases]
-        for key, label in labels:
-            action = shown.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(key == self.canvas_choice())
-            shown_group.addAction(action)
-            action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
-            self.canvas_choice_actions[key] = action
-        settings_menu.addAction("Optimize for this PC…").triggered.connect(lambda: self.open_optimizer())
-        settings_menu.addAction("Light settings for a slower PC…").triggered.connect(
-            lambda: self.use_light_settings())
         settings_menu.addSeparator()
-        settings_menu.addAction("Open logs folder…").triggered.connect(lambda: self._open_logs())
         doctor_action = settings_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
-        palette_action = QAction("Command palette…", self)
-        palette_action.setShortcuts([QKeySequence("Ctrl+K"), QKeySequence("Ctrl+Shift+P")])
-        palette_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        palette_action.triggered.connect(lambda: self._open_palette())
-        settings_menu.addAction(palette_action)
+        settings_menu.addAction("Ducking (mic first)…").triggered.connect(lambda: self._open_ducking())
+        settings_menu.addAction("Optimize for this PC…").triggered.connect(lambda: self.open_optimizer())
+        settings_menu.addAction("Light settings for a slower PC…").triggered.connect(
+            lambda: self.use_light_settings())
 
-        self.docks_menu = self.menuBar().addMenu("&Docks")
-        self.docks["Stats"].toggleViewAction().setShortcut(QKeySequence("Ctrl+Shift+S"))
-        self.lock_action = QAction("Lock docks", self)
-        self.lock_action.setCheckable(True)
-        self.lock_action.toggled.connect(self._set_docks_locked)
-        self.reset_layout_action = QAction("Reset layout", self)
-        self.reset_layout_action.triggered.connect(self._reset_layout)
-        self.custom_docks_action = QAction("Custom docks…", self)
-        self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
-        self._fill_docks_menu()
+        help_menu = bar.addMenu("&Help")
+        help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
+        help_menu.addAction("Open logs folder (for bug reports)").triggered.connect(lambda: self._open_logs())
+        help_menu.addSeparator()
+        help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
+
+    def _fill_projectors_menu(self, menu: QMenu) -> None:
+        menu.clear()
+        for canvas in self.collection.canvases:
+            self._fill_projector_menu(menu.addMenu(canvas.id.capitalize()), canvas.id)
+
+    def shortcut_lines(self) -> list[tuple[str, str]]:
+        """(keys, what) for Help → Keyboard shortcuts: every menu action with a shortcut, plus canvas moves."""
+        lines: list[tuple[str, str]] = []
+
+        def walk(menu: QMenu, prefix: str) -> None:
+            for action in menu.actions():
+                if action.menu() is not None:
+                    walk(action.menu(), prefix)
+                elif action.shortcut().toString():
+                    lines.append((action.shortcut().toString(QKeySequence.SequenceFormat.NativeText),
+                                  f"{prefix}{action.text().replace('&', '')}"))
+
+        for top in self.menuBar().actions():
+            if top.menu() is not None:
+                walk(top.menu(), "")
+        lines += [("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
+                  ("Ctrl+0", "Fit the canvas"), ("Alt + drag a side", "Crop"),
+                  ("Shift + drag a corner", "Free shape (or keep it, if Keep shape is off)")]
+        seen, unique = set(), []
+        for keys, text in lines:
+            if (keys, text) not in seen:
+                seen.add((keys, text))
+                unique.append((keys, text))
+        return unique
+
+    def _show_shortcuts(self) -> None:
+        rows = "".join(f"<tr><td style='padding:3px 18px 3px 0'><b>{k}</b></td><td>{t}</td></tr>"
+                       for k, t in self.shortcut_lines())
+        box = QMessageBox(self)
+        box.setWindowTitle("Keyboard shortcuts")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(f"<table>{rows}</table>")
+        box.exec()
+
+    def _show_about(self) -> None:
+        from sprigcast import __version__
+
+        QMessageBox.about(self, "About SprigCast",
+                          f"<b>SprigCast {__version__}</b><br>One show, every shape: stream and record "
+                          "horizontal and vertical at once.<br><br>Open source under the GPL 3.0 or later.")
 
     def _fill_docks_menu(self) -> None:
         """Built-in docks, then your custom ones, then the layout actions. Rebuilt when custom docks change."""
