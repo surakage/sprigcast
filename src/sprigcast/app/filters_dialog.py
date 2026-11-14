@@ -299,8 +299,12 @@ class FiltersDialog(QDialog):
         self.reset_button.setEnabled(flt is not None)
         if flt is None:
             self.title.setText("")
-            empty = QLabel("No filters yet. Click + to add one." if not self.source.filters else "")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if self.source.filters:
+                empty = QLabel("")
+            else:
+                from sprigcast.app.empty import EmptyState
+
+                empty = EmptyState("No filters yet. Click + to add one.")
             self.form_area.setWidget(empty)
             self.form = None
             return

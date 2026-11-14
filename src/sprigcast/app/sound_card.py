@@ -242,7 +242,9 @@ class SoundCard(QWidget):
         self.meters, self.group_meters, self.rows, self.parts = {}, {}, {}, {}
         self._lit = {}
         if not self.sounds:
-            self.body.addWidget(_muted_label("No mic or desktop audio yet"))
+            from sprigcast.app.empty import EmptyState
+
+            self.body.addWidget(EmptyState("No mic or desktop audio yet. Add them in Build with + Add.", scale=0.7))
             return
         for group in GROUPS:
             members = [s for s in self.sounds.values() if s.group == group]
