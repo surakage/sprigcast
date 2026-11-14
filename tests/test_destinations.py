@@ -551,3 +551,31 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_clip_saves_the_shapes_chosen_in_settings(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ClipTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        assert [c.id for c in w._clip_canvases()] == ["horizontal", "vertical"]
+        col.recording.clip_shapes = "vertical"
+        assert [c.id for c in w._clip_canvases()] == ["vertical"]
+        col.recording.clip_shapes = "horizontal"
+        assert [c.id for c in w._clip_canvases()] == ["horizontal"]
+        w.live_side.set_clip(True, 45)
+        assert w.live_side.clip.text() == "Clip 45s"
+        w.live_side.set_clip(False, 45)
+        assert w.live_side.clip.text() == "Clips"
+        w.live_side.clip_saved(2)
+        assert w.live_side.clip.text() == "Saved ✓"
+    finally:
+        w.close()
+        QSettings().clear()

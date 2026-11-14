@@ -282,6 +282,7 @@ class BrowserHost(QObject):
         self._sounds: dict[str, Any] = {}  # source id -> PageSound, read by the audio thread
         self._lock = threading.Lock()
         self._request.connect(self._handle, Qt.ConnectionType.QueuedConnection)
+        self._shut = False
 
     # Any thread ---------------------------------------------------------------------
 
@@ -329,6 +330,8 @@ class BrowserHost(QObject):
 
     @Slot(str, str, object)
     def _handle(self, action: str, source_id: str, value) -> None:
+        if self._shut:
+            return  # a request still queued when SprigCast closed: no new pages after shutdown
         page = self.pages.get(source_id)
         try:
             if action == "open":
@@ -347,6 +350,7 @@ class BrowserHost(QObject):
             log.exception("browser source %s: %s failed", source_id, action)
 
     def shutdown(self) -> None:
+        self._shut = True
         for page in self.pages.values():
             page.close()
         self.pages.clear()

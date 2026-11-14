@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
+    QHBoxLayout,
+    QPushButton,
+    QRadioButton,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -40,6 +44,9 @@ def _combo(choices: dict[str, str], value: str) -> QComboBox:
         combo.addItem(label, key)
     combo.setCurrentIndex(max(0, combo.findData(value)))
     return combo
+
+
+CLIP_LENGTHS = (15, 30, 45, 60)
 
 
 def _hint(text: str) -> QLabel:
@@ -167,16 +174,7 @@ class OutputPage(QWidget):
         self.record_form = EncoderForm("Encoder settings", collection.recording.encoder, encoder_name)
         self.record_form.setEnabled(not recording)
         box.addWidget(self.record_form)
-        replay_group = QGroupBox("Replay buffer")
-        replay_form = QFormLayout(replay_group)
-        self.replay_seconds = QSpinBox()
-        self.replay_seconds.setRange(5, 300)
-        self.replay_seconds.setSuffix(" s")
-        self.replay_seconds.setValue(collection.recording.replay_seconds)
-        self.replay_seconds.setToolTip("How much Save replay keeps. Longer uses more memory (about 1 MB per second "
-                                       "per canvas at 8 Mbps).")
-        replay_form.addRow("Keep the last", self.replay_seconds)
-        box.addWidget(replay_group)
+        box.addWidget(self._clips_group(collection))
         box.addStretch(1)
         self.tabs.addTab(record_tab, "Recording")
         self.streaming, self.recording = streaming, recording
@@ -189,7 +187,51 @@ class OutputPage(QWidget):
             collection.stream_encoder = self.stream_form.values()
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
-        collection.recording.replay_seconds = self.replay_seconds.value()
+        collection.recording.replay_seconds = self.clip_length.checkedId()
+        collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
+        collection.recording.clips_on_start = self.clips_on_start.isChecked()
+
+    def _clips_group(self, collection: SceneCollection) -> QGroupBox:
+        """Clips: how long, which shapes, and whether they're ready from the start."""
+        group = QGroupBox("Clips")
+        form = QFormLayout(group)
+        form.setVerticalSpacing(12)
+        form.addRow(_hint("Clip saves the last few seconds as a video, so a great moment is never missed. "
+                          "SprigCast keeps those seconds in memory (about 1 MB a second for each shape)."))
+        lengths = QHBoxLayout()
+        lengths.setSpacing(6)
+        self.clip_length = QButtonGroup(group)
+        current = min(CLIP_LENGTHS, key=lambda n: abs(n - collection.recording.replay_seconds))
+        for seconds in CLIP_LENGTHS:
+            pill = QPushButton(f"{seconds} s")
+            pill.setCheckable(True)
+            pill.setChecked(seconds == current)
+            pill.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton:checked {{ background: {theme.SELECT_BG};"
+                               f" color: {theme.SELECT_TEXT}; }}")
+            pill.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.clip_length.addButton(pill, seconds)
+            lengths.addWidget(pill)
+        lengths.addStretch(1)
+        form.addRow("Length", lengths)
+        shapes = QVBoxLayout()
+        shapes.setSpacing(6)
+        self.clip_shapes = QButtonGroup(group)
+        for key, label, note in (
+            ("both", "Both shapes", "two files from the same moment, one wide and one tall"),
+            ("horizontal", "Horizontal", "for YouTube and highlights"),
+            ("vertical", "Vertical", "for TikTok, Shorts and Reels"),
+        ):
+            choice = QRadioButton(f"{label}  ·  {note}")
+            choice.setProperty("shape", key)
+            choice.setChecked(collection.recording.clip_shapes == key)
+            self.clip_shapes.addButton(choice)
+            shapes.addWidget(choice)
+        form.addRow("Shapes", shapes)
+        self.clips_on_start = QCheckBox("Get clips ready when SprigCast opens")
+        self.clips_on_start.setToolTip("Otherwise the first press of Clips on Live gets them ready")
+        self.clips_on_start.setChecked(collection.recording.clips_on_start)
+        form.addRow("", self.clips_on_start)
+        return group
 
 
 def enhanced_in_use(collection: SceneCollection) -> bool:

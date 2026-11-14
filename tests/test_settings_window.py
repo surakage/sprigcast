@@ -143,3 +143,18 @@ def test_startup_options_are_saved(app):
     w.start_minimized.setChecked(True)
     assert w.apply()
     assert autostart.start_minimized(["sprigcast"])
+
+
+def test_clip_length_shapes_and_ready_on_open(app):
+    col = _collection()
+    col.recording.replay_seconds = 40  # an older odd length shows as the nearest choice
+    w = _window(col, tab="Recording")
+    page = w.output_page
+    assert page.clip_length.checkedId() == 45 and col.recording.clip_shapes == "both"
+    page.clip_length.button(15).click()
+    vertical = next(b for b in page.clip_shapes.buttons() if b.property("shape") == "vertical")
+    vertical.click()
+    page.clips_on_start.setChecked(True)
+    assert w.apply()
+    rec = col.recording
+    assert (rec.replay_seconds, rec.clip_shapes, rec.clips_on_start) == (15, "vertical", True)

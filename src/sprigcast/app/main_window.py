@@ -444,6 +444,8 @@ class MainWindow(QMainWindow):
         self._sync_canvas_choice()
         self._show_part_editor()
         self.live_panel.studio.setChecked(QSettings().value("live/studio", False, type=bool))
+        if self.collection.recording.clips_on_start:  # once the renderer has its first frames
+            QTimer.singleShot(1500, lambda: self.replay is None and self.replay_button.setChecked(True))
 
     # Building the UI ------------------------------------------------------
 
@@ -3483,12 +3485,28 @@ class MainWindow(QMainWindow):
 
     # Replay buffer ---------------------------------------------------------------------
 
+    def _clip_canvases(self) -> list:
+        """The canvases a clip saves: Settings → Recording → Clips picks horizontal, vertical or both."""
+        shapes = self.collection.recording.clip_shapes
+        enabled = [c for c in self.collection.canvases if c.enabled]
+        if shapes == "both":
+            return enabled
+        wanted = [c for c in enabled if (c.width >= c.height) == (shapes == "horizontal")]
+        return wanted or enabled[:1]
+
+    def _restart_clips_if_changed(self, before: tuple) -> None:
+        """Clip length or shapes changed in Settings while clips are ready: start again with the new ones."""
+        settings = self.collection.recording
+        if self.replay is not None and before != (settings.replay_seconds, settings.clip_shapes):
+            self.replay_button.setChecked(False)
+            self.replay_button.setChecked(True)
+
     def _toggle_replay(self, on: bool) -> None:
         if on and self.replay is None:
             settings = self.collection.recording
-            canvases = [c for c in self.collection.canvases if c.enabled and c.id in settings.canvases]
+            canvases = self._clip_canvases()
             if not canvases:
-                QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
+                QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
                 self.replay_button.setChecked(False)
                 return
             try:
@@ -3502,7 +3520,7 @@ class MainWindow(QMainWindow):
                 self.replay_button.setChecked(False)
                 return
             self.replay_button.setStyleSheet(ON_AIR_STYLE)
-            self.statusBar().showMessage(f"Replay buffer on: keeping the last {settings.replay_seconds} s.", 4000)
+            self.statusBar().showMessage(f"Clips ready: Save clip keeps the last {settings.replay_seconds} s.", 4000)
         elif not on and self.replay is not None:
             self.replay.stop()
             self.replay = None
@@ -3512,7 +3530,7 @@ class MainWindow(QMainWindow):
 
     def _save_replay(self) -> None:
         if self.replay is None:
-            self.statusBar().showMessage("Turn on the replay buffer first (Controls → Replay buffer).", 4000)
+            self.statusBar().showMessage("Press Clip first to get clips ready.", 4000)
             return
         try:
             paths = self.replay.save()
@@ -3520,7 +3538,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Couldn't save the replay: {exc}", 6000)
             return
         names = ", ".join(p.name for p in paths)
-        self.statusBar().showMessage(f"Saved replay: {names}", 8000)
+        self.statusBar().showMessage(f"Saved clip: {names}", 8000)
+        self.live_side.clip_saved(len(paths))
 
     def _stop_recording(self) -> None:
         session, self.recording = self.recording, None
@@ -3787,6 +3806,8 @@ class MainWindow(QMainWindow):
             "audio_input": [d.name for d in list_audio_devices(loopback=False)],
             "audio_output": [d.name for d in list_audio_devices(loopback=True, rescan=False)],  # one rescan
         }
+        rec = self.collection.recording
+        self._clips_before = (rec.replay_seconds, rec.clip_shapes)
         window = SettingsWindow(
             self.collection,
             default_recordings_folder=self._default_recordings_folder(),
@@ -3808,6 +3829,12 @@ class MainWindow(QMainWindow):
 
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""
+        clips = getattr(self, "_clips_before", None)
+        if clips is not None:
+            self._restart_clips_if_changed(clips)
+            rec = self.collection.recording
+            self._clips_before = (rec.replay_seconds, rec.clip_shapes)
+        self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
         from sprigcast.app.theme import apply_theme
 
         apply_theme(QApplication.instance())
