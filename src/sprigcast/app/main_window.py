@@ -1104,14 +1104,18 @@ class MainWindow(QMainWindow):
         self._dock("Destinations", scroll)
 
     def _edit_destination(self, output_id: str | None) -> None:
-        self._open_settings("Stream", output_id=output_id or "new")
+        """Open Settings → Stream on a destination. Only "new" (the + Add link) adds one; Edit just opens the list."""
+        if output_id is None:
+            first = next((o.id for o in self.collection.outputs if o.type == "stream"), None)
+            output_id = first or "new"
+        self._open_settings("Stream", output_id=output_id)
 
     def _build_live_stage(self) -> None:
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
                                     self._edit_in_build)
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
-                                  self._edit_destination)
+                                  self._edit_destination, self._on_stream_toggled)
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()
@@ -1205,13 +1209,15 @@ class MainWindow(QMainWindow):
         from sprigcast.output.keys import probably_has_key
 
         places = []
-        for output in self.collection.outputs:
-            if output.type != "stream":
-                continue
+        streams = [o for o in self.collection.outputs if o.type == "stream"]
+        for output in streams:
             service = SERVICES.get(output.service or "custom", SERVICES["custom"])
             issue = problem(output, self.collection, probably_has_key) if output.enabled else None
             note = (notes or {}).get(output.id) or issue or ("Ready" if output.enabled else "Off")
-            places.append(Destination(output.id, service.label, output.enabled, note))
+            name = service.label
+            if sum(1 for o in streams if o.service == output.service) > 1:  # two Twitch rows: say which shape
+                name += f" · {output.canvas}"
+            places.append(Destination(output.id, name, output.enabled, note))
         self.live_side.show_destinations(places, levels or {})
 
     # Studio mode -----------------------------------------------------------------------

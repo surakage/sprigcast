@@ -411,3 +411,50 @@ def test_inspector_numbers_sit_centred(app):
     field = box.lineEdit().geometry()
     assert field.x() == 0 and field.width() == box.width()  # no arrow space pushing the number left
     holder.close()
+def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("PlacesTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    w = MainWindow(col, tmp_path / "scenes.json")
+    opened = []
+    monkeypatch.setattr(w, "_open_settings", lambda tab="General", output_id=None: opened.append(output_id))
+    try:
+        w._set_mode("live")
+        side = w.live_side
+        assert list(side.place_rows) == ["tw", "tt"]
+        switch = side.place_rows["tt"][3]
+        assert side.place_rows["tw"][3].isChecked() and not switch.isChecked()
+        switch.click()  # turn TikTok on from Live
+        assert col.outputs[1].enabled and side.place_rows["tt"][2].text() != "Off"
+        side.place_rows["tw"][3].click()
+        assert not col.outputs[0].enabled and side.place_rows["tw"][2].text() == "Off"
+        # Edit opens the list on the first one; only + Add makes a new one.
+        w._edit_destination(None)
+        side.add_place.click()
+        assert opened == ["tw", "new"] and len(col.outputs) == 2
+        side.set_live(True)
+        assert not switch.isEnabled() and not side.add_place.isEnabled()
+        # Two Twitch destinations say which shape each one sends.
+        col.outputs.append(Output(id="tw2", type="stream", service="twitch", canvas="vertical", key_ref="k/tw2"))
+        w._live_destinations()
+        assert side.place_rows["tw2"][1].text() == "Twitch · vertical"
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_stream_page_on_switch(app):
+    from sprigcast.app.stream_dialog import StreamPage, output_label
+
+    col = _collection()
+    page = StreamPage(col)
+    page.select_output("tt")
+    assert not page.enabled.isChecked() and output_label(page.outputs[1]).endswith("(off)")
+    page.enabled.setChecked(True)
+    assert page.outputs[1].enabled and page.apply_to(col) and col.outputs[1].enabled
