@@ -108,7 +108,7 @@ def plugin_source_kinds() -> list[str]:
 def _hint(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet("color: gray")
+    label.setStyleSheet(f"color: {theme.MUTED}")
     return label
 
 

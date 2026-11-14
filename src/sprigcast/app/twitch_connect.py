@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.output import twitch_auth
 from sprigcast.output.twitch_auth import Pending, TwitchAuthError
 
@@ -61,7 +62,7 @@ class TwitchConnectDialog(QDialog):
         layout.addLayout(row)
         self.status = QLabel("")
         self.status.setWordWrap(True)
-        self.status.setStyleSheet("color: gray")
+        self.status.setStyleSheet(f"color: {theme.MUTED}")
         layout.addWidget(self.status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         buttons.rejected.connect(self.reject)

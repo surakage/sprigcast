@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.core.scene import Canvas, RecordingSettings
 
 SIZE_LABELS = {
@@ -56,7 +57,7 @@ class RecordingPage(QWidget):
         self.bitrate.setValue(settings.bitrate_kbps)
         form.addRow("Video bitrate", self.bitrate)
         hint = QLabel("12000 is good for 1080p60. Use 20000 or more for fast games.")
-        hint.setStyleSheet("color: gray")
+        hint.setStyleSheet(f"color: {theme.MUTED}")
         form.addRow("", hint)
 
         self.container = QComboBox()

@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
+
 
 def _label(key: str) -> str:
     return key.replace("_", " ").capitalize()
@@ -46,7 +48,7 @@ class SettingsDialog(QDialog):
         if "text" in defaults:
             tip = QLabel("{time}, {time12} and {date} show a live clock. A file's text replaces Text when set.")
             tip.setWordWrap(True)
-            tip.setStyleSheet("color: gray")
+            tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
