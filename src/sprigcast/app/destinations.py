@@ -1,6 +1,6 @@
 """Words about places you stream to: what goes there, what's missing, and how it's doing while live.
 
-Live's "Where it goes" card (app/live_stage.py) and the stream doctor use these.
+Live's "Destinations" card (app/live_stage.py) and the stream doctor use these.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
     ┌ stage ─────────────────────────────────────┐ ┌ End stream ┐
     │ horizontal program   vertical program      │ │ Record  Clip│
-    │ NEXT · Gaming                  [Bloom it]  │ │ Where it goes
+    │ NEXT · Gaming                  [Bloom it]  │ │ Destinations 
     └────────────────────────────────────────────┘ │ Sound       │
     [Just Chatting] [Gaming] [BRB] [Ending] …      │ CPU · RAM   │
 
@@ -75,6 +75,12 @@ def heading(text: str, size: int = 14) -> QLabel:
     label.setFont(font)
     label.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; background: transparent;")
     return label
+
+
+# Pills on a PANEL card are one step lighter, so they read as buttons.
+CARD_PILL_STYLE = theme.PILL_STYLE + (
+    f"QPushButton {{ background: {theme.RAISED}; }} QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+)
 
 
 def pill(text: str, style: str = "") -> QPushButton:
@@ -151,14 +157,18 @@ def side_card() -> QFrame:
     return card
 
 
+PLACES_HEIGHT = 140  # about four destinations; more scroll inside the card
+
+
 class FitScroll(QScrollArea):
     """Scrolls its widget only when the column is too short: as tall as the content when there is room,
     down to SHORTEST when there isn't. Never scrolls sideways."""
 
     SHORTEST = 150
 
-    def __init__(self, widget: QWidget):
+    def __init__(self, widget: QWidget, cap: int | None = None):
         super().__init__()
+        self.cap = cap  # never taller than this either: past it, the content scrolls
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -169,7 +179,10 @@ class FitScroll(QScrollArea):
         self._fit()
 
     def _fit(self) -> None:
-        self.setMaximumHeight(max(1, self.widget().sizeHint().height()))  # never taller than the content
+        height = self.widget().sizeHint().height()
+        if self.cap is not None:
+            height = min(height, self.cap)
+        self.setMaximumHeight(max(1, height))  # never taller than the content
         self.updateGeometry()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
@@ -179,10 +192,11 @@ class FitScroll(QScrollArea):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         hint = self.widget().sizeHint()
-        return QSize(hint.width(), hint.height())
+        return QSize(hint.width(), hint.height() if self.cap is None else min(hint.height(), self.cap))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(0, min(self.SHORTEST, self.widget().sizeHint().height()))
+        shortest = self.SHORTEST if self.cap is None else self.cap
+        return QSize(0, min(shortest, self.widget().sizeHint().height()))
 
 
 class LiveSide(QWidget):
@@ -211,6 +225,11 @@ class LiveSide(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(16)
 
+        # One card: Go live, Record / Clips / Settings, then where the stream goes. The list scrolls
+        # inside the card past a few rows, so a long list never squeezes Chat below it.
+        where_card = side_card()
+        where = where_card.layout()
+        where.setSpacing(12)
         buttons = QVBoxLayout()
         buttons.setSpacing(10)
         self.live = pill("Go live", theme.BIG_GO_STYLE)
@@ -219,15 +238,15 @@ class LiveSide(QWidget):
         buttons.addWidget(self.live)
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.record = pill("Record")
+        self.record = pill("Record", CARD_PILL_STYLE)
         self.record.setToolTip("Record the canvases ticked in Controls, to your recordings folder")
         self.record.clicked.connect(on_record)
-        self.clip = pill("Clips")
+        self.clip = pill("Clips", CARD_PILL_STYLE)
         self.clip.clicked.connect(on_clip)
         self._clip_on, self._clip_seconds = False, 30
         row.addWidget(self.record)
         row.addWidget(self.clip)
-        self.settings = pill("⚙")
+        self.settings = pill("⚙", CARD_PILL_STYLE)
         self.settings.setFixedWidth(44)
         self.settings.setToolTip("Settings (Ctrl+,)")
         self.settings.setVisible(on_settings is not None)
@@ -239,12 +258,15 @@ class LiveSide(QWidget):
         self.rec_note.setStyleSheet(f"color: {theme.LIVE_TEXT}; background: transparent;")
         self.rec_note.setVisible(False)
         buttons.addWidget(self.rec_note)
-        root.addLayout(buttons)
-
-        where_card = side_card()
-        where = where_card.layout()
+        where.addLayout(buttons)
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {theme.EDGE};")
+        where.addSpacing(2)
+        where.addWidget(line)
+        where.addSpacing(2)
         top = QHBoxLayout()
-        top.addWidget(heading("Where it goes"), 1)
+        top.addWidget(heading("Destinations"), 1)
         self.add_place = QPushButton("+ Add")
         self.add_place.setStyleSheet(theme.LINK_STYLE)
         self.add_place.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -261,9 +283,12 @@ class LiveSide(QWidget):
         self.manage.clicked.connect(lambda: self.set_editing(not self.editing))
         top.addWidget(self.manage)
         where.addLayout(top)
-        self.places = QVBoxLayout()
+        places_box = QWidget()
+        self.places = QVBoxLayout(places_box)
+        self.places.setContentsMargins(0, 0, 0, 0)
         self.places.setSpacing(12)
-        where.addLayout(self.places)
+        self.places_scroll = FitScroll(places_box, cap=PLACES_HEIGHT)
+        where.addWidget(self.places_scroll)
         self.all_settings = QPushButton("All stream settings…")
         self.all_settings.setStyleSheet(theme.LINK_STYLE)
         self.all_settings.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -312,7 +337,7 @@ class LiveSide(QWidget):
     def set_recording(self, text: str) -> None:
         """'' when not recording, else the REC clock line."""
         self.record.setText("Stop recording" if text else "Record")
-        self.record.setStyleSheet(theme.PILL_ON_AIR_STYLE if text else theme.PILL_STYLE)
+        self.record.setStyleSheet(theme.PILL_ON_AIR_STYLE if text else CARD_PILL_STYLE)
         self.rec_note.setText(text)
         self.rec_note.setVisible(bool(text))
 
@@ -322,7 +347,7 @@ class LiveSide(QWidget):
         self.clip.setToolTip(f"Save the last {seconds} s as a clip (length and shapes: Settings → Recording)" if on
                              else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clip can save it")
         self.clip.setText(f"Clip {seconds}s" if on else "Clips")
-        self.clip.setStyleSheet(theme.PILL_SELECTED_STYLE if on else theme.PILL_STYLE)
+        self.clip.setStyleSheet(theme.PILL_SELECTED_STYLE if on else CARD_PILL_STYLE)
 
     def clip_saved(self, files: int) -> None:
         """A moment of thanks on the button, then back to "Clip 30s"."""
@@ -331,7 +356,7 @@ class LiveSide(QWidget):
         self.clip.setText("Saved ✓" if files else "Nothing saved")
         QTimer.singleShot(1800, lambda: self.set_clip(self._clip_on, self._clip_seconds))
 
-    # Where it goes --------------------------------------------------------------------------
+    # Destinations ---------------------------------------------------------------------------
 
     def _show_add_menu(self) -> None:
         self.add_menu.exec(self.add_place.mapToGlobal(self.add_place.rect().bottomLeft()))
@@ -372,7 +397,10 @@ class LiveSide(QWidget):
             switch.blockSignals(False)
             switch.setEnabled(not self.is_live)
             level = levels.get(place.id, "idle" if place.on else "off")
-            dot.setStyleSheet(f"color: {HEALTH_COLORS.get(level, HEALTH_COLORS['idle'])}; background: transparent;")
+            colour = HEALTH_COLORS.get(level, HEALTH_COLORS['idle'])
+            dot.setStyleSheet(f"color: {colour}; background: transparent;")
+            # The note carries the health colour itself (Ready, Live, Slow...): no separate dot needed.
+            note.setStyleSheet(f"color: {colour if place.on and level != 'idle' else theme.MUTED}; background: transparent;")
             name.setText(place.name)
             name.setStyleSheet(f"color: {theme.TEXT if place.on else theme.MUTED}; background: transparent;")
             note.setText(place.note)
@@ -407,8 +435,8 @@ class LiveSide(QWidget):
         switch.setCursor(Qt.CursorShape.PointingHandCursor)
         switch.setToolTip("On: Go live sends here. Off: skipped.")
         switch.toggled.connect(lambda on, pid=place.id: self.on_toggle(pid, on))
+        dot.setVisible(False)
         line.addWidget(switch)
-        line.addWidget(dot)
         line.addWidget(name, 1)
         line.addWidget(note)
         outer.addLayout(line)
@@ -512,7 +540,7 @@ class LiveStage(QWidget):
         self.card = StageCard()
         left.addWidget(self.card, 1)
         # Under the canvas: three cards the same size, Blooms | Sound | Transitions. The main window
-        # fills the Blooms and Transitions cards; the right column keeps Go live, Where it goes and Chat.
+        # fills the Blooms and Transitions cards; the right column keeps Go live, Destinations and Chat.
         self.bottom = QWidget()
         row = QHBoxLayout(self.bottom)
         row.setContentsMargins(0, 0, 0, 0)
