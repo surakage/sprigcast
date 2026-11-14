@@ -349,6 +349,129 @@ class Limiter(Compressor):
         return np.clip(out, -ceiling, ceiling)
 
 
+@_audio("invert_polarity", "Invert Polarity", [])
+class InvertPolarity(AudioFilter):
+    """Flips the wave upside down: fixes a mic that cancels out against another copy of itself."""
+
+    def process(self, block):
+        return -block
+
+
+class FFmpegAudioFilter(AudioFilter):
+    """Runs one of FFmpeg's audio filters (fast C code) through PyAV, one block at a time.
+
+    Some FFmpeg filters hold a few ms of audio back; the first blocks are padded with silence so
+    every call still returns exactly as many samples as it was given."""
+
+    def graph_spec(self) -> list[tuple[str, str]]:  # [(filter name, its arguments)]
+        raise NotImplementedError
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        self._graph = None
+        self._built_for: tuple | None = None
+        self._pts = 0
+        self._pending = np.zeros((0, 2), dtype=np.float32)
+
+    def _build(self, spec: list[tuple[str, str]]) -> None:
+        import av
+
+        graph = av.filter.Graph()
+        last = graph.add_abuffer(format="fltp", sample_rate=SAMPLE_RATE, layout="stereo")
+        for name, args in [*spec, ("aformat", "sample_fmts=fltp:channel_layouts=stereo")]:  # same shape out
+            node = graph.add(name, args)
+            last.link_to(node)
+            last = node
+        sink = graph.add("abuffersink")
+        last.link_to(sink)
+        graph.configure()
+        self._graph, self._built_for, self._pts = graph, tuple(spec), 0
+
+    def process(self, block):
+        import av
+
+        spec = self.graph_spec()
+        if tuple(spec) != self._built_for:
+            self._build(spec)  # settings changed: a fresh graph (FFmpeg filters are fixed once set up)
+        frame = av.AudioFrame.from_ndarray(np.ascontiguousarray(block.T, dtype=np.float32), format="fltp",
+                                           layout="stereo")
+        frame.sample_rate, frame.pts = SAMPLE_RATE, self._pts
+        self._pts += len(block)
+        self._graph.push(frame)
+        pulled = [self._pending]
+        while True:
+            try:
+                out = self._graph.pull()
+            except (av.BlockingIOError, av.EOFError):
+                break
+            pulled.append(out.to_ndarray().T.astype(np.float32, copy=False))
+        joined = np.concatenate(pulled) if len(pulled) > 1 else self._pending
+        n = len(block)
+        if len(joined) < n:
+            joined = np.concatenate([np.zeros((n - len(joined), 2), np.float32), joined])
+        self._pending = joined[n:]
+        return joined[:n]
+
+
+def _lin(db: float) -> float:
+    return float(db_to_gain(float(db)))
+
+
+@_audio("eq3", "3-Band Equalizer", [
+    Field("low_db", "Low", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("mid_db", "Mid", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("high_db", "High", 0.0, -20.0, 20.0, 0.1, " dB"),
+])
+class Equalizer3(FFmpegAudioFilter):
+    """Bass below ~250 Hz, mids around 1.5 kHz, treble above ~5 kHz."""
+
+    def graph_spec(self):
+        s = self.settings
+        return [("bass", f"g={float(s['low_db']):.2f}:f=250"),
+                ("equalizer", f"f=1500:t=q:w=0.8:g={float(s['mid_db']):.2f}"),
+                ("treble", f"g={float(s['high_db']):.2f}:f=5000")]
+
+
+@_audio("expander", "Expander", [
+    Field("ratio", "Ratio", 2.0, 1.0, 20.0, 0.1, ":1"),
+    Field("threshold_db", "Threshold", -40.0, -60.0, 0.0, 0.5, " dB"),
+    Field("attack_ms", "Attack", 10, 1, 100, 1, " ms"),
+    Field("release_ms", "Release", 50, 1, 1000, 1, " ms"),
+])
+class Expander(FFmpegAudioFilter):
+    """The gentle cousin of the noise gate: quiet sounds (room noise, breaths) get quieter still."""
+
+    def graph_spec(self):
+        s = self.settings
+        return [("agate", f"mode=downward:threshold={_lin(s['threshold_db']):.6f}:ratio={float(s['ratio']):.2f}"
+                          f":attack={float(s['attack_ms']):.1f}:release={float(s['release_ms']):.1f}:range=0.001")]
+
+
+@_audio("upward_compressor", "Upward Compressor", [
+    Field("ratio", "Ratio", 1.5, 1.0, 20.0, 0.1, ":1"),
+    Field("threshold_db", "Threshold", -20.0, -60.0, 0.0, 0.5, " dB"),
+    Field("attack_ms", "Attack", 10, 1, 100, 1, " ms"),
+    Field("release_ms", "Release", 50, 1, 1000, 1, " ms"),
+])
+class UpwardCompressor(FFmpegAudioFilter):
+    """Lifts quiet parts toward the threshold: soft voices come forward without loud ones getting louder."""
+
+    def graph_spec(self):
+        s = self.settings
+        return [("acompressor", f"mode=upward:threshold={_lin(s['threshold_db']):.6f}:ratio={float(s['ratio']):.2f}"
+                                f":attack={float(s['attack_ms']):.1f}:release={float(s['release_ms']):.1f}")]
+
+
+@_audio("noise_suppression", "Noise Suppression", [
+    Field("amount_db", "Suppression", 12.0, 1.0, 97.0, 1.0, " dB"),
+])
+class NoiseSuppression(FFmpegAudioFilter):
+    """Takes out steady background noise (fans, hum, hiss) while you talk, not just between words."""
+
+    def graph_spec(self):
+        return [("afftdn", f"nr={float(self.settings['amount_db']):.1f}:nf=-50:tn=1")]
+
+
 class AudioChain:
     """A source's enabled audio filters, run in list order. Rebuilt by the engine when they change."""
 
