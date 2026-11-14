@@ -1523,9 +1523,13 @@ class MainWindow(QMainWindow):
         brand_row.setContentsMargins(0, 0, 0, 0)
         brand_row.setSpacing(10)
         logo = QLabel()
-        icon = QApplication.windowIcon()
+        from sprigcast.app.main import brand_mark
+
+        icon = brand_mark()
+        if icon.isNull():
+            icon = QApplication.windowIcon()
         if not icon.isNull():
-            logo.setPixmap(icon.pixmap(28, 28))
+            logo.setPixmap(icon.pixmap(30, 30))
         brand_row.addWidget(logo)
         name = QLabel("SprigCast")
         font = name.font()
