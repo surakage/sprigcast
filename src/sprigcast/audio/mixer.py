@@ -13,6 +13,7 @@ Two extras on top of the plain mix:
   "tracks" setting; by default everything goes to stream, recording and clips, and voices also
   to the voice track), plus "vod" (VOD-safe: everything recorded except music) and "track4" and
   "track5" (your own picks); see source_tracks. Only the tracks some output asks for are mixed.
+- Source record's "clean" track: the recording track less the sources in clean_out.
 """
 
 from __future__ import annotations
@@ -166,6 +167,8 @@ class Mixer:
         self._sources: list = []
         self._extras: list = []  # short-lived sounds that are not sources, like a stinger clip
         self._delays: dict[str, np.ndarray] = {}
+        # Source record: its "clean" track is the "recording" track without these sources' sound.
+        self.clean_out: frozenset[str] = frozenset()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
@@ -268,9 +271,12 @@ class Mixer:
         for source, block, gain, voice in processed:
             if not voice and not (isinstance(duck, float) and duck == 1.0):
                 block = block * duck
-            for track in source_tracks(source):
+            tracks = source_tracks(source)
+            for track in tracks:
                 if track in blocks:
                     blocks[track].append((block, gain))
+            if "clean" in blocks and "recording" in tracks and source.id not in self.clean_out:
+                blocks["clean"].append((block, gain))
             if measure:
                 meters[source.id] = levels(block, gain) if gain else (FLOOR_DB, FLOOR_DB)
             if monitor_taps and gain and is_monitored(source):

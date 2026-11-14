@@ -4102,6 +4102,8 @@ class MainWindow(QMainWindow):
             self.recording = None
             QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
             return
+        if settings.source_record:
+            self._start_source_record(canvases)
         log.info("recording started: %s, %d kbps, %s, size %s, encoder %s preset %s",
                  ", ".join(c.id for c in canvases), settings.bitrate_kbps, settings.container,
                  f"{settings.short_side}p" if settings.short_side else "canvas", settings.encoder.rate_control,
@@ -4110,6 +4112,25 @@ class MainWindow(QMainWindow):
         self._refresh_recording_status()
 
     # Replay buffer ---------------------------------------------------------------------
+
+    def _start_source_record(self, canvases: list) -> None:
+        """Source record: next to the recording, files without the sources picked in Settings."""
+        from sprigcast.output.source_record import SourceRecording, WithSourceRecord
+
+        settings = self.collection.recording
+        known = {s.id for s in self.collection.sources}
+        hidden = [i for i in settings.source_record_hide if i in known]
+        try:
+            extra = SourceRecording.start(
+                self.engine, canvases, self._recordings_folder(), hidden, settings.bitrate_kbps,
+                settings.container, encoder=settings.encoder, short_side=settings.short_side,
+            )
+        except Exception as exc:
+            log.exception("source record failed to start")
+            self.statusBar().showMessage(f"Recording, but source record could not start: {exc}", 10000)
+            return
+        self.recording = WithSourceRecord(self.recording, extra)
+        log.info("source record started without %d sources", len(hidden))
 
     def _clip_key(self) -> tuple:
         """What clips are started with; a change while they're ready starts them again."""
