@@ -29,12 +29,13 @@ from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Scene, SceneCollec
 
 VENDOR = "sprigcast"
 OBS_VERSION = "31.0.0"  # what we tell apps that check OBS's version; sprigcastVersion says what we are
-SOUND_KINDS = ("audio_input", "audio_output")
+SOUND_KINDS = ("audio_input", "audio_output", "app_audio")
 
 # SprigCast source kind -> the OBS input kind apps expect for the same thing.
 INPUT_KINDS = {
     "audio_input": "wasapi_input_capture",
     "audio_output": "wasapi_output_capture",
+    "app_audio": "wasapi_process_output_capture",
     "camera": "dshow_input",
     "display_capture": "monitor_capture",
     "window_capture": "window_capture",

@@ -422,7 +422,7 @@ class Engine:
         ))
         monitoring = any(
             s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources
-            if s.kind in ("audio_input", "audio_output")
+            if s.kind in ("audio_input", "audio_output", "app_audio")
         )
         if monitoring and not self._monitoring:
             self._monitoring = True

@@ -1,6 +1,7 @@
 """Starter kit: a ready set of blooms from a few choices, so a first stream needs no building.
 
-    Camera  [Elgato Facecam ▾]     Screen  [Monitor 1 ▾]     Mic  [Default ▾]   ☑ Desktop sound
+    Camera  [Elgato Facecam ▾]     Screen  [Monitor 1 ▾]     Mic  [Default ▾]
+    Desktop sound  (By type | All in one)   ● Games [Full-screen game ▾]  ● Music [Usual: Spotify… ▾] ...
     Blooms  ☑ Starting soon  ☑ Just Chatting  ☑ Gaming  ☑ Be right back  ☑ Ending
     ☑ Vertical versions too
 
@@ -45,7 +46,10 @@ class StarterChoice:
     camera: dict | None = None  # camera source settings (name, path, width, height, fps, mirror)
     monitor: tuple[int, int, int] | None = None  # index, width, height
     mic: str | None = "default"  # device name, "default", or None for no mic
-    desktop: bool = True
+    desktop: str | bool | None = "default"  # speakers to capture: name, "default", or None/False for none
+    # Sound by type instead (Games, Music, ...): type key -> exe names picked, or None for the usual apps.
+    # When set, `desktop` is left out so nothing plays twice.
+    app_sounds: dict[str, list[str] | None] | None = None
     blooms: list[str] = field(default_factory=lambda: list(BLOOMS))
     vertical: bool = True
     replace_example: bool = True
@@ -124,9 +128,28 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
             first = next(s for s in collection.scenes if s.id in made and s.canvas == canvas.id)
             collection.active_scenes[canvas.id] = first.id
     _add_sound(collection, "audio_input", choice.mic, "Mic")
-    if choice.desktop:
-        _add_sound(collection, "audio_output", "default", "Desktop audio")
+    if choice.app_sounds is not None:
+        _add_app_sounds(collection, choice.app_sounds)
+    else:
+        desktop = "default" if choice.desktop is True else (choice.desktop or None)
+        _add_sound(collection, "audio_output", desktop, "Desktop audio")
     return made
+
+
+def _add_app_sounds(collection: SceneCollection, picks: dict[str, list[str] | None]) -> None:
+    """One row per type of sound (Games, Music, ...), each catching only its apps; skips types already there."""
+    from sprigcast.sources.app_audio import TYPES
+
+    have = {str(c.settings.get("preset")) for c in collection.sources if c.kind == "app_audio"}
+    for key, apps in picks.items():
+        kind = TYPES.get(key)
+        if kind is None or key in have:
+            continue
+        settings = {"preset": key, "apps": list(apps or []), "volume_db": 0.0, "muted": False}
+        if apps:
+            settings["auto_game"] = False  # a game picked by name: just that one
+        collection.sources.append(SourceConfig(id=collection.new_id(f"sound-{key}"), kind="app_audio",
+                                               name=kind.name, settings=settings))
 
 
 def _add_sound(collection: SceneCollection, kind: str, device: str | None, name: str) -> None:
@@ -147,7 +170,7 @@ def _drop_example(collection: SceneCollection) -> None:
     collection.active_scenes = {c: s for c, s in collection.active_scenes.items() if s not in gone}
     used = {i.source for s in collection.scenes for i in s.items}
     collection.sources = [c for c in collection.sources
-                          if c.id in used or c.kind in ("audio_input", "audio_output")]
+                          if c.id in used or c.kind in ("audio_input", "audio_output", "app_audio")]
     collection.transition_rules = [r for r in collection.transition_rules
                                    if r.from_scene not in gone and r.to_scene not in gone]
 
@@ -161,6 +184,7 @@ def combo_style() -> str:
     return (f"QComboBox {{ background: {theme.CHROME}; color: {theme.TEXT}; border: 1px solid {theme.EDGE_STRONG};"
             " border-radius: 16px; padding: 6px 14px; min-height: 20px; }"
             f"QComboBox:focus, QComboBox:hover {{ border-color: {theme.ACCENT}; }}"
+            f"QComboBox:disabled {{ color: {theme.MUTED}; background: transparent; border-color: {theme.EDGE}; }}"
             "QComboBox::drop-down { border: none; background: transparent; width: 30px; }" + arrow)
 
 
@@ -169,6 +193,12 @@ CHIP_STYLE = (f"QPushButton {{ background: transparent; color: {theme.MUTED}; bo
               f"QPushButton:hover {{ border-color: {theme.ACCENT}; color: {theme.TEXT}; }}"
               f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
               f" border-color: {theme.ACCENT}; }}")
+
+
+SEGMENT_STYLE = (f"QPushButton {{ background: transparent; color: {theme.MUTED}; border: none; border-radius: 12px;"
+                 " padding: 4px 12px; font-weight: 600; }"
+                 f"QPushButton:hover {{ color: {theme.TEXT}; }}"
+                 f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}")
 
 
 def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
@@ -192,48 +222,6 @@ def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
 BOX_HEIGHT = 34  # every row of the form; pills keep their radius (16) under half this
 
 
-class SoundBox(QFrame):
-    """Desktop sound as a pill like the boxes above: what it is on the left, an on/off switch on the right.
-
-    Click anywhere on the pill to flip it.
-    """
-
-    def __init__(self, height: int, parent: QWidget | None = None):
-        from sprigcast.app.live_stage import Switch
-
-        super().__init__(parent)
-        self.setObjectName("soundBox")
-        self.setFixedHeight(height)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(14, 0, 12, 0)
-        row.setSpacing(10)
-        self.text = QLabel("Games, music and alerts")
-        self.state = QLabel()
-        self.switch = Switch()
-        self.switch.setCursor(Qt.CursorShape.PointingHandCursor)
-        row.addWidget(self.text, 1)
-        row.addWidget(self.state)
-        row.addWidget(self.switch)
-        self.switch.toggled.connect(self._show)
-        self.switch.setChecked(True)
-        self._show(True)
-
-    def _show(self, on: bool) -> None:
-        edge = theme.ACCENT if on else theme.EDGE_STRONG
-        self.setStyleSheet(f"#soundBox {{ background: {theme.CHROME}; border: 1px solid {theme.EDGE_STRONG};"
-                           " border-radius: 16px; }"
-                           f"#soundBox:hover {{ border-color: {theme.ACCENT}; }}")
-        self.text.setStyleSheet(f"color: {theme.TEXT if on else theme.MUTED}; background: transparent;")
-        self.state.setText("On" if on else "Off")
-        self.state.setStyleSheet(f"color: {edge if on else theme.MUTED}; font-weight: 600; background: transparent;")
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
-            self.switch.toggle()
-        super().mouseReleaseEvent(event)
-
-
 def _row_label(text: str, box: QWidget) -> QLabel:
     """A form label as tall as its box, so the words sit level with the box's text."""
     label = QLabel(text)
@@ -249,11 +237,12 @@ class StarterDialog(QDialog):
     """
 
     def __init__(self, cameras: list, monitors: list, mics: list[str], fresh: bool, both_shapes: bool,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, speakers: list[str] | None = None,
+                 running_apps: list[str] | None = None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Starter kit")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(700)
         self.cameras, self.monitors = cameras, monitors
         self._drag = None
         outer = QVBoxLayout(self)
@@ -270,7 +259,7 @@ class StarterDialog(QDialog):
         outer.addWidget(card)
         root = QVBoxLayout(card)
         root.setContentsMargins(26, 22, 26, 22)
-        root.setSpacing(14)
+        root.setSpacing(12)
         title = QLabel("Set up your blooms in one go")
         font = title.font()
         font.setPixelSize(20)
@@ -315,10 +304,8 @@ class StarterDialog(QDialog):
         form.addRow(_row_label("Mic", self.mic), self.mic)
         for box in (self.camera, self.screen, self.mic):
             box.setFixedHeight(BOX_HEIGHT)
-        sound_box = SoundBox(BOX_HEIGHT)
-        self.desktop = sound_box.switch
-        form.addRow(_row_label("Desktop sound", sound_box), sound_box)
         root.addLayout(form)
+        root.addWidget(self._desktop_section(style, speakers or [], running_apps or []))
         # Which blooms: on/off chips in their own card, with a running count.
         chips_card, chips = _section("Blooms to make")
         self.bloom_count = QLabel()
@@ -336,22 +323,26 @@ class StarterDialog(QDialog):
             chip.toggled.connect(lambda on, c=chip, n=name: (c.setText(f"✓  {n}" if on else n), self._count()))
             chip.setChecked(True)
             self.bloom_boxes[name] = chip
-            grid.addWidget(chip, i // 3, i % 3)
-        for column in range(3):
+            grid.addWidget(chip, 0, i)  # one row: the dialog is wide enough
+        for column in range(len(BLOOMS)):
             grid.setColumnStretch(column, 1)
         chips.addLayout(grid)
         root.addWidget(chips_card)
         # Extras, only when they apply.
         extras_card, extras = _section("Extras")
-        self.vertical = QCheckBox("Vertical versions for TikTok, Shorts and Reels")
+        self.vertical = QCheckBox("Vertical versions (TikTok, Shorts, Reels)")
         self.vertical.setChecked(both_shapes)
         self.vertical.setVisible(both_shapes)
         self.replace = QCheckBox("Replace the example blooms")
         self.replace.setChecked(fresh)
         self.replace.setVisible(fresh)
+        extras_row = QHBoxLayout()
+        extras_row.setSpacing(24)
         for box in (self.vertical, self.replace):
             box.setCursor(Qt.CursorShape.PointingHandCursor)
-            extras.addWidget(box)
+            extras_row.addWidget(box)
+        extras_row.addStretch(1)
+        extras.addLayout(extras_row)
         root.addWidget(extras_card)
         extras_card.setVisible(both_shapes or fresh)
         line = QFrame()
@@ -372,6 +363,77 @@ class StarterDialog(QDialog):
             buttons.addWidget(b)
         root.addLayout(buttons)
         self._count()
+
+    def _desktop_section(self, style: str, speakers: list[str], running: list[str]) -> QFrame:
+        """Desktop sound: one row per type (Games, Music, ...) with its own on/off and apps, or all in one."""
+        from sprigcast.app.live_stage import Switch
+        from sprigcast.sources.app_audio import SOUND_TYPES
+
+        card, body = _section("Desktop sound")
+        head = card.findChild(QHBoxLayout, "head")
+        self.split = QPushButton("By type")
+        self.whole = QPushButton("All in one")
+        for b, tip in ((self.split, "Games, music, voice chat... each with its own volume and mute"),
+                       (self.whole, "Everything your PC plays, as one sound")):
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.setStyleSheet(SEGMENT_STYLE)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(tip)
+            head.addWidget(b)
+        self.split.setChecked(True)
+        types = QWidget()
+        grid = QGridLayout(types)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(2, 1)
+        self.type_rows: dict[str, tuple] = {}
+        for i, kind in enumerate(SOUND_TYPES):
+            switch = Switch()
+            switch.setChecked(True)
+            switch.setCursor(Qt.CursorShape.PointingHandCursor)
+            name = QLabel(kind.name)
+            name.setMinimumWidth(104)
+            pick = QComboBox()
+            pick.setStyleSheet(style)
+            pick.setFixedHeight(30)
+            pick.setCursor(Qt.CursorShape.PointingHandCursor)
+            pick.addItem(f"Usual: {kind.hint}" if kind.apps else kind.hint, None)
+            for app in running:
+                pick.addItem(app[:-4] if app.lower().endswith(".exe") else app, [app])
+            pick.setToolTip("Which app this sound comes from. Usual catches the common ones; pick an app that's "
+                            "open now to use just that one.")
+
+            def show(on: bool, n=name, p=pick) -> None:
+                n.setStyleSheet(f"color: {theme.TEXT if on else theme.MUTED}; background: transparent;")
+                p.setEnabled(on)
+
+            switch.toggled.connect(show)
+            show(True)
+            grid.addWidget(switch, i, 0)
+            grid.addWidget(name, i, 1)
+            grid.addWidget(pick, i, 2)
+            self.type_rows[kind.key] = (switch, pick)
+        body.addWidget(types)
+        self.desktop = QComboBox()
+        self.desktop.setStyleSheet(style)
+        self.desktop.setFixedHeight(BOX_HEIGHT)
+        self.desktop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.desktop.addItem("Default speakers (follows Windows)", "default")
+        for name in speakers:
+            self.desktop.addItem(name, name)
+        self.desktop.addItem("No desktop sound", None)
+        body.addWidget(self.desktop)
+        self.desktop.hide()
+        self.split.toggled.connect(lambda on: (types.setVisible(on), self.desktop.setVisible(not on)))
+        return card
+
+    def app_sounds(self) -> dict[str, list[str] | None] | None:
+        """Type -> picked apps (None = usual) for the types switched on; None when it's all in one."""
+        if not self.split.isChecked():
+            return None
+        return {key: pick.currentData() for key, (switch, pick) in self.type_rows.items() if switch.isChecked()}
 
     def _count(self) -> None:
         """'4 of 5' beside the heading; nothing picked means nothing to make."""
@@ -404,7 +466,8 @@ class StarterDialog(QDialog):
             camera=camera_settings(cam) if cam is not None else None,
             monitor=(monitor.index, monitor.width, monitor.height) if monitor is not None else None,
             mic=self.mic.currentData(),
-            desktop=self.desktop.isChecked(),
+            desktop=self.desktop.currentData(),
+            app_sounds=self.app_sounds(),
             blooms=[n for n, b in self.bloom_boxes.items() if b.isChecked()],
             vertical=not self.vertical.isHidden() and self.vertical.isChecked(),
             replace_example=self.replace.isChecked() and not self.replace.isHidden(),

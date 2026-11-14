@@ -38,7 +38,7 @@ API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it set
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "custom")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
-SOUND_KINDS = ("audio_input", "audio_output")
+SOUND_KINDS = ("audio_input", "audio_output", "app_audio")
 MAX_STEPS = 100  # in one {"steps": [...]} list
 MAX_WAIT_MS = 10 * 60 * 1000  # all its waits together
 

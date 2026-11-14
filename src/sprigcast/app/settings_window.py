@@ -96,7 +96,7 @@ DOWNSCALE_LABELS = {
     "bicubic": "Bicubic (sharp, 16 samples)",
     "lanczos": "Lanczos (sharpest, 36 samples)",
 }
-AUDIO_KINDS = ("audio_input", "audio_output")
+AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 
 # QSettings keys
 SAVE_STYLE = theme.PILL_STYLE + (

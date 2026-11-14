@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.core.scene import AudioSettings, SceneCollection
 
-AUDIO_KINDS = ("audio_input", "audio_output")
+AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 
 
 def is_voice(settings: dict, kind: str) -> bool:

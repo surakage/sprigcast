@@ -80,6 +80,24 @@ def test_starter_kit_makes_blooms_once_per_sound(tmp_path):
     assert not is_fresh(col)
 
 
+
+def test_starter_desktop_sound_picks_speakers_or_none():
+    from sprigcast.app.starter import StarterChoice, build_starter
+
+    def fresh():
+        return SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)], sources=[], scenes=[])
+
+    col = fresh()
+    build_starter(col, StarterChoice(mic=None, desktop="Headphones (Arctis 7)", blooms=["Ending"]))
+    outs = [c for c in col.sources if c.kind == "audio_output"]
+    assert [c.settings["device"] for c in outs] == ["Headphones (Arctis 7)"]
+    col = fresh()
+    build_starter(col, StarterChoice(mic=None, desktop=None, blooms=["Ending"]))
+    assert not [c for c in col.sources if c.kind == "audio_output"]
+    col = fresh()
+    build_starter(col, StarterChoice(mic=None, desktop=True, blooms=["Ending"]))  # older callers
+    assert [c.settings["device"] for c in col.sources if c.kind == "audio_output"] == ["default"]
+
 def test_build_tabs_sound_sections_add_undo(tmp_path, monkeypatch):
     from PySide6.QtCore import QSettings
 

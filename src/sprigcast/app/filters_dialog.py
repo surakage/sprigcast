@@ -34,7 +34,7 @@ from sprigcast.core import looks
 from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
 from sprigcast.core.scene import Filter, SourceConfig
 
-AUDIO_KINDS = {"audio_input", "audio_output"}
+AUDIO_KINDS = {"audio_input", "audio_output", "app_audio"}
 
 
 def media_of(source: SourceConfig) -> str:
