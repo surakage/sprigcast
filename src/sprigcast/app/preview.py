@@ -48,6 +48,8 @@ class Preview(QWidget):
     menu_requested = Signal(str, int, QPoint)
     # canvas id: the small "twin" of the other shape in Build was clicked (swap to editing it)
     swap_requested = Signal(str)
+    # A sprig dragged in from the library: canvas id, part id.
+    sprig_dropped = Signal(str, str)
 
     def __init__(self, canvas_id: str, title: str, aspect: tuple[int, int], parent: QWidget | None = None):
         super().__init__(parent)
@@ -82,6 +84,7 @@ class Preview(QWidget):
         self.setMinimumSize(160, 160)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)  # sprigs dragged in from the library
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
     # Data from the main window -------------------------------------------------
@@ -368,6 +371,30 @@ class Preview(QWidget):
             p.drawEllipse(mid, half * 0.9, half * 0.9)
 
     # Mouse and keyboard --------------------------------------------------------------------
+
+    def _takes_sprig(self, event) -> bool:
+        from sprigcast.app.library import SPRIG_MIME
+
+        return self.editable and not self.twin and self.scene is not None and event.mimeData().hasFormat(SPRIG_MIME)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self._takes_sprig(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        from sprigcast.app.library import SPRIG_MIME
+
+        if not self._takes_sprig(event):
+            event.ignore()
+            return
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        self.sprig_dropped.emit(self.canvas_id, bytes(event.mimeData().data(SPRIG_MIME)).decode())
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if self.twin:
