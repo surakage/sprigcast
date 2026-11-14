@@ -12,12 +12,27 @@ from pydantic import BaseModel, Field, model_validator
 FORMAT_VERSION = 2
 
 
+DOWNSCALE_FILTERS = ("bilinear", "area", "bicubic", "lanczos")
+
+
 class Canvas(BaseModel):
+    """A canvas: the base size you build on. Viewers and recordings get the output size (scaled down if set)."""
+
     id: str  # "horizontal", "vertical"
     width: int
     height: int
     fps: int = 60
     enabled: bool = True
+    output_short_side: int | None = None  # what's sent out: short side scaled to this (720: 1280x720); None = base
+    downscale: Literal["bilinear", "area", "bicubic", "lanczos"] = "bicubic"  # how the output is scaled down
+
+    def output_size(self) -> tuple[int, int]:
+        """The size streams and recordings get by default: the base size, or scaled to output_short_side."""
+        short = min(self.width, self.height)
+        if not self.output_short_side or short <= self.output_short_side:
+            return self.width, self.height
+        k = self.output_short_side / short
+        return max(2, round(self.width * k / 2) * 2), max(2, round(self.height * k / 2) * 2)
 
 
 class Filter(BaseModel):
@@ -189,6 +204,9 @@ class Output(BaseModel):
 class EncoderSettings(BaseModel):
     """How video is encoded (Settings → Output), like OBS's NVENC options. x264 gets the closest match."""
 
+    encoder: str = "auto"  # an FFmpeg encoder name (h264_nvenc, hevc_amf, libx264...); auto = best on this PC
+    x264_preset: str = "veryfast"  # x264 (CPU) only: ultrafast .. slow
+    x264_tune: str = ""  # x264 only: "", film, animation, grain, stillimage, zerolatency
     rate_control: Literal["cbr", "vbr", "cqp"] = "cbr"
     cq_level: int = 20  # with cqp: lower is better quality and bigger files
     keyint_sec: int = 2  # seconds between keyframes; 0 = auto (2)

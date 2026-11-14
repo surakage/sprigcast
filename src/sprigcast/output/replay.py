@@ -24,7 +24,7 @@ from fractions import Fraction
 from functools import cached_property
 from pathlib import Path
 
-from sprigcast.output.recorder import CONTAINERS, Recorder, pick_codec
+from sprigcast.output.recorder import CONTAINERS, Recorder, pick_codec, resolve_codec
 
 log = logging.getLogger(__name__)
 
@@ -327,7 +327,7 @@ class ReplaySession:
     @classmethod
     def start(cls, engine, canvases: list, folder: Path, seconds: float, bitrate_kbps: int, container: str = "mkv",
               codec: str | None = None, encoder=None) -> ReplaySession:
-        codec = codec or pick_codec()
+        codec = codec or resolve_codec(encoder)
         start_time = time.perf_counter()
         buffers = []
         for canvas in canvases:

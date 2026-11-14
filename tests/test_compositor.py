@@ -116,3 +116,49 @@ def test_colour_source_fills_its_size_from_a_tiny_texture(compositor):
         assert tuple(img[row, col]) == (0x3D, 0xDC, 0x84, 255)
     for row, col in ((8, 20), (27, 20), (17, 15), (17, 40)):  # just outside it
         assert tuple(img[row, col]) == (0, 0, 0, 0)
+
+
+def test_downscale_filters_keep_flat_colour_and_differ_on_detail():
+    import numpy as np
+    import pytest
+
+    from sprigcast.core.scene import Canvas, Scene, SceneItem
+    from sprigcast.render.compositor import Compositor
+
+    try:
+        comp = Compositor()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"no OpenGL context: {exc}")
+    try:
+        canvas = Canvas(id="c", width=64, height=36)
+        img = np.zeros((36, 64, 4), np.uint8)
+        img[..., 3] = 255
+        img[:, ::2, :3] = 255  # fine stripes: each filter blends them differently
+        comp.upload("s", img)
+        scene = Scene(id="s", name="s", canvas="c", items=[SceneItem(source="s")])
+        comp.render(canvas, scene, {"s": (64, 36)})
+        lumas = {}
+        for mode in ("bilinear", "area", "bicubic", "lanczos"):
+            comp.downscale = {"c": mode}
+            y = np.frombuffer(bytes(comp.read_nv12("c", (32, 18))), np.uint8)[: 32 * 18].reshape(18, 32)
+            lumas[mode] = y
+        assert abs(int(lumas["area"].mean()) - 126) < 12  # half white, half black
+        assert len({m.tobytes() for m in lumas.values()}) >= 2
+        flat = np.full((36, 64, 4), (120, 120, 120, 255), np.uint8)
+        comp.upload("s", flat)
+        comp.render(canvas, scene, {"s": (64, 36)})
+        for mode in ("bicubic", "lanczos"):
+            comp.downscale = {"c": mode}
+            y = np.frombuffer(bytes(comp.read_nv12("c", (32, 18))), np.uint8)[: 32 * 18]
+            assert abs(int(y.mean()) - int(y[0])) <= 1 and y.std() < 1.0
+    finally:
+        comp.release()
+
+
+def test_canvas_output_size():
+    from sprigcast.core.scene import Canvas
+
+    assert Canvas(id="h", width=1920, height=1080).output_size() == (1920, 1080)
+    assert Canvas(id="h", width=1920, height=1080, output_short_side=720).output_size() == (1280, 720)
+    assert Canvas(id="v", width=1080, height=1920, output_short_side=720).output_size() == (720, 1280)
+    assert Canvas(id="h", width=1280, height=720, output_short_side=1080).output_size() == (1280, 720)

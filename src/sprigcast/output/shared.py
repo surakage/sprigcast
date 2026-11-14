@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from sprigcast.output.recorder import pick_codec, recording_path, shrink_to
+from sprigcast.output.recorder import recording_path, resolve_codec, shrink_to
 from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, replay_path
 
 log = logging.getLogger(__name__)
@@ -37,10 +37,12 @@ class CanvasEncoder(ReplayBuffer):
         self._file_done = threading.Event()
 
     def _video_options(self) -> dict[str, str]:
+        from sprigcast.output.recorder import family
+
         opts = super()._video_options()
-        if self.codec == "h264_nvenc":
+        if family(self.codec) == "nvenc":
             opts["forced-idr"] = "1"  # a keyframe asked for (a recording starting) is a clean IDR frame
-        elif self.codec in ("h264_amf", "h264_qsv") and "profile" in opts:  # same for AMD and Intel
+        elif family(self.codec) in ("amf", "qsv") and opts:  # same for AMD and Intel
             opts["forced_idr"] = "1"
         return opts
 
@@ -137,7 +139,8 @@ class EncoderPool:
         if enc is None:
             enc = CanvasEncoder(canvas.id, canvas.width, canvas.height, canvas.fps, bitrate_kbps, codec,
                                 time.perf_counter(), container, encoder,
-                                shrink_to(canvas.width, canvas.height, short_side), self.tracks)
+                                shrink_to(canvas.width, canvas.height, short_side or getattr(canvas, "output_short_side", None)),
+                                self.tracks)
             enc.start()
             self.encoders[canvas.id] = enc
             self._users[canvas.id] = set()
@@ -178,7 +181,7 @@ class SharedRecording:
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, bitrate_kbps: int, container: str = "mkv",
               codec: str | None = None, encoder=None, short_side: int | None = None) -> SharedRecording:
-        codec = codec or pick_codec()
+        codec = codec or resolve_codec(encoder)
         now = datetime.now()
         encoders, paths = [], []
         try:
@@ -232,7 +235,7 @@ class SharedReplay:
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, seconds: float, bitrate_kbps: int,
               container: str = "mkv", codec: str | None = None, encoder=None,
               short_side: int | None = None) -> SharedReplay:
-        codec = codec or pick_codec()
+        codec = codec or resolve_codec(encoder)
         encoders = []
         for canvas in canvases:
             enc = pool.acquire("replay", canvas, bitrate_kbps, container, codec, encoder, short_side)

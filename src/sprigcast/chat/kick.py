@@ -21,7 +21,10 @@ from sprigcast.chat import ChatMessage
 log = logging.getLogger(__name__)
 
 CHANNEL_API = "https://kick.com/api/v2/channels/{slug}"
-PUSHER_KEY = "32cbd69e4b950bf97679"  # Kick's public chat key; QSettings "kick/pusher_key" overrides it
+# Kick's public chat keys, newest first: when Kick retires one, Pusher says 4001 and the next is tried.
+# QSettings "kick/pusher_key" puts another in front without a new SprigCast.
+PUSHER_KEYS = ("34bf7a0ff419a2a775b9", "32cbd69e4b950bf97679")
+PUSHER_KEY = PUSHER_KEYS[0]
 PUSHER_URL = "wss://ws-us2.pusher.com/app/{key}?protocol=7&client=js&version=8.4.0&flash=false"
 AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
          "Chrome/140.0.0.0 Safari/537.36")
@@ -64,7 +67,7 @@ def _content(text: str) -> tuple[str, list, dict]:
 
 def message_from_event(event: str, data: dict) -> ChatMessage | None:
     """One Pusher event's data -> ChatMessage (chat lines, subs, gifts, hosts)."""
-    if event == "App\\Events\\ChatMessageEvent":
+    if event in ("App\\Events\\ChatMessageEvent", "App\\Events\\ChatMessageSentEvent"):
         sender = data.get("sender") or {}
         identity = sender.get("identity") or {}
         text, emotes, images = _content(str(data.get("content", "")))
@@ -102,6 +105,7 @@ class KickChat(QObject):
         self._wanted = False
         self._tries = 0
         self._seen: list[str] = []
+        self._key_index = 0  # which of PUSHER_KEYS this run uses
         self._retry = QTimer(self)
         self._retry.setSingleShot(True)
         self._retry.timeout.connect(self._open)
@@ -188,7 +192,9 @@ class KickChat(QObject):
     def _connect(self) -> None:
         from PySide6.QtWebSockets import QWebSocket
 
-        key = str(QSettings().value("kick/pusher_key", "") or "") or PUSHER_KEY
+        custom = str(QSettings().value("kick/pusher_key", "") or "")
+        keys = ((custom,) if custom else ()) + PUSHER_KEYS
+        key = keys[self._key_index % len(keys)]
         self.socket = QWebSocket()
         self.socket.disconnected.connect(lambda: self._failed("disconnected"))
         self.socket.textMessageReceived.connect(self.handle_text)
@@ -217,6 +223,8 @@ class KickChat(QObject):
             self._send({"event": "pusher:pong", "data": {}})
         elif event == "pusher:error":
             log.info("kick chat %s: pusher error %s", self.channel, data)
+            if isinstance(data, dict) and data.get("code") == 4001:  # that key was retired: try the next
+                self._key_index += 1
         elif event == "App\\Events\\MessageDeletedEvent":
             message_id = (data.get("message") or {}).get("id")
             if message_id:

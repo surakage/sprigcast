@@ -66,6 +66,7 @@ from sprigcast.app.fit import FitButton
 from sprigcast.app.hotkeys import (
     SAVE_REPLAY,
     SCENE_PREFIX,
+    SCREENSHOT,
     STATE_PREFIX,
     STUDIO_GO,
     TOGGLE_RECORD,
@@ -139,7 +140,7 @@ from sprigcast.core.scene import (
 )
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key, set_key
-from sprigcast.output.recorder import codec_label, codec_short, pick_codec
+from sprigcast.output.recorder import codec_label, codec_short, pick_codec, resolve_codec
 from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
@@ -174,7 +175,7 @@ log = logging.getLogger(__name__)
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
 BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output",
-                  "scene", "browser"}
+                  "scene", "browser", "chat"}
 
 
 def _name_from(settings: dict, fallback: str) -> str:
@@ -542,6 +543,13 @@ class MainWindow(QMainWindow):
                 self.chat_panel.sleep()
 
         self.panels.changed.connect(chat_in_use)
+        self._chat_sources_changed()
+
+    def _chat_sources_changed(self) -> None:
+        """A chat source on any bloom keeps your chats read, even with the Chat panel closed."""
+        panel = getattr(self, "chat_panel", None)
+        if panel is not None:
+            panel.hub.want("source", any(s.kind == "chat" for s in self.collection.sources))
 
     def _connect_twitch(self) -> None:
         from sprigcast.app.twitch_connect import TwitchConnectDialog
@@ -744,6 +752,7 @@ class MainWindow(QMainWindow):
             ("Picture…", self._add_image),
             ("Text", self._add_text),
             ("Web page…", self._add_browser),
+            ("Chat", self._add_chat),
             ("Colour…", self._add_color),
         ):
             menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
@@ -1525,6 +1534,9 @@ class MainWindow(QMainWindow):
             places.append(Destination(output.id, name, output.enabled, note, output.canvas,
                                       output.bandwidth_test if service.bandwidth_test else None))
         self.live_side.show_destinations(places, levels or {})
+        if self.streaming is None and hasattr(self, "mode_clock"):
+            ready = sum(1 for p in places if p.on and p.note == "Ready")
+            self._set_header_clock(f"Offline  ·  {ready} ready to go live" if ready else "Offline", False)
 
     # Studio mode -----------------------------------------------------------------------
 
@@ -2161,9 +2173,7 @@ class MainWindow(QMainWindow):
                 self._last_stats = event
                 if self.stats_strip.is_open():
                     self._refresh_stats_panel()
-                self.status.setText(
-                    f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
-                )
+                self._show_render_health(event)
             elif isinstance(event, AudioLevels):
                 if self.mode == "live":
                     self.live_side.set_levels(event.levels)
@@ -2195,6 +2205,7 @@ class MainWindow(QMainWindow):
             self.collection.save(self.scenes_path)
             self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
@@ -2631,6 +2642,7 @@ class MainWindow(QMainWindow):
                     "camera": "Camera",
                     "text": "Text",
                     "browser": "Page",
+                    "chat": "Chat box",
                 }.get(config.kind, "Settings")
             )
             self.prop_status.setText(self._status_text(item.source))
@@ -3405,6 +3417,31 @@ class MainWindow(QMainWindow):
     def _add_text(self) -> None:
         self._add_from_class("text", "Text")
 
+    def _add_chat(self) -> None:
+        """Your mixed chat drawn on the canvas (sources/chat.py). Sized to fit the canvas's shape."""
+        scene = self._scene()
+        if scene is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        from sprigcast.sources.chat import DEFAULTS
+
+        canvas = self.collection.canvas(scene.canvas)
+        settings = dict(DEFAULTS)
+        if canvas.height > canvas.width:  # vertical: a wide, short strip near the bottom, bigger words for phones
+            settings.update(width=round(canvas.width * 0.8), height=round(canvas.height * 0.3),
+                            size=round(canvas.width / 27))
+        else:
+            settings.update(width=round(canvas.width * 0.25), height=round(canvas.height * 0.6),
+                            size=round(canvas.height / 40))
+        self._add_item(SourceConfig(id=self.collection.new_id("chat"), kind="chat", name="Chat", settings=settings))
+        item = scene.items[-1]
+        item.x = round(canvas.width * (0.1 if canvas.height > canvas.width else 0.72))
+        item.y = round(canvas.height * (0.55 if canvas.height > canvas.width else 0.3))
+        self._changed()
+        self._refresh_properties()
+        if not self.chat_panel.reading():
+            self.statusBar().showMessage("Add your channels in the Chat panel (⋯ → Channels…) to fill it.", 8000)
+
     def _interact(self, source_id: str) -> None:
         """Open a browser source's page on screen so you can click and type in it."""
         source = next((s for s in self.collection.sources if s.id == source_id), None)
@@ -3854,6 +3891,18 @@ class MainWindow(QMainWindow):
     def _recordings_folder(self) -> Path:
         return Path(self.collection.recording.folder or self._default_recordings_folder())
 
+    def _screenshot(self, shapes: list[str] | None = None, width: int | None = None, save: bool = True,
+                    as_data: bool = False) -> list[dict]:
+        """A PNG of what's on air in each shape (or just shapes), in the recordings folder's Screenshots."""
+        from sprigcast.app import screenshot
+
+        ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
+        folder = self._recordings_folder() / "Screenshots" if save else None
+        shots = screenshot.take(self.engine, ids, folder, width, as_data)
+        if save:
+            self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+        return shots
+
     def _open_recordings_folder(self) -> None:
         folder = self._recordings_folder()
         folder.mkdir(parents=True, exist_ok=True)
@@ -4049,7 +4098,9 @@ class MainWindow(QMainWindow):
             return
         self._say("Connecting…")
         try:
-            self.streaming = StreamSession.start(self.engine, targets, pick_codec(), self.collection.stream_encoder)
+            self.streaming = StreamSession.start(self.engine, targets,
+                                                 resolve_codec(self.collection.stream_encoder, streaming=True),
+                                                 self.collection.stream_encoder)
         except Exception as exc:
             self.streaming = None
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
@@ -4135,6 +4186,7 @@ class MainWindow(QMainWindow):
         self._refresh_stream_boxes()
         self.live_panel.set_clock("Offline", False)
         self._set_header_clock("Offline", False)
+        self._live_destinations()  # "Offline · N ready to go live"
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
@@ -4176,7 +4228,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 log.exception("stream report")
         self.live_panel.set_clock(clock, True)
-        self._set_header_clock(clock.replace("● LIVE", "● Live") + ("" if worst == "good" else "  ·  check Destinations"), True)
+        import re
+
+        sending = [int(m.group(1)) for _level, text in states.values() if (m := re.match(r"(\d+) kbps", text))]
+        line = clock.replace("● LIVE", "● Live")
+        if sending:
+            # How many places are getting the stream, and the upload they add up to.
+            line += f"  ·  {len(sending)} of {len(states)} sending  ·  {sum(sending) / 1000:.1f} Mbps up"
+        self._set_header_clock(line + ("" if worst == "good" else "  ·  check Destinations"), True)
 
     # Hotkeys -----------------------------------------------------------------
 
@@ -4238,6 +4297,24 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import apply_settings
 
         apply_settings(self.control, self)
+
+    def _show_render_health(self, event) -> None:
+        """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""
+        target = max((c.fps for c in self.collection.canvases), default=60)
+        late = max(0, event.dropped_ticks - getattr(self, "_late_before", 0))  # the engine counts them up
+        self._late_before = event.dropped_ticks
+        budget = 1000 / target
+        if event.fps < target * 0.85 or late > target * 0.05:
+            word, colour = "Struggling", theme.BAD
+        elif event.fps < target * 0.95 or late or event.render_ms > budget * 0.6:
+            word, colour = "Busy", theme.WARN
+        else:
+            word, colour = "Smooth", theme.ACCENT
+        self.status.setText(f'<span style="color:{colour}">●</span>'
+                            f'<span style="color:{theme.MUTED}">&nbsp;&nbsp;{word}</span>')
+        self.stats_strip.setToolTip(f"{event.fps:.0f} of {target} frames a second  ·  each frame takes "
+                                    f"{event.render_ms:.1f} ms of {budget:.1f}  ·  {late} late this second\n"
+                                    "Click for all the numbers (Ctrl+Shift+S)")
 
     # Command palette -------------------------------------------------------------
 
@@ -4424,6 +4501,8 @@ class MainWindow(QMainWindow):
             self._studio_go()
         elif action == SAVE_REPLAY:
             self._save_replay()
+        elif action == SCREENSHOT:
+            self._screenshot()
         elif action == TOGGLE_STREAM:
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:

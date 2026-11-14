@@ -20,6 +20,7 @@ dependencies = [
     "keyring>=25",  # stream keys in Windows Credential Manager (M8)
     "pynput>=1.7; sys_platform == 'win32'",  # global hotkeys (M10)
     "psutil>=5.9",  # CPU and memory in the stats panel (M10)
+    "TikTokLive>=7.0.1",  # TikTok chat when TikFinity isn't running (unofficial; loaded only when used)
 ]
 
 [project.scripts]

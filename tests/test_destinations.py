@@ -577,3 +577,23 @@ def test_long_destination_list_scrolls_inside_its_card(app):
     app.processEvents()
     assert side.places_scroll.maximumHeight() < PLACES_HEIGHT  # a short list takes only what it needs
     side.close()
+
+
+def test_bloom_pills_show_their_key_and_numbers_switch(app):
+    from sprigcast.app.hotkeys import SCENE_PREFIX
+    from sprigcast.app.live_panel import LivePanel
+
+    col = _collection()
+    col.hotkeys[SCENE_PREFIX + "h2"] = "Ctrl+2"
+    picked = []
+    panel = LivePanel(picked.append)
+    panel.show()
+    panel.show_scenes(col)
+    assert panel.buttons["h1"].key == "1"  # no hotkey of its own: its number
+    assert panel.buttons["h2"].key == "Ctrl+2"  # its own hotkey wins
+    assert panel.number_order == ["h1", "h2"]
+    panel._number(2)
+    assert picked == ["h2"]
+    panel._number(5)  # nothing there
+    assert picked == ["h2"]
+    panel.close()

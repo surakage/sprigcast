@@ -71,7 +71,7 @@ class SharedStreamEncoder(ReplayBuffer):
         # A link (re)joining asks for a keyframe: make it a clean IDR a new viewer can start from.
         if self.codec in ("h264_nvenc", "libx264"):
             opts["forced-idr"] = "1"
-        elif self.codec in ("h264_amf", "h264_qsv") and "profile" in opts:
+        elif self.codec in ("h264_amf", "h264_qsv") and opts:
             opts["forced_idr"] = "1"
         return opts
 

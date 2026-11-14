@@ -222,3 +222,57 @@ def test_panel_sleeps_when_taken_off_every_screen(app, monkeypatch):
     assert stopped == ["surakage"] and not panel.readers and not panel.active
     panel.activate()  # shown again: reads again, earlier lines still there
     assert set(panel.readers) == {"twitch"} and [m.text for m in panel.view.messages] == ["kept"]
+
+
+def test_chat_back_on_twitch(app, monkeypatch):
+    from sprigcast.app import chat_panel
+    from sprigcast.output import twitch_auth
+
+    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: setattr(self, "channel", ch))
+    sent = []
+    monkeypatch.setattr(twitch_auth, "can_send_chat", lambda: True)
+    monkeypatch.setattr(twitch_auth, "send_chat", lambda channel, text: sent.append((channel, text)))
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "")
+    connects = []
+    panel = chat_panel.ChatPanel(lambda: connects.append(1))
+    panel.activate()
+    assert panel.say_row.isHidden()  # no chat yet: nothing to answer
+    twitch_auth._announce("surakage")
+    assert not panel.say_row.isHidden() and "surakage" in panel.say.toolTip()
+    panel.say.setText("hi chat")
+    panel.send()
+    for _ in range(50):
+        app.processEvents()
+        if sent and panel.say.isEnabled():
+            break
+        import time
+        time.sleep(0.01)
+    app.processEvents()
+    assert sent == [("surakage", "hi chat")] and panel.say.text() == ""
+
+    monkeypatch.setattr(twitch_auth, "can_send_chat", lambda: False)  # connected before sending was asked for
+    panel.say.setText("again")
+    panel.send()
+    assert connects == [1] and len(sent) == 1
+
+
+def test_send_chat_needs_the_scope_and_finds_the_channel(monkeypatch):
+    from sprigcast.output import twitch_auth
+
+    tokens = {"access_token": "t", "refresh_token": "r", "expires_at": 9e12, "login": "surakage",
+              "user_id": "42", "scope": ["channel:read:stream_key"]}
+    monkeypatch.setattr(twitch_auth, "_load", lambda: tokens)
+    with pytest.raises(twitch_auth.TwitchAuthError, match="Reconnect"):
+        twitch_auth.send_chat("surakage", "hi")
+    tokens["scope"].append(twitch_auth.CHAT_SCOPE)
+    posted = []
+    monkeypatch.setattr(twitch_auth, "_get", lambda path, token, cid: {"data": [{"id": "99"}]})
+    monkeypatch.setattr(twitch_auth, "_post_json",
+                        lambda path, body, token, cid: (posted.append(body), {"data": [{"is_sent": True}]})[1])
+    twitch_auth.send_chat("surakage", "hi")
+    twitch_auth.send_chat("#MossFriend", "yo")
+    assert [p["broadcaster_id"] for p in posted] == ["42", "99"] and posted[0]["sender_id"] == "42"
+    monkeypatch.setattr(twitch_auth, "_post_json", lambda *a: {"data": [{"is_sent": False,
+                                                                         "drop_reason": {"message": "Slow mode"}}]})
+    with pytest.raises(twitch_auth.TwitchAuthError, match="Slow mode"):
+        twitch_auth.send_chat("surakage", "hi")

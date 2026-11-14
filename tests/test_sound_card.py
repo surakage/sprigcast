@@ -129,3 +129,29 @@ def test_new_audio_filters_keep_the_block_shape():
     low = np.repeat(np.sin(np.arange(BLOCK * 8) * 2 * np.pi * 80 / 48000)[:, None] * 0.1, 2, 1).astype(np.float32)
     out = np.concatenate([louder.process(low[i:i + BLOCK]) for i in range(0, len(low), BLOCK)])
     assert np.abs(out[-BLOCK:]).max() > 0.25  # +12 dB on an 80 Hz tone
+
+
+def test_dragging_a_sound_rows_bar_sets_its_volume(app):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from sprigcast.app.sound_card import Sound, SoundCard, VolumeMeter
+
+    changes = []
+    card = SoundCard(lambda sid, ch: changes.append((sid, ch)), lambda sid: None)
+    card.resize(320, 400)
+    card.show()
+    card.show_sound([Sound("mic", "Mic", group="Voice")])
+    card.open_groups.add("Voice")
+    card.show_sound([Sound("mic", "Mic", group="Voice")])
+    meter = card.meters["mic"]
+    assert isinstance(meter, VolumeMeter) and meter.db == 0
+    row = card.rows["mic"]
+    QTest.mouseClick(meter, Qt.MouseButton.LeftButton, pos=QPoint(6, meter.height() // 2))
+    assert changes[-1] == ("mic", {"volume_db": -60.0})
+    assert card.notes["mic"].text() == "-60 dB"
+    card.show_sound([Sound("mic", "Mic", group="Voice", volume_db=-60.0)])
+    assert card.rows["mic"] is row  # a volume change doesn't rebuild the rows (a drag keeps going)
+    QTest.mouseDClick(meter, Qt.MouseButton.LeftButton, pos=QPoint(20, meter.height() // 2))
+    assert changes[-1] == ("mic", {"volume_db": 0.0})
+    card.close()

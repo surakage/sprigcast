@@ -46,6 +46,7 @@ class FakeHost:
         self.rec = None
         self.clips = False
         self.saved = []
+        self.shots = []
 
     def commit(self, what):
         self.commits.append(what)
@@ -97,6 +98,18 @@ class FakeHost:
 
     def source_sizes(self):
         return {"cam": (16, 9)}
+
+    def screenshot(self, shapes, width, save, as_data):
+        self.shots.append((shapes, width, save, as_data))
+        out = []
+        for shape in shapes:
+            shot = {"shape": shape, "width": width or 1920, "height": 1080}
+            if save:
+                shot["path"] = f"Screenshots/screenshot {shape}.png"
+            if as_data:
+                shot["png"] = "iVBOR"
+            out.append(shot)
+        return out
 
     def stats(self):
         return {"activeFps": 60.0}

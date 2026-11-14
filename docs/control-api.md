@@ -2,6 +2,9 @@
 
 Let stream tools, control decks, bots, scripts and plugins drive SprigCast.
 
+> **Preview.** This API is still taking shape: action names, fields and events may change between
+> versions. `hello` says `"api": 0, "preview": true` until it settles at `"api": 1`.
+
 Turn it on in **Settings → Connections**, then connect a WebSocket to:
 
 ```
@@ -26,9 +29,9 @@ Things are named by **name or id**. Any action that changes a bloom takes `shape
 ## Connecting
 
 ```
-server → {"hello": {"app": "SprigCast", "version": "0.1.0", "api": 1, "auth": {"salt": "…", "challenge": "…"}}}
+server → {"hello": {"app": "SprigCast", "version": "0.1.0", "api": 0, "preview": true, "auth": {"salt": "…", "challenge": "…"}}}
 app    → {"auth": "<answer>", "events": ["bloom", "sound"]}
-server → {"welcome": {"api": 1, "events": ["bloom", "sound"]}}
+server → {"welcome": {"api": 0, "events": ["bloom", "sound"]}}
 ```
 
 `auth` is `null` when no password is set. Then send `{"events": "all"}` (or a list, or `"none"`) to start.
@@ -55,6 +58,23 @@ Error codes:
 | `failed` | something went wrong inside SprigCast |
 
 `app.actions` returns every action with its fields, so a plugin can build its menus from it.
+
+### Step lists
+
+Send several actions in one message, with waits between them. One answer comes back when the
+last step is done:
+
+```
+app    → {"id": "8", "steps": [
+            {"do": "item.show", "bloom": "Main", "item": "Alert"},
+            {"wait": 5000},
+            {"do": "item.hide", "bloom": "Main", "item": "Alert"}]}
+server → {"id": "8", "ok": true, "result": {"steps": [{"ok": true, …}, {"ok": true, "waited": 5000}, {"ok": true, …}]}}
+```
+
+- `wait` is in milliseconds (all the waits together: at most 10 minutes). SprigCast keeps running while it waits.
+- A list holds at most 100 steps.
+- A failing step stops the list. Send `"stopOnError": false` to carry on.
 
 ## Events
 
@@ -87,6 +107,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 {"do": "filter.set", "source": "Facecam", "filter": "Color Correction", "settings": {"saturation": 0.4}}
 {"do": "source.set", "source": "Goal text", "settings": {"text": "Sub goal: 42 / 50"}}
 {"do": "clip.save"}
+{"do": "screenshot.take", "shape": "vertical", "width": 540, "save": false, "data": true}
 {"do": "stream.toggle"}
 ```
 
@@ -143,6 +164,8 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `item.hide` | Hide something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `item.order` | Bring something forward or send it back. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `to`: top, bottom, up (one step) or down (one step) |
+| `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
 | `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `items.list` | What's inside a bloom or sprig, per shape. | `bloom` (optional): name or id, `sprig` (optional): name or id |
@@ -162,6 +185,12 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `record.status` | Recording or not, for how long, and the file. | none |
 | `record.stop` | Stop recording. | none |
 | `record.toggle` | Start or stop recording. | none |
+
+### screenshot
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `screenshot.take` | A picture of what's on air in each shape. | `shape` (optional): both (default), horizontal or vertical, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
 ### sound
 
@@ -210,6 +239,21 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | --- | --- | --- |
 | `transition.get` | The usual transition and its length. | none |
 | `transition.set` | Change the usual transition and/or its length. | `kind` (optional): cut, fade, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000 |
+
+## Web links
+
+For buttons and scripts that can only open a link. Turn on **Allow web links** in Settings → Connections. A password is always needed.
+
+```
+http://127.0.0.1:4455/api                                  every action
+http://127.0.0.1:4455/api/bloom.show?bloom=BRB&password=…   run one, fields in the address
+curl -H "Authorization: Bearer …" -X POST http://127.0.0.1:4455/api/filter.set \
+     -d '{"source": "Facecam", "filter": "Blur", "on": true}'
+```
+
+Values in the address are read the way they look: `true`, `false`, `null` and numbers become those, and anything else is text. The answer is the same JSON as on the WebSocket, without `id`. The HTTP status matches the error: 400 bad request, 401 password, 403 off, 404 not found, 409 not allowed or busy.
+
+Requests made by web pages on other sites are refused, so a page you visit can't drive SprigCast.
 
 ## The OBS-compatible door
 

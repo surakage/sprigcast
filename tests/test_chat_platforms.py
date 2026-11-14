@@ -27,6 +27,10 @@ def test_youtube_live_page_and_chat_page():
     assert youtube.video_from_live_page(live) == "dQw4w9WgXcQ"
     offline = '<html><link rel="canonical" href="https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv"></html>'
     assert youtube.video_from_live_page(offline) is None
+    # Late-2026 /live pages: canonical says "undefined", the stream is the page's current video
+    current = ('<link rel="canonical" href="undefined"><script>var ytInitialData = {"currentVideoEndpoint":'
+               '{"clickTrackingParams":"x","watchEndpoint":{"videoId":"4t4AQ15yj1M"}}};</script>')
+    assert youtube.video_from_live_page(current) == "4t4AQ15yj1M"
     data = {"contents": {"liveChatRenderer": {
         "continuations": [{"invalidationContinuationData": {"continuation": "TOP", "timeoutMs": 10000}}],
         "header": {"liveChatHeaderRenderer": {"viewSelector": {"sortFilterSubMenuRenderer": {"subMenuItems": [
@@ -117,5 +121,57 @@ def test_kick_reader_subscribes_pongs_and_dedupes():
     reader.handle_text(json.dumps(line))
     reader.handle_text(json.dumps({"event": "pusher:ping", "data": {}}))
     assert len(got) == 1 and states == ["live"] and reader.socket.sent[-1]["event"] == "pusher:pong"
+    sent = {"event": "App\\Events\\ChatMessageSentEvent",
+            "data": json.dumps({"id": "x2", "content": "yo", "sender": {"username": "b"}})}
+    reader.handle_text(json.dumps(sent))
+    assert [m.text for m in got] == ["hi", "yo"]
+    # A retired chat key (Pusher 4001) moves the next try on to the next key
+    assert reader._key_index == 0
+    reader.handle_text(json.dumps({"event": "pusher:error", "data": {"code": 4001, "message": "gone"}}))
+    assert reader._key_index == 1
     reader._ping.stop()
     reader.socket = None
+
+
+def test_tiktok_handles_and_tikfinity_messages():
+    from sprigcast.chat import tiktok
+
+    assert tiktok.handle_from_text("https://www.tiktok.com/@Sloth.Bloom/live") == "sloth.bloom"
+    assert tiktok.handle_from_text("@moss_fern") == "moss_fern"
+    assert tiktok.handle_from_text("no spaces allowed") is None
+    chat = tiktok.message_from_tikfinity({"event": "chat", "data": {
+        "uniqueId": "surakage", "nickname": "Sura", "comment": "hi chat", "msgId": "7", "userId": "1",
+        "isModerator": True, "tikfinityUsername": "surakage",
+        "emotes": [{"placeInComment": 2, "emoteId": "e1", "emoteImageUrl": "https://p16.tiktokcdn.com/e1.png"}]}})
+    assert chat.user == "Sura" and chat.badges == ("broadcaster", "moderator")
+    assert chat.text == "hi▢ chat" and chat.emotes == [(2, 2, "tt-e1")] and chat.images["tt-e1"].startswith("https://")
+    streak = {"event": "gift", "data": {"nickname": "Fern", "giftName": "Rose", "giftType": 1, "repeatCount": 3,
+                                        "repeatEnd": False}}
+    assert tiktok.message_from_tikfinity(streak) is None  # mid-streak: wait for the last count
+    streak["data"]["repeatEnd"] = True
+    gift = tiktok.message_from_tikfinity(streak)
+    assert gift.notice and gift.text == "Fern sent Rose x3"
+    assert tiktok.message_from_tikfinity({"event": "like", "data": {"likeCount": 5}}) is None
+    assert tiktok.message_from_tikfinity({"event": "follow", "data": {"nickname": "Moss"}}).text == "Moss followed"
+
+
+def test_tiktok_falls_back_to_tiktok_itself_when_tikfinity_is_not_running(monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+
+    from sprigcast.chat import tiktok
+
+    QCoreApplication.instance() or QCoreApplication([])
+    reader = tiktok.TikTokChat()
+    direct, tried = [], []
+    monkeypatch.setattr(reader, "_open_tikfinity", lambda: tried.append("tikfinity"))
+    monkeypatch.setattr(reader, "_open_direct", lambda: direct.append(reader.channel))
+    reader.start("sloth.bloom")
+    assert tried == ["tikfinity"]
+    reader._tikfinity_down()  # never connected: TikFinity isn't running
+    assert direct == ["sloth.bloom"]
+    reader._tikfinity_up()
+    reader._tikfinity_down()  # was running and closed: look for it again first
+    assert direct == ["sloth.bloom"] and reader._retry.isActive()
+    old = reader._run
+    reader._direct_ended(old - 1, "stream ended", True)  # an old run ending changes nothing
+    reader.stop()

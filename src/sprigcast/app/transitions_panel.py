@@ -105,7 +105,19 @@ class TransitionPicture(QWidget):
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._step)
         self._loops_left = 0
+        self.rest = 0.0  # where the picture waits between plays (0 = the A card)
         self.progress = 0.0
+
+    def fill(self) -> None:
+        """Take whatever room is left (Live's card)."""
+        self.setMinimumHeight(36)
+        self.setMaximumHeight(16777215)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setToolTip("How blooms change: it plays every few seconds, or point at it")
+        # Play once every few seconds while it's on screen; it rests (and costs nothing) in between.
+        self._every = QTimer(self)
+        self._every.setInterval(5000)
+        self._every.timeout.connect(lambda: self.play(1) if not self._loops_left else None)
 
     def play(self, loops: int = 2) -> None:
         """Run the picture a couple of times (it rests on the A card in between, costing nothing)."""
@@ -116,6 +128,8 @@ class TransitionPicture(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if hasattr(self, "_every"):
+            self._every.start()
         if self.wide:
             self.play(1000)  # the pop-up's screen keeps showing it while open (it stops when hidden)
         if self._loops_left:
@@ -123,6 +137,8 @@ class TransitionPicture(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         self._timer.stop()
+        if hasattr(self, "_every"):
+            self._every.stop()
         super().hideEvent(event)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -141,7 +157,7 @@ class TransitionPicture(QWidget):
         cycle, at = divmod(elapsed, self.LOOP_MS)
         if cycle >= self._loops_left:
             self._timer.stop()
-            self._loops_left, self.progress = 0, 0.0
+            self._loops_left, self.progress = 0, self.rest
         else:
             # Hold on A a moment, run the change, then hold on B.
             self.progress = min(1.0, max(0.0, (at - 300) / (self.LOOP_MS - 700)))
@@ -313,8 +329,8 @@ class TransitionsPanel(QWidget):
             self.kind_pick.setMenu(menu)
 
         self.picture = TransitionPicture(lambda: self.transition, wide=wide)
-        self.picture.setVisible(not compact)  # Live's card is short: the choices say enough there
-        root.addWidget(self.picture)
+        if not compact:
+            root.addWidget(self.picture)  # Live's card puts it last, in whatever room is left
 
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -435,7 +451,12 @@ class TransitionsPanel(QWidget):
             root.addSpacing(4)
             root.addLayout(row)
             self.show_rule_count()
-        root.addStretch(1)
+        if compact:
+            self.picture.fill()
+            root.addSpacing(2)
+            root.addWidget(self.picture, 1)
+        else:
+            root.addStretch(1)
         self.load(transition)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
