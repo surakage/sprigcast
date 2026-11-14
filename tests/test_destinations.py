@@ -270,7 +270,7 @@ def test_command_palette_lists_scenes_menus_and_switches(app, tmp_path, monkeypa
         w.show()
         palette = w._open_palette()
         groups = {c.group for c in palette.commands}
-        assert {"Scene", "Action", "Mode", "Add", "Settings", "Dock", "File"} <= groups
+        assert {"Scene", "Action", "Mode", "Add", "Tools", "Dock", "File"} <= groups
         titles = [c.title for c in palette.commands]
         assert "Go live" in titles and "Dock: Scenes" not in titles and "Scenes" in titles
         palette.search.setText("brb")
@@ -436,10 +436,41 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         assert not col.outputs[0].enabled and side.place_rows["tw"][2].text() == "Off"
         # Edit opens the list on the first one; only + Add makes a new one.
         w._edit_destination(None)
-        side.add_place.click()
-        assert opened == ["tw", "new"] and len(col.outputs) == 2
+        assert opened == ["tw"] and len(col.outputs) == 2  # opening settings adds nothing
+        # + Add picks a service; one that needs a key opens Settings on the new place.
+        from sprigcast.output import twitch_auth
+
+        monkeypatch.setattr(twitch_auth, "connected_account", lambda: None)
+        side.add_menu.actions()[1].trigger()  # YouTube
+        assert len(col.outputs) == 3 and col.outputs[2].service == "youtube" and opened[-1] == col.outputs[2].id
+        monkeypatch.setattr(twitch_auth, "connected_account", lambda: "someone")
+        side.add_menu.actions()[0].trigger()  # Twitch with a connected account: ready, nothing to open
+        assert col.outputs[3].twitch_account and len(opened) == 2
+        # Edit works right here: shape, test mode and remove (twice) without opening Settings.
+        side.manage.click()
+        assert side.editing and side.manage.text() == "Done" and side.all_settings.isVisibleTo(side)
+        tools = side.place_tools["tw"]
+        tools["shape"].click()
+        assert col.outputs[0].canvas == "vertical" and side.place_tools["tw"]["shape"].text() == "Vertical"
+        side.place_tools["tw"]["test"].click()
+        assert col.outputs[0].bandwidth_test
+        assert "test" not in side.place_tools["tt"]  # TikTok has no test mode
+        removed_keys = []
+        monkeypatch.setattr("sprigcast.app.main_window.set_key", lambda ref, key: removed_keys.append(ref))
+        remove = side.place_tools[col.outputs[2].id]["remove"]
+        gone = col.outputs[2].id
+        remove.click()
+        assert remove.text() == "Sure?" and len(col.outputs) == 4
+        remove.click()
+        assert gone not in [o.id for o in col.outputs] and removed_keys == [f"sprigcast/{gone}"]
+        assert len(opened) == 2
+        col.outputs[:] = col.outputs[:2]
+        w._live_destinations()
+        side.manage.click()
+        assert not side.editing
         side.set_live(True)
-        assert not switch.isEnabled() and not side.add_place.isEnabled()
+        switch = side.place_rows["tt"][3]
+        assert not switch.isEnabled() and not side.add_place.isEnabled() and not side.manage.isEnabled()
         # Two Twitch destinations say which shape each one sends.
         col.outputs.append(Output(id="tw2", type="stream", service="twitch", canvas="vertical", key_ref="k/tw2"))
         w._live_destinations()

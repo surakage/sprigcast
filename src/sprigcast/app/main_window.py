@@ -109,6 +109,7 @@ from sprigcast.core.events import (
 )
 from sprigcast.core.scene import (
     FOLDER_COLOURS,
+    Output,
     PART_KIND,
     Scene,
     SceneCollection,
@@ -116,7 +117,7 @@ from sprigcast.core.scene import (
     SourceConfig,
 )
 from sprigcast.core.source import known_kinds, source_class
-from sprigcast.output.keys import get_key
+from sprigcast.output.keys import get_key, set_key
 from sprigcast.output.recorder import codec_label, codec_short, pick_codec
 from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
@@ -1106,18 +1107,64 @@ class MainWindow(QMainWindow):
         self._dock("Destinations", scroll)
 
     def _edit_destination(self, output_id: str | None) -> None:
-        """Open Settings → Stream on a destination. Only "new" (the + Add link) adds one; Edit just opens the list."""
+        """Open Settings → Stream on a destination. "new:<service>" (Live's + Add menu) adds one first."""
+        if output_id and output_id.startswith("new:"):
+            output_id = self._new_destination(output_id.split(":", 1)[1])
+            if output_id is None:
+                return  # ready to go: a Twitch account gives the key
         if output_id is None:
             first = next((o.id for o in self.collection.outputs if o.type == "stream"), None)
             output_id = first or "new"
         self._open_settings("Stream", output_id=output_id)
+
+    def _new_destination(self, service_key: str) -> str | None:
+        """Add a place to stream. Returns its id when it still needs a key or server (Settings opens on it)."""
+        from sprigcast.output import twitch_auth
+
+        service = SERVICES.get(service_key, SERVICES["custom"])
+        taken = {o.id for o in self.collection.outputs}
+        n = 1
+        while f"out-{n}" in taken:
+            n += 1
+        canvas = service.canvas if any(c.id == service.canvas for c in self.collection.canvases) \
+            else self.collection.canvases[0].id
+        output = Output(id=f"out-{n}", type="stream", service=service_key, canvas=canvas,
+                        bitrate_kbps=service.kbps, key_ref=f"sprigcast/out-{n}", enabled=True)
+        if service_key == "twitch" and twitch_auth.connected_account():
+            output.twitch_account = True
+        self.collection.outputs.append(output)
+        self.collection.save(self.scenes_path)
+        self._refresh_stream_boxes()
+        return None if output.twitch_account else output.id
+
+    def _place_action(self, output_id: str, action: str) -> None:
+        """Live's Edit mode: remove a place, swap its canvas, or flip Twitch's bandwidth test."""
+        output = next((o for o in self.collection.outputs if o.id == output_id), None)
+        if output is None or self.streaming is not None:
+            return
+        if action == "remove":
+            self.collection.outputs.remove(output)
+            if output.key_ref and not any(o.key_ref == output.key_ref for o in self.collection.outputs):
+                try:
+                    set_key(output.key_ref, "")  # its saved key goes too
+                except Exception:  # no credential store: nothing saved to delete
+                    log.debug("could not delete key %s", output.key_ref, exc_info=True)
+        elif action == "shape":
+            ids = [c.id for c in self.collection.canvases]
+            output.canvas = ids[(ids.index(output.canvas) + 1) % len(ids)] if output.canvas in ids else ids[0]
+            output.size = None  # the old size was for the other shape
+        elif action == "test":
+            output.bandwidth_test = not output.bandwidth_test
+        self.collection.save(self.scenes_path)
+        self._refresh_stream_boxes()
 
     def _build_live_stage(self) -> None:
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
                                     self._edit_in_build)
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
-                                  self._edit_destination, self._on_stream_toggled)
+                                  self._edit_destination, self._on_stream_toggled, self._place_action,
+                                  lambda: self._open_settings())
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()
@@ -1219,7 +1266,8 @@ class MainWindow(QMainWindow):
             name = service.label
             if sum(1 for o in streams if o.service == output.service) > 1:  # two Twitch rows: say which shape
                 name += f" · {output.canvas}"
-            places.append(Destination(output.id, name, output.enabled, note))
+            places.append(Destination(output.id, name, output.enabled, note, output.canvas,
+                                      output.bandwidth_test if service.bandwidth_test else None))
         self.live_side.show_destinations(places, levels or {})
 
     # Studio mode -----------------------------------------------------------------------
@@ -1691,7 +1739,7 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        settings_menu = self.menuBar().addMenu("&Settings")
+        settings_menu = self.menuBar().addMenu("&Tools")  # "Settings…" is inside, and ⚙ sits by Go live
         open_settings = settings_menu.addAction("Settings…")
         open_settings.setShortcut(QKeySequence("Ctrl+,"))
         open_settings.triggered.connect(lambda: self._open_settings())
@@ -3562,7 +3610,7 @@ class MainWindow(QMainWindow):
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
         devices = {
             "audio_input": [d.name for d in list_audio_devices(loopback=False)],
-            "audio_output": [d.name for d in list_audio_devices(loopback=True)],
+            "audio_output": [d.name for d in list_audio_devices(loopback=True, rescan=False)],  # one rescan
         }
         window = SettingsWindow(
             self.collection,

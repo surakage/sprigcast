@@ -10,9 +10,9 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QSettings
+from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication
 
 # Night Canopy: near-neutral deep greens, hairline edges, one green accent for actions and
 # selection, and pink kept for the things that matter on stream: Live and Recording.
@@ -197,29 +197,7 @@ QSplitter::handle {{ background: {BG}; }}
 """
 
 
-class PopIn(QObject):
-    """Fades dialogs in as they open (150 ms), so a pop-up reads as arriving on top of the window."""
-
-    def __init__(self, parent: QObject | None = None):
-        super().__init__(parent)
-        self.enabled = True
-        self._running: dict[int, QPropertyAnimation] = {}
-
-    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
-        if self.enabled and event.type() == QEvent.Type.Show and isinstance(obj, QDialog) and obj.isWindow():
-            anim = QPropertyAnimation(obj, b"windowOpacity", obj)
-            anim.setDuration(150)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            key = id(obj)
-            self._running[key] = anim
-            anim.finished.connect(lambda: self._running.pop(key, None))
-            anim.start()
-        return False
-
-
-_pop_in: PopIn | None = None
+_applied: str | None = None  # the theme last applied: re-applying it restyles every widget (~1 s)
 
 THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
 _system_style: str | None = None
@@ -265,14 +243,16 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
 
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
-    global _system_style, _pop_in
+    global _system_style, _applied
+    wanted = name or chosen_theme()
+    if wanted == _applied:
+        return wanted != "system"
+    _applied = wanted
     if _system_style is None:
         _system_style = app.style().name()
         _set_symbol_fallbacks(app)
-    if (name or chosen_theme()) == "system":
+    if wanted == "system":
         app.setStyleSheet("")
-        if _pop_in is not None:
-            _pop_in.enabled = False
         app.setStyle(_system_style)
         app.setPalette(app.style().standardPalette())
         return False
@@ -300,8 +280,4 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(MUTED))
     app.setPalette(palette)
     app.setStyleSheet(STYLESHEET)
-    if _pop_in is None:
-        _pop_in = PopIn(app)
-        app.installEventFilter(_pop_in)
-    _pop_in.enabled = True
     return True
