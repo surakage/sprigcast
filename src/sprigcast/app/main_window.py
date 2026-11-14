@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.labels import literal
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import live_line
@@ -730,7 +731,7 @@ class MainWindow(QMainWindow):
         parts = [p for p in self.collection.parts() if scene is None or not self.collection.contains(p, scene.id)]
         parts_menu = menu.addMenu(icons.icon("sprig", theme.ACCENT), cap(PART))
         for part in parts:
-            parts_menu.addAction(part.name).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
+            parts_menu.addAction(literal(part.name)).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
         if not parts:
             parts_menu.addAction(f"No {PARTS} yet: + beside {cap(PARTS)} on the left").setEnabled(False)
         menu.addSeparator()
@@ -742,7 +743,7 @@ class MainWindow(QMainWindow):
         def cameras(sub: QMenu) -> None:
             found = list_cameras()
             for cam in found:
-                sub.addAction(cam.name).triggered.connect(lambda _=False, c=cam: self._add_camera(c))
+                sub.addAction(literal(cam.name)).triggered.connect(lambda _=False, c=cam: self._add_camera(c))
             if not found:
                 sub.addAction("No camera found (plugged in? in use?)").setEnabled(False)
             sub.addSeparator()
@@ -785,7 +786,7 @@ class MainWindow(QMainWindow):
                 sub.addAction("Default (follows Windows)").triggered.connect(
                     lambda _=False, k=kind: self._add_audio(k, "default"))
                 for device in found:
-                    sub.addAction(device.name).triggered.connect(
+                    sub.addAction(literal(device.name)).triggered.connect(
                         lambda _=False, k=kind, d=device.name: self._add_audio(k, d))
             sub.addSection("File")
             sub.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
@@ -965,7 +966,7 @@ class MainWindow(QMainWindow):
                     show = self.collection.active_scene(canvas.id)
                     if show is None:
                         continue
-                    action = menu.addAction(f"Add to “{show.name}”  ({canvas.id})")
+                    action = menu.addAction(f"Add to “{literal(show.name)}”  ({canvas.id})")
                     if self.collection.contains(part, show.id):
                         action.setEnabled(False)
                     action.triggered.connect(lambda _=False, pid=part.id, sid=show.id: self._add_part_source(pid, sid))
@@ -989,7 +990,7 @@ class MainWindow(QMainWindow):
     def _folder_menu(self, menu: QMenu, folder) -> None:
         sprigs = folder.holds == "part"
         add = self._add_part if sprigs else self._add_scene
-        menu.addAction(f"New {PART if sprigs else SHOW} in “{folder.name}”…").triggered.connect(
+        menu.addAction(f"New {PART if sprigs else SHOW} in “{literal(folder.name)}”…").triggered.connect(
             lambda: (setattr(self, "selected_folder_id", folder.id), add()))
         menu.addSeparator()
         if not sprigs:
@@ -1017,7 +1018,7 @@ class MainWindow(QMainWindow):
         if folders:
             menu.addSeparator()
         for folder in folders:
-            action = menu.addAction(_dot(folder.colour, 14), folder.name)
+            action = menu.addAction(_dot(folder.colour, 14), literal(folder.name))
             action.setCheckable(True)
             action.setChecked(scene.folder == folder.id)
             action.triggered.connect(lambda _=False, fid=folder.id: self._move_to_folder(scene.id, fid))
@@ -1967,7 +1968,7 @@ class MainWindow(QMainWindow):
         if others:
             menu.addSeparator()
         for other in others:
-            action = menu.addAction(f"{other.name}   ({other.canvas})")
+            action = menu.addAction(f"{literal(other.name)}   ({other.canvas})")
             action.setCheckable(True)
             action.setChecked(scene.linked_to == other.id)
             action.triggered.connect(lambda _=False, oid=other.id: self._link_scene(scene.id, oid))
@@ -3299,7 +3300,7 @@ class MainWindow(QMainWindow):
                 if inner.source in seen:
                     continue
                 seen.add(inner.source)
-                action = menu.addAction(self.collection.source(inner.source).name)
+                action = menu.addAction(literal(self.collection.source(inner.source).name))
                 action.setCheckable(True)
                 action.setChecked(inner.source not in hidden)
                 action.setToolTip(f"Untick to hide it in this {SHOW} only. Other {SHOWS} using the {PART} still show it.")
