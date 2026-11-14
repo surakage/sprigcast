@@ -262,7 +262,7 @@ class OutputPage(QWidget):
         box.addWidget(_hint("Clips use the Recording encoder and bitrate, so a clip looks exactly like a recording."))
         box.addStretch(1)
         self.tabs.addTab(clips_tab, "Clips (replay buffer)")
-        self.camera_tab = CameraTab()
+        self.camera_tab = CameraTab(collection)
         self.tabs.addTab(self.camera_tab, "Virtual camera")
         self.streaming, self.recording = streaming, recording
 
@@ -328,6 +328,14 @@ def enhanced_in_use(collection: SceneCollection) -> bool:
 
 
 CAMERA_ON = "camera/on"  # QSettings: show SprigCast as a camera while it runs
+CAMERA_SHOWS = "camera/shows"  # "auto", "canvas:<id>", "bloom:<scene id>" or "source:<source id>"
+VIDEO_KINDS_SKIP = ("audio_input", "audio_output", "app_audio", "scene")
+
+
+def camera_choice() -> str:
+    from PySide6.QtCore import QSettings
+
+    return QSettings().value(CAMERA_SHOWS, "auto", type=str) or "auto"
 
 
 def camera_wanted() -> bool:
@@ -339,9 +347,9 @@ def camera_wanted() -> bool:
 class CameraTab(QWidget):
     """Virtual camera: set it up once (administrator prompt), then switch it on or off."""
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, collection: SceneCollection | None = None, parent: QWidget | None = None):
         from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QPushButton
+        from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QPushButton
 
         from sprigcast.output import virtualcam
 
@@ -356,9 +364,27 @@ class CameraTab(QWidget):
         self.on = QCheckBox("Show SprigCast as a camera")
         self.on.setChecked(camera_wanted())
         inner.addWidget(self.on)
-        inner.addWidget(_hint("Zoom, Teams, Discord, Google Meet and the Camera app list it as "
-                              "\u201cSprigCast Camera\u201d. A landscape call shows your horizontal canvas, "
-                              "a portrait one your vertical canvas."))
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        self.shows = QComboBox()
+        self.shows.addItem("Matches the app (horizontal or vertical canvas)", "auto")
+        for canvas in (collection.canvases if collection else []):
+            self.shows.addItem(f"{canvas.id.capitalize()} canvas ({canvas.width}\u00d7{canvas.height})",
+                               f"canvas:{canvas.id}")
+        if collection is not None:
+            for scene in collection.scenes:
+                if scene.kind == "show" and not scene.shape_of:
+                    self.shows.addItem(f"Bloom: {scene.name} ({scene.canvas})", f"bloom:{scene.id}")
+            for source in collection.sources:
+                if source.kind not in VIDEO_KINDS_SKIP:
+                    self.shows.addItem(f"Source: {source.name}", f"source:{source.id}")
+        current = self.shows.findData(camera_choice())
+        self.shows.setCurrentIndex(max(0, current))
+        form.addRow("Shows", self.shows)
+        inner.addLayout(form)
+        inner.addWidget(_hint("Zoom, Teams, Discord, TikTok LIVE Studio and the Camera app list it as "
+                              "\u201cSprigCast Camera\u201d. If the app wants another shape than what it shows, "
+                              "you get black bars instead of a stretched picture."))
         self.status = QLabel()
         self.status.setWordWrap(True)
         inner.addWidget(self.status)
@@ -426,3 +452,4 @@ class CameraTab(QWidget):
         from PySide6.QtCore import QSettings
 
         QSettings().setValue(CAMERA_ON, self.on.isChecked())
+        QSettings().setValue(CAMERA_SHOWS, self.shows.currentData())

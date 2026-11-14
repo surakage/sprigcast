@@ -385,3 +385,10 @@ def test_changing_the_mode_of_an_unshared_camera_reopens_on_the_same_thread(fake
         assert src._feed is feed and list(camera._feeds.values()) == [feed]
     finally:
         src.stop()
+
+
+def test_own_virtual_camera_is_left_out_without_shifting_indexes(monkeypatch):
+    from sprigcast.sources import camera as cam
+
+    monkeypatch.setattr(cam, "_dshow_list", lambda: [("Facecam", "a"), ("SprigCast Camera", ""), ("Cam B", "b")])
+    assert [(c.index, c.name) for c in cam.list_cameras()] == [(0, "Facecam"), (2, "Cam B")]
