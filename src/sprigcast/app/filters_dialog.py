@@ -150,11 +150,12 @@ class FiltersDialog(QDialog):
     """Edits `source.filters` in place and calls on_change(save=False) after every edit, so the
     preview updates live. Closing calls on_change(save=True)."""
 
-    def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None):
+    def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None,
+                 media: str | None = None):
         super().__init__(parent)
         self.source = source
         self.on_change = on_change
-        self.media = media_of(source)
+        self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         self.setWindowTitle(f"Filters for “{source.name}”")
         self.resize(780, 460)
         self.form: FilterForm | None = None
