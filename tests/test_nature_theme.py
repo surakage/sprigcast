@@ -43,7 +43,7 @@ def test_style_sheet_uses_leaf_and_seed_pictures(tmp_path):
     assert pictures["seed_on"] in rules and pictures["seed_handle"] in rules
 
 
-def test_vine_progress_and_napping_sloth(tmp_path):
+def test_plain_progress_and_napping_sloth(tmp_path):
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -53,10 +53,7 @@ def test_vine_progress_and_napping_sloth(tmp_path):
     from sprigcast.app import theme
     from sprigcast.app.empty import EmptyState, NappingSloth
 
-    pics = theme.nature_pictures(str(tmp_path))
-    assert "vine" in pics and "<path" in open(pics["vine"], encoding="utf-8").read()
-    rules = theme.nature_rules(str(tmp_path))
-    assert "QProgressBar::chunk" in rules and "repeat-x" in rules
+    assert "QProgressBar::chunk" not in theme.nature_rules(str(tmp_path))  # plain progress bars
     clicked = []
     empty = EmptyState("Nothing here yet", "+ Add", lambda: clicked.append(1))
     empty.button.click()
