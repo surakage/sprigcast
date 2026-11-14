@@ -1,7 +1,9 @@
-"""The remote control server: a WebSocket on the UI thread that speaks obs-websocket 5.
+"""The remote control server: one WebSocket on the UI thread with two doors.
 
-Streamer.bot, Stream Deck, Speaker.bot, SAMMI, Touch Portal and anything else written for OBS's
-WebSocket connect to it as if SprigCast were OBS (Settings → Connections has the port and password).
+ws://127.0.0.1:<port>/sprigcast is the SprigCast API (control/native.py, docs/control-api.md): our own
+words, both shapes built in, where new features go. Any other path is the OBS-compatible door
+(control/api.py) so apps made for OBS work today; it is frozen and can be switched off in
+Settings → Connections. Both share the port, the password and the main window bridge below.
 
 Light by design: Qt's own WebSocket server (no extra threads or packages), nothing runs while no app
 is connected, and events come from comparing a small snapshot after each change rather than hooks
@@ -19,6 +21,7 @@ from PySide6.QtNetwork import QHostAddress
 from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServer
 
 from sprigcast.control.api import ControlApi
+from sprigcast.control.native import NativeApi, NativeSession
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
 
 if TYPE_CHECKING:
@@ -30,8 +33,10 @@ ENABLED = "control/enabled"
 PORT = "control/port"
 PASSWORD = "control/password"
 USE_PASSWORD = "control/use_password"
+OBS_DOOR = "control/obs_door"  # also accept apps made for OBS (the frozen compatibility door)
 LAN = "control/lan"  # let phones and other PCs connect, not just apps on this PC
 DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use another if OBS runs too)
+NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
 WATCH_MS = 500  # how often stream/record/Studio states are compared while an app is connected
 
 
@@ -47,6 +52,7 @@ def saved_settings() -> dict[str, Any]:
         "password": password,
         "use_password": q.value(USE_PASSWORD, True, type=bool),
         "lan": q.value(LAN, False, type=bool),
+        "obs_door": q.value(OBS_DOOR, True, type=bool),
     }
 
 
@@ -76,6 +82,8 @@ class WindowHost:
             w._transition_edited()
         elif what == "places":
             w._refresh_stream_boxes()
+        elif what in ("sources", "filters"):
+            w._refresh_sources()
 
     def studio(self) -> bool:
         return bool(self.w.studio)
@@ -183,23 +191,36 @@ class WindowHost:
 
 
 class ControlServer(QObject):
-    """Owns the listening socket and one Session per connected app."""
+    """Owns the listening socket and one session per connected app.
 
-    def __init__(self, api: ControlApi, parent: QObject | None = None):
+    Apps on ws://host:port/sprigcast speak the SprigCast API (control/native.py); any other path is the
+    OBS-compatible door (control/api.py), which can be switched off and gets no new features.
+    """
+
+    def __init__(self, api: ControlApi, parent: QObject | None = None, native: NativeApi | None = None):
         super().__init__(parent)
         self.api = api
+        self.native = native if native is not None else NativeApi(api.host)
         api.custom_event = lambda data: self.broadcast("CustomEvent", Sub.GENERAL, data)
+        self.native.custom_event = lambda data: self.native_broadcast("custom", {"data": data})
         self.server: QWebSocketServer | None = None
-        self.sessions: dict[QWebSocket, Session] = {}
+        self.sessions: dict[QWebSocket, Session | NativeSession] = {}
         self.password = ""
+        self.obs_door = True  # also accept apps made for OBS (Settings → Connections)
         self.frame_seconds = 1 / 60
         self.error = ""
         self.watch = QTimer(self)
         self.watch.setInterval(WATCH_MS)
         self.watch.timeout.connect(self.notify)
         self._notify_queued = False
-        self._running: tuple | None = None  # (port, password, lan) it listens with
+        self._running: tuple | None = None  # (port, password, lan, obs door) it listens with
         self.on_clients_changed = lambda count: None
+
+    def _obs(self) -> list[tuple[QWebSocket, Session]]:
+        return [(k, s) for k, s in self.sessions.items() if isinstance(s, Session)]
+
+    def _natives(self) -> list[tuple[QWebSocket, NativeSession]]:
+        return [(k, s) for k, s in self.sessions.items() if isinstance(s, NativeSession)]
 
     # Listening -------------------------------------------------------------------------
 
@@ -223,6 +244,7 @@ class ControlServer(QObject):
         if self.server is None:
             return
         self.broadcast("ExitStarted", Sub.GENERAL, None)
+        self.native_broadcast("app.closing", {})
         for socket in list(self.sessions):
             socket.close(QWebSocketProtocol.CloseCode.CloseCodeGoingAway, "SprigCast stopped the server")
         self.sessions.clear()
@@ -245,16 +267,28 @@ class ControlServer(QObject):
     def _accept(self) -> None:
         while self.server is not None and self.server.hasPendingConnections():
             socket = self.server.nextPendingConnection()
-            session = Session(handler=self.api.handle, password=self.password, frame_seconds=self.frame_seconds)
+            native = socket.requestUrl().path().rstrip("/").lower() == NATIVE_PATH
+            if not native and not self.obs_door:
+                socket.close(QWebSocketProtocol.CloseCode(4000),
+                             f"Connect to {NATIVE_PATH} (apps made for OBS are switched off in SprigCast)")
+                socket.deleteLater()
+                continue
+            if native:
+                session: Session | NativeSession = NativeSession(api=self.native, password=self.password)
+                first = not self._natives()
+            else:
+                session = Session(handler=self.api.handle, password=self.password, frame_seconds=self.frame_seconds)
+                first = not self._obs()
             self.sessions[socket] = session
             socket.textMessageReceived.connect(lambda text, s=socket: self._received(s, text))
             socket.binaryMessageReceived.connect(lambda _data, s=socket: s.close(
                 QWebSocketProtocol.CloseCode(4002), "Only JSON text messages are understood."))
             socket.disconnected.connect(lambda s=socket: self._gone(s))
             socket.sendTextMessage(session.hello())
-            log.info("control: an app connected from %s", socket.peerAddress().toString())
-            if len(self.sessions) == 1:
-                self.api.changes()  # start comparing from now
+            log.info("control: %s app connected from %s", "a SprigCast API" if native else "an OBS-style",
+                     socket.peerAddress().toString())
+            if first:  # start comparing from now
+                (self.native if native else self.api).changes()
             self.watch.start()
             self.on_clients_changed(len(self.sessions))
 
@@ -295,32 +329,46 @@ class ControlServer(QObject):
 
     def notify(self) -> None:
         self._notify_queued = False
-        if not self.sessions:
-            return
         try:
-            events = self.api.changes()
+            if self._obs():
+                for event_type, intent, data in self.api.changes():
+                    self.broadcast(event_type, intent, data)
+            if self._natives():
+                for name, data in self.native.changes():
+                    self.native_broadcast(name, data)
         except Exception:
             log.exception("control: working out events")
-            return
-        for event_type, intent, data in events:
-            self.broadcast(event_type, intent, data)
 
     def broadcast(self, event_type: str, intent: int, data: dict[str, Any] | None) -> None:
-        for socket, session in list(self.sessions.items()):
+        """An OBS-style event to the apps on the OBS door."""
+        for socket, session in self._obs():
             message = session.event(event_type, intent, data)
             if message is not None:
                 socket.sendTextMessage(message)
 
+    def native_broadcast(self, name: str, data: dict[str, Any]) -> None:
+        """A SprigCast API event to the apps that asked for its group."""
+        for socket, session in self._natives():
+            message = session.event(name, data)
+            if message is not None:
+                socket.sendTextMessage(message)
+
     def wants_meters(self) -> bool:
-        return any(s.wants(Sub.INPUT_VOLUME_METERS) for s in self.sessions.values())
+        return any(s.wants(Sub.INPUT_VOLUME_METERS) for _, s in self._obs()) or \
+            any(s.wants("meters") for _, s in self._natives())
 
     def meters(self, levels: dict[str, tuple[float, float]]) -> None:
-        if self.wants_meters():
+        if not self.sessions or not self.wants_meters():
+            return
+        if any(s.wants(Sub.INPUT_VOLUME_METERS) for _, s in self._obs()):
             self.broadcast("InputVolumeMeters", Sub.INPUT_VOLUME_METERS, self.api.meters(levels))
+        if any(s.wants("meters") for _, s in self._natives()):
+            self.native_broadcast("meters", self.native.meters(levels))
 
     def replay_saved(self, paths: list) -> None:
         if paths:
             self.broadcast("ReplayBufferSaved", Sub.OUTPUTS, {"savedReplayPath": str(paths[0])})
+            self.native_broadcast("clip.saved", {"files": [str(p) for p in paths]})
 
 
 def start_for(window: MainWindow) -> ControlServer:
@@ -336,11 +384,15 @@ def apply_settings(server: ControlServer, window: MainWindow | None = None) -> N
     if window is not None and window.collection.canvases:
         server.frame_seconds = 1 / max(1, window.collection.canvases[0].fps)
     password = settings["password"] if settings["use_password"] else ""
+    server.obs_door = settings["obs_door"]
     wanted = (settings["port"], password, settings["lan"])
     if not settings["enabled"]:
         server.stop()
         server._running = None
         return
-    if server.listening and getattr(server, "_running", None) == wanted:
+    if not server.obs_door:  # switched off just now: say goodbye to apps already on that door
+        for socket, _ in server._obs():
+            socket.close(QWebSocketProtocol.CloseCode(4000), "Apps made for OBS are switched off in SprigCast")
+    if server.listening and server._running == wanted:
         return
     server._running = wanted if server.start(*wanted) else None
