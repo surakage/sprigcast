@@ -56,21 +56,46 @@ def _hint(text: str) -> QLabel:
     return label
 
 
-class EncoderForm(QGroupBox):
-    """The encoder settings group. values() returns a new EncoderSettings."""
+X264_PRESETS = {
+    "ultrafast": "ultrafast (lightest on the CPU)", "superfast": "superfast", "veryfast": "veryfast (recommended)",
+    "faster": "faster", "fast": "fast", "medium": "medium", "slow": "slow (heaviest, best quality)",
+}
+X264_TUNES = {"": "None", "film": "Film", "animation": "Animation", "grain": "Grain",
+              "stillimage": "Still image", "zerolatency": "Zero latency"}
 
-    def __init__(self, title: str, settings: EncoderSettings, encoder_name: str, parent: QWidget | None = None):
+
+class EncoderForm(QGroupBox):
+    """The encoder settings card: every option shows, and only the rows the chosen encoder uses.
+
+    values() returns a new EncoderSettings.
+    """
+
+    def __init__(self, title: str, settings: EncoderSettings, encoder_name: str = "", streaming: bool = False,
+                 parent: QWidget | None = None):
         super().__init__(title, parent)
+        from sprigcast.output.recorder import codec_label, encoder_choices, pick_codec
+
         form = QFormLayout(self)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        form.addRow("Video encoder", QLabel(encoder_name))
+        form.setVerticalSpacing(10)
+        self._form = form
+        self.encoder = QComboBox()
+        best = pick_codec()
+        self.encoder.addItem(f"Best on this PC ({codec_label(best)})", "auto")
+        for codec in encoder_choices(streaming):
+            self.encoder.addItem(codec_label(codec), codec)
+        if self.encoder.findData(settings.encoder) < 0:
+            self.encoder.addItem(f"{codec_label(settings.encoder)} (not on this PC: uses the best one)", settings.encoder)
+        self.encoder.setCurrentIndex(self.encoder.findData(settings.encoder))
+        self._best = best
+        form.addRow("Video encoder", self.encoder)
         self.rate_control = _combo(RATE_CONTROLS, settings.rate_control)
         form.addRow("Rate control", self.rate_control)
         self.cq_level = QSpinBox()
         self.cq_level.setRange(1, 51)
         self.cq_level.setValue(settings.cq_level)
-        self.cq_label = QLabel("CQ level")
-        form.addRow(self.cq_label, self.cq_level)
+        self.cq_level.setToolTip("Lower is better quality and bigger files. 18 to 23 suits most recordings.")
+        form.addRow("Quality level", self.cq_level)
         self.keyint = QSpinBox()
         self.keyint.setRange(0, 10)
         self.keyint.setSuffix(" s")
@@ -79,12 +104,23 @@ class EncoderForm(QGroupBox):
         form.addRow("Keyframe interval", self.keyint)
         self.preset = _combo(PRESETS, settings.preset)
         form.addRow("Preset", self.preset)
+        self.x264_preset = _combo(X264_PRESETS, settings.x264_preset)
+        self.x264_preset.setToolTip("How hard the CPU works on each frame. Slower presets look better but "
+                                    "take CPU time away from your game.")
+        form.addRow("CPU usage preset", self.x264_preset)
         self.tuning = _combo(TUNINGS, settings.tuning)
         form.addRow("Tuning", self.tuning)
+        self.x264_tune = _combo(X264_TUNES, settings.x264_tune)
+        form.addRow("Tune", self.x264_tune)
         self.multipass = _combo(MULTIPASS, settings.multipass)
         form.addRow("Multipass mode", self.multipass)
         self.profile = _combo(PROFILES, settings.profile)
         form.addRow("Profile", self.profile)
+        self.b_frames = QSpinBox()
+        self.b_frames.setRange(0, 4)
+        self.b_frames.setValue(settings.b_frames)
+        self.b_frames.setToolTip("0 keeps SprigCast's lighter NVENC path, which uses less memory.")
+        form.addRow("B-frames", self.b_frames)
         self.lookahead = QCheckBox("Look-ahead")
         self.lookahead.setToolTip("Lets the encoder look a few frames ahead to spend bits where motion starts. "
                                   "Uses more GPU time.")
@@ -94,46 +130,58 @@ class EncoderForm(QGroupBox):
         self.adaptive_quant.setToolTip("Spends more bits on flat areas (skies, walls) where blockiness shows most.")
         self.adaptive_quant.setChecked(settings.adaptive_quant)
         form.addRow("", self.adaptive_quant)
-        self.b_frames = QSpinBox()
-        self.b_frames.setRange(0, 4)
-        self.b_frames.setValue(settings.b_frames)
-        form.addRow("B-frames", self.b_frames)
         self.audio = QComboBox()
         for kbps in sorted({*AUDIO_KBPS, settings.audio_kbps}):
             self.audio.addItem(f"{kbps} kbps", kbps)
         self.audio.setCurrentIndex(self.audio.findData(settings.audio_kbps))
         form.addRow("Audio bitrate", self.audio)
-        if "x264" in encoder_name.lower():
-            form.addRow("", _hint("No graphics-card encoder found: using x264 (CPU). "
-                                  "Multipass and look-ahead are ignored."))
-        elif "nvenc" not in encoder_name.lower():
-            form.addRow("", _hint("Multipass is NVIDIA-only and is ignored with this encoder."))
-        self.rate_control.currentIndexChanged.connect(self._rate_changed)
-        self._rate_changed()
-        # The fine controls fold away: most people only ever touch rate control and audio.
-        self._form = form
-        self._advanced = [self.keyint, self.preset, self.tuning, self.multipass, self.profile, self.lookahead,
-                          self.adaptive_quant, self.b_frames]
-        self.more = QPushButton("Show advanced")
-        self.more.setCheckable(True)
-        self.more.setStyleSheet(theme.LINK_STYLE)
-        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.more.toggled.connect(self.show_advanced)
-        form.addRow("", self.more)
-        self.show_advanced(False)
+        self.note = _hint("")
+        form.addRow("", self.note)
+        self.rate_control.currentIndexChanged.connect(self._update_rows)
+        self.encoder.currentIndexChanged.connect(self._update_rows)
+        self._update_rows()
 
-    def show_advanced(self, on: bool) -> None:
-        for widget in self._advanced:
-            self._form.setRowVisible(widget, on)
-        self.more.setText("Hide advanced" if on else "Show advanced  ·  preset, keyframes, B-frames…")
+    def codec(self) -> str:
+        chosen = self.encoder.currentData()
+        return self._best if chosen == "auto" else chosen
 
-    def _rate_changed(self) -> None:
-        cqp = self.rate_control.currentData() == "cqp"
-        self.cq_level.setVisible(cqp)
-        self.cq_label.setVisible(cqp)
+    def _update_rows(self) -> None:
+        """Show the rows the chosen encoder reads; the rest would do nothing."""
+        from sprigcast.output.recorder import family
+
+        fam = family(self.codec())
+        gpu = fam != "x264"
+        rows = {
+            self.cq_level: self.rate_control.currentData() == "cqp",
+            self.preset: gpu and fam != "mf",
+            self.tuning: fam in ("nvenc", "amf", "qsv"),
+            self.multipass: fam == "nvenc",
+            self.profile: self.codec() in ("h264_nvenc", "h264_amf", "h264_qsv", "libx264"),
+            self.b_frames: fam == "nvenc",
+            self.lookahead: fam in ("nvenc", "qsv"),
+            self.adaptive_quant: fam in ("nvenc", "amf", "x264"),
+            self.x264_preset: not gpu,
+            self.x264_tune: not gpu,
+        }
+        for widget, visible in rows.items():
+            self._form.setRowVisible(widget, visible)
+        notes = {
+            "x264": "x264 encodes on the CPU. It looks great but competes with your game for CPU time.",
+            "mf": "Windows Media Foundation has few options of its own. Use NVENC, AMF or Quick Sync if you have them.",
+        }
+        if self.codec().startswith(("hevc", "av1")):
+            text = ("HEVC and AV1 make smaller files at the same quality. Most editors open them; some older "
+                    "players and phones can't play AV1.")
+        else:
+            text = notes.get(fam, "")
+        self.note.setText(text)
+        self._form.setRowVisible(self.note, bool(text))
 
     def values(self) -> EncoderSettings:
         return EncoderSettings(
+            encoder=self.encoder.currentData(),
+            x264_preset=self.x264_preset.currentData(),
+            x264_tune=self.x264_tune.currentData(),
             rate_control=self.rate_control.currentData(),
             cq_level=self.cq_level.value(),
             keyint_sec=self.keyint.value(),
@@ -169,41 +217,54 @@ class OutputPage(QWidget):
 
         stream_tab = QWidget()
         box = QVBoxLayout(stream_tab)
+        box.setContentsMargins(0, 4, 0, 0)
+        box.setSpacing(14)
         if streaming:
             box.addWidget(_hint("You're live. End the stream to change these."))
-        self.stream_form = EncoderForm("Encoder settings", collection.stream_encoder, encoder_name)
+        self.stream_form = EncoderForm("Encoder", collection.stream_encoder, encoder_name, streaming=True)
         self.stream_form.setEnabled(not streaming)
         box.addWidget(self.stream_form)
-        box.addWidget(_hint("Bitrate and size are set per destination (Settings → Stream). Most sites want CBR and 2 s keyframes."))
+        box.addWidget(_hint("Bitrate and size are set for each place you stream to (Settings → Stream). "
+                            "Most sites want CBR and 2 s keyframes."))
         box.addStretch(1)
         self.tabs.addTab(stream_tab, "Streaming")
 
         record_tab = QWidget()
         box = QVBoxLayout(record_tab)
+        box.setContentsMargins(0, 4, 0, 0)
+        box.setSpacing(14)
         if recording:
             box.addWidget(_hint("Recording now. Stop the recording to change these."))
-        recording_group = QGroupBox("Recording settings")
+        recording_group = QGroupBox("Recording")
         inner = QVBoxLayout(recording_group)
+        inner.setContentsMargins(0, 0, 0, 0)
         inner.addWidget(recording_page)
-        recording_group.setEnabled(not recording)
-        box.addWidget(recording_group)
-        self.record_form = EncoderForm("Encoder settings", collection.recording.encoder, encoder_name)
-        self.record_form.setEnabled(not recording)
-        box.addWidget(self.record_form)
         self.voice_track = QCheckBox("Also record your voice on its own track")
         self.voice_track.setToolTip("Recordings get a second audio track with only your mic (and anything set "
                                     "to go to Voice in the Sound card), so you can fix it apart when editing. "
                                     "Players play the first track: everything, as usual.")
         self.voice_track.setChecked(collection.recording.voice_track)
-        self.voice_track.setEnabled(not recording)
-        box.addWidget(self.voice_track)
-        box.addWidget(self._clips_group(collection))
+        inner.addWidget(self.voice_track)
+        recording_group.setEnabled(not recording)
+        box.addWidget(recording_group)
+        self.record_form = EncoderForm("Encoder", collection.recording.encoder, encoder_name)
+        self.record_form.setEnabled(not recording)
+        box.addWidget(self.record_form)
         box.addStretch(1)
         self.tabs.addTab(record_tab, "Recording")
+
+        clips_tab = QWidget()
+        box = QVBoxLayout(clips_tab)
+        box.setContentsMargins(0, 4, 0, 0)
+        box.setSpacing(14)
+        box.addWidget(self._clips_group(collection))
+        box.addWidget(_hint("Clips use the Recording encoder and bitrate, so a clip looks exactly like a recording."))
+        box.addStretch(1)
+        self.tabs.addTab(clips_tab, "Clips (replay buffer)")
         self.streaming, self.recording = streaming, recording
 
     def show_tab(self, name: str) -> None:
-        self.tabs.setCurrentIndex(1 if name == "Recording" else 0)
+        self.tabs.setCurrentIndex({"Recording": 1, "Clips": 2, "Replay": 2}.get(name, 0))
 
     def apply_to(self, collection: SceneCollection) -> None:
         if not self.streaming:

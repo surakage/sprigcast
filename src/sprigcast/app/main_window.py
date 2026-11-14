@@ -137,7 +137,7 @@ from sprigcast.core.scene import (
 )
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key, set_key
-from sprigcast.output.recorder import codec_label, codec_short, pick_codec
+from sprigcast.output.recorder import codec_label, codec_short, pick_codec, resolve_codec
 from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
@@ -3805,7 +3805,9 @@ class MainWindow(QMainWindow):
             return
         self._say("Connecting…")
         try:
-            self.streaming = StreamSession.start(self.engine, targets, pick_codec(), self.collection.stream_encoder)
+            self.streaming = StreamSession.start(self.engine, targets,
+                                                 resolve_codec(self.collection.stream_encoder, streaming=True),
+                                                 self.collection.stream_encoder)
         except Exception as exc:
             self.streaming = None
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")

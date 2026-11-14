@@ -387,6 +387,11 @@ class StreamSession:
 
         start_time = time.perf_counter()
         streamers, taps, shared = [], [], []
+        for t in targets:  # no size of its own: the canvas's output (scaled) size
+            if t.size is None and hasattr(t.canvas, "output_size"):
+                size = t.canvas.output_size()
+                if size != (t.canvas.width, t.canvas.height):
+                    t.size = size
         # Destinations that want the same picture (canvas, size, fps, bitrate) share one encoder.
         groups: dict[tuple, list[StreamTarget]] = {}
         for t in targets:

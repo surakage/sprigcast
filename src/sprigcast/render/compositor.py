@@ -217,22 +217,67 @@ void main() {
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }
 """
+SCALE_MODES = {"bilinear": 0, "area": 1, "bicubic": 2, "lanczos": 3}
 NV12_FRAGMENT = """
 #version 330
 uniform sampler2D canvas;
 uniform vec2 out_size;      // size of the plane being drawn, in pixels
 uniform bool chroma;        // false: Y plane, true: interleaved CbCr at half size
 uniform vec2 texel;         // one output pixel of the full-size picture, in canvas uv
+uniform int scale_mode;     // scaling down: 0 bilinear, 1 area, 2 bicubic, 3 lanczos (Settings → Video)
 out vec4 color;
 
 vec3 rgb_at(vec2 uv) {
     return texture(canvas, uv).rgb;  // already composited over black (alpha is dropped)
 }
 
+float cubic(float x) {  // Catmull-Rom: sharp, no ringing to speak of
+    x = abs(x);
+    if (x < 1.0) return 1.5 * x * x * x - 2.5 * x * x + 1.0;
+    if (x < 2.0) return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
+    return 0.0;
+}
+
+float lanczos(float x) {  // a = 3
+    x = abs(x);
+    if (x < 1e-5) return 1.0;
+    if (x >= 3.0) return 0.0;
+    float px = 3.14159265 * x;
+    return 3.0 * sin(px) * sin(px / 3.0) / (px * px);
+}
+
+// The full-size picture at uv, scaled down with the chosen filter.
+vec3 scaled_at(vec2 uv) {
+    vec2 src = vec2(textureSize(canvas, 0));
+    if (scale_mode == 0 || all(lessThan(abs(src * texel - vec2(1.0)), vec2(0.001)))) {
+        return rgb_at(uv);  // bilinear, or no scaling at all
+    }
+    if (scale_mode == 1) {  // area: average the footprint of the output pixel
+        vec2 q = texel * 0.25;
+        return 0.25 * (rgb_at(uv + vec2(-q.x, -q.y)) + rgb_at(uv + vec2(q.x, -q.y))
+                     + rgb_at(uv + vec2(-q.x, q.y)) + rgb_at(uv + vec2(q.x, q.y)));
+    }
+    vec2 p = uv * src - 0.5;
+    vec2 base = floor(p);
+    vec2 f = p - base;
+    int r = scale_mode == 2 ? 2 : 3;
+    vec3 sum = vec3(0.0);
+    float total = 0.0;
+    for (int j = -r + 1; j <= r; j++) {
+        for (int i = -r + 1; i <= r; i++) {
+            vec2 d = vec2(float(i), float(j)) - f;
+            float w = scale_mode == 2 ? cubic(d.x) * cubic(d.y) : lanczos(d.x) * lanczos(d.y);
+            sum += w * texelFetch(canvas, ivec2(clamp(base + vec2(i, j), vec2(0.0), src - 1.0)), 0).rgb;
+            total += w;
+        }
+    }
+    return clamp(sum / total, 0.0, 1.0);
+}
+
 void main() {
     vec2 uv = gl_FragCoord.xy / out_size;  // row 0 of the target = top of the canvas
     if (!chroma) {
-        vec3 c = rgb_at(uv);
+        vec3 c = scaled_at(uv);
         color = vec4((16.0 + 219.0 * dot(c, vec3(0.2126, 0.7152, 0.0722))) / 255.0, 0.0, 0.0, 1.0);
     } else {
         // Average the 2x2 block of full-size pixels this chroma sample covers.
@@ -538,6 +583,7 @@ class Compositor:
         # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
         self.parts: dict[tuple[str, str], moderngl.Texture] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
+        self.downscale: dict[str, str] = {}  # canvas id -> how outputs smaller than it are scaled (Canvas.downscale)
         self.time = 0.0  # seconds, drives the Scroll filter
         self._applied: VideoEffects | None = None
         # Colour looks and shape pictures, loaded once each (key: "look:<name>" or a file path).
@@ -846,6 +892,7 @@ class Compositor:
         program = self.nv12_program
         program["canvas"].value = 0
         program["texel"].value = (1.0 / w, 1.0 / h)
+        program["scale_mode"].value = SCALE_MODES.get(self.downscale.get(canvas_id, "bilinear"), 0)
         for fbo, plane, chroma in ((target.y_fbo, (w, h), False), (target.uv_fbo, (w // 2, h // 2), True)):
             fbo.use()
             self.ctx.viewport = (0, 0, *plane)

@@ -168,7 +168,7 @@ def test_encoder_settings_map_to_ffmpeg_options():
     assert nv["tune"] == "ll" and nv["rc-lookahead"] == "16" and nv["preset"] == "p5"
     cq = video_options("h264_nvenc", EncoderSettings(rate_control="cqp", cq_level=18, adaptive_quant=False), 6000)
     assert cq["rc"] == "constqp" and cq["qp"] == "18" and cq["spatial-aq"] == "0" and "maxrate" not in cq
-    x = video_options("libx264", EncoderSettings(preset="p7", tuning="ull"), 4000)
+    x = video_options("libx264", EncoderSettings(x264_preset="fast", tuning="ull"), 4000)
     assert x["preset"] == "fast" and x["tune"] == "zerolatency" and x["nal-hrd"] == "cbr"
 
 
