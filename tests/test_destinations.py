@@ -317,3 +317,41 @@ def test_show_one_canvas_at_a_time(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_build_edits_a_bloom_without_putting_it_on_air(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("BuildEditTest")
+    QSettings().clear()
+    from sprigcast.app.build_stage import ROLE_CHILDREN, ROLE_NAME
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SceneItem, SourceConfig
+
+    col = _collection()
+    col.sources += [SourceConfig(id="a", kind="color", name="Moss", settings={"color": "#00ff00"}),
+                    SourceConfig(id="b", kind="color", name="Facecam", settings={"color": "#ff0000"})]
+    col.scene("h2").items += [SceneItem(source="a"), SceneItem(source="b")]
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._pick_bloom("h2")  # a pill: open BRB for editing
+        assert col.active_scenes["horizontal"] == "h1"  # Main stays on air
+        assert w.engine.staged == {"horizontal": "h2"} and w.previews["horizontal"].scene.id == "h2"
+        assert "not on air" in w.previews["horizontal"].subtitle and w.on_air_button.isVisibleTo(w)
+        # Inside lists top-most first; dragging Moss above Facecam puts it in front.
+        assert [w.source_list.item(i).data(ROLE_NAME) for i in range(2)] == ["Facecam", "Moss"]
+        assert w.source_list.item(0).data(ROLE_CHILDREN) == []
+        w._on_inside_moved(1, 0)
+        assert [i.source for i in col.scene("h2").items] == ["b", "a"]
+        assert w.source_list.currentRow() == 0 and w._item().source == "a"
+        w._put_on_air()
+        assert col.active_scenes["horizontal"] == "h2" and w.engine.staged == {}
+        assert not w.on_air_button.isVisibleTo(w)
+        w._set_mode("live")
+        assert w.engine.staged == {}  # Live's Next is Studio mode's alone
+    finally:
+        w.close()
+        QSettings().clear()
