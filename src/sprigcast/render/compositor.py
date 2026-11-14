@@ -36,6 +36,9 @@ void main() {
 FRAGMENT_SHADER = """
 #version 330
 uniform sampler2D tex;
+uniform int planar;         // 0: RGBA texture; 1: I420 planes packed in one 1-channel texture; 2: I420 + alpha
+uniform vec2 plane_size;    // planar: the picture's size (the Y plane), in pixels
+uniform vec3 yuv;           // planar: Kr, Kb of the colour matrix, 1.0 for full range
 uniform float opacity;
 uniform bool premul;        // a part's texture: colors are multiplied by alpha already
 uniform vec2 scroll;        // uv offset (already multiplied by time)
@@ -155,16 +158,46 @@ float shape_distance() {
     return d;
 }
 
+// A source's colour at st. Video files keep their decoded YUV planes (40% of the RGBA size, no CPU
+// conversion) packed in one texture: Y rows, then rows of U | V side by side, then the alpha rows.
+vec4 src(vec2 st) {
+    if (planar == 0) {
+        return texture(tex, st);
+    }
+    vec2 ts = vec2(textureSize(tex, 0));
+    vec2 lp = plane_size;
+    vec2 cp = lp * 0.5;
+    vec2 p = clamp(st * lp, vec2(0.5), lp - 0.5);   // texel centres stay inside their own plane
+    vec2 q = clamp(st * cp, vec2(0.5), cp - 0.5);
+    float y = texture(tex, p / ts).r;
+    float u = texture(tex, vec2(q.x, lp.y + q.y) / ts).r;
+    float v = texture(tex, vec2(cp.x + q.x, lp.y + q.y) / ts).r;
+    float a = planar == 2 ? texture(tex, vec2(p.x, lp.y + cp.y + p.y) / ts).r : 1.0;
+    if (yuv.z > 0.5) {
+        u -= 128.0 / 255.0;
+        v -= 128.0 / 255.0;
+    } else {
+        y = (y * 255.0 - 16.0) / 219.0;
+        u = (u * 255.0 - 128.0) / 224.0;
+        v = (v * 255.0 - 128.0) / 224.0;
+    }
+    float kr = yuv.x, kb = yuv.y;
+    float r = y + 2.0 * (1.0 - kr) * v;
+    float b = y + 2.0 * (1.0 - kb) * u;
+    float g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+    return vec4(clamp(vec3(r, g, b), 0.0, 1.0), a);
+}
+
 void main() {
     vec2 st = wrap ? fract(uv + scroll) : uv;
-    vec4 c = texture(tex, st);
+    vec4 c = src(st);
     if (premul && c.a > 0.0) {
         c.rgb /= c.a;
     }
     if (sharpen > 0.0) {
-        vec2 px = 1.0 / vec2(textureSize(tex, 0));
-        vec3 around = texture(tex, st + vec2(px.x, 0.0)).rgb + texture(tex, st - vec2(px.x, 0.0)).rgb
-                    + texture(tex, st + vec2(0.0, px.y)).rgb + texture(tex, st - vec2(0.0, px.y)).rgb;
+        vec2 px = 1.0 / (planar > 0 ? plane_size : vec2(textureSize(tex, 0)));
+        vec3 around = src(st + vec2(px.x, 0.0)).rgb + src(st - vec2(px.x, 0.0)).rgb
+                    + src(st + vec2(0.0, px.y)).rgb + src(st - vec2(0.0, px.y)).rgb;
         c.rgb = clamp(c.rgb + (4.0 * c.rgb - around) * sharpen, 0.0, 1.0);
     }
     if (key_mode == 1) {
@@ -520,6 +553,20 @@ class _Nv12Target:
 
 # How to read each source byte order as RGBA when sampling ("1" = fully opaque).
 SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1"}
+# Colour matrices for planar YUV sources: Kr, Kb.
+YUV_MATRICES = {"601": (0.299, 0.114), "709": (0.2126, 0.0722), "2020": (0.2627, 0.0593)}
+
+
+def planar_layout(channel_order: str) -> tuple[int, tuple[float, float, float]] | None:
+    """For a planar source ("I420/709/tv", "I420A/601/pc"): (mode, (Kr, Kb, full)); else None.
+
+    Made by sources.media.pack_i420."""
+    if not channel_order.startswith("I420"):
+        return None
+    kind, _, rest = channel_order.partition("/")
+    matrix, _, rng = rest.partition("/")
+    kr, kb = YUV_MATRICES.get(matrix, YUV_MATRICES["601"])
+    return (2 if kind == "I420A" else 1), (kr, kb, 1.0 if rng == "pc" else 0.0)
 
 
 class _CanvasTarget:
@@ -570,6 +617,8 @@ class Compositor:
         self.vbo = self.ctx.buffer(reserve=4 * 4 * 4, dynamic=True)  # 4 vertices x (x, y, u, v) float32
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
         self.textures: dict[str, moderngl.Texture] = {}
+        # Planar YUV sources: id -> (mode, (Kr, Kb, full), picture size); see planar_layout.
+        self.planar: dict[str, tuple[int, tuple[float, float, float], tuple[int, int]]] = {}
         self.targets: dict[str, _CanvasTarget] = {}
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
@@ -607,6 +656,13 @@ class Compositor:
         """
         h, w = frame.shape[:2]
         components = frame.shape[2] if frame.ndim == 3 else 1
+        layout = planar_layout(channel_order) if components == 1 else None
+        if layout is not None:  # Y rows, half as many U|V rows, then (with alpha) as many alpha rows again
+            mode = layout[0]
+            pic_h = h * 2 // 5 if mode == 2 else h * 2 // 3
+            self.planar[source_id] = (mode, layout[1], (w, pic_h))
+        else:
+            self.planar.pop(source_id, None)
         tex = self.textures.get(source_id)
         if tex is None or tex.size != (w, h) or tex.components != components:
             if tex is not None:
@@ -618,6 +674,7 @@ class Compositor:
         tex.write(np.ascontiguousarray(frame, dtype=np.uint8))
 
     def forget(self, source_id: str) -> None:
+        self.planar.pop(source_id, None)
         tex = self.textures.pop(source_id, None)
         if tex is not None:
             tex.release()
@@ -742,6 +799,8 @@ class Compositor:
         self.program["canvas_size"].value = (float(size[0]), float(size[1]))
         self.program["tex"].value = 0
         self.program["opacity"].value = 1.0
+        self.program["planar"].value = 0
+        planar_on = False
         self._applied = None
         for item in scene.items:
             part = self.parts.get((item.source, scene.canvas))
@@ -753,8 +812,18 @@ class Compositor:
             if not quad:
                 continue
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
+            planar = None if part is not None else self.planar.get(item.source)
+            if planar is not None:
+                self.program["planar"].value = planar[0]
+                self.program["yuv"].value = planar[1]
+                self.program["plane_size"].value = planar[2]
+                self._applied = None  # effects measured in texels: the picture's size, not the packed texture's
+            elif planar_on:
+                self.program["planar"].value = 0
+                self._applied = None
+            planar_on = planar is not None
             fx = self.effects.get(item.source, NO_EFFECTS)
-            self._apply_effects(fx, tex.size)
+            self._apply_effects(fx, planar[2] if planar is not None else tex.size)
             if fx.shape:
                 (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = quad[:3]
                 self.program["quad_size"].value = (math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x0, y2 - y0))

@@ -183,3 +183,34 @@ def test_targets_an_ended_recording_used_are_let_go(compositor):
     assert "pr" in compositor.targets
     compositor.read_nv12_later("pr", (32, 18), "t", time.monotonic())  # and comes back when wanted again
     assert ("pr", (32, 18)) in compositor.nv12_targets
+
+
+@pytest.mark.parametrize("fmt,colorspace,color_range", [("yuv420p", 2, 0), ("yuva420p", 1, 0), ("yuv420p", 1, 2)])
+def test_video_planes_convert_on_the_gpu_like_ffmpeg(compositor, fmt, colorspace, color_range):
+    """Video files hand over packed YUV planes (sources.media.pack_i420); the shader must match FFmpeg's RGBA."""
+    av = pytest.importorskip("av")
+    from sprigcast.sources.media import pack_i420
+
+    compositor.ctx.__enter__()  # earlier tests made their own GL context current
+    w, h = 64, 36
+    frame = av.VideoFrame(w, h, fmt)
+    for i, plane in enumerate(frame.planes):
+        rows = h if i in (0, 3) else h // 2
+        ramp = np.linspace(40 + 30 * i, 200 - 20 * i, plane.line_size)  # smooth, like real pictures
+        data = np.tile(ramp, (rows, 1)) + np.linspace(0, 20, rows)[:, None]
+        if i == 3:
+            data[:] = 255  # opaque: the readback is then the colour itself
+        plane.update(np.clip(data, 0, 255).astype(np.uint8).tobytes())
+    frame.colorspace, frame.color_range = colorspace, color_range
+    packed, order = pack_i420(frame, (w, h))
+    assert packed.shape == ((h + h // 2 + (h if fmt == "yuva420p" else 0)), w)
+    want = frame.reformat(format="rgba").to_ndarray().astype(int)
+    canvas = Canvas(id="yuv", width=w, height=h)
+    compositor.upload("vid", packed, order)
+    compositor.render(canvas, Scene(id="s", name="s", canvas="yuv", items=[SceneItem(source="vid")]), {"vid": (w, h)})
+    got = pixels(compositor, canvas).astype(int)
+    diff = np.abs(got - want)
+    bad = np.argwhere(diff > 8)
+    assert diff.max() <= 8, (order, diff.max(), bad[:3].tolist(), got[tuple(bad[0][:2])].tolist(), want[tuple(bad[0][:2])].tolist())
+    compositor.forget("vid")
+    assert "vid" not in compositor.planar
