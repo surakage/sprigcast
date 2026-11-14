@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -146,6 +145,18 @@ class FilterForm(QWidget):
                 self.setters[key](value)
 
 
+# On a PANEL pop-up, pills and number boxes are one step lighter so they read as things to press.
+RAISED_PILL = theme.SMALL_PILL_STYLE + (
+    f"QPushButton, QToolButton {{ background: {theme.RAISED}; }}"
+    f"QPushButton:hover, QToolButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+NUMBER_STYLE = (
+    f"QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {{ background: {theme.RAISED}; color: {theme.TEXT};"
+    f" border: none; border-radius: 12px; padding: 5px 10px; }}"
+    f"QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{ background: {theme.RAISED_HOVER}; }}"
+    "QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button"
+    " { subcontrol-origin: margin; width: 0px; height: 0px; border: none; }")
+
+
 class FiltersDialog(QDialog):
     """Edits `source.filters` in place and calls on_change(save=False) after every edit, so the
     preview updates live. Closing calls on_change(save=True)."""
@@ -157,73 +168,96 @@ class FiltersDialog(QDialog):
         self.on_change = on_change
         self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         self.setWindowTitle(f"Filters for “{source.name}”")
-        self.resize(780, 460)
+        self.resize(820, 520)
         self.form: FilterForm | None = None
 
+        # Calm and roomy: the filters as a list of rounded rows on the left (tick to switch one off),
+        # its settings on a soft card on the right, and pill buttons with words instead of symbols.
         self.list = QListWidget()
-        self.list.setMinimumWidth(220)
+        self.list.setMinimumWidth(240)
+        self.list.setSpacing(3)
+        self.list.setStyleSheet(
+            f"QListWidget {{ background: transparent; border: none; outline: none; }}"
+            f"QListWidget::item {{ background: {theme.RAISED}; color: {theme.TEXT}; border-radius: 12px;"
+            f" padding: 9px 10px; }}"
+            f"QListWidget::item:hover {{ background: {theme.RAISED_HOVER}; }}"
+            f"QListWidget::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}")
         self.list.currentRowChanged.connect(self._show_selected)
         self.list.itemChanged.connect(self._toggled)
         self.add_menu = QMenu(self)
         self.add_menu.aboutToShow.connect(self._fill_add_menu)
+        add = QPushButton("+ Add filter")
+        add.setStyleSheet(RAISED_PILL)
+        add.setMenu(self.add_menu)
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
         bar = QHBoxLayout()
-        bar.setSpacing(2)
+        bar.setSpacing(6)
+        bar.addWidget(add, 1)
         for text, tip, target in (
-            ("+", "Add a filter", self.add_menu),
-            ("−", "Remove the selected filter", self._remove),
-            ("▲", "Move up", lambda: self._move(-1)),
-            ("▼", "Move down", lambda: self._move(+1)),
+            ("↑", "Move up", lambda: self._move(-1)),
+            ("↓", "Move down", lambda: self._move(+1)),
+            ("Remove", "Remove the selected filter", self._remove),
         ):
-            b = QToolButton()
-            b.setText(text)
+            b = QPushButton(text)
             b.setToolTip(tip)
-            b.setAutoRaise(True)
-            b.setMinimumSize(30, 28)
-            if isinstance(target, QMenu):
-                b.setMenu(target)
-                b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-            else:
-                b.clicked.connect(target)
+            b.setStyleSheet(RAISED_PILL)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(target)
             bar.addWidget(b)
-        bar.addStretch(1)
         left = QVBoxLayout()
-        title = QLabel("Audio filters" if self.media == "audio" else "Effect filters")
-        title.setStyleSheet("font-weight: bold")
+        left.setSpacing(12)
+        title = QLabel("Sound filters" if self.media == "audio" else "Effects")
+        title.setStyleSheet("font-weight: 600; font-size: 15px;")
         left.addWidget(title)
+        self.empty = QLabel("No filters yet. Add one: a noise gate or compressor is a good start for a mic."
+                            if self.media == "audio" else "No effects yet.")
+        self.empty.setWordWrap(True)
+        self.empty.setStyleSheet(f"color: {theme.MUTED}")
+        left.addWidget(self.empty)
         left.addWidget(self.list, 1)
         left.addLayout(bar)
 
         self.title = QLabel("")
-        self.title.setStyleSheet("font-weight: bold")
+        self.title.setStyleSheet("font-weight: 600; font-size: 15px;")
         self.form_area = QScrollArea()
         self.form_area.setWidgetResizable(True)
         self.form_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.form_area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         self.reset_button = QPushButton("Defaults")
+        self.reset_button.setStyleSheet(RAISED_PILL)
         self.reset_button.setToolTip("Put this filter's settings back to their defaults")
         self.reset_button.clicked.connect(self._reset)
         hint = QLabel(
-            "Audio filters run top to bottom." if self.media == "audio"
-            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, then color correction."
+            "They run top to bottom. Untick one to switch it off without removing it." if self.media == "audio"
+            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, then colour."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
-        right = QVBoxLayout()
-        right.addWidget(self.title)
+        card = QFrame()
+        card.setObjectName("filterCard")
+        card.setStyleSheet(f"#filterCard {{ background: {theme.CARD}; border-radius: 16px; }}" + NUMBER_STYLE)
+        right = QVBoxLayout(card)
+        right.setContentsMargins(18, 16, 18, 16)
+        right.setSpacing(12)
+        top = QHBoxLayout()
+        top.addWidget(self.title, 1)
+        top.addWidget(self.reset_button)
+        right.addLayout(top)
         right.addWidget(self.form_area, 1)
         right.addWidget(hint)
-        row = QHBoxLayout()
-        row.addWidget(self.reset_button)
-        row.addStretch(1)
-        right.addLayout(row)
 
         body = QHBoxLayout()
+        body.setSpacing(20)
         body.addLayout(left)
-        body.addLayout(right, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
+        body.addWidget(card, 1)
+        done = QPushButton("Done")
+        done.setStyleSheet(theme.PRIMARY_STYLE)
+        done.clicked.connect(self.reject)
         root = QVBoxLayout(self)
+        root.setContentsMargins(22, 22, 22, 22)
+        root.setSpacing(18)
         root.addLayout(body, 1)
-        root.addWidget(buttons)
+        root.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
         self._refresh(0)
 
     # List ---------------------------------------------------------------------
@@ -238,6 +272,8 @@ class FiltersDialog(QDialog):
             item.setToolTip("Untick to switch the filter off without removing it")
             self.list.addItem(item)
         self.list.blockSignals(False)
+        self.empty.setVisible(not self.source.filters)
+        self.list.setVisible(bool(self.source.filters))
         if self.source.filters:
             self.list.setCurrentRow(max(0, min(select or 0, len(self.source.filters) - 1)))
         self._show_selected(self.list.currentRow())

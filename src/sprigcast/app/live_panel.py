@@ -99,67 +99,65 @@ def _compact(button: QPushButton, text: str) -> QPushButton:
 
 
 class BloomTile(QPushButton):
-    """A bloom as a card: its last on-air picture (or its folder colour) with the name under it.
+    """A bloom as a pill button: a dot in its folder colour, then its name.
 
-    A pink ring means on air, a dashed green one means lined up next (Studio mode)."""
+    A pink ring and dot mean on air, a dashed green ring means lined up next (Studio mode). The
+    last on-air picture is kept (Build's bloom pills show it) but not drawn here: pills keep many
+    blooms on screen at once."""
+
+    HEIGHT = 38
 
     def __init__(self, name: str, colour: str | None = None):
         super().__init__(name)
         self.colour = colour
         self.thumb: QImage | None = None
         self.setCheckable(True)
-        self.setFixedSize(*TILE_SIZE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        font = self.font()
+        font.setPixelSize(13)
+        font.setWeight(font.Weight.DemiBold)
+        self.setFont(font)
+        self.setFixedHeight(self.HEIGHT)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(*TILE_SIZE)
+        text = QFontMetrics(self.font()).horizontalAdvance(self.text())
+        return QSize(min(220, text + 50), self.HEIGHT)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        return QSize(*TILE_SIZE)
+        return QSize(60, self.HEIGHT)
 
     def set_thumb(self, image: QImage | None) -> None:
         self.thumb = image
-        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        radius = outer.height() / 2
         hover = self.underMouse() and self.isEnabled()
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(theme.RAISED if hover else theme.PANEL))
-        p.drawRoundedRect(outer, 18, 18)
-        pic = QRectF(8, 8, self.width() - 16, (self.width() - 16) * 9 / 16)
-        clip = QPainterPath()
-        clip.addRoundedRect(pic, 12, 12)
-        p.save()
-        p.setClipPath(clip)
-        p.fillRect(pic, QColor(self.colour or theme.STAGE_EMPTY))
-        if self.thumb is not None and not self.thumb.isNull():
-            size = QSize(self.thumb.width(), self.thumb.height()).scaled(pic.size().toSize(),
-                                                                          Qt.AspectRatioMode.KeepAspectRatio)
-            target = QRectF(pic.x() + (pic.width() - size.width()) / 2, pic.y() + (pic.height() - size.height()) / 2,
-                            size.width(), size.height())
-            p.drawImage(target, self.thumb)
-        p.restore()
+        p.setBrush(QColor(theme.RAISED_HOVER if hover else theme.RAISED))
+        p.drawRoundedRect(outer, radius, radius)
+        on_air = self.isChecked()
+        dot = QColor(theme.LIVE if on_air else (self.colour or theme.LEAF_OFF))
+        if not on_air and self.colour:
+            dot = dot.lighter(260)  # folder colours arrive darkened for the old picture tiles
+        p.setBrush(dot)
+        p.drawEllipse(QRectF(16, outer.center().y() - 4, 8, 8))
         p.setPen(QColor(theme.TEXT_BRIGHT if self.isEnabled() else theme.MUTED))
-        font = p.font()
-        font.setPixelSize(14)
-        font.setWeight(font.Weight.DemiBold)
-        p.setFont(font)
-        text_rect = QRectF(14, pic.bottom() + 8, self.width() - 28, self.height() - pic.bottom() - 14)
-        name = QFontMetrics(font).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(text_rect.width()))
+        p.setFont(self.font())
+        text_rect = QRectF(32, 0, self.width() - 46, self.height())
+        name = QFontMetrics(self.font()).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(text_rect.width()))
         p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
-        ring = theme.LIVE if self.isChecked() else theme.ACCENT if self.property("staged") else None
+        ring = theme.LIVE if on_air else theme.ACCENT if self.property("staged") else None
         if ring:
             pen = QPen(QColor(ring), 2)
-            if not self.isChecked():
+            if not on_air:
                 pen.setStyle(Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(outer.adjusted(1, 1, -1, -1), 17, 17)
+            p.drawRoundedRect(outer.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
         p.end()
 
 
@@ -318,7 +316,7 @@ class LivePanel(QWidget):
 
     def _add_grid(self, scenes, colour: str | None = None) -> None:
         flow_box = QWidget()
-        flow = FlowLayout(flow_box, spacing=14)
+        flow = FlowLayout(flow_box, spacing=8)
         tint = QColor(colour).darker(260).name() if colour else None
         for scene in scenes:
             button = BloomTile(scene.name + ("  ⇄" if scene.linked_to else ""), tint)

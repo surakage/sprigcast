@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 
 SIDE_WIDTH = 300
+BOTTOM_HEIGHT = 300  # the Blooms | Sound | Transitions row under the canvas
 GAP = 20
 
 
@@ -282,8 +283,7 @@ class LiveSide(QWidget):
         # A long sound list (Edit shows all of them) scrolls inside its card instead of pushing the
         # panels below (Chat, Transitions) off the bottom of the window.
         sound_card.layout().addWidget(FitScroll(self.sound))
-        sound_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)  # panels get the rest
-        root.addWidget(sound_card)
+        self.sound_card = sound_card  # LiveStage shows it under the canvas, beside Blooms and Transitions
 
         # Panels you choose for Live (chat, activity feed...) fill the rest of the column (app/panels.py).
         self.panel_slot = QVBoxLayout()
@@ -510,9 +510,24 @@ class LiveStage(QWidget):
         left.setSpacing(GAP)
         self.card = StageCard()
         left.addWidget(self.card, 1)
-        self.tiles_slot = QVBoxLayout()
-        self.tiles_slot.setContentsMargins(0, 0, 0, 0)
-        left.addLayout(self.tiles_slot)
+        # Under the canvas: three cards the same size, Blooms | Sound | Transitions. The main window
+        # fills the Blooms and Transitions cards; the right column keeps Go live, Where it goes and Chat.
+        self.bottom = QWidget()
+        row = QHBoxLayout(self.bottom)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(GAP)
+        self.blooms_card, self.transitions_card = side_card(), side_card()
+        for card in (self.blooms_card, side.sound_card, self.transitions_card):
+            card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            row.addWidget(card, 1)
+        self.bottom.setFixedHeight(BOTTOM_HEIGHT)
+        left.addWidget(self.bottom)
+        self.tiles_slot = self.blooms_card.layout()
         root.addLayout(left, 1)
         self.side = side
         root.addWidget(side)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # About a third of the screen, so a small laptop screen still has a canvas worth looking at.
+        self.bottom.setFixedHeight(max(220, min(BOTTOM_HEIGHT, int(self.height() * 0.32))))

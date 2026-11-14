@@ -565,10 +565,13 @@ class TunePage(QWidget):
         edit_filters.clicked.connect(lambda: on_filters(self.sound_id))
         filters_top.addWidget(edit_filters)
         box.addLayout(filters_top)
-        self.filters = QLabel("")
-        self.filters.setWordWrap(True)
+        # One filter per row, in the order they run, so five to eight of them still read at a glance.
+        self.filters = QLabel("None yet")
         self.filters.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         box.addWidget(self.filters)
+        self.filter_rows = QVBoxLayout()
+        self.filter_rows.setSpacing(4)
+        box.addLayout(self.filter_rows)
 
         _more, box = self._section(col)
         group_row = QHBoxLayout()
@@ -632,11 +635,25 @@ class TunePage(QWidget):
         for track, button in self.goes.items():
             button.setChecked(track in sound.tracks)
             button.setEnabled(sound.monitor != "only")  # "just me" goes nowhere but your speakers
-        self.filters.setText(", ".join(sound.filters) if sound.filters else "None yet")
+        self._show_filters(sound.filters)
         self.group.setCurrentText(sound.group)
         self.pin.setChecked(sound.pinned)
         self.duck.setChecked(sound.voice)
         self._loading = False
+
+    def _show_filters(self, names: list[str]) -> None:
+        while self.filter_rows.count():
+            widget = self.filter_rows.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.filters.setVisible(not names)
+        for i, name in enumerate(names, 1):
+            row = QLabel(f"{i}   {name}")
+            row.setToolTip("Filters run top to bottom")
+            row.setStyleSheet(f"background: {theme.RAISED}; color: {theme.TEXT}; border-radius: 10px;"
+                              " padding: 6px 10px;")
+            self.filter_rows.addWidget(row)
 
     def _tracks_clicked(self) -> None:
         self._send({"tracks": [t for t, b in self.goes.items() if b.isChecked()]})

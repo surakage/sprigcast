@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -228,7 +229,7 @@ class TransitionsPanel(QWidget):
 
     def __init__(self, transition: Transition, changed: Callable[[], None],
                  probe: Callable[[str], float | None] | None = None, parent: QWidget | None = None,
-                 collection: SceneCollection | None = None):
+                 collection: SceneCollection | None = None, compact: bool = False):
         super().__init__(parent)
         self.transition = transition
         self.changed = changed
@@ -239,8 +240,6 @@ class TransitionsPanel(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(12)
         self.setStyleSheet(FIELD_STYLE)
-        if collection is not None:
-            root.addWidget(section_title("Usually", "Between blooms with no rule below"))
 
         grid = QGridLayout()
         grid.setSpacing(6)
@@ -263,6 +262,7 @@ class TransitionsPanel(QWidget):
         self._reflow(4)
 
         self.picture = TransitionPicture(lambda: self.transition)
+        self.picture.setVisible(not compact)  # Live's card is short: the choices say enough there
         root.addWidget(self.picture)
 
         form = QFormLayout()
@@ -350,11 +350,25 @@ class TransitionsPanel(QWidget):
         sound_layout.addWidget(self.mute)
         form.addRow("Sound", sound)
         root.addLayout(form)
-        self.rules: RulesTable | None = None
+        self.rules_button: QPushButton | None = None
         if collection is not None:
-            self.rules = RulesTable(collection, changed, probe)
-            root.addSpacing(6)
-            root.addWidget(self.rules)
+            # The table of bloom-to-bloom rules opens in its own pop-up: there's no room for it here.
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            label = QLabel("Between blooms")
+            label.setToolTip("Give particular switches their own transition, like a stinger into BRB")
+            row.addWidget(label)
+            self.rules_count = QLabel("")
+            self.rules_count.setStyleSheet(theme.MUTED_STYLE)
+            row.addWidget(self.rules_count, 1)
+            self.rules_button = QPushButton("Edit")
+            self.rules_button.setStyleSheet(PILL_STYLE)
+            self.rules_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.rules_button.clicked.connect(self.open_rules)
+            row.addWidget(self.rules_button)
+            root.addSpacing(4)
+            root.addLayout(row)
+            self.show_rule_count()
         root.addStretch(1)
         self.load(transition)
 
@@ -446,6 +460,7 @@ class TransitionsPanel(QWidget):
         self._updating = False
         self._show_clip_length()
         self._show_rows()
+        self.show_rule_count()
 
     def _show_rows(self) -> None:
         kind = self.transition.kind
@@ -464,10 +479,50 @@ class TransitionsPanel(QWidget):
 
     def _show_clip_length(self) -> None:
         path = self.transition.stinger.path
-        seconds = self.probe(path) if (self.probe and path) else None
+        if getattr(self, "_probed", (None, None))[0] != path:  # opening the file once per clip is enough
+            self._probed = (path, self.probe(path) if (self.probe and path) else None)
+        seconds = self._probed[1]
         self.clip_length.setText(f"of {seconds:.1f} s" if seconds else "")
         if seconds:
             self.cut_at.setMaximum(max(0, int(seconds * 1000)))
+
+    def show_rule_count(self) -> None:
+        if self.collection is None:
+            return
+        count = len(self.collection.transition_rules)
+        self.rules_count.setText(f"{count} rule{'s' if count != 1 else ''}" if count else "None")
+
+    def rules_dialog(self) -> QDialog:
+        """The pop-up with the bloom-to-bloom table (built fresh each time, so names are current)."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Between blooms")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        def edited() -> None:
+            self.show_rule_count()
+            self.changed()
+
+        table = RulesTable(self.collection, edited, self.probe)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        scroll.setWidget(table)
+        layout.addWidget(scroll, 1)
+        done = QPushButton("Done")
+        done.setStyleSheet(theme.PRIMARY_STYLE)
+        done.clicked.connect(dialog.accept)
+        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.table = table
+        dialog.resize(420, 520)
+        return dialog
+
+    def open_rules(self) -> None:
+        self.rules_dialog().exec()
+        self.show_rule_count()
 
     def set_kind(self, kind: str) -> None:
         """Pick a kind from elsewhere (the Live screen's transition chip)."""
