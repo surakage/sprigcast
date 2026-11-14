@@ -376,6 +376,7 @@ class ControlServer(QObject):
                 socket.close(QWebSocketProtocol.CloseCode(step.code), step.reason)
                 return
             socket.sendTextMessage(step)
+            self.soon()  # a step list changes things between waits
 
     # Events ----------------------------------------------------------------------------
 
