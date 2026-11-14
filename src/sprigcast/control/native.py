@@ -34,7 +34,8 @@ from sprigcast import __version__
 from sprigcast.control.protocol import Close, auth_string
 from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
 
-API_VERSION = 1
+API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
+PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "custom")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
 SOUND_KINDS = ("audio_input", "audio_output")
@@ -276,7 +277,8 @@ class NativeApi:
 
     @action("app.info", "Version, API version and the shapes this setup has.")
     def app_info(self, data):
-        return {"app": "SprigCast", "version": __version__, "api": API_VERSION, "shapes": self._shapes(),
+        return {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
+                "shapes": self._shapes(),
                 "events": list(EVENT_GROUPS + HIGH_VOLUME)}
 
     @action("app.actions", "Every action with what it does and its fields (fields starting with ? are optional).")
@@ -792,7 +794,7 @@ class NativeSession:
     challenge: str = field(default_factory=lambda: secrets.token_urlsafe(24))
 
     def hello(self) -> str:
-        hello: dict[str, Any] = {"app": "SprigCast", "version": __version__, "api": API_VERSION,
+        hello: dict[str, Any] = {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
                                  "auth": {"salt": self.salt, "challenge": self.challenge} if self.password else None}
         return json.dumps({"hello": hello})
 
@@ -840,20 +842,25 @@ class NativeSession:
         yield json.dumps(self.answer(message), default=str)
 
     def answer(self, message: dict[str, Any]) -> dict[str, Any]:
-        out: dict[str, Any] = {"id": message.get("id")}
-        name = message.get("do")
-        try:
-            if not isinstance(name, str):
-                raise _bad("do is missing: say which action, like {\"do\": \"bloom.show\", \"bloom\": \"BRB\"}.")
-            data = {k: v for k, v in message.items() if k not in ("do", "id")}
-            result = self.api.run(name, data)
-        except ApiError as exc:
-            out.update(ok=False, error={"code": exc.code, "message": exc.message})
-            return out
-        except Exception as exc:  # a bug must not drop the connection
-            out.update(ok=False, error={"code": "failed", "message": f"{type(exc).__name__}: {exc}"})
-            return out
-        out["ok"] = True
-        if result is not None:
-            out["result"] = result
+        return answer(self.api, message)
+
+
+def answer(api: NativeApi, message: dict[str, Any]) -> dict[str, Any]:
+    """Run one {"do": ..., fields} message: {"id", "ok", "result"} or {"id", "ok": false, "error"}."""
+    out: dict[str, Any] = {"id": message.get("id")}
+    name = message.get("do")
+    try:
+        if not isinstance(name, str):
+            raise _bad("do is missing: say which action, like {\"do\": \"bloom.show\", \"bloom\": \"BRB\"}.")
+        data = {k: v for k, v in message.items() if k not in ("do", "id")}
+        result = api.run(name, data)
+    except ApiError as exc:
+        out.update(ok=False, error={"code": exc.code, "message": exc.message})
         return out
+    except Exception as exc:  # a bug must not drop the connection
+        out.update(ok=False, error={"code": "failed", "message": f"{type(exc).__name__}: {exc}"})
+        return out
+    out["ok"] = True
+    if result is not None:
+        out["result"] = result
+    return out

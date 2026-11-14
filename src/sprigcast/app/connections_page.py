@@ -30,6 +30,7 @@ from sprigcast.app.control_server import (
     PASSWORD,
     PORT,
     USE_PASSWORD,
+    WEB_DOOR,
     saved_settings,
 )
 from sprigcast.control.protocol import new_password
@@ -126,6 +127,11 @@ class ConnectionsPage(QWidget):
         dbox.addWidget(self.lan)
         dbox.addWidget(_hint("Only needed when the app runs on another device. Keep a password on."))
         dbox.addSpacing(6)
+        self.web_door = QCheckBox("Allow web links")
+        self.web_door.setChecked(s["web_door"])
+        dbox.addWidget(self.web_door)
+        dbox.addWidget(_hint("For buttons and scripts that can only open a link. Always needs the password."))
+        dbox.addSpacing(6)
         self.obs_door = QCheckBox("Compatibility mode")
         self.obs_door.setChecked(s["obs_door"])
         dbox.addWidget(self.obs_door)
@@ -146,7 +152,8 @@ class ConnectionsPage(QWidget):
         self.status.setStyleSheet(theme.NOTE_STYLE + " padding: 8px 14px;")
         cbox.addWidget(self.status, 0, Qt.AlignmentFlag.AlignLeft)
 
-        for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled, self.obs_door.toggled):
+        for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled, self.obs_door.toggled,
+                       self.web_door.toggled):
             signal.connect(self._refresh)
         self.port.valueChanged.connect(self._refresh)
         self.password.textChanged.connect(self._refresh)
@@ -169,6 +176,8 @@ class ConnectionsPage(QWidget):
         host = "127.0.0.1"
         lines = [f"Address: ws://{host}:{self.port.value()}{NATIVE_PATH}", f"Server: {host}", f"Port: {self.port.value()}"]
         lines.append(f"Password: {self.password.text()}" if self.use_password.isChecked() else "Password: none")
+        if self.web_door.isChecked():
+            lines.insert(1, f"Web links: http://{host}:{self.port.value()}/api")
         return "\n".join(lines)
 
     def _refresh(self, *_args) -> None:
@@ -202,4 +211,5 @@ class ConnectionsPage(QWidget):
         q.setValue(PASSWORD, self.password.text().strip() or new_password())
         q.setValue(LAN, self.lan.isChecked())
         q.setValue(OBS_DOOR, self.obs_door.isChecked())
+        q.setValue(WEB_DOOR, self.web_door.isChecked())
         QTimer.singleShot(0, self._refresh)  # the server restarts once Settings is applied

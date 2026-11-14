@@ -2,6 +2,9 @@
 
 Let stream tools, control decks, bots, scripts and plugins drive SprigCast.
 
+> **Preview.** This API is still taking shape: action names, fields and events may change between
+> versions. `hello` says `"api": 0, "preview": true` until it settles at `"api": 1`.
+
 Turn it on in **Settings → Connections**, then connect a WebSocket to:
 
 ```
@@ -26,9 +29,9 @@ Things are named by **name or id**. Any action that changes a bloom takes `shape
 ## Connecting
 
 ```
-server → {"hello": {"app": "SprigCast", "version": "0.1.0", "api": 1, "auth": {"salt": "…", "challenge": "…"}}}
+server → {"hello": {"app": "SprigCast", "version": "0.1.0", "api": 0, "preview": true, "auth": {"salt": "…", "challenge": "…"}}}
 app    → {"auth": "<answer>", "events": ["bloom", "sound"]}
-server → {"welcome": {"api": 1, "events": ["bloom", "sound"]}}
+server → {"welcome": {"api": 0, "events": ["bloom", "sound"]}}
 ```
 
 `auth` is `null` when no password is set. Then send `{"events": "all"}` (or a list, or `"none"`) to start.
@@ -210,6 +213,21 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | --- | --- | --- |
 | `transition.get` | The usual transition and its length. | none |
 | `transition.set` | Change the usual transition and/or its length. | `kind` (optional): cut, fade, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000 |
+
+## Web links
+
+For buttons and scripts that can only open a link. Turn on **Allow web links** in Settings → Connections. A password is always needed.
+
+```
+http://127.0.0.1:4455/api                                  every action
+http://127.0.0.1:4455/api/bloom.show?bloom=BRB&password=…   run one, fields in the address
+curl -H "Authorization: Bearer …" -X POST http://127.0.0.1:4455/api/filter.set \
+     -d '{"source": "Facecam", "filter": "Blur", "on": true}'
+```
+
+Values in the address are read the way they look: `true`, `false`, `null` and numbers become those, and anything else is text. The answer is the same JSON as on the WebSocket, without `id`. The HTTP status matches the error: 400 bad request, 401 password, 403 off, 404 not found, 409 not allowed or busy.
+
+Requests made by web pages on other sites are refused, so a page you visit can't drive SprigCast.
 
 ## The OBS-compatible door
 
