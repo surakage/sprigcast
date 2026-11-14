@@ -27,6 +27,10 @@ def test_youtube_live_page_and_chat_page():
     assert youtube.video_from_live_page(live) == "dQw4w9WgXcQ"
     offline = '<html><link rel="canonical" href="https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv"></html>'
     assert youtube.video_from_live_page(offline) is None
+    # Late-2026 /live pages: canonical says "undefined", the stream is the page's current video
+    current = ('<link rel="canonical" href="undefined"><script>var ytInitialData = {"currentVideoEndpoint":'
+               '{"clickTrackingParams":"x","watchEndpoint":{"videoId":"4t4AQ15yj1M"}}};</script>')
+    assert youtube.video_from_live_page(current) == "4t4AQ15yj1M"
     data = {"contents": {"liveChatRenderer": {
         "continuations": [{"invalidationContinuationData": {"continuation": "TOP", "timeoutMs": 10000}}],
         "header": {"liveChatHeaderRenderer": {"viewSelector": {"sortFilterSubMenuRenderer": {"subMenuItems": [
@@ -117,6 +121,14 @@ def test_kick_reader_subscribes_pongs_and_dedupes():
     reader.handle_text(json.dumps(line))
     reader.handle_text(json.dumps({"event": "pusher:ping", "data": {}}))
     assert len(got) == 1 and states == ["live"] and reader.socket.sent[-1]["event"] == "pusher:pong"
+    sent = {"event": "App\\Events\\ChatMessageSentEvent",
+            "data": json.dumps({"id": "x2", "content": "yo", "sender": {"username": "b"}})}
+    reader.handle_text(json.dumps(sent))
+    assert [m.text for m in got] == ["hi", "yo"]
+    # A retired chat key (Pusher 4001) moves the next try on to the next key
+    assert reader._key_index == 0
+    reader.handle_text(json.dumps({"event": "pusher:error", "data": {"code": 4001, "message": "gone"}}))
+    assert reader._key_index == 1
     reader._ping.stop()
     reader.socket = None
 

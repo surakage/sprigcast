@@ -68,6 +68,11 @@ def video_from_live_page(page: str) -> str | None:
     m = re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=(' + _VIDEO_ID + ')"', page)
     if m:
         return m.group(1)
+    at = page.find('"currentVideoEndpoint"')  # 2026 pages: the live video is the page's current video
+    if at >= 0:
+        m = re.search(r'"watchEndpoint":\{"videoId":"(' + _VIDEO_ID + ')"', page[at:at + 1500])
+        if m:
+            return m.group(1)
     m = re.search(r'"liveStreamabilityRenderer":\{"videoId":"(' + _VIDEO_ID + ')"', page)
     return m.group(1) if m else None
 
