@@ -4673,7 +4673,29 @@ class MainWindow(QMainWindow):
         return palette
 
     def _on_hotkey(self, action: str) -> None:
-        if action == STUDIO_GO:
+        from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE, TOGGLE_STUDIO
+
+        if action == TOGGLE_CLIPS:
+            self._toggle_replay(self.replay is None)
+        elif action == TOGGLE_STUDIO:
+            self.live_panel.studio.toggle()
+        elif action == TOGGLE_MODE:
+            self._set_mode("live" if self.mode == "build" else "build")
+        elif action == MUTE_ALL:
+            sounds = [c for c in self.collection.sources if c.kind in self.AUDIO_KINDS]
+            mute = any(not c.settings.get("muted", False) for c in sounds)
+            for config in sounds:
+                if bool(config.settings.get("muted", False)) != mute:
+                    self._on_audio_changed(config.id, {"muted": mute})
+        elif action.startswith(SOUND_PREFIX):
+            source_id, _, what = action[len(SOUND_PREFIX):].rpartition(":")
+            config = next((c for c in self.collection.sources if c.id == source_id), None)
+            if config is not None:
+                muted = bool(config.settings.get("muted", False))
+                want = {"mute": True, "unmute": False}.get(what, not muted)
+                if want != muted:
+                    self._on_audio_changed(source_id, {"muted": want})
+        elif action == STUDIO_GO:
             self._studio_go()
         elif action == SAVE_REPLAY:
             self._save_replay()
