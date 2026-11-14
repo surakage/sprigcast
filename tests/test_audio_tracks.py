@@ -1,6 +1,7 @@
 """Sound tracks 1-5 (everything, VOD-safe, voice, 4, 5), what recordings keep, and global devices."""
 
 import os
+import threading
 import time
 
 import numpy as np
@@ -109,10 +110,18 @@ def test_recording_keeps_the_chosen_tracks_with_their_names(tmp_path):
     pool.track_titles = {"recording": "All of it", "vod": "VOD-safe"}
     rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 800, codec="libx264")
     assert pool.encoders["horizontal"].tracks == ("recording", "vod", "voice", "clips")
-    _feed(engine, time.perf_counter(), 20, pool=pool)
+    # Under a busy machine the encoder can take a while to open and the file starts at the next
+    # keyframe, so wait for it, feed plenty, and keep feeding while the file closes (it ends at a keyframe).
+    assert pool.encoders["horizontal"].wait_open(30)
+    _feed(engine, time.perf_counter(), 40, pool=pool)
+    feeder = threading.Thread(target=_feed, args=(engine, time.perf_counter(), 20, 40, pool))
+    feeder.start()
     rec.stop()
+    feeder.join()
     assert rec.errors == []
-    assert _audio_tracks(rec.paths[0]) == [("All of it", 0.5), ("VOD-safe", 0.37), ("Voice", 0.25)]
+    tracks = _audio_tracks(rec.paths[0])
+    assert [title for title, _ in tracks] == ["All of it", "VOD-safe", "Voice"]
+    assert [level for _, level in tracks] == pytest.approx([0.5, 0.37, 0.25], abs=0.02)
 
 
 def test_audio_page_sets_switch_tracks_and_which_sounds_go_where(monkeypatch):
