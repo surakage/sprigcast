@@ -137,6 +137,15 @@ class StreamReport:
         self._next = 0.0
         self._started = clock()
         self._file = None
+        self._process = None  # kept: cpu_percent() measures since its last call on the same object
+        try:
+            import psutil
+
+            self._process = psutil.Process()
+            self._process.cpu_percent()
+            psutil.cpu_percent()
+        except Exception:
+            pass
         folder = folder or log_dir()
         try:
             folder.mkdir(parents=True, exist_ok=True)
@@ -214,7 +223,7 @@ class StreamReport:
         try:
             import psutil
 
-            proc = psutil.Process()
+            proc = self._process
             extra.append(f"SprigCast {proc.memory_info().rss / 2**20:.0f} MB, "
                          f"CPU {proc.cpu_percent() / (os.cpu_count() or 1):.0f}% of the PC, "
                          f"PC CPU {psutil.cpu_percent():.0f}%")
