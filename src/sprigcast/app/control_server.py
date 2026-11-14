@@ -127,7 +127,7 @@ class WindowHost:
 
     def start_stream(self) -> str | None:
         if not any(o.type == "stream" and o.enabled for o in self.w.collection.outputs):
-            return "No place to stream to is switched on (Live → Where it goes)."
+            return "No place to stream to is switched on (Live → Destinations)."
         QTimer.singleShot(0, lambda: self.w.streaming is None and self.w._start_streaming())
         return None
 

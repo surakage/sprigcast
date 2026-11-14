@@ -560,3 +560,20 @@ def test_clip_saves_the_shapes_chosen_in_settings(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_long_destination_list_scrolls_inside_its_card(app):
+    from sprigcast.app.live_stage import PLACES_HEIGHT, Destination, LiveSide
+
+    side = LiveSide(lambda: None, lambda: None, lambda: None, lambda _id: None)
+    side.resize(300, 900)
+    side.show()
+    places = [Destination(id=f"p{i}", name=f"Place {i}", on=True, note="Ready") for i in range(10)]
+    side.show_destinations(places, {})
+    app.processEvents()
+    assert len(side.place_rows) == 10
+    assert side.places_scroll.maximumHeight() <= PLACES_HEIGHT  # Chat below keeps its room
+    side.show_destinations(places[:1], {})
+    app.processEvents()
+    assert side.places_scroll.maximumHeight() < PLACES_HEIGHT  # a short list takes only what it needs
+    side.close()

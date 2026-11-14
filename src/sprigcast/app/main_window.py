@@ -3764,7 +3764,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 log.exception("stream report")
         self.live_panel.set_clock(clock, True)
-        self._set_header_clock(clock.replace("● LIVE", "● Live") + ("" if worst == "good" else "  ·  check Where it goes"), True)
+        self._set_header_clock(clock.replace("● LIVE", "● Live") + ("" if worst == "good" else "  ·  check Destinations"), True)
 
     # Hotkeys -----------------------------------------------------------------
 
