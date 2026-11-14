@@ -152,7 +152,7 @@ class TransitionPicture(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         box = QRectF(0, 0, self.width(), self.height())
         frame = QPainterPath()
-        frame.addRoundedRect(box, 13, 13)
+        frame.addRoundedRect(box, 18 if self.wide else 14, 18 if self.wide else 14)
         p.setClipPath(frame)
         t = self.transition()
         progress = self.progress
@@ -693,7 +693,7 @@ class PopUp(QDialog):
         card = QFrame()
         card.setObjectName("popCard")
         card.setStyleSheet(f"#popCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
-                           " border-radius: 18px; }")
+                           " border-radius: 24px; }")
         shadow = QGraphicsDropShadowEffect(card)
         shadow.setBlurRadius(36)
         shadow.setOffset(0, 10)
