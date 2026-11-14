@@ -389,7 +389,6 @@ class MainWindow(QMainWindow):
         self._build_transitions_dock()
         self._build_live_stage()
         self.live_side.panel_slot.addWidget(self.panels.cards["live"])
-        self.panels.cards["live"].setMinimumHeight(240)  # a long Sound list scrolls before Chat gets squeezed
         self._build_properties_dock()
         self._build_item_actions()
         self._fill_bloom_tools()
@@ -499,19 +498,45 @@ class MainWindow(QMainWindow):
         from sprigcast.app.transitions_panel import TransitionsPanel
         from sprigcast.render.stinger import probe
 
-        self.transitions_panel = TransitionsPanel(self.collection.transition, self._transition_edited, probe,
+        self.transitions_panel = TransitionsPanel(self.collection.transition,
+                                                  lambda: self._transition_edited(self.transitions_panel), probe,
                                                   collection=self.collection)
         scroll = QScrollArea()  # a short card (Build's left column) scrolls instead of squashing the pills
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         scroll.setWidget(self.transitions_panel)
-        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", scroll)))
+        # On Live, transitions have their own card under the canvas (see _build_live_transitions).
+        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", scroll), modes=("build",)))
         self._build_transition_menu()
 
-    def _transition_edited(self) -> None:
+    def _transition_edited(self, source=None) -> None:
+        """One transitions view changed the settings: show them in the others, then save."""
+        for panel in (getattr(self, "transitions_panel", None), getattr(self, "live_transitions", None)):
+            if panel is not None and panel is not source:
+                panel.load(self.collection.transition)
         self._show_transition_chip()
         self._changed()
+
+    def _build_live_transitions(self) -> None:
+        """Live's Transitions card: the choices and their settings; the bloom-to-bloom table is a pop-up."""
+        from sprigcast.app.live_stage import heading
+        from sprigcast.app.transitions_panel import TransitionsPanel
+        from sprigcast.render.stinger import probe
+
+        card = self.live_stage.transitions_card
+        card.layout().addWidget(heading("Transitions"))
+        self.live_transitions = TransitionsPanel(self.collection.transition,
+                                                 lambda: self._transition_edited(self.live_transitions), probe,
+                                                 collection=self.collection, compact=True)
+        self.live_transitions.layout().setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        scroll.setWidget(self.live_transitions)
+        card.layout().addWidget(scroll, 1)
 
     def _show_transition_chip(self) -> None:
         from sprigcast.app.transitions_panel import summary
@@ -1173,7 +1198,9 @@ class MainWindow(QMainWindow):
         self.live_tiles.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         self.live_tiles.setWidget(self.live_panel)
         self.live_tiles.viewport().installEventFilter(self)  # re-fits the tiles' height when the width changes
-        self.live_stage.tiles_slot.addWidget(self.live_tiles)
+        self.live_stage.tiles_slot.addWidget(self.live_tiles, 1)
+        self.live_panel.transition_chip.hide()  # the Transitions card beside the blooms shows it now
+        self._build_live_transitions()
         self.modes.addWidget(self.live_stage)  # page 1
         self._thumbs_at = 0.0
         self.live_side.set_clip(False, self.collection.recording.replay_seconds)
@@ -1184,11 +1211,8 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _fit_tiles(self) -> None:
-        """The tiles take the height they need (up to about two rows), the stage gets the rest."""
-        width = self.live_tiles.viewport().width()
-        layout = self.live_panel.layout()
-        need = layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else self.live_panel.sizeHint().height()
-        self.live_tiles.setFixedHeight(max(120, min(360, need + 2)))
+        """Nothing to fit any more (kept for older callers)."""
+        # The blooms now sit in their own card of fixed height under the canvas and scroll inside it.
 
     def _place_canvases(self) -> None:
         """The canvas previews sit on Live's stage in Live mode and on Build's canvas card in Build mode."""

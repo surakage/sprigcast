@@ -331,13 +331,16 @@ def test_rules_table_adds_edits_and_removes():
     col = collection("a")
     edits = []
     panel = TransitionsPanel(col.transition, lambda: edits.append(1), collection=col)
-    table = panel.rules
-    assert table.hint.isVisibleTo(panel)
+    assert panel.rules_count.text() == "None"
+    dialog = panel.rules_dialog()  # the table opens in a pop-up
+    table = dialog.table
+    assert table.hint.isVisibleTo(dialog)
     table.add()
     rule = col.transition_rules[0]
     assert rule.to_scene == "a" and rule.transition.kind == "stinger" and edits
     row = table.rows.itemAt(0).widget()
     assert isinstance(row, RuleRow) and row.to_pick.text().startswith("A")
+    assert panel.rules_count.text() == "1 rule"
     row._set_end("from_scene", "b")
     assert rule.from_scene == "b" and row.from_pick.text().startswith("B")
     table.remove(rule)
@@ -364,3 +367,34 @@ def test_a_long_sound_list_scrolls_instead_of_pushing_panels_away():
     app.processEvents()
     assert scroll.maximumHeight() > short  # grows with the list...
     assert scroll.minimumSizeHint().height() <= FitScroll.SHORTEST  # ...but can shrink and scroll
+
+
+
+def test_live_has_blooms_sound_and_transitions_cards_kept_in_step(tmp_path):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("LiveBottomRowTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = collection("a")
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        stage = w.live_stage
+        assert w.live_side.sound_card.parentWidget() is stage.bottom
+        assert w.live_tiles.parentWidget() is stage.blooms_card
+        w.live_transitions.set_kind("leaf")  # the Live card and the Build panel stay in step
+        assert col.transition.kind == "leaf" and w.transitions_panel.kind_buttons["leaf"].isChecked()
+        w.transitions_panel.set_kind("wipe")
+        assert w.live_transitions.kind_buttons["wipe"].isChecked()
+        assert "live" not in next(p for k, p in w.panels.panels.items() if k == "transitions").modes
+    finally:
+        w.close()
+        QSettings().clear()
