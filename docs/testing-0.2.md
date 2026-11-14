@@ -19,7 +19,9 @@ The starter kit test can replace your blooms, and this lets you put them back.
 **Sound check (2 minutes).** Do this first, so a muted mic isn't mistaken for a bug.
 
 1. Open Wave Link and unmute the Wave XLR. Check the mic's level moves when you talk.
-2. In SprigCast, Settings → Audio → Devices: the mic should be the Wave device you use.
+2. In SprigCast, Settings → Audio → Devices: the mic should be the Wave device you use. Your Wave Link
+   channels should be listed first for desktop sound, named like "Game · Elgato Wave Link". If you pick
+   Wave Link Stream (a mix that already holds your mic), turn the separate Mic off so you don't hear it twice.
 3. On the Live screen, talk and watch the mic's meter on the Sound card move.
 4. Press **Record**, count to ten out loud, press it again.
 5. File → Open recordings folder, and play the new file. You should hear yourself.
@@ -108,11 +110,15 @@ Shows SprigCast as a webcam in Discord, Zoom or the Windows Camera app. Windows 
 
 1. Settings → Output → **Virtual camera** tab. Press **Set up the camera** and say Yes on the Windows
    prompt. The status should change to "Set up."
-2. Tick **Show SprigCast as a camera** and press Apply.
+2. Tick **Show SprigCast as a camera**. Leave **Shows** on "Matches the app" for now, and press Apply.
 3. Open the Windows Camera app (or Discord → Settings → Voice & Video) and pick **SprigCast Camera**.
+4. Now set **Shows** to **Vertical canvas** and press Apply. Open TikTok LIVE Studio and add
+   SprigCast Camera as a camera source.
+5. Try **Shows** set to one bloom, then to one source (your Facecam).
 
-**Works if:** you see your bloom on air. A landscape call shows the horizontal canvas, a portrait one
-the vertical. Switching blooms in Live changes what the camera shows.
+**Works if:** step 3 shows your bloom on air and changes when you switch blooms in Live. TikTok LIVE
+Studio shows the vertical canvas (this used to fail to start). A single bloom or source fills the
+picture, with bars at the sides if its shape is different.
 
 **Report:** the camera missing from the list, a black or green picture, a picture that freezes, or an
 error during setup (copy its wording).
@@ -132,6 +138,25 @@ top says "reading chat via TikFinity".
 takes an optional Euler Stream key that makes this steadier.)
 
 **Report:** no messages, messages that arrive late, or the panel staying on "connecting…".
+
+## 7. Game capture sound
+
+Gives a game its own sound row, so you can turn the game down without touching Discord or music.
+
+1. Start a game (or any app that makes sound, like a browser playing a video).
+2. In Build, **+ Add → Window** and pick it.
+3. Right-click the capture on the canvas → **Sound** → **The app's own sound**.
+4. Check the Sound list: a new row named "*capture name* sound" in the Game group.
+5. Play some music in another app. Turn the game's sound row down to nothing.
+6. Try **Sound** again and pick a Wave Link channel instead, like "Game · Elgato Wave Link".
+
+**Works if:** the game row's meter moves only with the game, turning it down mutes only the game, and
+the row keeps its volume when you switch it to the Wave Link channel. Removing the capture removes its
+sound row too.
+
+**Report:** no new row, the row catching all your desktop sound instead of just the game, or sound
+playing twice (once from the row and once from Desktop sound). If it plays twice, say which Desktop
+sound device you use.
 
 ## Already tried on Windows
 
