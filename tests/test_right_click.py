@@ -101,3 +101,32 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_window_capture_sound_menu(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("RightClickTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    col.sources.append(SourceConfig(id="win", kind="window_capture", name="Game",
+                                    settings={"title": "Game", "process": "game.exe"}))
+    col.scenes[0].items = [SceneItem(source="win")]
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._on_preview_selected("horizontal", 0)
+        menu = w._preview_menu("horizontal", 0)
+        sound = next(a.menu() for a in menu.actions() if a.text() == "Sound")
+        assert _texts(sound)[:2] == ["No sound of its own", "The app's own sound"]
+        next(a for a in sound.actions() if a.text() == "The app's own sound").trigger()
+        made = next(s for s in w.collection.sources if s.settings.get("capture_of") == "win")
+        assert made.kind == "app_audio" and made.settings["apps"] == ["game.exe"]
+        sound = next(a.menu() for a in w._preview_menu("horizontal", 0).actions() if a.text() == "Sound")
+        assert next(a for a in sound.actions() if a.text() == "The app's own sound").isChecked()
+    finally:
+        w.close()
+        QSettings().clear()

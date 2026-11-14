@@ -754,7 +754,9 @@ class SceneCollection(BaseModel):
 
     def remove_source_if_unused(self, source_id: str) -> None:
         if not any(item.source == source_id for scene in self.scenes for item in scene.items):
-            self.sources = [s for s in self.sources if s.id != source_id]
+            # A capture's own sound (core/capture_sound.py) goes with it.
+            self.sources = [s for s in self.sources
+                            if s.id != source_id and s.settings.get("capture_of") != source_id]
 
     # Files ---------------------------------------------------------------
 

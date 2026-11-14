@@ -1,9 +1,9 @@
 """Microphone and desktop-audio sources through WASAPI (the PyAudioWPatch package).
 
 Desktop sound can also come from a sound mixer app's own outputs. Elgato Wave Link, for example,
-adds a playback device per channel (Wave Link Game, Music...: captured like speakers) and its mixes
-as recording devices (Wave Link Stream, Monitor): those are listed with desktop sound too, first,
-and a desktop sound set to one of them records from it directly.
+adds a playback device per channel ("Game (Elgato Virtual Audio)", Music, System...: captured like
+speakers; older versions say "Wave Link Game") and may list its mixes as recording devices: those
+are listed with desktop sound too, first, and a desktop sound set to one records from it directly.
 
 Each source converts whatever its device delivers (mono, 5.1, 44.1 kHz, ...) to 48 kHz stereo
 float32 in the device callback, and keeps it in a short buffer the mixer reads from.
@@ -47,6 +47,19 @@ _MIXER_APP = re.compile(r"wave ?link|elgato virtual", re.IGNORECASE)  # never a 
 
 def is_mixer_app_device(name: str) -> bool:
     return bool(_MIXER_APP.search(name or ""))
+
+
+_ELGATO_NAME = re.compile(r"^\s*(?:wave ?link\s+)?(?P<channel>.+?)\s*\((?:elgato virtual audio|elgato[^)]*)\)\s*$",
+                          re.IGNORECASE)
+
+
+def device_label(name: str) -> str:
+    """How a device reads in pickers: Elgato Wave Link channels as "Game · Elgato Wave Link"."""
+    if not is_mixer_app_device(name):
+        return name
+    match = _ELGATO_NAME.match(name)
+    channel = match.group("channel") if match else re.sub(r"(?i)^wave ?link\s+", "", name)
+    return f"{channel} · Elgato Wave Link"
 
 
 def _pyaudio():
