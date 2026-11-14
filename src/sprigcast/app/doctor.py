@@ -421,6 +421,11 @@ class DoctorDialog(QDialog):
         words.addWidget(self.subtitle)
         words.addWidget(self.busy)
         top.addLayout(words, 1)
+        from sprigcast.app.empty import ArtPicture
+
+        self.sloth = ArtPicture("happy", 84, height=84)  # puzzled with a loose vine for trouble, waving when all good
+        self.sloth.hide()
+        top.addWidget(self.sloth, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(header)
 
         holder = QWidget()
@@ -459,6 +464,9 @@ class DoctorDialog(QDialog):
         self.headline.setStyleSheet(f"color: {colour if level != 'checking' else theme.TEXT_BRIGHT}")
         self.subtitle.setText(SUBTITLES[level])
         self.busy.setVisible(level == "checking")
+        self.sloth.setVisible(level in ("bad", "warning", "good"))
+        if level in ("bad", "warning", "good"):
+            self.sloth.set_art("happy" if level == "good" else "trouble")
 
     def start(self) -> None:
         self.again.setEnabled(False)

@@ -20,7 +20,9 @@ _pictures: dict[str, QPixmap] = {}
 
 
 def art(name: str) -> QPixmap:
-    """A picture from app/art (loaded once): "napping", "welcome" or "live". Empty if it's missing."""
+    """A picture from app/art (loaded once): "napping", "welcome", "live", "ending", "trouble", "happy"...
+
+    Empty if it's missing."""
     if name not in _pictures:
         _pictures[name] = QPixmap(str(ART_FOLDER / f"sloth-{name}.png"))
     return _pictures[name]
@@ -33,13 +35,23 @@ def sloth_art() -> QPixmap:
 class ArtPicture(QWidget):
     """One of the sloth pictures, `width` px wide, drawn smoothly at any screen scale."""
 
-    def __init__(self, name: str, width: int, parent: QWidget | None = None):
+    def __init__(self, name: str, width: int, parent: QWidget | None = None, height: int | None = None):
         super().__init__(parent)
+        self.box = (width, height)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.set_art(name)
+
+    def set_art(self, name: str) -> None:
+        """Show another picture; fits `width` (and `height`, if given) keeping its shape."""
         self.name = name
         picture = art(name)
         ratio = picture.height() / picture.width() if not picture.isNull() else 0.6
-        self.setFixedSize(width, round(width * ratio))
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        width, height = self.box
+        if height is None:
+            self.setFixedSize(width, round(width * ratio))
+        else:
+            self.setFixedSize(width, height)
+        self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
         picture = art(self.name)
@@ -115,6 +127,9 @@ class LiveCheer(QWidget):
         row.setSpacing(14)
         self.picture = _PulsingLive(96)
         row.addWidget(self.picture)
+        self.still = ArtPicture("ending", 96, height=96)  # the goodbye sloth, after a stream ends
+        self.still.hide()
+        row.addWidget(self.still)
         words = QVBoxLayout()
         words.setSpacing(4)
         words.addStretch(1)
@@ -139,14 +154,25 @@ class LiveCheer(QWidget):
         self.hide()
 
     def cheer(self, where: str) -> None:
-        self.where.setText(f"On {where}" if where else "")
-        self.where.setVisible(bool(where))
+        self._card(True, "You're live!", f"On {where}" if where else "")
+
+    def goodbye(self, line: str) -> None:
+        """'Nice stream!' with the waving-goodnight sloth, when a stream ends."""
+        self._card(False, "Nice stream!", line)
+
+    def _card(self, live: bool, title: str, line: str) -> None:
+        self.picture.setVisible(live)
+        self.still.setVisible(not live)
+        self.title.setText(title)
+        self.where.setText(line)
+        self.where.setVisible(bool(line))
         self.adjustSize()
         parent = self.parentWidget()
         self.move(max(0, (parent.width() - self.width()) // 2), 24)
         self.raise_()
         self.show()
-        self.picture.start()
+        if live:
+            self.picture.start()
         self._fade_to(1.0, 250, start=0.0)
         self._timer.start()
 

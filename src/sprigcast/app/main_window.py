@@ -4055,6 +4055,16 @@ class MainWindow(QMainWindow):
         names = [st.name for _, st in self.streaming.streamers] if self.streaming is not None else []
         self.live_cheer.cheer(", ".join(dict.fromkeys(names)))
 
+    def _cheer_goodbye(self, seconds: int) -> None:
+        """A few seconds of "Nice stream!" with the goodnight sloth when a stream ends."""
+        from sprigcast.app.empty import LiveCheer
+
+        if getattr(self, "live_cheer", None) is None:
+            self.live_cheer = LiveCheer(self.live_stage)
+        length = f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}" if seconds >= 3600 \
+            else f"{seconds // 60}:{seconds % 60:02d}"
+        self.live_cheer.goodbye(f"Live for {length}")
+
     def _say(self, text: str) -> None:
         """A short note in the status bar, drawn now (the next step may keep the UI busy a moment)."""
         self.statusBar().showMessage(text, 6000)
@@ -4421,6 +4431,8 @@ class MainWindow(QMainWindow):
         if proven is not None:
             log.info("upload: this stream %s", f"proved {proven} kbps fits" if proven else "had network trouble")
         self.statusBar().showMessage(lines[0], 10000)
+        if seconds >= 60:  # not for a quick test that never really went out
+            self._cheer_goodbye(seconds)
         for line in lines[1:]:
             log.info("stream summary: %s", line)
         report, self._stream_report = getattr(self, "_stream_report", None), None
