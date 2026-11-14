@@ -2255,9 +2255,21 @@ class MainWindow(QMainWindow):
 
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
-        if save:
-            self.collection.save(self.scenes_path)
-            self._remember_for_undo()
+        if not save:  # mid-drag: at most one copy per frame, the newest (copying on every mouse move lagged)
+            timer = getattr(self, "_drag_send", None)
+            if timer is None:
+                timer = self._drag_send = QTimer(self)
+                timer.setSingleShot(True)
+                timer.setInterval(16)
+                timer.timeout.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
+            if not timer.isActive():
+                timer.start()
+            return
+        timer = getattr(self, "_drag_send", None)
+        if timer is not None:
+            timer.stop()  # this full send carries the drag's end
+        self.collection.save(self.scenes_path)
+        self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
         self._chat_sources_changed()
         control = getattr(self, "control", None)
@@ -4708,6 +4720,7 @@ class MainWindow(QMainWindow):
             return settings
 
         made = build_starter(self.collection, dialog.choice(camera_settings))
+        self._sync_canvas_choice()  # vertical versions may have switched the vertical canvas on
         if not made:
             return False
         self._exit_in_place()

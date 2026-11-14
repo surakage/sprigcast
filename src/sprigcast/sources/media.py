@@ -324,8 +324,15 @@ class MediaSource(Source):
                 self._decode(path, generation, start_at)
             except Exception as exc:
                 log.warning("media %s could not be played: %s", path, exc)
+                started = self.status == "ok"
                 self.status = f"can't play: {exc}"[:80]
-                self._wait_for_change(generation, timeout=5.0)
+                if started:  # it broke partway: end there, never start over by itself (only play or loop do)
+                    with self._lock:
+                        if self._generation == generation:
+                            self._finished_at = self._position()
+                    self._wait_for_change(generation)
+                else:  # couldn't open it: try again in a bit (a file still copying, a drive waking up)
+                    self._wait_for_change(generation, timeout=5.0)
 
     def _wait_for_change(self, generation: int, timeout: float | None = None) -> None:
         with self._wake:
@@ -395,6 +402,8 @@ class MediaSource(Source):
                                 if not self._push_audio(offset + at, samples, generation):
                                     return
                         continue
+                    if decoder is not None and packet.size == 0:
+                        continue  # demux's empty end-of-file packet: our own decoder is flushed once below
                     frames = decoder.decode(packet) if decoder is not None else packet.decode()
                     for frame in frames:
                         pts = frame.pts if frame.pts is not None else packet.pts
@@ -406,7 +415,11 @@ class MediaSource(Source):
                         if not self._push_frame(offset + at, picture, generation):
                             return
                 if decoder is not None:
-                    for frame in decoder.decode(None):
+                    try:
+                        tail = decoder.decode(None)  # flush: the last pictures libvpx was holding back
+                    except EOFError:  # already flushed
+                        tail = []
+                    for frame in tail:
                         picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
                         at = float((frame.pts or 0) * video.time_base) - origin
                         self._push_frame(offset + at, picture, generation)

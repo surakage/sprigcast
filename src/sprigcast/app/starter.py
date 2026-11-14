@@ -66,6 +66,9 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
     """Add the starter blooms to `collection` and return their ids (horizontal ones first)."""
     if choice.replace_example:
         _drop_example(collection)
+    if choice.vertical:  # vertical versions: switch the vertical canvas on if it was off
+        for canvas in collection.canvases:
+            canvas.enabled = True
     canvases = [c for c in collection.canvases if c.enabled or c is collection.canvases[0]]
     main = canvases[0]
     if not choice.vertical:
@@ -358,7 +361,8 @@ class StarterDialog(QDialog):
         extras_card, extras = _section("Extras")
         self.vertical = QCheckBox("Vertical versions (TikTok, Shorts, Reels)")
         self.vertical.setChecked(both_shapes)
-        self.vertical.setVisible(both_shapes)
+        if not both_shapes:
+            self.vertical.setToolTip("Also switches on the vertical canvas, so you stream both shapes at once")
         self.replace = QCheckBox("Replace the example blooms")
         self.replace.setChecked(fresh)
         self.replace.setVisible(fresh)
@@ -370,7 +374,7 @@ class StarterDialog(QDialog):
         extras_row.addStretch(1)
         extras.addLayout(extras_row)
         root.addWidget(extras_card)
-        extras_card.setVisible(both_shapes or fresh)
+
         line = QFrame()
         line.setFixedHeight(1)
         line.setStyleSheet(f"background: {theme.EDGE_STRONG};")
@@ -495,6 +499,6 @@ class StarterDialog(QDialog):
             desktop=self.desktop.currentData(),
             app_sounds=self.app_sounds(),
             blooms=[n for n, b in self.bloom_boxes.items() if b.isChecked()],
-            vertical=not self.vertical.isHidden() and self.vertical.isChecked(),
+            vertical=self.vertical.isChecked(),
             replace_example=self.replace.isChecked() and not self.replace.isHidden(),
         )

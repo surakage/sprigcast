@@ -232,6 +232,17 @@ class Engine:
             if isinstance(command, Shutdown):
                 return False
             if isinstance(command, ReplaceCollection):
+                # A drag sends a new collection on every mouse move: only the newest one matters, so
+                # skip straight to it instead of rebuilding sources for each (that backlog was the lag).
+                while True:
+                    try:
+                        newer = self.commands.get_nowait()
+                    except queue.Empty:
+                        break
+                    if isinstance(newer, Shutdown):
+                        return False
+                    if isinstance(newer, ReplaceCollection):
+                        command = newer
                 self._start_transitions(self._collection, command.collection)
                 self._start_state_fades(self._collection, command.collection)
                 self._collection = command.collection

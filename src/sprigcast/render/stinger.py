@@ -169,6 +169,8 @@ class StingerPlayer:
                         for out in resampler.resample(frame):
                             self._add_audio(out.to_ndarray().reshape(-1, 2))
                     continue
+                if decoder is not None and packet.size == 0:
+                    continue  # demux's empty end-of-file packet: our own decoder is flushed once below
                 frames = decoder.decode(packet) if decoder is not None else packet.decode()
                 for frame in frames:
                     pts = frame.pts if frame.pts is not None else packet.pts
@@ -179,7 +181,11 @@ class StingerPlayer:
                     if not self._add_frame(t - first, picture):
                         return
             if decoder is not None:
-                for frame in decoder.decode(None):
+                try:
+                    tail = decoder.decode(None)  # flush: the last pictures libvpx was holding back
+                except EOFError:
+                    tail = []
+                for frame in tail:
                     picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
                     pts = frame.pts or 0
                     self._add_frame(float(pts * video.time_base) - (first or 0.0), picture)
