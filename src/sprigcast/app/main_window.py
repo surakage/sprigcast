@@ -388,6 +388,7 @@ class MainWindow(QMainWindow):
         self._build_scenes_dock()
         self._build_sources_dock()
         self._build_audio_dock()
+        self._build_chat_panel()
         self._build_transitions_dock()
         self._build_destinations_dock()
         self._build_controls_dock()
@@ -477,6 +478,18 @@ class MainWindow(QMainWindow):
         self.link_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bar.layout().insertWidget(bar.layout().count() - 1, self.link_button)
         self._dock("Scenes", self.scene_tree, bar)
+
+    def _build_chat_panel(self) -> None:
+        """Chat on Live: Twitch read natively, or any chat link, in this one panel (app/chat_panel.py)."""
+        from sprigcast.app.chat_panel import KEY, ChatPanel
+
+        self.chat_panel = ChatPanel(self._connect_twitch)
+        self.panels.add(Panel(KEY, "Chat", self.chat_panel, on_show=self.chat_panel.activate), shown_in=("live",))
+
+    def _connect_twitch(self) -> None:
+        from sprigcast.app.twitch_connect import TwitchConnectDialog
+
+        TwitchConnectDialog(self).exec()  # the Chat panel hears about the new account itself
 
     def _build_transitions_dock(self) -> None:
         panel = QWidget()
@@ -1975,6 +1988,7 @@ class MainWindow(QMainWindow):
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()
+        self.chat_panel.shutdown()
         self._save_layout()
         self.hotkeys.stop()
         self.meter.stop()

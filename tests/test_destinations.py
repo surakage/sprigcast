@@ -110,10 +110,11 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         assert w.previews["vertical"].twin and not w.previews["vertical"].editable
         assert w.previews["horizontal"].editable and not w.previews["horizontal"].twin
         w._set_mode("live")
-        # Live has its own screen: the stage, bloom tiles and side column, and no panels by default.
+        # Live has its own screen: the stage, bloom tiles and side column, and only the Chat panel by default.
         assert w.live_stage.isVisible() and w.live_panel.isVisible() and not w.build_stage.isVisible()
         assert not w.dock_bodies["Scenes"].isVisible() and not w.dock_bodies["Audio Mixer"].isVisible()
-        assert not w.panels.cards["live"].isVisible()
+        assert w.panels.cards["live"].isVisible() and list(w.panels.cards["live"].buttons) == ["chat"]
+        assert w.chat_panel.pages.currentWidget() is w.chat_panel.empty  # nothing connected: nothing to read
         assert w.previews["horizontal"].isVisible() and w.previews["horizontal"].live_look
         assert not any(p.editable for p in w.previews.values())
         w.live_panel.buttons["h2"].click()
