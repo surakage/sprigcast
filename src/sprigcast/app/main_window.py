@@ -2865,9 +2865,23 @@ class MainWindow(QMainWindow):
         kind = TYPES.get(str(config.settings.get("preset", "")))
         picked = [str(a) for a in config.settings.get("apps") or []]
         menu = QMenu(self)
+        from sprigcast.sources.audio import device_label
+
+        outputs = [d.name for d in list_audio_devices(loopback=True, rescan=False)]
+        device = str(config.settings.get("device") or "")
+        if device and device not in outputs:
+            outputs.append(device)  # not plugged in right now: still shown, ticked
+        if outputs:
+            menu.addSection("From an output")
+            for name in outputs:
+                act = menu.addAction(device_label(name))
+                act.setCheckable(True)
+                act.setChecked(name == device)
+                act.triggered.connect(lambda _=False, d=name: self._set_app_sound(source_id, device=d))
+            menu.addSection("From apps")
         usual = menu.addAction(f"Usual apps ({kind.hint})" if kind and kind.apps else "Usual apps")
         usual.setCheckable(True)
-        usual.setChecked(not picked)
+        usual.setChecked(not picked and not device)
         usual.setEnabled(bool(kind and kind.apps))
         usual.triggered.connect(lambda: self._set_app_sound(source_id, apps=[]))
         game = menu.addAction("The full-screen game in front")
@@ -2889,6 +2903,8 @@ class MainWindow(QMainWindow):
 
     def _set_app_sound(self, source_id: str, **changes) -> None:
         config = self.collection.source(source_id)
+        if "device" not in changes and ("apps" in changes or "auto_game" in changes):
+            changes["device"] = ""  # picking apps takes the sound from apps again, not an output
         settings = {**config.settings, **changes}
         if "apps" in changes and "auto_game" not in config.settings:  # picking apps by hand: just those
             from sprigcast.sources.app_audio import follows_game

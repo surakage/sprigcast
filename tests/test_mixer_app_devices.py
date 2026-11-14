@@ -113,3 +113,76 @@ def test_a_window_capture_gets_its_own_sound_like_obs_capture_audio():
     col.remove_source_if_unused("win")
     assert [s.id for s in col.sources] == ["mic"]  # the sound went with its capture
     assert set_capture_sound(col, win, None) is None
+
+
+WAVE_LINK = ["Sceptre F27 (NVIDIA High Definition Audio)", "System (Elgato Virtual Audio)",
+             "Game (Elgato Virtual Audio)", "Music (Elgato Virtual Audio)", "SFX (Elgato Virtual Audio)",
+             "Voice chat (Elgato Virtual Audio)", "TTS (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)"]
+
+
+def test_an_app_sound_from_an_output_reads_as_that_output():
+    from sprigcast.sources.app_audio import describe, follows_game
+
+    settings = {"preset": "games", "device": "Game (Elgato Virtual Audio)"}
+    assert describe(settings) == "Game · Elgato Wave Link" and not follows_game(settings)
+
+
+def test_an_app_sound_set_to_a_channel_plays_that_output(fake):
+    from sprigcast.core.source import create_source
+
+    src = create_source("app_audio", "g", {"preset": "games", "device": "Wave Link Game (Elgato Wave:3)"})
+    src.start()
+    try:
+        assert src._device is not None and src._thread is None  # no app scanning
+        assert src.read_block(64).shape == (64, 2)
+        src.update({**src.settings, "device": ""})
+        assert src._device is None
+    finally:
+        src.stop()
+
+
+def test_starter_by_type_offers_every_output_on_each_row(monkeypatch):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import starter
+    from sprigcast.core.scene import Canvas, SceneCollection
+
+    dialog = starter.StarterDialog([], [], [], True, False, speakers=WAVE_LINK, running_apps=["Discord.exe"])
+    assert not dialog.show_desktop.isChecked()  # Wave Link is here: outputs only until you ask for desktop audio
+    assert dialog.app_sounds() == {}  # nothing picked for you: names differ from PC to PC
+    _switch, pick = dialog.type_rows["games"]
+    offered = [pick.itemData(i) for i in range(pick.count())]
+    assert offered[0] == "" and [o["device"] for o in offered[1:]] == WAVE_LINK  # every output, on every row
+    dialog.show_desktop.setChecked(True)
+    texts = [pick.itemText(i) for i in range(pick.count())]
+    assert "Discord" in texts and pick.currentData() is None  # the usual apps, as before
+    assert dialog.app_sounds()["voice"] is None
+    offered = [pick.itemData(i) for i in range(pick.count())]
+    pick.setCurrentIndex(offered.index({"device": "Game (Elgato Virtual Audio)"}))
+    picks = dialog.app_sounds()
+    assert picks["games"] == {"device": "Game (Elgato Virtual Audio)"}
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)])
+    starter._add_app_sounds(col, picks)
+    games = next(s for s in col.sources if s.settings.get("preset") == "games")
+    assert games.kind == "app_audio" and games.settings["device"] == "Game (Elgato Virtual Audio)"
+    assert col.global_device_ids() == []  # outputs picked here never count as the global desktop audio
+
+
+def test_without_a_mixer_app_desktop_audio_shows_from_the_start():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import starter
+
+    dialog = starter.StarterDialog([], [], [], True, False, speakers=["Speakers"], running_apps=["Spotify.exe"])
+    assert dialog.show_desktop.isChecked()
+    assert dialog.app_sounds()["music"] is None  # the usual apps, as before
