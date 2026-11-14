@@ -91,7 +91,7 @@ def test_scenes_list_and_live_panel_show_folders(tmp_path, monkeypatch):
         assert set(w.live_panel.buttons) == {"h2", new.id, "v1"}  # vertical has no folders: all its blooms
         w._set_folder_live(folder.id, False)
         w.live_panel.show_scenes(col)
-        assert set(w.live_panel.buttons) == {"h1", "h2", "h3", new.id, "v1"}
+        assert set(w.live_panel.buttons) == {"h1", "h2", "h3", new.id}  # v1 switches with h1: no tile of its own
         w._remove_folder(folder.id)
         assert not col.folders and col.scene("h2").folder is None
     finally:

@@ -9,7 +9,7 @@ import queue
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QSettings, QStandardPaths, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -73,6 +73,7 @@ from sprigcast.app.hotkeys import (
     Hotkeys,
 )
 from sprigcast.app.live_panel import LivePanel
+from sprigcast.app.live_stage import Destination, LiveSide, LiveStage
 from sprigcast.app.palette import Command, CommandPalette
 from sprigcast.app.part_dialog import NewPartDialog
 from sprigcast.app.preview import Preview
@@ -249,7 +250,8 @@ class MainWindow(QMainWindow):
             self.previews[canvas.id] = preview
             upcoming = Preview(f"next:{canvas.id}", f"Next · {canvas.id.capitalize()}", (canvas.width, canvas.height))
             upcoming.editable = False
-            upcoming.empty_text = "Click a scene in Live to line it up here, then press Go"
+            upcoming.live_look = True
+            upcoming.empty_text = "Click a bloom to line it up here"
             upcoming.hide()
             self.next_previews[canvas.id] = upcoming
             column = QSplitter(Qt.Orientation.Vertical)
@@ -316,6 +318,7 @@ class MainWindow(QMainWindow):
         self.canvas_tabs.setCurrentIndex(canvas_ids.index(self.build_canvas))
         self.canvas_tabs.currentChanged.connect(self._on_canvas_tab)
         canvas_page = QWidget()
+        self.canvas_page = canvas_page
         page_layout = QVBoxLayout(canvas_page)
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.setSpacing(0)
@@ -363,7 +366,7 @@ class MainWindow(QMainWindow):
         self._build_transitions_dock()
         self._build_destinations_dock()
         self._build_controls_dock()
-        self._build_live_dock()
+        self._build_live_stage()
         self._build_properties_dock()
         self.stats_panel = StatsPanel()
         self.stats_dock = self._dock("Stats", self.stats_panel)
@@ -910,14 +913,100 @@ class MainWindow(QMainWindow):
     def _edit_destination(self, output_id: str | None) -> None:
         self._open_settings("Stream", output_id=output_id or "new")
 
-    def _build_live_dock(self) -> None:
+    def _build_live_stage(self) -> None:
+        """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
                                     self._edit_in_build)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(self.live_panel)
-        self._dock("Live", scroll)
+        self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
+                                  self._edit_destination)
+        self.live_stage = LiveStage(self.live_side)
+        self.live_stage.card.go_slot.addWidget(self.live_panel.go)
+        self.live_tiles = QScrollArea()
+        self.live_tiles.setWidgetResizable(True)
+        self.live_tiles.setFrameShape(QFrame.Shape.NoFrame)
+        self.live_tiles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.live_tiles.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.live_tiles.setWidget(self.live_panel)
+        self.live_tiles.viewport().installEventFilter(self)  # re-fits the tiles' height when the width changes
+        self.live_stage.tiles_slot.addWidget(self.live_tiles)
+        self.center.addWidget(self.live_stage)  # page 2
+        self._thumbs_at = 0.0
+        self.live_side.set_clip(False, self.collection.recording.replay_seconds)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt naming)
+        if event.type() == QEvent.Type.Resize and watched is self.live_tiles.viewport():
+            QTimer.singleShot(0, self._fit_tiles)
+        return super().eventFilter(watched, event)
+
+    def _fit_tiles(self) -> None:
+        """The tiles take the height they need (up to about two rows), the stage gets the rest."""
+        width = self.live_tiles.viewport().width()
+        layout = self.live_panel.layout()
+        need = layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else self.live_panel.sizeHint().height()
+        self.live_tiles.setFixedHeight(max(120, min(360, need + 2)))
+
+    def _place_canvases(self) -> None:
+        """The canvas previews sit on Live's stage in Live mode and under Build's tabs in Build mode."""
+        if self.mode == "live":
+            if self.splitter.parent() is not self.live_stage.card:
+                self.live_stage.card.holder.addWidget(self.splitter)
+            for preview in self.previews.values():
+                preview.live_look = True
+            QTimer.singleShot(0, self._fit_tiles)
+            QTimer.singleShot(0, self._share_stage)
+        else:
+            if self.splitter.parent() is not self.canvas_page:
+                self.canvas_page.layout().addWidget(self.splitter, 1)
+            for preview in self.previews.values():
+                preview.live_look = False
+        for preview in self.previews.values():
+            preview.update()
+
+    def _share_stage(self) -> None:
+        """Give each canvas stage width in proportion to its shape, so a 16:9 and a 9:16 both fill the height."""
+        shown = [c for c in self.collection.canvases if self.canvas_columns[c.id].isVisible()]
+        if len(shown) < 2:
+            return
+        total = self.splitter.width()
+        ratios = {c.id: c.width / c.height for c in shown}
+        weight = sum(ratios.values())
+        self.splitter.setSizes([int(total * ratios[c.id] / weight) if c in shown else 0
+                                for c in self.collection.canvases])
+
+    def _on_clip_clicked(self) -> None:
+        """Save clip, or first start keeping the last seconds in memory."""
+        if self.replay is None:
+            self.replay_button.setChecked(True)
+        else:
+            self._save_replay()
+
+    def _grab_thumbs(self) -> None:
+        """Every few seconds, keep a small picture of each bloom on air for its Live tile."""
+        now = time.monotonic()
+        if now - self._thumbs_at < 3.0 or self.mode != "live":
+            return
+        self._thumbs_at = now
+        for canvas_id, preview in self.previews.items():
+            image = preview._image
+            scene_id = self.collection.active_scenes.get(canvas_id)
+            if image is None or scene_id is None or self.in_place is not None:
+                continue
+            self.live_panel.set_thumb(scene_id, image.scaled(
+                320, 180, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def _live_destinations(self, levels: dict[str, str] | None = None, notes: dict[str, str] | None = None) -> None:
+        from sprigcast.app.destinations import problem
+        from sprigcast.output.keys import probably_has_key
+
+        places = []
+        for output in self.collection.outputs:
+            if output.type != "stream":
+                continue
+            service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+            issue = problem(output, self.collection, probably_has_key) if output.enabled else None
+            note = (notes or {}).get(output.id) or issue or ("Ready" if output.enabled else "Off")
+            places.append(Destination(output.id, service.label, output.enabled, note))
+        self.live_side.show_destinations(places, levels or {})
 
     # Studio mode -----------------------------------------------------------------------
 
@@ -928,7 +1017,14 @@ class MainWindow(QMainWindow):
         self.live_panel.go.setVisible(on)
         if not on:
             self._stage({})
+        self._show_next()
         self._apply_canvas_view()
+
+    def _show_next(self) -> None:
+        names = [self.collection.scene(sid).name for cid, sid in self.staged.items()
+                 if cid == self.collection.canvases[0].id or len(self.staged) == 1]
+        self.live_stage.card.set_next(names or [self.collection.scene(s).name for s in self.staged.values()][:1],
+                                      self.studio)
 
     def _stage(self, staged: dict[str, str]) -> None:
         self.staged = staged
@@ -942,6 +1038,7 @@ class MainWindow(QMainWindow):
                 upcoming._image = None
             upcoming.update()
         self.live_panel.show_scenes(self.collection)
+        self._show_next()
 
     def _studio_go(self) -> None:
         """Send everything lined up on air at once (each canvas fades with the transition)."""
@@ -989,42 +1086,85 @@ class MainWindow(QMainWindow):
     MODES = {"live": "Live", "build": "Build"}  # Live first: it's where the show runs
 
     def _build_mode_bar(self) -> None:
-        """Build (edit scenes, OBS-style docks) or Live (big scene buttons, destinations, mixer)."""
+        """The header: logo, the Live | Build pill, search, and the on-air clock (or Offline)."""
         bar = QToolBar("Mode")
         bar.setObjectName("modeBar")
         bar.setMovable(False)
-        bar.setStyleSheet(
-            f"QToolButton {{ padding: 5px 18px; border-radius: 8px; margin: 2px; color: {theme.MUTED}; }}"
-            f"QToolButton:hover {{ color: {theme.TEXT}; }}"
-            f"QToolButton:checked {{ background: {theme.RAISED_HOVER}; color: {theme.TEXT_BRIGHT}; font-weight: bold;"
-            f" border: 1px solid {theme.EDGE_STRONG}; border-top-color: {theme.HIGHLIGHT}; }}"
+        bar.setStyleSheet(f"QToolBar#modeBar {{ background: {theme.CHROME}; border: none; padding: 10px 18px; spacing: 18px; }}")
+        brand = QWidget()
+        brand_row = QHBoxLayout(brand)
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(10)
+        logo = QLabel()
+        icon = QApplication.windowIcon()
+        if not icon.isNull():
+            logo.setPixmap(icon.pixmap(28, 28))
+        brand_row.addWidget(logo)
+        name = QLabel("SprigCast")
+        font = name.font()
+        font.setPixelSize(19)
+        font.setWeight(font.Weight.DemiBold)
+        name.setFont(font)
+        name.setStyleSheet(f"color: {theme.TEXT_BRIGHT};")
+        brand_row.addWidget(name)
+        bar.addWidget(brand)
+        pills = QFrame()
+        pills.setObjectName("modePills")
+        pills.setStyleSheet(
+            f"#modePills {{ background: {theme.PANEL}; border-radius: 18px; }}"
+            f"#modePills QToolButton {{ border: none; border-radius: 14px; padding: 6px 20px; color: {theme.MUTED};"
+            f" background: transparent; font-weight: 500; }}"
+            f"#modePills QToolButton:hover {{ color: {theme.TEXT}; }}"
+            f"#modePills QToolButton:checked {{ background: {theme.RAISED_HOVER}; color: {theme.TEXT_BRIGHT};"
+            f" font-weight: 600; }}"
         )
+        pill_row = QHBoxLayout(pills)
+        pill_row.setContentsMargins(4, 4, 4, 4)
+        pill_row.setSpacing(0)
         group = QActionGroup(self)
         group.setExclusive(True)
         self.mode_actions: dict[str, QAction] = {}
         for mode, label in self.MODES.items():
             action = QAction(label, self)
             action.setCheckable(True)
-            action.setToolTip({"build": "Edit scenes and sources, one canvas at a time (Ctrl+2)",
-                               "live": "Run the show: big scene buttons, destinations and mixer (Ctrl+1)"}[mode])
+            action.setToolTip({"build": "Make and edit blooms (Ctrl+2)",
+                               "live": "Run the show (Ctrl+1)"}[mode])
             action.setShortcut(QKeySequence("Ctrl+1" if mode == "live" else "Ctrl+2"))
             action.triggered.connect(lambda _=False, m=mode: self._set_mode(m))
             group.addAction(action)
-            bar.addAction(action)
+            self.addAction(action)  # keeps the shortcut working
+            button = QToolButton()
+            button.setDefaultAction(action)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            pill_row.addWidget(button)
             self.mode_actions[mode] = action
         self.mode_actions["build"].setChecked(True)
+        bar.addWidget(pills)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
         self.palette_button = QToolButton()
-        self.palette_button.setText("🔍  Search commands   Ctrl+K")
-        self.palette_button.setToolTip("Find any action, scene, setting or dock by typing")
-        self.palette_button.setAutoRaise(True)
+        self.palette_button.setText("🔍")
+        self.palette_button.setFixedSize(38, 38)
+        self.palette_button.setToolTip("Search commands, blooms and settings (Ctrl+K)")
+        self.palette_button.setStyleSheet(
+            f"QToolButton {{ background: {theme.PANEL}; border: none; border-radius: 19px; color: {theme.MUTED}; }}"
+            f"QToolButton:hover {{ background: {theme.RAISED}; color: {theme.TEXT}; }}")
+        self.palette_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.palette_button.clicked.connect(lambda: self._open_palette())
         bar.addWidget(self.palette_button)
         self.mode_clock = QLabel("")
         bar.addWidget(self.mode_clock)
+        self._set_header_clock("Offline", False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+
+    def _set_header_clock(self, text: str, live: bool) -> None:
+        self.mode_clock.setText(text)
+        font = self.mode_clock.font()
+        font.setPixelSize(16 if live else 13)
+        font.setWeight(font.Weight.DemiBold if live else font.Weight.Normal)
+        self.mode_clock.setFont(font)
+        self.mode_clock.setStyleSheet(f"color: {theme.LIVE_TEXT if live else theme.MUTED}; padding-left: 6px;")
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -1039,6 +1179,7 @@ class MainWindow(QMainWindow):
         self._hide_other_mode_docks()
         editable = mode == "build"
         self._exit_in_place()
+        self._place_canvases()
         self._show_part_editor()
         for preview in self.previews.values():
             preview.editable = editable
@@ -1212,18 +1353,18 @@ class MainWindow(QMainWindow):
 
     # Dock layout -----------------------------------------------------------------
 
-    LAYOUT_VERSION = 3  # bump when the set of docks changes, so an old saved layout is ignored
+    LAYOUT_VERSION = 4  # bump when the set of docks changes, so an old saved layout is ignored
 
     DEFAULT_LAYOUTS = {
         # mode: (docks along the bottom, their widths)
         "build": (["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls"],
                   [200, 260, 330, 170, 260, 190]),
-        "live": (["Live", "Audio Mixer", "Destinations", "Controls"], [560, 360, 300, 200]),
+        "live": ([], []),  # Live has its own screen (live_stage.py); docks only if you open them
     }
     # Docks that only make sense in one mode: hidden in the other even if an older saved layout shows them.
     MODE_ONLY = {
         "build": {"Scenes", "Sources", "Scene Transitions", "Properties"},
-        "live": {"Live"},
+        "live": set(),
     }
 
     def _arrange_default_layout(self) -> None:
@@ -1234,6 +1375,11 @@ class MainWindow(QMainWindow):
             dock.setFloating(False)
             dock.show()
             self.removeDockWidget(dock)
+        if not order:
+            for dock in self.docks.values():
+                self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+                dock.hide()
+            return
         first = self.docks[order[0]]
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, first)
         first.show()
@@ -1341,7 +1487,7 @@ class MainWindow(QMainWindow):
         """Built-in docks, then your custom ones, then the layout actions. Rebuilt when custom docks change."""
         menu = self.docks_menu
         menu.clear()
-        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Live",
+        for name in ["Scenes", "Sources", "Audio Mixer", "Scene Transitions", "Destinations", "Controls",
                      "Properties", "Stats"]:
             menu.addAction(self.docks[name].toggleViewAction())
         custom = [d for n, d in self.docks.items() if n.startswith(custom_docks.PREFIX)]
@@ -1368,6 +1514,7 @@ class MainWindow(QMainWindow):
     def _refresh_meter(self) -> None:
         self.last_resources = self.meter.sample()
         self.meter_label.setText(describe(self.last_resources))
+        self.live_side.stats.setText(describe(self.last_resources))
         warning = ram_warning(self.last_resources)
         self.meter_label.setStyleSheet(f"color: {theme.WARN}" if warning else "")
         self.meter_label.setToolTip(warning or self._meter_tip)
@@ -1429,6 +1576,8 @@ class MainWindow(QMainWindow):
                 )
             elif isinstance(event, AudioLevels):
                 self.audio_panel.set_levels(event.levels)
+                if self.mode == "live":
+                    self.live_side.set_levels(event.levels)
                 self.peak_watch.feed(event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
@@ -1443,6 +1592,7 @@ class MainWindow(QMainWindow):
             self._refresh_recording_status()
         if self.streaming is not None:
             self._refresh_stream_status()
+        self._grab_thumbs()
 
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
@@ -1519,6 +1669,8 @@ class MainWindow(QMainWindow):
             self.part_preview.set_scene(part, self._item_index())
             self.part_empty.setVisible(not part.items)
         self.live_panel.show_scenes(self.collection)
+        if getattr(self, "mode", "build") == "live":
+            QTimer.singleShot(0, self._fit_tiles)
 
     def _refresh_scenes(self) -> None:
         self._updating = True
@@ -1685,13 +1837,16 @@ class MainWindow(QMainWindow):
             for s in self.collection.sources
             if s.kind in self.AUDIO_KINDS
         ])
+        self.live_side.show_sound([(s.id, s.name, bool(s.settings.get("muted", False)))
+                                   for s in self.collection.sources
+                                   if s.kind in self.AUDIO_KINDS and not s.settings.get("hidden", False)])
 
     def _on_audio_changed(self, source_id: str, changes: dict) -> None:
         """A mixer control changed: volume_db, muted, monitor, hidden or duck_voice."""
         config = self.collection.source(source_id)
         config.settings = {**config.settings, **changes}
         self._changed()
-        if "hidden" in changes or "duck_voice" in changes:
+        if "hidden" in changes or "duck_voice" in changes or "muted" in changes:
             self._refresh_audio()
         if changes.get("hidden"):
             self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
@@ -2006,7 +2161,7 @@ class MainWindow(QMainWindow):
         if scene is None or scene.kind != "part" or self.mode != "build" or self.in_place is not None:
             self.engine.editing_part = None
             self.part_preview.canvas_id = "part:"
-            self.center.setCurrentIndex(0)
+            self.center.setCurrentIndex(2 if self.mode == "live" else 0)
             return
         canvas = self.collection.canvas(scene.canvas)
         main = self.collection.main_part(scene)
@@ -2578,6 +2733,7 @@ class MainWindow(QMainWindow):
             self.record_button.setEnabled(True)
         self.record_button.setText("Stop recording")
         self.record_button.setStyleSheet(ON_AIR_STYLE)
+        self.live_side.set_recording("● REC 0:00:00")
         for box in self.record_canvas_boxes.values():
             box.setEnabled(False)
         self._refresh_recording_status()
@@ -2609,6 +2765,7 @@ class MainWindow(QMainWindow):
             self.replay = None
             self.replay_button.setStyleSheet("")
         self.save_replay_button.setEnabled(self.replay is not None)
+        self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
 
     def _save_replay(self) -> None:
         if self.replay is None:
@@ -2631,6 +2788,7 @@ class MainWindow(QMainWindow):
         session.stop()
         self.record_button.setText("Start recording")
         self.record_button.setStyleSheet("")
+        self.live_side.set_recording("")
         for box in self.record_canvas_boxes.values():
             box.setEnabled(True)
         errors = session.errors
@@ -2657,11 +2815,14 @@ class MainWindow(QMainWindow):
             text += f"  ·  {dropped} frames dropped (encoder too slow)"
         self.record_status.setText(text)
         self.live_panel.set_recording(text)
+        self.live_side.set_recording(text)
 
     # Streaming -----------------------------------------------------------------
 
     def _refresh_stream_boxes(self) -> None:
         self.destinations.show_outputs(self.collection)
+        if self.streaming is None:
+            self._live_destinations()
 
     def _on_stream_toggled(self, output_id: str, on: bool) -> None:
         for output in self.collection.outputs:
@@ -2731,6 +2892,10 @@ class MainWindow(QMainWindow):
             self.live_button.setEnabled(True)
         self.live_button.setText("End stream")
         self.live_button.setStyleSheet(ON_AIR_STYLE)
+        self.live_side.set_live(True)
+        for preview in self.previews.values():
+            preview.ring = theme.LIVE
+            preview.update()
         self.destinations.set_live(True)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
@@ -2805,10 +2970,14 @@ class MainWindow(QMainWindow):
         session.stop()
         self.live_button.setText("Go live")
         self.live_button.setStyleSheet(GO_LIVE_STYLE)
+        self.live_side.set_live(False)
+        for preview in self.previews.values():
+            preview.ring = None
+            preview.update()
         self.destinations.set_live(False)
         self._refresh_stream_boxes()
         self.live_panel.set_clock("Offline", False)
-        self.mode_clock.setText("")
+        self._set_header_clock("Offline", False)
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
@@ -2833,10 +3002,12 @@ class MainWindow(QMainWindow):
             states[getattr(st, "output_id", st.name)] = (level, text)
             worst = max(worst, level, key=lambda lv: rank.get(lv, 0))
         self.destinations.show_live(states)
+        self._live_destinations({k: v[0] for k, v in states.items()},
+                                {k: v[1].split(" · ")[0] for k, v in states.items()})
         names = ", ".join(html.escape(st.name) for _, st in session.streamers)
         self.stream_status.setText(f"{clock}<br>{names}")
         self.live_panel.set_clock(clock, True)
-        self.mode_clock.setText(clock + ("" if worst == "good" else "  ·  check Destinations") + "  ")
+        self._set_header_clock(clock.replace("● LIVE", "● Live") + ("" if worst == "good" else "  ·  check Where it goes"), True)
 
     # Hotkeys -----------------------------------------------------------------
 

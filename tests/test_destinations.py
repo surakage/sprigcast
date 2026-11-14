@@ -80,9 +80,9 @@ def test_live_panel_scene_buttons(app):
     picked = []
     panel = LivePanel(picked.append)
     panel.show_scenes(col)
-    assert set(panel.buttons) == {"h1", "h2", "v1"}
+    assert set(panel.buttons) == {"h1", "h2"}  # v1 is linked to h1: its tile switches both
     assert panel.buttons["h1"].isChecked() and not panel.buttons["h2"].isChecked()
-    assert "⇄" in panel.buttons["v1"].text()  # linked
+    assert "Main (vertical)" in panel.buttons["h1"].toolTip()
     panel.buttons["h2"].click()
     assert picked == ["h2"]
     col.set_active("h2")
@@ -103,11 +103,14 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         w.show()
-        assert w.mode == "build" and w.docks["Sources"].isVisible() and not w.docks["Live"].isVisible()
+        assert w.mode == "build" and w.docks["Sources"].isVisible() and not w.live_stage.isVisible()
         assert w.docks["Destinations"].isVisible()
         w._set_mode("live")
-        assert w.docks["Live"].isVisible() and not w.docks["Sources"].isVisible()
-        assert not w.docks["Scenes"].isVisible() and w.docks["Audio Mixer"].isVisible()
+        # Live has its own screen: the stage, bloom tiles and side column, and no docks by default.
+        assert w.live_stage.isVisible() and w.live_panel.isVisible() and not w.docks["Sources"].isVisible()
+        assert not w.docks["Scenes"].isVisible() and not w.docks["Audio Mixer"].isVisible()
+        assert w.previews["horizontal"].isVisible() and w.previews["horizontal"].live_look
+        assert w.docks["Audio Mixer"].toggleViewAction().isEnabled()  # still there if you want it
         assert not w.docks["Scenes"].toggleViewAction().isEnabled()
         # Even a saved Live layout that shows Scenes (from an older version) gets it hidden again.
         w._set_mode("build")
@@ -121,6 +124,7 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         assert col.active_scenes["horizontal"] == "h2"
         w._set_mode("build")
         assert w.docks["Sources"].isVisible() and all(p.editable for p in w.previews.values())
+        assert w.previews["horizontal"].isVisible() and not w.previews["horizontal"].live_look
         assert QSettings().value("window/mode") == "build"
     finally:
         w.close()
