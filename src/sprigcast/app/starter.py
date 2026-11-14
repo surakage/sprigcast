@@ -189,10 +189,55 @@ def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
     return card, body
 
 
+BOX_HEIGHT = 34  # every row of the form; pills keep their radius (16) under half this
+
+
+class SoundBox(QFrame):
+    """Desktop sound as a pill like the boxes above: what it is on the left, an on/off switch on the right.
+
+    Click anywhere on the pill to flip it.
+    """
+
+    def __init__(self, height: int, parent: QWidget | None = None):
+        from sprigcast.app.live_stage import Switch
+
+        super().__init__(parent)
+        self.setObjectName("soundBox")
+        self.setFixedHeight(height)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 0, 12, 0)
+        row.setSpacing(10)
+        self.text = QLabel("Games, music and alerts")
+        self.state = QLabel()
+        self.switch = Switch()
+        self.switch.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(self.text, 1)
+        row.addWidget(self.state)
+        row.addWidget(self.switch)
+        self.switch.toggled.connect(self._show)
+        self.switch.setChecked(True)
+        self._show(True)
+
+    def _show(self, on: bool) -> None:
+        edge = theme.ACCENT if on else theme.EDGE_STRONG
+        self.setStyleSheet(f"#soundBox {{ background: {theme.CHROME}; border: 1px solid {theme.EDGE_STRONG};"
+                           " border-radius: 16px; }"
+                           f"#soundBox:hover {{ border-color: {theme.ACCENT}; }}")
+        self.text.setStyleSheet(f"color: {theme.TEXT if on else theme.MUTED}; background: transparent;")
+        self.state.setText("On" if on else "Off")
+        self.state.setStyleSheet(f"color: {edge if on else theme.MUTED}; font-weight: 600; background: transparent;")
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.switch.toggle()
+        super().mouseReleaseEvent(event)
+
+
 def _row_label(text: str, box: QWidget) -> QLabel:
     """A form label as tall as its box, so the words sit level with the box's text."""
     label = QLabel(text)
-    label.setMinimumHeight(box.sizeHint().height())
+    label.setMinimumHeight(max(BOX_HEIGHT, box.sizeHint().height()))
     label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     return label
 
@@ -268,10 +313,11 @@ class StarterDialog(QDialog):
             self.mic.addItem(name, name)
         self.mic.addItem("No mic", None)
         form.addRow(_row_label("Mic", self.mic), self.mic)
-        self.desktop = QCheckBox("Games, music and alerts")
-        self.desktop.setChecked(True)
-        self.desktop.setCursor(Qt.CursorShape.PointingHandCursor)
-        form.addRow(_row_label("Desktop sound", self.desktop), self.desktop)
+        for box in (self.camera, self.screen, self.mic):
+            box.setFixedHeight(BOX_HEIGHT)
+        sound_box = SoundBox(BOX_HEIGHT)
+        self.desktop = sound_box.switch
+        form.addRow(_row_label("Desktop sound", sound_box), sound_box)
         root.addLayout(form)
         # Which blooms: on/off chips in their own card, with a running count.
         chips_card, chips = _section("Blooms to make")
