@@ -82,8 +82,12 @@ def test_reconnects_when_server_appears_later(tmp_path, monkeypatch):
     st.start()
     server = None
     try:
-        feed(st, 0.5)
-        assert wait_for(lambda: st.reconnects >= 1)
+        # Keep frames coming: the encoder only tries the server once it has packets to send, and a
+        # refused connect takes a few seconds on Windows (instant on Linux).
+        end = time.time() + 20
+        while st.reconnects < 1 and time.time() < end:
+            feed(st, 0.2)
+        assert st.reconnects >= 1
         assert "disconnected" in st.status and "secretkey" not in st.status
         server = rtmp_server(port, out)
         end = time.time() + 10
@@ -124,10 +128,11 @@ def test_health_levels(monkeypatch):
     st.connected = True
     st.health()
     st.frames += 30
-    time.sleep(0.01)
+    time.sleep(0.05)  # health() needs the clock to move; Windows' monotonic clock ticks every ~16 ms
     assert st.health() == ("good", "live")
     st.frames += 20
     st.dropped += 10
+    time.sleep(0.05)
     st.mux_seconds += 1.0  # mostly waiting on the network
     level, reason = st.health()
     assert level == "bad" and "upload" in reason
@@ -138,20 +143,20 @@ def test_health_grace_after_connect_and_warnings_are_held(monkeypatch):
     st.connected, st._connected_at = True, time.monotonic()
     st.health()
     st.frames, st.dropped = 20, 10  # backlog from the handshake: inside the grace period
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     assert st.health() == ("good", "live")
     st._connected_at -= 10  # well after connecting
     st.health()
     st.frames, st.dropped = 40, 11
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     level, reason = st.health()
     assert level == "warning" and "falling behind" in reason
     st.frames += 30
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     assert st.health() == (level, reason)  # recovered, but still shown for a while
     st._held = (level, reason, time.monotonic() - 1)
     st.frames += 30
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     assert st.health() == ("good", "live")
 
 
