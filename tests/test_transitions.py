@@ -398,3 +398,21 @@ def test_live_has_blooms_sound_and_transitions_cards_kept_in_step(tmp_path):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_live_card_picks_the_transition_from_a_drop_down():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import TransitionsPanel
+
+    t = Transition()
+    panel = TransitionsPanel(t, lambda: None, compact=True)
+    assert panel.kind_pick.text().startswith("Fade")
+    assert not panel.kind_buttons["fade"].parentWidget().isVisibleTo(panel)  # no pill grid on the short card
+    next(a for a in panel.kind_pick.menu().actions() if a.text() == "Stinger").trigger()
+    assert t.kind == "stinger" and panel.kind_pick.text().startswith("Stinger")
