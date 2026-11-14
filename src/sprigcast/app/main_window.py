@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import logging
 import os
 import queue
@@ -58,12 +57,11 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import custom_docks, doctor, safe_zones, theme
-from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
 from sprigcast.app.camera_dialog import CameraDialog
-from sprigcast.app.destinations import DestinationsPanel, live_line
+from sprigcast.app.destinations import live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
 from sprigcast.app.filters_dialog import FiltersDialog
-from sprigcast.app.fit import AdaptiveRow, FitButton
+from sprigcast.app.fit import FitButton
 from sprigcast.app.hotkeys import (
     SAVE_REPLAY,
     SCENE_PREFIX,
@@ -100,7 +98,6 @@ from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.panels import Panel, Panels
 from sprigcast.app.stats_panel import StatsPanel, StatsStrip
 from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
-from sprigcast.app.theme import GO_LIVE_STYLE, ON_AIR_STYLE
 from sprigcast.audio.mixer import source_tracks
 from sprigcast.core.events import (
     AudioLevels,
@@ -385,14 +382,10 @@ class MainWindow(QMainWindow):
 
         # No floating docks: extra panels sit in one fixed card per screen (app/panels.py).
         self.panels = Panels(self)
-        self.dock_bodies: dict[str, QWidget] = {}  # older views kept off screen (the Live and Build screens replace them)
         self._build_scenes_dock()
         self._build_sources_dock()
-        self._build_audio_dock()
         self._build_chat_panel()
         self._build_transitions_dock()
-        self._build_destinations_dock()
-        self._build_controls_dock()
         self._build_live_stage()
         self.live_side.panel_slot.addWidget(self.panels.cards["live"])
         self.panels.cards["live"].setMinimumHeight(240)  # a long Sound list scrolls before Chat gets squeezed
@@ -447,7 +440,7 @@ class MainWindow(QMainWindow):
         self._show_part_editor()
         self.live_panel.studio.setChecked(QSettings().value("live/studio", False, type=bool))
         if self.collection.recording.clips_on_start:  # once the renderer has its first frames
-            QTimer.singleShot(1500, lambda: self.replay is None and self.replay_button.setChecked(True))
+            QTimer.singleShot(1500, lambda: self.replay is None and self._toggle_replay(True))
 
     # Building the UI ------------------------------------------------------
 
@@ -1103,94 +1096,6 @@ class MainWindow(QMainWindow):
                 return partner
         return self._shown_scene(canvas_id)
 
-    def _build_audio_dock(self) -> None:
-        layout = str(QSettings().value("audio/layout", HORIZONTAL))
-        self.audio_panel = AudioPanel(self._on_audio_changed, VERTICAL if layout == VERTICAL else HORIZONTAL)
-        add_menu = QMenu(self)
-        add_menu.addAction("Microphone").triggered.connect(lambda: self._add_audio("audio_input"))
-        add_menu.addAction("Desktop audio").triggered.connect(lambda: self._add_audio("audio_output"))
-        bar = _toolbar(
-            ("+", "Add a microphone or desktop audio", add_menu),
-            ("−", "Remove the selected audio source (click its name first)", self._remove_audio),
-            ("⚙", "Change the selected source's device", self._change_audio_device),
-            ("⇅", "Switch between rows and side-by-side strips", self._toggle_mixer_layout),
-            None,
-            ("Ducking", "Lower other sounds while you talk", self._open_ducking),
-            ("Filters", "Noise gate, compressor, gain and more for the selected audio source", self._edit_audio_filters),
-        )
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(self.audio_panel)
-        self._dock("Audio Mixer", scroll, bar)
-
-    def _build_controls_dock(self) -> None:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        self.live_button = FitButton("Go live")
-        self.live_button.setMinimumHeight(34)
-        self.live_button.setStyleSheet(GO_LIVE_STYLE)
-        self.live_button.clicked.connect(self._on_live_clicked)
-        layout.addWidget(self.live_button)
-        self.record_button = FitButton("Start recording")
-        self.record_button.setMinimumHeight(34)
-        self.record_button.clicked.connect(self._on_record_clicked)
-        layout.addWidget(self.record_button)
-        self.doctor_button = _button("🩺 Stream doctor", lambda: self._open_doctor())
-        self.doctor_button.setToolTip("Check keys, upload, GPU, mics and sources before going live")
-        layout.addWidget(self.doctor_button)
-        self.replay_button = FitButton("Replay buffer")
-        self.replay_button.setCheckable(True)
-        self.replay_button.setToolTip("Keep the last seconds of every recorded canvas in memory, ready to save as a clip")
-        self.replay_button.toggled.connect(self._toggle_replay)
-        self.save_replay_button = FitButton("Save replay")
-        self.save_replay_button.setToolTip("Save the last seconds as clips in your recordings folder (one per canvas)")
-        self.save_replay_button.setEnabled(False)
-        self.save_replay_button.clicked.connect(self._save_replay)
-        layout.addWidget(AdaptiveRow(self.replay_button, self.save_replay_button))  # stacks when the dock is narrow
-
-        self.settings_button = _button("Settings", lambda: self._open_settings())
-        layout.addWidget(self.settings_button)
-
-        # Which outputs go live / which canvases record, then live status, folded away by default.
-        self.stream_status = QLabel("Offline")
-        self.stream_status.setWordWrap(True)
-        layout.addWidget(self.stream_status)
-        hint = QLabel("Where to stream: the Destinations dock.")
-        hint.setStyleSheet(f"color: {theme.MUTED}")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
-        self.record_status = QLabel("Not recording")
-        self.record_status.setWordWrap(True)
-        layout.addWidget(self.record_status)
-        self.record_canvas_boxes: dict[str, QCheckBox] = {}
-        for canvas in self.collection.canvases:
-            box = QCheckBox(f"Record {canvas.id}")
-            box.setToolTip(f"{canvas.width}×{canvas.height}")
-            box.setChecked(canvas.id in self.collection.recording.canvases)
-            box.toggled.connect(self._on_record_canvases_changed)
-            self.record_canvas_boxes[canvas.id] = box
-            layout.addWidget(box)
-        layout.addStretch(1)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(panel)
-        self._dock("Controls", scroll)
-
-    def _build_destinations_dock(self) -> None:
-        from sprigcast.output.keys import probably_has_key
-
-        self.destinations = DestinationsPanel(self._on_stream_toggled, self._edit_destination, probably_has_key)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(self.destinations)
-        self._dock("Destinations", scroll)
-
     def _edit_destination(self, output_id: str | None) -> None:
         """Open Settings → Stream on a destination. "new:<service>" (Live's + Add menu) adds one first."""
         if output_id and output_id.startswith("new:"):
@@ -1322,7 +1227,7 @@ class MainWindow(QMainWindow):
     def _on_clip_clicked(self) -> None:
         """Save clip, or first start keeping the last seconds in memory."""
         if self.replay is None:
-            self.replay_button.setChecked(True)
+            self._toggle_replay(True)
         else:
             self._save_replay()
 
@@ -1623,9 +1528,6 @@ class MainWindow(QMainWindow):
         """Bring tabs, previews, the record boxes and the menu in line with which canvases are on."""
         for i, canvas in enumerate(self.collection.canvases):
             self.canvas_tabs.setTabVisible(i, canvas.enabled)
-            box = self.record_canvas_boxes.get(canvas.id)
-            if box is not None:
-                box.setEnabled(canvas.enabled)
         if not self.collection.canvas(self.build_canvas).enabled:
             first = next((i for i, c in enumerate(self.collection.canvases) if c.enabled), None)
             if first is not None:
@@ -1719,7 +1621,6 @@ class MainWindow(QMainWindow):
         if isinstance(body, QScrollArea):
             # Contents shrink to the panel's width (see app/fit.py); only scroll up and down.
             body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.dock_bodies[title] = wrapper
         self.panels.shelve(wrapper)
         return wrapper
 
@@ -1985,7 +1886,6 @@ class MainWindow(QMainWindow):
                     f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
                 )
             elif isinstance(event, AudioLevels):
-                self.audio_panel.set_levels(event.levels)
                 if self.mode == "live":
                     self.live_side.set_levels(event.levels)
                 self.peak_watch.feed(event.levels)
@@ -2387,22 +2287,8 @@ class MainWindow(QMainWindow):
         return False
 
     def _refresh_audio(self) -> None:
-        self.audio_panel.set_sources([
-            AudioInfo(
-                id=s.id,
-                name=s.name,
-                volume_db=float(s.settings.get("volume_db", 0.0)),
-                muted=bool(s.settings.get("muted", False)),
-                monitor=bool(s.settings.get("monitor", False)),
-                hidden=bool(s.settings.get("hidden", False)),
-                voice=is_voice(s.settings, s.kind),
-                kind=s.kind,
-            )
-            for s in self.collection.sources
-            if s.kind in self.AUDIO_KINDS
-        ])
         self.live_side.show_sound([self._sound_item(s) for s in self.collection.sources
-                                   if self._has_sound(s) and not s.settings.get("hidden", False)])
+                                   if self._has_sound(s)])
         self.live_side.sound.set_mic_first(self.collection.audio.ducking)
 
     def _set_mic_first(self, on: bool) -> None:
@@ -2445,11 +2331,6 @@ class MainWindow(QMainWindow):
         if changes.get("hidden"):
             self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
 
-    def _toggle_mixer_layout(self) -> None:
-        layout = HORIZONTAL if self.audio_panel.orientation == VERTICAL else VERTICAL
-        self.audio_panel.set_orientation(layout)
-        QSettings().setValue("audio/layout", layout)
-
     def _open_ducking(self) -> None:
         dialog = DuckingDialog(self.collection, self)
         if dialog.exec():
@@ -2487,28 +2368,6 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_audio()
 
-    def _change_audio_device(self) -> None:
-        source_id = self.audio_panel.selected_id()
-        if source_id is None:
-            QMessageBox.information(self, "SprigCast", "Select an audio source first (click its name).")
-            return
-        config = self.collection.source(source_id)
-        device = self._pick_audio_device(config.kind, str(config.settings.get("device", "default")))
-        if device is None:
-            return
-        config.settings = {**config.settings, "device": device}
-        base = "Desktop audio" if config.kind == "audio_output" else "Mic"
-        config.name = base if device == "default" else f"{base} ({device})"
-        self._changed()
-        self._refresh_audio()
-
-    def _edit_audio_filters(self) -> None:
-        source_id = self.audio_panel.selected_id()
-        if source_id is None:
-            QMessageBox.information(self, "SprigCast", "Select an audio source first (click its name).")
-            return
-        self._open_filters(source_id)
-
     def _edit_filters(self) -> None:
         item = self._item()
         if item is None:
@@ -2521,15 +2380,6 @@ class MainWindow(QMainWindow):
         if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
-
-    def _remove_audio(self) -> None:
-        source_id = self.audio_panel.selected_id()
-        if source_id is None:
-            QMessageBox.information(self, "SprigCast", "Select an audio source first (click its name).")
-            return
-        self.collection.sources = [s for s in self.collection.sources if s.id != source_id]
-        self._changed()
-        self._refresh_audio()
 
     # Preview editing -------------------------------------------------------------
 
@@ -3439,12 +3289,13 @@ class MainWindow(QMainWindow):
         videos = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
         return str(Path(videos or Path.home()) / "SprigCast")
 
+    def _say(self, text: str) -> None:
+        """A short note in the status bar, drawn now (the next step may keep the UI busy a moment)."""
+        self.statusBar().showMessage(text, 6000)
+        self.statusBar().repaint()
+
     def _recordings_folder(self) -> Path:
         return Path(self.collection.recording.folder or self._default_recordings_folder())
-
-    def _on_record_canvases_changed(self) -> None:
-        self.collection.recording.canvases = [cid for cid, box in self.record_canvas_boxes.items() if box.isChecked()]
-        self.collection.save(self.scenes_path)
 
     def _open_recordings_folder(self) -> None:
         folder = self._recordings_folder()
@@ -3470,8 +3321,7 @@ class MainWindow(QMainWindow):
         if not canvases:
             QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
             return
-        self.record_button.setEnabled(False)
-        self.record_status.setText("Starting…")
+        self._say("Starting the recording…")
         self.encoders.voice_track = settings.voice_track
         try:
             self.recording = SharedRecording.start(
@@ -3481,19 +3331,12 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.recording = None
             QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
-            self.record_status.setText("Not recording")
             return
-        finally:
-            self.record_button.setEnabled(True)
         log.info("recording started: %s, %d kbps, %s, size %s, encoder %s preset %s",
                  ", ".join(c.id for c in canvases), settings.bitrate_kbps, settings.container,
                  f"{settings.short_side}p" if settings.short_side else "canvas", settings.encoder.rate_control,
                  settings.encoder.preset)
-        self.record_button.setText("Stop recording")
-        self.record_button.setStyleSheet(ON_AIR_STYLE)
         self.live_side.set_recording("● REC 0:00:00")
-        for box in self.record_canvas_boxes.values():
-            box.setEnabled(False)
         self._refresh_recording_status()
 
     # Replay buffer ---------------------------------------------------------------------
@@ -3511,8 +3354,8 @@ class MainWindow(QMainWindow):
         """Clip length or shapes changed in Settings while clips are ready: start again with the new ones."""
         settings = self.collection.recording
         if self.replay is not None and before != (settings.replay_seconds, settings.clip_shapes, settings.voice_track):
-            self.replay_button.setChecked(False)
-            self.replay_button.setChecked(True)
+            self._toggle_replay(False)
+            self._toggle_replay(True)
 
     def _toggle_replay(self, on: bool) -> None:
         if on and self.replay is None:
@@ -3520,7 +3363,6 @@ class MainWindow(QMainWindow):
             canvases = self._clip_canvases()
             if not canvases:
                 QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
-                self.replay_button.setChecked(False)
                 return
             self.encoders.voice_track = settings.voice_track
             try:
@@ -3530,16 +3372,12 @@ class MainWindow(QMainWindow):
                     short_side=settings.short_side,
                 )
             except Exception as exc:
-                QMessageBox.critical(self, "SprigCast", f"Could not start the replay buffer:\n{exc}")
-                self.replay_button.setChecked(False)
+                QMessageBox.critical(self, "SprigCast", f"Could not get clips ready:\n{exc}")
                 return
-            self.replay_button.setStyleSheet(ON_AIR_STYLE)
             self.statusBar().showMessage(f"Clips ready: Save clip keeps the last {settings.replay_seconds} s.", 4000)
         elif not on and self.replay is not None:
             self.replay.stop()
             self.replay = None
-            self.replay_button.setStyleSheet("")
-        self.save_replay_button.setEnabled(self.replay is not None)
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
 
     def _save_replay(self) -> None:
@@ -3559,24 +3397,18 @@ class MainWindow(QMainWindow):
         session, self.recording = self.recording, None
         if session is None:
             return
-        self.record_status.setText("Finishing files…")
-        self.record_status.repaint()
+        self._say("Finishing files…")
         session.stop()
-        self.record_button.setText("Start recording")
-        self.record_button.setStyleSheet("")
         self.live_side.set_recording("")
-        for box in self.record_canvas_boxes.values():
-            box.setEnabled(True)
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
         log.info("recording stopped after %.0f s: %s; %d frames dropped%s", session.elapsed, names or "no files",
                  session.dropped, f"; errors: {errors}" if errors else "")
         if errors:
-            self.record_status.setText("Recording failed")
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
         else:
-            self.record_status.setText(f"Saved {names}")
+            self._say(f"Saved {names}")
             self.live_panel.set_recording("")
 
     def _refresh_recording_status(self) -> None:
@@ -3591,14 +3423,12 @@ class MainWindow(QMainWindow):
         text = f"● REC {clock}  ·  {codec}"
         if dropped:
             text += f"  ·  {dropped} frames dropped (encoder too slow)"
-        self.record_status.setText(text)
         self.live_panel.set_recording(text)
         self.live_side.set_recording(text)
 
     # Streaming -----------------------------------------------------------------
 
     def _refresh_stream_boxes(self) -> None:
-        self.destinations.show_outputs(self.collection)
         if self.streaming is None:
             self._live_destinations()
 
@@ -3657,24 +3487,17 @@ class MainWindow(QMainWindow):
             return
         if not self._doctor_says_go():
             return
-        self.live_button.setEnabled(False)
-        self.stream_status.setText("Connecting…")
+        self._say("Connecting…")
         try:
             self.streaming = StreamSession.start(self.engine, targets, pick_codec(), self.collection.stream_encoder)
         except Exception as exc:
             self.streaming = None
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
-            self.stream_status.setText("Offline")
             return
-        finally:
-            self.live_button.setEnabled(True)
-        self.live_button.setText("End stream")
-        self.live_button.setStyleSheet(ON_AIR_STYLE)
         self.live_side.set_live(True)
         for preview in self.previews.values():
             preview.ring = theme.LIVE
             preview.update()
-        self.destinations.set_live(True)
         from sprigcast.app.logbook import StreamReport
 
         self._stream_report = StreamReport(self.streaming, self.collection)
@@ -3692,8 +3515,7 @@ class MainWindow(QMainWindow):
                              and c.id != target.canvas.id), None)
             if vertical is not None:
                 canvases.append(vertical)
-        self.stream_status.setText("Asking Twitch for the Enhanced Broadcasting settings…")
-        self.stream_status.repaint()
+        self._say("Asking Twitch for the Enhanced Broadcasting settings…")
         try:
             request = enhanced.build_request(
                 target.key, [enhanced.CanvasInfo(c.width, c.height, c.fps) for c in canvases], __version__,
@@ -3709,12 +3531,10 @@ class MainWindow(QMainWindow):
                 f"Enhanced Broadcasting isn't available right now:\n\n{exc}\n\n"
                 "Go live with a single quality instead?",
             )
-            self.stream_status.setText("Offline")
             return target if answer == QMessageBox.StandardButton.Yes else None
         if config.warning:
             answer = QMessageBox.question(self, "SprigCast", f"Twitch says:\n\n{config.warning}\n\nGo live anyway?")
             if answer != QMessageBox.StandardButton.Yes:
-                self.stream_status.setText("Offline")
                 return None
         log.info("Enhanced Broadcasting: %s", config.describe())
         vertical = any(t.canvas_index > 0 for t in config.tracks)
@@ -3727,8 +3547,7 @@ class MainWindow(QMainWindow):
         from sprigcast.output import twitch_auth
         from sprigcast.output.keys import set_key
 
-        self.stream_status.setText("Getting your stream key from Twitch…")
-        self.stream_status.repaint()
+        self._say("Getting your stream key from Twitch…")
         try:
             key = twitch_auth.fetch_stream_key()
         except Exception as exc:
@@ -3746,16 +3565,12 @@ class MainWindow(QMainWindow):
         session, self.streaming = self.streaming, None
         if session is None:
             return
-        self.stream_status.setText("Ending stream…")
-        self.stream_status.repaint()
+        self._say("Ending stream…")
         session.stop()
-        self.live_button.setText("Go live")
-        self.live_button.setStyleSheet(GO_LIVE_STYLE)
         self.live_side.set_live(False)
         for preview in self.previews.values():
             preview.ring = None
             preview.update()
-        self.destinations.set_live(False)
         self._refresh_stream_boxes()
         self.live_panel.set_clock("Offline", False)
         self._set_header_clock("Offline", False)
@@ -3770,8 +3585,7 @@ class MainWindow(QMainWindow):
         optimize.remember_proven(QSettings(), proven)
         if proven is not None:
             log.info("upload: this stream %s", f"proved {proven} kbps fits" if proven else "had network trouble")
-        self.stream_status.setText("\n".join(lines))
-        self.stream_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.statusBar().showMessage(lines[0], 10000)
         for line in lines[1:]:
             log.info("stream summary: %s", line)
         report, self._stream_report = getattr(self, "_stream_report", None), None
@@ -3792,11 +3606,8 @@ class MainWindow(QMainWindow):
             level, text = live_line(st)
             states[getattr(st, "output_id", st.name)] = (level, text)
             worst = max(worst, level, key=lambda lv: rank.get(lv, 0))
-        self.destinations.show_live(states)
         self._live_destinations({k: v[0] for k, v in states.items()},
                                 {k: v[1].split(" · ")[0] for k, v in states.items()})
-        names = ", ".join(html.escape(st.name) for _, st in session.streamers)
-        self.stream_status.setText(f"{clock}<br>{names}")
         report = getattr(self, "_stream_report", None)
         if report is not None:
             try:
@@ -3859,10 +3670,6 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_stream_boxes()
         self._updating = True
-        for canvas_id, box in self.record_canvas_boxes.items():
-            box.blockSignals(True)
-            box.setChecked(canvas_id in self.collection.recording.canvases)
-            box.blockSignals(False)
         self._updating = False
         self._refresh_audio()
         self._apply_hotkeys()
@@ -3888,7 +3695,8 @@ class MainWindow(QMainWindow):
                     hotkeys.get(TOGGLE_RECORD, "")),
             Command("Studio mode", "Action", lambda: self.live_panel.studio.toggle(), checked=self.studio),
             Command("Studio mode: Go", "Action", self._studio_go, hotkeys.get(STUDIO_GO, "")),
-            Command("Replay buffer", "Action", self.replay_button.toggle, checked=self.replay_button.isChecked()),
+            Command("Clips ready", "Action", lambda: self._toggle_replay(self.replay is None),
+                    checked=self.replay is not None),
             Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
             Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
         ]
@@ -3931,7 +3739,7 @@ class MainWindow(QMainWindow):
         """Offer the light settings (720p, 30 fps, fast encoder). True if they were applied."""
         from sprigcast.app import lowend
 
-        if self.streaming is not None or self.recording is not None or self.replay_button.isChecked():
+        if self.streaming is not None or self.recording is not None or self.replay is not None:
             QMessageBox.information(self, "Light settings", "Stop streaming, recording and the replay buffer first.")
             return False
         cpu = pick_codec() == "libx264"
@@ -3962,7 +3770,7 @@ class MainWindow(QMainWindow):
 
         from sprigcast.app.wizard import OptimizeWizard
 
-        if self.streaming is not None or self.recording is not None or self.replay_button.isChecked():
+        if self.streaming is not None or self.recording is not None or self.replay is not None:
             QMessageBox.information(self, "Optimize for this PC", "Stop streaming, recording and the replay buffer first.")
             return False
         wizard = OptimizeWizard(self.collection, lowend.waiting_fps(), first_run=first_run, parent=self)

@@ -49,30 +49,6 @@ def test_readiness_and_summary():
     assert what_goes(tw, col) == "Enhanced · horizontal + vertical"
 
 
-def test_cards_toggle_edit_and_live(app):
-    from sprigcast.app.destinations import DestinationsPanel
-
-    col = _collection()
-    toggled, edited = [], []
-    panel = DestinationsPanel(lambda oid, on: toggled.append((oid, on)), edited.append, lambda ref: ref == "k/tw")
-    panel.show_outputs(col)
-    assert list(panel.cards) == ["tw", "tt"]
-    tw, tt = panel.cards["tw"], panel.cards["tt"]
-    assert tw.switch.isChecked() and tw.state.text() == "Ready"
-    assert not tt.switch.isChecked() and tt.state.text() == "Needs a server URL"
-    tt.switch.setChecked(True)
-    assert toggled == [("tt", True)]
-    panel.add_button.click()
-    assert edited == [None]
-
-    panel.set_live(True)
-    assert not tw.switch.isEnabled() and not panel.add_button.isEnabled()
-    panel.show_live({"tw": ("good", "6000 kbps")})
-    assert tw.state.text() == "6000 kbps" and tw.property("level") == "good"
-    panel.set_live(False)
-    assert tw.switch.isEnabled()
-
-
 def test_live_panel_scene_buttons(app):
     from sprigcast.app.live_panel import LivePanel
 
@@ -105,14 +81,14 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         w.show()
         # Build has its own screen too: bloom pills, Inside, the canvas with its twin, the inspector.
         assert w.mode == "build" and w.build_stage.isVisible() and w.source_list.isVisible()
-        assert not w.live_stage.isVisible() and not w.dock_bodies["Destinations"].isVisible()
+        assert not w.live_stage.isVisible()
         assert set(w.bloom_bar.pills) == {"h1", "h2"} and w.bloom_bar.pills["h1"].isChecked()
         assert w.previews["vertical"].twin and not w.previews["vertical"].editable
         assert w.previews["horizontal"].editable and not w.previews["horizontal"].twin
         w._set_mode("live")
         # Live has its own screen: the stage, bloom tiles and side column, and only the Chat panel by default.
         assert w.live_stage.isVisible() and w.live_panel.isVisible() and not w.build_stage.isVisible()
-        assert not w.dock_bodies["Scenes"].isVisible() and not w.dock_bodies["Audio Mixer"].isVisible()
+        assert not w.scene_tree.isVisible()
         assert w.panels.cards["live"].isVisible() and list(w.panels.cards["live"].buttons) == ["chat"]
         assert w.chat_panel.pages.currentWidget() is w.chat_panel.empty  # nothing connected: nothing to read
         assert w.chat_panel.active
@@ -300,7 +276,6 @@ def test_show_one_canvas_at_a_time(app, tmp_path, monkeypatch):
         assert [c.enabled for c in col.canvases] == [True, False] and w.canvas_choice() == "horizontal"
         assert w.build_canvas == "horizontal" and not w.canvas_tabs.isTabVisible(1)
         assert w.canvas_columns["horizontal"].isVisible() and not w.canvas_columns["vertical"].isVisible()
-        assert not w.record_canvas_boxes["vertical"].isEnabled()
         assert w.canvas_choice_actions["horizontal"].isChecked()
         w._set_mode("live")
         assert not w.canvas_columns["vertical"].isVisible()

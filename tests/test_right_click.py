@@ -53,7 +53,6 @@ def test_right_click_in_a_preview_selects_and_asks_for_a_menu(app):
 
 
 def test_live_scene_and_destination_menus(app):
-    from sprigcast.app.destinations import DestinationCard
     from sprigcast.app.live_panel import LivePanel
 
     shown, edited = [], []
@@ -65,15 +64,6 @@ def test_live_scene_and_destination_menus(app):
     assert shown == ["h2"] and edited == ["h2"]
     panel.studio.setChecked(True)
     assert _texts(panel.scene_menu("h2"))[0] == "Line up next"
-
-    toggled, opened = [], []
-    col = _collection()
-    card = DestinationCard(col.outputs[0], lambda oid, on: toggled.append((oid, on)), opened.append)
-    menu = card.context_menu()
-    assert _texts(menu) == ["Go live here", "Edit…"]
-    menu.actions()[0].setChecked(True)
-    menu.actions()[1].trigger()
-    assert toggled == [("tw", True)] and opened == ["tw"] and card.switch.isChecked()
 
 
 def test_main_window_menus(app, tmp_path, monkeypatch):

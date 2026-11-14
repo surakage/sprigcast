@@ -176,34 +176,6 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_mixer_rows_strips_and_hidden(app):
-    from PySide6.QtCore import Qt
-
-    from sprigcast.app.audio_dock import HORIZONTAL, VERTICAL, AudioInfo, AudioPanel
-
-    changes = []
-    panel = AudioPanel(lambda sid, c: changes.append((sid, c)))
-    infos = [AudioInfo("mic", "Mic", voice=True), AudioInfo("desk", "Desktop audio", kind="audio_output"),
-             AudioInfo("music", "Music", hidden=True, kind="audio_output")]
-    panel.set_sources(infos)
-    assert list(panel.rows) == ["mic", "desk"] and panel.hidden_button.text() == "1 hidden · show"
-    assert panel.rows["mic"].slider.orientation() == Qt.Orientation.Horizontal
-    panel.rows["mic"].monitor.setChecked(True)
-    assert changes[-1] == ("mic", {"monitor": True}) and panel.rows["mic"].monitor.text() == "🎧 On"
-    assert not panel.rows["desk"].monitor.isEnabled()  # desktop audio already plays on the speakers
-    panel.rows["mic"].select.setChecked(True)
-    panel.set_orientation(VERTICAL)
-    assert panel.rows["mic"].slider.orientation() == Qt.Orientation.Vertical
-    assert panel.rows["mic"].meter.orientation == VERTICAL and panel.selected_id() == "mic"
-    panel.set_show_hidden(True)
-    assert "music" in panel.rows and "(hidden)" in panel.rows["music"].select.text()
-    panel.set_orientation(HORIZONTAL)
-    panel.set_levels({"master": (-10, -12), "duck": (-9.0, -9.0)})
-    assert panel.ducking.text() == "Ducking -9 dB"
-    panel.set_levels({"duck": (0.0, 0.0)})
-    assert panel.ducking.text() == ""
-
-
 def test_ducking_dialog_saves_settings_and_voices(app):
     from sprigcast.app.ducking_dialog import DuckingDialog
     from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig
@@ -239,14 +211,12 @@ def test_main_window_mixer_controls(app, tmp_path, monkeypatch):
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         w._refresh_audio()
-        assert "test-mic" in w.audio_panel.rows
-        w._on_audio_changed("test-mic", {"monitor": True})
-        w._on_audio_changed("test-mic", {"volume_db": -6.0})
+        assert "test-mic" in w.live_side.sound.rows
+        w._on_sound_changed("test-mic", {"monitor": True})
+        w._on_sound_changed("test-mic", {"volume_db": -6.0})
         assert col.source("test-mic").settings["monitor"] is True and col.source("test-mic").settings["volume_db"] == -6.0
-        w._on_audio_changed("test-mic", {"hidden": True})
-        assert "test-mic" not in w.audio_panel.rows and w.audio_panel.hidden_button.isVisibleTo(w.audio_panel)
-        w._toggle_mixer_layout()
-        assert w.audio_panel.orientation == "vertical" and QSettings().value("audio/layout") == "vertical"
+        w._on_sound_changed("test-mic", {"tracks": ["stream"]})
+        assert w._sound_item(col.source("test-mic")).tracks == ("stream",)
     finally:
         w.close()
         QSettings().clear()
