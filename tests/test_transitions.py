@@ -234,3 +234,49 @@ def test_engine_falls_back_to_a_fade_when_the_clip_will_not_open(compositor, tmp
     assert engine._transitions["h"].stinger.ready.wait(5)
     extra = engine._transition_step(compositor, "h", time.perf_counter())
     assert extra["transition"].kind == "fade"
+
+
+# The panel and the Live chip ------------------------------------------------------------------------
+
+
+def test_panel_fits_narrow_cards_and_live_chip_picks_a_transition(tmp_path):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication, QFormLayout
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import TransitionsPanel, summary
+
+    t = Transition()
+    panel = TransitionsPanel(t, lambda: None)
+    panel.resize(220, 400)
+    panel.show()
+    app.processEvents()
+    assert panel._columns == 2 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapAllRows
+    panel.resize(400, 400)
+    app.processEvents()
+    assert panel._columns == 4 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.DontWrapRows
+    panel.close()
+    assert summary(Transition(kind="leaf", duration_ms=500)) == "Leaf · 0.5 s"
+    assert summary(Transition(kind="stinger")) == "Stinger"
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("TransitionChipTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = collection("a")
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        chip = w.live_panel.transition_chip
+        assert chip.text().startswith("Fade · 0.3 s")
+        bloom = next(a for a in chip.menu().actions() if a.text() == "Bloom")
+        bloom.trigger()
+        assert col.transition.kind == "bloom" and chip.text().startswith("Bloom")
+        assert w.transitions_panel.kind_buttons["bloom"].isChecked()
+    finally:
+        w.close()
+        QSettings().clear()

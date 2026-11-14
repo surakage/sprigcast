@@ -51,19 +51,30 @@ VIDEO_FILTER = "Videos (*.webm *.mov *.mp4 *.mkv *.avi *.gif);;All files (*)"
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
 MATTES = [("none", "No matte"), ("right", "Matte on the right"), ("below", "Matte below")]
 
-CHOICE_STYLE = theme.SMALL_PILL_STYLE + (
+# The panel sits on a PANEL card (Live's side column, Build's left column, or its own window), so its
+# pills and boxes are one step lighter (RAISED) to read as things you can press or type in.
+PILL_STYLE = (
+    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 13px;"
+    f" padding: 6px 8px; font-weight: 600; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+    f"QPushButton:disabled {{ color: {theme.MUTED}; }}"
+    "QPushButton::menu-indicator { width: 0; image: none; }"
+)
+CHOICE_STYLE = PILL_STYLE + (
     f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
 )
 
-# Number boxes as soft pills, like the choices above: the number sits centred with
-# room on both sides instead of hugging the left edge. No arrow buttons (type, scroll or use the arrow
-# keys); setButtonSymbols(NoButtons) can't be used, the app stylesheet then shrinks the text to 1 px.
+# Number boxes as soft pills too, the number centred with room on both sides. No arrow buttons (type,
+# scroll or use the arrow keys); setButtonSymbols(NoButtons) can't be used, the app stylesheet then
+# shrinks the text to 1 px.
 FIELD_STYLE = (
-    f"QSpinBox {{ background: {theme.PANEL}; color: {theme.TEXT}; border: none; border-radius: 13px;"
+    f"QSpinBox {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 13px;"
     f" padding: 6px 14px; min-height: 14px; }}"
-    f"QSpinBox:hover, QSpinBox:focus {{ background: {theme.RAISED}; }}"
+    f"QSpinBox:hover, QSpinBox:focus {{ background: {theme.RAISED_HOVER}; }}"
     "QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px; border: none; }"
 )
+CHOICE_WIDTH = 64  # a choice pill needs about this much room ("Stinger" plus padding)
+NARROW = 280  # below this width labels go above their settings
 
 
 def short_name(path: str, empty: str = "Choose…") -> str:
@@ -81,7 +92,7 @@ class TransitionPicture(QWidget):
     def __init__(self, transition: Callable[[], Transition], parent: QWidget | None = None):
         super().__init__(parent)
         self.transition = transition
-        self.setFixedHeight(64)
+        self.setFixedHeight(56)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
@@ -124,10 +135,9 @@ class TransitionPicture(QWidget):
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        width = min(self.width() - 2.0, 112.0)
-        box = QRectF((self.width() - width) / 2, 1, width, self.height() - 2.0)
+        box = QRectF(0, 0, self.width(), self.height())
         frame = QPainterPath()
-        frame.addRoundedRect(box, 10, 10)
+        frame.addRoundedRect(box, 13, 13)
         p.setClipPath(frame)
         t = self.transition()
         progress = self.progress
@@ -203,6 +213,14 @@ class TransitionPicture(QWidget):
         return path
 
 
+def summary(transition: Transition) -> str:
+    """What the Live chip says: the kind, and its length when it has one."""
+    label = dict((k, name) for k, name, _tip in KINDS)[transition.kind]
+    if transition.kind in TIMED:
+        return f"{label} · {transition.duration_ms / 1000:g} s"
+    return label
+
+
 class TransitionsPanel(QWidget):
     """Edits `transition` in place; calls changed() after every edit."""
 
@@ -220,6 +238,8 @@ class TransitionsPanel(QWidget):
 
         grid = QGridLayout()
         grid.setSpacing(6)
+        self.grid = grid
+        self._columns = 0
         self.kinds = QButtonGroup(self)
         self.kinds.setExclusive(True)
         self.kind_buttons: dict[str, QPushButton] = {}
@@ -228,12 +248,13 @@ class TransitionsPanel(QWidget):
             button.setCheckable(True)
             button.setToolTip(tip)
             button.setStyleSheet(CHOICE_STYLE)
+            button.setMinimumHeight(28)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.kinds.addButton(button)
             self.kind_buttons[kind] = button
             button.clicked.connect(lambda _=False, k=kind: self._pick(k))
-            grid.addWidget(button, i // 4, i % 4)
         root.addLayout(grid)
+        self._reflow(4)
 
         self.picture = TransitionPicture(lambda: self.transition)
         root.addWidget(self.picture)
@@ -302,7 +323,7 @@ class TransitionsPanel(QWidget):
         cut_layout.addWidget(self.clip_length, 1)
         form.addRow("Swap at", cut_row)
         self.matte = QPushButton()  # a pill with a little menu, like the other choices
-        self.matte.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.matte.setStyleSheet(PILL_STYLE)
         self.matte.setToolTip("A track matte clip: picture in one half, black and white matte in the other")
         self._build_matte_menu()
         form.addRow("Matte", self.matte)
@@ -326,6 +347,28 @@ class TransitionsPanel(QWidget):
         root.addStretch(1)
         self.load(transition)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if not hasattr(self, "form"):
+            return
+        inner = self.width() - 16
+        self._reflow(4 if inner >= 4 * CHOICE_WIDTH else 2)  # 4 or 2 columns: eight choices fill whole rows
+        wrap = QFormLayout.RowWrapPolicy.WrapAllRows if self.width() < NARROW else QFormLayout.RowWrapPolicy.DontWrapRows
+        if self.form.rowWrapPolicy() != wrap:
+            self.form.setRowWrapPolicy(wrap)
+
+    def _reflow(self, columns: int) -> None:
+        """Lay the choices out in `columns` equal columns: four on a wide card, fewer on a narrow one."""
+        if columns == self._columns:
+            return
+        self._columns = columns
+        for button in self.kind_buttons.values():
+            self.grid.removeWidget(button)
+        for i, button in enumerate(self.kind_buttons.values()):
+            self.grid.addWidget(button, i // columns, i % columns)
+        for c in range(4):
+            self.grid.setColumnStretch(c, 1 if c < columns else 0)
+
     def _build_matte_menu(self) -> None:
         menu = QMenu(self.matte)
         for value, label in MATTES:
@@ -346,10 +389,10 @@ class TransitionsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         pick = QPushButton(empty)
-        pick.setStyleSheet(theme.SMALL_PILL_STYLE)
+        pick.setStyleSheet(PILL_STYLE)
         pick.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         clear = QPushButton("×")
-        clear.setStyleSheet(theme.SMALL_PILL_STYLE)
+        clear.setStyleSheet(PILL_STYLE)
         clear.setToolTip("Clear")
         layout.addWidget(pick, 1)
         layout.addWidget(clear)
@@ -414,6 +457,11 @@ class TransitionsPanel(QWidget):
         self.clip_length.setText(f"of {seconds:.1f} s" if seconds else "")
         if seconds:
             self.cut_at.setMaximum(max(0, int(seconds * 1000)))
+
+    def set_kind(self, kind: str) -> None:
+        """Pick a kind from elsewhere (the Live screen's transition chip)."""
+        self.kind_buttons[kind].setChecked(True)
+        self._pick(kind)
 
     def _pick(self, kind: str) -> None:
         self.transition.kind = kind
