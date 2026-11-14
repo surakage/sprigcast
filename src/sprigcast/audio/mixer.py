@@ -38,11 +38,13 @@ def to_db(value: float) -> float:
     return FLOOR_DB if value <= 10 ** (FLOOR_DB / 20) else max(FLOOR_DB, 20 * math.log10(value))
 
 
-def levels(block: np.ndarray) -> tuple[float, float]:
-    """(peak dBFS, RMS dBFS) of a block."""
+def levels(block: np.ndarray, gain: float = 1.0) -> tuple[float, float]:
+    """(peak dBFS, RMS dBFS) of a block, as if multiplied by gain (without making that copy)."""
     if not len(block):
         return FLOOR_DB, FLOOR_DB
-    return to_db(float(np.max(np.abs(block)))), to_db(float(np.sqrt(np.mean(np.square(block)))))
+    peak = max(float(block.max()), -float(block.min()))
+    rms = math.sqrt(float(np.vdot(block, block)) / block.size)
+    return to_db(peak * gain), to_db(rms * gain)
 
 
 def mix(blocks: list[tuple[np.ndarray, float]]) -> np.ndarray:
@@ -204,8 +206,11 @@ class Mixer:
         self._stop.set()
         self._thread.join(timeout=2)
 
-    def tick(self) -> np.ndarray:
-        """Mix one block. Returns it and collects per-source levels (after gain and ducking)."""
+    def tick(self, measure: bool = True) -> np.ndarray:
+        """Mix one block. Returns it and, when measure, collects per-source levels (after gain and ducking).
+
+        Meters are reported every LEVELS_EVERY blocks, so the blocks in between skip measuring them.
+        """
         with self._lock:
             sources, taps, monitor_taps = self._sources + self._extras, self._taps, self._monitor_taps
         processed, meters = [], {}
@@ -226,7 +231,7 @@ class Mixer:
             gain = source.gain
             voice = is_voice(source)
             if voice and gain:
-                voice_db = max(voice_db, levels(block * gain)[1])
+                voice_db = max(voice_db, levels(block, gain)[1])
             processed.append((source, block, gain, voice))
         duck = self._duck_ramp(voice_db)
         wanted = {"stream"}.union(*(tracks for _, tracks in taps))
@@ -238,7 +243,8 @@ class Mixer:
             for track in source_tracks(source):
                 if track in blocks:
                     blocks[track].append((block, gain))
-            meters[source.id] = levels(block * gain) if gain else (FLOOR_DB, FLOOR_DB)
+            if measure:
+                meters[source.id] = levels(block, gain) if gain else (FLOOR_DB, FLOOR_DB)
             if monitor_taps and gain and is_monitored(source):
                 monitored.append((block, gain))
         mixes, done = {}, {}
@@ -248,10 +254,11 @@ class Mixer:
                 done[key] = mix(parts)
             mixes[track] = done[key]
         mixed = mixes["stream"]
-        meters["master"] = levels(mixed)
-        duck_db = to_db(self.duck_gain)
-        meters["duck"] = (duck_db, duck_db)
-        self._meters = meters
+        if measure:
+            meters["master"] = levels(mixed)
+            duck_db = to_db(self.duck_gain)
+            meters["duck"] = (duck_db, duck_db)
+            self._meters = meters
         for tap, tracks in taps:
             tap(mixes[tracks[0]] if len(tracks) == 1 else tuple(mixes[t] for t in tracks))
         if monitor_taps:
@@ -265,8 +272,8 @@ class Mixer:
         next_at = time.perf_counter()
         count = 0
         while not self._stop.is_set():
-            self.tick()
             count += 1
+            self.tick(measure=count % LEVELS_EVERY == 0)
             if count % LEVELS_EVERY == 0:
                 self.report(self._meters)
             next_at += interval
