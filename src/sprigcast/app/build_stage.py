@@ -240,7 +240,10 @@ class InsideDelegate(QStyledItemDelegate):
         tag = index.data(ROLE_TAG) or ""
         small = QFont(option.font)
         small.setPixelSize(11)
-        tag_w = QFontMetrics(small).horizontalAdvance(tag) + 12 if tag else 0
+        small_metrics = QFontMetrics(small)
+        cap = int(top.width() * 0.4)  # the name always keeps most of the row
+        tag = small_metrics.elidedText(tag, Qt.TextElideMode.ElideRight, cap - 12) if tag else ""
+        tag_w = small_metrics.horizontalAdvance(tag) + 12 if tag else 0
         colour = theme.SELECT_TEXT if selected else theme.TEXT if shown else theme.MUTED
         p.setPen(QColor(colour))
         width = int(top.right() - x - tag_w - 8)
