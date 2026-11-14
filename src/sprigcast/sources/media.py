@@ -1,0 +1,438 @@
+"""Media: plays a video or sound file (MP4, MOV, MKV, WebM, MP3, WAV, OGG, FLAC...).
+
+A video file is placed in a bloom like a picture: it plays while its bloom is on screen, and its sound
+goes to the mixer. A sound file has no picture, so it lives in Sound like a mic and plays in every bloom.
+
+A small thread decodes a little ahead (a few frames, about a second of sound) and the render and mixer
+threads take what's due on the media's own clock, so picture and sound stay together. Paused, the
+thread waits; asleep (its bloom off screen) the file is closed and every frame let go.
+
+Controls (play, pause, restart, stop, seek) are safe to call from any thread: the control API, hotkeys
+and the right-click menu call them directly.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from sprigcast.core.source import Source, register
+from sprigcast.render.stinger import LIBVPX, fit_size
+from sprigcast.sources.audio import SAMPLE_RATE
+
+log = logging.getLogger(__name__)
+
+AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus", ".wma", ".aif", ".aiff"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".ts", ".gif", ".wmv", ".mpg", ".mpeg"}
+AHEAD_FRAMES = 3  # pictures decoded ahead of the one on screen (a 1080p picture is 8 MB)
+AHEAD_AUDIO_S = 1.0  # sound decoded ahead of what's playing
+SYNC_S = 0.08  # sound further off the clock than this is skipped or waited for
+MAX_SIZE = (1920, 1920)  # bigger videos are shrunk while decoding: no canvas needs more
+STATES = ("playing", "paused", "stopped", "ended")
+
+
+def is_sound_file(path: str) -> bool:
+    return Path(str(path)).suffix.lower() in AUDIO_EXTS
+
+
+def file_filter() -> str:
+    video = " ".join(f"*{e}" for e in sorted(VIDEO_EXTS))
+    audio = " ".join(f"*{e}" for e in sorted(AUDIO_EXTS))
+    return f"Video and sound ({video} {audio});;Video ({video});;Sound ({audio});;All files (*)"
+
+
+@register("media")
+class MediaSource(Source):
+    """Settings: path, loop, restart_on_show (start over each time its bloom comes on screen),
+    clear_on_end (show nothing once it ends instead of the last picture), play_on_start (sound files: start
+    playing when SprigCast opens; otherwise they wait for play), volume_db, muted, monitor."""
+
+    label = "Video or sound file"
+    defaults = {"path": "", "loop": False, "restart_on_show": True, "clear_on_end": False, "play_on_start": False}
+
+    def __init__(self, source_id: str, settings: dict[str, Any]):
+        super().__init__(source_id, settings)
+        self._lock = threading.Lock()
+        self._wake = threading.Condition(self._lock)
+        self._frames: deque[tuple[float, np.ndarray]] = deque()
+        self._audio: deque[tuple[float, np.ndarray]] = deque()  # (time of first sample, samples)
+        self._audio_s = 0.0
+        self._state = "playing"  # a sound file waits for play unless play_on_start (set below)
+        self._base = 0.0  # position when the clock last stopped or jumped
+        self._anchor: float | None = None  # monotonic time the clock started running from _base
+        self._generation = 0  # bumped by a seek or restart: the decoder starts over
+        self._start_at = 0.0
+        self._finished_at: float | None = None  # timeline end once the file (not looping) is fully decoded
+        self._shown: float | None = None
+        self._blank: np.ndarray | None = None
+        self._size = (0, 0)
+        self.duration: float | None = None
+        self.has_video = not is_sound_file(settings.get("path", ""))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.status = "starting" if settings.get("path") else "no file"
+        if not self.has_video and not settings.get("play_on_start"):
+            self._state = "stopped"
+
+    # A video sleeps while its bloom is off screen; a sound file belongs to Sound and keeps playing.
+    @property
+    def sleeps(self) -> bool:  # type: ignore[override]
+        return self.has_video
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return self._size
+
+    @property
+    def gain(self) -> float:
+        if self.settings.get("muted"):
+            return 0.0
+        return float(10 ** (float(self.settings.get("volume_db", 0.0)) / 20))
+
+    # Lifecycle (render thread) ---------------------------------------------------------------
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2)
+            if self._thread.is_alive():
+                return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name=f"media-{self.id}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._wake:
+            self._wake.notify_all()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+        self._thread = None
+        with self._lock:
+            self._frames.clear()
+            self._audio.clear()
+            self._audio_s = 0.0
+
+    def sleep(self) -> None:
+        with self._lock:
+            position = self._position()
+            self._pause_clock()
+            self._base = position
+        self._stop.set()
+        with self._wake:
+            self._wake.notify_all()
+        with self._lock:
+            self._frames.clear()
+            self._audio.clear()
+            self._audio_s = 0.0
+            self._shown = None
+
+    def wake(self) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+        if self.settings.get("restart_on_show", True):
+            self._jump(0.0, "playing")
+        else:
+            with self._lock:
+                self._jump_locked(self._base % self.duration if self.duration else self._base, self._state)
+        self.start()
+
+    def update(self, settings: dict[str, Any]) -> None:
+        new_file = settings.get("path") != self.settings.get("path")
+        super().update(settings)
+        if new_file:
+            self.has_video = not is_sound_file(settings.get("path", ""))
+            self.duration = None
+            self._size = (0, 0)
+            self.status = "starting" if settings.get("path") else "no file"
+            self._jump(0.0, "playing" if self.has_video or settings.get("play_on_start") else "stopped")
+
+    # Controls (any thread) -----------------------------------------------------------------------
+
+    def play(self) -> None:
+        with self._lock:
+            if self._state in ("ended", "stopped"):
+                self._jump_locked(0.0, "playing")
+            elif self._state == "paused":
+                self._state = "playing"
+                self._wake.notify_all()
+
+    def pause(self) -> None:
+        with self._lock:
+            if self._state == "playing":
+                self._base = self._position()
+                self._pause_clock()
+                self._state = "paused"
+
+    def toggle(self) -> None:
+        if self.state == "playing":
+            self.pause()
+        else:
+            self.play()
+
+    def restart(self) -> None:
+        self._jump(0.0, "playing")
+
+    def stop_playing(self) -> None:
+        """Stop and show nothing; play starts from the beginning."""
+        self._jump(0.0, "stopped")
+
+    def seek(self, seconds: float) -> None:
+        with self._lock:
+            state = "paused" if self._state == "paused" else "playing"
+            limit = self.duration if self.duration else seconds
+            self._jump_locked(min(max(0.0, seconds), max(0.0, limit - 0.05)), state)
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            self._check_end()
+            return self._state
+
+    @property
+    def position(self) -> float:
+        with self._lock:
+            p = self._position()
+        return p % self.duration if self.duration and self.settings.get("loop") else p
+
+    def info(self) -> dict[str, Any]:
+        return {"state": self.state, "position": round(self.position, 3),
+                "duration": round(self.duration, 3) if self.duration else None,
+                "loop": bool(self.settings.get("loop")), "video": self.has_video, "status": self.status}
+
+    # Clock (call with the lock held) ---------------------------------------------------------------
+
+    def _position(self) -> float:
+        if self._anchor is None:
+            return self._base
+        return self._base + time.monotonic() - self._anchor
+
+    def _pause_clock(self) -> None:
+        self._anchor = None
+
+    def _run_clock(self) -> None:
+        """Start the clock once the first picture or sound is decoded, so nothing at the start is lost."""
+        if self._state == "playing" and self._anchor is None and (self._frames or self._audio):
+            self._anchor = time.monotonic()
+
+    def _jump(self, seconds: float, state: str) -> None:
+        with self._lock:
+            self._jump_locked(seconds, state)
+
+    def _jump_locked(self, seconds: float, state: str) -> None:
+        self._generation += 1
+        self._start_at = seconds
+        self._base = seconds
+        self._anchor = None
+        self._state = state
+        self._finished_at = None
+        self._frames.clear()
+        self._audio.clear()
+        self._audio_s = 0.0
+        self._shown = None
+        if state == "stopped" and self.has_video:
+            self._blank = np.zeros((2, 2, 4), dtype=np.uint8)
+        self._wake.notify_all()
+
+    def _check_end(self) -> None:
+        if self._state == "playing" and self._finished_at is not None and self._position() >= self._finished_at \
+                and not self._frames and not self._audio:
+            self._base = self._finished_at
+            self._anchor = None
+            self._state = "ended"
+            if self.settings.get("clear_on_end") and self.has_video:
+                self._blank = np.zeros((2, 2, 4), dtype=np.uint8)
+
+    # Render thread -----------------------------------------------------------------------------------
+
+    def video_frame(self) -> np.ndarray | None:
+        with self._lock:
+            if self._blank is not None:
+                blank, self._blank = self._blank, None
+                return blank
+            if self._state != "playing" and self._shown is not None:
+                return None
+            self._run_clock()
+            now = self._position()
+            while len(self._frames) >= 2 and self._frames[1][0] <= now:
+                self._frames.popleft()
+                self._wake.notify_all()
+            if self._frames and self._frames[0][0] <= now + 0.005 or (self._shown is None and self._frames):
+                t, picture = self._frames[0]
+                if len(self._frames) == 1:
+                    self._frames.popleft()  # the last one decoded: hand it over and make room
+                    self._wake.notify_all()
+                if t != self._shown:
+                    self._shown = t
+                    return picture
+            self._check_end()
+            return None
+
+    # Mixer thread -------------------------------------------------------------------------------------
+
+    def read_block(self, count: int) -> np.ndarray:
+        out = np.zeros((count, 2), dtype=np.float32)
+        with self._lock:
+            if self._state != "playing" or self.asleep:
+                return out
+            self._run_clock()
+            now = self._position()
+            filled = 0
+            while self._audio and filled < count:
+                start, chunk = self._audio[0]
+                cursor = now + filled / SAMPLE_RATE
+                if start + len(chunk) / SAMPLE_RATE < cursor - SYNC_S:  # fell behind the clock: skip it
+                    self._drop_audio()
+                    continue
+                if start > cursor + SYNC_S:  # ahead of the clock: silence until it's due
+                    break
+                take = min(count - filled, len(chunk))
+                out[filled:filled + take] = chunk[:take]
+                filled += take
+                if take == len(chunk):
+                    self._drop_audio()
+                else:
+                    self._audio[0] = (start + take / SAMPLE_RATE, chunk[take:])
+                    self._audio_s -= take / SAMPLE_RATE
+            if not self.has_video:
+                self._check_end()
+        return out
+
+    def _drop_audio(self) -> None:
+        _, chunk = self._audio.popleft()
+        self._audio_s -= len(chunk) / SAMPLE_RATE
+        self._wake.notify_all()
+
+    # Decoder thread -------------------------------------------------------------------------------------
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            path = str(self.settings.get("path", ""))
+            with self._lock:
+                generation, start_at = self._generation, self._start_at
+            if not path:
+                self.status = "no file"
+                self._wait_for_change(generation)
+                continue
+            try:
+                self._decode(path, generation, start_at)
+            except Exception as exc:
+                log.warning("media %s could not be played: %s", path, exc)
+                self.status = f"can't play: {exc}"[:80]
+                self._wait_for_change(generation, timeout=5.0)
+
+    def _wait_for_change(self, generation: int, timeout: float | None = None) -> None:
+        with self._wake:
+            self._wake.wait_for(lambda: self._stop.is_set() or self._generation != generation, timeout)
+
+    def _current(self, generation: int) -> bool:
+        return not self._stop.is_set() and self._generation == generation
+
+    def _decode(self, path: str, generation: int, start_at: float) -> None:
+        import av
+
+        if not Path(path).exists():
+            raise FileNotFoundError("file not found")
+        offset = 0.0  # added to each pass's times when looping, so the timeline keeps running
+        while self._current(generation):
+            if self.state == "stopped":  # waiting for play: just learn what the file is
+                if self.duration is None:
+                    with av.open(path) as container:
+                        self.has_video = bool(container.streams.video)
+                        if container.duration is not None:
+                            self.duration = max(0.04, container.duration / 1_000_000)
+                self.status = "ok"
+                self._wait_for_change(generation)
+                return
+            with av.open(path) as container:
+                video = container.streams.video[0] if container.streams.video else None
+                audio = container.streams.audio[0] if container.streams.audio else None
+                if video is None and audio is None:
+                    raise ValueError("no picture or sound in the file")
+                self.has_video = video is not None
+                if container.duration is not None:
+                    self.duration = max(0.04, container.duration / 1_000_000)
+                elif video is not None and video.duration is not None and video.time_base is not None:
+                    self.duration = max(0.04, float(video.duration * video.time_base))
+                decoder = None
+                size = (0, 0)
+                if video is not None:
+                    name = video.codec_context.name
+                    if name in LIBVPX and LIBVPX[name] in av.codecs_available:
+                        decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps see-through parts
+                    else:
+                        video.thread_type = "AUTO"
+                    size = fit_size((video.codec_context.width, video.codec_context.height), MAX_SIZE)
+                    self._size = size
+                resampler = av.AudioResampler(format="flt", layout="stereo", rate=SAMPLE_RATE) if audio else None
+                skip_to = start_at if offset == 0.0 else 0.0
+                if skip_to > 0.5:
+                    target = video or audio
+                    container.seek(int(skip_to / target.time_base), stream=target)
+                self.status = "ok"
+                # Times in the file can start above 0 (MPEG-TS, some MP4s): count from the file's start.
+                origin = container.start_time / 1_000_000 if container.start_time is not None else 0.0
+                streams = [s for s in (video, audio) if s is not None]
+                for packet in container.demux(*streams):
+                    if not self._current(generation):
+                        return
+                    if packet.stream is audio:
+                        for frame in packet.decode():
+                            t = float(frame.pts * frame.time_base) if frame.pts is not None else None
+                            for out in resampler.resample(frame):
+                                if t is None:
+                                    continue
+                                samples = out.to_ndarray().reshape(-1, 2).astype(np.float32, copy=False)
+                                at = t - origin
+                                if at + len(samples) / SAMPLE_RATE < skip_to:
+                                    continue
+                                if not self._push_audio(offset + at, samples, generation):
+                                    return
+                        continue
+                    frames = decoder.decode(packet) if decoder is not None else packet.decode()
+                    for frame in frames:
+                        pts = frame.pts if frame.pts is not None else packet.pts
+                        t = float(pts * video.time_base) if pts is not None else 0.0
+                        at = t - origin
+                        if at < skip_to - 0.001:
+                            continue
+                        picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
+                        if not self._push_frame(offset + at, picture, generation):
+                            return
+                if decoder is not None:
+                    for frame in decoder.decode(None):
+                        picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
+                        at = float((frame.pts or 0) * video.time_base) - origin
+                        self._push_frame(offset + at, picture, generation)
+            length = self.duration or 0.0
+            if not self.settings.get("loop") or length <= 0.05:
+                with self._lock:
+                    if self._generation == generation:
+                        self._finished_at = offset + length
+                self._wait_for_change(generation)
+                return
+            offset += length
+
+    def _push_frame(self, t: float, picture: np.ndarray, generation: int) -> bool:
+        with self._wake:
+            self._wake.wait_for(lambda: not self._current(generation) or len(self._frames) < AHEAD_FRAMES)
+            if not self._current(generation):
+                return False
+            self._frames.append((t, np.ascontiguousarray(picture)))
+        return True
+
+    def _push_audio(self, t: float, samples: np.ndarray, generation: int) -> bool:
+        with self._wake:
+            self._wake.wait_for(lambda: not self._current(generation) or self._audio_s < AHEAD_AUDIO_S
+                                or (self.has_video and len(self._frames) < 2))
+            if not self._current(generation):
+                return False
+            self._audio.append((t, samples))
+            self._audio_s += len(samples) / SAMPLE_RATE
+        return True

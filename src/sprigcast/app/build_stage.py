@@ -171,7 +171,7 @@ ICON = 22
 
 KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "camera": "camera", "color": "colour",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
-              "audio_output": "desktop sound", "scene": "sprig"}
+              "audio_output": "desktop sound", "scene": "sprig", "media": "video"}
 
 
 def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False) -> None:
@@ -239,6 +239,14 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
             for i, h in enumerate((4, 9, 6, 11, 5)):
                 x = cx - 6 + i * 3
                 p.drawLine(QPointF(x, cy + h / 2), QPointF(x, cy - h / 2))
+    elif kind == "media":  # a play triangle in a frame
+        p.drawRoundedRect(QRectF(cx - 7, cy - 5.5, 14, 11), 2.5, 2.5)
+        tri = QPainterPath()
+        tri.moveTo(cx - 2, cy - 3)
+        tri.lineTo(cx + 3.5, cy)
+        tri.lineTo(cx - 2, cy + 3)
+        tri.closeSubpath()
+        p.drawPath(tri)
     elif kind == "scene":
         font = p.font()
         font.setPixelSize(13)

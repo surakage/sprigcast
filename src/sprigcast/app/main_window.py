@@ -66,6 +66,7 @@ from sprigcast.app.fit import FitButton
 from sprigcast.app.hotkeys import (
     SAVE_REPLAY,
     SCENE_PREFIX,
+    MEDIA_PREFIX,
     SCREENSHOT,
     STATE_PREFIX,
     STUDIO_GO,
@@ -146,6 +147,7 @@ from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
 from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
+from sprigcast.sources.media import file_filter as media_file_filter, is_sound_file
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 LEARNED_AFTER = 5  # sessions before Build's hints stop showing
@@ -175,7 +177,7 @@ log = logging.getLogger(__name__)
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
 BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output",
-                  "scene", "browser", "chat"}
+                  "scene", "browser", "chat", "media"}
 
 
 def _name_from(settings: dict, fallback: str) -> str:
@@ -523,6 +525,7 @@ class MainWindow(QMainWindow):
         if key == SOUND_ROOT:
             menu.addAction("Microphone…").triggered.connect(lambda: self._add_audio("audio_input"))
             menu.addAction("Desktop sound…").triggered.connect(lambda: self._add_audio("audio_output"))
+            menu.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
         elif key == PART_ROOT:
             menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
             menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
@@ -750,6 +753,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         for label, slot in (
             ("Picture…", self._add_image),
+            ("Video or sound file…", self._add_media),
             ("Text", self._add_text),
             ("Web page…", self._add_browser),
             ("Chat", self._add_chat),
@@ -767,6 +771,8 @@ class MainWindow(QMainWindow):
                 for device in found:
                     sub.addAction(device.name).triggered.connect(
                         lambda _=False, k=kind, d=device.name: self._add_audio(k, d))
+            sub.addSection("File")
+            sub.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
 
         lazy("Sound (plays in every bloom)", sounds)
         plugins = menu.addMenu("Plugins")
@@ -852,6 +858,9 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS:
                 self._fill_quick_filter_menu(menu.addMenu("Shape"), item.source, "shape", "shape", SHAPES)
                 self._fill_quick_filter_menu(menu.addMenu("Color look"), item.source, "lut", "look", LOOKS)
+            if item is not None and self.collection.source(item.source).kind == "media":
+                menu.addSeparator()
+                self._fill_media_menu(menu, item.source)
             menu.addSeparator()
             size = menu.addMenu("Size and place")
             for key in ("fit", "stretch", "center", "reset", "uncrop"):
@@ -878,6 +887,11 @@ class MainWindow(QMainWindow):
             self._folder_menu(menu, self.collection.folder(folder_id))
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
             return
+        if under is not None and under.data(0, ROLE_ROW) == "sound":
+            config = self.collection.source(under.data(0, ROLE_ID))
+            if config is not None and config.kind == "media":
+                self._fill_media_menu(menu, config.id)
+                menu.addSeparator()
         if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
@@ -2676,7 +2690,7 @@ class MainWindow(QMainWindow):
 
     def _has_sound(self, config) -> bool:
         """Sounds the Sound card lists: mics, desktop audio, and browser pages whose sound comes here."""
-        if config.kind in self.AUDIO_KINDS:
+        if config.kind in self.AUDIO_KINDS or config.kind == "media":
             return True
         if config.kind == "browser":
             from sprigcast.sources.browser import sound_to_mixer
@@ -3520,6 +3534,62 @@ class MainWindow(QMainWindow):
                          settings={"path": path})
         )
 
+    def _add_media(self, sound: bool = False) -> None:
+        """A video goes into the selected bloom like a picture; a sound file goes into Sound (every bloom)."""
+        title = "Choose a sound file" if sound else "Choose a video or sound file"
+        path, _ = QFileDialog.getOpenFileName(self, title, "", media_file_filter())
+        if not path:
+            return
+        stem = Path(path).stem
+        config = SourceConfig(id=self.collection.new_id("media"), kind="media",
+                              name=ask_name(self, short_name(stem.replace("_", " "), "Media"), stem),
+                              settings={"path": path, "volume_db": 0.0, "muted": False, "loop": False})
+        if is_sound_file(path):
+            self.collection.sources.append(config)
+            self._changed()
+            self._say(f"{config.name!r} is in Sound. Right-click it to play.")
+        else:
+            self._add_item(config)
+        self._refresh_audio()
+        self._refresh_scenes()
+
+    def media_source(self, source_id: str):
+        """The playing media source (from the engine), or None."""
+        source = self.engine._sources.get(source_id)
+        return source if getattr(source, "kind", "") == "media" else None
+
+    def media_control(self, source_id: str, what: str, seconds: float | None = None) -> dict | None:
+        """play, pause, toggle, restart, stop or seek a video or sound file. Returns where it is now."""
+        source = self.media_source(source_id)
+        if source is None:
+            return None
+        if what == "seek":
+            source.seek(float(seconds or 0.0))
+        else:
+            {"play": source.play, "pause": source.pause, "toggle": source.toggle, "restart": source.restart,
+             "stop": source.stop_playing}[what]()
+        if getattr(self, "control", None) is not None:
+            self.control.soon()
+        return source.info()
+
+    def _fill_media_menu(self, menu: QMenu, source_id: str) -> None:
+        source = self.media_source(source_id)
+        playing = source is not None and source.state == "playing"
+        for label, what in (("Pause" if playing else "Play", "toggle"), ("Start over", "restart"), ("Stop", "stop")):
+            action = menu.addAction(label)
+            action.setEnabled(source is not None)
+            action.triggered.connect(lambda _=False, w=what: self.media_control(source_id, w))
+        config = self.collection.source(source_id)
+        loop = menu.addAction("Loop")
+        loop.setCheckable(True)
+        loop.setChecked(bool(config.settings.get("loop")))
+        loop.toggled.connect(lambda on: self._set_media_loop(source_id, on))
+
+    def _set_media_loop(self, source_id: str, on: bool) -> None:
+        config = self.collection.source(source_id)
+        config.settings = {**config.settings, "loop": on}
+        self._changed()
+
     def _pick_monitor(self, current: int | None = None):
         monitors = list_monitors()
         if not monitors:
@@ -3862,7 +3932,7 @@ class MainWindow(QMainWindow):
             if not dialog.exec():
                 return
             old_auto = _name_from(config.settings, config.name)
-            config.settings = dialog.values()
+            config.settings = {**config.settings, **dialog.values()}  # volume, mute... aren't in the form
             if config.name == old_auto:  # the name followed the text, so keep it following
                 config.name = _name_from(config.settings, config.name)
         self._changed()
@@ -4503,6 +4573,9 @@ class MainWindow(QMainWindow):
             self._save_replay()
         elif action == SCREENSHOT:
             self._screenshot()
+        elif action.startswith(MEDIA_PREFIX):
+            source_id, _, what = action[len(MEDIA_PREFIX):].rpartition(":")
+            self.media_control(source_id, what)
         elif action == TOGGLE_STREAM:
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:

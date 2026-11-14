@@ -301,3 +301,29 @@ def test_screenshot_grabs_the_next_frame(tmp_path):
     first = screenshot.path_for(tmp_path, "vertical", when)
     first.write_bytes(b"")
     assert screenshot.path_for(tmp_path, "vertical", when).name == "screenshot vertical 2026-11-14 09-40-00 (2).png"
+
+
+def test_media_controls_and_events():
+    from sprigcast.core.scene import SourceConfig
+
+    api, host = _api()
+    host.collection.sources.append(SourceConfig(id="m1", kind="media", name="Intro", settings={"path": "intro.mp4"}))
+    host.collection.sources.append(SourceConfig(id="m2", kind="media", name="Music", settings={"path": "song.mp3"}))
+    assert _ok(api, "media.status", media="Intro")["state"] == "unloaded"
+    assert _fails(api, "media.play", media="Intro") == "not_allowed"  # its bloom was never on screen
+    host.media["m1"] = {"state": "playing", "position": 1.0, "duration": 10.0, "video": True}
+    host.media["m2"] = {"state": "stopped", "position": 0.0, "duration": 180.0, "video": False}
+    api.changes()
+    assert _ok(api, "media.pause", media="Intro")["state"] == "paused"
+    assert ("media.changed", {"media": "Intro", "id": "m1", "file": "intro.mp4", "loop": False, "state": "paused",
+                              "position": 1.0, "duration": 10.0, "video": True}) in api.changes()
+    assert _ok(api, "media.toggle", media="m1")["state"] == "playing"
+    assert _ok(api, "media.seek", media="Intro", change=2.5)["position"] == 3.5
+    assert _ok(api, "media.seek", media="Intro", seconds=-4)["position"] == 0.0
+    assert _fails(api, "media.seek", media="Intro") == "bad_request"
+    assert _ok(api, "media.restart", media="Music")["state"] == "playing"
+    assert _ok(api, "media.stop", media="Music")["state"] == "stopped"
+    assert _ok(api, "media.loop", media="Music")["loop"] is True and "sources" in host.commits
+    assert [m["media"] for m in _ok(api, "media.list")["media"]] == ["Intro", "Music"]
+    assert _fails(api, "media.play", media="Cam") == "not_allowed"  # a camera isn't media
+    assert _ok(api, "sound.mute", sound="Music")["muted"] is True  # media sound is in the Sound card

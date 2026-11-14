@@ -91,6 +91,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `output` | `stream.changed`, `record.changed`, `clips.changed` (on), `clip.saved` (files) |
 | `studio` | `studio.changed` (on) |
 | `transition` | `transition.changed` (kind, ms) |
+| `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
 | `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
 
@@ -107,6 +108,8 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 {"do": "filter.set", "source": "Facecam", "filter": "Color Correction", "settings": {"saturation": 0.4}}
 {"do": "source.set", "source": "Goal text", "settings": {"text": "Sub goal: 42 / 50"}}
 {"do": "clip.save"}
+{"do": "media.restart", "media": "Intro video"}
+{"do": "media.play", "media": "Hype music"}
 {"do": "screenshot.take", "shape": "vertical", "width": 540, "save": false, "data": true}
 {"do": "stream.toggle"}
 ```
@@ -169,6 +172,20 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `items.list` | What's inside a bloom or sprig, per shape. | `bloom` (optional): name or id, `sprig` (optional): name or id |
+
+### media
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `media.list` | Every video and sound file, with what it's doing (playing, paused, stopped, ended). | none |
+| `media.loop` | Loop it or not (no on: toggle). | `media`: name or id, `on` (optional): true or false |
+| `media.pause` | Pause where it is. | `media`: name or id |
+| `media.play` | Play (from the start if it ended or was stopped). | `media`: name or id |
+| `media.restart` | Play from the start. | `media`: name or id |
+| `media.seek` | Jump to a time. | `media`: name or id, `seconds` (optional): time from the start, `change` (optional): seconds to move (negative: back) |
+| `media.status` | What a video or sound file is doing, where it is and how long it is. | `media`: name or id |
+| `media.stop` | Stop and show nothing (play starts from the beginning). | `media`: name or id |
+| `media.toggle` | Pause if playing, else play. | `media`: name or id |
 
 ### place
 

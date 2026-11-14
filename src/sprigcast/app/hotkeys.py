@@ -23,6 +23,7 @@ STUDIO_GO = "studio_go"  # Studio mode: send the lined-up scenes on air
 SAVE_REPLAY = "save_replay"  # save the replay buffer's last seconds as clips
 SCREENSHOT = "screenshot"  # a PNG of each shape on air, in the recordings folder
 SCENE_PREFIX = "scene:"
+MEDIA_PREFIX = "media:"  # "media:<source id>:<toggle|restart|stop>"
 STATE_PREFIX = "state:"  # "state:<sprig id>:<state name>"; an empty name goes back to as built
 
 _MODIFIERS = {"ctrl": "<ctrl>", "alt": "<alt>", "shift": "<shift>", "meta": "<cmd>"}
@@ -42,6 +43,10 @@ def actions(collection: SceneCollection) -> list[tuple[str, str]]:
     for canvas in collection.canvases:
         for scene in collection.scenes_for(canvas.id):
             items.append((SCENE_PREFIX + scene.id, f"Show scene: {scene.name} ({canvas.id})"))
+    for source in collection.sources:
+        if source.kind == "media":
+            for what, label in (("toggle", "play / pause"), ("restart", "start over"), ("stop", "stop")):
+                items.append((f"{MEDIA_PREFIX}{source.id}:{what}", f"{source.name}: {label}"))
     for part in collection.parts():
         if part.states:
             items.append((f"{STATE_PREFIX}{part.id}:", f"Sprig {part.name}: as built"))
