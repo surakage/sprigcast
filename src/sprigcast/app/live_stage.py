@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 
-SIDE_WIDTH = 280
+SIDE_WIDTH = 300
 GAP = 20
 
 
@@ -130,6 +130,17 @@ CHIP_STYLE = (
 REMOVE_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
 
 
+def side_card() -> QFrame:
+    """A soft rounded card for a side-column section, padded so nothing touches its edges."""
+    card = QFrame()
+    card.setObjectName("sideCard")
+    card.setStyleSheet(f"#sideCard {{ background: {theme.PANEL}; border: none; border-radius: 18px; }}")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(18, 16, 18, 18)
+    layout.setSpacing(14)
+    return card
+
+
 class LiveSide(QWidget):
     """The right-hand column: the big stream button, Record and Save clip, where it goes, and sound."""
 
@@ -151,7 +162,7 @@ class LiveSide(QWidget):
         self.setFixedWidth(SIDE_WIDTH)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(24)
+        root.setSpacing(16)
 
         buttons = QVBoxLayout()
         buttons.setSpacing(10)
@@ -182,8 +193,8 @@ class LiveSide(QWidget):
         buttons.addWidget(self.rec_note)
         root.addLayout(buttons)
 
-        where = QVBoxLayout()
-        where.setSpacing(10)
+        where_card = side_card()
+        where = where_card.layout()
         top = QHBoxLayout()
         top.addWidget(heading("Where it goes"), 1)
         self.add_place = QPushButton("+ Add")
@@ -203,7 +214,7 @@ class LiveSide(QWidget):
         top.addWidget(self.manage)
         where.addLayout(top)
         self.places = QVBoxLayout()
-        self.places.setSpacing(10)
+        self.places.setSpacing(12)
         where.addLayout(self.places)
         self.all_settings = QPushButton("All stream settings…")
         self.all_settings.setStyleSheet(theme.LINK_STYLE)
@@ -211,18 +222,18 @@ class LiveSide(QWidget):
         self.all_settings.clicked.connect(lambda: on_destination(None))
         self.all_settings.setVisible(False)
         where.addWidget(self.all_settings, 0, Qt.AlignmentFlag.AlignLeft)
-        root.addLayout(where)
+        root.addWidget(where_card)
         self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
         self.place_tools: dict[str, dict[str, QPushButton]] = {}
         self._shape_key: tuple | None = None
 
-        sound = QVBoxLayout()
-        sound.setSpacing(12)
+        sound_card = side_card()
+        sound = sound_card.layout()
         sound.addWidget(heading("Sound"))
         self.sounds = QVBoxLayout()
         self.sounds.setSpacing(12)
         sound.addLayout(self.sounds)
-        root.addLayout(sound)
+        root.addWidget(sound_card)
         self.meters: dict[str, ThinMeter] = {}
         self._sound_shape: list | None = None
 
@@ -343,7 +354,7 @@ class LiveSide(QWidget):
         self.place_rows[place.id] = (dot, name, note, switch)
         if self.editing:
             tools_row = QHBoxLayout()
-            tools_row.setContentsMargins(40, 0, 0, 0)
+            tools_row.setContentsMargins(0, 2, 0, 4)
             tools_row.setSpacing(6)
             tools: dict[str, QPushButton] = {}
 
@@ -402,6 +413,7 @@ class LiveSide(QWidget):
             col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(7)
             label = QLabel(name + ("   muted" if muted else ""))
+            label.setWordWrap(True)
             label.setStyleSheet(f"color: {theme.MUTED if muted else theme.TEXT}; background: transparent;")
             meter = ThinMeter()
             meter.muted = muted
