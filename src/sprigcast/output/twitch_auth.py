@@ -2,7 +2,7 @@
 
 Uses Twitch's Device Code Grant Flow, the sign-in made for apps without a web server:
 SprigCast shows a short code, you approve it at twitch.tv/activate, and Twitch hands back
-tokens. Only the `channel:read:stream_key` scope is requested. Tokens live in the OS credential
+tokens. Only `channel:read:stream_key` and `user:write:chat` (send chat from the Chat panel) are requested. Tokens live in the OS credential
 store (like stream keys), never in scenes.json.
 
 Twitch needs a registered app's Client ID. A Public client has no secret, so the ID can be
@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from sprigcast.output.keys import get_key, set_key
 
 DEFAULT_CLIENT_ID = "jsv3nwvolg6ph5e5s9tyzphwzcyvbp"  # SprigCast's public Twitch app (Public client: no secret)
-SCOPES = "channel:read:stream_key"
+SCOPES = "channel:read:stream_key user:write:chat"  # your stream key, and sending chat from the Chat panel
+CHAT_SCOPE = "user:write:chat"
 TOKEN_REF = "twitch/oauth"  # keyring entry holding {"access_token", "refresh_token", "expires_at", "login", "user_id"}
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -136,6 +137,7 @@ def _save_tokens(reply: dict, cid: str, account: dict | None = None) -> dict:
         "access_token": reply["access_token"],
         "refresh_token": reply.get("refresh_token", ""),
         "expires_at": time.time() + int(reply.get("expires_in", 3600)) - 60,
+        "scope": list(reply.get("scope") or []),
     }
     if account is None:
         users = _get("/users", tokens["access_token"], cid).get("data") or []
@@ -240,3 +242,66 @@ def fetch_stream_key(cid: str | None = None) -> str:
     if not keys or not keys[0].get("stream_key"):
         raise TwitchAuthError("Twitch didn't return a stream key.")
     return keys[0]["stream_key"]
+
+
+# Sending chat -----------------------------------------------------------------------------
+
+
+def can_send_chat() -> bool:
+    """Was Twitch connected with permission to send chat? (Connections made before it was asked for weren't.)"""
+    tokens = _load()
+    return bool(tokens) and CHAT_SCOPE in (tokens.get("scope") or [])
+
+
+def _post_json(path: str, body: dict, token: str, cid: str) -> dict:
+    request = urllib.request.Request(
+        f"{HELIX}{path}", data=json.dumps(body).encode(), method="POST",
+        headers={"Authorization": f"Bearer {token}", "Client-Id": cid, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise PermissionError("token rejected") from exc
+        try:
+            message = json.loads(exc.read() or b"{}").get("message", "")
+        except ValueError:
+            message = ""
+        if exc.code == 403:
+            raise TwitchAuthError("Reconnect Twitch to send chat (Settings → Stream).") from exc
+        raise TwitchAuthError(f"Twitch said {exc.code}: {message or 'could not send'}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise TwitchAuthError(f"Couldn't reach Twitch: {exc}") from exc
+
+
+def send_chat(channel: str, text: str, cid: str | None = None) -> None:
+    """Say `text` in `channel`'s chat as the connected account. Raises TwitchAuthError worded for the user."""
+    cid = cid or client_id()
+    tokens = _load()
+    if not tokens:
+        raise TwitchAuthError("Connect Twitch to send chat.")
+    if CHAT_SCOPE not in (tokens.get("scope") or []):
+        raise TwitchAuthError("Reconnect Twitch once so SprigCast may send chat (Settings → Stream).")
+    if time.time() >= float(tokens.get("expires_at", 0)):
+        tokens = _refresh(tokens, cid)
+    channel = channel.lower().lstrip("#")
+
+    def attempt(tok: dict) -> dict:
+        broadcaster = tok["user_id"]
+        if channel != str(tok.get("login", "")).lower():
+            users = _get(f"/users?login={urllib.parse.quote(channel)}", tok["access_token"], cid).get("data") or []
+            if not users:
+                raise TwitchAuthError(f"No Twitch channel called {channel}.")
+            broadcaster = users[0]["id"]
+        return _post_json("/chat/messages", {"broadcaster_id": broadcaster, "sender_id": tok["user_id"],
+                                             "message": text[:500]}, tok["access_token"], cid)
+
+    try:
+        reply = attempt(tokens)
+    except PermissionError:
+        reply = attempt(_refresh(tokens, cid))
+    sent = (reply.get("data") or [{}])[0]
+    if not sent.get("is_sent", False):
+        reason = (sent.get("drop_reason") or {}).get("message") or "Twitch didn't post it"
+        raise TwitchAuthError(reason)

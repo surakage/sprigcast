@@ -171,7 +171,7 @@ log = logging.getLogger(__name__)
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
 BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output",
-                  "scene", "browser"}
+                  "scene", "browser", "chat"}
 
 
 def _name_from(settings: dict, fallback: str) -> str:
@@ -521,6 +521,13 @@ class MainWindow(QMainWindow):
                 self.chat_panel.sleep()
 
         self.panels.changed.connect(chat_in_use)
+        self._chat_sources_changed()
+
+    def _chat_sources_changed(self) -> None:
+        """A chat source on any bloom keeps your chats read, even with the Chat panel closed."""
+        panel = getattr(self, "chat_panel", None)
+        if panel is not None:
+            panel.hub.want("source", any(s.kind == "chat" for s in self.collection.sources))
 
     def _connect_twitch(self) -> None:
         from sprigcast.app.twitch_connect import TwitchConnectDialog
@@ -681,6 +688,7 @@ class MainWindow(QMainWindow):
             ("Image", self._add_image),
             ("Color", self._add_color),
             ("Text", self._add_text),
+            ("Chat", self._add_chat),
             ("Browser (web page)", self._add_browser),
         ):
             menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
@@ -2065,6 +2073,7 @@ class MainWindow(QMainWindow):
         if save:
             self.collection.save(self.scenes_path)
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
@@ -2423,6 +2432,7 @@ class MainWindow(QMainWindow):
                     "camera": "Camera",
                     "text": "Text",
                     "browser": "Page",
+                    "chat": "Chat box",
                 }.get(config.kind, "Settings")
             )
             self.prop_status.setText(self._status_text(item.source))
@@ -3132,6 +3142,31 @@ class MainWindow(QMainWindow):
 
     def _add_text(self) -> None:
         self._add_from_class("text", "Text")
+
+    def _add_chat(self) -> None:
+        """Your mixed chat drawn on the canvas (sources/chat.py). Sized to fit the canvas's shape."""
+        scene = self._scene()
+        if scene is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        from sprigcast.sources.chat import DEFAULTS
+
+        canvas = self.collection.canvas(scene.canvas)
+        settings = dict(DEFAULTS)
+        if canvas.height > canvas.width:  # vertical: a wide, short strip near the bottom, bigger words for phones
+            settings.update(width=round(canvas.width * 0.8), height=round(canvas.height * 0.3),
+                            size=round(canvas.width / 27))
+        else:
+            settings.update(width=round(canvas.width * 0.25), height=round(canvas.height * 0.6),
+                            size=round(canvas.height / 40))
+        self._add_item(SourceConfig(id=self.collection.new_id("chat"), kind="chat", name="Chat", settings=settings))
+        item = scene.items[-1]
+        item.x = round(canvas.width * (0.1 if canvas.height > canvas.width else 0.72))
+        item.y = round(canvas.height * (0.55 if canvas.height > canvas.width else 0.3))
+        self._changed()
+        self._refresh_properties()
+        if not self.chat_panel.reading():
+            self.statusBar().showMessage("Add your channels in the Chat panel (⋯ → Channels…) to fill it.", 8000)
 
     def _interact(self, source_id: str) -> None:
         """Open a browser source's page on screen so you can click and type in it."""

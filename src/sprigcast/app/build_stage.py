@@ -160,7 +160,7 @@ ROW_H, CHILD_H, EYE_W = 34, 24, 30
 ICON = 22
 
 KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "camera": "camera", "color": "colour",
-              "image": "picture", "text": "text", "browser": "web page", "audio_input": "mic",
+              "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
               "audio_output": "desktop sound", "scene": "sprig"}
 
 
@@ -210,6 +210,12 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
     elif kind == "text":
         p.drawLine(QPointF(cx - 5, cy - 5), QPointF(cx + 5, cy - 5))
         p.drawLine(QPointF(cx, cy - 5), QPointF(cx, cy + 5.5))
+    elif kind == "chat":  # a speech bubble with a tail
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(cx - 6.5, cy - 5.5, 13, 9), 3, 3)
+        p.drawPath(path)
+        p.drawLine(QPointF(cx - 3, cy + 3.5), QPointF(cx - 4.5, cy + 6.5))
+        p.drawLine(QPointF(cx - 4.5, cy + 6.5), QPointF(cx, cy + 3.5))
     elif kind == "browser":
         p.drawEllipse(QRectF(cx - 6, cy - 6, 12, 12))
         p.drawEllipse(QRectF(cx - 2.5, cy - 6, 5, 12))
