@@ -273,7 +273,9 @@ class StreamLink:
             return f"{self.name}: never connected ({self.status})"
         loss = self.dropped / total
         waiting = self.mux_seconds / max(1e-6, time.monotonic() - self.started_at)
-        line = (f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), sharing an encoder; "
+        live_s = max(1e-6, time.monotonic() - (self._connected_at or self.started_at))
+        average = f"averaged {self.bytes_out * 8 / 1000 / live_s:.0f} kbps (set {self.bitrate_kbps})"
+        line = (f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), {average}, sharing an encoder; "
                 f"waiting on the network {waiting:.0%} of the time, longest stall {self.longest_stall:.1f} s")
         if self.reconnects:
             line += f"; {self.reconnects} reconnects"
