@@ -9,10 +9,10 @@ from __future__ import annotations
 import queue
 import threading
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -41,6 +41,122 @@ def _label(text: str, style: str = "") -> QLabel:
     return label
 
 
+def _room_colour(pct: int | None) -> str:
+    if pct is None:
+        return theme.MUTED
+    return theme.ACCENT if pct <= 60 else theme.WARN if pct <= 85 else theme.BAD
+
+
+class StageButton(QPushButton):
+    """One Seed-to-Bloom stage: a leaf that grows with the stage, its name and its size and fps."""
+
+    def __init__(self, index: int, name: str, step: tuple[int, int]):
+        super().__init__()
+        self.index, self.name, self.step = index, name, step
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumWidth(90)
+        self.setAccessibleName(f"{name}: {optimize.step_text(step)}")
+        self.reached = False  # at or below the chosen stage: drawn in green
+        self.suggested = False
+        # Sized in the style sheet too: the app's QPushButton rule would otherwise shrink it to a text button
+        self.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0;"
+                           " min-height: 108px; max-height: 108px; }")
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        on = self.isChecked()
+        if on:
+            p.setPen(QPen(QColor(theme.ACCENT), 1.2))
+            p.setBrush(QColor(theme.SELECT_BG))
+            p.drawRoundedRect(r, 12, 12)
+        elif self.underMouse():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.RAISED))
+            p.drawRoundedRect(r, 12, 12)
+        colour = QColor(theme.SELECT_TEXT if on else theme.ACCENT if self.reached else "#5d6b64")
+        size = 18 + self.index * 5  # the leaf grows stage by stage
+        cx, base = r.center().x(), r.top() + 14 + 42
+        p.setPen(QPen(colour, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawLine(QPointF(cx, base), QPointF(cx, base - size * 0.45))
+        leaf = QPainterPath(QPointF(cx, base - size * 0.45))
+        leaf.cubicTo(QPointF(cx, base - size * 1.0), QPointF(cx + size * 0.55, base - size * 1.1),
+                     QPointF(cx + size * 0.6, base - size * 1.15))
+        leaf.cubicTo(QPointF(cx + size * 0.6, base - size * 0.65), QPointF(cx + size * 0.2, base - size * 0.45),
+                     QPointF(cx, base - size * 0.45))
+        p.drawPath(leaf)
+        if self.index:
+            small = QPainterPath(QPointF(cx, base - size * 0.25))
+            small.cubicTo(QPointF(cx, base - size * 0.6), QPointF(cx - size * 0.4, base - size * 0.7),
+                          QPointF(cx - size * 0.45, base - size * 0.72))
+            small.cubicTo(QPointF(cx - size * 0.45, base - size * 0.4), QPointF(cx - size * 0.15, base - size * 0.25),
+                          QPointF(cx, base - size * 0.25))
+            p.drawPath(small)
+        font = p.font()
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(colour)
+        p.drawText(QRectF(r.left(), base + 4, r.width(), 18), Qt.AlignmentFlag.AlignCenter, self.name)
+        font.setBold(False)
+        font.setPointSizeF(font.pointSizeF() * 0.85)
+        p.setFont(font)
+        p.setPen(QColor(theme.MUTED))
+        short, fps = self.step
+        text = f"{short}p · {fps}" + ("  ★" if self.suggested else "")
+        p.drawText(QRectF(r.left(), base + 22, r.width(), 16), Qt.AlignmentFlag.AlignCenter, text)
+
+
+class Gauge(QWidget):
+    """A half-ring that fills with how much of something a quality takes: green, yellow when tight, red."""
+
+    def __init__(self, title: str):
+        super().__init__()
+        self.title, self.pct, self.caption = title, None, ""
+        self.setMinimumSize(QSize(200, 136))
+
+    def set(self, pct: int | None, caption: str) -> None:
+        self.pct, self.caption = pct, caption
+        self.setAccessibleName(f"{self.title}: {caption}")
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        radius = min(w / 2 - 14, 68)
+        box = QRectF(w / 2 - radius, 10, radius * 2, radius * 2)
+        pen = QPen(QColor(theme.RAISED), 12, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(box, 180 * 16, -180 * 16)
+        if self.pct is not None:
+            pen.setColor(QColor(_room_colour(self.pct)))
+            p.setPen(pen)
+            p.drawArc(box, 180 * 16, int(-180 * 16 * min(self.pct, 100) / 100))
+        font = p.font()
+        font.setPointSizeF(font.pointSizeF() * 1.7)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor(theme.TEXT_BRIGHT))
+        big = "?" if self.pct is None else f"{self.pct}%"
+        p.drawText(QRectF(0, 10 + radius - 30, w, 34), Qt.AlignmentFlag.AlignCenter, big)
+        font.setPointSizeF(font.pointSizeF() / 1.7)
+        font.setBold(False)
+        p.setFont(font)
+        p.setPen(QColor(theme.MUTED))
+        p.drawText(QRectF(0, 10 + radius + 10, w, 18), Qt.AlignmentFlag.AlignCenter, self.title)
+        p.drawText(QRectF(0, 10 + radius + 28, w, 18), Qt.AlignmentFlag.AlignCenter, self.caption)
+
+
+def _chip(text: str, colour: str) -> QLabel:
+    chip = QLabel(f"<span style='color:{colour}'>●</span>&nbsp; {text}")
+    chip.setStyleSheet(f"background: {theme.PANEL}; border: 1px solid {theme.EDGE}; border-radius: 13px;"
+                       " padding: 5px 12px;")
+    return chip
+
+
 class OptimizeWizard(QDialog):
     """Three pages: Start, Checking, Suggestions. ``chosen`` holds the ticked changes after Apply."""
 
@@ -48,7 +164,7 @@ class OptimizeWizard(QDialog):
                  first_run: bool = False, parent: QWidget | None = None, run_in_thread: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Optimize for this PC")
-        self.setMinimumWidth(560)
+        self.setMinimumSize(640, 600)
         self.collection = collection
         self.waiting_fps = waiting_fps or {}
         self.run_in_thread = run_in_thread
@@ -129,9 +245,7 @@ class OptimizeWizard(QDialog):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        box.addWidget(_label("Suggested settings", TITLE_STYLE))
-        self.headline = _label("")
-        box.addWidget(self.headline)
+        self.headline = _label("", f"color: {theme.MUTED};")
         upload = QHBoxLayout()
         upload.addWidget(QLabel("Upload speed"))
         self.upload = QDoubleSpinBox()
@@ -147,24 +261,55 @@ class OptimizeWizard(QDialog):
         self.upload_row.setLayout(upload)
         upload.setContentsMargins(0, 0, 0, 0)
 
+        intro = QVBoxLayout()
+        intro.setSpacing(2)
+        self.grow_label = _label("", f"color: {theme.MUTED}; font-size: 9pt; letter-spacing: 1px;")
+        intro.addWidget(self.grow_label)
+        self.stage_title = _label("", TITLE_STYLE.replace("15pt", "20pt"))
+        intro.addWidget(self.stage_title)
+        intro.addWidget(self.headline)
+        box.addLayout(intro)
+
         card = QFrame()
         card.setObjectName("qualityCard")
         card.setStyleSheet(f"#qualityCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE};"
-                           " border-radius: 10px; }")
+                           " border-radius: 12px; }")
         inner = QVBoxLayout(card)
-        inner.setContentsMargins(16, 14, 16, 14)
-        inner.setSpacing(6)
-        inner.addWidget(_label("Quality", f"color: {theme.MUTED};"))
-        self.quality = QComboBox()
-        self.quality.setStyleSheet("font-size: 13pt; padding: 6px 10px;")
-        self.quality.currentIndexChanged.connect(self._quality_changed)
-        inner.addWidget(self.quality)
-        self.follows = _label("", f"color: {theme.MUTED};")
-        inner.addWidget(self.follows)
+        inner.setContentsMargins(12, 10, 12, 10)
+        inner.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.stages: list[StageButton] = []
+        for index, (name, step) in enumerate(optimize.STAGES):
+            button = StageButton(index, name, step)
+            button.clicked.connect(lambda _=False, st=step: self._pick(st))
+            row.addWidget(button)
+            self.stages.append(button)
+        inner.addLayout(row)
+        ends = QHBoxLayout()
+        ends.addWidget(_label("Lighter", f"color: {theme.MUTED}; font-size: 8pt;"))
+        ends.addStretch(1)
+        ends.addWidget(_label("Sharper", f"color: {theme.MUTED}; font-size: 8pt;"))
+        inner.addLayout(ends)
         box.addWidget(card)
-        box.addWidget(self.upload_row)
 
-        self.details_button = QPushButton("Show details")
+        gauges = QHBoxLayout()
+        self.pc_gauge = Gauge("PC room used")
+        self.upload_gauge = Gauge("Upload used")
+        gauges.addWidget(self.pc_gauge)
+        gauges.addWidget(self.upload_gauge)
+        box.addLayout(gauges)
+
+        self.chips = QHBoxLayout()
+        self.chips.setSpacing(8)
+        chips = QWidget()
+        chips.setLayout(self.chips)
+        self.chips.setContentsMargins(0, 0, 0, 0)
+        box.addWidget(chips)
+        box.addWidget(self.upload_row)
+        self.follows = self.headline  # one line under the title says what fits this PC
+
+        self.details_button = QPushButton("Fine-tune each setting")
         self.details_button.setCheckable(True)
         self.details_button.toggled.connect(self._toggle_details)
         details_row = QHBoxLayout()
@@ -186,7 +331,7 @@ class OptimizeWizard(QDialog):
     def _toggle_details(self, shown: bool) -> None:
         self.change_list.setVisible(shown)
         self._spacer.setVisible(not shown)
-        self.details_button.setText("Hide details" if shown else "Show details")
+        self.details_button.setText("Hide the details" if shown else "Fine-tune each setting")
 
     # Flow ------------------------------------------------------------------------------
 
@@ -268,10 +413,9 @@ class OptimizeWizard(QDialog):
         self._fill_plan()
         self._show_buttons()
 
-    def _quality_changed(self, index: int) -> None:
-        if index < 0 or self.plan is None:
+    def _pick(self, step: tuple[int, int]) -> None:
+        if self.plan is None:
             return
-        step = self.quality.itemData(index)
         if step == self.plan.recommended:
             self.profile.extra.pop(optimize.QUALITY, None)  # back on the suggestion: it follows the upload again
         else:
@@ -280,33 +424,48 @@ class OptimizeWizard(QDialog):
         self._show_buttons()
 
     def _fill_quality(self) -> None:
-        self.quality.blockSignals(True)
-        self.quality.clear()
-        for step in optimize.LADDER:
-            text = f"{optimize.step_text(step)} · {optimize.STEP_KBPS[step]} kbps"
-            if step == self.plan.recommended:
-                text += "   (suggested)"
-            self.quality.addItem(text, step)
-        self.quality.setCurrentIndex(optimize.LADDER.index(self.plan.quality))
-        self.quality.blockSignals(False)
-        stream, record = self.profile.wants_stream, self.profile.wants_record
-        same = record and self.plan.recording == self.plan.quality
-        if not stream:
-            follows = "Used for recordings."
-        else:
-            follows = "Used for every stream and recording." if same else "Used for every stream."
-            if self.plan.limits:
-                follows += " Except " + "; ".join(self.plan.limits) + "."
-            if record and not same:
-                follows += f" Recordings: {optimize.step_text(self.plan.recording)} (they don't need upload)."
-        if not self.plan.changes:
-            follows += " Your settings already match."
-        self.follows.setText(follows)
+        quality = self.plan.quality
+        chosen = [n for n, st in optimize.STAGES].index(optimize.STAGE_NAME[quality])
+        for button in self.stages:
+            button.setChecked(button.step == quality)
+            button.reached = button.index <= chosen
+            button.suggested = button.step == self.plan.recommended
+            button.update()
+        name = optimize.STAGE_NAME[quality]
+        kbps = optimize.STEP_KBPS[quality]
+        self.grow_label.setText("YOUR PC CAN GROW TO" if quality == self.plan.recommended else "YOU PICKED")
+        self.stage_title.setText(f"{name}  <span style='font-size:13pt; font-weight:normal; color:{theme.SELECT_TEXT}'>"
+                                 f"{optimize.step_text(quality)} · {kbps} kbps</span>")
+        pc, upload = optimize.room(self.profile, self.collection, quality)
+        self.pc_gauge.set(pc, "Graphics-card encoder" if self.profile.hardware else "CPU encoder")
+        self.upload_gauge.setVisible(self.profile.wants_stream)
+        self.upload_gauge.set(upload, f"of {self.profile.upload_kbps / 1000:.1f} Mbps" if upload is not None
+                              else "Type your speed below")
+        while self.chips.count():
+            item = self.chips.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        from sprigcast.output.stream import SERVICES
+
+        for output, step, _ in optimize.stream_steps(self.profile, self.collection, quality):
+            service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+            limit = step != quality
+            text = f"{service.label} · {step[0]}p{step[1]}" + (", its limit" if limit else "")
+            self.chips.addWidget(_chip(text, theme.WARN if limit else theme.ACCENT))
+        if self.profile.wants_record:
+            rec = self.plan.recording
+            self.chips.addWidget(_chip(f"Recordings · {rec[0]}p{rec[1]}", theme.ACCENT))
+        self.chips.addStretch(1)
 
     def _fill_plan(self) -> None:
         self.plan = optimize.plan(self.profile, self.collection, self.waiting_fps)
         self._fill_quality()
-        self.headline.setText(self.plan.headline)
+        light = self.profile.weak_reasons
+        headline = f"Kept light for this PC: {', '.join(light)}." if light else ""
+        if not self.plan.changes:
+            headline += (" " if headline else "") + "Your settings already match."
+        self.headline.setText(headline)
+        self.headline.setVisible(bool(headline))
         self.change_list.clear()
         for change in self.plan.changes:
             item = QListWidgetItem(f"{change.label}\nNow: {change.now}", self.change_list)
