@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import numpy as np
+import math
 
 import moderngl
+import numpy as np
 
+from sprigcast.core import looks
 from sprigcast.core.filters import VideoEffects
+from sprigcast.core.looks import SHAPE_IDS
 from sprigcast.core.scene import Canvas, Scene, Transition
 
 NO_EFFECTS = VideoEffects()
@@ -17,7 +20,9 @@ uniform vec2 canvas_size;
 in vec2 in_pos;      // canvas pixels, origin top-left
 in vec2 in_uv;
 out vec2 uv;
+out vec2 local;      // 0..1 across the drawn quad (the corners come top-left, top-right, bottom-left, bottom-right)
 void main() {
+    local = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
     // Map canvas pixels to clip space so that canvas row 0 lands in framebuffer row 0.
     // A plain fbo.read() then returns rows top to bottom, with no flip needed.
     vec2 ndc = in_pos / canvas_size * 2.0 - 1.0;
@@ -48,7 +53,21 @@ uniform float saturation;
 uniform float hue;
 uniform float fx_opacity;
 uniform vec3 tint;
+uniform sampler3D lut;      // colour look, x = red
+uniform bool use_lut;
+uniform float lut_amount;
+uniform float lut_size;
+uniform int shape;          // 0 none, 1 rounded, 2 circle, 3 hexagon, 4 leaf, 5 heart, 6 star, 7 image
+uniform vec2 quad_size;     // the quad's size on the canvas, in pixels
+uniform float roundness;
+uniform bool stretch;
+uniform float feather;
+uniform float border;
+uniform vec3 border_color;
+uniform sampler2D mask;
+uniform bool mask_luma;     // the shape picture has no transparency: white keeps, black cuts
 in vec2 uv;
+in vec2 local;
 out vec4 color;
 
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
@@ -62,6 +81,77 @@ vec3 rotate_hue(vec3 c, float a) {
     vec3 k = vec3(0.57735);
     float cs = cos(a);
     return c * cs + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cs);
+}
+
+float dot2(vec2 v) { return dot(v, v); }
+
+// Signed distances (negative inside), after Inigo Quilez. y points down here, so some shapes flip it.
+float sd_box(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+float sd_hexagon(vec2 p, float r) {
+    const vec3 k = vec3(-0.866025404, 0.5, 0.577350269);
+    p = abs(p.yx);
+    p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+
+float sd_vesica(vec2 p, float r, float d) {
+    p = abs(p);
+    float b = sqrt(r * r - d * d);
+    return ((p.y - b) * d > p.x * b) ? length(p - vec2(0.0, b)) : length(p - vec2(-d, 0.0)) - r;
+}
+
+float sd_heart(vec2 p) {
+    p.x = abs(p.x);
+    if (p.y + p.x > 1.0) return sqrt(dot2(p - vec2(0.25, 0.75))) - sqrt(2.0) / 4.0;
+    return sqrt(min(dot2(p - vec2(0.0, 1.0)), dot2(p - 0.5 * max(p.x + p.y, 0.0)))) * sign(p.x - p.y);
+}
+
+float sd_star(vec2 p, float r, float rf) {
+    const vec2 k1 = vec2(0.809016994375, -0.587785252292);
+    const vec2 k2 = vec2(-k1.x, k1.y);
+    p.x = abs(p.x);
+    p -= 2.0 * max(dot(k1, p), 0.0) * k1;
+    p -= 2.0 * max(dot(k2, p), 0.0) * k2;
+    p.x = abs(p.x);
+    p.y -= r;
+    vec2 ba = rf * vec2(-k1.y, k1.x) - vec2(0.0, 1.0);
+    float h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
+    return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+}
+
+// Distance in canvas pixels from the shape's edge.
+float shape_distance() {
+    vec2 size = max(quad_size, vec2(1.0));
+    float side = min(size.x, size.y);
+    if (shape == 1) {
+        return sd_box((local - 0.5) * size, size * 0.5, roundness * side);
+    }
+    // The other shapes sit in the middle at the short side's size, or stretch to fill.
+    vec2 p = stretch ? (local - 0.5) * side : (local - 0.5) * size;
+    float r = side * 0.5;
+    float d;
+    if (shape == 2) {
+        d = length(p) - r;
+    } else if (shape == 3) {
+        d = sd_hexagon(p, r * 0.866);
+    } else if (shape == 4) {
+        vec2 q = vec2(p.x + p.y, p.y - p.x) * 0.70710678;   // turned 45 degrees, tip to the top right
+        d = sd_vesica(q, r * 1.65, r * 1.0);
+    } else if (shape == 5) {
+        float s = r * 1.62;
+        d = sd_heart(vec2(p.x, -p.y) / s + vec2(0.0, 0.53)) * s;
+    } else {
+        d = sd_star(vec2(p.x, -p.y + r * 0.1), r, 0.45);
+    }
+    if (stretch) {
+        d *= min(size.x, size.y) / side;   // a rough pixel scale, enough for edges and borders
+    }
+    return d;
 }
 
 void main() {
@@ -94,6 +184,23 @@ void main() {
         c.rgb = rotate_hue(c.rgb, hue);
     }
     c.rgb = clamp(c.rgb * tint, 0.0, 1.0);
+    if (use_lut) {
+        vec3 at = c.rgb * ((lut_size - 1.0) / lut_size) + 0.5 / lut_size;   // sample texel centres
+        c.rgb = mix(c.rgb, texture(lut, at).rgb, lut_amount);
+    }
+    if (shape == 7) {
+        vec4 m = texture(mask, local);
+        c.a *= mask_luma ? dot(m.rgb, LUMA) : m.a;
+    } else if (shape > 0) {
+        float d = shape_distance();
+        const float aa = 0.75;
+        if (border > 0.0) {
+            float ring = smoothstep(-border - aa, -border + aa, d);   // 1 within `border` pixels of the edge
+            c.rgb = mix(c.rgb, border_color, ring);
+            c.a = mix(c.a, 1.0, ring);
+        }
+        c.a *= 1.0 - smoothstep(-feather - aa, aa, d);
+    }
     color = c * vec4(1.0, 1.0, 1.0, opacity * fx_opacity);
 }
 """
@@ -433,6 +540,12 @@ class Compositor:
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
         self.time = 0.0  # seconds, drives the Scroll filter
         self._applied: VideoEffects | None = None
+        # Colour looks and shape pictures, loaded once each (key: "look:<name>" or a file path).
+        self.program["lut"].value = 1
+        self.program["mask"].value = 2
+        self.looks: dict[str, moderngl.Texture3D | None] = {}
+        self.masks: dict[str, tuple[moderngl.Texture, bool] | None] = {}
+        self.load_errors: dict[str, str] = {}  # key -> why it couldn't be loaded (shown in the Filters window)
 
     # Sources -------------------------------------------------------------
 
@@ -588,7 +701,11 @@ class Compositor:
             if not quad:
                 continue
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
-            self._apply_effects(self.effects.get(item.source, NO_EFFECTS), tex.size)
+            fx = self.effects.get(item.source, NO_EFFECTS)
+            self._apply_effects(fx, tex.size)
+            if fx.shape:
+                (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = quad[:3]
+                self.program["quad_size"].value = (math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x0, y2 - y0))
             if fades:
                 self.program["opacity"].value = fades.get(item.source, 1.0)
             self.program["premul"].value = part is not None
@@ -618,6 +735,73 @@ class Compositor:
         p["hue"].value = fx.hue
         p["fx_opacity"].value = fx.opacity
         p["tint"].value = fx.tint
+        look = self._look(fx.lut) if fx.lut else None
+        p["use_lut"].value = look is not None
+        if look is not None:
+            look.use(location=1)
+            p["lut_size"].value = float(look.size[0])
+            p["lut_amount"].value = fx.lut_amount
+        shape = fx.shape
+        if shape == SHAPE_IDS["image"]:
+            mask = self._mask(fx.mask)
+            if mask is None:
+                shape = 0
+            else:
+                mask[0].use(location=2)
+                p["mask_luma"].value = mask[1]
+        p["shape"].value = shape
+        if shape:
+            p["roundness"].value = fx.roundness
+            p["stretch"].value = fx.stretch
+            p["feather"].value = fx.feather
+            p["border"].value = fx.border
+            p["border_color"].value = fx.border_color
+
+    def _look(self, key: str) -> moderngl.Texture3D | None:
+        if key not in self.looks:
+            self.looks[key] = None
+            try:
+                table = looks.look(key[5:]) if key.startswith("look:") else looks.read_cube(key)
+            except looks.LutError as exc:
+                self.load_errors[key] = str(exc)
+                return None
+            n = table.shape[0]
+            tex = self.ctx.texture3d((n, n, n), 3, np.ascontiguousarray(table, dtype="f4").tobytes(), dtype="f4")
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex.repeat_x = tex.repeat_y = tex.repeat_z = False
+            self.looks[key] = tex
+        return self.looks[key]
+
+    def _mask(self, path: str) -> tuple[moderngl.Texture, bool] | None:
+        if path not in self.masks:
+            self.masks[path] = None
+            try:
+                from PIL import Image
+
+                with Image.open(path) as img:
+                    rgba = img.convert("RGBA")
+            except Exception as exc:  # noqa: BLE001 (any unreadable picture just means no shape)
+                self.load_errors[path] = f"Can't open that picture: {exc}"
+                return None
+            rgba.thumbnail((1024, 1024))
+            data = np.asarray(rgba, dtype=np.uint8)
+            tex = self.ctx.texture(rgba.size, 4, np.ascontiguousarray(data).tobytes())
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex.repeat_x = tex.repeat_y = False
+            self.masks[path] = (tex, bool(data[..., 3].min() == 255))  # no transparency: use brightness
+        return self.masks[path]
+
+    def forget_looks(self) -> None:
+        """Drop loaded looks and shape pictures so edited files load again."""
+        for tex in self.looks.values():
+            if tex is not None:
+                tex.release()
+        for mask in self.masks.values():
+            if mask is not None:
+                mask[0].release()
+        self.looks.clear()
+        self.masks.clear()
+        self.load_errors.clear()
 
     def read(self, canvas_id: str) -> bytes:
         """Return the canvas as tightly packed RGBA rows, top row first."""
@@ -702,6 +886,7 @@ class Compositor:
             nv12.release()
         for scaled in self.scaled_targets.values():
             scaled.release()
+        self.forget_looks()
         self.vao.release()
         self.vbo.release()
         self.program.release()

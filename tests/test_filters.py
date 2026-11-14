@@ -212,3 +212,70 @@ def test_gpu_scroll_moves_the_image(compositor):
     after = np.frombuffer(compositor.read("f"), dtype=np.uint8).reshape(16, 16, 4)[8, 2]
     compositor.effects, compositor.time = {}, 0.0
     assert before[0] == 255 and after[2] == 255
+
+
+def render_full(comp, img, filters):
+    h, w = img.shape[:2]
+    canvas = Canvas(id="f", width=w, height=h)
+    comp.upload("src", img)
+    fx = video_effects(filters)
+    comp.effects = {"src": fx} if fx.active else {}
+    scene = Scene(id="s", name="s", canvas="f", items=[SceneItem(source="src")])
+    comp.render(canvas, scene, {"src": (w, h)})
+    out = np.frombuffer(comp.read("f"), dtype=np.uint8).reshape(h, w, 4).copy()
+    comp.effects = {}
+    return out
+
+
+def test_lut_filter_settings():
+    fx = video_effects([flt("lut", look="mono", amount=50)])
+    assert fx.active and fx.lut == "look:mono" and fx.lut_amount == 0.5
+    assert video_effects([flt("lut", look="file", file="C:/luts/a.cube")]).lut == "C:/luts/a.cube"
+    assert not video_effects([flt("lut", look="file", file="")]).active  # no file picked yet: nothing to do
+
+
+def test_gpu_lut_mono_and_from_file(compositor, tmp_path):
+    from sprigcast.core import looks
+
+    r, g, b, _ = render_one(compositor, (200, 60, 30, 255), [flt("lut", look="mono")])
+    assert abs(r - g) <= 2 and abs(g - b) <= 2
+    swap = looks.identity(9)[..., ::-1].copy()  # a file that swaps red and blue
+    path = looks.write_cube(tmp_path / "swap.cube", swap)
+    assert render_one(compositor, (200, 60, 30, 255), [flt("lut", look="file", file=str(path))])[:3] == \
+        pytest.approx((30, 60, 200), abs=2)
+    half = render_one(compositor, (200, 60, 30, 255), [flt("lut", look="file", file=str(path), amount=50)])
+    assert half[:3] == pytest.approx((115, 60, 115), abs=2)
+    assert render_one(compositor, (200, 60, 30, 255), [flt("lut", look="file", file=str(tmp_path / "x.cube"))])[:3] \
+        == (200, 60, 30)  # a missing file leaves the picture alone
+    assert str(tmp_path / "x.cube") in compositor.load_errors
+
+
+def test_gpu_shapes_cut_the_corners(compositor):
+    img = np.full((64, 96, 4), (200, 100, 50, 255), np.uint8)
+    for shape in ("circle", "hexagon", "leaf", "heart", "star"):
+        out = render_full(compositor, img, [flt("shape", shape=shape)])
+        assert out[32, 48, 3] == 255, shape  # the middle stays
+        assert out[1, 1, 3] == 0 and out[62, 94, 3] == 0, shape  # corners are cut away
+        assert out[32, 4, 3] == 0, shape  # sits in the middle at the short side's size
+    out = render_full(compositor, img, [flt("shape", shape="circle", stretch=True)])
+    assert out[32, 4, 3] == 255  # an ellipse reaches the sides
+    out = render_full(compositor, img, [flt("shape", shape="rounded", roundness=50)])
+    assert out[1, 1, 3] == 0 and out[32, 1, 3] == 255 and out[1, 48, 3] == 255
+    out = render_full(compositor, img, [flt("shape", shape="circle", border=4, border_color="#00ff00")])
+    assert tuple(out[32, 18]) == (0, 255, 0, 255) and tuple(out[32, 48][:3]) == (200, 100, 50)
+
+
+def test_gpu_shape_from_picture(compositor, tmp_path):
+    from PIL import Image
+
+    pic = np.zeros((10, 10, 4), np.uint8)
+    pic[:, :5] = (255, 255, 255, 255)  # keep the left half
+    Image.fromarray(pic).save(tmp_path / "half.png")
+    img = np.full((32, 32, 4), (200, 100, 50, 255), np.uint8)
+    out = render_full(compositor, img, [flt("shape", shape="image", mask_file=str(tmp_path / "half.png"))])
+    assert out[16, 4, 3] == 255 and out[16, 28, 3] == 0
+    opaque = np.zeros((10, 10, 3), np.uint8)
+    opaque[:, 5:] = 255  # no transparency: white keeps (the right half)
+    Image.fromarray(opaque).save(tmp_path / "white.png")
+    out = render_full(compositor, img, [flt("shape", shape="image", mask_file=str(tmp_path / "white.png"))])
+    assert out[16, 4, 3] == 0 and out[16, 28, 3] == 255
