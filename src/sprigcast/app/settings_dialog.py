@@ -29,8 +29,18 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 
 
+LABELS = {
+    "url": "URL",
+    "file": "Local file",
+    "fps": "Frames per second",
+    "css": "Custom CSS",
+    "mute": "Mute page sound",
+    "keep_running": "Keep running when hidden",
+}
+
+
 def _label(key: str) -> str:
-    return key.replace("_", " ").capitalize()
+    return LABELS.get(key) or key.replace("_", " ").capitalize()
 
 
 class SettingsDialog(QDialog):
@@ -47,6 +57,12 @@ class SettingsDialog(QDialog):
             form.addRow(_label(key), widget)
         if "text" in defaults:
             tip = QLabel("{time}, {time12} and {date} show a live clock. A file's text replaces Text when set.")
+            tip.setWordWrap(True)
+            tip.setStyleSheet(f"color: {theme.MUTED}")
+            form.addRow("", tip)
+        if "css" in defaults and "url" in defaults:
+            tip = QLabel("A local file is used instead of the URL when set. Page sound plays on your desktop "
+                         "audio. Keep running when hidden keeps alerts connected while another bloom is on.")
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
@@ -74,7 +90,7 @@ class SettingsDialog(QDialog):
             box.setValue(float(value))
             self.fields[key] = box
             return box
-        if key == "text":
+        if key in ("text", "css"):
             edit = QPlainTextEdit(str(value))
             edit.setFixedHeight(80)
             self.fields[key] = edit
