@@ -50,7 +50,7 @@ Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\C
 // The SprigCast Camera lives in Program Files and is registered machine-wide (the Windows Frame Server
 // loads it), which needs administrator rights. The rest of SprigCast installs per user without them, so
 // only this one step asks Windows for permission, and only when the camera is new or changed. The app's
-// own Settings > Output → Virtual camera button stays as a repair path (output/virtualcam.py does the same).
+// own Settings > Output > Virtual camera button stays as a repair path (output/virtualcam.py does the same).
 const
   CameraClsid = '{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}';
 
