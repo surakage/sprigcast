@@ -122,7 +122,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | --- | --- | --- |
 | `app.actions` | Every action with what it does and its fields (fields starting with ? are optional). | none |
 | `app.broadcast` | Send your own event to every connected app. | `data`: any object |
-| `app.info` | Version, API version and the shapes this setup has. | none |
+| `app.info` | Version, API version and the shapes that are turned on. | none |
 | `app.stats` | Frames per second, render time and memory. | none |
 
 ### bloom

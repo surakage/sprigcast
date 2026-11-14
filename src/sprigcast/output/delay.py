@@ -18,7 +18,8 @@ class DelayLine:
     """Hands each item to `release` `seconds` after it was put in, in order, on its own thread.
 
     `close()` drops whatever is still waiting and stops releasing at once, so a reconnecting stream
-    never gets packets meant for its old connection.
+    never gets packets meant for its old connection. `finish()` is for ending a stream: it takes nothing
+    new but keeps releasing until the delayed part has gone out, like OBS.
     """
 
     def __init__(self, seconds: float, release: Callable, name: str = "delay"):
@@ -27,12 +28,13 @@ class DelayLine:
         self._items: deque = deque()
         self._lock = threading.Condition()
         self._closed = False
+        self._finishing = False
         self._thread = threading.Thread(target=self._run, name=f"sprigcast-{name}", daemon=True)
         self._thread.start()
 
     def put(self, item) -> None:
         with self._lock:
-            if self._closed:
+            if self._closed or self._finishing:
                 return
             self._items.append((time.monotonic() + self.seconds, item))
             self._lock.notify()
@@ -40,6 +42,22 @@ class DelayLine:
     def waiting(self) -> int:
         with self._lock:
             return len(self._items)
+
+    def finish(self, timeout: float | None = None) -> bool:
+        """Take nothing new and wait until everything waiting has been released on time. True when it
+        all went out; on timeout the rest is dropped (close())."""
+        with self._lock:
+            self._finishing = True
+            self._lock.notify()
+            end = None if timeout is None else time.monotonic() + timeout
+            while self._items and not self._closed:
+                left = None if end is None else end - time.monotonic()
+                if left is not None and left <= 0:
+                    break
+                self._lock.wait(left)
+            drained = not self._items
+        self.close()
+        return drained
 
     def close(self) -> None:
         with self._lock:
@@ -58,3 +76,5 @@ class DelayLine:
                 _, item = self._items.popleft()
                 # released while holding the lock, so close() can't race a release into a new connection
                 self._release(item)
+                if not self._items:
+                    self._lock.notify_all()  # finish() is waiting for the last one

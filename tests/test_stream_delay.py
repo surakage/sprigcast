@@ -54,6 +54,7 @@ def test_a_delayed_link_sends_late_and_its_wait_is_not_backlog(tmp_path):
     finally:
         link.stop()
         enc.stop()
+        link._thread.join(5)  # with a delay, the link ends in the background once the tail is out
     with av.open(str(path)) as f:
         assert sum(1 for p in f.demux(video=0) if p.size) > 5
 
@@ -74,3 +75,39 @@ def test_waiting_out_the_delay_is_not_connecting():
     assert st.delay_left() == 0 and st.health()[0] == "warning"
     st.started_at, st.reconnects = time.monotonic(), 1  # after a drop it's a reconnect, not the delay
     assert st.delay_left() == 0
+
+
+def test_finishing_sends_what_waits_on_time_then_takes_nothing():
+    got = []
+    line = DelayLine(0.3, lambda item: got.append((item, time.monotonic())))
+    began = time.monotonic()
+    line.put("a")
+    line.put("b")
+    assert line.finish(2) is True
+    assert [i for i, _ in got] == ["a", "b"] and got[0][1] - began >= 0.29  # still on time, not rushed
+    line.put("c")
+    time.sleep(0.35)
+    assert [i for i, _ in got] == ["a", "b"]
+
+
+def test_ending_a_delayed_stream_still_sends_the_delayed_part(tmp_path):
+    # OBS keeps sending until the delay has drained; stopping used to cut the last N seconds.
+    enc = SharedStreamEncoder(_Canvas(), 30, 800, "libx264", time.perf_counter())
+    path = tmp_path / "tail.flv"
+    link = StreamLink("tail", "unused", "key", enc, open_container=lambda u: av.open(str(path), "w", format="flv"))
+    link.delay_s = 1.0
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    _feed(enc, 2.0)
+    fed_until = time.monotonic()
+    began = time.monotonic()
+    link.stop()
+    assert time.monotonic() - began < 0.5  # ending doesn't hold the window up for the delay
+    enc.stop()
+    link._thread.join(5)
+    assert not link._thread.is_alive() and time.monotonic() - fed_until >= 0.9
+    with av.open(str(path)) as f:
+        video = f.streams.video[0]
+        last = max(float(p.pts * video.time_base) for p in f.demux(video) if p.pts is not None)
+    assert last > 1.5  # the second that was still in the delay when we stopped went out too

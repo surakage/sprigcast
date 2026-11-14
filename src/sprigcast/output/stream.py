@@ -359,11 +359,24 @@ class Streamer(Recorder):
                 self._connected_at = time.monotonic()
                 self.status = "live"
 
+    def stop(self, timeout: float = 15.0) -> None:
+        """Stop sending. With a stream delay the delayed part still goes out first (like OBS), in the
+        background, so ending a stream never freezes the window for the length of the delay."""
+        if self.delay_s > 0 and self._delay_line is not None and self._send_error is None:
+            self.status = f"ending: sending the last {self.delay_s:g} s"
+            threading.Thread(target=super().stop, args=(self.delay_s + timeout,),
+                             name=f"sprigcast-end-{self.name}", daemon=True).start()
+            return
+        super().stop(timeout)
+
     def _before_close(self, container) -> bool:
         """Let the sender finish what is queued (briefly), then stop it before the container closes."""
-        if self._delay_line is not None:  # what's still delayed is never sent: stopping cuts there
-            self._delay_line.close()
-            self._delay_line = None
+        line, self._delay_line = self._delay_line, None
+        if line is not None:
+            if self._stop.is_set() and self._send_error is None:
+                line.finish(self.delay_s + 5)  # ending: the delayed part goes out on time, then we stop
+            else:
+                line.close()  # the connection failed: what's delayed belongs to it and goes with it
         self._send_q.put(None)
         self._sender.join(timeout=3.0 if self._send_error is None else 0.5)
         if self._sender.is_alive():
