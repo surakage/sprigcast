@@ -390,6 +390,7 @@ class MainWindow(QMainWindow):
         self._build_controls_dock()
         self._build_live_stage()
         self._build_properties_dock()
+        self._build_item_actions()
         self._fill_bloom_tools()
         self.stats_panel = StatsPanel()
         self.stats_dock = self._dock("Stats", self.stats_panel)
@@ -619,20 +620,25 @@ class MainWindow(QMainWindow):
             turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
             turn.triggered.connect(self._turn_into_part)
             menu.addSeparator()
-            menu.addAction("Settings…").triggered.connect(self._edit_source_settings)
-            menu.addAction("Filters…").triggered.connect(self._edit_filters)
-            menu.addAction("Transform…").triggered.connect(self._show_transform)
-            menu.addAction("Fit to canvas").triggered.connect(self._fit_item)
-            lock = menu.addAction("Lock")
-            lock.setCheckable(True)
-            lock.setChecked(bool(item and item.locked))
-            lock.toggled.connect(lambda on: self.prop_locked.setChecked(on))
-            menu.addAction("Rename…").triggered.connect(self._rename_item)
+            acts = self.item_actions
+            for key in ("settings", "filters", "rename"):
+                menu.addAction(acts[key])
             menu.addSeparator()
-            menu.addAction("Move up").triggered.connect(lambda: self._move_item(+1))
-            menu.addAction("Move down").triggered.connect(lambda: self._move_item(-1))
+            size = menu.addMenu("Size and place")
+            for key in ("fit", "stretch", "center", "reset", "uncrop"):
+                size.addAction(acts[key])
+            size.addSeparator()
+            hint = size.addAction("Crop: hold Alt and drag a side")
+            hint.setEnabled(False)
+            order = menu.addMenu("Order")
+            for key in ("front", "up", "down", "back"):
+                order.addAction(acts[key])
+            acts["lock"].setCheckable(True)
+            acts["lock"].setChecked(bool(item and item.locked))
+            menu.addAction(acts["hide"])
+            menu.addAction(acts["lock"])
             menu.addSeparator()
-            menu.addAction("Remove").triggered.connect(self._remove_item)
+            menu.addAction(acts["remove"])
         return menu
 
     def _scene_context_menu(self, pos) -> None:
@@ -833,7 +839,7 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         panel.setStyleSheet(theme.SOFT_FIELD_STYLE)
         col = QVBoxLayout(panel)
-        col.setContentsMargins(0, 0, 0, 0)
+        col.setContentsMargins(6, 0, 16, 8)  # breathing room from the window edge
         col.setSpacing(22)
 
         self.prop_sections: list[QWidget] = []  # hidden while nothing is selected
@@ -872,28 +878,49 @@ class MainWindow(QMainWindow):
 
         place = section("Place")
         grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
         self.spin: dict[str, QDoubleSpinBox] = {}
-        for i, (key, lo, hi, step, decimals) in enumerate((
-            ("x", -10000, 10000, 1, 0),
-            ("y", -10000, 10000, 1, 0),
-            ("scale", 0.01, 20, 0.05, 2),
-            ("rotation", -360, 360, 1, 1),
-        )):
+        fields = (  # key, label, low, high, step, decimals, row, column
+            ("x", "X", -20000, 20000, 1, 0, 0, 0),
+            ("y", "Y", -20000, 20000, 1, 0, 0, 1),
+            ("w", "Width", 0, 40000, 1, 0, 1, 0),
+            ("h", "Height", 0, 40000, 1, 0, 1, 1),
+            ("rotation", "Rotation", -360, 360, 1, 1, 2, 0),
+        )
+        for key, label, lo, hi, step, decimals, row, column in fields:
             box = QDoubleSpinBox()
             box.setRange(lo, hi)
             box.setSingleStep(step)
             box.setDecimals(decimals)
+            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if key in ("w", "h"):
+                box.setSpecialValueText("–")  # shown until the source's size is known
+            box.setMinimumHeight(36)
             box.valueChanged.connect(lambda value, k=key: self._on_transform_edited(k, value))
             self.spin[key] = box
             cell = QVBoxLayout()
             cell.setSpacing(5)
-            name = QLabel({"x": "X", "y": "Y"}.get(key, key.capitalize()))
+            name = QLabel(label)
+            name.setAlignment(Qt.AlignmentFlag.AlignCenter)
             name.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
             cell.addWidget(name)
             cell.addWidget(box)
-            grid.addLayout(cell, i // 2, i % 2)
+            grid.addLayout(cell, row, column)
+        self.keep_shape = QPushButton("🔒 Keep shape")
+        self.keep_shape.setCheckable(True)
+        self.keep_shape.setChecked(QSettings().value("edit/keep_aspect", True, type=bool))
+        self.keep_shape.setToolTip("On: resizing keeps the width and height in proportion. "
+                                   "Off: drag a side or type a size to stretch. Shift while dragging flips it.")
+        self.keep_shape.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton:checked {{ background: {theme.SELECT_BG};"
+                                      f" color: {theme.SELECT_TEXT}; }}")
+        self.keep_shape.setMinimumHeight(36)
+        self.keep_shape.toggled.connect(self._set_keep_shape)
+        keep_cell = QVBoxLayout()
+        keep_cell.setSpacing(5)
+        keep_cell.addWidget(QLabel(""))
+        keep_cell.addWidget(self.keep_shape)
+        grid.addLayout(keep_cell, 2, 1)
         place.addLayout(grid)
         self.prop_locked = QCheckBox("Locked (clicks pass through it)")
         self.prop_locked.toggled.connect(self._on_locked_toggled)
@@ -909,14 +936,21 @@ class MainWindow(QMainWindow):
         self.prop_filters.setToolTip("Color fix, chroma key, blur and more")
         self.prop_filters.clicked.connect(self._edit_filters)
         self.prop_fit = QPushButton("Fit")
-        self.prop_fit.setToolTip("Fit to canvas")
+        self.prop_fit.setToolTip("Fit to canvas (Ctrl+F)")
         self.prop_fit.clicked.connect(self._fit_item)
-        for chip in (self.prop_extra, self.prop_filters, self.prop_fit):
+        self.prop_uncrop = QPushButton("Uncrop")
+        self.prop_uncrop.setToolTip("Show the whole picture again")
+        self.prop_uncrop.clicked.connect(self._reset_crop)
+        for chip in (self.prop_extra, self.prop_filters, self.prop_fit, self.prop_uncrop):
             chip.setStyleSheet(chip_style)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chips.addWidget(chip)
         chips.addStretch(1)
         look.addLayout(chips)
+        crop_hint = QLabel("Crop: hold Alt and drag a side or corner on the canvas.")
+        crop_hint.setWordWrap(True)
+        crop_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        look.addWidget(crop_hint)
 
         shapes = section("Shapes")
         self.prop_shapes: dict[str, QLabel] = {}
@@ -1412,7 +1446,9 @@ class MainWindow(QMainWindow):
             twin = build and canvas.id != self.build_canvas
             preview.twin = twin
             preview.editable = build and not twin
-            preview.title = canvas.id.capitalize() + ("  ·  click to edit" if twin else "")
+            preview.title = f"{canvas.id.capitalize()} {canvas.width}×{canvas.height}"
+            preview.setToolTip(f"Click to edit the {canvas.id} shape" if twin else "")
+            preview.keep_aspect = self.keep_shape.isChecked()
             preview.setCursor(Qt.CursorShape.PointingHandCursor if twin else Qt.CursorShape.ArrowCursor)
             preview.update()
         # Build: the shape being edited comes first and the twin sits to its right; Live: canvas order.
@@ -1757,7 +1793,8 @@ class MainWindow(QMainWindow):
                              *edited]:
             if preview.isVisible():
                 r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
-                sizes[key] = (int(r.width() * dpr), int(r.height() * dpr))
+                aw, ah = preview.aspect  # zoomed in, never ask for more pixels than the canvas has
+                sizes[key] = (min(int(r.width() * dpr), int(aw)), min(int(r.height() * dpr), int(ah)))
         return sizes
 
     def _poll_engine(self) -> None:
@@ -1806,6 +1843,11 @@ class MainWindow(QMainWindow):
                 for preview in [*self.previews.values(), self.part_preview]:
                     preview.sizes = self.source_sizes
                 self._refresh_source_labels()
+                selected = self._item()
+                if selected is not None and self.spin["w"].value() == 0 and selected.source in self.source_sizes:
+                    self._updating = True
+                    self._show_spin_values(selected)  # its size just became known
+                    self._updating = False
             elif isinstance(event, EngineError):
                 self.statusBar().showMessage(event.message, 10000)
                 if "compositor" in event.message:
@@ -1888,7 +1930,7 @@ class MainWindow(QMainWindow):
             if scene is not None and scene.id != self.collection.active_scenes.get(canvas_id):
                 preview.subtitle += "  ·  not on air"
             if preview.twin:
-                preview.subtitle = ""  # the title already says "click to edit"
+                preview.subtitle = ""  # small: just the shape and its size (the tooltip says click to edit)
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
             preview.set_scene(scene, index)
             selected = self._item()
@@ -2149,8 +2191,8 @@ class MainWindow(QMainWindow):
             self.prop_locked.setChecked(item.locked)
             config = self.collection.source(item.source)
             self.prop_name.setText(config.name)
-            for key, box in self.spin.items():
-                box.setValue(float(getattr(item, key)))
+            self._show_spin_values(item)
+            self.prop_uncrop.setVisible(any(item.crop))
             self.prop_extra.setText(
                 {
                     "color": "Colour",
@@ -2314,8 +2356,7 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         self._updating = True
-        for key, box in self.spin.items():
-            box.setValue(float(getattr(item, key)))
+        self._show_spin_values(item)
         self._updating = False
 
     def _on_locked_toggled(self, locked: bool) -> None:
@@ -2922,11 +2963,103 @@ class MainWindow(QMainWindow):
         if not w or not h:
             return
         item.scale = min(canvas.width / w, canvas.height / h)
+        item.scale_y = None
         item.rotation = 0.0
         item.x = (canvas.width - w * item.scale) / 2
         item.y = (canvas.height - h * item.scale) / 2
         self._changed()
         self._refresh_properties()
+
+    def _reset_crop(self) -> None:
+        item = self._item()
+        if item is None:
+            return
+        item.crop = (0, 0, 0, 0)
+        self._changed()
+        self._refresh_properties()
+
+    def _edit_item(self, change) -> None:
+        """Apply `change(item, canvas size, source size)` to the selected item, then save and redraw."""
+        scene, item = self._scene(), self._item()
+        if scene is None or item is None:
+            return
+        size = self.source_sizes.get(item.source)
+        if not size or not size[0] or not size[1]:
+            self.statusBar().showMessage("That source has no picture yet. Try again in a second.", 4000)
+            return
+        canvas = self.collection.canvas(scene.canvas)
+        change(item, (canvas.width, canvas.height), size)
+        self._changed()
+        self._refresh_properties()
+
+    def _stretch_item(self) -> None:
+        def change(item, canvas, size):
+            cw, ch = item.cropped_size(size)
+            item.rotation, item.x, item.y = 0.0, 0.0, 0.0
+            item.scale = canvas[0] / cw
+            item.scale_y = None if abs(canvas[1] / ch - item.scale) < 1e-6 else canvas[1] / ch
+        self._edit_item(change)
+
+    def _center_item(self) -> None:
+        def change(item, canvas, size):
+            w, h = item.drawn_size(size)
+            item.x, item.y = round((canvas[0] - w) / 2), round((canvas[1] - h) / 2)
+        self._edit_item(change)
+
+    def _reset_item_size(self) -> None:
+        def change(item, canvas, size):
+            item.scale, item.scale_y, item.rotation, item.crop = 1.0, None, 0.0, (0, 0, 0, 0)
+        self._edit_item(change)
+
+    def _to_edge(self, front: bool) -> None:
+        scene, index = self._scene(), self._item_index()
+        if scene is None or index is None:
+            return
+        item = scene.items.pop(index)
+        if front:
+            scene.items.append(item)
+        else:
+            scene.items.insert(0, item)
+        self._changed()
+        self._refresh_sources(keep_row=0 if front else len(scene.items) - 1)
+
+    def _toggle_item_visible(self) -> None:
+        item = self._item()
+        if item is None:
+            return
+        item.visible = not item.visible
+        self._changed()
+        self._refresh_sources(keep_row=self.source_list.currentRow())
+
+    def _build_item_actions(self) -> None:
+        """Shortcuts for the selected thing in Build. They show in its right-click menu and work while
+        the Build screen has focus (typing in a box still types)."""
+        self.item_actions: dict[str, QAction] = {}
+        table = (
+            ("fit", "Fit to canvas", "Ctrl+F", self._fit_item),
+            ("stretch", "Stretch to fill the canvas", "Ctrl+Shift+F", self._stretch_item),
+            ("center", "Centre on the canvas", "Ctrl+E", self._center_item),
+            ("reset", "Reset size, crop and rotation", "Ctrl+R", self._reset_item_size),
+            ("uncrop", "Remove crop", "Ctrl+Shift+R", self._reset_crop),
+            ("front", "Bring to front", "Ctrl+Shift+Up", lambda: self._to_edge(True)),
+            ("up", "Bring forward", "Ctrl+Up", lambda: self._move_item(+1)),
+            ("down", "Send backward", "Ctrl+Down", lambda: self._move_item(-1)),
+            ("back", "Send to back", "Ctrl+Shift+Down", lambda: self._to_edge(False)),
+            ("hide", "Show / hide", "Ctrl+H", self._toggle_item_visible),
+            ("lock", "Lock", "Ctrl+L", lambda: self.prop_locked.setChecked(not self.prop_locked.isChecked())),
+            ("settings", "Settings…", "Ctrl+Return", self._edit_source_settings),
+            ("filters", "Filters…", "Ctrl+Shift+E", self._edit_filters),
+            ("rename", "Rename…", "F2", self._rename_item),
+            ("remove", "Remove", "Delete", self._remove_item),
+        )
+        for key, text, shortcut, slot in table:
+            action = QAction(text, self)
+            action.setShortcut(QKeySequence(shortcut))
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            action.setShortcutVisibleInContextMenu(True)
+            action.triggered.connect(lambda _=False, f=slot: f())
+            self.build_stage.addAction(action)
+            self.item_actions[key] = action
 
     def _remove_item(self) -> None:
         scene, index = self._scene(), self._item_index()
@@ -2959,14 +3092,54 @@ class MainWindow(QMainWindow):
         scene.items[index].visible = row.checkState() == Qt.CheckState.Checked
         self._changed()
 
+    def _show_spin_values(self, item: SceneItem) -> None:
+        """Fill X, Y, Width, Height and Rotation (width and height in canvas pixels)."""
+        size = self.source_sizes.get(item.source)
+        w, h = item.drawn_size(size) if size and size[0] and size[1] else (0.0, 0.0)
+        values = {"x": item.x, "y": item.y, "w": w, "h": h, "rotation": item.rotation}
+        for key, box in self.spin.items():
+            box.blockSignals(True)
+            box.setValue(float(values[key]))
+            box.blockSignals(False)
+        for key in ("w", "h"):
+            self.spin[key].setEnabled(bool(w and h))
+
     def _on_transform_edited(self, key: str, value: float) -> None:
         if self._updating:
             return
         item = self._item()
         if item is None:
             return
+        if key in ("w", "h"):
+            size = self.source_sizes.get(item.source)
+            cw, ch = item.cropped_size(size) if size else (0, 0)
+            if not cw or not ch or value < 1:
+                return
+            sx, sy = item.scale, item.sy
+            if key == "w":
+                new_sx = max(0.01, value / cw)
+                sy = sy * new_sx / sx if self.keep_shape.isChecked() else sy
+                sx = new_sx
+            else:
+                new_sy = max(0.01, value / ch)
+                sx = sx * new_sy / sy if self.keep_shape.isChecked() else sx
+                sy = new_sy
+            item.scale, item.scale_y = sx, (None if abs(sx - sy) < 1e-6 else sy)
+            self._changed()
+            self._updating = True
+            self._show_spin_values(item)
+            self._updating = False
+            self._refresh_previews()
+            return
         setattr(item, key, value)
         self._changed()
+        self._refresh_previews()
+
+    def _set_keep_shape(self, on: bool) -> None:
+        QSettings().setValue("edit/keep_aspect", on)
+        self.keep_shape.setText("🔒 Keep shape" if on else "🔓 Free shape")
+        for preview in [*self.previews.values(), self.part_preview]:
+            preview.keep_aspect = on
 
     def _on_name_edited(self) -> None:
         item = self._item()
@@ -3402,7 +3575,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.settings_window import sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
-        self._sync_canvas_choice()  # Settings → Video may have switched a canvas on or off
+        self._sync_canvas_choice()  # Settings → Video may have switched a canvas on or off (and sizes changed)
         self._changed()
         self._refresh_stream_boxes()
         self._updating = True

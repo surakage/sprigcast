@@ -101,6 +101,7 @@ SOFT_FIELD_STYLE = (  # borderless inputs on the Build inspector
     f" color: {TEXT}; }}"
     f"QLineEdit:focus, QDoubleSpinBox:focus {{ background: {RAISED}; }}"
     "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 14px; border: none; background: transparent; }"
+    "QDoubleSpinBox { padding: 6px 0 6px 14px; }"  # balances the (invisible) arrows so numbers sit centred
 )
 LINK_STYLE = (
     f"QPushButton {{ background: transparent; border: none; color: {MUTED}; padding: 2px 4px; }}"

@@ -111,3 +111,18 @@ def test_snap_options_and_other_sources():
     item = start.model_copy()
     edit.move(item, start, size, (5, 5), canvas=(1920, 1080), snap=8)
     assert (item.x, item.y) == (0, 0)
+
+
+def test_sides_stretch_or_keep_shape_and_crop():
+    item = SceneItem(source="s", x=10, y=10)
+    start = item.model_copy()
+    # The right side's middle handle (5) of a 200×100 item at (10, 10) sits at (210, 60).
+    assert edit.handle_at(item, SIZE, (210, 60), radius=5) == 5
+    edit.scale_from_corner(item, start, SIZE, corner=5, point=(410, 60), keep_aspect=False)
+    assert item.scale == 2.0 and item.sy == 1.0 and (item.x, item.y) == (10, 10)  # wider, same height
+    item = start.model_copy()
+    edit.scale_from_corner(item, start, SIZE, corner=5, point=(410, 60), keep_aspect=True)
+    assert item.scale == 2.0 and item.scale_y is None
+    item = start.model_copy()
+    edit.crop_from_corner(item, start, SIZE, corner=7, point=(110, 60))  # pull the bottom side up 50 px
+    assert item.crop == (0, 0, 0, 50) and (item.x, item.y) == (10, 10)

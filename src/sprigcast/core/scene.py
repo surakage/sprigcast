@@ -45,10 +45,22 @@ class SceneItem(BaseModel):
     x: float = 0.0  # top-left corner, canvas pixels
     y: float = 0.0
     scale: float = 1.0
+    # Height scale when the item is stretched (aspect unlocked); None keeps the shape (= scale).
+    scale_y: float | None = None
     rotation: float = 0.0  # degrees, clockwise, around the item's centre
     crop: tuple[int, int, int, int] = (0, 0, 0, 0)  # left, top, right, bottom in source pixels
     visible: bool = True
     locked: bool = False
+
+    @property
+    def sy(self) -> float:
+        """The height scale: scale_y when stretched, else the same as the width scale."""
+        return self.scale if self.scale_y is None else self.scale_y
+
+    def drawn_size(self, source_size: tuple[int, int]) -> tuple[float, float]:
+        """Width and height on the canvas, in canvas pixels (crop and both scales applied)."""
+        w, h = self.cropped_size(source_size)
+        return w * self.scale, h * self.sy
 
     def cropped_size(self, source_size: tuple[int, int]) -> tuple[int, int]:
         w, h = source_size
@@ -67,7 +79,7 @@ class SceneItem(BaseModel):
         left, top, right, bottom = self.crop
         u0, v0 = left / sw, top / sh
         u1, v1 = (sw - right) / sw, (sh - bottom) / sh
-        w, h = cw * self.scale, ch * self.scale
+        w, h = cw * self.scale, ch * self.sy
         cx, cy = self.x + w / 2, self.y + h / 2
         rad = math.radians(self.rotation)
         cos_r, sin_r = math.cos(rad), math.sin(rad)
@@ -137,7 +149,7 @@ def _bounds(items: list[SceneItem], sizes: dict[str, tuple[int, int]]) -> tuple[
             continue
         w, h = item.cropped_size(size)
         if w and h:
-            boxes.append((item.x, item.y, item.x + w * item.scale, item.y + h * item.scale))
+            boxes.append((item.x, item.y, item.x + w * item.scale, item.y + h * item.sy))
     if not boxes:
         return None
     return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
@@ -474,7 +486,8 @@ class SceneCollection(BaseModel):
                 self.sources.append(copy)
                 source = copy
             x, y = move(item.x, item.y)
-            items.append(item.model_copy(update={"source": source.id, "x": x, "y": y, "scale": item.scale * ratio}))
+            items.append(item.model_copy(update={"source": source.id, "x": x, "y": y, "scale": item.scale * ratio,
+                                                 "scale_y": None if item.scale_y is None else item.scale_y * ratio}))
         shape = Scene(id=new_id, name=part.name, canvas=canvas_id, kind="part", shape_of=part.id, items=items)
         self.scenes.append(shape)
         self._refit_placements(part, canvas_id, (src.width, src.height), (dst.width, dst.height))
@@ -529,11 +542,12 @@ class SceneCollection(BaseModel):
                 if item.source not in placements:
                     continue
                 w, h = item.cropped_size(old)
-                cx, cy = item.x + w * item.scale / 2, item.y + h * item.scale / 2
+                cx, cy = item.x + w * item.scale / 2, item.y + h * item.sy / 2
                 item.crop = (0, 0, 0, 0)
                 item.scale = item.scale * fit_new / fit_old
+                item.scale_y = None if item.scale_y is None else item.scale_y * fit_new / fit_old
                 item.x = cx - new[0] * item.scale / 2
-                item.y = cy - new[1] * item.scale / 2
+                item.y = cy - new[1] * item.sy / 2
 
     def active_scene(self, canvas_id: str) -> Scene | None:
         scene_id = self.active_scenes.get(canvas_id)
