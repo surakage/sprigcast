@@ -193,3 +193,30 @@ def test_video_page_base_and_output_size(app):
     assert w.apply()
     assert col.canvases[0].output_short_side == 720 and col.canvases[0].downscale == "lanczos"
     assert col.canvases[0].output_size() == (1280, 720)
+
+
+def test_advanced_page_names_remux_and_priority(app):
+    from datetime import datetime
+
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app.settings_window import remux_choice
+    from sprigcast.output import naming
+
+    w = _window(_collection(), tab="Advanced")
+    assert w.current_tab() == "Advanced" and w.priority.count() > 0
+    w.filename.setText("{date} live")
+    assert w.filename_example.text().startswith("2026-11-14 live horizontal 19-30-05.mkv")
+    w.replay_prefix.setText("Clip")
+    assert not w.remux_delete.isEnabled()
+    w.remux.setChecked(True)
+    w.remux_delete.setChecked(True)
+    try:
+        assert w.apply()
+        assert remux_choice() == (True, True)
+        assert naming.recording_name("vertical", datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02 live vertical 03-04-05"
+        assert naming.replay_name("vertical", datetime(2026, 1, 2, 3, 4, 5)).startswith("Clip 2026-01-02")
+    finally:
+        naming.set_patterns()
+        for key in ("advanced/filename", "advanced/replay_prefix", "advanced/remux_mp4", "advanced/remux_delete_mkv"):
+            QSettings().remove(key)
