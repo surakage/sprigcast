@@ -86,3 +86,13 @@ def test_not_supported_off_windows(monkeypatch):
     ok, why = virtualcam.supported()
     assert not ok and "Windows 11" in why
     assert virtualcam.open_block() is None and not virtualcam.installed()
+
+
+def test_installed_camera_counts_without_a_bundled_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(virtualcam.sys, "platform", "win32")
+    monkeypatch.setattr(virtualcam, "windows_build", lambda: 22631)
+    monkeypatch.setattr(virtualcam, "bundled_dll", lambda: None)
+    monkeypatch.setattr(virtualcam, "registered_path", lambda: tmp_path / "sprigcast_camera.dll")
+    assert virtualcam.supported() == (True, "")
+    monkeypatch.setattr(virtualcam, "registered_path", lambda: None)
+    assert not virtualcam.supported()[0]
