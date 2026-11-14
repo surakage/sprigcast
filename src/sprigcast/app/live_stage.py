@@ -283,6 +283,7 @@ class LiveSide(QWidget):
         # A long sound list (Edit shows all of them) scrolls inside its card instead of pushing the
         # panels below (Chat, Transitions) off the bottom of the window.
         sound_card.layout().addWidget(FitScroll(self.sound))
+        sound_card.layout().addStretch(1)  # a short list sits at the top, its title level with Blooms and Transitions
         self.sound_card = sound_card  # LiveStage shows it under the canvas, beside Blooms and Transitions
 
         # Panels you choose for Live (chat, activity feed...) fill the rest of the column (app/panels.py).
