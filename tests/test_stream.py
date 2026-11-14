@@ -211,3 +211,17 @@ def test_a_long_outage_skips_frames_instead_of_growing_forever(monkeypatch):
     st._backlog_bytes = int(1 * 1000 * 1000 / 8)  # caught up below the resume mark
     st.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 0.1))
     assert st._video.qsize() == 1
+
+
+def test_measured_kbps_smooths_over_a_few_seconds():
+    from types import SimpleNamespace
+
+    from sprigcast.output.recorder import measured_kbps
+
+    st = SimpleNamespace(bytes_out=0)
+    readings = []
+    for second in range(12):
+        # a keyframe burst every other second: 1 s readings would swing 4,000 / 8,000
+        st.bytes_out += (1_000_000 if second % 2 else 500_000)
+        readings.append(measured_kbps(st, float(second)))
+    assert all(5000 <= r <= 7000 for r in readings[6:])
