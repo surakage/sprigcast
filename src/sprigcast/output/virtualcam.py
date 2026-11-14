@@ -63,7 +63,7 @@ def supported() -> tuple[bool, str]:
         return False, "The SprigCast camera needs Windows 11."
     if windows_build() < 22000:
         return False, "The SprigCast camera needs Windows 11 (this PC has Windows 10)."
-    if bundled_dll() is None:
+    if bundled_dll() is None and registered_path() is None:  # a dev checkout can use the installed camera
         return False, "This copy of SprigCast came without the camera. Reinstall from the latest installer."
     return True, ""
 
@@ -246,6 +246,8 @@ class VirtualCamera:
             return False
         if hr < 0:
             self.error = f"Windows refused the camera (0x{hr & 0xFFFFFFFF:08X})."
+            if needs_update():
+                self.error += " Click Update the camera, then restart SprigCast."
             log.warning("virtual camera: SC_Start failed 0x%08X at step %s", hr & 0xFFFFFFFF, self._stage())
             return False
         self.error = ""
