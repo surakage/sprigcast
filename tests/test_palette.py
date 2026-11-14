@@ -23,7 +23,7 @@ def app(tmp_path):
 
 def _commands(log):
     return [Command(t, g, lambda t=t: log.append(t)) for t, g in [
-        ("Go live", "Action"), ("Start recording", "Action"), ("Stream outputs", "Settings"),
+        ("Go live", "Action"), ("Start recording", "Action"), ("Stream outputs", "Tools"),
         ("Just Chatting  (horizontal)", "Scene"), ("Game  (horizontal)", "Scene"), ("Scenes", "Dock"),
     ]]
 
@@ -31,8 +31,8 @@ def _commands(log):
 def test_letters_in_order_and_word_starts_win():
     assert score("Go live", "gl") > score("Big pile", "gl")
     assert score("Go live", "lg") is None
-    titles = [c.title for c in rank(_commands([]), "set str")]
-    assert titles[0] == "Stream outputs"  # matches "Settings Stream outputs"
+    titles = [c.title for c in rank(_commands([]), "tool str")]
+    assert titles[0] == "Stream outputs"  # matches "Tools Stream outputs"
     assert [c.title for c in rank(_commands([]), "gam")][0] == "Game  (horizontal)"
 
 

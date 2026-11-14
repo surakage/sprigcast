@@ -77,14 +77,16 @@ class PortAudio:
         cls._open_streams = max(0, cls._open_streams - 1)
 
 
-def list_audio_devices(loopback: bool) -> list[AudioDevice]:
-    """WASAPI microphones (loopback=False) or speakers to capture (loopback=True)."""
+def list_audio_devices(loopback: bool, rescan: bool = True) -> list[AudioDevice]:
+    """WASAPI microphones (loopback=False) or speakers to capture (loopback=True).
+
+    rescan=False reuses the last scan: a rescan restarts PortAudio (a few hundred ms on Windows)."""
     try:
         pa_mod = _pyaudio()
     except RuntimeError:
         return []
     with PortAudio.lock:
-        pa = PortAudio.get(pa_mod, rescan=True)
+        pa = PortAudio.get(pa_mod, rescan=rescan)
         devices = []
         for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
             if loopback and info.get("isLoopbackDevice"):

@@ -165,6 +165,9 @@ class SettingsWindow(QDialog):
             ("Plugins", self._plugins_page(plugin_report, open_plugins_folder)),
         ):
             QListWidgetItem(name, self.tabs)
+            if name == "Stream":  # scrolls its own form; the place list and + Add stay put
+                self.stack.addWidget(page)
+                continue
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.Shape.NoFrame)

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -114,6 +115,19 @@ class Destination:
     name: str
     on: bool
     note: str  # "Ready", "Needs a stream key", or the live bitrate
+    canvas: str = "horizontal"
+    test: bool | None = None  # Twitch bandwidth test on/off; None where the service has none
+
+
+SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
+                   ("custom", "Custom RTMP"))
+CHIP_STYLE = (
+    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 10px;"
+    f" padding: 2px 10px; min-height: 16px; font-size: 11px; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+)
+REMOVE_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
 
 
 class LiveSide(QWidget):
@@ -121,11 +135,19 @@ class LiveSide(QWidget):
 
     def __init__(self, on_live: Callable[[], None], on_record: Callable[[], None], on_clip: Callable[[], None],
                  on_destination: Callable[[str | None], None],
-                 on_toggle: Callable[[str, bool], None] | None = None):
+                 on_toggle: Callable[[str, bool], None] | None = None,
+                 on_place: Callable[[str, str], None] | None = None,
+                 on_settings: Callable[[], None] | None = None):
+        """on_destination(id): open Settings on a place (None: the first, "new:<service>": add one).
+        on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"."""
         super().__init__()
         self.on_destination = on_destination
         self.on_toggle = on_toggle or (lambda _id, _on: None)
+        self.on_place = on_place or (lambda _id, _action: None)
         self.is_live = False
+        self.editing = False
+        self._places: list[Destination] = []
+        self._levels: dict[str, str] = {}
         self.setFixedWidth(SIDE_WIDTH)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -146,6 +168,13 @@ class LiveSide(QWidget):
         self.clip.clicked.connect(on_clip)
         row.addWidget(self.record)
         row.addWidget(self.clip)
+        self.settings = pill("⚙")
+        self.settings.setFixedWidth(44)
+        self.settings.setToolTip("Settings (Ctrl+,)")
+        self.settings.setVisible(on_settings is not None)
+        if on_settings is not None:
+            self.settings.clicked.connect(on_settings)
+        row.addWidget(self.settings)
         buttons.addLayout(row)
         self.rec_note = QLabel("")
         self.rec_note.setStyleSheet(f"color: {theme.LIVE_TEXT}; background: transparent;")
@@ -161,20 +190,31 @@ class LiveSide(QWidget):
         self.add_place.setStyleSheet(theme.LINK_STYLE)
         self.add_place.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_place.setToolTip("Add another place to stream")
-        self.add_place.clicked.connect(lambda: on_destination("new"))
+        self.add_menu = QMenu(self)
+        for key, label in SERVICE_CHOICES:
+            self.add_menu.addAction(label).triggered.connect(lambda _=False, k=key: on_destination(f"new:{k}"))
+        self.add_place.clicked.connect(self._show_add_menu)
         top.addWidget(self.add_place)
-        manage = QPushButton("Edit")
-        manage.setStyleSheet(theme.LINK_STYLE)
-        manage.setCursor(Qt.CursorShape.PointingHandCursor)
-        manage.setToolTip("Change where you stream (nothing new is added)")
-        manage.clicked.connect(lambda: on_destination(None))
-        top.addWidget(manage)
+        self.manage = QPushButton("Edit")
+        self.manage.setStyleSheet(theme.LINK_STYLE)
+        self.manage.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.manage.setToolTip("Switch places on or off, remove them, or change their shape, right here")
+        self.manage.clicked.connect(lambda: self.set_editing(not self.editing))
+        top.addWidget(self.manage)
         where.addLayout(top)
         self.places = QVBoxLayout()
         self.places.setSpacing(10)
         where.addLayout(self.places)
+        self.all_settings = QPushButton("All stream settings…")
+        self.all_settings.setStyleSheet(theme.LINK_STYLE)
+        self.all_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.all_settings.clicked.connect(lambda: on_destination(None))
+        self.all_settings.setVisible(False)
+        where.addWidget(self.all_settings, 0, Qt.AlignmentFlag.AlignLeft)
         root.addLayout(where)
         self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
+        self.place_tools: dict[str, dict[str, QPushButton]] = {}
+        self._shape_key: tuple | None = None
 
         sound = QVBoxLayout()
         sound.setSpacing(12)
@@ -197,6 +237,9 @@ class LiveSide(QWidget):
     def set_live(self, live: bool) -> None:
         self.is_live = live
         self.add_place.setEnabled(not live)
+        if live and self.editing:
+            self.set_editing(False)
+        self.manage.setEnabled(not live)
         for *_, switch in self.place_rows.values():
             switch.setEnabled(not live)  # a place joins or leaves only between streams
         self.live.setText("End stream" if live else "Go live")
@@ -217,45 +260,36 @@ class LiveSide(QWidget):
 
     # Where it goes --------------------------------------------------------------------------
 
+    def _show_add_menu(self) -> None:
+        self.add_menu.exec(self.add_place.mapToGlobal(self.add_place.rect().bottomLeft()))
+
+    def set_editing(self, on: bool) -> None:
+        """Edit mode: each place gets Remove, its shape and (Twitch) test mode, without leaving Live."""
+        self.editing = on and not self.is_live
+        self.manage.setText("Done" if self.editing else "Edit")
+        self.all_settings.setVisible(self.editing)
+        self.show_destinations(self._places, self._levels)
+
     def show_destinations(self, places: list[Destination], levels: dict[str, str]) -> None:
         """levels: destination id -> health level ("good", "warning", "bad", "idle", "off")."""
-        if [p.id for p in places] != list(self.place_rows):
+        self._places, self._levels = list(places), dict(levels)
+        shape = ([p.id for p in places], self.editing)
+        if shape != self._shape_key:
+            self._shape_key = shape
             while self.places.count():
                 item = self.places.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
                     widget.setParent(None)
                     widget.deleteLater()
-            self.place_rows = {}
+            self.place_rows, self.place_tools = {}, {}
             if not places:
                 empty = QPushButton("+ Add a place to stream")
                 empty.setStyleSheet(theme.LINK_STYLE)
-                empty.clicked.connect(lambda: self.on_destination("new"))
+                empty.clicked.connect(self._show_add_menu)
                 self.places.addWidget(empty)
             for place in places:
-                box = QPushButton()
-                box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left; }")
-                box.setCursor(Qt.CursorShape.PointingHandCursor)
-                box.setToolTip("Edit this destination")
-                box.clicked.connect(lambda _=False, pid=place.id: self.on_destination(pid))
-                line = QHBoxLayout(box)
-                line.setContentsMargins(0, 0, 0, 0)
-                line.setSpacing(10)
-                dot, name, note = QLabel("●"), QLabel(), QLabel()
-                for label in (dot, name, note):
-                    label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
-                switch = Switch()
-                switch.setCursor(Qt.CursorShape.PointingHandCursor)
-                switch.setToolTip("On: Go live sends here. Off: skipped.")
-                switch.toggled.connect(lambda on, pid=place.id: self.on_toggle(pid, on))
-                line.addWidget(switch)
-                line.addWidget(dot)
-                line.addWidget(name, 1)
-                line.addWidget(note)
-                box.setMinimumHeight(22)
-                self.places.addWidget(box)
-                self.place_rows[place.id] = (dot, name, note, switch)
+                self.places.addWidget(self._place_row(place))
         from sprigcast.app.destinations import HEALTH_COLORS
 
         for place in places:
@@ -269,6 +303,80 @@ class LiveSide(QWidget):
             name.setText(place.name)
             name.setStyleSheet(f"color: {theme.TEXT if place.on else theme.MUTED}; background: transparent;")
             note.setText(place.note)
+            tools = self.place_tools.get(place.id)
+            if tools:
+                tall = place.canvas == "vertical"
+                tools["shape"].setText("Vertical" if tall else "Horizontal")
+                if "test" in tools:
+                    tools["test"].blockSignals(True)
+                    tools["test"].setChecked(bool(place.test))
+                    tools["test"].blockSignals(False)
+
+    def _place_row(self, place: Destination) -> QWidget:
+        if not self.editing:
+            box = QPushButton()
+            box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left; }")
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            box.setToolTip("Open this place's settings")
+            box.clicked.connect(lambda _=False, pid=place.id: self.on_destination(pid))
+        else:
+            box = QWidget()
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+        line = QHBoxLayout()
+        line.setSpacing(10)
+        dot, name, note = QLabel("●"), QLabel(), QLabel()
+        for label in (dot, name, note):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        switch = Switch()
+        switch.setCursor(Qt.CursorShape.PointingHandCursor)
+        switch.setToolTip("On: Go live sends here. Off: skipped.")
+        switch.toggled.connect(lambda on, pid=place.id: self.on_toggle(pid, on))
+        line.addWidget(switch)
+        line.addWidget(dot)
+        line.addWidget(name, 1)
+        line.addWidget(note)
+        outer.addLayout(line)
+        box.setMinimumHeight(22)
+        self.place_rows[place.id] = (dot, name, note, switch)
+        if self.editing:
+            tools_row = QHBoxLayout()
+            tools_row.setContentsMargins(40, 0, 0, 0)
+            tools_row.setSpacing(6)
+            tools: dict[str, QPushButton] = {}
+
+            def chip(key: str, text: str, tip: str, style: str = CHIP_STYLE) -> QPushButton:
+                b = QPushButton(text)
+                b.setStyleSheet(style)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.setToolTip(tip)
+                tools[key] = b
+                tools_row.addWidget(b)
+                return b
+
+            chip("shape", "", "Which canvas this place gets: click to swap").clicked.connect(
+                lambda _=False, pid=place.id: self.on_place(pid, "shape"))
+            if place.test is not None:
+                test = chip("test", "Test", "Bandwidth test: send to Twitch without going live")
+                test.setCheckable(True)
+                test.toggled.connect(lambda _on, pid=place.id: self.on_place(pid, "test"))
+            chip("settings", "⚙", "Key, bitrate and everything else").clicked.connect(
+                lambda _=False, pid=place.id: self.on_destination(pid))
+            tools_row.addStretch(1)
+            remove = chip("remove", "Remove", "Remove this place (click twice)", REMOVE_CHIP_STYLE)
+            remove.clicked.connect(lambda _=False, pid=place.id, b=remove: self._remove_clicked(pid, b))
+            outer.addLayout(tools_row)
+            self.place_tools[place.id] = tools
+        return box
+
+    def _remove_clicked(self, place_id: str, button: QPushButton) -> None:
+        """First click asks ("Sure?"), the second removes."""
+        if button.text() != "Sure?":
+            button.setText("Sure?")
+            return
+        self.on_place(place_id, "remove")
 
     # Sound --------------------------------------------------------------------------------
 

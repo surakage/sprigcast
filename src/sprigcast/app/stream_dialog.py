@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from sprigcast.app import theme
+from sprigcast.app.live_stage import Switch
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output import twitch_auth
 from sprigcast.output.keys import get_key, set_key
@@ -42,6 +46,58 @@ def _output_label(output: Output) -> str:
     return label
 
 
+PLACE_CARDS_STYLE = (
+    f"#placeCards {{ background: transparent; border: none; outline: none; }}"
+    f"#placeCards::item {{ background: {theme.PANEL}; color: {theme.TEXT}; border-radius: 14px;"
+    f" padding: 10px 14px; margin-bottom: 8px; }}"
+    f"#placeCards::item:hover {{ background: {theme.RAISED_HOVER}; }}"
+    f"#placeCards::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+)
+REMOVE_STYLE = theme.SMALL_PILL_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
+
+
+def _heading(text: str, size: int) -> QLabel:
+    label = QLabel(text)
+    font = label.font()
+    font.setPixelSize(size)
+    font.setWeight(QFont.Weight.DemiBold)
+    label.setFont(font)
+    return label
+
+
+def _section(title: str) -> tuple[QWidget, QFormLayout]:
+    """A heading over a soft rounded card (no OBS-style group box frame)."""
+    holder = QWidget()
+    outer = QVBoxLayout(holder)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(8)
+    outer.addWidget(_heading(title, 15))
+    card = QFrame()
+    card.setObjectName("streamCard")
+    card.setStyleSheet(f"#streamCard {{ background: {theme.PANEL}; border-radius: 16px; }}")
+    form = QFormLayout(card)
+    form.setContentsMargins(18, 16, 18, 16)
+    form.setHorizontalSpacing(16)
+    form.setVerticalSpacing(10)
+    outer.addWidget(card)
+    return holder, form
+
+
+def place_card_text(output: Output) -> str:
+    """Two lines for a place card: the service, then shape and quality (and off)."""
+    service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+    detail = output.canvas
+    if output.enhanced and output.service == "twitch":
+        detail += " · Enhanced"
+    elif output.size:
+        detail += f" · {output.size[1]}p"
+    if output.bandwidth_test and service.bandwidth_test:
+        detail += " · test"
+    if not output.enabled:
+        detail += " · off"
+    return f"{service.label}\n{detail}"
+
+
 class StreamPage(QWidget):
     """Edits copies of the collection's stream outputs; apply_to() writes them back and saves keys."""
 
@@ -55,30 +111,53 @@ class StreamPage(QWidget):
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        left = QVBoxLayout()
-        self.list = QListWidget()
-        self.list.currentRowChanged.connect(self._load)
-        left.addWidget(self.list)
-        buttons = QHBoxLayout()
-        add, remove = QPushButton("Add"), QPushButton("Remove")
-        add.clicked.connect(self._add)
-        remove.clicked.connect(self._remove)
-        buttons.addWidget(add)
-        buttons.addWidget(remove)
-        left.addLayout(buttons)
-        root.addLayout(left, 1)
+        root.setSpacing(18)
 
-        right = QVBoxLayout()
+        # Left: the places you stream to, as cards. "+ Add" sits on top so it never scrolls away.
+        left = QVBoxLayout()
+        left.setSpacing(10)
+        top = QHBoxLayout()
+        top.addWidget(_heading("Places", 17), 1)
+        self.add_button = QPushButton("+ Add")
+        self.add_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.add_button.setToolTip("Add another place to stream")
+        self.add_button.clicked.connect(self._add)
+        top.addWidget(self.add_button)
+        left.addLayout(top)
+        self.list = QListWidget()
+        self.list.setObjectName("placeCards")
+        self.list.setFixedWidth(220)
+        self.list.setFrameShape(QListWidget.Shape.NoFrame)
+        self.list.setStyleSheet(PLACE_CARDS_STYLE)
+        self.list.currentRowChanged.connect(self._load)
+        left.addWidget(self.list, 1)
+        root.addLayout(left)
+
+        # Right: the chosen place, scrolling on its own.
         self.form_widget = QWidget()
         groups = QVBoxLayout(self.form_widget)
-        groups.setContentsMargins(0, 0, 0, 0)
-
-        # Destination: where the stream goes and how SprigCast signs in.
-        destination = QGroupBox("Destination")
-        form = QFormLayout(destination)
-        self.enabled = QCheckBox("Go live here when I press Go live")
+        groups.setContentsMargins(0, 0, 8, 0)
+        groups.setSpacing(18)
+        hero = QHBoxLayout()
+        hero.setSpacing(12)
+        self.hero = _heading("", 22)
+        hero.addWidget(self.hero, 1)
+        self.enabled = Switch()
+        self.enabled.setToolTip("On: Go live sends here. Off: skipped.")
         self.enabled.toggled.connect(self._edited)
-        form.addRow("On", self.enabled)
+        self.enabled_label = QLabel("Go live here")
+        self.enabled_label.setStyleSheet(theme.MUTED_STYLE)
+        hero.addWidget(self.enabled_label)
+        hero.addWidget(self.enabled)
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.setStyleSheet(REMOVE_STYLE)
+        self.remove_button.setToolTip("Remove this place (and its saved stream key)")
+        self.remove_button.clicked.connect(self._remove)
+        hero.addWidget(self.remove_button)
+        groups.addLayout(hero)
+
+        # Account: which service and how SprigCast signs in.
+        destination, form = _section("Account")
         self.service = QComboBox()
         for key, service in SERVICES.items():
             self.service.addItem(service.label, key)
@@ -122,9 +201,8 @@ class StreamPage(QWidget):
         form.addRow("", self.help)
         groups.addWidget(destination)
 
-        # Video: what this destination gets from its canvas.
-        video = QGroupBox("Video")
-        form = QFormLayout(video)
+        # Picture: what this place gets from its canvas.
+        video, form = _section("Picture")
         self.canvas = QComboBox()
         for canvas in collection.canvases:
             self.canvas.addItem(f"{canvas.id} ({canvas.width}×{canvas.height})", canvas.id)
@@ -141,8 +219,8 @@ class StreamPage(QWidget):
         self.bitrate.setSingleStep(500)
         self.bitrate.setSuffix(" kbps")
         self.bitrate.valueChanged.connect(self._edited)
-        form.addRow("Video bitrate", self.bitrate)
-        self.video_note = QLabel("Encoder settings (rate control, preset, keyframes…) are in Settings → Output.")
+        form.addRow("Bitrate", self.bitrate)
+        self.video_note = QLabel("Encoder settings (rate control, preset, keyframes…) are on the Output page.")
         self.video_note.setWordWrap(True)
         self.video_note.setStyleSheet("color: gray")
         self.auto_bitrate = QCheckBox("Auto-pilot bitrate")
@@ -155,8 +233,7 @@ class StreamPage(QWidget):
         groups.addWidget(video)
 
         # Twitch Enhanced Broadcasting: Twitch picks several qualities for this PC, all sent at once.
-        self.enhanced_box = QGroupBox("Multitrack Video")
-        form = QFormLayout(self.enhanced_box)
+        self.enhanced_box, form = _section("Twitch Enhanced Broadcasting")
         intro = QLabel(
             "Twitch picks your stream qualities, and can take a vertical version too. "
             "Turning this on sends Twitch details about your PC and software. "
@@ -192,8 +269,7 @@ class StreamPage(QWidget):
         groups.addWidget(self.enhanced_box)
 
         # Advanced options.
-        advanced = QGroupBox("Advanced options")
-        form = QFormLayout(advanced)
+        advanced, form = _section("Extras")
         self.bandwidth_test = QCheckBox("Enable bandwidth test mode (send to Twitch without going live)")
         self.bandwidth_test.toggled.connect(self._edited)
         form.addRow("", self.bandwidth_test)
@@ -208,9 +284,12 @@ class StreamPage(QWidget):
         form.addRow("", note)
         groups.addWidget(advanced)
 
-        right.addWidget(self.form_widget)
-        right.addStretch(1)
-        root.addLayout(right, 3)
+        groups.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(self.form_widget)
+        root.addWidget(scroll, 1)
 
         self._refresh_list(0)
 
@@ -237,9 +316,11 @@ class StreamPage(QWidget):
         self._loading = True
         self.list.clear()
         for output in self.outputs:
-            self.list.addItem(output_label(output))
+            self.list.addItem(place_card_text(output))
         self._loading = False
         self.form_widget.setEnabled(bool(self.outputs))
+        if not self.outputs:
+            self.hero.setText("Nothing here yet. Press + Add.")
         if self.outputs:
             self.list.setCurrentRow(max(0, min(row, len(self.outputs) - 1)))
 
@@ -284,6 +365,7 @@ class StreamPage(QWidget):
             return
         self._loading = True
         self.enabled.setChecked(output.enabled)
+        self.hero.setText(SERVICES.get(output.service or "custom", SERVICES["custom"]).label)
         self.service.setCurrentIndex(max(0, self.service.findData(output.service or "custom")))
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(output.canvas)))
         self._fill_size_and_fps(output.size, output.fps)
@@ -402,7 +484,8 @@ class StreamPage(QWidget):
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()
         self._show_service(output)
-        self.list.item(self.list.currentRow()).setText(output_label(output))
+        self.list.item(self.list.currentRow()).setText(place_card_text(output))
+        self.hero.setText(SERVICES.get(output.service or "custom", SERVICES["custom"]).label)
 
     def _twitch_clicked(self) -> None:
         output = self._current()
