@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import moderngl
 import numpy as np
@@ -592,6 +593,9 @@ class Compositor:
         self.looks: dict[str, moderngl.Texture3D | None] = {}
         self.masks: dict[str, tuple[moderngl.Texture, bool] | None] = {}
         self.load_errors: dict[str, str] = {}  # key -> why it couldn't be loaded (shown in the Filters window)
+        # When each output-only target was last drawn: ("nv12" | "scaled", key) or ("canvas", "clean:<id>").
+        # prune() lets go of the ones nobody has drawn for a while (see prune).
+        self._used: dict[tuple, float] = {}
 
     # Sources -------------------------------------------------------------
 
@@ -671,6 +675,8 @@ class Compositor:
         and `cut` says whether the cut point has passed; `wipe_map` is the texture key of a wipe image.
         """
         target = self._target(canvas)
+        if canvas.id.startswith("clean:"):
+            self._used[("canvas", canvas.id)] = time.monotonic()
         size = (canvas.width, canvas.height)
         if previous is None or progress >= 1.0:
             self._draw_scene(target.fbo, size, scene, source_sizes)
@@ -860,6 +866,7 @@ class Compositor:
             for key in [k for k in self.scaled_targets if k[0] == canvas_id]:  # the preview was resized
                 self.scaled_targets.pop(key).release()
             target = self.scaled_targets[(canvas_id, size)] = _ScaledTarget(self.ctx, size)
+        self._used[("scaled", (canvas_id, size))] = time.monotonic()
         self.ctx.disable(moderngl.BLEND)
         source.color.use(0)
         self.scale_program["canvas"].value = 0
@@ -886,6 +893,7 @@ class Compositor:
         target = self.nv12_targets.get((canvas_id, size))
         if target is None:
             target = self.nv12_targets[(canvas_id, size)] = _Nv12Target(self.ctx, size)
+        self._used[("nv12", (canvas_id, size))] = time.monotonic()
         w, h = size
         self.ctx.disable(moderngl.BLEND)
         source.color.use(0)
@@ -923,6 +931,20 @@ class Compositor:
 
         target.pbos.fill(tag, now, queue)
         return target.pbos.take(now)
+
+    def prune(self, idle_s: float = 3.0, now: float | None = None) -> int:
+        """Let go of output-only targets nobody has drawn for idle_s: the NV12 and scaled copies (with
+        their two read-back buffers each) of a recording, stream or preview that ended, and source
+        record's clean copy of a canvas. They used to stay until SprigCast closed. Returns how many."""
+        now = time.monotonic() if now is None else now
+        stale = [key for key, when in self._used.items() if now - when > idle_s]
+        for kind, key in stale:
+            del self._used[(kind, key)]
+            pool = {"nv12": self.nv12_targets, "scaled": self.scaled_targets, "canvas": self.targets}[kind]
+            target = pool.pop(key, None)
+            if target is not None:
+                target.release()
+        return len(stale)
 
     def release(self) -> None:
         for tex in self.textures.values():
