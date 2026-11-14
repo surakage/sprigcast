@@ -579,7 +579,9 @@ class Recorder:
         if x < expected - 0.4:
             return None
         if self._last_queued < 0:
-            pts = max(0, round(x))  # the first frame sets the phase: later ticks sit near whole numbers
+            # The first frame sets the phase: later ticks sit near whole numbers. Rounding up from
+            # x.5-x.6 put the next tick more than 0.4 early, so it was skipped as a spare render.
+            pts = max(0, math.floor(x + 0.3))
         else:
             pts = expected if x < expected + 0.9 else round(x)
         self._last_queued = pts

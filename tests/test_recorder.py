@@ -331,3 +331,15 @@ def test_enhanced_broadcasting_options_follow_the_encoder():
     amf = encoder_options("h264_amf", {"profile": "main"}, 3000)
     assert amf["rc"] == "cbr" and amf["profile"] == "main" and amf["maxrate"] == "3000k"
     assert _sw_format("h264_qsv") == "nv12" and _sw_format("libx264") == "yuv420p"
+
+
+def test_the_first_frame_never_costs_the_second(tmp_path):
+    # A first frame at x.5-x.6 of a slot used to round up, leaving the next one "early" and skipped.
+    class F:
+        def __init__(self, t):
+            self.time = t
+
+    for phase in (0.0, 0.3, 0.45, 0.5, 0.55, 0.6, 0.75, 0.95):
+        rec = Recorder(tmp_path / "x.mkv", 64, 64, 30, 1000, "libx264", 0.0)
+        got = [rec._assign_pts(F((i + phase) / 30)) for i in range(10)]
+        assert None not in got and got == list(range(got[0], got[0] + 10)), (phase, got)
