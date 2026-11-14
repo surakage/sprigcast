@@ -144,6 +144,7 @@ def _save_tokens(reply: dict, cid: str, account: dict | None = None) -> dict:
         account = {"login": users[0]["login"], "user_id": users[0]["id"]}
     tokens.update(login=account["login"], user_id=account["user_id"])
     set_key(TOKEN_REF, json.dumps(tokens))
+    _announce(account["login"])
     return tokens
 
 
@@ -158,6 +159,46 @@ def connected_account() -> str | None:
 
 def disconnect() -> None:
     set_key(TOKEN_REF, "")
+    _announce("")
+
+
+# Who's connected, without opening the credential store ----------------------------------
+
+LOGIN_SETTING = "twitch/login"  # the connected login name ("" = none), kept in QSettings: it isn't secret
+_events = None
+
+
+def account_events():
+    """A Qt object whose `changed(str)` fires with the login name when Twitch is connected, "" when
+    disconnected. Create it on the UI thread first (the Chat panel does), so signals land there."""
+    global _events
+    if _events is None:
+        from PySide6.QtCore import QObject, Signal
+
+        class _Events(QObject):
+            changed = Signal(str)
+
+        _events = _Events()
+    return _events
+
+
+def remembered_login() -> str | None:
+    """The connected login from QSettings: None if never recorded (older installs), "" if not connected."""
+    from PySide6.QtCore import QSettings
+
+    value = QSettings().value(LOGIN_SETTING)
+    return None if value is None else str(value)
+
+
+def _announce(login: str) -> None:
+    try:
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue(LOGIN_SETTING, login)
+    except Exception:
+        return
+    if _events is not None:
+        _events.changed.emit(login)
 
 
 def _load() -> dict | None:
