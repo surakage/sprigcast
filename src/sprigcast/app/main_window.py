@@ -3321,6 +3321,15 @@ class MainWindow(QMainWindow):
         videos = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
         return str(Path(videos or Path.home()) / "SprigCast")
 
+    def _cheer_live(self) -> None:
+        """A few seconds of "You're live!" over the Live screen, naming where it goes."""
+        from sprigcast.app.empty import LiveCheer
+
+        if getattr(self, "live_cheer", None) is None:
+            self.live_cheer = LiveCheer(self.live_stage)
+        names = [st.name for _, st in self.streaming.streamers] if self.streaming is not None else []
+        self.live_cheer.cheer(", ".join(dict.fromkeys(names)))
+
     def _say(self, text: str) -> None:
         """A short note in the status bar, drawn now (the next step may keep the UI busy a moment)."""
         self.statusBar().showMessage(text, 6000)
@@ -3527,6 +3536,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
             return
         self.live_side.set_live(True)
+        self._cheer_live()
         for preview in self.previews.values():
             preview.ring = theme.LIVE
             preview.update()
