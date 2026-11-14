@@ -59,6 +59,7 @@ class Preview(QWidget):
         self.aspect = aspect
         self.scene: Scene | None = None
         self.sizes: dict[str, tuple[int, int]] = {}
+        self.statuses: dict[str, str] = {}  # source id -> status, from the engine (empty pages get a placeholder)
         self.selected_index: int | None = None
         self.transparent = True  # show see-through canvas areas as a checkerboard
         self.live_look = False  # Live's stage: rounded corners, no checkerboard frame
@@ -80,6 +81,7 @@ class Preview(QWidget):
         self.safe_zones = "Off"  # see safe_zones.CHOICES; only portrait canvases draw them
         self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
+        self._image_data: bytes | None = None  # what _image draws from, kept alive while it does
         self._drag: tuple[str, int | None, QPointF, SceneItem] | None = None  # mode, corner, start, item copy
         self.setMinimumSize(160, 160)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -91,9 +93,14 @@ class Preview(QWidget):
 
     def set_frame(self, data: bytes, width: int, height: int, canvas_size: tuple[int, int] | None = None) -> None:
         """An image of the canvas; it may be smaller than the canvas (shrunk to fit on screen)."""
-        # copy() detaches the image from the bytes object, which the engine may drop at any time.
         fmt = QImage.Format.Format_RGBA8888_Premultiplied if self.transparent else QImage.Format.Format_RGBA8888
-        self._image = QImage(data, width, height, width * 4, fmt).copy()
+        if isinstance(data, bytes):
+            # bytes never change, so the image can use them in place while we hold them: no copy per frame.
+            self._image_data = data
+            self._image = QImage(data, width, height, width * 4, fmt)
+        else:  # a reused or changing buffer: copy() detaches the image from it
+            self._image_data = None
+            self._image = QImage(data, width, height, width * 4, fmt).copy()
         self.aspect = canvas_size or (width, height)  # editing works in canvas pixels, whatever the image size
         self.update()
 
@@ -111,7 +118,7 @@ class Preview(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         """A preview that isn't showing keeps no picture (up to 8 MB); a new one arrives when it is shown."""
-        self._image = self._inner_image = None
+        self._image = self._inner_image = self._image_data = None
         super().hideEvent(event)
 
     def set_inner(self, placement: SceneItem | None, part_size: tuple[int, int] | None) -> None:
@@ -250,10 +257,48 @@ class Preview(QWidget):
                 p.setPen(QPen(QColor(self.ring), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), 23, 23)
+        self._paint_empty_pages(p)
         self._paint_inner(p)
         self._paint_safe_zones(p)
         self._paint_selection(p)
         p.end()
+
+    def _paint_empty_pages(self, p: QPainter) -> None:
+        """A browser source with no page yet: a dashed card with a leaf and its size, so it can be placed
+        and sized before the page exists. Only here in the editor: viewers see nothing."""
+        if not self.editable or self.scene is None or self._image is None:
+            return
+        for item in self.scene.items:
+            if not item.visible or self.statuses.get(item.source) != "No page set":
+                continue
+            size = self.sizes.get(item.source)
+            quad = item.quad(size) if size and size[0] and size[1] else None
+            if not quad:
+                continue
+            tl, tr, bl, br = (self.to_widget(x, y) for x, y, _u, _v in quad)
+            shape = QPolygonF([tl, tr, br, bl])
+            box = shape.boundingRect()
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QPen(QColor(theme.ACCENT), 1.5, Qt.PenStyle.DashLine))
+            p.setBrush(QColor(79, 216, 143, 28))
+            p.drawPolygon(shape)
+            side = min(box.width(), box.height())
+            if side >= 24:
+                leaf = min(56.0, side * 0.35)
+                text_h = 34 if box.height() >= leaf + 44 else 0
+                top = box.center().y() - (leaf + text_h) / 2
+                theme.paint_leaf(p, QRectF(box.center().x() - leaf / 2, top, leaf, leaf), True,
+                                 QColor(79, 216, 143, 170))
+                if text_h and box.width() >= 90:
+                    p.setPen(QColor(theme.TEXT))
+                    font = p.font()
+                    font.setPointSizeF(max(7.0, font.pointSizeF() * 0.9))
+                    p.setFont(font)
+                    p.drawText(QRectF(box.left() + 4, top + leaf + 4, box.width() - 8, text_h),
+                               Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+                               f"Browser · {size[0]}×{size[1]}\nAdd a link in Sources")
+            p.restore()
 
     def _paint_safe_zones(self, p: QPainter) -> None:
         """Where the vertical apps put their buttons and captions: tinted boxes, and the clear middle outlined."""

@@ -259,3 +259,23 @@ def test_interact_puts_the_page_on_screen_and_back(tmp_path):
         assert "w" not in host.pages
     finally:
         host.shutdown()
+
+
+def test_an_empty_page_opens_no_browser_until_a_link_is_added():
+    host = FakeHost()
+    browser.set_host(host)
+    try:
+        source = BrowserSource("b", {"url": "https://"})
+        source.start()
+        assert source.status == "No page set" and host.calls == []  # no Chromium page for nothing
+        source.update({"url": "https://a.com"})
+        assert host.calls == [("open", "https://a.com")] and source.status == "ok"
+        source.update({"url": ""})
+        assert host.calls[-1] == ("close",) and source.status == "No page set"
+        source.sleep()
+        source.update({"url": "https://b.com"})
+        assert host.calls[-1] == ("close",)  # asleep: waits until it's on screen again
+        source.wake()
+        assert host.calls[-1] == ("open", "https://b.com")
+    finally:
+        browser.set_host(None)

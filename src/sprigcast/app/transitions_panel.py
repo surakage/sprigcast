@@ -89,6 +89,14 @@ def short_name(path: str, empty: str = "Choose…") -> str:
     return name if len(name) <= 22 else name[:10] + "…" + name[-10:]
 
 
+
+# While live, the Live card's picture only plays when pointed at: no repainting during a stream for show.
+QUIET = [False]
+
+
+def set_quiet(quiet: bool) -> None:
+    QUIET[0] = quiet
+
 class TransitionPicture(QWidget):
     """A small moving picture of the transition: an "A" card turning into a "B" card, looping."""
 
@@ -117,7 +125,7 @@ class TransitionPicture(QWidget):
         # Play once every few seconds while it's on screen; it rests (and costs nothing) in between.
         self._every = QTimer(self)
         self._every.setInterval(5000)
-        self._every.timeout.connect(lambda: self.play(1) if not self._loops_left else None)
+        self._every.timeout.connect(lambda: self.play(1) if not self._loops_left and not QUIET[0] else None)
 
     def play(self, loops: int = 2) -> None:
         """Run the picture a couple of times (it rests on the A card in between, costing nothing)."""

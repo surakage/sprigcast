@@ -238,6 +238,9 @@ def _sources(c: Checkup) -> list[Finding]:
     found = []
     for s in c.collection.sources:
         status = c.statuses.get(s.id)
+        if status == "No page set":  # an empty browser source shows nothing: a note, not a reason to stop
+            found.append(Finding("info", "Sources", f"{s.name} has no page yet: it shows nothing until you add one."))
+            continue
         if status and not status.startswith(OK_STATUSES):
             found.append(Finding("bad", "Sources", f"{s.name} isn't working ({status}): "
                                                    "check it's plugged in or open, or edit it in Sources."))

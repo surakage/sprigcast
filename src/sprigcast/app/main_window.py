@@ -2182,7 +2182,7 @@ class MainWindow(QMainWindow):
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
                 for preview in [*self.previews.values(), self.part_preview]:
-                    preview.sizes = self.source_sizes
+                    preview.sizes, preview.statuses = self.source_sizes, self.source_statuses
                 self._refresh_source_labels()
                 selected = self._item()
                 if selected is not None and self.spin["w"].value() == 0 and selected.source in self.source_sizes:
@@ -4106,6 +4106,9 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
             return
         self.live_side.set_live(True)
+        from sprigcast.app import transitions_panel
+
+        transitions_panel.set_quiet(True)  # its picture plays only when pointed at while live
         self._cheer_live()
         for preview in self.previews.values():
             preview.ring = theme.LIVE
@@ -4179,6 +4182,9 @@ class MainWindow(QMainWindow):
             return
         self._say("Ending stream…")
         session.stop()
+        from sprigcast.app import transitions_panel
+
+        transitions_panel.set_quiet(False)
         self.live_side.set_live(False)
         for preview in self.previews.values():
             preview.ring = None
