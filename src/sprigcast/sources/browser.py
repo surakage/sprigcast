@@ -99,6 +99,7 @@ class BrowserSource(Source):
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
         self._open = False
+        self._wanted = False  # started and awake: a page set later opens straight away
         self._blank = True  # send one clear frame so a new source has a size before the page draws
 
     @property
@@ -112,28 +113,35 @@ class BrowserSource(Source):
         self._start_page()
 
     def _start_page(self) -> None:
+        self._wanted = True
         if _host is None:
             self.status = "Browser sources need Qt WebEngine"
             return
         if not page_url(self.settings):
+            # Nothing to show: no Chromium page (each costs tens of MB). The preview draws a placeholder.
+            if self._open:
+                _host.close(self.id)
+                self._open = False
             self.status = "No page set"
-        else:
-            self.status = "ok"
+            self._blank = True
+            return
+        self.status = "ok"
         _host.open(self.id, dict(self.settings))
         self._open = True
 
     def stop(self) -> None:
         if _host is not None and self._open:
             _host.close(self.id)
-        self._open = False
+        self._open = self._wanted = False
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
-        if self._open:
+        if self._open or self._wanted:
             self._start_page()  # the host reloads only when something that matters changed
 
     def sleep(self) -> None:
         if not self._open or _host is None:
+            self._wanted = False
             return
         if self._keep_running():
             _host.pause(self.id, True)

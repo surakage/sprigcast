@@ -112,3 +112,18 @@ def test_dialog_shows_findings():
 def test_a_source_asleep_off_screen_is_not_a_problem():
     findings = examine(_checkup(has_key=lambda ref: True, statuses={"cam": "paused (not on screen)"}))
     assert not any(f.area == "Sources" for f in findings)
+
+
+def test_an_empty_browser_page_is_a_note_not_a_reason_to_stop():
+    from sprigcast.app import doctor
+
+    findings = doctor._sources(_SourcesCheck())
+    assert [f.level for f in findings] == ["info"]
+
+
+class _SourcesCheck:
+    def __init__(self):
+        from types import SimpleNamespace as NS
+
+        self.collection = NS(sources=[NS(id="b", name="Alerts")])
+        self.statuses = {"b": "No page set"}
