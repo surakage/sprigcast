@@ -22,7 +22,16 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.live_stage import heading
-from sprigcast.app.control_server import ENABLED, LAN, PASSWORD, PORT, USE_PASSWORD, saved_settings
+from sprigcast.app.control_server import (
+    ENABLED,
+    LAN,
+    NATIVE_PATH,
+    OBS_DOOR,
+    PASSWORD,
+    PORT,
+    USE_PASSWORD,
+    saved_settings,
+)
 from sprigcast.control.protocol import new_password
 
 def _hint(text: str) -> QLabel:
@@ -111,11 +120,17 @@ class ConnectionsPage(QWidget):
         self.use_password.toggled.connect(lambda on: [w.setEnabled(on) for w in (self.password, self.show_password, self.new_password)])
         self.use_password.toggled.emit(self.use_password.isChecked())
 
-        devices, dbox = _card("Other devices")
+        devices, dbox = _card("Who can connect")
         self.lan = QCheckBox("Let phones and other computers on my network connect")
         self.lan.setChecked(s["lan"])
         dbox.addWidget(self.lan)
         dbox.addWidget(_hint("Only needed when the app runs on another device. Keep a password on."))
+        dbox.addSpacing(6)
+        self.obs_door = QCheckBox("Compatibility mode")
+        self.obs_door.setChecked(s["obs_door"])
+        dbox.addWidget(self.obs_door)
+        dbox.addWidget(_hint("For apps that can only connect the way they connect to OBS. "
+                             "New features come to SprigCast's own connection first."))
 
         connect, cbox = _card("Connect an app")
         self.details = QLabel()
@@ -131,7 +146,7 @@ class ConnectionsPage(QWidget):
         self.status.setStyleSheet(theme.NOTE_STYLE + " padding: 8px 14px;")
         cbox.addWidget(self.status, 0, Qt.AlignmentFlag.AlignLeft)
 
-        for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled):
+        for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled, self.obs_door.toggled):
             signal.connect(self._refresh)
         self.port.valueChanged.connect(self._refresh)
         self.password.textChanged.connect(self._refresh)
@@ -152,7 +167,7 @@ class ConnectionsPage(QWidget):
 
     def connect_text(self) -> str:
         host = "127.0.0.1"
-        lines = [f"Server: {host}", f"Port: {self.port.value()}"]
+        lines = [f"Address: ws://{host}:{self.port.value()}{NATIVE_PATH}", f"Server: {host}", f"Port: {self.port.value()}"]
         lines.append(f"Password: {self.password.text()}" if self.use_password.isChecked() else "Password: none")
         return "\n".join(lines)
 
@@ -186,4 +201,5 @@ class ConnectionsPage(QWidget):
         q.setValue(USE_PASSWORD, self.use_password.isChecked())
         q.setValue(PASSWORD, self.password.text().strip() or new_password())
         q.setValue(LAN, self.lan.isChecked())
+        q.setValue(OBS_DOOR, self.obs_door.isChecked())
         QTimer.singleShot(0, self._refresh)  # the server restarts once Settings is applied

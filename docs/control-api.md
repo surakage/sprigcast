@@ -1,0 +1,231 @@
+# SprigCast control API
+
+Let stream tools, control decks, bots, scripts and plugins drive SprigCast.
+
+Turn it on in **Settings → Connections**, then connect a WebSocket to:
+
+```
+ws://127.0.0.1:4455/sprigcast
+```
+
+The port and password are the ones shown in Settings → Connections. Apps on other devices can connect only when "Let phones and other computers on my network connect" is on.
+
+## Words
+
+| Word | Meaning |
+| --- | --- |
+| bloom | a show you put on air (a scene) |
+| sprig | a reusable part placed inside blooms, with optional Live states |
+| item | one thing inside a bloom or sprig |
+| shape | a canvas: `horizontal` or `vertical` |
+| sound | anything in the mixer |
+| place | somewhere you stream to (Twitch, YouTube…) |
+
+Things are named by **name or id**. Any action that changes a bloom takes `shape`: `both` (the default), or one shape.
+
+## Connecting
+
+```
+server → {"hello": {"app": "SprigCast", "version": "0.1.0", "api": 1, "auth": {"salt": "…", "challenge": "…"}}}
+app    → {"auth": "<answer>", "events": ["bloom", "sound"]}
+server → {"welcome": {"api": 1, "events": ["bloom", "sound"]}}
+```
+
+`auth` is `null` when no password is set. Then send `{"events": "all"}` (or a list, or `"none"`) to start.
+
+The password answer is `base64(sha256(base64(sha256(password + salt)) + challenge))`. This is the same as obs-websocket's, so existing client code can be reused.
+
+## Asking
+
+```
+app    → {"id": "7", "do": "bloom.show", "bloom": "BRB", "shape": "both"}
+server → {"id": "7", "ok": true, "result": {…}}
+server → {"id": "7", "ok": false, "error": {"code": "not_found", "message": "No bloom called 'BRB'."}}
+```
+
+Error codes:
+
+| Code | Meaning |
+| --- | --- |
+| `bad_request` | a field is missing or has the wrong type |
+| `not_found` | no such bloom, sprig, item, sound, source, filter or place |
+| `not_allowed` | it can't be done here, e.g. putting a sprig on air |
+| `busy` | already doing it, e.g. already live |
+| `unknown_action` | no such action |
+| `failed` | something went wrong inside SprigCast |
+
+`app.actions` returns every action with its fields, so a plugin can build its menus from it.
+
+## Events
+
+Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
+
+| Group | Events |
+| --- | --- |
+| `bloom` | `bloom.shown` (bloom, bloomId, shape), `bloom.linedUp`, `blooms.changed` |
+| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible) |
+| `sprig` | `sprig.state` (sprig, sprigId, state) |
+| `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
+| `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed` |
+| `source` | `source.changed` (source, sourceId, settings) |
+| `output` | `stream.changed`, `record.changed`, `clips.changed` (on), `clip.saved` (files) |
+| `studio` | `studio.changed` (on) |
+| `transition` | `transition.changed` (kind, ms) |
+| `custom` | `custom` (data), sent by another app with `app.broadcast` |
+| `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
+
+## Examples
+
+```json
+{"do": "bloom.show", "bloom": "Just Chatting"}
+{"do": "bloom.show", "bloom": "Shorts", "shape": "vertical"}
+{"do": "item.toggle", "bloom": "Gaming", "item": "Webcam"}
+{"do": "sprig.state", "sprig": "Cam frame", "state": "Alert showing"}
+{"do": "sound.mute", "sound": "Mic"}
+{"do": "sound.volume", "sound": "Music", "change": -6}
+{"do": "filter.set", "source": "Facecam", "filter": "Blur", "on": true}
+{"do": "filter.set", "source": "Facecam", "filter": "Color Correction", "settings": {"saturation": 0.4}}
+{"do": "source.set", "source": "Goal text", "settings": {"text": "Sub goal: 42 / 50"}}
+{"do": "clip.save"}
+{"do": "stream.toggle"}
+```
+
+## Every action
+
+### app
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `app.actions` | Every action with what it does and its fields (fields starting with ? are optional). | none |
+| `app.broadcast` | Send your own event to every connected app. | `data`: any object |
+| `app.info` | Version, API version and the shapes this setup has. | none |
+| `app.stats` | Frames per second, render time and memory. | none |
+
+### bloom
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `bloom.current` | The bloom on air in each shape. | none |
+| `bloom.go` | Studio mode: send what's lined up in Next on air (Bloom it). | none |
+| `bloom.lineUp` | Studio mode: line a bloom up in Next (turns Studio mode on). | `bloom`: name or id |
+| `bloom.show` | Put a bloom on air. | `bloom`: name or id, `shape` (optional): both (default), horizontal or vertical |
+| `blooms.list` | Every bloom, its shapes and which shapes it's on air in. | none |
+
+### clip
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `clip.save` | Save the last seconds as a clip (gets clips ready first if they're off). | none |
+| `clips.set` | Keep clips ready (on) or stop (off). | `on`: true or false |
+| `clips.status` | Whether clips are ready and how long a clip is. | none |
+
+### filter
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `filter.add` | Add a filter to a source. | `source`: name or id, `kind`: kind from filters.kinds, `name` (optional): its name, `settings` (optional): {key: value}, `on` (optional): true (default) or false |
+| `filter.move` | Move a filter to a new place in the list (0 = top). | `source`: name or id, `filter`: name, id or kind, `index`: new position |
+| `filter.remove` | Remove a filter from a source. | `source`: name or id, `filter`: name, id or kind |
+| `filter.set` | Turn a filter on or off and/or change some of its settings (others stay). | `source`: name or id, `filter`: filter name, id or kind, `on` (optional): true or false, `settings` (optional): {key: value} |
+| `filter.toggle` | Turn a filter on if off, off if on. | `source`: name or id, `filter`: name, id or kind |
+| `filters.kinds` | Filter kinds you can add, with their settings and limits. | none |
+| `filters.list` | A source's filters, top to bottom. | `source`: name or id |
+
+### hotkey
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `hotkey.list` | Hotkey actions and what they do. | none |
+| `hotkey.run` | Do what a hotkey does (hotkey.list shows them). | `hotkey`: hotkey action id |
+
+### item
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `item.hide` | Hide something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `items.list` | What's inside a bloom or sprig, per shape. | `bloom` (optional): name or id, `sprig` (optional): name or id |
+
+### place
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `place.set` | Switch a place on or off for the next Go live. | `place`: id from places.list, `on`: true or false |
+| `places.list` | Where the stream goes (Twitch, YouTube...), each one's shape and if it's on. | none |
+
+### record
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `record.start` | Start recording. | none |
+| `record.status` | Recording or not, for how long, and the file. | none |
+| `record.stop` | Stop recording. | none |
+| `record.toggle` | Start or stop recording. | none |
+
+### sound
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `sound.balance` | Left/right: -1 left, 0 middle, 1 right. | `sound`: name or id, `balance`: -1 to 1 |
+| `sound.micFirst` | Lower everything else while your mic talks (ducking). | `on`: true or false |
+| `sound.mute` | Mute or unmute a sound (no muted: toggle). | `sound`: name or id, `muted` (optional): true or false |
+| `sound.volume` | Set a sound's volume in dB, or change it by some dB. | `sound`: name or id, `db` (optional): new volume, -100 to 26, `change` (optional): dB to add (negative to lower) |
+| `sounds.list` | Every sound in the mixer with its volume and mute. | none |
+
+### source
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `source.get` | A source's settings. | `source`: name or id |
+| `source.rename` | Give a source a new name. | `source`: name or id, `name`: new name |
+| `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a colour... | `source`: name or id, `settings`: {key: value} |
+| `sources.list` | Every source (cameras, text, browser pages, images, sounds...). | none |
+
+### sprig
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `sprig.state` | Switch a sprig to one of its Live states (null: as built). | `sprig`: name or id, `state`: state name or null |
+| `sprigs.list` | Every sprig, its Live states and the state showing. | none |
+
+### stream
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `stream.start` | Go live to every place that's switched on. | none |
+| `stream.status` | Live or not, for how long, and dropped frames. | none |
+| `stream.stop` | End the stream. | none |
+| `stream.toggle` | Go live, or end the stream. | none |
+
+### studio
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `studio.set` | Studio mode on or off (blooms line up in Next before going on air). | `on`: true or false |
+
+### transition
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `transition.get` | The usual transition and its length. | none |
+| `transition.set` | Change the usual transition and/or its length. | `kind` (optional): cut, fade, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000 |
+
+## The OBS-compatible door
+
+Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. That door is frozen: new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
+
+## Adding actions from a plugin
+
+A plugin in the plugins folder can add its own actions:
+
+```python
+from sprigcast.control.native import register_action
+
+def burst(api, data):
+    return {"amount": data.get("amount", 1)}
+
+register_action("confetti.burst", "Throw confetti.", {"amount": "?how much"}, burst)
+```
+
+Apps then call `{"do": "confetti.burst", "amount": 3}`, and the action shows up in `app.actions`.
