@@ -148,7 +148,9 @@ class LiveSide(QWidget):
                  on_destination: Callable[[str | None], None],
                  on_toggle: Callable[[str, bool], None] | None = None,
                  on_place: Callable[[str, str], None] | None = None,
-                 on_settings: Callable[[], None] | None = None):
+                 on_settings: Callable[[], None] | None = None,
+                 on_sound: Callable[[str, dict], None] | None = None,
+                 on_sound_filters: Callable[[str], None] | None = None):
         """on_destination(id): open Settings on a place (None: the first, "new:<service>": add one).
         on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"."""
         super().__init__()
@@ -227,15 +229,12 @@ class LiveSide(QWidget):
         self.place_tools: dict[str, dict[str, QPushButton]] = {}
         self._shape_key: tuple | None = None
 
+        from sprigcast.app.sound_card import SoundCard
+
         sound_card = side_card()
-        sound = sound_card.layout()
-        sound.addWidget(heading("Sound"))
-        self.sounds = QVBoxLayout()
-        self.sounds.setSpacing(12)
-        sound.addLayout(self.sounds)
+        self.sound = SoundCard(on_sound or (lambda _id, _changes: None), on_sound_filters or (lambda _id: None))
+        sound_card.layout().addWidget(self.sound)
         root.addWidget(sound_card)
-        self.meters: dict[str, ThinMeter] = {}
-        self._sound_shape: list | None = None
 
         root.addStretch(1)
         self.stats = QLabel("")
@@ -391,41 +390,12 @@ class LiveSide(QWidget):
 
     # Sound --------------------------------------------------------------------------------
 
-    def show_sound(self, sources: list[tuple[str, str, bool]]) -> None:
-        """(source id, name, muted) for every audio source shown in the mixer."""
-        if sources == self._sound_shape:
-            return
-        self._sound_shape = list(sources)
-        while self.sounds.count():
-            item = self.sounds.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        self.meters = {}
-        if not sources:
-            empty = QLabel("No mic or desktop audio yet")
-            empty.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
-            self.sounds.addWidget(empty)
-        for source_id, name, muted in sources:
-            box = QWidget()
-            col = QVBoxLayout(box)
-            col.setContentsMargins(0, 0, 0, 0)
-            col.setSpacing(7)
-            label = QLabel(name + ("   muted" if muted else ""))
-            label.setWordWrap(True)
-            label.setStyleSheet(f"color: {theme.MUTED if muted else theme.TEXT}; background: transparent;")
-            meter = ThinMeter()
-            meter.muted = muted
-            col.addWidget(label)
-            col.addWidget(meter)
-            self.sounds.addWidget(box)
-            self.meters[source_id] = meter
+    def show_sound(self, sources: list) -> None:
+        """Sound items for every audio source shown in Live (see app/sound_card.py)."""
+        self.sound.show_sound(sources)
 
     def set_levels(self, levels: dict[str, tuple[float, float]]) -> None:
-        for source_id, meter in self.meters.items():
-            if source_id in levels:
-                meter.set_db(levels[source_id][1])
+        self.sound.set_levels(levels)
 
 
 class StageCard(QFrame):

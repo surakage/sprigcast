@@ -71,7 +71,39 @@ def is_voice(source) -> bool:
 
 
 def is_monitored(source) -> bool:
+    """True for "me + stream" and "just me" (monitor: True or "only")."""
     return bool((getattr(source, "settings", {}) or {}).get("monitor", False))
+
+
+def is_monitor_only(source) -> bool:
+    """'Just me': on your speakers, never in the stream or recordings."""
+    return (getattr(source, "settings", {}) or {}).get("monitor") == "only"
+
+
+MAX_DELAY_MS = 2000
+
+
+def shape(block: np.ndarray, settings: dict, pending: dict, key: str) -> np.ndarray:
+    """Per-source mono, left/right balance and delay (sync offset), after the filters.
+
+    settings: "mono" (bool), "balance" (-1 left .. 0 centre .. 1 right), "delay_ms" (0..2000).
+    pending[key] holds the delayed samples between blocks."""
+    if settings.get("mono"):
+        both = block.mean(axis=1, keepdims=True)
+        block = np.repeat(both, 2, axis=1)
+    balance = max(-1.0, min(1.0, float(settings.get("balance", 0.0) or 0.0)))
+    if balance:
+        block = block * np.array([min(1.0, 1.0 - balance), min(1.0, 1.0 + balance)], dtype=np.float32)
+    delay = int(max(0, min(MAX_DELAY_MS, int(settings.get("delay_ms", 0) or 0))) * SAMPLE_RATE / 1000)
+    if delay:
+        held = pending.get(key)
+        if held is None or len(held) != delay:
+            held = np.zeros((delay, 2), dtype=np.float32)  # a new delay starts with silence
+        joined = np.concatenate([held, block.astype(np.float32, copy=False)])
+        block, pending[key] = joined[: len(block)], joined[len(block):]
+    else:
+        pending.pop(key, None)
+    return block
 
 
 class Mixer:
@@ -83,6 +115,7 @@ class Mixer:
         self._monitor_taps: list[Callable[[np.ndarray], None]] = []
         self._taps: list[Callable[[np.ndarray], None]] = []
         self._sources: list = []
+        self._delays: dict[str, np.ndarray] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
@@ -154,6 +187,10 @@ class Mixer:
                 except Exception:
                     log.exception("audio filters on %s failed; turning them off", source.id)
                     source.audio_chain = None
+            settings = getattr(source, "settings", {}) or {}
+            if settings.get("mono") or settings.get("balance") or settings.get("delay_ms") \
+                    or source.id in self._delays:
+                block = shape(block, settings, self._delays, source.id)
             gain = source.gain
             voice = is_voice(source)
             if voice and gain:
@@ -164,7 +201,8 @@ class Mixer:
         for source, block, gain, voice in processed:
             if not voice and not (isinstance(duck, float) and duck == 1.0):
                 block = block * duck
-            blocks.append((block, gain))
+            if not is_monitor_only(source):
+                blocks.append((block, gain))
             meters[source.id] = levels(block * gain) if gain else (FLOOR_DB, FLOOR_DB)
             if monitor_taps and gain and is_monitored(source):
                 monitored.append((block, gain))

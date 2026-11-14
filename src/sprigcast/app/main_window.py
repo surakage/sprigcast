@@ -162,6 +162,7 @@ def _dot(colour: str, size: int = 12) -> QIcon:
     p.drawEllipse(1, 1, size - 2, size - 2)
     p.end()
     return QIcon(pix)
+from sprigcast.app.sound_card import Sound, auto_group
 from sprigcast.app.names import ask_name, short_name, short_status, status_summary, window_name
 
 log = logging.getLogger(__name__)
@@ -1164,7 +1165,7 @@ class MainWindow(QMainWindow):
                                     self._edit_in_build)
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
-                                  lambda: self._open_settings())
+                                  lambda: self._open_settings(), self._on_sound_changed, self._open_filters)
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()
@@ -2289,9 +2290,31 @@ class MainWindow(QMainWindow):
             for s in self.collection.sources
             if s.kind in self.AUDIO_KINDS
         ])
-        self.live_side.show_sound([(s.id, s.name, bool(s.settings.get("muted", False)))
-                                   for s in self.collection.sources
+        self.live_side.show_sound([self._sound_item(s) for s in self.collection.sources
                                    if s.kind in self.AUDIO_KINDS and not s.settings.get("hidden", False)])
+
+    def _sound_item(self, config) -> Sound:
+        st = config.settings
+        monitor = st.get("monitor", False)
+        return Sound(
+            id=config.id, name=config.name, muted=bool(st.get("muted", False)),
+            group=str(st.get("group") or auto_group(config.name, config.kind)),
+            pinned=bool(st.get("pinned", config.kind == "audio_input")),
+            volume_db=float(st.get("volume_db", 0.0)),
+            monitor="only" if monitor == "only" else bool(monitor),
+            mono=bool(st.get("mono", False)), balance=float(st.get("balance", 0.0) or 0.0),
+            delay_ms=int(st.get("delay_ms", 0) or 0), voice=is_voice(st, config.kind),
+            filters=[f.name for f in config.filters if f.enabled],
+            can_monitor=config.kind != "audio_output",  # desktop audio already plays on your speakers
+        )
+
+    def _on_sound_changed(self, source_id: str, changes: dict) -> None:
+        """Live's Sound card changed a sound; volume and left/right apply without rebuilding the card."""
+        config = self.collection.source(source_id)
+        config.settings = {**config.settings, **changes}
+        self._changed()
+        if set(changes) & {"muted", "group", "pinned", "monitor", "duck_voice"}:
+            self._refresh_audio()
 
     def _on_audio_changed(self, source_id: str, changes: dict) -> None:
         """A mixer control changed: volume_db, muted, monitor, hidden or duck_voice."""
@@ -2376,6 +2399,8 @@ class MainWindow(QMainWindow):
 
     def _open_filters(self, source_id: str) -> None:
         FiltersDialog(self.collection.source(source_id), self._changed, self).exec()
+        if self.collection.source(source_id).kind in self.AUDIO_KINDS:
+            self._refresh_audio()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
 
     def _remove_audio(self) -> None:
