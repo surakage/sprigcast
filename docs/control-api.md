@@ -107,6 +107,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 {"do": "filter.set", "source": "Facecam", "filter": "Color Correction", "settings": {"saturation": 0.4}}
 {"do": "source.set", "source": "Goal text", "settings": {"text": "Sub goal: 42 / 50"}}
 {"do": "clip.save"}
+{"do": "screenshot.take", "shape": "vertical", "width": 540, "save": false, "data": true}
 {"do": "stream.toggle"}
 ```
 
@@ -184,6 +185,12 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `record.status` | Recording or not, for how long, and the file. | none |
 | `record.stop` | Stop recording. | none |
 | `record.toggle` | Start or stop recording. | none |
+
+### screenshot
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `screenshot.take` | A picture of what's on air in each shape. | `shape` (optional): both (default), horizontal or vertical, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
 ### sound
 

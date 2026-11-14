@@ -1,6 +1,8 @@
 """The SprigCast API: our own control language on ws://…/sprigcast."""
 
 import json
+from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -255,3 +257,47 @@ def test_items_move_and_reorder():
     _ok(api, "item.order", bloom="Chatting", item="Alert", to="up", shape="horizontal")
     assert col.scene("chat-h").items[1].source == "alert" and col.scene("chat-v").items[0].source == "alert"
     assert _fails(api, "item.order", bloom="Chatting", item="Alert", to="sideways") == "bad_request"
+
+
+def test_screenshots_per_shape():
+    api, host = _api()
+    shots = _ok(api, "screenshot.take")["shots"]
+    assert [s["shape"] for s in shots] == ["horizontal", "vertical"] and all("path" in s for s in shots)
+    small = _ok(api, "screenshot.take", shape="vertical", width=320, save=False, data=True)["shots"]
+    assert small == [{"shape": "vertical", "width": 320, "height": 1080, "png": "iVBOR"}]
+    assert host.shots[-1] == (["vertical"], 320, False, True)
+    assert _fails(api, "screenshot.take", save=False) == "bad_request"
+    assert _fails(api, "screenshot.take", width=4) == "bad_request"
+    assert _fails(api, "screenshot.take", shape="square") == "bad_request"
+    host.screenshot = lambda *a: []
+    assert _fails(api, "screenshot.take") == "not_allowed"
+
+
+def test_screenshot_grabs_the_next_frame(tmp_path):
+    _qt()
+    from sprigcast.app import screenshot
+    from sprigcast.render.engine import Frame
+
+    class Engine:
+        def __init__(self):
+            self.taps = {}
+
+        def add_frame_tap(self, canvas_id, callback, nv12_size=None):
+            self.taps[canvas_id] = callback
+            if canvas_id == "horizontal":  # only this canvas is drawing
+                callback(Frame(canvas_id, 4, 2, bytes([0, 200, 0, 255]) * 8))
+
+        def remove_frame_tap(self, canvas_id, callback):
+            assert self.taps.pop(canvas_id) is callback
+
+    engine = Engine()
+    shots = screenshot.take(engine, ["horizontal", "vertical"], tmp_path, width=None, as_data=True)
+    assert len(shots) == 1 and shots[0]["shape"] == "horizontal" and (shots[0]["width"], shots[0]["height"]) == (4, 2)
+    saved = Path(shots[0]["path"])
+    assert saved.parent == tmp_path and saved.suffix == ".png" and saved.exists()
+    assert shots[0]["png"].startswith("iVBOR")  # PNG magic, base64
+    assert engine.taps == {}  # taps removed again
+    when = datetime(2026, 11, 14, 9, 40, 0)
+    first = screenshot.path_for(tmp_path, "vertical", when)
+    first.write_bytes(b"")
+    assert screenshot.path_for(tmp_path, "vertical", when).name == "screenshot vertical 2026-11-14 09-40-00 (2).png"
