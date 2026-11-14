@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import autostart, priority, theme
+from sprigcast.output import naming
 from sprigcast.app.hotkeys_dialog import HotkeysPage
 from sprigcast.app.live_stage import heading
 from sprigcast.app.output_page import OutputPage
@@ -42,7 +44,7 @@ from sprigcast.core.filters import filter_kinds
 from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import known_kinds, source_class
 
-TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Connections", "Plugins"]
+TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Connections", "Advanced", "Plugins"]
 TAB_ALIASES = {"Recording": "Output", "Clips": "Output"}  # older menu entries and Output's own tabs
 ABOUT = {  # one line under each page's title
     "General": "Look, startup, snapping and the questions SprigCast asks first.",
@@ -52,6 +54,7 @@ ABOUT = {  # one line under each page's title
     "Video": "Your canvases: their size, frame rate and which ones are on.",
     "Hotkeys": "Keys that work even while you're in a game.",
     "Connections": "Let other apps on your PC control SprigCast.",
+    "Advanced": "Process priority, file names, MP4 copies and colour. Most people never need these.",
     "Plugins": "Extra sources and filters from the plugins folder.",
 }
 
@@ -73,6 +76,7 @@ def window_style() -> str:
 #settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.PANEL}; border: none;
     border-radius: 10px; padding: 7px 14px; min-height: 20px; }}
 #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox {{ padding-right: 24px; }}
+#settingsWindow QLabel#valueChip {{ background: {t.PANEL}; border-radius: 10px; padding: 7px 14px; }}
 #settingsWindow QLineEdit:focus, #settingsWindow QSpinBox:focus, #settingsWindow QDoubleSpinBox:focus,
 #settingsWindow QComboBox:focus {{ background: {t.RAISED}; }}
 #settingsWindow QComboBox::drop-down {{ border: none; width: 26px; background: transparent; }}
@@ -167,6 +171,24 @@ def _hint(text: str) -> QLabel:
     return label
 
 
+ADV_FILENAME = "advanced/filename"
+ADV_REPLAY_PREFIX = "advanced/replay_prefix"
+ADV_REMUX = "advanced/remux_mp4"
+ADV_REMUX_DELETE = "advanced/remux_delete_mkv"
+
+
+def apply_naming() -> None:
+    """Hand the saved file-name patterns to the recorders (at startup and after Settings)."""
+    q = QSettings()
+    naming.set_patterns(q.value(ADV_FILENAME, "", type=str), q.value(ADV_REPLAY_PREFIX, "", type=str))
+
+
+def remux_choice() -> tuple[bool, bool]:
+    """(make an MP4 copy of each MKV recording, delete the MKV afterwards)."""
+    q = QSettings()
+    return q.value(ADV_REMUX, False, type=bool), q.value(ADV_REMUX_DELETE, False, type=bool)
+
+
 def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
     page = QWidget()
     layout = QVBoxLayout(page)
@@ -222,6 +244,7 @@ class SettingsWindow(QDialog):
             ("Video", self._video_page()),
             ("Hotkeys", self._hotkeys_page()),
             ("Connections", self._connections_page(control)),
+            ("Advanced", self._advanced_page()),
             ("Plugins", self._plugins_page(plugin_report, open_plugins_folder)),
         ):
             QListWidgetItem(name, self.tabs)
@@ -337,11 +360,6 @@ class SettingsWindow(QDialog):
 
         performance = QGroupBox("Running next to games and other apps")
         perf_form = QFormLayout(performance)
-        self.priority = QComboBox()
-        for key, label in priority.LEVELS.items():
-            self.priority.addItem(label, key)
-        self.priority.setCurrentIndex(max(0, self.priority.findData(priority.chosen())))
-        perf_form.addRow("Process priority", self.priority)
         self.sleep_sources = QComboBox()
         for key, label in SLEEP_CHOICES.items():
             self.sleep_sources.addItem(label, key)
@@ -350,9 +368,6 @@ class SettingsWindow(QDialog):
         perf_form.addRow("", _hint(
             "Paused sources use no memory or CPU and start again when their scene is shown. "
             "A paused camera takes about a second to come back."))
-        perf_form.addRow("", _hint(
-            "Above normal keeps the stream smooth while a game uses the CPU. SprigCast also asks Windows to put "
-            "its GPU work first; that works best when SprigCast runs as administrator."))
 
         startup = QGroupBox("Startup")
         start_box = QVBoxLayout(startup)
@@ -366,6 +381,66 @@ class SettingsWindow(QDialog):
         start_box.addWidget(_hint("When Windows starts it, SprigCast always opens minimised to the taskbar."))
 
         return _page(look, startup, snapping, safety, performance)
+
+    def _advanced_page(self) -> QWidget:
+        """The settings most people never touch: priority, file names, MP4 copies, colour."""
+        q = QSettings()
+        process = QGroupBox("Process")
+        pform = QFormLayout(process)
+        self.priority = QComboBox()
+        for key, label in priority.LEVELS.items():
+            self.priority.addItem(label, key)
+        self.priority.setCurrentIndex(max(0, self.priority.findData(priority.chosen())))
+        pform.addRow("Process priority", self.priority)
+        pform.addRow("", _hint(
+            "Above normal keeps the stream smooth while a game uses the CPU. SprigCast also asks Windows to put "
+            "its GPU work first; that works best when SprigCast runs as administrator."))
+
+        files = QGroupBox("Recording files")
+        fform = QFormLayout(files)
+        self.filename = QLineEdit(q.value(ADV_FILENAME, naming.RECORDING_PATTERN, type=str))
+        self.filename.setPlaceholderText(naming.RECORDING_PATTERN)
+        fform.addRow("File name", self.filename)
+        self.filename_example = _hint("")
+        fform.addRow("", self.filename_example)
+        fform.addRow("", _hint("Use {date} {time} {canvas}, or {year} {month} {day} {hour} {minute} {second}."))
+        self.replay_prefix = QLineEdit(q.value(ADV_REPLAY_PREFIX, naming.REPLAY_PREFIX, type=str))
+        self.replay_prefix.setPlaceholderText(naming.REPLAY_PREFIX)
+        fform.addRow("Clip names start with", self.replay_prefix)
+        self.remux = QCheckBox("Also save each MKV recording as an MP4")
+        self.remux.setChecked(q.value(ADV_REMUX, False, type=bool))
+        fform.addRow("", self.remux)
+        self.remux_delete = QCheckBox("Then delete the MKV")
+        self.remux_delete.setChecked(q.value(ADV_REMUX_DELETE, False, type=bool))
+        fform.addRow("", self.remux_delete)
+        fform.addRow("", _hint("MKV survives a crash; the MP4 copy is made once a recording ends, in seconds, "
+                               "with no quality change. Editors and phones like MP4 best."))
+        self.remux.toggled.connect(self.remux_delete.setEnabled)
+        self.remux_delete.setEnabled(self.remux.isChecked())
+
+        def example(*_):
+            from datetime import datetime
+
+            saved = dict(naming._patterns)
+            naming.set_patterns(self.filename.text(), self.replay_prefix.text())
+            when = datetime(2026, 11, 14, 19, 30, 5)
+            self.filename_example.setText(f"{naming.recording_name('horizontal', when)}.mkv   ·   "
+                                          f"{naming.replay_name('vertical', when)}.mkv")
+            naming._patterns.update(saved)
+        self.filename.textChanged.connect(example)
+        self.replay_prefix.textChanged.connect(example)
+        example()
+
+        colour = QGroupBox("Colour")
+        cform = QFormLayout(colour)
+        for name, value in (("Colour format", "NV12 (4:2:0)"), ("Colour space", "Rec. 709 (HD)"),
+                            ("Colour range", "Limited")):
+            chip = QLabel(value)
+            chip.setObjectName("valueChip")
+            cform.addRow(name, chip)
+        cform.addRow("", _hint("What Twitch, YouTube, TikTok and every player expect, so colours look the same "
+                               "everywhere."))
+        return _page(process, files, colour)
 
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
         files = QGroupBox("Installed plugins")
@@ -598,6 +673,11 @@ class SettingsWindow(QDialog):
             except OSError as exc:
                 QMessageBox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
         settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
+        settings.setValue(ADV_FILENAME, self.filename.text().strip() or naming.RECORDING_PATTERN)
+        settings.setValue(ADV_REPLAY_PREFIX, self.replay_prefix.text().strip() or naming.REPLAY_PREFIX)
+        settings.setValue(ADV_REMUX, self.remux.isChecked())
+        settings.setValue(ADV_REMUX_DELETE, self.remux_delete.isChecked())
+        apply_naming()
         level = self.priority.currentData()
         if level != priority.chosen():
             settings.setValue(priority.SETTING, level)

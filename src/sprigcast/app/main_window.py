@@ -454,9 +454,10 @@ class MainWindow(QMainWindow):
 
         self.browser_host = start_host(self)  # draws browser sources; Chromium loads with the first one
         self.engine = Engine(collection)
-        from sprigcast.app.settings_window import sleep_policy
+        from sprigcast.app.settings_window import apply_naming, sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
+        apply_naming()  # file-name patterns from Settings → Advanced
         # Nothing is on screen yet: don't copy full-size frames back until _poll_engine says which
         # previews are showing and how big they are (each early one was an 8 MB frame).
         self.engine.previews = frozenset()
@@ -4176,6 +4177,14 @@ class MainWindow(QMainWindow):
         else:
             self._say(f"Saved {names}")
             self.live_panel.set_recording("")
+            from sprigcast.app.settings_window import remux_choice
+
+            remux, delete = remux_choice()
+            mkvs = [p for p in session.paths if p.suffix.lower() == ".mkv"]
+            if remux and mkvs:
+                from sprigcast.output.naming import remux_later
+
+                remux_later(mkvs, delete)  # the result is logged; the files appear next to the MKVs
 
     def _refresh_recording_status(self) -> None:
         session = self.recording
