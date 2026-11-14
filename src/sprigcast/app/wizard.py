@@ -216,7 +216,7 @@ class OptimizeWizard(QDialog):
         box.addWidget(_label("I use SprigCast to:", theme.MUTED_STYLE))
         self.wants_stream = QCheckBox("Stream")
         self.wants_record = QCheckBox("Record and save replays")
-        self.test_upload = QCheckBox("Test my upload speed (sends about 10 MB to Cloudflare's speed test)")
+        self.test_upload = QCheckBox("Test my upload speed (a hidden Twitch test stream, or Cloudflare's speed test)")
         for check in (self.wants_stream, self.wants_record, self.test_upload):
             check.setChecked(True)
             box.addWidget(check)
@@ -356,6 +356,7 @@ class OptimizeWizard(QDialog):
         self.profile = optimize.PcProfile(wants_stream=self.wants_stream.isChecked(),
                                           wants_record=self.wants_record.isChecked())
         self.profile.extra["test_upload"] = self.test_upload.isChecked()
+        self.profile.extra["collection"] = self.collection  # the upload check streams to Twitch when a key is set
         self.check_list.clear()
         self._rows.clear()
         self._pending = list(optimize.CHECKS)
