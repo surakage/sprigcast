@@ -209,3 +209,53 @@ def test_an_alert_sound_from_another_site(tmp_path, cors):
     finally:
         host.shutdown()
         server.shutdown()
+
+
+def test_interact_puts_the_page_on_screen_and_back(tmp_path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtWidgets import QApplication
+
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.browser_host import start_host
+
+    page = tmp_path / "widget.html"
+    page.write_text("<body><div id='box' style='width:50px;height:40px;background:rgb(255,0,0)'></div></body>")
+    host = start_host()
+    settings = {"file": str(page), "width": 200, "height": 100, "fps": 30, "css": browser.DEFAULT_CSS}
+
+    def wait_for(colour):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            app.processEvents()
+            got = host.take("w")
+            if got is not None and tuple(got[10, 10, :3]) == colour:
+                return True
+            time.sleep(0.02)
+        return False
+
+    try:
+        window = host.interact("w", settings, "Widget")  # asleep: opens the page first
+        assert window is not None and "w" in host.pages
+        view = host.pages["w"].view
+        assert view.window() is window
+        assert not view.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        assert host.interact("w", settings, "Widget") is window  # a second ask raises the same window
+        assert wait_for((255, 0, 0)), "the page never drew while on screen"
+        view.page().runJavaScript("document.getElementById('box').style.background='rgb(0,0,255)'")
+        assert wait_for((0, 0, 255)), "stream frames stopped while interacting"
+        window.close()
+        app.processEvents()
+        assert host.pages["w"].interacting is None
+        assert view.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        assert view.parent() is None
+        view.page().runJavaScript("document.getElementById('box').style.background='rgb(0,255,0)'")
+        assert wait_for((0, 255, 0)), "the page stopped drawing after going back off screen"
+        host.close("w")
+        app.processEvents()
+        assert "w" not in host.pages
+    finally:
+        host.shutdown()

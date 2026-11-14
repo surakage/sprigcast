@@ -699,6 +699,8 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind == "browser" and self.browser_host:
                 menu.addAction("Refresh page").triggered.connect(
                     lambda _=False, sid=item.source: self.browser_host.reload(sid))
+                menu.addAction("Interact…").triggered.connect(
+                    lambda _=False, sid=item.source: self._interact(sid))
             count = len(self.source_list.selectedItems())
             turn = menu.addAction(f"Turn into {a(PART)}…" if count < 2 else f"Turn these {count} into {a(PART)}…")
             turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
@@ -3008,6 +3010,13 @@ class MainWindow(QMainWindow):
 
     def _add_text(self) -> None:
         self._add_from_class("text", "Text")
+
+    def _interact(self, source_id: str) -> None:
+        """Open a browser source's page on screen so you can click and type in it."""
+        source = next((s for s in self.collection.sources if s.id == source_id), None)
+        if source is None or self.browser_host is None:
+            return
+        self.browser_host.interact(source_id, source.settings, source.name, self)
 
     def _add_browser(self) -> None:
         if self.browser_host is None:
