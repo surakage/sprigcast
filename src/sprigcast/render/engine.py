@@ -384,7 +384,7 @@ class Engine:
 
     def _sync_sources(self, compositor) -> None:
         """Create, update and remove source instances so they match the collection."""
-        wanted = {s.id: s for s in self._collection.sources}
+        wanted = {s.id: s for s in self._collection.sources_in_use()}
         for source_id in list(self._sources):
             if source_id not in wanted or self._sources[source_id].kind != wanted[source_id].kind:
                 self._sources.pop(source_id).stop()
@@ -421,7 +421,7 @@ class Engine:
             attack_ms=audio.duck_attack_ms, release_ms=audio.duck_release_ms, hold_ms=audio.duck_hold_ms,
         ))
         monitoring = any(
-            s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources
+            s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources_in_use()
             if s.kind in ("audio_input", "audio_output", "media")
         )
         if monitoring and not self._monitoring:

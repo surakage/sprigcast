@@ -229,8 +229,8 @@ def test_named_tracks_each_get_the_sources_that_go_to_them():
     music = Fake("music", 0.5, tracks=["recording", "clips"])  # e.g. copyrighted music kept off the stream
     alert = Fake("alert", 0.125, tracks=["stream"])
     mine = Fake("mine", 0.0625, monitor="only")
-    assert source_tracks(mic) == ("stream", "recording", "clips", "voice")
-    assert source_tracks(music) == ("recording", "clips")
+    assert source_tracks(mic) == ("stream", "recording", "vod", "voice", "clips")
+    assert source_tracks(music) == ("recording", "vod", "clips")  # named "music" but put in no group
     assert source_tracks(mine) == ()
     mixer = Mixer(report=lambda levels: None)
     mixer.set_sources([mic, music, alert, mine])

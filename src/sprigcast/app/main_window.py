@@ -2690,7 +2690,9 @@ class MainWindow(QMainWindow):
 
     def _has_sound(self, config) -> bool:
         """Sounds the Sound card lists: mics, desktop audio, and browser pages whose sound comes here."""
-        if config.kind in self.AUDIO_KINDS or config.kind == "media":
+        if config.kind in self.AUDIO_KINDS:
+            return not self.collection.device_off(config)  # global devices switched off: not listed
+        if config.kind == "media":
             return True
         if config.kind == "browser":
             from sprigcast.sources.browser import sound_to_mixer
@@ -2770,7 +2772,8 @@ class MainWindow(QMainWindow):
         if device is None:
             return
         same = next((c for c in self.collection.sources
-                     if c.kind == kind and str(c.settings.get("device", "default")) == device), None)
+                     if c.kind == kind and str(c.settings.get("device", "default")) == device
+                     and not self.collection.device_off(c)), None)
         if same is not None:  # already here: one source serves every bloom on both shapes
             self.statusBar().showMessage(f"{same.name!r} is already in Sound: it plays in every bloom, on both "
                                          "shapes, so there's no need to add it again.", 8000)
@@ -3998,7 +4001,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
             return
         self._say("Starting the recording…")
-        self.encoders.voice_track = settings.voice_track
+        self._set_encoder_tracks()
         try:
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
@@ -4017,6 +4020,19 @@ class MainWindow(QMainWindow):
 
     # Replay buffer ---------------------------------------------------------------------
 
+    def _clip_key(self) -> tuple:
+        """What clips are started with; a change while they're ready starts them again."""
+        rec = self.collection.recording
+        return (rec.replay_seconds, rec.clip_shapes, tuple(rec.audio_tracks), tuple(self.collection.audio.track_names))
+
+    def _set_encoder_tracks(self) -> None:
+        """New encoders carry the sound tracks recordings keep (Settings → Audio), named as set there."""
+        from sprigcast.core.scene import AUDIO_TRACKS
+
+        self.encoders.recording_tracks = self.collection.recording.track_ids()
+        audio = self.collection.audio
+        self.encoders.track_titles = {t: audio.track_name(i) for i, t in enumerate(AUDIO_TRACKS, 1)}
+
     def _clip_canvases(self) -> list:
         """The canvases a clip saves: Settings → Recording → Clips picks horizontal, vertical or both."""
         shapes = self.collection.recording.clip_shapes
@@ -4029,7 +4045,7 @@ class MainWindow(QMainWindow):
     def _restart_clips_if_changed(self, before: tuple) -> None:
         """Clip length or shapes changed in Settings while clips are ready: start again with the new ones."""
         settings = self.collection.recording
-        if self.replay is not None and before != (settings.replay_seconds, settings.clip_shapes, settings.voice_track):
+        if self.replay is not None and before != self._clip_key():
             self._toggle_replay(False)
             self._toggle_replay(True)
 
@@ -4040,7 +4056,7 @@ class MainWindow(QMainWindow):
             if not canvases:
                 QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
                 return
-            self.encoders.voice_track = settings.voice_track
+            self._set_encoder_tracks()
             try:
                 self.replay = SharedReplay.start(
                     self.encoders, canvases, self._recordings_folder(), settings.replay_seconds,
@@ -4328,7 +4344,7 @@ class MainWindow(QMainWindow):
             "audio_output": [d.name for d in list_audio_devices(loopback=True, rescan=False)],  # one rescan
         }
         rec = self.collection.recording
-        self._clips_before = (rec.replay_seconds, rec.clip_shapes, rec.voice_track)
+        self._clips_before = self._clip_key()
         window = SettingsWindow(
             self.collection,
             default_recordings_folder=self._default_recordings_folder(),
@@ -4355,7 +4371,7 @@ class MainWindow(QMainWindow):
         if clips is not None:
             self._restart_clips_if_changed(clips)
             rec = self.collection.recording
-            self._clips_before = (rec.replay_seconds, rec.clip_shapes, rec.voice_track)
+            self._clips_before = self._clip_key()
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
         from sprigcast.app.theme import apply_theme
 

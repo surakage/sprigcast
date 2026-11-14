@@ -50,7 +50,8 @@ def test_tabs_and_apply_writes_everything(app):
 
     w.recording_page.canvas_boxes["vertical"].setChecked(False)
     w.recording_page.container.setCurrentIndex(w.recording_page.container.findData("mp4"))
-    w.audio_combos["mic-1"].setCurrentIndex(w.audio_combos["mic-1"].findData("USB Mic"))
+    combo = w.audio_page.device_combos["mic-1"]
+    combo.setCurrentIndex(combo.findData("USB Mic"))
     w.confirm_stream.setChecked(False)
     w.theme.setCurrentIndex(w.theme.findData("system"))
     enabled, width, height, fps = w.video_fields["horizontal"]

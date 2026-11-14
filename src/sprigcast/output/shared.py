@@ -35,6 +35,7 @@ class CanvasEncoder(ReplayBuffer):
         self.file_error: str | None = None
         self._closing = False  # end the file at the next keyframe
         self._file_done = threading.Event()
+        self.file_tracks: tuple[str, ...] = tuple(t for t in tracks if t != "clips")  # what a recording keeps
 
     def _video_options(self) -> dict[str, str]:
         from sprigcast.output.recorder import family
@@ -92,7 +93,7 @@ class CanvasEncoder(ReplayBuffer):
                 if not (p.kind == "video" and p.keyframe):
                     return  # the file starts at a keyframe
                 self.file = PacketFile(self.file_path, self.container_kind, self._templates, p.seconds,
-                                       self.audio_kinds("recording", "voice") or ("audio",))
+                                       self.audio_kinds(*self.file_tracks) or ("audio",))
             began = time.perf_counter()
             self.file.write(p)
             waited = time.perf_counter() - began
@@ -124,11 +125,22 @@ class EncoderPool:
         self.engine = engine
         self.encoders: dict[str, CanvasEncoder] = {}
         self._users: dict[str, set[str]] = {}
-        self.voice_track = False  # recordings also get your voice on its own audio track (for new encoders)
+        # The mixer tracks a recording keeps (Settings → Audio, tracks 1-5), and their names in the file.
+        # Encoders started from now on carry these plus the clips track.
+        self.recording_tracks: tuple[str, ...] = ("recording",)
+        self.track_titles: dict[str, str] = {}
+
+    @property
+    def voice_track(self) -> bool:
+        return "voice" in self.recording_tracks
+
+    @voice_track.setter
+    def voice_track(self, on: bool) -> None:
+        self.recording_tracks = ("recording", "voice") if on else ("recording",)
 
     @property
     def tracks(self) -> tuple[str, ...]:
-        return ("recording", "voice", "clips") if self.voice_track else ("recording", "clips")
+        return (*self.recording_tracks, "clips")
 
     def acquire(self, user: str, canvas, bitrate_kbps: int, container: str, codec: str, encoder,
                 short_side: int | None = None) -> CanvasEncoder:
@@ -141,6 +153,8 @@ class EncoderPool:
                                 time.perf_counter(), container, encoder,
                                 shrink_to(canvas.width, canvas.height, short_side or getattr(canvas, "output_short_side", None)),
                                 self.tracks)
+            enc.file_tracks = self.recording_tracks
+            enc.track_titles.update(self.track_titles)
             enc.start()
             self.encoders[canvas.id] = enc
             self._users[canvas.id] = set()

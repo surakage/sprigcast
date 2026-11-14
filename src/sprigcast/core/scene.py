@@ -220,6 +220,13 @@ class EncoderSettings(BaseModel):
     audio_kbps: int = 160
 
 
+# Sound tracks 1-5 a recording can keep, by the mixer track each one is (audio/mixer.py):
+# 1 everything, 2 everything except sounds kept out of VODs (music), 3 voice, 4 and 5 your own picks.
+AUDIO_TRACKS = ("recording", "vod", "voice", "track4", "track5")
+TRACK_NAMES = ("Everything", "VOD-safe", "Voice", "Track 4", "Track 5")
+AUDIO_DEVICE_KINDS = ("audio_input", "audio_output")
+
+
 class RecordingSettings(BaseModel):
     folder: str = ""  # empty: Videos/SprigCast
     canvases: list[str] = Field(default_factory=lambda: ["horizontal", "vertical"])  # which canvases to record
@@ -228,11 +235,31 @@ class RecordingSettings(BaseModel):
     replay_seconds: int = 30  # clip length (15, 30, 45 or 60 in Settings); saved clips land in the recordings folder
     clip_shapes: Literal["horizontal", "vertical", "both"] = "both"  # which canvases a clip saves
     clips_on_start: bool = False  # keep clips ready from the moment SprigCast opens
-    voice_track: bool = True  # recordings also carry your voice (mics) alone, as a second audio track
+    voice_track: bool = True  # old setting, read once: now track 3 in audio_tracks (kept in step with it)
+    audio_tracks: list[int] = Field(default_factory=lambda: [1, 3])  # which of sound tracks 1-5 recordings keep
     short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,
     # and at recording bitrates the quality difference is invisible. Streams skip them too since 2026-11.
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tracks_from_voice(cls, data):
+        """Files from before tracks 1-5: "voice_track" on means tracks 1 and 3, off means track 1."""
+        if isinstance(data, dict) and "audio_tracks" not in data and "voice_track" in data:
+            data = {**data, "audio_tracks": [1, 3] if data["voice_track"] else [1]}
+        return data
+
+    @model_validator(mode="after")
+    def _tidy_tracks(self) -> "RecordingSettings":
+        tracks = sorted({t for t in self.audio_tracks if 1 <= t <= len(AUDIO_TRACKS)})
+        self.audio_tracks = tracks or [1]  # a recording always has sound
+        self.voice_track = 3 in self.audio_tracks
+        return self
+
+    def track_ids(self) -> tuple[str, ...]:
+        """The mixer tracks a recording keeps, in track order (see AUDIO_TRACKS)."""
+        return tuple(AUDIO_TRACKS[t - 1] for t in self.audio_tracks)
 
 
 class AudioSettings(BaseModel):
@@ -245,6 +272,15 @@ class AudioSettings(BaseModel):
     duck_attack_ms: float = 250.0
     duck_release_ms: float = 900.0
     duck_hold_ms: float = 400.0
+    track_names: list[str] = Field(default_factory=lambda: list(TRACK_NAMES))  # names of tracks 1-5 in files
+    # Global devices: the Desktop audio and Mic set in Settings → Audio. Off: they are not opened at all
+    # and leave the Sound list, so only the mics and desktop sounds you add yourself play.
+    global_devices: bool = True
+    global_sources: list[str] | None = None  # their source ids; None (older files): the first desktop and mic
+
+    def track_name(self, number: int) -> str:
+        names = [*self.track_names, *TRACK_NAMES[len(self.track_names):]]
+        return names[number - 1].strip() or TRACK_NAMES[number - 1]
 
 
 TRANSITION_KINDS = ("cut", "fade", "slide", "swipe", "wipe", "leaf", "bloom", "stinger")
@@ -364,6 +400,28 @@ class SceneCollection(BaseModel):
 
     def scene(self, scene_id: str) -> Scene:
         return next(s for s in self.scenes if s.id == scene_id)
+
+    # Global audio devices ---------------------------------------------------------------
+
+    def global_device_ids(self) -> list[str]:
+        """The global Desktop audio and Mic: the ones listed, or (older files) the first of each kind."""
+        ids = {s.id for s in self.sources}
+        if self.audio.global_sources is not None:
+            return [i for i in self.audio.global_sources if i in ids]
+        firsts = [next((s.id for s in self.sources if s.kind == kind), None) for kind in AUDIO_DEVICE_KINDS]
+        return [i for i in firsts if i]
+
+    def device_off(self, source: SourceConfig) -> bool:
+        """True for a global device while global devices are switched off: not opened, not listed."""
+        return (not self.audio.global_devices and source.kind in AUDIO_DEVICE_KINDS
+                and source.id in self.global_device_ids())
+
+    def sources_in_use(self) -> list[SourceConfig]:
+        """Every source the engine should open (all of them, less global devices that are off)."""
+        if self.audio.global_devices:
+            return list(self.sources)
+        off = set(self.global_device_ids())
+        return [s for s in self.sources if not (s.kind in AUDIO_DEVICE_KINDS and s.id in off)]
 
     def folders_for(self, canvas_id: str) -> list[SceneFolder]:
         """The bloom folders on a canvas."""

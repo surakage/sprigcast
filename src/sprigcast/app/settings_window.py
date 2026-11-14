@@ -48,7 +48,7 @@ ABOUT = {  # one line under each page's title
     "General": "Look, startup, snapping and the questions SprigCast asks first.",
     "Stream": "The places you go live, and what each one gets.",
     "Output": "Encoder quality for streams, and how recordings and clips are saved.",
-    "Audio": "Which mic and desktop audio each sound uses.",
+    "Audio": "Devices, sound tracks and which sounds go on each.",
     "Video": "Your canvases: their size, frame rate and which ones are on.",
     "Hotkeys": "Keys that work even while you're in a game.",
     "Connections": "Let other apps on your PC control SprigCast.",
@@ -428,28 +428,10 @@ class SettingsWindow(QDialog):
             ))
 
     def _audio_page(self, audio_devices: dict[str, list[str]]) -> QWidget:
-        group = QGroupBox("Devices")
-        form = QFormLayout(group)
-        self.audio_combos: dict[str, QComboBox] = {}
-        sources = [s for s in self.collection.sources if s.kind in AUDIO_KINDS]
-        for source in sources:
-            combo = QComboBox()
-            combo.addItem("Default (follows Windows)", "default")
-            for name in audio_devices.get(source.kind, []):
-                combo.addItem(name, name)
-            current = str(source.settings.get("device", "default"))
-            if combo.findData(current) < 0:
-                combo.addItem(f"{current} (not connected)", current)
-            combo.setCurrentIndex(combo.findData(current))
-            self.audio_combos[source.id] = combo
-            kind = "Desktop audio" if source.kind == "audio_output" else "Microphone"
-            form.addRow(f"{source.name}\n({kind})" if source.name != kind else source.name, combo)
-        if not sources:
-            form.addRow(_hint("No audio sources yet. Add them with + in the Audio Mixer dock."))
-        hint = _hint(
-            "\"Default\" follows Windows. Volume and mute are in the Audio Mixer."
-        )
-        return _page(group, hint)
+        from sprigcast.app.audio_page import AudioPage
+
+        self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording)
+        return _page(self.audio_page)
 
     def _video_page(self) -> QWidget:
         """One card per canvas: base size (what you build on), output size (what viewers get), filter, fps."""
@@ -574,13 +556,7 @@ class SettingsWindow(QDialog):
         self.output_page.apply_to(self.collection)
         self.collection.hotkeys = self.hotkeys_page.result_hotkeys()
         self.connections_page.apply()
-        for source in self.collection.sources:
-            combo = self.audio_combos.get(source.id)
-            if combo is not None and combo.currentData() != source.settings.get("device", "default"):
-                device = combo.currentData()
-                source.settings = {**source.settings, "device": device}
-                base = "Desktop audio" if source.kind == "audio_output" else "Mic"
-                source.name = base if device == "default" else f"{base} ({device})"
+        self.audio_page.apply_to(self.collection, recording=self.recording)
 
         settings = QSettings()
         settings.setValue("general/theme", self.theme.currentData())

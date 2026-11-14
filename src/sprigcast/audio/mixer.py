@@ -11,13 +11,15 @@ Two extras on top of the plain mix:
   mix never reaches the stream; the stream always gets every unmuted source.
 - Named tracks: each source goes to some of "stream", "recording", "voice" and "clips" (its
   "tracks" setting; by default everything goes to stream, recording and clips, and voices also
-  to the voice track). Only the tracks some output asks for are mixed.
+  to the voice track), plus "vod" (VOD-safe: everything recorded except music) and "track4" and
+  "track5" (your own picks); see source_tracks. Only the tracks some output asks for are mixed.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -80,20 +82,44 @@ def is_monitored(source) -> bool:
     return bool((getattr(source, "settings", {}) or {}).get("monitor", False))
 
 
-TRACKS = ("stream", "recording", "voice", "clips")
+TRACKS = ("stream", "recording", "vod", "voice", "clips", "track4", "track5")
 MAIN_TRACKS = ("stream", "recording", "clips")
+_MUSIC = re.compile(r"music|spotify|song|pretzel|playlist|radio", re.IGNORECASE)
+
+
+def is_music(source) -> bool:
+    """Music by its Sound group ("Music"), or for a sound never put in a group, by its name."""
+    settings = getattr(source, "settings", {}) or {}
+    group = settings.get("group")
+    if group:
+        return group == "Music"
+    return getattr(source, "kind", "") != "audio_input" and bool(_MUSIC.search(getattr(source, "name", "") or ""))
 
 
 def source_tracks(source) -> tuple[str, ...]:
-    """The named tracks a source goes to: its "tracks" setting, or stream + recording + clips (+ voice
-    for a voice). A "just me" source goes to none."""
+    """The named tracks a source goes to. A "just me" source goes to none.
+
+    "stream", "recording", "voice" and "clips" come from its "tracks" setting (by default stream +
+    recording + clips, + voice for a voice). On top of that, recording tracks 2, 4 and 5:
+    - "vod" (VOD-safe): everything in "recording" except sounds kept out ("vod": False; music by default),
+    - "track4" and "track5": only sounds put there ("track4": True / "track5": True).
+    """
     if is_monitor_only(source):
         return ()
     settings = getattr(source, "settings", {}) or {}
     chosen = settings.get("tracks")
     if chosen is None:
-        return (*MAIN_TRACKS, "voice") if is_voice(source) else MAIN_TRACKS
-    return tuple(t for t in TRACKS if t in chosen)
+        base = (*MAIN_TRACKS, "voice") if is_voice(source) else MAIN_TRACKS
+    else:
+        base = tuple(t for t in TRACKS if t in chosen and t not in EXTRA_TRACKS)
+    extra = []
+    if "recording" in base and settings.get("vod", not is_music(source)):
+        extra.append("vod")
+    extra += [t for t in ("track4", "track5") if settings.get(t)]
+    return tuple(t for t in TRACKS if t in base or t in extra)
+
+
+EXTRA_TRACKS = ("vod", "track4", "track5")  # set by their own switches, never by the "tracks" list
 
 
 def is_monitor_only(source) -> bool:
