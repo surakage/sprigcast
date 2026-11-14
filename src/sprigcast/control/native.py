@@ -36,9 +36,9 @@ from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, Sce
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 PREVIEW = API_VERSION == 0
-EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "custom")
+EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "media", "custom")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
-SOUND_KINDS = ("audio_input", "audio_output")
+SOUND_KINDS = ("audio_input", "audio_output", "media")
 MAX_STEPS = 100  # in one {"steps": [...]} list
 MAX_WAIT_MS = 10 * 60 * 1000  # all its waits together
 
@@ -712,6 +712,82 @@ class NativeApi:
         self.last_clip = self.host.save_clip()
         return {"saved": self.last_clip, "started": False}
 
+    # Media (video and sound files) ---------------------------------------------------------------
+
+    def _media(self, data: dict[str, Any]) -> SourceConfig:
+        source = self._source(data, "media")
+        if source.kind != "media":
+            raise ApiError("not_allowed", f"{source.name!r} isn't a video or sound file.")
+        return source
+
+    def _media_info(self, source: SourceConfig, info: dict[str, Any] | None = None) -> dict[str, Any]:
+        info = info if info is not None else self.host.media_info(source.id)
+        out = {"media": source.name, "id": source.id, "file": str(source.settings.get("path", "")),
+               "loop": bool(source.settings.get("loop"))}
+        if info:
+            out.update({k: info[k] for k in ("state", "position", "duration", "video") if k in info})
+        else:
+            out["state"] = "unloaded"  # its bloom hasn't been on screen yet
+        return out
+
+    def _media_do(self, data: dict[str, Any], what: str, seconds: float | None = None) -> dict[str, Any]:
+        source = self._media(data)
+        info = self.host.media_control(source.id, what, seconds)
+        if info is None:
+            raise ApiError("not_allowed", f"{source.name!r} isn't loaded yet: put its bloom on screen first.")
+        return self._media_info(source, info)
+
+    @action("media.list", "Every video and sound file, with what it's doing (playing, paused, stopped, ended).")
+    def media_list(self, data):
+        return {"media": [self._media_info(s) for s in self.col.sources if s.kind == "media"]}
+
+    @action("media.status", "What a video or sound file is doing, where it is and how long it is.", media="name or id")
+    def media_status(self, data):
+        return self._media_info(self._media(data))
+
+    @action("media.play", "Play (from the start if it ended or was stopped).", media="name or id")
+    def media_play(self, data):
+        return self._media_do(data, "play")
+
+    @action("media.pause", "Pause where it is.", media="name or id")
+    def media_pause(self, data):
+        return self._media_do(data, "pause")
+
+    @action("media.toggle", "Pause if playing, else play.", media="name or id")
+    def media_toggle(self, data):
+        return self._media_do(data, "toggle")
+
+    @action("media.restart", "Play from the start.", media="name or id")
+    def media_restart(self, data):
+        return self._media_do(data, "restart")
+
+    @action("media.stop", "Stop and show nothing (play starts from the beginning).", media="name or id")
+    def media_stop(self, data):
+        return self._media_do(data, "stop")
+
+    @action("media.seek", "Jump to a time.", media="name or id", seconds="?time from the start",
+            change="?seconds to move (negative: back)")
+    def media_seek(self, data):
+        source = self._media(data)
+        seconds = _get(data, "seconds", float, optional=True)
+        change = _get(data, "change", float, optional=True)
+        if (seconds is None) == (change is None):
+            raise _bad("Give seconds or change.")
+        if change is not None:
+            current = self.host.media_info(source.id)
+            if current is None:
+                raise ApiError("not_allowed", f"{source.name!r} isn't loaded yet: put its bloom on screen first.")
+            seconds = current["position"] + change
+        return self._media_do(data, "seek", max(0.0, seconds))
+
+    @action("media.loop", "Loop it or not (no on: toggle).", media="name or id", on="?true or false")
+    def media_loop(self, data):
+        source = self._media(data)
+        on = _get(data, "on", bool, optional=True)
+        source.settings = {**source.settings, "loop": (not source.settings.get("loop")) if on is None else on}
+        self.host.commit("sources")
+        return self._media_info(source)
+
     # Screenshots ---------------------------------------------------------------------------------
 
     @action("screenshot.take", "A picture of what's on air in each shape.",
@@ -785,6 +861,7 @@ class NativeApi:
             "clips": self.host.clips_ready(),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
+            "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
         }
 
     def changes(self) -> list[tuple[str, dict[str, Any]]]:
@@ -846,6 +923,9 @@ class NativeApi:
         for pid, state in now["states"].items():
             if pid in last["states"] and last["states"][pid] != state:
                 out.append(("sprig.state", {"sprig": scenes[pid].name, "sprigId": pid, "state": state}))
+        for sid, state in now["media"].items():
+            if sid in last["media"] and last["media"][sid] != state and state is not None:
+                out.append(("media.changed", self._media_info(sources[sid])))
         return out
 
     def meters(self, levels: dict[str, tuple[float, float]]) -> dict[str, Any]:

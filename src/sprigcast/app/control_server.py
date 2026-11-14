@@ -171,6 +171,13 @@ class WindowHost:
     def screenshot(self, shapes: list[str], width: int | None, save: bool, as_data: bool) -> list[dict[str, Any]]:
         return self.w._screenshot(shapes, width, save, as_data)
 
+    def media_info(self, source_id: str) -> dict[str, Any] | None:
+        source = self.w.media_source(source_id)
+        return source.info() if source is not None else None
+
+    def media_control(self, source_id: str, what: str, seconds: float | None = None) -> dict[str, Any] | None:
+        return self.w.media_control(source_id, what, seconds)
+
     def stats(self) -> dict[str, Any]:
         out: dict[str, Any] = {"recordDirectory": str(self.w._recordings_folder())}
         stats = getattr(self.w, "_last_stats", None)
@@ -358,10 +365,10 @@ class ControlServer(QObject):
             log.info("control: an app disconnected")
         try:
             socket.deleteLater()
-        except RuntimeError:  # Qt already freed it (the app is closing)
-            pass
-        if not self.sessions:
-            self.watch.stop()
+            if not self.sessions:
+                self.watch.stop()
+        except RuntimeError:  # Qt already freed it (the app is closing): nothing left to tidy
+            return
         self.on_clients_changed(len(self.sessions))
 
     def _received(self, socket: QWebSocket, text: str) -> None:
