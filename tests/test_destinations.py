@@ -489,3 +489,44 @@ def test_stream_page_on_switch(app):
     assert not page.enabled.isChecked() and output_label(page.outputs[1]).endswith("(off)")
     page.enabled.setChecked(True)
     assert page.outputs[1].enabled and page.apply_to(col) and col.outputs[1].enabled
+
+
+def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ProjectorTest")
+    QSettings().clear()
+    from PySide6.QtGui import QGuiApplication
+
+    from sprigcast.app.main_window import MainWindow
+
+    w = MainWindow(_collection(), tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._set_mode("live")
+        menu = w._preview_menu("vertical", -1)
+        full = next(a for a in menu.actions() if a.text() == "Full screen on…").menu()
+        labels = [a.text() for a in full.actions() if a.text()]
+        assert labels[0].startswith("Monitor 1:") and "In a window" in labels
+        assert len(menu.actions()) == 1  # Live: only the projector, no editing items
+        projector = w.open_projector("vertical", None)
+        assert w.projectors == [projector] and "vertical" in w._watched_previews()
+        w.showMinimized()
+        assert "vertical" in w._watched_previews()  # keeps going while the main window is down
+        w.showNormal()
+        projector.resize(1080, 1920)
+        assert w._preview_pixel_sizes()["vertical"][1] >= 1920
+        projector.set_frame(b"\x00" * (4 * 8 * 8), 8, 8)
+        screen = QGuiApplication.screens()[0]
+        on_screen = w.open_projector("horizontal", screen)
+        assert on_screen.isFullScreen()
+        w.open_projector("vertical", screen)  # one per screen: replaces the horizontal one
+        assert on_screen not in w.projectors and len(w.projectors) == 2
+        for p in list(w.projectors):
+            p.close()
+        assert w.projectors == []
+    finally:
+        w.close()
+        QSettings().clear()

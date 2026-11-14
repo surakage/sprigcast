@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
+    QGuiApplication,
     QIcon,
     QKeySequence,
     QPainter,
@@ -250,6 +251,7 @@ class MainWindow(QMainWindow):
 
         # Previews ------------------------------------------------------------
         self.previews: dict[str, Preview] = {}
+        self.projectors: list = []  # full-screen canvases (app/projector.py)
         # Studio mode (Live): a Next preview above each canvas shows the scene lined up to go on air.
         self.next_previews: dict[str, Preview] = {}
         self.canvas_columns: dict[str, QSplitter] = {}
@@ -602,12 +604,50 @@ class MainWindow(QMainWindow):
         self._preview_menu(canvas_id, index).exec(where)
 
     def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
-        """Right-click in a preview: the same menu as the Sources list for what's under the mouse."""
-        menu = self._source_menu(index >= 0 and self._item() is not None)
+        """Right-click in a preview: the same menu as the Sources list for what's under the mouse.
+        In Live (nothing to edit) it only offers projectors."""
+        if canvas_id.startswith("part:") or (self.mode == "live" and canvas_id in self.previews):
+            menu = QMenu(self)
+        else:
+            menu = self._source_menu(index >= 0 and self._item() is not None)
         if index < 0 and not canvas_id.startswith("part:"):
-            menu.addSeparator()
-            menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
+            if menu.actions():
+                menu.addSeparator()
+            self._fill_projector_menu(menu.addMenu("Full screen on…"), canvas_id)
+            if self.mode != "live":
+                menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
         return menu
+
+    # Projectors ------------------------------------------------------------------------
+
+    def _fill_projector_menu(self, menu: QMenu, canvas_id: str) -> None:
+        from sprigcast.app.projector import screen_label
+
+        for i, screen in enumerate(QGuiApplication.screens()):
+            menu.addAction(screen_label(i, screen)).triggered.connect(
+                lambda _=False, sc=screen: self.open_projector(canvas_id, sc))
+        menu.addSeparator()
+        menu.addAction("In a window").triggered.connect(lambda: self.open_projector(canvas_id, None))
+        if any(p.canvas_id == canvas_id for p in self.projectors):
+            menu.addAction("Close this canvas's projectors").triggered.connect(
+                lambda: [p.close() for p in list(self.projectors) if p.canvas_id == canvas_id])
+
+    def open_projector(self, canvas_id: str, screen):
+        """Show a canvas full screen on `screen` (None: in a window). One per screen: a new one replaces it."""
+        from sprigcast.app.projector import Projector
+
+        if screen is not None:
+            for old in [p for p in self.projectors if p.screen() is screen and p.isFullScreen()]:
+                old.close()
+        canvas = self.collection.canvas(canvas_id)
+        projector = Projector(canvas_id, canvas_id.capitalize() if canvas else canvas_id, screen,
+                              self._projector_closed)
+        self.projectors.append(projector)
+        return projector
+
+    def _projector_closed(self, projector) -> None:
+        if projector in self.projectors:
+            self.projectors.remove(projector)
 
     def _source_menu(self, on_item: bool) -> QMenu:
         menu = QMenu(self)
@@ -1833,9 +1873,10 @@ class MainWindow(QMainWindow):
 
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
+        projected = {p.canvas_id for p in self.projectors}
         if self.isMinimized() or not self.isVisible():
-            return frozenset()
-        keys = {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
+            return frozenset(projected)  # a projector keeps showing while the main window is down
+        keys = projected | {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
         keys |= {f"next:{cid}" for cid, p in self.next_previews.items() if p.isVisible()}
         if self.mode == "build":
             keys |= {f"next:{cid}" for cid in self.engine.staged if self.previews[cid].isVisible()}
@@ -1853,6 +1894,10 @@ class MainWindow(QMainWindow):
                 r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
                 aw, ah = preview.aspect  # zoomed in, never ask for more pixels than the canvas has
                 sizes[key] = (min(int(r.width() * dpr), int(aw)), min(int(r.height() * dpr), int(ah)))
+        for projector in self.projectors:  # a projector wants its screen's worth of pixels
+            pw, ph = projector.pixel_size()
+            old = sizes.get(projector.canvas_id, (0, 0))
+            sizes[projector.canvas_id] = (max(old[0], pw), max(old[1], ph))
         return sizes
 
     def _poll_engine(self) -> None:
@@ -1867,6 +1912,9 @@ class MainWindow(QMainWindow):
             if frame is None:
                 continue
             view = self.engine.staged if self.mode == "build" else {}
+            for projector in self.projectors:
+                if projector.canvas_id == canvas_id:
+                    projector.set_frame(frame.data, frame.width, frame.height)
             if canvas_id in self.previews:
                 if canvas_id not in view:  # else the preview shows the bloom being edited (next:)
                     self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
@@ -1923,6 +1971,8 @@ class MainWindow(QMainWindow):
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        for projector in list(self.projectors):
+            projector.close()
         self._save_layout()
         self.hotkeys.stop()
         self.meter.stop()
