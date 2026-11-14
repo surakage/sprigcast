@@ -243,9 +243,12 @@ def test_hotkeys_page_cards_search_and_sound_keys(app):
     assert w.apply() and col.hotkeys == {f"{SOUND_PREFIX}mic-1:toggle": "Ctrl+M"}
 
 
-def test_virtual_camera_tab(app):
+def test_virtual_camera_tab(app, monkeypatch):
     from sprigcast.app.output_page import camera_wanted
+    from sprigcast.output import virtualcam
 
+    # Pretend this PC can't have the camera, whatever it really is (CI, Windows 10, a Windows 11 dev copy).
+    monkeypatch.setattr(virtualcam, "supported", lambda: (False, "The SprigCast camera needs Windows 11."))
     w = _window(_collection(), tab="Output")
     w.output_page.show_tab("Camera")
     tab = w.output_page.camera_tab
