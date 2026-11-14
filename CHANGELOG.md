@@ -40,6 +40,10 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Video page: base size and output size are separate, with a choice of downscale filter (#184).
 - Stream page with padded cards for each place you go live (#126, #127).
 - Menu bar: File, Edit, View, Panels, Tools, Help (#137). Docks are replaced by Panels (#140, #156).
+- Audio page in tabs: Devices, Tracks, Sounds and Bitrate, with one switch for global devices (#203, #209, #212).
+- Hotkeys page: grouped cards, search, and keys for sounds, clips, Studio mode and Build/Live (#204).
+- Advanced page: process priority, recording file names, MP4 copies, colour, and a stream delay (#202, #206).
+  While the delay runs, the Go live card says "Going out in N s" instead of Connecting (#215).
 
 ### Sound
 
@@ -47,6 +51,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Tune page for each sound, with a filters pop-up and five new audio filters (#130, #135, #158).
 - "Mic first" ducking: other sounds dip while you talk (#135).
 - Named tracks: Stream, Recording, Voice and Clips, chosen per sound (#154).
+- Tracks 1 to 5, including a VOD-safe track, and each recording picks its tracks (#203).
+- Source record: record one sound or source on its own (#209).
 - Browser sources can play sound (#147).
 - Cheaper level meters (#199).
 
@@ -79,6 +85,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Browser source on Chromium 140 (#139), and right-click Interact to click around in the page (#153).
 - Color looks (LUTs) and shapes for any source (#168).
 - Media source: video and sound files, with play and pause from menus, hotkeys and the API (#198).
+- SprigCast Camera: a Windows 11 virtual camera, set up in Output → Virtual camera (#208).
 
 ### Chat
 
@@ -98,10 +105,17 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Night Canopy theme: calm greens, pink only for Live and Recording (#106).
 - New logo (the sprig S) and sloth mascot (#178), sloth art for empty spots and the wizard (#157, #161, #163).
 - Leaf tick boxes, seed radio buttons and seed knobs (#142, #143).
+- Drawn line icons instead of emoji, a rounded About box and a README banner (#205, #207).
+- The new sloths in the starter blooms, Stream doctor and a Nice stream card (#211).
+- Live screen spacing evened out (#213).
 
 ### Installer
 
 - Windows installer built on GitHub (#103, #104), which asks to close SprigCast first (#105).
+
+### Tests
+
+- The test suite passes on Windows 11 too (#210, #214).
 
 ## 0.1.0
 
