@@ -1,4 +1,4 @@
-"""Main window: two canvas previews plus Scenes, Sources, Properties, Audio and Recording docks."""
+"""Main window: the Live and Build screens, their panels (app/panels.py), menus and the stats strip."""
 
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
-    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -98,7 +97,8 @@ from sprigcast.app.settings_window import (
     confirm_enabled,
 )
 from sprigcast.app.states_dialog import StatesDialog
-from sprigcast.app.stats_panel import StatsPanel
+from sprigcast.app.panels import Panel, Panels
+from sprigcast.app.stats_panel import StatsPanel, StatsStrip
 from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.app.theme import GO_LIVE_STYLE, ON_AIR_STYLE
 from sprigcast.core.events import (
@@ -382,12 +382,9 @@ class MainWindow(QMainWindow):
         self.modes.addWidget(self.build_stage)
         self.setCentralWidget(self.modes)
 
-        self.setDockOptions(
-            QMainWindow.DockOption.AllowNestedDocks
-            | QMainWindow.DockOption.AllowTabbedDocks
-            | QMainWindow.DockOption.AnimatedDocks
-        )
-        self.docks: dict[str, QDockWidget] = {}
+        # No floating docks: extra panels sit in one fixed card per screen (app/panels.py).
+        self.panels = Panels(self)
+        self.dock_bodies: dict[str, QWidget] = {}  # older views kept off screen (the Live and Build screens replace them)
         self._build_scenes_dock()
         self._build_sources_dock()
         self._build_audio_dock()
@@ -395,24 +392,24 @@ class MainWindow(QMainWindow):
         self._build_destinations_dock()
         self._build_controls_dock()
         self._build_live_stage()
+        self.live_side.panel_slot.addWidget(self.panels.cards["live"])
         self._build_properties_dock()
         self._build_item_actions()
         self._fill_bloom_tools()
         self.stats_panel = StatsPanel()
-        self.stats_dock = self._dock("Stats", self.stats_panel)
         self._last_stats = None
         self.peak_watch = doctor.PeakWatch()
-        self._arrange_default_layout()
-        self._build_menu()
         self.status = QLabel("Starting renderer…")
-        self.statusBar().addPermanentWidget(self.status)
         self.meter = ResourceMeter(gpu=not os.environ.get("SPRIGCAST_NO_GPU_METER"))
         self._warned_ram = False
         self.meter_label = QLabel("")
         self._meter_tip = ("What SprigCast uses right now: its share of the whole CPU, its memory, "
                            "and how busy the graphics card is (all apps)")
         self.meter_label.setToolTip(self._meter_tip)
-        self.statusBar().addPermanentWidget(self.meter_label)
+        self.stats_strip = StatsStrip(self.status, self.meter_label, self.stats_panel)
+        self.stats_strip.on_open = self._refresh_stats_panel
+        self.statusBar().addPermanentWidget(self.stats_strip)
+        self._build_menu()
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._refresh_meter)
         self.meter_timer.start(2000)
@@ -441,7 +438,7 @@ class MainWindow(QMainWindow):
         self.mode = "build"
         self._build_mode_bar()
         self._refresh_all()
-        custom_docks.apply(self, custom_docks.load(), self._fill_docks_menu)  # before the layout puts them back
+        custom_docks.apply(self, custom_docks.load())  # before the saved panels are put back
         self._restore_layout()
         self._sync_canvas_choice()
         self._show_part_editor()
@@ -504,7 +501,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(panel)
         layout.addStretch(1)
-        self._dock("Scene Transitions", wrapper)
+        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", wrapper)))
 
     def _on_transition_changed(self) -> None:
         self.collection.transition.kind = self.transition_kind.currentData()
@@ -518,20 +515,16 @@ class MainWindow(QMainWindow):
         """Put the window and docks back where they were last time (if the screen still fits them)."""
         settings = QSettings()
         geometry = settings.value("window/geometry")
-        state = settings.value("window/state")
         if geometry is not None:
             self.restoreGeometry(geometry)
-        if state is not None:
-            self.restoreState(state, self.LAYOUT_VERSION)
-        self._set_docks_locked(QSettings().value("window/locked", False, type=bool))
         if settings.value("window/mode", "build") == "live":
             self._set_mode("live")
-        self._hide_other_mode_docks()
+        self.panels.set_mode(self.mode)
+        self.panels.restore_popped()
 
     def _save_layout(self) -> None:
         settings = QSettings()
         settings.setValue("window/geometry", self.saveGeometry())
-        settings.setValue(self._state_key(self.mode), self.saveState(self.LAYOUT_VERSION))
 
     def _build_sources_dock(self) -> None:
         self.source_list = InsideList()
@@ -574,6 +567,7 @@ class MainWindow(QMainWindow):
         self.inside_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         self.build_stage.left.addWidget(self.inside_hint)
         self.build_stage.left.addLayout(tools)
+        self.build_stage.left.addWidget(self.panels.cards["build"], 1)  # panels you choose for Build
 
     def _fill_add_source_menu(self) -> None:
         menu = self.add_source_menu
@@ -1508,13 +1502,9 @@ class MainWindow(QMainWindow):
         if mode == self.mode:
             self.mode_actions[mode].setChecked(True)
             return
-        QSettings().setValue(self._state_key(self.mode), self.saveState(self.LAYOUT_VERSION))
         self.mode = mode
         self.mode_actions[mode].setChecked(True)
-        state = QSettings().value(self._state_key(mode))
-        if state is None or not self.restoreState(state, self.LAYOUT_VERSION):
-            self._arrange_default_layout()
-        self._hide_other_mode_docks()
+        self.panels.set_mode(mode)
         editable = mode == "build"
         self._exit_in_place()
         self._place_canvases()
@@ -1524,18 +1514,6 @@ class MainWindow(QMainWindow):
             preview.update()
         self._apply_canvas_view()
         QSettings().setValue("window/mode", mode)
-
-    def _hide_other_mode_docks(self) -> None:
-        """Live never shows Scenes, Sources and the other editing docks; Build never shows the Live dock.
-        Their Docks menu entries are disabled in the other mode too."""
-        for mode, names in self.MODE_ONLY.items():
-            for name in names:
-                dock = self.docks.get(name)
-                if dock is None:
-                    continue
-                if mode != self.mode:
-                    dock.hide()
-                dock.toggleViewAction().setEnabled(mode == self.mode)
 
     # Build mode's canvas tabs ---------------------------------------------------------
 
@@ -1685,91 +1663,24 @@ class MainWindow(QMainWindow):
         linked = f"linked to “{self.collection.scene(target_id).name}”" if target_id else "not linked"
         self.statusBar().showMessage(f"“{scene.name}” is {linked}.", 4000)
 
-    @staticmethod
-    def _state_key(mode: str) -> str:
-        return "window/state" if mode == "build" else f"window/state_{mode}"
-
-    def _dock(self, title: str, body: QWidget, toolbar: QWidget | None = None) -> QDockWidget:
+    def _dock(self, title: str, body: QWidget, toolbar: QWidget | None = None) -> QWidget:
+        """Wrap a view with its toolbar. It stays off screen unless it's offered as a panel."""
         wrapper = QWidget()
         layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
         layout.addWidget(body, 1)
         if toolbar is not None:
             layout.addWidget(toolbar)
         if isinstance(body, QScrollArea):
-            # Contents shrink to the dock's width (see app/fit.py); only scroll up and down.
+            # Contents shrink to the panel's width (see app/fit.py); only scroll up and down.
             body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        dock = QDockWidget(title, self)
-        dock.setObjectName(title)
-        dock.setWidget(wrapper)
-        dock.setMinimumWidth(160)
-        self.docks[title] = dock
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
-        return dock
-
-    # Dock layout -----------------------------------------------------------------
-
-    LAYOUT_VERSION = 5  # bump when the set of docks changes, so an old saved layout is ignored
-
-    DEFAULT_LAYOUTS = {
-        # mode: (docks along the bottom, their widths)
-        "build": ([], []),  # Build has its own screen too (build_stage.py)
-        "live": ([], []),  # Live has its own screen (live_stage.py); docks only if you open them
-    }
-    # Docks that only make sense in one mode: hidden in the other even if an older saved layout shows them.
-    MODE_ONLY = {
-        "build": {"Scenes", "Scene Transitions"},
-        "live": set(),
-    }
-
-    def _arrange_default_layout(self) -> None:
-        """Build: OBS-style Scenes | Sources | Audio Mixer | Scene Transitions | Destinations | Controls.
-        Live: Live (scene buttons) | Audio Mixer | Destinations | Controls."""
-        order, widths = self.DEFAULT_LAYOUTS[getattr(self, "mode", "build")]
-        for dock in self.docks.values():
-            dock.setFloating(False)
-            dock.show()
-            self.removeDockWidget(dock)
-        if not order:
-            for dock in self.docks.values():
-                self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-                dock.hide()
-            return
-        first = self.docks[order[0]]
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, first)
-        first.show()
-        for prev, name in zip(order, order[1:]):
-            self.splitDockWidget(self.docks[prev], self.docks[name], Qt.Orientation.Horizontal)
-            self.docks[name].show()
-        for name, dock in self.docks.items():
-            if name not in order:
-                self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-                dock.hide()
-        self.resizeDocks([self.docks[n] for n in order], widths, Qt.Orientation.Horizontal)
-        self.resizeDocks([first], [300], Qt.Orientation.Vertical)
-
-    def _reset_layout(self) -> None:
-        self._set_docks_locked(False)
-        self._arrange_default_layout()
-        self._hide_other_mode_docks()
-
-    def _set_docks_locked(self, locked: bool) -> None:
-        features = QDockWidget.DockWidgetFeature.NoDockWidgetFeatures
-        if not locked:
-            features = (
-                QDockWidget.DockWidgetFeature.DockWidgetMovable
-                | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-                | QDockWidget.DockWidgetFeature.DockWidgetClosable
-            )
-        for dock in self.docks.values():
-            dock.setFeatures(features)
-        if self.lock_action.isChecked() != locked:
-            self.lock_action.setChecked(locked)
-        QSettings().setValue("window/locked", locked)
+        self.dock_bodies[title] = wrapper
+        self.panels.shelve(wrapper)
+        return wrapper
 
     def _build_menu(self) -> None:
-        """File · Edit · View · Docks · Tools · Help."""
+        """File · Edit · View · Panels · Tools · Help."""
         bar = self.menuBar()
 
         file_menu = bar.addMenu("&File")
@@ -1844,16 +1755,18 @@ class MainWindow(QMainWindow):
         palette_action.triggered.connect(lambda: self._open_palette())
         view_menu.addAction(palette_action)
 
-        self.docks_menu = bar.addMenu("&Docks")
-        self.docks["Stats"].toggleViewAction().setShortcut(QKeySequence("Ctrl+Shift+S"))
-        self.lock_action = QAction("Lock docks", self)
-        self.lock_action.setCheckable(True)
-        self.lock_action.toggled.connect(self._set_docks_locked)
-        self.reset_layout_action = QAction("Reset layout", self)
-        self.reset_layout_action.triggered.connect(self._reset_layout)
-        self.custom_docks_action = QAction("Add or edit custom docks…", self)
-        self.custom_docks_action.setToolTip("A web page as a dock: chat, alerts, Streamer.bot, TikFinity…")
+        self.docks_menu = bar.addMenu("&Panels")
+        self.stats_action = QAction("Stats", self)
+        self.stats_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.stats_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.stats_action.triggered.connect(lambda: self.stats_strip.toggle())
+        self.addAction(self.stats_action)
+        self.reset_layout_action = QAction("Reset panels", self)
+        self.reset_layout_action.triggered.connect(lambda: self.panels.reset())
+        self.custom_docks_action = QAction("Add or edit web panels…", self)
+        self.custom_docks_action.setToolTip("A web page as a panel: chat, activity feed, Streamer.bot, TikFinity…")
         self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
+        self.docks_menu.aboutToShow.connect(self._fill_docks_menu)
         self._fill_docks_menu()
 
         settings_menu = bar.addMenu("&Tools")
@@ -1933,29 +1846,17 @@ class MainWindow(QMainWindow):
                           "horizontal and vertical at once.<br><br>Open source under the GPL 3.0 or later.")
 
     def _fill_docks_menu(self) -> None:
-        """Built-in docks, then your custom ones, then the layout actions. Rebuilt when custom docks change."""
-        menu = self.docks_menu
-        menu.clear()
-        for name in ["Scenes", "Audio Mixer", "Scene Transitions", "Destinations", "Controls", "Stats"]:
-            menu.addAction(self.docks[name].toggleViewAction())
-        custom = [d for n, d in self.docks.items() if n.startswith(custom_docks.PREFIX)]
-        if custom:
-            menu.addSeparator()
-            for dock in custom:
-                menu.addAction(dock.toggleViewAction())
-        menu.addSeparator()
-        menu.addAction(self.custom_docks_action)
-        menu.addAction(self.lock_action)
-        menu.addAction(self.reset_layout_action)
+        """Each panel this screen offers (ticked when shown), Pop out, then adding web panels and Stats."""
+        self.panels.fill_menu(self.docks_menu, [self.custom_docks_action, self.stats_action,
+                                                self.reset_layout_action])
 
     def _edit_custom_docks(self) -> None:
         if not custom_docks.web_engine_available():
-            QMessageBox.warning(self, "SprigCast", "Custom docks need Qt WebEngine, which isn't installed.")
+            QMessageBox.warning(self, "SprigCast", "Web panels need Qt WebEngine, which isn't installed.")
             return
         dialog = custom_docks.CustomDocksDialog(custom_docks.load(), self)
         if dialog.exec():
-            custom_docks.apply(self, dialog.result_docks(), self._fill_docks_menu)
-            self._set_docks_locked(self.lock_action.isChecked())
+            custom_docks.apply(self, dialog.result_docks())
 
     # Engine link ------------------------------------------------------------
 
@@ -2034,7 +1935,7 @@ class MainWindow(QMainWindow):
                 break
             if isinstance(event, Stats):
                 self._last_stats = event
-                if self.stats_dock.isVisible():
+                if self.stats_strip.is_open():
                     self._refresh_stats_panel()
                 self.status.setText(
                     f"{event.fps:.0f} fps  ·  render {event.render_ms:.1f} ms  ·  late ticks {event.dropped_ticks}"
@@ -2073,6 +1974,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         for projector in list(self.projectors):
             projector.close()
+        self.panels.close_windows()
         self._save_layout()
         self.hotkeys.stop()
         self.meter.stop()
@@ -3908,7 +3810,7 @@ class MainWindow(QMainWindow):
         commands += self._menu_commands(self.add_source_menu, "Add")
         for menu_action in self.menuBar().actions():
             group = menu_action.text().replace("&", "")
-            group = {"Docks": "Dock"}.get(group, group)
+            group = {"Panels": "Panel"}.get(group, group)
             commands += self._menu_commands(menu_action.menu(), group)
         return [c for c in commands if c.title and "Command palette" not in c.title]
 

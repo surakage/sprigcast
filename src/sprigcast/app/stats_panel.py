@@ -80,3 +80,55 @@ class StatsPanel(QWidget):
         if not outputs:
             rows.append(f"<tr><td colspan=2 style='padding-top:8px; color:{theme.MUTED}'>Not streaming or recording.</td></tr>")
         self.label.setText("<table>" + "".join(rows) + "</table>")
+
+
+class StatsStrip(QWidget):
+    """The slim line along the bottom: render speed and what SprigCast uses. Click it (or Ctrl+Shift+S)
+    for every number, in a card that opens above it and closes when you click anywhere else."""
+
+    def __init__(self, render: QLabel, usage: QLabel, panel: StatsPanel, parent: QWidget | None = None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QFrame, QHBoxLayout
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click for all the numbers (Ctrl+Shift+S)")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 0, 4, 0)
+        row.setSpacing(14)
+        for label in (render, usage):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            row.addWidget(label)
+        self.more = QLabel("▴")
+        self.more.setStyleSheet(f"color: {theme.MUTED};")
+        row.addWidget(self.more)
+        self.card = QFrame(self, Qt.WindowType.Popup)
+        self.card.setObjectName("statsCard")
+        self.card.setStyleSheet(f"#statsCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
+                                " border-radius: 14px; }")
+        inner = QVBoxLayout(self.card)
+        inner.setContentsMargins(16, 14, 16, 14)
+        inner.addWidget(panel)
+        scroll = panel.findChild(QScrollArea)
+        if scroll is not None:  # the card is the background, no well inside it
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+            panel.label.setStyleSheet("background: transparent;")
+        self.card.resize(420, 300)
+        self.on_open = None  # set by the window: fill the numbers before the card shows
+
+    def is_open(self) -> bool:
+        return self.card.isVisible()
+
+    def toggle(self) -> None:
+        if self.card.isVisible():
+            self.card.hide()
+            return
+        if self.on_open is not None:
+            self.on_open()
+        corner = self.mapToGlobal(self.rect().topRight())
+        self.card.move(corner.x() - self.card.width(), corner.y() - self.card.height() - 8)
+        self.card.show()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.toggle()

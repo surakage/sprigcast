@@ -47,15 +47,18 @@ def test_dialog_adds_a_twitch_chat_from_a_channel_name(app):
     assert again.result_docks() == []
 
 
-def test_apply_adds_updates_and_removes_docks_without_loading_pages(app):
+def test_apply_adds_updates_and_removes_web_panels_without_loading_pages(app):
+    from sprigcast.app.panels import Panels
+
     window = QMainWindow()
-    window.docks = {}
-    calls = []
+    window.panels = Panels(window)
     spec = cd.CustomDock("a1", "Chat", "https://example.com/a")
-    cd.apply(window, [spec], lambda: calls.append(1))
-    dock = window.docks["custom:a1"]
-    assert dock.objectName() == "custom:a1" and dock.widget().view is None  # not shown yet: no browser
-    cd.apply(window, [cd.CustomDock("a1", "Alerts", "https://example.com/b")], lambda: calls.append(1))
-    assert dock.windowTitle() == "Alerts" and dock.widget().url == "https://example.com/b"
-    cd.apply(window, [], lambda: calls.append(1))
-    assert window.docks == {} and cd.load() == [] and len(calls) == 3
+    cd.apply(window, [spec])
+    panel = window.panels.panels["custom:a1"]
+    assert panel.widget.view is None  # not shown yet: no browser
+    assert window.panels.is_shown("custom:a1", "live") and not window.panels.is_shown("custom:a1", "build")
+    cd.apply(window, [cd.CustomDock("a1", "Alerts", "https://example.com/b")])
+    assert panel.title == "Alerts" and panel.widget.url == "https://example.com/b"
+    cd.apply(window, [])
+    assert window.panels.panels == {} and cd.load() == []
+    assert not window.panels.is_shown("custom:a1", "live")
