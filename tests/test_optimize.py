@@ -193,3 +193,46 @@ def test_first_run_offers_the_wizard_once(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def _twitch_and_youtube():
+    return SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080, fps=60)],
+        outputs=[Output(id="tw", type="stream", service="twitch", canvas="horizontal", bitrate_kbps=6000, enabled=True),
+                 Output(id="yt", type="stream", service="youtube", canvas="horizontal", bitrate_kbps=6000,
+                        enabled=True)],
+    )
+
+
+def test_streams_on_one_canvas_get_one_bitrate_so_they_share_an_encoder():
+    c = _twitch_and_youtube()
+    p = optimize.PcProfile(**STRONG, upload_kbps=40000)
+    kbps = {o.id: k for o, _, k in optimize.stream_steps(p, c, (1080, 60))}
+    assert kbps == {"tw": 6000, "yt": 6000}  # YouTube would take 9000, but then it needs its own encode
+
+
+def test_a_clean_stream_proves_the_upload_and_the_gauge_matches_apply():
+    # The user's PC: the Twitch test read 11.2 Mbps, yet Twitch + YouTube at 6000 each ran clean.
+    c = _twitch_and_youtube()
+    p = optimize.PcProfile(**STRONG, upload_kbps=11179)
+    tested = optimize.plan(p, c)
+    assert "Twitch: 1920×1080, 60 fps, 4000 kbps" in [ch.label for ch in tested.changes]
+    assert optimize.room(p, c, (1080, 60))[1] <= 100  # the gauge shows the 4000s Apply would set
+
+    p = optimize.PcProfile(**STRONG, upload_kbps=11179)
+    p.extra["proven_kbps"] = 2 * (6000 + c.stream_encoder.audio_kbps)
+    proven = optimize.plan(p, c)
+    assert not [ch for ch in proven.changes if ch.group == "Stream"]  # 6000 each stays
+    assert optimize.room(p, c, (1080, 60))[1] <= 80
+
+
+def test_proven_kbps_only_counts_clean_long_streams():
+    from types import SimpleNamespace as NS
+
+    def st(**kw):
+        return NS(**{"frames": 3600, "dropped": 0, "reconnects": 0, "autopilot": None, "bitrate_kbps": 6000, **kw})
+
+    assert optimize.proven_kbps([st(), st()], 160, 120) == 12320
+    assert optimize.proven_kbps([st(), st()], 160, 20) is None  # too short to prove anything
+    assert optimize.proven_kbps([st(), st(dropped=50)], 160, 120) == 0  # the network struggled
+    assert optimize.proven_kbps([st(autopilot=NS(steps_down=1))], 160, 120) == 0

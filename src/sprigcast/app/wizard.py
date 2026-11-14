@@ -13,7 +13,6 @@ import threading
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -48,6 +47,72 @@ def _room_colour(pct: int | None) -> str:
     if pct is None:
         return theme.MUTED
     return theme.ACCENT if pct <= 60 else theme.WARN if pct <= 85 else theme.BAD
+
+
+class LeafChoice(QPushButton):
+    """A yes/no choice drawn as a card with a leaf: an outline when off, a filled green leaf when on.
+
+    Checkable like a QCheckBox (isChecked, setChecked, toggled), with a title and a line explaining it.
+    """
+
+    HEIGHT = 64
+
+    def __init__(self, title: str, detail: str):
+        super().__init__()
+        self.title, self.detail = title, detail
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(detail)
+        self.setToolTip(detail)
+        # Sized in the style sheet too: the app's QPushButton rule would otherwise shrink it to a text button
+        self.setStyleSheet(f"QPushButton {{ background: transparent; border: none; padding: 0;"
+                           f" min-height: {self.HEIGHT}px; max-height: {self.HEIGHT}px; }}")
+
+    def sizeHint(self) -> QSize:
+        return QSize(420, self.HEIGHT)
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        on, enabled = self.isChecked(), self.isEnabled()
+        p.setPen(QPen(QColor(theme.ACCENT if on and enabled else theme.EDGE_STRONG), 1.2))
+        p.setBrush(QColor(theme.SELECT_BG if on and enabled else theme.RAISED_HOVER if self.underMouse()
+                          else theme.CARD))
+        p.drawRoundedRect(r, 14, 14)
+        # The leaf: tip up and to the right, a vein down the middle
+        cx, cy, size = r.left() + 32, r.center().y(), 22
+        leaf = QPainterPath(QPointF(cx - size * 0.5, cy + size * 0.5))
+        leaf.cubicTo(QPointF(cx - size * 0.6, cy - size * 0.2), QPointF(cx + size * 0.1, cy - size * 0.6),
+                     QPointF(cx + size * 0.55, cy - size * 0.55))
+        leaf.cubicTo(QPointF(cx + size * 0.6, cy + size * 0.05), QPointF(cx + size * 0.1, cy + size * 0.6),
+                     QPointF(cx - size * 0.5, cy + size * 0.5))
+        green = QColor(theme.ACCENT if enabled else theme.MUTED)
+        if on:
+            p.setPen(QPen(green, 1.6))
+            p.setBrush(green)
+        else:
+            p.setPen(QPen(QColor("#5d6b64"), 1.6))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(leaf)
+        vein = QColor(theme.ACCENT_TEXT if on else "#5d6b64")
+        p.setPen(QPen(vein, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawLine(QPointF(cx - size * 0.5, cy + size * 0.5), QPointF(cx + size * 0.3, cy - size * 0.3))
+        # Title and explanation
+        text_left = r.left() + 62
+        font = p.font()
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QColor(theme.TEXT_BRIGHT if enabled else theme.MUTED))
+        p.drawText(QRectF(text_left, r.top() + 10, r.width() - 76, 20),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.title)
+        font.setBold(False)
+        font.setPointSizeF(font.pointSizeF() * 0.9)
+        p.setFont(font)
+        p.setPen(QColor(theme.MUTED))
+        p.drawText(QRectF(text_left, r.top() + 30, r.width() - 76, r.height() - 34),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, self.detail)
 
 
 class StageButton(QPushButton):
@@ -216,13 +281,21 @@ class OptimizeWizard(QDialog):
         box.addWidget(_label("SprigCast checks your PC and suggests stream and recording settings that fit it. "
                              "Takes about 15 seconds. Nothing changes until you press Apply."))
         box.addSpacing(6)
-        box.addWidget(_label("I use SprigCast to:", theme.MUTED_STYLE))
-        self.wants_stream = QCheckBox("Stream")
-        self.wants_record = QCheckBox("Record and save replays")
-        self.test_upload = QCheckBox("Test my upload speed (a hidden Twitch test stream, or Cloudflare's speed test)")
+        box.addWidget(_label("What do you use SprigCast for? Tap a leaf to turn it on or off.", theme.MUTED_STYLE))
+        box.addSpacing(2)
+        self.wants_stream = LeafChoice(
+            "Stream", "Go live on Twitch, YouTube and the rest. Picks a size, frame rate and bitrate each site "
+            "takes and your upload can carry.")
+        self.wants_record = LeafChoice(
+            "Record and save replays", "Save videos and clips to this PC. They get more quality than a stream, "
+            "since nothing is uploaded.")
+        self.test_upload = LeafChoice(
+            "Test my upload speed", "A hidden 8-second Twitch test stream (viewers never see it), or Cloudflare's "
+            "speed test if Twitch isn't set up. Your past clean streams count too.")
         for check in (self.wants_stream, self.wants_record, self.test_upload):
             check.setChecked(True)
             box.addWidget(check)
+            box.addSpacing(4)
         self.wants_stream.toggled.connect(self.test_upload.setEnabled)
         for check in (self.wants_stream, self.wants_record):
             check.toggled.connect(self._show_buttons)
@@ -361,6 +434,9 @@ class OptimizeWizard(QDialog):
                                           wants_record=self.wants_record.isChecked())
         self.profile.extra["test_upload"] = self.test_upload.isChecked()
         self.profile.extra["collection"] = self.collection  # the upload check streams to Twitch when a key is set
+        from PySide6.QtCore import QSettings
+
+        self.profile.extra["proven_kbps"] = optimize.load_proven(QSettings())  # what your last clean stream carried
         self.check_list.clear()
         self._rows.clear()
         self._pending = list(optimize.CHECKS)
@@ -408,6 +484,8 @@ class OptimizeWizard(QDialog):
         log.info("optimize: %s, %d threads, %.0f GB, %s, x264 %s ms/720p frame, upload %s kbps (%s)",
                  p.cpu_name or "CPU", p.threads, p.memory_gb, p.codec, p.x264_ms_720, p.upload_kbps,
                  p.extra.get("upload_source") or "not tested")
+        if p.extra.get("proven_kbps"):
+            log.info("optimize: your last clean stream carried %s kbps", p.extra["proven_kbps"])
         self.upload_row.setVisible(self.profile.wants_stream)
         self.upload.blockSignals(True)
         self.upload.setValue((self.profile.upload_kbps or 0) / 1000)
@@ -450,8 +528,10 @@ class OptimizeWizard(QDialog):
         pc, upload = optimize.room(self.profile, self.collection, quality)
         self.pc_gauge.set(pc, "Graphics-card encoder" if self.profile.hardware else "CPU encoder")
         self.upload_gauge.setVisible(self.profile.wants_stream)
-        self.upload_gauge.set(upload, f"of {self.profile.upload_kbps / 1000:.1f} Mbps" if upload is not None
-                              else "Type your speed below")
+        usable = optimize.usable_upload(self.profile)
+        proven = (usable or 0) > (self.profile.upload_kbps or 0)
+        self.upload_gauge.set(upload, (f"of {usable / 1000:.1f} Mbps" + (" (your streams)" if proven else ""))
+                              if upload is not None else "Type your speed below")
         while self.chips.count():
             item = self.chips.takeAt(0)
             if item.widget():
