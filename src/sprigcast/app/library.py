@@ -18,7 +18,15 @@ draws it and filters it.
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QModelIndex, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QLineEdit,
@@ -43,6 +51,7 @@ ROLE_ON_AIR = Qt.ItemDataRole.UserRole + 34  # a bloom on air gets a pink dot
 ROLE_THUMB = Qt.ItemDataRole.UserRole + 35  # a bloom's last on-air picture (QImage)
 ROLE_NOTE = Qt.ItemDataRole.UserRole + 36  # headings: the quiet words after the title
 PART_ROOT = "~sprigs"
+SPRIG_MIME = "application/x-sprigcast-sprig"  # a sprig dragged out of the library: its part id
 
 HEADING_H, FOLDER_H, ROW_H = 44, 34, 34
 SWATCH = (34, 20)
@@ -249,6 +258,24 @@ class LibraryTree(QTreeWidget):
         """One click opens or folds a folder (there's no arrow to aim for)."""
         if item.data(0, ROLE_ROW) == "folder":
             item.setExpanded(not item.isExpanded())
+
+    def mimeData(self, items):  # noqa: N802 (Qt naming)
+        """A dragged sprig also carries its id, so the canvas or Inside can take it."""
+        data = super().mimeData(items)
+        sprigs = [i for i in items if i.data(0, ROLE_ROW) == "sprig"]
+        if data is not None and len(sprigs) == 1:
+            data.setData(SPRIG_MIME, str(sprigs[0].data(0, ROLE_ID)).encode())
+        return data
+
+    def set_thumb(self, scene_id: str, image: QImage) -> None:
+        """A fresh picture for one bloom's swatch, without rebuilding the list."""
+        stack = [self.invisibleRootItem()]
+        while stack:
+            item = stack.pop()
+            if item.data(0, ROLE_ROW) == "bloom" and item.data(0, ROLE_ID) == scene_id:
+                item.setData(0, ROLE_THUMB, image)
+                return
+            stack.extend(item.child(i) for i in range(item.childCount()))
 
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         super().dropEvent(event)

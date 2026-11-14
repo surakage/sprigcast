@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QGuiApplication,
     QIcon,
+    QImage,
     QKeySequence,
     QPainter,
     QPixmap,
@@ -72,9 +73,12 @@ from sprigcast.app.hotkeys import (
     Hotkeys,
 )
 from sprigcast.app.build_stage import (
+    KIND_NAMES,
     ROLE_CHILDREN,
+    ROLE_KIND,
     ROLE_NAME,
     ROLE_SPRIG,
+    ROLE_SWATCH,
     ROLE_TAG,
     BuildBar,
     BuildStage,
@@ -262,6 +266,7 @@ class MainWindow(QMainWindow):
             preview.opened.connect(self._on_preview_opened)
             preview.menu_requested.connect(self._on_preview_menu)
             preview.swap_requested.connect(self._swap_shape)
+            preview.sprig_dropped.connect(self._sprig_dropped)
             self.previews[canvas.id] = preview
             upcoming = Preview(f"next:{canvas.id}", f"Next · {canvas.id.capitalize()}", (canvas.width, canvas.height))
             upcoming.editable = False
@@ -279,6 +284,7 @@ class MainWindow(QMainWindow):
         self.part_preview = Preview("part:", "Part", (16, 9))
         self.part_preview.selected.connect(self._on_preview_selected)
         self.part_preview.edited.connect(self._on_preview_edited)
+        self.part_preview.sprig_dropped.connect(self._sprig_dropped)
         self.part_preview.menu_requested.connect(self._on_preview_menu)
         part_panel = QWidget()
         part_layout = QVBoxLayout(part_panel)
@@ -316,6 +322,8 @@ class MainWindow(QMainWindow):
         # Nesting, said plainly: what you change here changes in every bloom that uses this sprig.
         self.part_uses_note = QLabel()
         self.part_uses_note.setWordWrap(True)
+        self.part_uses_note.setTextFormat(Qt.TextFormat.RichText)
+        self.part_uses_note.linkActivated.connect(self._jump_to_bloom)
         self.part_uses_note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 14px; margin: 4px 8px 0 8px;")
         part_layout.addWidget(self.part_uses_note)
         self.part_empty = QLabel(
@@ -442,6 +450,7 @@ class MainWindow(QMainWindow):
         self.hotkeys.apply(self.collection.hotkeys)
 
         self.mode = "build"
+        self._load_thumbs()
         self._build_mode_bar()
         self._refresh_all()
         custom_docks.apply(self, custom_docks.load())  # before the saved panels are put back
@@ -613,6 +622,7 @@ class MainWindow(QMainWindow):
     def _build_sources_dock(self) -> None:
         self.source_list = InsideList()
         self.source_list.moved.connect(self._on_inside_moved)
+        self.source_list.sprig_dropped.connect(lambda part_id: self._sprig_dropped("", part_id))
         self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.source_list.itemSelectionChanged.connect(self._refresh_properties)
         self.source_list.itemChanged.connect(self._on_source_toggled)
@@ -644,6 +654,8 @@ class MainWindow(QMainWindow):
         for text, tip, slot in (
             ("Settings", "Settings for the selected thing (or double-click it)", self._edit_source_settings),
             ("Remove", "Remove the selected thing from this bloom", self._remove_item),
+            (f"{PART_MARK} Make {PART}", f"Turn the selected things into a {PART} you can reuse in other {SHOWS} "
+                                         "(Ctrl+click to pick several)", self._turn_into_part),
         ):
             button = QPushButton(text)
             button.setToolTip(tip)
@@ -745,7 +757,7 @@ class MainWindow(QMainWindow):
         else:
             item = self._item()
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
-                menu.addAction(f"Edit {PART} in place").triggered.connect(self._open_part_item)
+                menu.addAction(f"Open {PART}").triggered.connect(self._open_part_item)
                 self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
             if item is not None and self.collection.source(item.source).kind == "browser" and self.browser_host:
                 menu.addAction("Refresh page").triggered.connect(
@@ -792,7 +804,8 @@ class MainWindow(QMainWindow):
         if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
-                menu.addAction("Show").triggered.connect(self._make_active)
+                menu.addAction("Put on air").triggered.connect(self._make_active)
+                menu.addAction("Copy").triggered.connect(lambda _=False, sid=scene.id: self._copy_bloom(sid))
                 self._fill_move_menu(menu.addMenu("Move to folder"), scene)
                 up = menu.addAction("Move up")
                 up.triggered.connect(lambda: self._move_scene(scene.id, -1))
@@ -1027,6 +1040,25 @@ class MainWindow(QMainWindow):
         self.prop_status.setWordWrap(True)
         self.prop_status.setStyleSheet(theme.MUTED_STYLE)
         top.addWidget(self.prop_status)
+        # A sprig placement: open it, and see (and jump to) every bloom it's in.
+        self.prop_sprig = QWidget()
+        sprig_box = QVBoxLayout(self.prop_sprig)
+        sprig_box.setContentsMargins(0, 10, 0, 0)
+        sprig_box.setSpacing(8)
+        self.prop_open_sprig = QPushButton(f"{PART_MARK}  Open {PART} to edit inside")
+        self.prop_open_sprig.setStyleSheet(theme.PRIMARY_STYLE + "QPushButton { border-radius: 17px; padding: 9px 14px; }")
+        self.prop_open_sprig.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.prop_open_sprig.setToolTip(f"Edit what's inside this {PART} (or double-click it)")
+        self.prop_open_sprig.clicked.connect(self._open_part_item)
+        sprig_box.addWidget(self.prop_open_sprig)
+        self.prop_used_in = QLabel()
+        self.prop_used_in.setWordWrap(True)
+        self.prop_used_in.setTextFormat(Qt.TextFormat.RichText)
+        self.prop_used_in.setStyleSheet(theme.MUTED_STYLE)
+        self.prop_used_in.linkActivated.connect(self._jump_to_bloom)
+        sprig_box.addWidget(self.prop_used_in)
+        self.prop_sprig.hide()
+        top.addWidget(self.prop_sprig)
         from sprigcast.app.empty import EmptyState
 
         self.prop_empty = EmptyState("Click something on the canvas or in Inside to move it, change its look, "
@@ -1243,6 +1275,7 @@ class MainWindow(QMainWindow):
         self._build_live_transitions()
         self.modes.addWidget(self.live_stage)  # page 1
         self._thumbs_at = 0.0
+        self._thumb_seen: dict[str, str | None] = {}  # Build: the bloom each preview showed at the last look
         self.live_side.set_clip(False, self.collection.recording.replay_seconds)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt naming)
@@ -1303,18 +1336,60 @@ class MainWindow(QMainWindow):
             self._save_replay()
 
     def _grab_thumbs(self) -> None:
-        """Every few seconds, keep a small picture of each bloom on air for its Live tile."""
+        """Every few seconds, keep a small picture of each bloom: the ones on air in Live, the ones
+        you're looking at in Build. Live tiles and Build's library swatches both show them."""
         now = time.monotonic()
-        if now - self._thumbs_at < 3.0 or self.mode != "live":
+        if now - self._thumbs_at < 3.0:
             return
         self._thumbs_at = now
         for canvas_id, preview in self.previews.items():
             image = preview._image
-            scene_id = self.collection.active_scenes.get(canvas_id)
-            if image is None or scene_id is None or self.in_place is not None:
+            if image is None or self.in_place is not None:
                 continue
-            self.live_panel.set_thumb(scene_id, image.scaled(
-                320, 180, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            if self.mode == "live":
+                scene_id = self.collection.active_scenes.get(canvas_id)
+            else:
+                scene = preview.scene
+                scene_id = scene.id if scene is not None and scene.kind == "show" else None
+                if self._thumb_seen.get(canvas_id) != scene_id:  # just switched: the frame may be the old bloom's
+                    self._thumb_seen[canvas_id] = scene_id
+                    continue
+            if scene_id is None:
+                continue
+            thumb = image.scaled(320, 180, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+            self.live_panel.set_thumb(scene_id, thumb)
+            self.scene_tree.set_thumb(scene_id, thumb)
+
+    def _thumbs_dir(self) -> Path:
+        return self.scenes_path.parent / "thumbs"
+
+    def _load_thumbs(self) -> None:
+        """Pictures saved last time, so swatches and tiles aren't blank until each bloom is seen again."""
+        ids = {s.id for s in self.collection.scenes if s.kind == "show"}
+        folder = self._thumbs_dir()
+        if not folder.is_dir():
+            return
+        for path in folder.glob("*.png"):
+            if path.stem in ids:
+                image = QImage(str(path))
+                if not image.isNull():
+                    self.live_panel.thumbs[path.stem] = image
+
+    def _save_thumbs(self) -> None:
+        """Once, on close: a small PNG per bloom (old blooms' pictures are cleared out)."""
+        ids = {s.id for s in self.collection.scenes if s.kind == "show"}
+        folder = self._thumbs_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            for path in folder.glob("*.png"):
+                if path.stem not in ids:
+                    path.unlink(missing_ok=True)
+            for scene_id, image in self.live_panel.thumbs.items():
+                if scene_id in ids and image is not None and not image.isNull():
+                    image.save(str(folder / f"{scene_id}.png"))
+        except OSError as exc:
+            log.info("couldn't save bloom pictures: %s", exc)
 
     def _live_destinations(self, levels: dict[str, str] | None = None, notes: dict[str, str] | None = None) -> None:
         from sprigcast.app.destinations import problem
@@ -1996,6 +2071,7 @@ class MainWindow(QMainWindow):
         self.panels.close_windows()
         self.chat_panel.shutdown()
         self._save_layout()
+        self._save_thumbs()
         self.hotkeys.stop()
         self.meter.stop()
         self.control.stop()
@@ -2244,8 +2320,10 @@ class MainWindow(QMainWindow):
         if short_status(status):
             tags.append(short_status(status))
         row.setData(ROLE_NAME, config.name)
-        row.setData(ROLE_TAG, " · ".join(tags))
+        row.setData(ROLE_TAG, " · ".join(tags) or KIND_NAMES.get(config.kind, ""))  # quiet: what it is
         row.setData(ROLE_SPRIG, config.kind == PART_KIND)
+        row.setData(ROLE_KIND, config.kind)
+        row.setData(ROLE_SWATCH, config.settings.get("color") if config.kind == "color" else None)
         row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
         detail = "" if status in ("ok", "") else f"\n{status}"
         row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind}){detail}")
@@ -2344,7 +2422,15 @@ class MainWindow(QMainWindow):
                 }.get(config.kind, "Settings")
             )
             self.prop_status.setText(self._status_text(item.source))
+            part = self.collection.part_of(config) if config.kind == PART_KIND else None
+            self.prop_sprig.setVisible(part is not None)
+            if part is not None:
+                here = self._scene()
+                others = [s for s in self.collection.part_uses(part.id) if here is None or s.id != here.id]
+                self.prop_used_in.setText(
+                    f"Also in {self._bloom_links(others)}" if others else f"Only in this {SHOW} so far.")
         else:
+            self.prop_sprig.hide()
             self.prop_name.clear()
             self.prop_extra.setText("")
             self.prop_status.setText("")
@@ -2643,6 +2729,49 @@ class MainWindow(QMainWindow):
         self._fit_item(size=(canvas.width, canvas.height))  # a horizontal-only part fits a vertical show too
         self._refresh_scenes()
 
+    def _copy_bloom(self, scene_id: str) -> None:
+        """A second bloom with the same things inside, in the same place and folder (sources are shared)."""
+        scene = self.collection.scene(scene_id)
+        names = {s.name for s in self.collection.scenes}
+        name, n = f"{scene.name} copy", 2
+        while name in names:
+            name, n = f"{scene.name} copy {n}", n + 1
+        copy = scene.model_copy(deep=True, update={"id": self.collection.new_id("scene"), "name": name,
+                                                   "linked_to": None})
+        for item in copy.items:  # a sprig's "just in this bloom" tweaks live on its placement: give the copy its own
+            config = self.collection.source(item.source)
+            if config.kind == PART_KIND:
+                own = config.model_copy(deep=True, update={"id": self.collection.new_id("part-src")})
+                self.collection.sources.append(own)
+                item.source = own.id
+        self.collection.scenes.insert(self.collection.scenes.index(scene) + 1, copy)
+        self.selected_scene_id = copy.id
+        self.last_bloom_id = copy.id
+        self._changed()
+        self._refresh_all()
+
+    def _bloom_links(self, scenes) -> str:
+        """Bloom names as links (click one to edit it), for rich-text labels."""
+        import html
+
+        return ", ".join(f'<a href="{s.id}" style="color: {theme.ACCENT}; text-decoration: none;">'
+                         f"{html.escape(s.name)}</a>" for s in scenes)
+
+    def _jump_to_bloom(self, scene_id: str) -> None:
+        """A bloom link: leave any sprig and edit that bloom (on its own shape)."""
+        if scene_id not in {s.id for s in self.collection.scenes if s.kind == "show"}:
+            return
+        canvas_id = self.collection.scene(scene_id).canvas
+        if canvas_id != self.build_canvas and canvas_id in self.previews:
+            self._swap_shape(canvas_id)
+        self._pick_bloom(scene_id)
+
+    def _sprig_dropped(self, _canvas_id: str, part_id: str) -> None:
+        """A sprig dragged from the library onto the canvas or into Inside: put it in what you're editing."""
+        if self.mode != "build" or part_id not in {p.id for p in self.collection.parts()}:
+            return
+        self._add_part_source(part_id)
+
     # Live states ---------------------------------------------------------------------
 
     def _edit_states(self, part_id: str) -> None:
@@ -2739,7 +2868,7 @@ class MainWindow(QMainWindow):
         main = self.collection.main_part(scene)
         uses = self.collection.part_uses(main.id)
         self.part_path.setText(f"{scene.canvas.capitalize()} {canvas.width}×{canvas.height}")
-        names = ", ".join(s.name for s in uses)
+        names = self._bloom_links(uses)
         self.part_uses_note.setText(
             f"{PART_MARK} This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
             "What you change here changes in all of them." if uses else

@@ -121,11 +121,89 @@ def test_opening_a_sprig_says_where_it_shows_and_goes_back(tmp_path, monkeypatch
         w._refresh_scenes()
         w._show_part_editor()
         assert w.center.currentIndex() == 1
-        assert "in 1 bloom: Just Chatting" in w.part_uses_note.text()
+        assert "in 1 bloom: " in w.part_uses_note.text() and '>Just Chatting</a>' in w.part_uses_note.text()
         assert w.part_back.text() == "← Just Chatting"
         assert w.build_bar.where.text().endswith("Webcam frame")
         w._close_part()
         assert w.selected_scene_id == "h2" and w.center.currentIndex() == 0
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_sprig_drops_copies_icons_and_links(tmp_path, monkeypatch):
+    from PySide6.QtCore import QMimeData, QSettings
+    from PySide6.QtWidgets import QInputDialog
+
+    from sprigcast.app.build_stage import ROLE_KIND, ROLE_TAG
+    from sprigcast.app.library import SPRIG_MIME
+
+    col, w = _window(tmp_path, monkeypatch, "LibraryDropTest")
+    try:
+        w.show()
+        w._pick_bloom("h1")
+        # The library hands out the sprig's id when one is dragged...
+        blooms, sprigs = w.scene_tree.topLevelItem(0), w.scene_tree.topLevelItem(1)
+        data = w.scene_tree.mimeData([sprigs.child(1)])
+        assert bytes(data.data(SPRIG_MIME)).decode() == "p2"
+        assert not w.scene_tree.mimeData([blooms.child(0)]).hasFormat(SPRIG_MIME)
+        # ...and dropping it on the canvas puts it in the bloom being edited.
+        w.previews["horizontal"].sprig_dropped.emit("horizontal", "p2")
+        placed = [col.source(i.source) for i in col.scene("h1").items]
+        assert [c.settings.get("scene") for c in placed] == ["p2"]
+        assert w.source_list.item(0).data(ROLE_KIND) == "scene"
+        assert w.source_list.item(0).data(ROLE_TAG) == "sprig"
+        mime = QMimeData()
+        mime.setData(SPRIG_MIME, b"p1")
+        assert mime.hasFormat(SPRIG_MIME)
+        w._sprig_dropped("", "nope")  # unknown ids are ignored
+        assert len(col.scene("h1").items) == 1
+        # Picking a sprig in Inside offers to open it and links the other blooms it's in.
+        w._pick_bloom("h2")
+        w.source_list.setCurrentRow(0)
+        assert w.prop_sprig.isVisibleTo(w)
+        assert "Only in this bloom" in w.prop_used_in.text()
+        w.previews["horizontal"].sprig_dropped.emit("horizontal", "p2")
+        w._pick_bloom("h1")
+        w.source_list.setCurrentRow(0)
+        assert 'href="h2"' in w.prop_used_in.text()
+        w._jump_to_bloom("h2")
+        assert w.selected_scene_id == "h2"
+        # Copy a bloom: same things inside, but its sprig placements are its own.
+        w._copy_bloom("h2")
+        copy = col.scene(w.selected_scene_id)
+        assert copy.name == "Just Chatting copy" and copy.id != "h2"
+        assert len(copy.items) == len(col.scene("h2").items)
+        assert {i.source for i in copy.items}.isdisjoint({i.source for i in col.scene("h2").items})
+        assert [s.id for s in col.scenes].index(copy.id) == [s.id for s in col.scenes].index("h2") + 1
+        # Make sprig from Inside's selection.
+        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Pair", True))
+        w.source_list.selectAll()
+        w._turn_into_part()
+        assert any(p.name == "Pair" for p in col.parts())
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_bloom_pictures_survive_a_restart(tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtGui import QImage
+
+    from sprigcast.app.library import ROLE_THUMB
+
+    col, w = _window(tmp_path, monkeypatch, "LibraryThumbTest")
+    try:
+        image = QImage(32, 18, QImage.Format.Format_RGB32)
+        image.fill(0x336699)
+        w.live_panel.set_thumb("h2", image)
+        w.scene_tree.set_thumb("h2", image)
+        assert w.scene_tree.topLevelItem(0).child(1).data(0, ROLE_THUMB) == image
+        w._save_thumbs()
+        assert (tmp_path / "thumbs" / "h2.png").exists()
+        w.live_panel.thumbs.clear()
+        w._load_thumbs()
+        assert w.live_panel.thumbs["h2"].width() == 32
     finally:
         w.close()
         QSettings().clear()

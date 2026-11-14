@@ -15,12 +15,13 @@ by accident: click it to swap. The main window builds the widgets that go in the
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
     QPainter,
+    QPainterPath,
     QPen,
 )
 from PySide6.QtWidgets import (
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.app.library import SPRIG_MIME
 from sprigcast.app.live_stage import heading
 from sprigcast.app.terms import PART_MARK
 
@@ -138,6 +140,11 @@ class BuildStage(QWidget):
         self.right_panel.addWidget(inspector)
         self.right_panel.setStretchFactor(0, 2)
         self.right_panel.setStretchFactor(1, 3)
+        saved = QSettings().value("build/inside_split")
+        if saved is not None:
+            self.right_panel.restoreState(saved)  # where you last left the gap
+        self.right_panel.splitterMoved.connect(
+            lambda *_: QSettings().setValue("build/inside_split", self.right_panel.saveState()))
         body.addWidget(self.right_panel)
 
 
@@ -147,7 +154,84 @@ ROLE_NAME = Qt.ItemDataRole.UserRole + 20  # the name alone, without the [kind] 
 ROLE_TAG = Qt.ItemDataRole.UserRole + 21  # quiet text on the right: "2 hidden here", "filters", "no signal"
 ROLE_SPRIG = Qt.ItemDataRole.UserRole + 22  # True for a sprig placement
 ROLE_CHILDREN = Qt.ItemDataRole.UserRole + 23  # [(depth, name, is_sprig)]: what's inside a sprig
+ROLE_KIND = Qt.ItemDataRole.UserRole + 24  # the source's kind, for its little icon
+ROLE_SWATCH = Qt.ItemDataRole.UserRole + 25  # a colour source's colour
 ROW_H, CHILD_H, EYE_W = 34, 24, 30
+ICON = 22
+
+KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "camera": "camera", "color": "colour",
+              "image": "picture", "text": "text", "browser": "web page", "audio_input": "mic",
+              "audio_output": "desktop sound", "scene": "sprig"}
+
+
+def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False) -> None:
+    """A small drawn icon on a soft chip saying what a source is: screen, window, camera, picture..."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(theme.RAISED_HOVER if selected else theme.RAISED))
+    p.drawRoundedRect(r, 7, 7)
+    ink = QColor(theme.ACCENT if kind == "scene" else theme.SELECT_TEXT if selected else theme.TEXT)
+    pen = QPen(ink, 1.4)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    c = r.center()
+    cx, cy = c.x(), c.y()
+    if kind == "display_capture":
+        p.drawRoundedRect(QRectF(cx - 6.5, cy - 5, 13, 8.5), 1.5, 1.5)
+        p.drawLine(QPointF(cx - 3, cy + 5.5), QPointF(cx + 3, cy + 5.5))
+    elif kind == "window_capture":
+        p.drawRoundedRect(QRectF(cx - 6.5, cy - 5.5, 13, 11), 1.5, 1.5)
+        p.drawLine(QPointF(cx - 6.5, cy - 2), QPointF(cx + 6.5, cy - 2))
+    elif kind == "camera":
+        p.drawRoundedRect(QRectF(cx - 7, cy - 4.5, 10, 9), 2, 2)
+        path = QPainterPath()
+        path.moveTo(cx + 3, cy - 1.5)
+        path.lineTo(cx + 7, cy - 4)
+        path.lineTo(cx + 7, cy + 4)
+        path.lineTo(cx + 3, cy + 1.5)
+        p.drawPath(path)
+    elif kind == "color":
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(str(colour or "#888888")[:7]))
+        p.drawRoundedRect(QRectF(cx - 5.5, cy - 5.5, 11, 11), 3, 3)
+    elif kind == "image":
+        p.drawRoundedRect(QRectF(cx - 6.5, cy - 5.5, 13, 11), 2, 2)
+        path = QPainterPath()
+        path.moveTo(cx - 5, cy + 4)
+        path.lineTo(cx - 1.5, cy)
+        path.lineTo(cx + 1, cy + 2.5)
+        path.lineTo(cx + 3, cy + 0.5)
+        path.lineTo(cx + 5, cy + 4)
+        p.drawPath(path)
+        p.drawPoint(QPointF(cx + 2.5, cy - 2.5))
+    elif kind == "text":
+        p.drawLine(QPointF(cx - 5, cy - 5), QPointF(cx + 5, cy - 5))
+        p.drawLine(QPointF(cx, cy - 5), QPointF(cx, cy + 5.5))
+    elif kind == "browser":
+        p.drawEllipse(QRectF(cx - 6, cy - 6, 12, 12))
+        p.drawEllipse(QRectF(cx - 2.5, cy - 6, 5, 12))
+        p.drawLine(QPointF(cx - 6, cy), QPointF(cx + 6, cy))
+    elif kind in ("audio_input", "audio_output"):
+        if kind == "audio_input":  # a mic
+            p.drawRoundedRect(QRectF(cx - 2.5, cy - 6.5, 5, 8.5), 2.5, 2.5)
+            p.drawArc(QRectF(cx - 5, cy - 3, 10, 7), 180 * 16, 180 * 16)
+            p.drawLine(QPointF(cx, cy + 4), QPointF(cx, cy + 6.5))
+        else:  # level bars
+            for i, h in enumerate((4, 9, 6, 11, 5)):
+                x = cx - 6 + i * 3
+                p.drawLine(QPointF(x, cy + h / 2), QPointF(x, cy - h / 2))
+    elif kind == "scene":
+        font = p.font()
+        font.setPixelSize(13)
+        p.setFont(font)
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, PART_MARK)
+    else:  # plugins and anything new: a little puzzle-ish dot
+        p.drawEllipse(QRectF(cx - 4, cy - 4, 8, 8))
+        p.drawPoint(QPointF(cx + 5.5, cy))
+    p.restore()
 
 
 class InsideDelegate(QStyledItemDelegate):
@@ -182,10 +266,12 @@ class InsideDelegate(QStyledItemDelegate):
         font.setWeight(QFont.Weight.DemiBold if sprig or selected else QFont.Weight.Normal)
         p.setFont(font)
         metrics = QFontMetrics(font)
-        if sprig:
-            p.setPen(QColor(theme.ACCENT))
-            p.drawText(QRectF(x, top.y(), 16, top.height()), Qt.AlignmentFlag.AlignVCenter, PART_MARK)
-            x += 18
+        kind = "scene" if sprig else (index.data(ROLE_KIND) or "")
+        if kind:
+            paint_kind_icon(p, QRectF(x, top.center().y() - ICON / 2, ICON, ICON), kind, index.data(ROLE_SWATCH),
+                            selected)
+            p.setFont(font)
+            x += ICON + 10
         tag = index.data(ROLE_TAG) or ""
         small = QFont(option.font)
         small.setPixelSize(11)
@@ -237,6 +323,7 @@ class InsideList(QListWidget):
     """The Inside list: drag a row to put it in front of or behind the others."""
 
     moved = Signal(int, int)  # from row, to row (rows are top-most first)
+    sprig_dropped = Signal(str)  # a sprig dragged in from the library: its part id
 
     def __init__(self):
         super().__init__()
@@ -247,8 +334,25 @@ class InsideList(QListWidget):
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setSpacing(1)
 
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasFormat(SPRIG_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasFormat(SPRIG_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
     def dropEvent(self, event) -> None:  # noqa: N802
         """Work out where the row was dropped and let the window reorder the bloom (it rebuilds the list)."""
+        if event.mimeData().hasFormat(SPRIG_MIME):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            self.sprig_dropped.emit(bytes(event.mimeData().data(SPRIG_MIME)).decode())
+            return
         source = self.currentRow()
         index = self.indexAt(event.position().toPoint())
         if not index.isValid():
