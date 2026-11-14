@@ -2,7 +2,7 @@
 
 Video filters run on the GPU, inside the compositor's shader, so they cost almost nothing.
 They always apply in a fixed order whatever their place in the list: scroll, sharpen,
-chroma/luma key, then color correction. A source has at most one filter of each video kind.
+chroma/luma key, color correction, color look (LUT), then shape. A source has at most one filter of each video kind.
 
 Audio filters run on the mixer thread, one 1024-sample block at a time, in list order.
 Plugins can add audio filters:
@@ -23,6 +23,8 @@ from typing import Any, Literal
 
 import numpy as np
 
+from sprigcast.core.looks import FROM_FILE, LOOKS, SHAPE_IDS, SHAPES
+
 SAMPLE_RATE = 48000
 
 
@@ -38,6 +40,8 @@ class Field:
     step: float = 1.0
     suffix: str = ""
     choices: tuple[tuple[str, str], ...] = ()  # (value, label) for a drop-down
+    file_types: str = ""  # a "...file" field: the file dialog's filter, like "LUT (*.cube)"
+    show_when: tuple[str, tuple[str, ...]] | None = None  # (other key, its values) for the row to show
 
     @property
     def kind(self) -> str:
@@ -47,6 +51,8 @@ class Field:
             return "bool"
         if isinstance(self.default, str) and self.key.endswith("color"):
             return "color"
+        if isinstance(self.default, str) and self.key.endswith("file"):
+            return "file"
         if isinstance(self.default, int):
             return "int"
         if isinstance(self.default, float):
@@ -131,6 +137,23 @@ _video("scroll", "Scroll", [
 ])
 
 
+_video("lut", "Color look (LUT)", [
+    Field("look", "Look", "canopy", choices=LOOKS + ((FROM_FILE, "From a .cube file…"),)),
+    Field("file", "Cube file", "", file_types="LUT (*.cube)", show_when=("look", (FROM_FILE,))),
+    Field("amount", "Strength", 100, 0, 100, 1, "%"),
+])
+_video("shape", "Shape", [
+    Field("shape", "Shape", "rounded", choices=SHAPES),
+    Field("mask_file", "Shape image", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",
+          show_when=("shape", ("image",))),
+    Field("roundness", "Corner roundness", 12, 0, 50, 1, "%", show_when=("shape", ("rounded",))),
+    Field("stretch", "Stretch to fill", False, show_when=("shape", ("circle", "hexagon", "leaf", "heart", "star"))),
+    Field("feather", "Soft edge", 0.0, 0.0, 40.0, 0.5, " px"),
+    Field("border", "Border", 0, 0, 40, 1, " px"),
+    Field("border_color", "Border color", "#3ecf7f"),
+])
+
+
 def parse_color(text: str) -> tuple[float, float, float]:
     text = str(text).strip().lstrip("#")
     try:
@@ -159,6 +182,15 @@ class VideoEffects:
     hue: float = 0.0  # radians
     opacity: float = 1.0
     tint: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    lut: str = ""  # "look:<name>" or a .cube path; "" = none
+    lut_amount: float = 1.0
+    shape: int = 0  # 0 none, else looks.SHAPE_IDS
+    roundness: float = 0.0  # rounded rectangle: corner radius as a share of the short side (0 .. 0.5)
+    stretch: bool = False
+    feather: float = 0.0  # canvas pixels
+    border: float = 0.0
+    border_color: tuple[float, float, float] = (0.24, 0.81, 0.5)
+    mask: str = ""  # shape "image": the picture's path
     active: bool = field(default=False, compare=False)
 
 
@@ -191,6 +223,22 @@ def video_effects(filters) -> VideoEffects:
             fx.sharpen = float(s["sharpness"])
         elif flt.kind == "scroll":
             fx.scroll = (float(s["speed_x"]), float(s["speed_y"]))
+        elif flt.kind == "lut":
+            source = str(s["file"]).strip() if s["look"] == FROM_FILE else f"look:{s['look']}"
+            if not source or float(s["amount"]) <= 0:
+                continue
+            fx.lut, fx.lut_amount = source, max(0.0, min(1.0, float(s["amount"]) / 100))
+        elif flt.kind == "shape":
+            shape = str(s["shape"])
+            if shape not in SHAPE_IDS or (shape == "image" and not str(s["mask_file"]).strip()):
+                continue
+            fx.shape = SHAPE_IDS[shape]
+            fx.roundness = max(0.0, min(0.5, float(s["roundness"]) / 100))
+            fx.stretch = bool(s["stretch"])
+            fx.feather = max(0.0, float(s["feather"]))
+            fx.border = max(0.0, float(s["border"]))
+            fx.border_color = parse_color(s["border_color"])
+            fx.mask = str(s["mask_file"]).strip() if shape == "image" else ""
         else:
             continue
         fx.active = True

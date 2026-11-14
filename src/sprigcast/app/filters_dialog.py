@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.core import looks
 from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
 from sprigcast.core.scene import Filter, SourceConfig
 
@@ -37,6 +39,28 @@ AUDIO_KINDS = {"audio_input", "audio_output"}
 
 def media_of(source: SourceConfig) -> str:
     return "audio" if source.kind in AUDIO_KINDS else "video"
+
+
+def looks_folder() -> Path:
+    """Documents\\SprigCast\\Looks: where SprigCast saves looks you make, and where it looks first for .cube files."""
+    from PySide6.QtCore import QStandardPaths
+
+    docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+    return Path(docs or Path.home() / "Documents") / "SprigCast" / "Looks"
+
+
+def file_problem(path: str) -> str:
+    """Why a picked file can't be used, or "" if it's fine (or nothing is picked yet)."""
+    if not path:
+        return ""
+    if not Path(path).is_file():
+        return "That file isn't there any more."
+    if path.lower().endswith(".cube"):
+        try:
+            looks.read_cube(path)
+        except looks.LutError as exc:
+            return str(exc)
+    return ""
 
 
 class FilterForm(QWidget):
@@ -49,10 +73,22 @@ class FilterForm(QWidget):
         self.fields = fields
         self.getters: dict[str, Callable[[], object]] = {}
         self.setters: dict[str, Callable[[object], None]] = {}
-        form = QFormLayout(self)
+        self.rows: dict[str, QWidget] = {}
+        self.form = form = QFormLayout(self)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         for f in fields:
-            form.addRow(f.label, self._widget(f, values.get(f.key, f.default)))
+            self.rows[f.key] = self._widget(f, values.get(f.key, f.default))
+            form.addRow(f.label, self.rows[f.key])
+        self.changed.connect(self._show_rows)
+        self._show_rows()
+
+    def _show_rows(self) -> None:
+        """Show only the rows that matter for the current choices (a file row only when "from a file")."""
+        for f in self.fields:
+            if f.show_when is not None:
+                key, wanted = f.show_when
+                getter = self.getters.get(key)
+                self.form.setRowVisible(self.rows[f.key], getter is not None and getter() in wanted)
 
     def _widget(self, f: Field, value) -> QWidget:
         kind = f.kind
@@ -93,12 +129,60 @@ class FilterForm(QWidget):
             return button
         if kind in ("int", "float"):
             return self._slider(f, value)
+        if kind == "file":
+            return self._file(f, str(value))
         from PySide6.QtWidgets import QLineEdit
 
         edit = QLineEdit(str(value))
         edit.textChanged.connect(self.changed)
         self.getters[f.key], self.setters[f.key] = edit.text, lambda v: edit.setText(str(v))
         return edit
+
+    def _file(self, f: Field, value: str) -> QWidget:
+        """The picked file's name, a Choose… pill, and a note if the file can't be used."""
+        from PySide6.QtWidgets import QFileDialog
+
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        name = QLabel()
+        name.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
+        choose = QPushButton("Choose…")
+        choose.setStyleSheet(RAISED_PILL)
+        choose.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(name, 1)
+        row.addWidget(choose)
+        col.addLayout(row)
+        note = QLabel()
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {theme.WARN}; background: transparent;")
+        col.addWidget(note)
+        box.setProperty("path", value)
+
+        def show(path: str) -> None:
+            box.setProperty("path", path)
+            name.setText(Path(path).name if path else "Nothing picked yet")
+            name.setToolTip(path)
+            problem = file_problem(path)
+            note.setText(problem)
+            note.setVisible(bool(problem))
+
+        def pick() -> None:
+            current = str(box.property("path") or "")
+            start = str(Path(current).parent) if current else str(looks_folder() if f.key == "file" else Path.home())
+            path, _ = QFileDialog.getOpenFileName(self, f.label, start, f.file_types or "All files (*)")
+            if path:
+                show(path)
+                self.changed.emit()
+
+        show(value)
+        choose.clicked.connect(pick)
+        self.getters[f.key] = lambda: str(box.property("path") or "")
+        self.setters[f.key] = lambda v: show(str(v))
+        return box
 
     def _slider(self, f: Field, value) -> QWidget:
         is_int = f.kind == "int"
@@ -229,7 +313,7 @@ class FiltersDialog(QDialog):
         self.reset_button.clicked.connect(self._reset)
         hint = QLabel(
             "They run top to bottom. Untick one to switch it off without removing it." if self.media == "audio"
-            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, then colour."
+            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, colour, look, then shape."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
@@ -239,8 +323,14 @@ class FiltersDialog(QDialog):
         right = QVBoxLayout(card)
         right.setContentsMargins(18, 16, 18, 16)
         right.setSpacing(12)
+        self.save_look_button = QPushButton("Save as look…")
+        self.save_look_button.setStyleSheet(RAISED_PILL)
+        self.save_look_button.setToolTip("Save these colour settings as a .cube LUT you can use anywhere")
+        self.save_look_button.clicked.connect(self._save_look)
+        self.save_look_button.hide()
         top = QHBoxLayout()
         top.addWidget(self.title, 1)
+        top.addWidget(self.save_look_button)
         top.addWidget(self.reset_button)
         right.addLayout(top)
         right.addWidget(self.form_area, 1)
@@ -334,6 +424,7 @@ class FiltersDialog(QDialog):
         flt = self._current()
         self.reset_button.setEnabled(flt is not None)
         if flt is None:
+            self.save_look_button.hide()
             self.title.setText("")
             if self.source.filters:
                 empty = QLabel("")
@@ -345,6 +436,7 @@ class FiltersDialog(QDialog):
             self.form = None
             return
         info = filter_kind(flt.kind)
+        self.save_look_button.setVisible(flt.kind == "color_correction")
         self.title.setText(info.label if info else flt.kind)
         if info is None:
             self.form_area.setWidget(QLabel(f"The {flt.kind!r} filter comes from a plugin that isn't loaded."))
@@ -359,6 +451,27 @@ class FiltersDialog(QDialog):
         if flt is not None and self.form is not None:
             flt.settings = self.form.values()
             self.on_change(save=False)
+
+    def _save_look(self, path: str | None = None) -> Path | None:
+        """Bake the selected Color Correction into a .cube file (in Documents\\SprigCast\\Looks by default)."""
+        flt = self._current()
+        if flt is None or flt.kind != "color_correction":
+            return None
+        if path is None:
+            from PySide6.QtWidgets import QFileDialog
+
+            folder = looks_folder()
+            folder.mkdir(parents=True, exist_ok=True)
+            path, _ = QFileDialog.getSaveFileName(self, "Save as look", str(folder / f"{self.source.name} look.cube"),
+                                                  "LUT (*.cube)")
+            if not path:
+                return None
+        if not path.lower().endswith(".cube"):
+            path += ".cube"
+        table = looks.bake_color_correction(settings_for(flt.kind, flt.settings))
+        saved = looks.write_cube(path, table, title=Path(path).stem)
+        self.title.setText(f"Color Correction  ·  saved {saved.name}")
+        return saved
 
     def _reset(self) -> None:
         flt = self._current()

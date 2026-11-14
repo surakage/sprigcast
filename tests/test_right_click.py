@@ -84,6 +84,16 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
         size_menu = next(a.menu() for a in menu.actions() if a.text() == "Size and place")
         fit = next(a for a in size_menu.actions() if a.text() == "Fit to canvas")
         assert fit.shortcut().toString() == "Ctrl+F"  # the shortcut shows in the menu
+        shape_menu = next(a.menu() for a in menu.actions() if a.text() == "Shape")
+        assert "Circle" in _texts(shape_menu) and "Color look" in on_item
+        next(a for a in shape_menu.actions() if a.text() == "Circle").trigger()
+        bg = w.collection.source("bg")
+        assert [(f.kind, f.settings["shape"]) for f in bg.filters] == [("shape", "circle")]
+        menu = w._preview_menu("horizontal", 0)
+        shape_menu = next(a.menu() for a in menu.actions() if a.text() == "Shape")
+        assert next(a for a in shape_menu.actions() if a.text() == "Circle").isChecked()
+        next(a for a in shape_menu.actions() if a.text() == "Rectangle (none)").trigger()
+        assert bg.filters == []
         assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Full screen on…", "Canvas size and frame rate…"]
         w._set_mode("live")
         w._edit_in_build("h2")

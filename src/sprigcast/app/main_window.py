@@ -6,6 +6,7 @@ import logging
 import os
 import queue
 import time
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSettings, QStandardPaths, Qt, QTimer, QUrl, Signal
@@ -107,8 +108,11 @@ from sprigcast.core.events import (
     SourceInfo,
     Stats,
 )
+from sprigcast.core.filters import filter_kind, settings_for
+from sprigcast.core.looks import LOOKS, SHAPES
 from sprigcast.core.scene import (
     FOLDER_COLOURS,
+    Filter,
     Output,
     PART_KIND,
     Scene,
@@ -736,6 +740,9 @@ class MainWindow(QMainWindow):
             acts = self.item_actions
             for key in ("settings", "filters", "rename"):
                 menu.addAction(acts[key])
+            if item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS:
+                self._fill_quick_filter_menu(menu.addMenu("Shape"), item.source, "shape", "shape", SHAPES)
+                self._fill_quick_filter_menu(menu.addMenu("Color look"), item.source, "lut", "look", LOOKS)
             menu.addSeparator()
             size = menu.addMenu("Size and place")
             for key in ("fit", "stretch", "center", "reset", "uncrop"):
@@ -2399,6 +2406,48 @@ class MainWindow(QMainWindow):
         )
         self._changed()
         self._refresh_audio()
+
+    def _fill_quick_filter_menu(self, menu: QMenu, source_id: str, kind: str, key: str,
+                                choices: tuple[tuple[str, str], ...]) -> None:
+        """A tick list for the Shape or Color look filter: pick one, or None to take it off."""
+        source = self.collection.source(source_id)
+        current = next((f for f in source.filters if f.kind == kind and f.enabled), None)
+        value = settings_for(kind, current.settings)[key] if current else None
+        none = menu.addAction("Rectangle (none)" if kind == "shape" else "None")
+        none.setCheckable(True)
+        none.setChecked(value is None)
+        none.triggered.connect(lambda _=False: self._set_quick_filter(source_id, kind, key, None))
+        menu.addSeparator()
+        for data, label in choices:
+            if data == "image":
+                continue
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(value == data)
+            action.triggered.connect(lambda _=False, d=data: self._set_quick_filter(source_id, kind, key, d))
+        menu.addSeparator()
+        more = "My own shape, border, soft edge…" if kind == "shape" else "From a .cube file, strength…"
+        menu.addAction(more).triggered.connect(
+            lambda _=False: self._set_quick_filter(source_id, kind, key, value or choices[0][0], open_filters=True))
+
+    def _set_quick_filter(self, source_id: str, kind: str, key: str, value: str | None,
+                          open_filters: bool = False) -> None:
+        """Turn a source's Shape / Color look filter on with `value`, or remove it (None)."""
+        source = self.collection.source(source_id)
+        existing = next((f for f in source.filters if f.kind == kind), None)
+        if value is None:
+            if existing is not None:
+                source.filters.remove(existing)
+        else:
+            if existing is None:
+                info = filter_kind(kind)
+                existing = Filter(id=uuid.uuid4().hex[:8], kind=kind, name=info.label, settings=dict(info.defaults))
+                source.filters.append(existing)
+            existing.enabled = True
+            existing.settings = {**settings_for(kind, existing.settings), key: value}
+        self._changed()
+        if open_filters:
+            self._open_filters(source_id)
 
     def _edit_filters(self) -> None:
         item = self._item()
