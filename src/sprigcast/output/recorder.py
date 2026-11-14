@@ -91,6 +91,7 @@ def nvenc_device() -> str:
 
 
 _direct_ok: bool | None = None
+_direct_hevc_ok: bool | None = None
 
 
 def direct_nvenc_ok() -> bool:
@@ -120,6 +121,32 @@ def direct_nvenc_ok() -> bool:
         return _direct_ok
 
 
+def direct_hevc_ok() -> bool:
+    """True when SprigCast's own NVENC encoder can also make HEVC here (checked once, after H.264).
+
+    FFmpeg's hevc_nvenc needs a CUDA context: on the user's PC a HEVC recording cost ~450 MB over idle
+    against ~155 MB for H.264 on our own encoder, and a source record doubled that.
+    """
+    global _direct_hevc_ok
+    if not direct_nvenc_ok():
+        return False
+    with _checks:
+        if _direct_hevc_ok is None:
+            ok = False
+            try:
+                from sprigcast.output.nvenc_d3d11 import D3D11Encoder
+
+                enc = D3D11Encoder(256, 256, 30, codec="hevc")
+                try:
+                    ok = bool(enc.encode(bytes(256 * 256 * 3 // 2), keyframe=True))
+                finally:
+                    enc.close()
+            except Exception as exc:  # a GPU without HEVC, sessions in use, ...
+                log.info("direct NVENC HEVC unavailable, using FFmpeg's: %s", exc)
+            _direct_hevc_ok = ok
+        return _direct_hevc_ok
+
+
 MEASURE_S = 5.0  # a 1 s window swings 5,000-9,000 at 6,000 kbps: keyframes every 2 s and bursty network writes
 
 
@@ -142,36 +169,38 @@ class DirectVideo:
     convert those themselves.
     """
 
-    def __init__(self, width: int, height: int, fps: int, bitrate_kbps: int, enc):
+    def __init__(self, width: int, height: int, fps: int, bitrate_kbps: int, enc, codec: str = "h264_nvenc"):
         import io
 
         import av
 
         from sprigcast.output.nvenc_d3d11 import D3D11Encoder
 
-        max_kbps, buffer_kbits = rate_limits("h264_nvenc", enc, bitrate_kbps)
+        self.codec = codec
+        raw = "hevc" if codec == "hevc_nvenc" else "h264"
+        max_kbps, buffer_kbits = rate_limits(codec, enc, bitrate_kbps)
         self.width, self.height = width, height
         self.time_base = Fraction(1, fps)
         self.encoder = D3D11Encoder(
             width, height, fps, enc.preset, bitrate_kbps=bitrate_kbps, rate_control=enc.rate_control,
             max_kbps=max_kbps, buffer_kbits=buffer_kbits, cq_level=enc.cq_level,
             gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning, adaptive_quant=enc.adaptive_quant,
-            multipass=enc.multipass,
+            multipass=enc.multipass, codec=raw,
         )
         self._enc = enc
         try:
             black = bytes(width * height) + bytes([128]) * (width * height // 2)
             first = self.encoder.encode(black, keyframe=True)  # only read for its headers, never written
-            self._probe = av.open(io.BytesIO(first), "r", format="h264")
+            self._probe = av.open(io.BytesIO(first), "r", format=raw)
             self.template = self._probe.streams.video[0]
             if not self.template.codec_context.extradata:
-                raise RuntimeError("the encoder's first frame had no SPS/PPS headers")
+                raise RuntimeError("the encoder's first frame had no parameter-set headers")
         except Exception:
             self.encoder.close()
             raise
 
     def set_bitrate(self, kbps: int) -> None:
-        max_kbps, buffer_kbits = rate_limits("h264_nvenc", self._enc, kbps)
+        max_kbps, buffer_kbits = rate_limits(self.codec, self._enc, kbps)
         self.encoder.set_bitrate(kbps, max_kbps, buffer_kbits)
 
     def encode(self, nv12, pts: int, keyframe: bool) -> list:
@@ -682,8 +711,11 @@ class Recorder:
     def uses_direct(self) -> bool:
         """Whether this recorder's video goes through SprigCast's own NVENC encoder (see DirectVideo)."""
         enc = self.encoder
-        return (self.allow_direct and self.codec == "h264_nvenc" and not enc.b_frames and not enc.lookahead
-                and direct_nvenc_ok())
+        if not self.allow_direct or enc.b_frames or enc.lookahead:
+            return False
+        if self.codec == "h264_nvenc":
+            return direct_nvenc_ok()
+        return self.codec == "hevc_nvenc" and direct_hevc_ok()
 
     def _open(self):
         from av.video.reformatter import VideoReformatter
@@ -692,7 +724,8 @@ class Recorder:
         self._reformatter = VideoReformatter()
         if self.uses_direct():
             try:
-                self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps, self.encoder)
+                self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps, self.encoder,
+                                           self.codec)
             except Exception as exc:  # fall back to FFmpeg's encoder for this recording
                 log.warning("direct NVENC failed to start (%s); using FFmpeg's", exc)
                 self._direct = None
