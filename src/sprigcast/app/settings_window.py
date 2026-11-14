@@ -1,6 +1,6 @@
 """The Settings window: one place for every option, a page for each topic picked from the side.
 
-Tabs: General, Stream, Recording, Audio, Video, Hotkeys. OK and Apply write the changes into the
+Tabs: General, Stream, Output, Audio, Video, Hotkeys, Connections, Plugins. OK and Apply write the changes into the
 scene collection and QSettings; the main window then refreshes itself (see MainWindow._after_settings).
 """
 
@@ -42,7 +42,7 @@ from sprigcast.core.filters import filter_kinds
 from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import known_kinds, source_class
 
-TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Plugins"]
+TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Connections", "Plugins"]
 TAB_ALIASES = {"Recording": "Output"}  # older menu entries
 ABOUT = {  # one line under each page's title
     "General": "Look, startup, snapping and the questions SprigCast asks first.",
@@ -51,6 +51,7 @@ ABOUT = {  # one line under each page's title
     "Audio": "Which mic and desktop audio each sound uses.",
     "Video": "Your canvases: their size, frame rate and which ones are on.",
     "Hotkeys": "Keys that work even while you're in a game.",
+    "Connections": "Let Streamer.bot, Stream Deck and other apps control SprigCast.",
     "Plugins": "Extra sources and filters from the plugins folder.",
 }
 
@@ -182,6 +183,7 @@ class SettingsWindow(QDialog):
         open_plugins_folder=None,
         streaming: bool = False,
         recording: bool = False,
+        control=None,
         tab: str = "General",
         parent: QWidget | None = None,
     ):
@@ -210,6 +212,7 @@ class SettingsWindow(QDialog):
             ("Audio", self._audio_page(audio_devices)),
             ("Video", self._video_page()),
             ("Hotkeys", self._hotkeys_page()),
+            ("Connections", self._connections_page(control)),
             ("Plugins", self._plugins_page(plugin_report, open_plugins_folder)),
         ):
             QListWidgetItem(name, self.tabs)
@@ -481,6 +484,12 @@ class SettingsWindow(QDialog):
             note = "Stop streaming and recording to change the canvases. " + note
         return _page(group, _hint(note))
 
+    def _connections_page(self, control) -> QWidget:
+        from sprigcast.app.connections_page import ConnectionsPage
+
+        self.connections_page = ConnectionsPage(control)
+        return _page(self.connections_page)
+
     def _hotkeys_page(self) -> QWidget:
         self.hotkeys_page = HotkeysPage(self.collection)
         return _page(self.hotkeys_page, stretch=False)
@@ -505,6 +514,7 @@ class SettingsWindow(QDialog):
             self.recording_page.apply_to(self.collection.recording, self.default_recordings_folder)
         self.output_page.apply_to(self.collection)
         self.collection.hotkeys = self.hotkeys_page.result_hotkeys()
+        self.connections_page.apply()
         for source in self.collection.sources:
             combo = self.audio_combos.get(source.id)
             if combo is not None and combo.currentData() != source.settings.get("device", "default"):
