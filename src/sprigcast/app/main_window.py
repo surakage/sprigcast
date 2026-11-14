@@ -349,6 +349,7 @@ class MainWindow(QMainWindow):
         part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
+        splitter.installEventFilter(self)  # Live re-shares the stage when it changes size
         # Build's shape tabs: one shape at a time, each with its own blooms (they sit at the top of the library).
         self.canvas_tabs = QTabBar()
         self.canvas_tabs.setObjectName("shapeTabs")
@@ -1444,6 +1445,8 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt naming)
         if event.type() == QEvent.Type.Resize and watched is self.live_tiles.viewport():
             QTimer.singleShot(0, self._fit_tiles)
+        if event.type() == QEvent.Type.Resize and watched is getattr(self, "splitter", None) and self.mode == "live":
+            QTimer.singleShot(0, self._share_stage)
         return super().eventFilter(watched, event)
 
     def _fit_tiles(self) -> None:
@@ -1466,6 +1469,7 @@ class MainWindow(QMainWindow):
                 self.splitter.show()
             for preview in self.previews.values():
                 preview.live_look = False
+                preview.align = "center"
         self.modes.setCurrentIndex(1 if self.mode == "live" else 0)
         self._sync_engine_staged()
         for preview in self.previews.values():
@@ -1482,9 +1486,26 @@ class MainWindow(QMainWindow):
         ratios = {c.id: c.width / c.height for c in shown}
         if self.mode == "build":  # one shape at a time: it gets the whole card
             return
-        weight = sum(ratios.values())
         canvases = [by_column[id(w)] for w in order]
-        self.splitter.setSizes([int(total * ratios[c.id] / weight) if c in shown else 0 for c in canvases])
+        visible = [c for c in canvases if c in shown]
+        # Each canvas as wide as the stage's height allows; any width left over goes to the outer
+        # sides, half each, and the two canvases lean together so the gap between them stays small.
+        height = max(1, self.splitter.height() - 24 - 6)
+        needed = {c.id: ratios[c.id] * height + 12 for c in visible}
+        spare = total - self.splitter.handleWidth() * (len(visible) - 1) - sum(needed.values())
+        if spare > 0:
+            sizes = [int(needed[c.id] + spare / 2) if c is visible[0] or c is visible[-1] else int(needed[c.id])
+                     if c in shown else 0 for c in canvases]
+        else:
+            weight = sum(ratios.values())
+            sizes = [int(total * ratios[c.id] / weight) if c in shown else 0 for c in canvases]
+        self.splitter.setSizes(sizes)
+        for c in canvases:
+            preview = self.previews.get(c.id)
+            if preview is not None:
+                lean = "right" if c is visible[0] else "left" if c is visible[-1] else "center"
+                preview.align = lean if spare > 0 else "center"
+                preview.update()
 
     def _on_clip_clicked(self) -> None:
         """Save clip, or first start keeping the last seconds in memory."""

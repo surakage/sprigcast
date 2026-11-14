@@ -63,6 +63,7 @@ class Preview(QWidget):
         self.selected_index: int | None = None
         self.transparent = True  # show see-through canvas areas as a checkerboard
         self.live_look = False  # Live's stage: rounded corners, no checkerboard frame
+        self.align = "center"  # Live's stage: "right"/"left" so two canvases sit together, evenly spaced
         self.ring: str | None = None
         self.zoom = 1.0  # 1 = the whole canvas fits; Ctrl+wheel zooms at the mouse, Ctrl+0 fits again
         self.pan = QPointF(0, 0)  # widget pixels the zoomed canvas is shifted by (middle-drag or Space+drag)
@@ -149,7 +150,9 @@ class Preview(QWidget):
         aw, ah = self.aspect
         scale = min(avail_w / aw, avail_h / ah) * self.zoom
         w, h = aw * scale, ah * scale
-        return QRectF(pad + (avail_w - w) / 2 + self.pan.x(), top + (avail_h - h) / 2 + self.pan.y(), w, h)
+        spare = avail_w - w
+        x = pad + (spare if self.align == "right" else 0.0 if self.align == "left" else spare / 2)
+        return QRectF(x + self.pan.x(), top + (avail_h - h) / 2 + self.pan.y(), w, h)
 
     def zoom_at(self, factor: float, at: QPointF | None = None) -> None:
         """Zoom by `factor` keeping the canvas point under `at` (widget pixels) where it is."""
@@ -250,7 +253,12 @@ class Preview(QWidget):
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
         if self.zoom > 1.0:
             label += f"   ·   {self.zoom * 100:.0f}%  (Ctrl+0 to fit)"
-        p.drawText(8, 17, label)
+        if self.live_look:  # the title starts where the canvas does, and never runs past it
+            left = max(8.0, rect.x() + 2)
+            label = p.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, int(max(60.0, rect.width() - 4)))
+            p.drawText(int(left), 17, label)
+        else:
+            p.drawText(8, 17, label)
         if self.live_look:
             if self.ring:
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)

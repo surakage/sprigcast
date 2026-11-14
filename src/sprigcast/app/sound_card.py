@@ -382,8 +382,8 @@ class SoundCard(QWidget):
         col.addWidget(meter)
         inner_box = QWidget()
         inner = QVBoxLayout(inner_box)
-        inner.setContentsMargins(20, 6, 0, 2)
-        inner.setSpacing(12)
+        inner.setContentsMargins(20, 4, 0, 2)
+        inner.setSpacing(6)
         for sound in members:
             row = self._sound_row(sound, colour)
             self.rows[sound.id] = row
@@ -400,7 +400,7 @@ class SoundCard(QWidget):
         row.clicked.connect(lambda sid=sound.id: self.open_tune(sid))
         col = QVBoxLayout(row)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(6)
+        col.setSpacing(0)  # the volume bar has its own breathing room (it's 14 px tall for the knob)
         line = QHBoxLayout()
         line.setSpacing(8)
         name = QLabel(sound.name)
