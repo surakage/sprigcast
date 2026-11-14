@@ -430,13 +430,16 @@ def test_live_card_keeps_deeper_settings_in_a_pop_up():
 
     t = Transition(kind="slide")
     seen = []
-    panel = TransitionsPanel(t, lambda: seen.append(t.kind), compact=True)
+    panel = TransitionsPanel(t, lambda: seen.append(t.kind), compact=True, collection=collection("a", t))
     panel.resize(300, 400)
     panel.show()
     assert panel.length.isVisibleTo(panel)
     assert not panel.direction_buttons["left"].isVisibleTo(panel)  # direction lives in the pop-up
     assert not panel.softness.isVisibleTo(panel) and not panel.clip.isVisibleTo(panel)
     dialog = panel.settings_dialog()
+    assert set(dialog.tabs) == {"transition", "rules"} and dialog.tabs["transition"].isChecked()
+    assert panel.rules_dialog().tabs["rules"].isChecked()  # Between blooms' Edit opens on the table tab
+    assert dialog.panel.picture.wide
     dialog.panel.direction_buttons["up"].click()
     assert t.direction == "up" and seen
     dialog.panel.set_kind("stinger")
