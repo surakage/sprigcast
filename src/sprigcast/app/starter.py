@@ -164,6 +164,31 @@ def combo_style() -> str:
             "QComboBox::drop-down { border: none; background: transparent; width: 30px; }" + arrow)
 
 
+CHIP_STYLE = (f"QPushButton {{ background: transparent; color: {theme.MUTED}; border: 1px solid {theme.EDGE_STRONG};"
+              " border-radius: 15px; padding: 7px 12px; font-weight: 600; }"
+              f"QPushButton:hover {{ border-color: {theme.ACCENT}; color: {theme.TEXT}; }}"
+              f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
+              f" border-color: {theme.ACCENT}; }}")
+
+
+def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
+    """A soft rounded card with a heading row (named 'head', for extras on the right) and a body."""
+    card = QFrame()
+    card.setObjectName("starterSection")
+    card.setStyleSheet(f"#starterSection {{ background: {theme.CARD}; border-radius: 18px; }}")
+    body = QVBoxLayout(card)
+    body.setContentsMargins(16, 12, 16, 14)
+    body.setSpacing(10)
+    head = QHBoxLayout()
+    head.setObjectName("head")
+    name = QLabel(title)
+    name.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 700;")
+    head.addWidget(name)
+    head.addStretch(1)
+    body.addLayout(head)
+    return card, body
+
+
 def _row_label(text: str, box: QWidget) -> QLabel:
     """A form label as tall as its box, so the words sit level with the box's text."""
     label = QLabel(text)
@@ -214,7 +239,7 @@ class StarterDialog(QDialog):
         root.addWidget(intro)
         form = QFormLayout()
         form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(10)
+        form.setVerticalSpacing(12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         style = combo_style()
         self.camera = QComboBox()
@@ -243,37 +268,56 @@ class StarterDialog(QDialog):
             self.mic.addItem(name, name)
         self.mic.addItem("No mic", None)
         form.addRow(_row_label("Mic", self.mic), self.mic)
-        root.addLayout(form)
-        self.desktop = QCheckBox("Desktop sound (games, music, alerts)")
+        self.desktop = QCheckBox("Games, music and alerts")
         self.desktop.setChecked(True)
-        root.addWidget(self.desktop)
-        blooms = QLabel("Blooms to make")
-        blooms.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600;")
-        root.addWidget(blooms)
+        self.desktop.setCursor(Qt.CursorShape.PointingHandCursor)
+        form.addRow(_row_label("Desktop sound", self.desktop), self.desktop)
+        root.addLayout(form)
+        # Which blooms: on/off chips in their own card, with a running count.
+        chips_card, chips = _section("Blooms to make")
+        self.bloom_count = QLabel()
+        self.bloom_count.setStyleSheet(theme.MUTED_STYLE)
+        chips_card.findChild(QHBoxLayout, "head").addWidget(self.bloom_count)
         grid = QGridLayout()
-        grid.setHorizontalSpacing(18)
+        grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(8)
-        self.bloom_boxes: dict[str, QCheckBox] = {}
+        self.bloom_boxes: dict[str, QPushButton] = {}
         for i, name in enumerate(BLOOMS):
-            box = QCheckBox(name)
-            box.setChecked(True)
-            self.bloom_boxes[name] = box
-            grid.addWidget(box, i // 3, i % 3)
-        root.addLayout(grid)
-        self.vertical = QCheckBox("Vertical versions too (TikTok, Shorts, Reels)")
+            chip = QPushButton()
+            chip.setCheckable(True)
+            chip.setStyleSheet(CHIP_STYLE)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.toggled.connect(lambda on, c=chip, n=name: (c.setText(f"✓  {n}" if on else n), self._count()))
+            chip.setChecked(True)
+            self.bloom_boxes[name] = chip
+            grid.addWidget(chip, i // 3, i % 3)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
+        chips.addLayout(grid)
+        root.addWidget(chips_card)
+        # Extras, only when they apply.
+        extras_card, extras = _section("Extras")
+        self.vertical = QCheckBox("Vertical versions for TikTok, Shorts and Reels")
         self.vertical.setChecked(both_shapes)
         self.vertical.setVisible(both_shapes)
-        root.addWidget(self.vertical)
         self.replace = QCheckBox("Replace the example blooms")
         self.replace.setChecked(fresh)
         self.replace.setVisible(fresh)
-        root.addWidget(self.replace)
+        for box in (self.vertical, self.replace):
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            extras.addWidget(box)
+        root.addWidget(extras_card)
+        extras_card.setVisible(both_shapes or fresh)
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {theme.EDGE_STRONG};")
+        root.addWidget(line)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         skip = QPushButton("Not now")
         skip.setStyleSheet(theme.SMALL_PILL_STYLE)
         skip.clicked.connect(self.reject)
-        go = QPushButton("Make my blooms")
+        go = self.go = QPushButton("Make my blooms")
         go.setStyleSheet(theme.PRIMARY_STYLE + "QPushButton { border-radius: 17px; padding: 9px 20px; }")
         go.setDefault(True)
         go.clicked.connect(self.accept)
@@ -281,6 +325,16 @@ class StarterDialog(QDialog):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             buttons.addWidget(b)
         root.addLayout(buttons)
+        self._count()
+
+    def _count(self) -> None:
+        """'4 of 5' beside the heading; nothing picked means nothing to make."""
+        if not hasattr(self, "bloom_count") or len(getattr(self, "bloom_boxes", {})) < len(BLOOMS):
+            return
+        on = sum(b.isChecked() for b in self.bloom_boxes.values())
+        self.bloom_count.setText(f"{on} of {len(BLOOMS)}")
+        if hasattr(self, "go"):
+            self.go.setEnabled(on > 0)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
