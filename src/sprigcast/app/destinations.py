@@ -41,7 +41,8 @@ def live_line(st) -> tuple[str, str]:
     """(level, text) for one streamer, for its card."""
     level, reason = st.health()
     if not st.connected:
-        return "warning", st.status.capitalize()
+        waiting = getattr(st, "delay_left", lambda: 0.0)() > 0  # sitting out the stream delay: all is well
+        return ("good" if waiting else "warning"), getattr(st, "waiting_text", lambda: st.status)().capitalize()
     text = f"{st.measure_kbps():.0f} kbps · {st.out_width}×{st.out_height} {st.fps} fps"
     if reason != "live":
         text += f" · {reason}"

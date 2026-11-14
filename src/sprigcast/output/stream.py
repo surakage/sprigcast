@@ -142,6 +142,18 @@ class Streamer(Recorder):
     def _live_text(self) -> str:
         return f"live, {self.delay_s:g} s delay" if self.delay_s > 0 else "live"
 
+    def delay_left(self) -> float:
+        """Seconds until the first delayed packets go out: nothing is wrong while they wait, so this isn't
+        "connecting". 0 with no delay, once something has been sent, and after a drop (that's a reconnect)."""
+        if self.delay_s <= 0 or self.connected or self.reconnects or self.bytes_out:
+            return 0.0
+        return max(0.0, self.started_at + self.delay_s - time.monotonic())
+
+    def waiting_text(self) -> str:
+        """What a not-yet-connected stream is doing, for cards and the stream report."""
+        left = self.delay_left()
+        return f"going out in {left:.0f} s (stream delay)" if left > 0 else self.status
+
     def health(self) -> tuple[str, str]:
         """("good" | "warning" | "bad", short reason), comparing against the previous call (about 1 s ago).
 
@@ -161,6 +173,8 @@ class Streamer(Recorder):
         sample = (now, self.frames, self.dropped, self.mux_seconds)
         last, self._health = self._health, sample
         if not self.connected:
+            if self.delay_left() > 0:
+                return "good", self.waiting_text()
             return ("warning" if self.status.startswith(("connecting", "reconnecting")) else "bad"), self.status
         if last is None or now <= last[0] or now - self._connected_at < GRACE_SECONDS:
             return "good", self._live_text()
