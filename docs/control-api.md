@@ -59,6 +59,23 @@ Error codes:
 
 `app.actions` returns every action with its fields, so a plugin can build its menus from it.
 
+### Step lists
+
+Send several actions in one message, with waits between them. One answer comes back when the
+last step is done:
+
+```
+app    → {"id": "8", "steps": [
+            {"do": "item.show", "bloom": "Main", "item": "Alert"},
+            {"wait": 5000},
+            {"do": "item.hide", "bloom": "Main", "item": "Alert"}]}
+server → {"id": "8", "ok": true, "result": {"steps": [{"ok": true, …}, {"ok": true, "waited": 5000}, {"ok": true, …}]}}
+```
+
+- `wait` is in milliseconds (all the waits together: at most 10 minutes). SprigCast keeps running while it waits.
+- A list holds at most 100 steps.
+- A failing step stops the list. Send `"stopOnError": false` to carry on.
+
 ## Events
 
 Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
@@ -146,6 +163,8 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `item.hide` | Hide something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `item.order` | Bring something forward or send it back. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `to`: top, bottom, up (one step) or down (one step) |
+| `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
 | `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `items.list` | What's inside a bloom or sprig, per shape. | `bloom` (optional): name or id, `sprig` (optional): name or id |

@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sprigcast import __version__
-from sprigcast.control.protocol import Close, auth_string
+from sprigcast.control.protocol import Close, Sleep, auth_string
 from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
@@ -39,6 +39,8 @@ PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "custom")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
 SOUND_KINDS = ("audio_input", "audio_output")
+MAX_STEPS = 100  # in one {"steps": [...]} list
+MAX_WAIT_MS = 10 * 60 * 1000  # all its waits together
 
 
 class ApiError(Exception):
@@ -381,6 +383,56 @@ class NativeApi:
             sprig="?sprig it's in", shape="?both (default), horizontal or vertical")
     def item_toggle(self, data):
         return self._set_items(data, None)
+
+    @action("item.place", "Move, size or turn something inside a bloom or sprig (only the fields you give change).",
+            item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",
+            shape="?both (default), horizontal or vertical", x="?left edge, canvas pixels", y="?top edge",
+            scale="?size, 1 = as big as the source", rotation="?degrees clockwise",
+            dx="?pixels to move right (negative: left)", dy="?pixels to move down (negative: up)")
+    def item_place(self, data):
+        holder, layouts = self._holder(data)
+        wanted = _get(data, "item", str)
+        items = self._matching_items(layouts, wanted)
+        if not items:
+            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+        values = {key: _get(data, key, float, optional=True) for key in ("x", "y", "scale", "rotation", "dx", "dy")}
+        if all(v is None for v in values.values()):
+            raise _bad("Give x, y, scale, rotation, dx or dy.")
+        if values["scale"] is not None and not 0.01 <= values["scale"] <= 100:
+            raise _bad("scale must be 0.01 to 100.")
+        for item in items:
+            if values["scale"] is not None:
+                ratio = None if item.scale_y is None or not item.scale else item.scale_y / item.scale
+                item.scale = values["scale"]
+                item.scale_y = None if ratio is None else values["scale"] * ratio
+            for key, attr in (("x", "x"), ("y", "y"), ("rotation", "rotation")):
+                if values[key] is not None:
+                    setattr(item, attr, values[key])
+            item.x += values["dx"] or 0.0
+            item.y += values["dy"] or 0.0
+        self.host.commit("items")
+        return {"items": [{"x": i.x, "y": i.y, "scale": i.scale, "rotation": i.rotation} for i in items]}
+
+    @action("item.order", "Bring something forward or send it back.", item="name or id", bloom="?bloom it's in",
+            sprig="?sprig it's in", shape="?both (default), horizontal or vertical",
+            to="top, bottom, up (one step) or down (one step)")
+    def item_order(self, data):
+        holder, layouts = self._holder(data)
+        wanted = _get(data, "item", str)
+        to = _get(data, "to", str)
+        if to not in ("top", "bottom", "up", "down"):
+            raise _bad("to must be top, bottom, up or down.")
+        moved = False
+        for layout in layouts:
+            for item in [i for i in layout.items if i in self._matching_items([layout], wanted)]:
+                at = next(n for n, i in enumerate(layout.items) if i is item)
+                layout.items.pop(at)
+                new = {"top": len(layout.items), "bottom": 0, "up": at + 1, "down": max(0, at - 1)}[to]
+                layout.items.insert(min(new, len(layout.items)), item)  # index 0 draws first (bottom)
+                moved = True
+        if not moved:
+            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+        self.host.commit("items")
 
     @action("sprigs.list", "Every sprig, its Live states and the state showing.")
     def sprigs_list(self, data):
@@ -814,7 +866,7 @@ class NativeSession:
         elif isinstance(wanted, list):
             self.events = {str(w) for w in wanted}
 
-    def receive(self, text: str) -> Iterator[str | Close]:
+    def receive(self, text: str) -> Iterator[str | Close | Sleep]:
         try:
             message = json.loads(text)
         except ValueError:
@@ -839,7 +891,48 @@ class NativeSession:
             self._set_events(message["events"])
             yield json.dumps({"welcome": {"api": API_VERSION, "events": sorted(self.events)}})
             return
+        if "steps" in message:
+            yield from self._steps(message)
+            return
         yield json.dumps(self.answer(message), default=str)
+
+    def _steps(self, message: dict[str, Any]) -> Iterator[str | Close | Sleep]:
+        """{"steps": [{"do": ...}, {"wait": 5000}, ...]}: run them in order, waiting where asked.
+
+        Answers once, at the end, with every step's answer. stopOnError (default true) stops at the
+        first failure. Other messages keep working while a list waits."""
+        steps = message.get("steps")
+        problem = None
+        if not isinstance(steps, list) or not steps:
+            problem = "steps must be a list of actions and waits."
+        elif len(steps) > MAX_STEPS:
+            problem = f"At most {MAX_STEPS} steps."
+        elif sum(float(s.get("wait", 0) or 0) for s in steps if isinstance(s, dict)
+                 and isinstance(s.get("wait", 0), (int, float))) > MAX_WAIT_MS:
+            problem = f"The waits add up to more than {MAX_WAIT_MS // 60000} minutes."
+        if problem:
+            yield json.dumps({"id": message.get("id"), "ok": False, "error": {"code": "bad_request", "message": problem}})
+            return
+        stop = message.get("stopOnError", True) is not False
+        results: list[dict[str, Any]] = []
+        for step in steps:
+            if isinstance(step, dict) and "wait" in step and "do" not in step:
+                wait = step["wait"]
+                if isinstance(wait, bool) or not isinstance(wait, (int, float)) or wait < 0:
+                    results.append({"ok": False, "error": {"code": "bad_request", "message": "wait is milliseconds."}})
+                    if stop:
+                        break
+                    continue
+                yield Sleep(wait / 1000)
+                results.append({"ok": True, "waited": wait})
+                continue
+            result = answer(self.api, step if isinstance(step, dict) else {})
+            result.pop("id", None)
+            results.append(result)
+            if stop and not result["ok"]:
+                break
+        yield json.dumps({"id": message.get("id"), "ok": all(r["ok"] for r in results) and len(results) == len(steps),
+                          "result": {"steps": results}}, default=str)
 
     def answer(self, message: dict[str, Any]) -> dict[str, Any]:
         return answer(self.api, message)
