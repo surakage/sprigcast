@@ -235,6 +235,7 @@ class TransitionsPanel(QWidget):
         self.changed = changed
         self.probe = probe
         self.collection = collection
+        self._narrow = 200 if compact else NARROW  # Live's card keeps labels beside their settings
         self._updating = False
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -258,8 +259,26 @@ class TransitionsPanel(QWidget):
             self.kinds.addButton(button)
             self.kind_buttons[kind] = button
             button.clicked.connect(lambda _=False, k=kind: self._pick(k))
-        root.addLayout(grid)
+        choices = QWidget()  # the eight pills; on Live's short card a drop-down takes their place
+        choices.setLayout(grid)
+        choices.setVisible(not compact)
+        root.addWidget(choices)
         self._reflow(4)
+        self.kind_pick: QPushButton | None = None
+        if compact:
+            self.kind_pick = QPushButton()
+            self.kind_pick.setStyleSheet(PILL_STYLE)
+            self.kind_pick.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.kind_pick.setToolTip("How blooms change on air")
+            menu = QMenu(self.kind_pick)
+            picks = {}
+            for kind, label, tip in KINDS:
+                action = menu.addAction(label, lambda k=kind: self.set_kind(k))
+                action.setToolTip(tip)
+                action.setCheckable(True)
+                picks[kind] = action
+            menu.aboutToShow.connect(lambda: [a.setChecked(k == self.transition.kind) for k, a in picks.items()])
+            self.kind_pick.setMenu(menu)
 
         self.picture = TransitionPicture(lambda: self.transition)
         self.picture.setVisible(not compact)  # Live's card is short: the choices say enough there
@@ -271,6 +290,8 @@ class TransitionsPanel(QWidget):
         form.setVerticalSpacing(8)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.form = form
+        if self.kind_pick is not None:
+            form.addRow("Type", self.kind_pick)
 
         self.length = QSpinBox()
         self.length.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -378,7 +399,7 @@ class TransitionsPanel(QWidget):
             return
         inner = self.width() - 16
         self._reflow(4 if inner >= 4 * CHOICE_WIDTH else 2)  # 4 or 2 columns: eight choices fill whole rows
-        wrap = QFormLayout.RowWrapPolicy.WrapAllRows if self.width() < NARROW else QFormLayout.RowWrapPolicy.DontWrapRows
+        wrap = QFormLayout.RowWrapPolicy.WrapAllRows if self.width() < self._narrow else QFormLayout.RowWrapPolicy.DontWrapRows
         if self.form.rowWrapPolicy() != wrap:
             self.form.setRowWrapPolicy(wrap)
 
@@ -446,6 +467,7 @@ class TransitionsPanel(QWidget):
         self._updating = True
         t, s = transition, transition.stinger
         self.kind_buttons[t.kind].setChecked(True)
+        self._show_kind()
         self.direction_buttons[t.direction].setChecked(True)
         self.length.setValue(t.duration_ms)
         self.softness.setValue(round(t.softness * 100))
@@ -529,8 +551,14 @@ class TransitionsPanel(QWidget):
         self.kind_buttons[kind].setChecked(True)
         self._pick(kind)
 
+    def _show_kind(self) -> None:
+        if self.kind_pick is not None:
+            label = dict((k, name) for k, name, _tip in KINDS)[self.transition.kind]
+            self.kind_pick.setText(f"{label}  ▾")
+
     def _pick(self, kind: str) -> None:
         self.transition.kind = kind
+        self._show_kind()
         self._show_rows()
         self.picture.play()
         self.changed()
