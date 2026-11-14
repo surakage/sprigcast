@@ -9,6 +9,8 @@ Settings:
     preset     "games" | "music" | "sfx" | "tts" | "voice" | "browser" | "custom"
     apps       exe names to catch (case doesn't matter); empty = the preset's usual apps
     auto_game  also catch the full-screen app in front (the Games preset turns this on)
+    device     instead of apps: an output to take this sound from, e.g. "Game (Elgato Virtual Audio)"
+               when Elgato Wave Link already sorts sound into channels
     volume_db, muted  as for every sound
 
 Everything here is plain data except `_ProcessCapture`, the WASAPI part, which only runs on Windows.
@@ -81,6 +83,8 @@ def wanted_apps(settings: dict[str, Any]) -> set[str]:
 
 
 def follows_game(settings: dict[str, Any]) -> bool:
+    if settings.get("device"):
+        return False
     if "auto_game" in settings:
         return bool(settings["auto_game"])
     kind = TYPES.get(str(settings.get("preset", "")))
@@ -88,7 +92,11 @@ def follows_game(settings: dict[str, Any]) -> bool:
 
 
 def describe(settings: dict[str, Any]) -> str:
-    """'Spotify, Apple Music, VLC…' or 'Full-screen game in front' or the picked apps."""
+    """'Spotify, Apple Music, VLC…' or 'Full-screen game in front' or the picked apps, or the output."""
+    if settings.get("device"):
+        from sprigcast.sources.audio import device_label
+
+        return device_label(str(settings["device"]))
     apps = [str(a) for a in settings.get("apps") or []]
     if apps:
         names = [a[:-4] if a.lower().endswith(".exe") else a for a in apps]
@@ -254,6 +262,7 @@ class AppAudioSource(Source):
         self._rescan = threading.Event()
         self._thread: threading.Thread | None = None
         self._game: tuple[int, str] | None = None
+        self._device = None  # a DesktopAudioSource when the sound comes from an output (settings "device")
         self.status = "starting"
 
     @property
@@ -267,6 +276,10 @@ class AppAudioSource(Source):
         return float(10 ** (float(self.settings.get("volume_db", 0.0)) / 20))
 
     def read_block(self, n: int) -> np.ndarray:
+        device = self._device
+        if device is not None:
+            self.status = device.status
+            return device.read_block(n)
         with self._lock:
             captures = list(self._captures.values())
         if not captures:
@@ -277,21 +290,35 @@ class AppAudioSource(Source):
         return out
 
     def start(self) -> None:
+        if self.settings.get("device"):
+            from sprigcast.sources.audio import DesktopAudioSource
+
+            self._device = DesktopAudioSource(f"{self.id}-device", {"device": str(self.settings["device"])})
+            self._device.start()
+            return
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name=f"app-audio-{self.id}", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        device, self._device = self._device, None
+        if device is not None:
+            device.stop()
         self._stop.set()
         self._rescan.set()
         if self._thread is not None:
             self._thread.join(timeout=3)
+            self._thread = None
         self._close_all()
 
     def update(self, settings: dict[str, Any]) -> None:
+        moved = settings.get("device") != self.settings.get("device")
         changed = any(settings.get(k) != self.settings.get(k) for k in ("apps", "preset", "auto_game"))
         super().update(settings)
-        if changed:
+        if moved:  # from apps to an output or back, or another output: start again
+            self.stop()
+            self.start()
+        elif changed:
             self._rescan.set()
 
     def targets(self, processes: list[tuple[int, int, str]]) -> dict[int, str]:

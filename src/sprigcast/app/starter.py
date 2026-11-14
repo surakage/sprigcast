@@ -171,8 +171,9 @@ def _sloth_item(collection: SceneCollection, pictures: dict[str, SourceConfig], 
     return SceneItem(source=config.id, scale=scale, x=x, y=y)
 
 
-def _add_app_sounds(collection: SceneCollection, picks: dict[str, list[str] | None]) -> None:
-    """One row per type of sound (Games, Music, ...), each catching only its apps; skips types already there."""
+def _add_app_sounds(collection: SceneCollection, picks: dict[str, list[str] | dict | None]) -> None:
+    """One row per type of sound (Games, Music, ...), each catching only its apps (a list; None = the usual
+    ones) or taking an output ({"device": name}, an Elgato Wave Link channel); skips types already there."""
     from sprigcast.sources.app_audio import TYPES
 
     have = {str(c.settings.get("preset")) for c in collection.sources if c.kind == "app_audio"}
@@ -180,9 +181,13 @@ def _add_app_sounds(collection: SceneCollection, picks: dict[str, list[str] | No
         kind = TYPES.get(key)
         if kind is None or key in have:
             continue
-        settings = {"preset": key, "apps": list(apps or []), "volume_db": 0.0, "muted": False}
-        if apps:
-            settings["auto_game"] = False  # a game picked by name: just that one
+        if isinstance(apps, dict):  # an output, like Elgato Wave Link's channel for this sound
+            settings = {"preset": key, "apps": [], "device": str(apps["device"]), "auto_game": False,
+                        "volume_db": 0.0, "muted": False}
+        else:
+            settings = {"preset": key, "apps": list(apps or []), "volume_db": 0.0, "muted": False}
+            if apps:
+                settings["auto_game"] = False  # a game picked by name: just that one
         collection.sources.append(SourceConfig(id=collection.new_id(f"sound-{key}"), kind="app_audio",
                                                name=kind.name, settings=settings))
 
@@ -404,6 +409,7 @@ class StarterDialog(QDialog):
         """Desktop sound: one row per type (Games, Music, ...) with its own on/off and apps, or all in one."""
         from sprigcast.app.live_stage import Switch
         from sprigcast.sources.app_audio import SOUND_TYPES
+        from sprigcast.sources.audio import is_mixer_app_device
 
         card, body = _section("Desktop sound")
         head = card.findChild(QHBoxLayout, "head")
@@ -435,11 +441,8 @@ class StarterDialog(QDialog):
             pick.setStyleSheet(style)
             pick.setFixedHeight(30)
             pick.setCursor(Qt.CursorShape.PointingHandCursor)
-            pick.addItem(f"Usual: {kind.hint}" if kind.apps else kind.hint, None)
-            for app in running:
-                pick.addItem(app[:-4] if app.lower().endswith(".exe") else app, [app])
-            pick.setToolTip("Which app this sound comes from. Usual catches the common ones; pick an app that's "
-                            "open now to use just that one.")
+            pick.setToolTip("Where this sound comes from: an output (like an Elgato Wave Link channel), or with "
+                            "Show desktop audio on, the usual apps or one app that's open now.")
 
             def show(on: bool, n=name, p=pick) -> None:
                 n.setStyleSheet(f"color: {theme.TEXT if on else theme.MUTED}; background: transparent;")
@@ -452,6 +455,26 @@ class StarterDialog(QDialog):
             grid.addWidget(pick, i, 2)
             self.type_rows[kind.key] = (switch, pick)
         body.addWidget(types)
+        # Outputs are always offered (names differ from PC to PC, so every one is). Desktop audio, the
+        # usual apps or one open app caught out of what the PC plays, joins the list with this switch:
+        # off by default when a mixer app like Elgato Wave Link already sorts sound into outputs.
+        self._speakers, self._running = list(speakers), list(running)
+        show_row = QHBoxLayout()
+        show_label = QLabel("Show desktop audio")
+        show_label.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        show_label.setToolTip("Also list the usual apps and apps open now, caught out of desktop audio")
+        self.show_desktop = Switch()
+        self.show_desktop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.show_desktop.setChecked(not any(is_mixer_app_device(n) for n in speakers) or not speakers)
+        show_row.addStretch(1)
+        show_row.addWidget(show_label)
+        show_row.addWidget(self.show_desktop)
+        self._show_row = QWidget()
+        self._show_row.setLayout(show_row)
+        show_row.setContentsMargins(0, 0, 0, 0)
+        body.addWidget(self._show_row)
+        self.show_desktop.toggled.connect(self._fill_type_picks)
+        self._fill_type_picks()
         self.desktop = QComboBox()
         self.desktop.setStyleSheet(style)
         self.desktop.setFixedHeight(BOX_HEIGHT)
@@ -462,14 +485,43 @@ class StarterDialog(QDialog):
         self.desktop.addItem("No desktop sound", None)
         body.addWidget(self.desktop)
         self.desktop.hide()
-        self.split.toggled.connect(lambda on: (types.setVisible(on), self.desktop.setVisible(not on)))
+        self.split.toggled.connect(lambda on: (types.setVisible(on), self._show_row.setVisible(on),
+                                               self.desktop.setVisible(not on)))
         return card
+
+    def _fill_type_picks(self) -> None:
+        """Each type's choices: the outputs, plus (Show desktop audio) its usual apps and the apps open now."""
+        from sprigcast.sources.app_audio import TYPES
+        from sprigcast.sources.audio import device_label
+
+        desktop = self.show_desktop.isChecked()
+        for key, (_switch, pick) in self.type_rows.items():
+            kind, before = TYPES[key], pick.currentData()
+            pick.blockSignals(True)
+            pick.clear()
+            if not desktop:
+                pick.addItem("Pick an output…" if self._speakers else "No outputs found", "")
+            for output in self._speakers:
+                pick.addItem(device_label(output), {"device": output})
+            if desktop:
+                if self._speakers:
+                    pick.insertSeparator(pick.count())
+                pick.addItem(f"Usual: {kind.hint}" if kind.apps else kind.hint, None)
+                for app in self._running:
+                    pick.addItem(app[:-4] if app.lower().endswith(".exe") else app, [app])
+            found = next((i for i in range(pick.count()) if pick.itemData(i) == before), -1)
+            if found >= 0 and before != "":
+                pick.setCurrentIndex(found)
+            elif desktop:
+                pick.setCurrentIndex(pick.findData(None))  # the usual apps, as before
+            pick.blockSignals(False)
 
     def app_sounds(self) -> dict[str, list[str] | None] | None:
         """Type -> picked apps (None = usual) for the types switched on; None when it's all in one."""
         if not self.split.isChecked():
             return None
-        return {key: pick.currentData() for key, (switch, pick) in self.type_rows.items() if switch.isChecked()}
+        return {key: pick.currentData() for key, (switch, pick) in self.type_rows.items()
+                if switch.isChecked() and pick.currentData() != ""}  # "" = no output picked yet: none made
 
     def _count(self) -> None:
         """'4 of 5' beside the heading; nothing picked means nothing to make."""
