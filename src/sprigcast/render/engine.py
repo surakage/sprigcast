@@ -91,6 +91,7 @@ class Engine:
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
         self._wipe_maps: dict[str, np.ndarray] = {}  # wipe image path -> its small grey picture
         self._release_later: list[tuple[str, str]] = []  # ("canvas" | "texture", key) to free on the next tick
+        self._pruned_at = 0.0  # when idle output targets were last let go (compositor.prune)
         self._state_fades: dict[str, tuple] = {}
         # Studio mode: canvas id -> the scene lined up to go on air next. Rendered to "next:<canvas>".
         # The UI replaces the whole dict, so the render thread always sees a consistent one.
@@ -763,6 +764,11 @@ class Engine:
         compositor.time = now
         if self._release_later:
             self._release_unused(compositor)
+        if now - self._pruned_at > 1.0:  # a recording or source record that ended leaves its targets idle
+            self._pruned_at = now
+            prune = getattr(compositor, "prune", None)  # test stand-ins may not have it
+            if prune is not None:
+                prune()
         self._rest_sources(compositor, now)
         for source_id, source in self._sources.items():
             if source.asleep:

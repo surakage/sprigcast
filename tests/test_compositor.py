@@ -162,3 +162,24 @@ def test_canvas_output_size():
     assert Canvas(id="h", width=1920, height=1080, output_short_side=720).output_size() == (1280, 720)
     assert Canvas(id="v", width=1080, height=1920, output_short_side=720).output_size() == (720, 1280)
     assert Canvas(id="h", width=1280, height=720, output_short_side=1080).output_size() == (1280, 720)
+
+
+def test_targets_an_ended_recording_used_are_let_go(compositor):
+    # A recording's NV12 copy (with two read-back buffers) and source record's clean canvas used to stay
+    # until SprigCast closed; the canvas itself stays.
+    import time
+
+    canvas = Canvas(id="pr", width=64, height=36)
+    clean = canvas.model_copy(update={"id": "clean:pr"})
+    compositor.render(canvas, None, {})
+    compositor.render(clean, None, {})
+    compositor.read_nv12_later("pr", (32, 18), "t", time.monotonic())
+    compositor.read_nv12_later("clean:pr", (32, 18), "t", time.monotonic())
+    compositor.read_scaled("pr", (16, 8))
+    assert compositor.prune() == 0  # just used: kept
+    assert compositor.prune(now=time.monotonic() + 10) >= 4
+    assert ("pr", (32, 18)) not in compositor.nv12_targets and ("clean:pr", (32, 18)) not in compositor.nv12_targets
+    assert ("pr", (16, 8)) not in compositor.scaled_targets and "clean:pr" not in compositor.targets
+    assert "pr" in compositor.targets
+    compositor.read_nv12_later("pr", (32, 18), "t", time.monotonic())  # and comes back when wanted again
+    assert ("pr", (32, 18)) in compositor.nv12_targets

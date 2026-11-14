@@ -193,12 +193,17 @@ def test_nvenc_shared_context_is_optional(monkeypatch):
     monkeypatch.setenv("SPRIGCAST_NVENC_OWN_CONTEXT", "1")
     assert recorder.nvenc_hwaccel() is None
     monkeypatch.delenv("SPRIGCAST_NVENC_OWN_CONTEXT")
-    monkeypatch.setattr(recorder, "_shared_gpu_ok", None)
+    monkeypatch.setattr(recorder, "_shared_gpu_ok", {})
     monkeypatch.setattr(recorder, "nvenc_works", lambda: False)
-    assert recorder.nvenc_hwaccel() is None and recorder._shared_gpu_ok is False  # no NVENC: nothing to share
-    monkeypatch.setattr(recorder, "_shared_gpu_ok", True)
+    assert recorder.nvenc_hwaccel() is None and recorder._shared_gpu_ok == {"h264_nvenc": False}  # no NVENC
+    monkeypatch.setattr(recorder, "_shared_gpu_ok", {"h264_nvenc": True, "hevc_nvenc": True, "av1_nvenc": True})
     accel = recorder.nvenc_hwaccel()
     assert accel is not None and accel.options == {"primary_ctx": "1"}
+    # HEVC and AV1 share the one context too (each used to make its own: ~250 MB apiece on Windows)
+    for codec in ("hevc_nvenc", "av1_nvenc"):
+        accel = recorder.encoder_hwaccel(codec)
+        assert accel is not None and accel.options == {"primary_ctx": "1"}
+    assert recorder.encoder_hwaccel("hevc_amf") is None
 
 
 def test_nvenc_without_b_frames_keeps_two_surfaces_and_no_delay():

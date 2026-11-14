@@ -55,10 +55,11 @@ def nvenc_works() -> bool:
         return _nvenc_ok
 
 
-_shared_gpu_ok: bool | None = None
+_shared_gpu_ok: dict[str, bool] = {}  # NVENC codec -> whether it runs on the shared CUDA context here
+SHARED_CONTEXT_CODECS = ("h264_nvenc", "hevc_nvenc", "av1_nvenc")
 
 
-def nvenc_hwaccel():
+def nvenc_hwaccel(codec: str = "h264_nvenc"):
     """Settings that make an NVENC encoder use CUDA's one shared ("primary") context, or None.
 
     Left to itself, each h264_nvenc encoder creates its own CUDA context, and on Windows each one
@@ -66,15 +67,16 @@ def nvenc_hwaccel():
     sharing one context saves most of a gigabyte. The frames are uploaded to the GPU once per encoder
     either way. Checked once per run by encoding a test frame; if that fails (old driver, an FFmpeg
     build without CUDA) every encoder falls back to its own context as before.
+    HEVC and AV1 share it too: before, each of them made its own context, so a HEVC recording with a
+    source record held two (~810 MB on the user's PC) and CUDA stayed loaded after it ended.
     Set SPRIGCAST_NVENC_OWN_CONTEXT=1 to turn this off.
     """
-    global _shared_gpu_ok
-    if nvenc_device() == "own":
+    if nvenc_device() == "own" or codec not in SHARED_CONTEXT_CODECS:
         return None
     with _checks:
-        if _shared_gpu_ok is None:
-            _shared_gpu_ok = nvenc_works() and _try_encoder("h264_nvenc", _make_hwaccel())
-    return _make_hwaccel() if _shared_gpu_ok else None
+        if codec not in _shared_gpu_ok:
+            _shared_gpu_ok[codec] = nvenc_works() and _try_encoder(codec, _make_hwaccel())
+    return _make_hwaccel() if _shared_gpu_ok[codec] else None
 
 
 def nvenc_device() -> str:
@@ -212,7 +214,7 @@ def _make_hwaccel():
 
 def encoder_hwaccel(codec: str):
     """The hwaccel to pass to add_stream() for this codec (only NVENC uses one)."""
-    return nvenc_hwaccel() if codec == "h264_nvenc" else None
+    return nvenc_hwaccel(codec) if codec in SHARED_CONTEXT_CODECS else None
 
 
 def _try_encoder(codec_name: str, hwaccel=None, options: dict[str, str] | None = None) -> bool:
