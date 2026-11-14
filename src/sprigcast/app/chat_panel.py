@@ -382,6 +382,9 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(12)
         layout.addStretch(1)
+        from sprigcast.app.empty import NappingSloth
+
+        layout.addWidget(NappingSloth(0.8), 0, Qt.AlignmentFlag.AlignHCenter)
         title = QLabel("Chat shows up here")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color: {theme.TEXT}; font-size: 15px; font-weight: 600")

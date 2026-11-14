@@ -399,6 +399,14 @@ def _seed_svg(ring: str, fill: str, sprout: str | None) -> str:
             f'<circle cx="12" cy="12" r="10" fill="{fill}" stroke="{ring}" stroke-width="1.8"/>{leaves}</svg>')
 
 
+def _vine_svg() -> str:
+    """One stretch of vine for progress bars: a gently wavy stem with a leaf up and a leaf down. Tiles sideways."""
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="14" viewBox="0 0 40 14">'
+            f'<path d="M0,7 C7,5 13,5 20,7 C27,9 33,9 40,7" stroke="{ACCENT_DARK}" stroke-width="2" fill="none"/>'
+            f'<path d="M9,6 C9.5,2.5 13,0.8 17,1 C16,4.2 13,6 9,6 Z" fill="{ACCENT}"/>'
+            f'<path d="M29,8 C28.5,11.5 25,13.2 21,13 C22,9.8 25,8 29,8 Z" fill="{ACCENT}"/></svg>')
+
+
 NATURE_PICTURES = {
     "leaf_off": lambda: _leaf_svg(CHROME, LEAF_OFF, LEAF_OFF),
     "leaf_hover": lambda: _leaf_svg(CHROME, ACCENT, ACCENT),
@@ -411,6 +419,7 @@ NATURE_PICTURES = {
     "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
     "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
     "seed_handle": _seed_handle_svg,
+    "vine": _vine_svg,
 }
 
 
@@ -458,6 +467,11 @@ def nature_rules(folder: str | None = None) -> str:
                  f" margin: -7px 0; border-radius: 9px; image: url({pic['seed_handle']}); }}")
     rules.append(f"QSlider::handle:vertical {{ background: transparent; border: none; width: 18px; height: 18px;"
                  f" margin: 0 -7px; border-radius: 9px; image: url({pic['seed_handle']}); }}")
+    # Progress grows as a vine along a soft track.
+    rules.append(f"QProgressBar {{ background: {RAISED}; border: none; border-radius: 7px; min-height: 14px;"
+                 f" max-height: 14px; color: transparent; }}")
+    rules.append(f"QProgressBar::chunk {{ background-color: transparent; background-image: url({pic['vine']});"
+                 f" background-repeat: repeat-x; background-position: left center; border-radius: 7px; }}")
     # Tick lists get room to breathe: nothing touches the box's edge, rows aren't packed together.
     rules.append("QListWidget, QTreeWidget { padding: 6px; }")
     rules.append("QListWidget::item, QTreeWidget::item { padding: 5px 8px; min-height: 22px; }")

@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QColor,
+    QCursor,
     QDesktopServices,
     QFont,
     QGuiApplication,
@@ -583,6 +584,12 @@ class MainWindow(QMainWindow):
         add.setMenu(self.add_source_menu)
         self.build_stage.add_slot.addWidget(add)
         self.build_stage.left.addWidget(self.source_list, 1)
+        from sprigcast.app.empty import EmptyState
+
+        self.inside_empty = EmptyState("Nothing here yet. Add a camera, screen, text or sprig.", "+ Add something",
+                                       lambda: self.add_source_menu.exec(QCursor.pos()), scale=0.8)
+        self.inside_empty.hide()
+        self.build_stage.left.addWidget(self.inside_empty)
         tools = QHBoxLayout()
         tools.setSpacing(8)
         for text, tip, slot in (
@@ -950,10 +957,10 @@ class MainWindow(QMainWindow):
         self.prop_status.setWordWrap(True)
         self.prop_status.setStyleSheet(theme.MUTED_STYLE)
         top.addWidget(self.prop_status)
-        self.prop_empty = QLabel("Click something on the canvas or in Inside to move it, change its look, "
-                                 "or see which shapes show it.")
-        self.prop_empty.setWordWrap(True)
-        self.prop_empty.setStyleSheet(theme.MUTED_STYLE)
+        from sprigcast.app.empty import EmptyState
+
+        self.prop_empty = EmptyState("Click something on the canvas or in Inside to move it, change its look, "
+                                     "or see which shapes show it.", scale=0.8)
         top.addWidget(self.prop_empty)
         col.addLayout(top)
 
@@ -2146,8 +2153,9 @@ class MainWindow(QMainWindow):
         if keep_row is not None and 0 <= keep_row < self.source_list.count():
             self.source_list.setCurrentRow(keep_row)
         empty = self.source_list.count() == 0
-        self.inside_hint.setText("Nothing here yet. Add a camera, screen, text or sprig with + Add." if empty
-                                 else "Drag to reorder: higher is in front. Right-click for more.")
+        self.source_list.setVisible(not empty)
+        self.inside_empty.setVisible(empty)
+        self.inside_hint.setVisible(not empty)
         self._updating = False
         self._refresh_properties()
 

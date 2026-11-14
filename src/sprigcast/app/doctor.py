@@ -366,8 +366,6 @@ QLabel#cardTitle {{ font-weight: 600; font-size: 10.5pt; }}
 QLabel#chip {{ color: {theme.TEXT}; background: {theme.RAISED}; border-radius: 9px; padding: 2px 9px;
               font-size: 8pt; }}
 QLabel#sectionLabel {{ color: {theme.MUTED}; font-size: 8.5pt; font-weight: 600; letter-spacing: 1px; }}
-QProgressBar {{ background: {theme.RAISED}; border: none; border-radius: 2px; max-height: 4px; }}
-QProgressBar::chunk {{ background: {theme.ACCENT}; border-radius: 2px; }}
 """
 
 

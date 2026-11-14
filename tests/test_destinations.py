@@ -80,7 +80,9 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
     try:
         w.show()
         # Build has its own screen too: bloom pills, Inside, the canvas with its twin, the inspector.
-        assert w.mode == "build" and w.build_stage.isVisible() and w.source_list.isVisible()
+        assert w.mode == "build" and w.build_stage.isVisible()
+        empty = w.source_list.count() == 0  # an empty bloom shows the napping sloth instead of the list
+        assert w.source_list.isVisible() != empty and w.inside_empty.isVisible() == empty
         assert not w.live_stage.isVisible()
         assert set(w.bloom_bar.pills) == {"h1", "h2"} and w.bloom_bar.pills["h1"].isChecked()
         assert w.previews["vertical"].twin and not w.previews["vertical"].editable
