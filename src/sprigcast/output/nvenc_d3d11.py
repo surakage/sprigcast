@@ -12,7 +12,7 @@ NvEncodeAPICreateInstance call. FFmpeg 8 (PyAV 19) speaks 13.0, so once a stream
 NVENC, our 12.1 sessions failed with INVALID_VERSION. We now speak the newest version the driver has
 (13.0, 12.2, 12.1) and try the next one (calling CreateInstance again) when a session open says
 INVALID_VERSION. The 12.2 and 13.0 struct layouts match 12.1 for every field used here.
-Frames go in as NV12 bytes and come out as H.264 Annex B packets. Synchronous mode, no B-frames.
+Frames go in as NV12 bytes and come out as H.264 or HEVC Annex B packets. Synchronous mode, no B-frames.
 """
 
 from __future__ import annotations
@@ -64,6 +64,8 @@ def _guid(d1, d2, d3, d4) -> GUID:
 
 
 H264 = _guid(0x6BC82762, 0x4E63, 0x4CA4, (0xAA, 0x85, 0x1E, 0x50, 0xF3, 0x21, 0xF6, 0xBF))
+HEVC = _guid(0x790CDC88, 0x4522, 0x4D7B, (0x94, 0x25, 0xBD, 0xA9, 0x97, 0x5F, 0x76, 0x03))
+CODECS = {"h264": H264, "hevc": HEVC}
 PRESETS = {
     "p1": _guid(0xFC0A8D3E, 0x45F8, 0x4CF8, (0x80, 0xC7, 0x29, 0x88, 0x71, 0x59, 0x0E, 0xBF)),
     "p2": _guid(0xF581CFB8, 0x88D6, 0x4381, (0x93, 0xF0, 0xDF, 0x13, 0xF9, 0xC2, 0x7D, 0xAB)),
@@ -90,7 +92,10 @@ RC_MODE, RC_CONST_QP, RC_AVG_BITRATE, RC_MAX_BITRATE, RC_VBV_SIZE, RC_VBV_DELAY 
 RC_FLAGS, RC_FLAG_AQ, RC_MULTIPASS = 36, 0x8, 100  # the enableAQ bit; NV_ENC_MULTI_PASS (0 off, 1 quarter, 2 full)
 MULTIPASS = {"disabled": 0, "qres": 1, "fullres": 2}
 RECONFIGURE_INIT_AT = 8  # NV_ENC_RECONFIGURE_PARAMS: version, then the initialise params, then the flag bits
-H264_IDR_PERIOD = 8
+# idrPeriod inside the codec part of NV_ENC_CONFIG (at CFG_H264): NV_ENC_CONFIG_H264 has one word of
+# flags and level before it; NV_ENC_CONFIG_HEVC has level, tier, minCUSize, maxCUSize and a word of flags.
+H264_IDR_PERIOD, HEVC_IDR_PERIOD = 8, 20
+IDR_PERIOD = {"h264": H264_IDR_PERIOD, "hevc": HEVC_IDR_PERIOD}
 STATUS_NAMES = [
     "SUCCESS", "NO_ENCODE_DEVICE", "UNSUPPORTED_DEVICE", "INVALID_ENCODERDEVICE", "INVALID_DEVICE",
     "DEVICE_NOT_EXIST", "INVALID_PTR", "INVALID_EVENT", "INVALID_PARAM", "INVALID_CALL", "OUT_OF_MEMORY",
@@ -270,7 +275,7 @@ def _release(com: c_void_p) -> None:
 
 
 class D3D11Encoder:
-    """One H.264 encoder on its own Direct3D 11 device. encode() takes NV12 bytes, returns packets.
+    """One H.264 or HEVC encoder on its own Direct3D 11 device. encode() takes NV12 bytes, returns packets.
 
     Never uses B-frames, so every packet comes out as soon as its frame went in, in order.
     """
@@ -278,7 +283,10 @@ class D3D11Encoder:
     def __init__(self, width: int, height: int, fps: int, preset: GUID | str = PRESET_P4, *,
                  bitrate_kbps: int = 0, rate_control: str = "vbr", max_kbps: int = 0, buffer_kbits: int = 0,
                  cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll", adaptive_quant: bool = False,
-                 multipass: str = "disabled"):
+                 multipass: str = "disabled", codec: str = "h264"):
+        if codec not in CODECS:
+            raise NvencError(f"no {codec} in SprigCast's own NVENC encoder")
+        self.codec = codec
         self.width, self.height = width, height
         self.device = c_void_p()
         self.encoder = c_void_p()
@@ -298,7 +306,7 @@ class D3D11Encoder:
                                       cq_level, gop_frames, adaptive_quant, multipass)
             self._settings = config  # kept: the encoder reads it again on reconfigure (set_bitrate)
             self._init = init = InitializeParams(
-                version=self._v("init", True), encodeGUID=H264, presetGUID=preset,
+                version=self._v("init", True), encodeGUID=CODECS[codec], presetGUID=preset,
                 encodeWidth=width, encodeHeight=height, darWidth=width, darHeight=height,
                 frameRateNum=fps, frameRateDen=1, enableEncodeAsync=0, enablePTD=1, tuningInfo=tuning_info,
                 encodeConfig=ctypes.addressof(config) + CONFIG_AT if config is not None else None,
@@ -354,12 +362,13 @@ class D3D11Encoder:
         struct.pack_into("<I", buf, 0, self._v("preset", True))  # NV_ENC_PRESET_CONFIG_VER
         struct.pack_into("<I", buf, CONFIG_AT, self._v("config", True))  # NV_ENC_CONFIG_VER
         get = _fn(F_PRESET_CONFIG_EX, c_void_p, GUID, GUID, c_int, c_void_p)
-        self._check(get(self.encoder, H264, preset, tuning_info, ctypes.addressof(buf)), "reading the preset")
+        self._check(get(self.encoder, CODECS[self.codec], preset, tuning_info, ctypes.addressof(buf)),
+                    "reading the preset")
         cfg = CONFIG_AT
         struct.pack_into("<i", buf, cfg + CFG_FRAME_INTERVAL_P, 1)  # 1 = I and P frames only
         if gop_frames:
             struct.pack_into("<I", buf, cfg + CFG_GOP, gop_frames)
-            struct.pack_into("<I", buf, cfg + CFG_H264 + H264_IDR_PERIOD, gop_frames)
+            struct.pack_into("<I", buf, cfg + CFG_H264 + IDR_PERIOD[self.codec], gop_frames)
         rc = cfg + CFG_RC
         struct.pack_into("<I", buf, rc + RC_MODE, RATE_CONTROL.get(rate_control, 1))
         if rate_control == "cqp":

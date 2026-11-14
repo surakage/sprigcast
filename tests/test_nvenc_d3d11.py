@@ -77,3 +77,14 @@ def test_speaks_the_newest_version_and_falls_back_on_invalid_version(monkeypatch
 def test_says_why_it_cannot_run():
     with pytest.raises(n.NvencError, match="Windows"):
         n.D3D11Encoder(64, 64, 30)
+
+
+def test_hevc_guid_and_idr_offsets():
+    # NV_ENC_CODEC_HEVC_GUID {790CDC88-4522-4D7B-9425-BDA9975F7603}
+    g = n.HEVC
+    assert (g.Data1, g.Data2, g.Data3, bytes(g.Data4)) == (0x790CDC88, 0x4522, 0x4D7B, bytes.fromhex("9425BDA9975F7603"))
+    # NV_ENC_CONFIG_H264: flags word, level, then idrPeriod; NV_ENC_CONFIG_HEVC: level, tier, minCUSize,
+    # maxCUSize (enums), a flags word, then idrPeriod
+    assert n.IDR_PERIOD == {"h264": 8, "hevc": 20}
+    with pytest.raises(n.NvencError):
+        n.D3D11Encoder(64, 64, 30, codec="av1")

@@ -21,14 +21,17 @@ pytestmark = pytest.mark.skipif("libx264" not in av.codecs_available, reason="ne
 class StandInEncoder:
     made: list = []
 
-    def __init__(self, width, height, fps, preset=None, **settings):
-        self.width, self.height, self.settings = width, height, settings
-        self.ctx = av.CodecContext.create("libx264", "w")
+    def __init__(self, width, height, fps, preset=None, codec="h264", **settings):
+        self.width, self.height, self.settings, self.codec = width, height, settings, codec
+        self.ctx = av.CodecContext.create("libx265" if codec == "hevc" else "libx264", "w")
         self.ctx.width, self.ctx.height, self.ctx.pix_fmt = width, height, "yuv420p"
         self.ctx.time_base, self.ctx.framerate = Fraction(1, fps), fps
         self.ctx.gop_size = settings.get("gop_frames") or 60
         self.ctx.max_b_frames = 0
         self.ctx.options = {"tune": "zerolatency", "preset": "ultrafast"}
+        if codec == "hevc":  # NVENC puts VPS/SPS/PPS on every keyframe it's asked for; so does this
+            self.ctx.options = {**self.ctx.options, "forced-idr": "1",
+                                "x265-params": "repeat-headers=1:log-level=error:bframes=0"}
         self.n, self.closed = 0, False
         StandInEncoder.made.append(self)
 
@@ -64,6 +67,7 @@ def direct(monkeypatch):
     StandInEncoder.made = []
     monkeypatch.setattr(nvenc_d3d11, "D3D11Encoder", StandInEncoder)
     monkeypatch.setattr(recorder, "direct_nvenc_ok", lambda: True)
+    monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: True)
     return StandInEncoder
 
 
@@ -215,3 +219,40 @@ def test_nvenc_works_without_cuda_when_our_encoder_does(monkeypatch):
     monkeypatch.setattr(recorder, "direct_nvenc_ok", lambda: True)
     monkeypatch.setattr(recorder, "_try_encoder", lambda *a, **k: pytest.fail("FFmpeg's NVENC was opened"))
     assert recorder.nvenc_works()
+
+
+@pytest.mark.skipif("libx265" not in av.codecs_available, reason="needs libx265 in PyAV")
+@pytest.mark.parametrize("container", ["mkv", "mp4", "flv"])
+def test_hevc_goes_through_the_direct_encoder_too(tmp_path, direct, container):
+    """FFmpeg's hevc_nvenc needs a CUDA context (~450 MB a recording on the user's PC); ours doesn't."""
+    from sprigcast.core.scene import EncoderSettings
+
+    path = tmp_path / f"h.{container}"
+    rec = Recorder(path, 320, 180, 30, 3000, "hevc_nvenc", 1000.0, container,
+                   encoder=EncoderSettings(rate_control="cbr", b_frames=0))
+    assert rec.uses_direct()
+    rec.start()
+    _nv12_frames(rec, 320, 180, 45)
+    rec.stop()
+    assert rec.error is None and rec.frames == 45
+    enc = direct.made[0]
+    assert enc.codec == "hevc" and enc.closed and enc.settings["gop_frames"] == 60
+    with av.open(str(path)) as f:
+        v = f.streams.video[0]
+        assert v.codec_context.name == "hevc" and (v.codec_context.width, v.codec_context.height) == (320, 180)
+        assert next(f.demux(video=0)).is_keyframe
+    with av.open(str(path)) as f:
+        assert sum(1 for _ in f.decode(video=0)) == 45
+
+
+def test_hevc_falls_back_to_ffmpeg_where_ours_cannot(tmp_path, direct, monkeypatch):
+    from sprigcast.core.scene import EncoderSettings
+
+    monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: False)
+    assert not Recorder(tmp_path / "a.mkv", 64, 64, 30, 1000, "hevc_nvenc", 0.0,
+                        encoder=EncoderSettings(b_frames=0)).uses_direct()
+    monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: True)
+    assert not Recorder(tmp_path / "b.mkv", 64, 64, 30, 1000, "hevc_nvenc", 0.0,
+                        encoder=EncoderSettings(b_frames=2)).uses_direct()
+    assert not Recorder(tmp_path / "c.mkv", 64, 64, 30, 1000, "av1_nvenc", 0.0,
+                        encoder=EncoderSettings(b_frames=0)).uses_direct()
