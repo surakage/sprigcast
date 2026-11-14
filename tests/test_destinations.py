@@ -79,12 +79,16 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         w.show()
-        # Build has its own screen too: bloom pills, Inside, the canvas with its twin, the inspector.
+        # Build has its own screen too: the library, the canvas with its twin, Inside and the inspector.
         assert w.mode == "build" and w.build_stage.isVisible()
         empty = w.source_list.count() == 0  # an empty bloom shows the napping sloth instead of the list
         assert w.source_list.isVisible() != empty and w.inside_empty.isVisible() == empty
         assert not w.live_stage.isVisible()
-        assert set(w.bloom_bar.pills) == {"h1", "h2"} and w.bloom_bar.pills["h1"].isChecked()
+        assert w.library.isVisible()
+        blooms = w.scene_tree.topLevelItem(0)
+        rows = {blooms.child(i).data(0, 256): blooms.child(i) for i in range(blooms.childCount())}
+        assert set(rows) == {"h1", "h2"} and rows["h1"].isSelected()
+        assert w.build_bar.where.text() == "Main"
         assert w.previews["vertical"].twin and not w.previews["vertical"].editable
         assert w.previews["horizontal"].editable and not w.previews["horizontal"].twin
         w._set_mode("live")
