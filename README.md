@@ -1,5 +1,7 @@
 # SprigCast
 
+![SprigCast: one show, every shape](brand/sprigcast-banner.png)
+
 A lightweight, open-source streaming app for Windows, in the spirit of OBS, Meld and Streamlabs.
 SprigCast renders a **horizontal** and a **vertical** canvas at the same time, and each output
 (Twitch, TikTok, a recording) streams from the canvas you choose. One show, every shape.

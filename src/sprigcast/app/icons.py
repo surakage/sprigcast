@@ -1,0 +1,198 @@
+"""SprigCast's own little line icons, drawn instead of emoji or font symbols.
+
+Emoji look different on every PC (and come in full colour on Windows), so every icon the app shows is drawn
+here in one style: thin rounded strokes on a 24 x 24 grid, the same look as the source icons in Build.
+The sprig is the logo's two leaves on a stem, filled, so it reads at any size.
+
+    paint_icon(painter, rect, "lock", colour)   # draw into a rect
+    icon("search")                              # a QIcon for a button or menu (sharp on high-DPI screens)
+"""
+
+from __future__ import annotations
+
+import math
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+
+from sprigcast.app import theme
+
+
+def _leaf(p: QPainter, base: QPointF, tip: QPointF, bulge: float) -> None:
+    """A filled leaf from base to tip, fattest in the middle; bulge > 0 bows it to the left of base->tip."""
+    dx, dy = tip.x() - base.x(), tip.y() - base.y()
+    nx, ny = -dy, dx  # normal
+    a = QPointF(base.x() + dx * 0.25 + nx * bulge, base.y() + dy * 0.25 + ny * bulge)
+    b = QPointF(base.x() + dx * 0.8 + nx * bulge * 0.9, base.y() + dy * 0.8 + ny * bulge * 0.9)
+    c = QPointF(base.x() + dx * 0.75 - nx * bulge * 0.55, base.y() + dy * 0.75 - ny * bulge * 0.55)
+    d = QPointF(base.x() + dx * 0.2 - nx * bulge * 0.55, base.y() + dy * 0.2 - ny * bulge * 0.55)
+    path = QPainterPath(base)
+    path.cubicTo(a, b, tip)
+    path.cubicTo(c, d, base)
+    p.fillPath(path, p.pen().color())
+
+
+def _gear(p: QPainter) -> None:
+    p.drawEllipse(QPointF(12, 12), 3, 3)
+    path = QPainterPath()
+    teeth = 8
+    for i in range(teeth * 2):
+        angle = math.pi * 2 * i / (teeth * 2) - math.pi / 2
+        r_out = 8.5 if i % 2 == 0 else 6.6
+        for j, off in enumerate((-0.17, 0.17)):
+            point = QPointF(12 + math.cos(angle + off) * r_out, 12 + math.sin(angle + off) * r_out)
+            if i == 0 and j == 0:
+                path.moveTo(point)
+            else:
+                path.lineTo(point)
+    path.closeSubpath()
+    p.drawPath(path)
+
+
+def _sprig(p: QPainter) -> None:
+    pen = p.pen()
+    pen.setWidthF(2.0)
+    p.setPen(pen)
+    stem = QPainterPath(QPointF(12, 21))
+    stem.cubicTo(QPointF(12, 16), QPointF(11, 12), QPointF(12, 7.5))
+    p.drawPath(stem)
+    _leaf(p, QPointF(12, 12.5), QPointF(20.5, 6), 0.42)
+    _leaf(p, QPointF(11.7, 16), QPointF(3.5, 11), -0.42)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(pen.color())
+    p.drawEllipse(QPointF(12, 5.2), 1.9, 1.9)  # the bud at the top, like the logo's dot
+
+
+def _draw(p: QPainter, name: str) -> None:
+    """Draw `name` on the 24 x 24 grid with the current pen."""
+    P = QPointF
+    if name == "sprig":
+        _sprig(p)
+    elif name == "bloom":  # five round petals around a centre
+        for i in range(5):
+            angle = math.pi * 2 * i / 5 - math.pi / 2
+            p.drawEllipse(P(12 + math.cos(angle) * 5, 12 + math.sin(angle) * 5), 3.6, 3.6)
+        p.drawEllipse(P(12, 12), 1.6, 1.6)
+    elif name == "leaf":
+        _leaf(p, P(5, 19), P(19.5, 4.5), 0.42)
+    elif name == "gear":
+        _gear(p)
+    elif name == "search":
+        p.drawEllipse(P(10.5, 10.5), 6, 6)
+        p.drawLine(P(15, 15), P(20, 20))
+    elif name in ("lock", "unlock"):
+        p.drawRoundedRect(QRectF(5, 11, 14, 10), 2.5, 2.5)
+        shackle = QPainterPath(P(8, 11))
+        shackle.lineTo(P(8, 7.5))
+        shackle.cubicTo(P(8, 2.5), P(16, 2.5), P(16, 7.5))
+        if name == "lock":
+            shackle.lineTo(P(16, 11))
+        p.drawPath(shackle)
+        p.drawLine(P(12, 15), P(12, 17))
+    elif name == "link":  # two rounded chain links on a slant
+        p.save()
+        p.translate(12, 12)
+        p.rotate(-45)
+        p.drawRoundedRect(QRectF(-9.5, -3.2, 10, 6.4), 3.2, 3.2)
+        p.drawRoundedRect(QRectF(-0.5, -3.2, 10, 6.4), 3.2, 3.2)
+        p.restore()
+    elif name == "key":
+        p.drawEllipse(P(8, 12), 4, 4)
+        p.drawLine(P(12, 12), P(21, 12))
+        p.drawLine(P(18, 12), P(18, 15.5))
+        p.drawLine(P(21, 12), P(21, 15))
+    elif name == "upload":  # signal bars
+        for i, h in enumerate((5, 9, 13)):
+            x = 6 + i * 6
+            p.drawLine(P(x, 19), P(x, 19 - h))
+    elif name == "monitor":
+        p.drawRoundedRect(QRectF(3.5, 4.5, 17, 11.5), 2, 2)
+        p.drawLine(P(12, 16), P(12, 19.5))
+        p.drawLine(P(8, 19.5), P(16, 19.5))
+    elif name == "mic":
+        p.drawRoundedRect(QRectF(9, 3, 6, 11), 3, 3)
+        p.drawArc(QRectF(5.5, 6, 13, 11), 180 * 16, 180 * 16)
+        p.drawLine(P(12, 17), P(12, 20.5))
+    elif name == "camera":
+        p.drawRoundedRect(QRectF(3, 6.5, 12.5, 11), 2.5, 2.5)
+        tri = QPainterPath(P(15.5, 10.5))
+        tri.lineTo(P(21, 7.5))
+        tri.lineTo(P(21, 16.5))
+        tri.lineTo(P(15.5, 13.5))
+        p.drawPath(tri)
+    elif name == "disk":  # a drive with a light
+        p.drawRoundedRect(QRectF(3.5, 8, 17, 9), 2.5, 2.5)
+        p.drawLine(P(7, 12.5), P(12, 12.5))
+        p.drawPoint(P(17, 12.5))
+    elif name == "bolt":
+        path = QPainterPath(P(13.5, 3))
+        for x, y in ((6, 13.5), (11.5, 13.5), (10.5, 21), (18, 10.5), (12.5, 10.5)):
+            path.lineTo(P(x, y))
+        path.closeSubpath()
+        p.drawPath(path)
+    elif name == "panel":  # a window with a side panel
+        p.drawRoundedRect(QRectF(3.5, 5, 17, 14), 2.5, 2.5)
+        p.drawLine(P(14.5, 5), P(14.5, 19))
+    elif name == "plus":
+        p.drawLine(P(12, 5), P(12, 19))
+        p.drawLine(P(5, 12), P(19, 12))
+    elif name == "compass":
+        p.drawEllipse(P(12, 12), 8.5, 8.5)
+        needle = QPainterPath(P(15.5, 8.5))
+        needle.lineTo(P(13, 13))
+        needle.lineTo(P(8.5, 15.5))
+        needle.lineTo(P(11, 11))
+        needle.closeSubpath()
+        p.drawPath(needle)
+    elif name == "folder":
+        path = QPainterPath(P(3.5, 17.5))
+        for x, y in ((3.5, 6.5), (9, 6.5), (11, 8.5), (20.5, 8.5), (20.5, 17.5)):
+            path.lineTo(P(x, y))
+        path.closeSubpath()
+        p.drawPath(path)
+    else:  # anything unknown: a small dot
+        p.drawEllipse(P(12, 12), 2, 2)
+
+
+NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
+         "camera", "disk", "bolt", "panel", "plus", "compass", "folder")
+
+
+def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:
+    """Draw icon `name` centred in `r` (square-ish), in `colour` (default: the normal text colour)."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    side = min(r.width(), r.height())
+    p.translate(r.center().x() - side / 2, r.center().y() - side / 2)
+    p.scale(side / 24, side / 24)
+    pen = QPen(QColor(colour or theme.TEXT), width * 24 / max(side, 1))  # `width` screen pixels at any size
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    _draw(p, name)
+    p.restore()
+
+
+def pixmap(name: str, colour: str | QColor | None = None, size: int = 18, ratio: float = 2.0) -> QPixmap:
+    pix = QPixmap(int(size * ratio), int(size * ratio))
+    pix.setDevicePixelRatio(ratio)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    paint_icon(p, QRectF(0, 0, size, size), name, colour)
+    p.end()
+    return pix
+
+
+_cache: dict[tuple, QIcon] = {}
+
+
+def icon(name: str, colour: str | QColor | None = None, size: int = 18) -> QIcon:
+    """A QIcon of `name`, drawn once per colour."""
+    key = (name, QColor(colour or theme.TEXT).name(QColor.NameFormat.HexArgb), size)
+    if key not in _cache:
+        made = QIcon()
+        for ratio in (1.0, 2.0):
+            made.addPixmap(pixmap(name, colour, size, ratio))
+        _cache[key] = made
+    return _cache[key]

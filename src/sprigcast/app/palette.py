@@ -25,14 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
+from sprigcast.app import icons, theme
 
 RECENT_KEY = "palette/recent"
 RECENT_MAX = 8
 RECENT_ROLE = Qt.ItemDataRole.UserRole + 1
 ROW_HEIGHT = 38
-GROUP_ICONS = {"Scene": "🎬", "Action": "⚡", "Settings": "⚙", "Dock": "🪟", "Add": "➕", "Sprig": "🌱",
-               "Mode": "🧭", "File": "📁"}
+GROUP_ICONS = {"Scene": "bloom", "Action": "bolt", "Settings": "gear", "Dock": "panel", "Add": "plus", "Sprig": "sprig",
+               "Mode": "compass", "File": "folder"}  # drawn by app/icons.py
 
 
 @dataclass
@@ -229,8 +229,9 @@ class _RowPainter(QStyledItemDelegate):
         x = rect.left() + 12
         painter.setFont(font)
         painter.setPen(QColor(theme.TEXT))
-        painter.drawText(QRectF(x, rect.top(), 24, rect.height()), Qt.AlignmentFlag.AlignCenter,
-                         GROUP_ICONS.get(command.group, "•"))
+        group = GROUP_ICONS.get(command.group, "dot")
+        icons.paint_icon(painter, QRectF(x + 3, rect.center().y() - 9, 18, 18), group,
+                         theme.ACCENT if group == "sprig" else theme.TEXT)
         x += 34
         right = rect.right() - 10
         small = QFont(font)

@@ -38,8 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
-from sprigcast.app.terms import PART_MARK
+from sprigcast.app import icons, theme
 
 ROLE_ID = Qt.ItemDataRole.UserRole  # a bloom's or sprig's scene id
 ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1  # a folder's id; "" on the Blooms heading, PART_ROOT on Sprigs
@@ -147,9 +146,7 @@ class LibraryDelegate(QStyledItemDelegate):
             if selected:
                 font.setWeight(QFont.Weight.Bold)
         else:  # sprig
-            p.setPen(QColor(theme.ACCENT))
-            p.setFont(font)
-            p.drawText(QRectF(x, r.y(), 16, r.height()), Qt.AlignmentFlag.AlignVCenter, PART_MARK)
+            icons.paint_icon(p, QRectF(x, mid - 8, 16, 16), "sprig", theme.ACCENT)
             x += 20
             if selected:
                 font.setWeight(QFont.Weight.Bold)
@@ -182,9 +179,7 @@ class LibraryDelegate(QStyledItemDelegate):
         big.setWeight(QFont.Weight.Bold)
         x = r.x() + 6
         if sprigs:
-            p.setPen(QColor(theme.ACCENT))
-            p.setFont(big)
-            p.drawText(QRectF(x, r.y(), 20, r.height()), Qt.AlignmentFlag.AlignVCenter, PART_MARK)
+            icons.paint_icon(p, QRectF(x, r.center().y() - 9, 18, 18), "sprig", theme.ACCENT)
             x += 22
         p.setPen(QColor(theme.TEXT_BRIGHT))
         p.setFont(big)

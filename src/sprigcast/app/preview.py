@@ -14,7 +14,7 @@ from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, 
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.app import safe_zones, theme
-from sprigcast.app.terms import PART, PART_MARK, a
+from sprigcast.app.terms import PART, a
 from sprigcast.core import edit
 from sprigcast.core.scene import Scene, SceneItem
 
@@ -622,6 +622,6 @@ class Preview(QWidget):
         else:
             self.unsetCursor()
         name = self.part_names.get(self.scene.items[index].source) if index is not None else None
-        hint = f"{PART_MARK} {name}: {a(PART)}. Double-click to edit it here." if name and self.inner is None else ""
+        hint = f"{name}: {a(PART)}. Double-click to edit it here." if name and self.inner is None else ""
         if hint != self.toolTip():
             self.setToolTip(hint)

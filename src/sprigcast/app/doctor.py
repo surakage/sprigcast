@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
+from sprigcast.app import icons, theme
 from sprigcast.app.destinations import problem
 from sprigcast.core.scene import SceneCollection
 from sprigcast.output.stream import SERVICES
@@ -349,8 +349,8 @@ def load_last_streams(settings) -> dict[str, LastStream]:
 # Dialog -------------------------------------------------------------------------
 
 
-AREA_ICONS = {"Keys": "🔑", "Upload": "📶", "Encoder": "⚙", "GPU": "🖥", "Audio": "🎙", "Sources": "🎥",
-              "Disk": "💾", "All": "🌿"}
+AREA_ICONS = {"Keys": "key", "Upload": "upload", "Encoder": "gear", "GPU": "monitor", "Audio": "mic", "Sources": "camera",
+              "Disk": "disk", "All": "leaf"}  # drawn by app/icons.py
 BADGES = {"bad": "✕", "warning": "!", "good": "✓", "checking": "…"}
 SUBTITLES = {
     "bad": "Fix the red ones before you go live.",
@@ -507,7 +507,8 @@ def _finding_card(f: Finding) -> QWidget:
     layout = QHBoxLayout(card)
     layout.setContentsMargins(14, 10, 12, 10)
     layout.setSpacing(12)
-    icon = QLabel(AREA_ICONS.get(f.area, "•"))
+    icon = QLabel()
+    icon.setPixmap(icons.pixmap(AREA_ICONS.get(f.area, "dot"), colour, 16))
     icon.setFixedSize(34, 34)
     icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
     icon.setStyleSheet(f"background: {QColor(colour).darker(260).name()}; border: 1px solid {colour};"

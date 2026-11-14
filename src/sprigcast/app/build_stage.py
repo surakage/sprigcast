@@ -39,10 +39,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
+from sprigcast.app import icons, theme
 from sprigcast.app.library import SPRIG_MIME
 from sprigcast.app.live_stage import heading
-from sprigcast.app.terms import PART_MARK
 
 LEFT_WIDTH = 290
 RIGHT_WIDTH = 320
@@ -59,6 +58,10 @@ class BuildBar(QWidget):
         self.where = heading("", 15)
         self.note = QLabel("")
         self.note.setStyleSheet(f"color: {theme.MUTED};")
+        self.mark = QLabel()  # the sprig, shown while a sprig is open
+        self.mark.setPixmap(icons.pixmap("sprig", theme.ACCENT, 18))
+        self.mark.hide()
+        row.addWidget(self.mark)
         row.addWidget(self.where)
         row.addWidget(self.note)
         row.addStretch(1)
@@ -68,7 +71,8 @@ class BuildBar(QWidget):
         self.setFixedHeight(40)
 
     def show_place(self, title: str, note: str, sprig: bool = False) -> None:
-        self.where.setText(f"{PART_MARK} {title}" if sprig and title else title)
+        self.mark.setVisible(bool(sprig and title))
+        self.where.setText(title)
         self.note.setText(note)
 
 
@@ -248,10 +252,7 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         tri.closeSubpath()
         p.drawPath(tri)
     elif kind == "scene":
-        font = p.font()
-        font.setPixelSize(13)
-        p.setFont(font)
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, PART_MARK)
+        icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "sprig", ink, 1.4)
     else:  # plugins and anything new: a little puzzle-ish dot
         p.drawEllipse(QRectF(cx - 4, cy - 4, 8, 8))
         p.drawPoint(QPointF(cx + 5.5, cy))
@@ -259,7 +260,7 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
 
 
 class InsideDelegate(QStyledItemDelegate):
-    """Draws an Inside row: a visibility dot, the name (❧ for sprigs), a quiet tag, then the sprig's
+    """Draws an Inside row: a visibility dot, the name (a sprig icon for sprigs), a quiet tag, then the sprig's
     own contents underneath on branch lines, like the mockup."""
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802
@@ -322,8 +323,7 @@ class InsideDelegate(QStyledItemDelegate):
             p.drawLine(int(indent), int(y), int(indent), int(y + CHILD_H))
             tx = indent + 12
             if child_sprig:
-                p.setPen(QColor(theme.ACCENT))
-                p.drawText(QRectF(tx, y, 16, CHILD_H), Qt.AlignmentFlag.AlignVCenter, PART_MARK)
+                icons.paint_icon(p, QRectF(tx, y + CHILD_H / 2 - 7, 14, 14), "sprig", theme.ACCENT)
                 tx += 18
             p.setPen(QColor(theme.MUTED if not selected else theme.SELECT_TEXT))
             p.drawText(QRectF(tx, y, top.right() - tx - 6, CHILD_H), Qt.AlignmentFlag.AlignVCenter, child)
