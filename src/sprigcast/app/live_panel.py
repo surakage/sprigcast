@@ -9,7 +9,18 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -111,6 +122,7 @@ class BloomTile(QPushButton):
         super().__init__(name)
         self.colour = colour
         self.thumb: QImage | None = None
+        self.key = ""  # its hotkey (or 1-9 while SprigCast has focus), shown in a little chip on the right
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -122,13 +134,38 @@ class BloomTile(QPushButton):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         text = QFontMetrics(self.font()).horizontalAdvance(self.text())
-        return QSize(min(220, text + 50), self.HEIGHT)
+        return QSize(min(240, text + 50 + self._key_width()), self.HEIGHT)
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         return QSize(60, self.HEIGHT)
 
     def set_thumb(self, image: QImage | None) -> None:
         self.thumb = image
+
+    def set_key(self, key: str) -> None:
+        self.key = key
+        self.updateGeometry()
+        self.update()
+
+    def _key_width(self) -> int:
+        if not self.key:
+            return 0
+        small = QFont(self.font())
+        small.setPixelSize(11)
+        return QFontMetrics(small).horizontalAdvance(self.key) + 14 + 6
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        super().enterEvent(event)
+        if self.thumb is not None and not self.thumb.isNull():
+            ThumbPop.show_for(self, self.thumb)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        ThumbPop.hide_now()
+        super().leaveEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        ThumbPop.hide_now()
+        super().hideEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
@@ -147,7 +184,20 @@ class BloomTile(QPushButton):
         p.drawEllipse(QRectF(16, outer.center().y() - 4, 8, 8))
         p.setPen(QColor(theme.TEXT_BRIGHT if self.isEnabled() else theme.MUTED))
         p.setFont(self.font())
-        text_rect = QRectF(32, 0, self.width() - 46, self.height())
+        key_w = self._key_width()
+        if key_w:
+            small = QFont(self.font())
+            small.setPixelSize(11)
+            chip = QRectF(outer.right() - 10 - (key_w - 6), outer.center().y() - 10, key_w - 6, 20)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.CHROME))
+            p.drawRoundedRect(chip, 10, 10)
+            p.setPen(QColor(theme.MUTED))
+            p.setFont(small)
+            p.drawText(chip, Qt.AlignmentFlag.AlignCenter, self.key)
+            p.restore()
+        text_rect = QRectF(32, 0, self.width() - 46 - key_w, self.height())
         name = QFontMetrics(self.font()).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(text_rect.width()))
         p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
         ring = theme.LIVE if on_air else theme.ACCENT if self.property("staged") else None
@@ -159,6 +209,46 @@ class BloomTile(QPushButton):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(outer.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
         p.end()
+
+
+class ThumbPop(QLabel):
+    """The bloom's last on-air picture, floating just above its pill while you point at it."""
+
+    _one: "ThumbPop | None" = None
+    WIDTH = 200
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+    @classmethod
+    def show_for(cls, tile: QWidget, image: QImage) -> None:
+        if cls._one is None:
+            cls._one = ThumbPop()
+        pop = cls._one
+        scaled = image.scaledToWidth(cls.WIDTH, Qt.TransformationMode.SmoothTransformation)
+        if scaled.height() > 160:  # a vertical bloom: keep it about as tall as a horizontal one
+            scaled = image.scaledToHeight(160, Qt.TransformationMode.SmoothTransformation)
+        rounded = QPixmap(scaled.size())
+        rounded.fill(Qt.GlobalColor.transparent)
+        p = QPainter(rounded)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, scaled.width(), scaled.height()), 12, 12)
+        p.setClipPath(path)
+        p.drawImage(0, 0, scaled)
+        p.end()
+        pop.setPixmap(rounded)
+        pop.resize(rounded.size())
+        corner = tile.mapToGlobal(QPoint(0, 0))
+        pop.move(corner.x(), corner.y() - rounded.height() - 8)
+        pop.show()
+
+    @classmethod
+    def hide_now(cls) -> None:
+        if cls._one is not None:
+            cls._one.hide()
 
 
 class LivePanel(QWidget):
@@ -173,6 +263,13 @@ class LivePanel(QWidget):
         self.buttons: dict[str, QPushButton] = {}
         self.state_buttons: dict[tuple[str, str | None], QPushButton] = {}  # (sprig id, state name or None)
         self.thumbs: dict[str, QImage] = {}  # scene id -> its last on-air picture, small
+        self.number_order: list[str] = []  # the blooms that 1-9 switch to, in the order shown
+        for n in range(1, 10):
+            # Window shortcuts only (never global): a game's number keys are left alone. Typing in a
+            # text box (chat) still types the number, and they do nothing while Live is hidden.
+            shortcut = QShortcut(QKeySequence(str(n)), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(lambda n=n: self._number(n))
         self._signature: tuple = ()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -218,6 +315,10 @@ class LivePanel(QWidget):
         root.addLayout(self.rows)
         root.addStretch(1)
 
+    def _number(self, n: int) -> None:
+        if 0 < n <= len(self.number_order) and self.isVisible():
+            self.on_scene(self.number_order[n - 1])
+
     def set_thumb(self, scene_id: str, image: QImage) -> None:
         self.thumbs[scene_id] = image
         tile = self.buttons.get(scene_id)
@@ -228,7 +329,8 @@ class LivePanel(QWidget):
         signature = (tuple((s.id, s.name, s.canvas, s.kind, s.folder, s.linked_to) for s in collection.scenes),
                      tuple((f.id, f.name, f.colour, f.live) for f in collection.folders),
                      tuple((p.id, p.name, tuple(s.name for s in p.states)) for p in collection.parts()),
-                     tuple(c.id for c in collection.canvases if c.enabled))
+                     tuple(c.id for c in collection.canvases if c.enabled),
+                     tuple(sorted((collection.hotkeys or {}).items())))
         if signature != self._signature:
             self._signature = signature
             self._rebuild(collection)
@@ -261,6 +363,7 @@ class LivePanel(QWidget):
                 widget.deleteLater()
         self.buttons = {}
         self.state_buttons = {}
+        self.number_order = []
         sections, shown = [], set()
         for canvas in collection.canvases:
             if not canvas.enabled:
@@ -326,6 +429,15 @@ class LivePanel(QWidget):
                 partners = [s.name for s in self._collection.scenes if s.linked_to == scene.id]
                 button.setToolTip(scene.name + (f"\nAlso switches: {', '.join(partners)}" if partners else ""))
             button.set_thumb(self.thumbs.get(scene.id))
+            from sprigcast.app.hotkeys import SCENE_PREFIX
+
+            combo = (self._collection.hotkeys or {}).get(SCENE_PREFIX + scene.id, "")
+            if len(self.number_order) < 9:
+                self.number_order.append(scene.id)
+                combo = combo or str(len(self.number_order))
+            button.set_key(combo)
+            if combo:
+                button.setToolTip(button.toolTip() + f"\nKey: {combo}")
             button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
