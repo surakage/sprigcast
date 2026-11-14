@@ -104,6 +104,7 @@ class Engine:
         self.preview_sizes: dict[str, tuple[int, int]] = {}
         self._preview_at: dict[str, float] = {}
         self.readbacks = 0  # canvases copied from the GPU, for Stats
+        self.wait_free = True  # copy outputs and small previews back a tick late instead of waiting on the GPU
         # Sources nothing on screen shows rest: "not_cameras" (cameras stay ready, they take a second
         # to open), "all", or "off". Set by the UI from Settings → General.
         self.sleep_policy = "not_cameras"
@@ -588,18 +589,27 @@ class Engine:
         target = canvas.model_copy(update={"id": f"next:{canvas.id}"})
         compositor.render(target, scene, sizes)
         mailbox = self.frames.setdefault(target.id, Mailbox())
-        mailbox.put(self._preview_frame(compositor, target.id, (canvas.width, canvas.height), now))
+        frame = self._preview_frame(compositor, target.id, (canvas.width, canvas.height), now)
+        if frame is not None:
+            mailbox.put(frame)
 
-    def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame:
-        frame = made.get(nv12_size)
-        if frame is None:
-            self.readbacks += 1
-            if nv12_size is None:
-                frame = Frame(canvas.id, canvas.width, canvas.height, compositor.read(canvas.id), now)
-            else:
-                data = compositor.read_nv12(canvas.id, nv12_size)
-                frame = Frame(canvas.id, nv12_size[0], nv12_size[1], data, now, "nv12")
-            made[nv12_size] = frame
+    def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame | None:
+        """This canvas for an output (NV12 at its size) or a full-size preview (RGBA). None: nothing yet.
+
+        With wait_free, NV12 comes back a tick late without the CPU waiting on the GPU (see compositor._Pbos).
+        """
+        if nv12_size in made:
+            return made[nv12_size]
+        self.readbacks += 1
+        if nv12_size is None:
+            frame = Frame(canvas.id, canvas.width, canvas.height, compositor.read(canvas.id), now)
+        elif self.wait_free:
+            data, drawn = compositor.read_nv12_later(canvas.id, nv12_size, now, now)
+            frame = None if data is None else Frame(canvas.id, nv12_size[0], nv12_size[1], data, drawn, "nv12")
+        else:
+            data = compositor.read_nv12(canvas.id, nv12_size)
+            frame = Frame(canvas.id, nv12_size[0], nv12_size[1], data, now, "nv12")
+        made[nv12_size] = frame
         return frame
 
     def _preview_size(self, key: str, canvas_size: tuple[int, int]) -> tuple[int, int] | None:
@@ -614,11 +624,14 @@ class Engine:
         scale = math.ceil(scale * 16) / 16  # steps of 1/16, so resizing the window doesn't churn GPU targets
         return max(16, round(cw * scale)), max(16, round(ch * scale))
 
-    def _preview_frame(self, compositor, target_id: str, canvas_size: tuple[int, int], now: float) -> Frame:
+    def _preview_frame(self, compositor, target_id: str, canvas_size: tuple[int, int], now: float) -> Frame | None:
         self.readbacks += 1
         size = self._preview_size(target_id, canvas_size)
         if size is None:
             return Frame(target_id, *canvas_size, compositor.read(target_id), now)
+        if self.wait_free:
+            data, drawn = compositor.read_scaled_later(target_id, size, now, now)
+            return None if data is None else Frame(target_id, size[0], size[1], data, drawn, canvas_size=canvas_size)
         return Frame(target_id, size[0], size[1], compositor.read_scaled(target_id, size), now, canvas_size=canvas_size)
 
     def _preview_due(self, key: str, now: float) -> bool:
@@ -678,11 +691,15 @@ class Engine:
             if preview:
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height))
                 if size is None:  # full size: shares the RGBA copy with any output that wants one
-                    self.frames[canvas.id].put(self._frame(compositor, canvas, None, now, frames))
+                    shown = self._frame(compositor, canvas, None, now, frames)
                 else:
-                    self.frames[canvas.id].put(self._preview_frame(compositor, canvas.id, (canvas.width, canvas.height), now))
+                    shown = self._preview_frame(compositor, canvas.id, (canvas.width, canvas.height), now)
+                if shown is not None:
+                    self.frames[canvas.id].put(shown)
             for callback, nv12_size in outputs:
                 frame = self._frame(compositor, canvas, nv12_size, now, frames)
+                if frame is None:
+                    continue  # the first tick of a wait-free copy: its frame arrives next tick
                 try:
                     callback(frame)
                 except Exception:

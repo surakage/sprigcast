@@ -72,6 +72,9 @@ def test_outputs_of_one_size_share_one_nv12_conversion():
             self.converted.append(size)
             return b"y" * (size[0] * size[1] * 3 // 2)
 
+        def read_nv12_later(self, key, size, tag, now):
+            return self.read_nv12(key, size), tag
+
     engine, fake = _engine(), Nv12Fake()
     engine.previews = frozenset()
     a, b, c = [], [], []
