@@ -238,6 +238,9 @@ class RecordingSettings(BaseModel):
     clips_on_start: bool = False  # keep clips ready from the moment SprigCast opens
     voice_track: bool = True  # old setting, read once: now track 3 in audio_tracks (kept in step with it)
     audio_tracks: list[int] = Field(default_factory=lambda: [1, 3])  # which of sound tracks 1-5 recordings keep
+    # Source record: a second file per canvas without these sources (picture and sound), e.g. no alerts.
+    source_record: bool = False
+    source_record_hide: list[str] = Field(default_factory=list)  # source ids left out
     short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,

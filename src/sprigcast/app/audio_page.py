@@ -1,10 +1,11 @@
-"""Settings → Audio: global devices, sound tracks 1-5 and which sounds go on each.
+"""Settings → Audio, in tabs: Devices, Tracks, Sounds (which go on each track) and Bitrate.
 
 - Global devices: the Desktop audio and Mic every setup starts with. Switched off, they are not opened
   at all and leave the Sound list, so only the mics and desktop sounds you add yourself play.
 - Tracks: a recording can keep up to five sound tracks. 1 is everything, 2 is VOD-safe (everything
   but the sounds you keep out of it, music by default), 3 is your voice, 4 and 5 are yours to fill.
-- Which sounds go where: a tick grid, one row per sound, one column per track.
+- Sounds: a tick grid, one row per sound, one column per track.
+- Bitrate: how good the sound is on the stream and in recordings (clips and source record too).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QLabel,
     QLineEdit,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -71,22 +73,71 @@ def put_on_track(source: SourceConfig, number: int, on: bool) -> None:
     source.settings = settings
 
 
+AUDIO_KBPS = (96, 128, 160, 192, 256, 320)
+
+
 def device_label(kind: str) -> str:
     return "Desktop audio" if kind == "audio_output" else "Mic"
 
 
 class AudioPage(QWidget):
-    def __init__(self, collection: SceneCollection, audio_devices: dict[str, list[str]], recording: bool = False):
+    TABS = ("Devices", "Tracks", "Sounds", "Bitrate")
+
+    def __init__(self, collection: SceneCollection, audio_devices: dict[str, list[str]], recording: bool = False,
+                 streaming: bool = False):
         super().__init__()
         self.collection = collection
+        self.streaming, self.recording = streaming, recording
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
         self.device_combos: dict[str, QComboBox] = {}
-        layout.addWidget(self._devices(audio_devices))
-        layout.addWidget(self._tracks(recording))
-        layout.addWidget(self._grid())
-        layout.addStretch(1)
+        self.tabs = QTabWidget()
+        for name, card in zip(self.TABS, (self._devices(audio_devices), self._tracks(recording), self._grid(),
+                                          self._bitrate())):
+            tab = QWidget()
+            box = QVBoxLayout(tab)
+            box.setContentsMargins(0, 4, 0, 0)
+            box.addWidget(card)
+            box.addStretch(1)
+            self.tabs.addTab(tab, name)
+        layout.addWidget(self.tabs)
+
+    def show_tab(self, name: str) -> None:
+        if name in self.TABS:
+            self.tabs.setCurrentIndex(self.TABS.index(name))
+
+    # Bitrate -----------------------------------------------------------------------------
+
+    def _kbps(self, value: int) -> QComboBox:
+        combo = QComboBox()
+        for kbps in sorted({*AUDIO_KBPS, value}):
+            combo.addItem(f"{kbps} kbps", kbps)
+        combo.setCurrentIndex(combo.findData(value))
+        return combo
+
+    def _bitrate(self) -> QWidget:
+        group = QGroupBox("Bitrate")
+        box = QVBoxLayout(group)
+        box.setContentsMargins(18, 30, 18, 18)
+        box.setSpacing(12)
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+        c = self.collection
+        self.stream_kbps = self._kbps(c.stream_encoder.audio_kbps)
+        self.stream_kbps.setEnabled(not self.streaming)
+        form.addRow("Stream", self.stream_kbps)
+        self.recording_kbps = self._kbps(c.recording.encoder.audio_kbps)
+        self.recording_kbps.setEnabled(not self.recording)
+        form.addRow("Recordings and clips", self.recording_kbps)
+        box.addLayout(form)
+        notes = ["160 kbps is plenty for a stream. Recordings can go higher: every track uses this bitrate."]
+        if self.streaming:
+            notes.append("End the stream to change the stream's.")
+        if self.recording:
+            notes.append("Stop the recording to change the recording's.")
+        box.addWidget(_hint(" ".join(notes)))
+        return group
 
     # Devices -----------------------------------------------------------------------------
 
@@ -146,7 +197,7 @@ class AudioPage(QWidget):
     # Tracks ------------------------------------------------------------------------------
 
     def _tracks(self, recording: bool) -> QWidget:
-        group = QGroupBox("Sound tracks")
+        group = QGroupBox("Tracks")
         box = QVBoxLayout(group)
         box.setContentsMargins(18, 30, 18, 18)
         box.setSpacing(12)
@@ -178,14 +229,14 @@ class AudioPage(QWidget):
         grid.setColumnStretch(1, 1)
         box.addLayout(grid)
         box.addWidget(_hint("Track 2 leaves out music, so you can upload it without copyright strikes. "
-                            "Pick which sounds go on each track below."
+                            "Pick which sounds go on each track in Sounds."
                             + (" Stop the recording to change which tracks it keeps." if recording else "")))
         return group
 
     # Which sounds go where ---------------------------------------------------------------
 
     def _grid(self) -> QWidget:
-        group = QGroupBox("Which sounds go where")
+        group = QGroupBox("Which sounds go on each track")
         box = QVBoxLayout(group)
         box.setContentsMargins(18, 30, 18, 18)
         box.setSpacing(12)
@@ -198,9 +249,9 @@ class AudioPage(QWidget):
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(8)
         for n in range(1, len(AUDIO_TRACKS) + 1):
-            head = QLabel(str(n))
+            head = QLabel(self.collection.audio.track_name(n))
             head.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            head.setToolTip(self.collection.audio.track_name(n))
+            head.setToolTip(f"Track {n}")
             head.setStyleSheet(f"color: {theme.MUTED}")
             grid.addWidget(head, 0, n)
         for row, source in enumerate(sounds, 1):
@@ -230,7 +281,12 @@ class AudioPage(QWidget):
             audio.global_sources = collection.global_device_ids()
         audio.global_devices = self.global_on.isChecked()
         audio.track_names = [e.text().strip() or TRACK_NAMES[i] for i, e in enumerate(self.track_names)]
+        if not self.streaming:
+            collection.stream_encoder = collection.stream_encoder.model_copy(
+                update={"audio_kbps": self.stream_kbps.currentData()})
         if not recording:
+            collection.recording.encoder = collection.recording.encoder.model_copy(
+                update={"audio_kbps": self.recording_kbps.currentData()})
             collection.recording.audio_tracks = [n for n, keep in enumerate(self.track_kept, 1) if keep.isChecked()]
             collection.recording.voice_track = 3 in collection.recording.audio_tracks
         for source in collection.sources:

@@ -109,6 +109,9 @@ class Engine:
         # to open), "all", or "off". Set by the UI from Settings → General.
         self.sleep_policy = "not_cameras"
         self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
+        # Source record: canvas id -> sources left out of its clean copy ("clean:<canvas id>"), which
+        # frame taps on that id get. Replaced whole by the UI (see set_clean).
+        self.clean_hidden: dict[str, frozenset[str]] = {}
 
     # Called from the UI thread ----------------------------------------------
 
@@ -133,6 +136,15 @@ class Engine:
         with self._taps_lock:
             taps = self._taps.get(canvas_id, [])
             taps[:] = [t for t in taps if t[0] != callback]
+
+    def set_clean(self, canvas_id: str, hidden) -> None:
+        """Source record: draw a copy of this canvas without these sources (None: stop drawing it)."""
+        clean = dict(self.clean_hidden)
+        if hidden is None:
+            clean.pop(canvas_id, None)
+        else:
+            clean[canvas_id] = frozenset(hidden)
+        self.clean_hidden = clean
 
     def stop(self, timeout: float = 2.0) -> None:
         self.commands.put(Shutdown())
@@ -594,6 +606,27 @@ class Engine:
         if frame is not None:
             mailbox.put(frame)
 
+    def _render_clean(self, compositor, canvas, sizes, now: float, outputs) -> None:
+        """Source record: draw the bloom on air without the left-out sources, for taps on "clean:<id>".
+
+        Only items placed in the bloom itself are left out (a whole sprig can be); it cuts between blooms
+        instead of running the transition."""
+        hidden = self.clean_hidden.get(canvas.id)
+        if hidden is None or not outputs:
+            return
+        target = canvas.model_copy(update={"id": f"clean:{canvas.id}"})
+        scene = self._collection.active_scene(canvas.id)
+        compositor.render(target, self._collection.hide_items(scene, set(hidden)) if scene else scene, sizes)
+        frames: dict = {}
+        for callback, nv12_size in outputs:
+            frame = self._frame(compositor, target, nv12_size, now, frames)
+            if frame is None:
+                continue
+            try:
+                callback(frame)
+            except Exception:
+                log.exception("frame tap for %s failed", target.id)
+
     def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame | None:
         """This canvas for an output (NV12 at its size) or a full-size preview (RGBA). None: nothing yet.
 
@@ -685,6 +718,7 @@ class Engine:
             outputs = taps.get(canvas.id, ())
             preview = self._preview_due(canvas.id, now)
             self._render_staged(compositor, canvas, sizes, now)
+            self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
             compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, **extra)

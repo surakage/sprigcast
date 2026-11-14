@@ -135,6 +135,7 @@ class EncoderForm(QGroupBox):
             self.audio.addItem(f"{kbps} kbps", kbps)
         self.audio.setCurrentIndex(self.audio.findData(settings.audio_kbps))
         form.addRow("Audio bitrate", self.audio)
+        form.setRowVisible(self.audio, False)  # set in Settings → Audio → Bitrate; kept so values() carries it
         self.note = _hint("")
         form.addRow("", self.note)
         self.rate_control.currentIndexChanged.connect(self._update_rows)
@@ -242,6 +243,11 @@ class OutputPage(QWidget):
         inner.addWidget(_hint("Which sound tracks a recording keeps (everything, VOD-safe, voice...) is in Audio."))
         recording_group.setEnabled(not recording)
         box.addWidget(recording_group)
+        from sprigcast.app.source_record_box import SourceRecordBox
+
+        self.source_record = SourceRecordBox(collection)
+        self.source_record.setEnabled(not recording)
+        box.addWidget(self.source_record)
         self.record_form = EncoderForm("Encoder", collection.recording.encoder, encoder_name)
         self.record_form.setEnabled(not recording)
         box.addWidget(self.record_form)
@@ -268,6 +274,7 @@ class OutputPage(QWidget):
             collection.stream_encoder = self.stream_form.values()
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
+            self.source_record.apply_to(collection)
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()

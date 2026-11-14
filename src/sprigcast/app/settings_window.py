@@ -50,7 +50,7 @@ ABOUT = {  # one line under each page's title
     "General": "Look, startup, snapping and the questions SprigCast asks first.",
     "Stream": "The places you go live, and what each one gets.",
     "Output": "Encoder quality for streams, and how recordings and clips are saved.",
-    "Audio": "Devices, sound tracks and which sounds go on each.",
+    "Audio": "Devices, sound tracks, which sounds go on each, and bitrate.",
     "Video": "Your canvases: their size, frame rate and which ones are on.",
     "Hotkeys": "Keys that work even while you're in a game.",
     "Connections": "Let other apps on your PC control SprigCast.",
@@ -532,7 +532,7 @@ class SettingsWindow(QDialog):
     def _audio_page(self, audio_devices: dict[str, list[str]]) -> QWidget:
         from sprigcast.app.audio_page import AudioPage
 
-        self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording)
+        self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording, streaming=self.streaming)
         return _page(self.audio_page)
 
     def _video_page(self) -> QWidget:
