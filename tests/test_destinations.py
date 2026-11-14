@@ -355,3 +355,42 @@ def test_build_edits_a_bloom_without_putting_it_on_air(app, tmp_path, monkeypatc
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_inspector_sizes_and_zoom(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("InspectorTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SceneItem, SourceConfig
+
+    col = _collection()
+    col.sources.append(SourceConfig(id="cam", kind="color", name="Facecam", settings={"color": "#ff0000"}))
+    col.scene("h1").items.append(SceneItem(source="cam"))
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        assert "1920×1080" in w.previews["horizontal"].title  # the canvas size from Settings
+        w.source_sizes["cam"] = (640, 360)
+        w._refresh_sources(keep_row=0)
+        assert w.spin["w"].value() == 640 and w.spin["h"].value() == 360
+        w.spin["w"].setValue(1280)  # keep shape: the height follows
+        item = col.scene("h1").items[0]
+        assert item.scale == 2.0 and item.scale_y is None and w.spin["h"].value() == 720
+        w.keep_shape.setChecked(False)
+        assert not w.previews["horizontal"].keep_aspect
+        w.spin["h"].setValue(360)  # free shape: only the height changes
+        assert item.scale == 2.0 and item.sy == 1.0
+        w.item_actions["reset"].trigger()
+        assert item.scale == 1.0 and item.scale_y is None
+        preview = w.previews["horizontal"]
+        preview.zoom_at(2.0)
+        assert preview.zoom == 2.0 and "200%" not in preview.title
+        preview.fit_view()
+        assert preview.zoom == 1.0
+    finally:
+        w.close()
+        QSettings().clear()

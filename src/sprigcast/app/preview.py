@@ -61,6 +61,11 @@ class Preview(QWidget):
         self.transparent = True  # show see-through canvas areas as a checkerboard
         self.live_look = False  # Live's stage: rounded corners, no checkerboard frame
         self.ring: str | None = None
+        self.zoom = 1.0  # 1 = the whole canvas fits; Ctrl+wheel zooms at the mouse, Ctrl+0 fits again
+        self.pan = QPointF(0, 0)  # widget pixels the zoomed canvas is shifted by (middle-drag or Space+drag)
+        self._panning: QPointF | None = None
+        self._space_down = False
+        self.keep_aspect = True  # resizing keeps the shape; Shift while dragging does the opposite
         self.twin = False  # Build's small view of the other shape: click to swap, never edited
         self.ghost_index: int | None = None  # on a twin: the item matching the one selected, outlined  # a colour ring round the picture, such as LIVE pink while on air
         self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
@@ -120,7 +125,7 @@ class Preview(QWidget):
             self.inner = (placement.x, placement.y, placement.scale, left, top)
             self.inner_size = part_size
             w, h = placement.cropped_size(part_size)
-            self.inner_rect = (placement.x, placement.y, w * placement.scale, h * placement.scale)
+            self.inner_rect = (placement.x, placement.y, w * placement.scale, h * placement.sy)
         self._drag = None
         self.update()
 
@@ -132,9 +137,30 @@ class Preview(QWidget):
         pad = 6.0 if self.live_look else 0.0  # room for the on-air ring
         avail_w, avail_h = float(self.width()) - 2 * pad, float(self.height()) - top - pad
         aw, ah = self.aspect
-        scale = min(avail_w / aw, avail_h / ah)
+        scale = min(avail_w / aw, avail_h / ah) * self.zoom
         w, h = aw * scale, ah * scale
-        return QRectF(pad + (avail_w - w) / 2, top + (avail_h - h) / 2, w, h)
+        return QRectF(pad + (avail_w - w) / 2 + self.pan.x(), top + (avail_h - h) / 2 + self.pan.y(), w, h)
+
+    def zoom_at(self, factor: float, at: QPointF | None = None) -> None:
+        """Zoom by `factor` keeping the canvas point under `at` (widget pixels) where it is."""
+        at = at or QPointF(self.width() / 2, self.height() / 2)
+        before = self.canvas_rect()
+        new = min(8.0, max(1.0, self.zoom * factor))
+        if new == self.zoom:
+            return
+        fx = (at.x() - before.x()) / before.width()
+        fy = (at.y() - before.y()) / before.height()
+        self.zoom = new
+        if new == 1.0:
+            self.pan = QPointF(0, 0)
+        else:
+            after = self.canvas_rect()
+            self.pan += QPointF(at.x() - (after.x() + fx * after.width()), at.y() - (after.y() + fy * after.height()))
+        self.update()
+
+    def fit_view(self) -> None:
+        self.zoom, self.pan = 1.0, QPointF(0, 0)
+        self.update()
 
     def _space(self) -> tuple[float, float, float]:
         """Widget x, y of the editing space's origin and widget pixels per space pixel.
@@ -171,9 +197,9 @@ class Preview(QWidget):
             size = self.sizes.get(other.source)
             if other is moving or not other.visible or not size or other.rotation % 360 != 0:
                 continue
-            w, h = other.cropped_size(size)
+            w, h = other.drawn_size(size)
             if w and h:
-                rects.append((other.x, other.y, w * other.scale, h * other.scale))
+                rects.append((other.x, other.y, w, h))
         return rects
 
     def _selected_item(self) -> tuple[SceneItem, tuple[int, int]] | None:
@@ -188,10 +214,9 @@ class Preview(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(theme.PANEL))
-        p.setPen(QColor(theme.MUTED))
-        label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
-        p.drawText(8, 17, label)
         rect = self.canvas_rect()
+        p.save()
+        p.setClipRect(QRectF(0, 22, self.width(), self.height() - 22))  # zoomed in, the canvas stays under the title
         if self.live_look:
             p.save()
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -200,6 +225,7 @@ class Preview(QWidget):
             p.setClipPath(clip)
         if self._image is None:
             p.fillRect(rect, QColor("#000000"))
+            p.setPen(QColor(theme.MUTED))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.empty_text)
         else:
             if self.transparent:
@@ -208,6 +234,13 @@ class Preview(QWidget):
             p.drawImage(rect, self._image)
         if self.live_look:
             p.restore()
+        p.restore()
+        p.setPen(QColor(theme.MUTED))
+        label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
+        if self.zoom > 1.0:
+            label += f"   ·   {self.zoom * 100:.0f}%  (Ctrl+0 to fit)"
+        p.drawText(8, 17, label)
+        if self.live_look:
             if self.ring:
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)
                 p.setPen(QPen(QColor(self.ring), 2))
@@ -326,6 +359,12 @@ class Preview(QWidget):
         half = HANDLE_PX / 2
         for corner in (tl, tr, bl, br):
             p.drawRect(QRectF(corner.x() - half, corner.y() - half, HANDLE_PX, HANDLE_PX))
+        # Side handles: drag to stretch (aspect unlocked) or, holding Alt, to crop that side.
+        p.setBrush(QColor(theme.PANEL))
+        p.setPen(QPen(ACCENT, 1.5))
+        for a_, b_ in ((tl, bl), (tr, br), (tl, tr), (bl, br)):
+            mid = (a_ + b_) / 2
+            p.drawEllipse(mid, half * 0.9, half * 0.9)
 
     # Mouse and keyboard --------------------------------------------------------------------
 
@@ -333,6 +372,11 @@ class Preview(QWidget):
         if self.twin:
             if event.button() == Qt.MouseButton.LeftButton:
                 self.swap_requested.emit(self.canvas_id)
+            return
+        middle = event.button() == Qt.MouseButton.MiddleButton
+        if (middle or (self._space_down and event.button() == Qt.MouseButton.LeftButton)) and self.zoom > 1.0:
+            self._panning = event.position() - self.pan  # pan the zoomed canvas
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
         if event.button() == Qt.MouseButton.RightButton and self.scene is not None and self.editable:
             index = edit.hit_test(self.scene.items, self.sizes, self.to_canvas(event.position()))
@@ -363,6 +407,10 @@ class Preview(QWidget):
         self.update()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._panning is not None:
+            self.pan = event.position() - self._panning
+            self.update()
+            return
         if self._drag is None:
             self._update_cursor(event.position())
             return
@@ -382,13 +430,18 @@ class Preview(QWidget):
             edit.move(item, start_item, size, delta, self._bounds(), snap,
                       edges=prefs["edges"], center=prefs["center"], others=others)
         elif mode == "scale":
-            edit.scale_from_corner(item, start_item, size, corner, point)
+            keep = self.keep_aspect != bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            edit.scale_from_corner(item, start_item, size, corner, point, keep_aspect=keep)
         else:
             edit.crop_from_corner(item, start_item, size, corner, point)
         self.edited.emit(self.canvas_id, False)
         self.update()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._panning is not None:
+            self._panning = None
+            self.unsetCursor()
+            return
         if self._drag is not None and event.button() == Qt.MouseButton.LeftButton:
             moved = event.position() != self._drag[2]
             self._drag = None
@@ -404,7 +457,40 @@ class Preview(QWidget):
         self._drag = None
         self.opened.emit(self.canvas_id, -1 if index is None else index)
 
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        """Ctrl+wheel zooms at the mouse; the wheel alone pans while zoomed in."""
+        if self.twin:
+            return
+        steps = event.angleDelta().y() / 120
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_at(1.15 ** steps, event.position())
+        elif self.zoom > 1.0:
+            horizontal = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            shift = QPointF(steps * 60, 0) if horizontal else QPointF(0, steps * 60)
+            self.pan += shift
+            self.update()
+        else:
+            super().wheelEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_down = False
+        super().keyReleaseEvent(event)
+
     def keyPressEvent(self, event) -> None:  # noqa: N802
+        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        if event.key() == Qt.Key.Key_Space:
+            self._space_down = True  # Space + drag pans, like design tools
+            return
+        if ctrl and event.key() == Qt.Key.Key_0:
+            self.fit_view()
+            return
+        if ctrl and event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self.zoom_at(1.25)
+            return
+        if ctrl and event.key() == Qt.Key.Key_Minus:
+            self.zoom_at(1 / 1.25)
+            return
         if event.key() == Qt.Key.Key_Escape and self.inner is not None:
             self.opened.emit(self.canvas_id, -1)
             return
@@ -425,6 +511,9 @@ class Preview(QWidget):
         self.update()
 
     def _update_cursor(self, pos: QPointF) -> None:
+        if self.twin:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            return
         if self.scene is None or not self.editable:
             self.unsetCursor()
             return
@@ -433,8 +522,14 @@ class Preview(QWidget):
         if selected is not None:
             corner = edit.handle_at(selected[0], selected[1], point, HANDLE_PX / self._scale())
             if corner is not None:
-                diagonal = corner in (0, 3)
-                self.setCursor(Qt.CursorShape.SizeFDiagCursor if diagonal else Qt.CursorShape.SizeBDiagCursor)
+                shapes = {0: Qt.CursorShape.SizeFDiagCursor, 3: Qt.CursorShape.SizeFDiagCursor,
+                          1: Qt.CursorShape.SizeBDiagCursor, 2: Qt.CursorShape.SizeBDiagCursor,
+                          4: Qt.CursorShape.SizeHorCursor, 5: Qt.CursorShape.SizeHorCursor,
+                          6: Qt.CursorShape.SizeVerCursor, 7: Qt.CursorShape.SizeVerCursor}
+                self.setCursor(shapes[corner])
+                tip = "Drag to resize · hold Alt to crop · Shift flips aspect lock"
+                if self.toolTip() != tip:
+                    self.setToolTip(tip)
                 return
         index = edit.hit_test(self.scene.items, self.sizes, point)
         if index is not None:

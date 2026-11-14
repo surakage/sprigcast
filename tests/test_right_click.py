@@ -89,7 +89,11 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
     try:
         w._on_preview_selected("horizontal", 0)
         on_item = _texts(w._preview_menu("horizontal", 0))
-        assert "Settings…" in on_item and "Remove" in on_item and "Fit to canvas" in on_item
+        assert "Settings…" in on_item and "Remove" in on_item and "Size and place" in on_item
+        menu = w._preview_menu("horizontal", 0)
+        size_menu = next(a.menu() for a in menu.actions() if a.text() == "Size and place")
+        fit = next(a for a in size_menu.actions() if a.text() == "Fit to canvas")
+        assert fit.shortcut().toString() == "Ctrl+F"  # the shortcut shows in the menu
         assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Canvas size and frame rate…"]
         w._set_mode("live")
         w._edit_in_build("h2")

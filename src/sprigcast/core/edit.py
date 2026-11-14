@@ -16,7 +16,9 @@ Point = tuple[float, float]
 Size = tuple[int, int]
 
 # Corner indices follow SceneItem.quad(): 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
-OPPOSITE = {0: 3, 1: 2, 2: 1, 3: 0}
+# Side handles (the middle of each edge) follow: 4 left, 5 right, 6 top, 7 bottom.
+OPPOSITE = {0: 3, 1: 2, 2: 1, 3: 0, 4: 5, 5: 4, 6: 7, 7: 6}
+SIDES = {4: (0, 2), 5: (1, 3), 6: (0, 1), 7: (2, 3)}  # the two corners each side runs between
 MIN_SCALE = 0.01
 MIN_CROPPED = 2  # source pixels that always stay visible
 
@@ -28,7 +30,12 @@ def _rotate(dx: float, dy: float, degrees: float) -> Point:
 
 
 def _corner(item: SceneItem, size: Size, index: int) -> Point:
-    x, y, _u, _v = item.quad(size)[index]
+    """A corner (0-3) or the middle of a side (4-7), in canvas pixels."""
+    quad = item.quad(size)
+    if index in SIDES:
+        a, b = SIDES[index]
+        return (quad[a][0] + quad[b][0]) / 2, (quad[a][1] + quad[b][1]) / 2
+    x, y, _u, _v = quad[index]
     return x, y
 
 
@@ -39,7 +46,7 @@ def contains(item: SceneItem, size: Size, point: Point) -> bool:
     cx = sum(p[0] for p in quad) / 4
     cy = sum(p[1] for p in quad) / 4
     lx, ly = _rotate(point[0] - cx, point[1] - cy, -item.rotation)
-    w, h = (d * item.scale for d in item.cropped_size(size))
+    w, h = item.drawn_size(size)
     return abs(lx) <= w / 2 and abs(ly) <= h / 2
 
 
@@ -54,10 +61,13 @@ def hit_test(items: Sequence[SceneItem], sizes: dict[str, Size], point: Point) -
 
 
 def handle_at(item: SceneItem, size: Size, point: Point, radius: float) -> int | None:
-    """Which corner handle (0-3) is within `radius` canvas pixels of the point, if any."""
+    """Which handle is within `radius` canvas pixels of the point: a corner (0-3), else a side (4-7)."""
+    if not item.quad(size):
+        return None
     best, best_d = None, radius
-    for index, (x, y, _u, _v) in enumerate(item.quad(size)):
-        d = math.hypot(point[0] - x, point[1] - y)
+    for index in range(8):
+        x, y = _corner(item, size, index)
+        d = math.hypot(point[0] - x, point[1] - y) + (0.01 if index > 3 else 0)  # corners win ties
         if d <= best_d:
             best, best_d = index, d
     return best
@@ -91,7 +101,7 @@ def move(
     item.x, item.y = round(start.x + delta[0]), round(start.y + delta[1])  # whole pixels stay crisp
     if canvas is None or snap <= 0 or item.rotation % 360 != 0:
         return
-    w, h = (d * item.scale for d in item.cropped_size(size))
+    w, h = item.drawn_size(size)
     for axis, (pos, length, limit) in enumerate(((item.x, w, canvas[0]), (item.y, h, canvas[1]))):
         options = []
         if edges:
@@ -112,8 +122,13 @@ def move(
                 item.y += nearest
 
 
-def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int, point: Point) -> None:
-    """Uniform scale by dragging a corner; the opposite corner stays where it was."""
+def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int, point: Point,
+                      keep_aspect: bool = True) -> None:
+    """Resize by dragging a corner (0-3) or a side (4-7); the opposite corner or side stays put.
+
+    keep_aspect: the shape stays the same (one scale). Off, the item stretches: a corner sets
+    width and height freely, a side changes only its own direction.
+    """
     anchor_index = OPPOSITE[corner]
     anchor = _corner(start, size, anchor_index)
     lx, ly = _rotate(point[0] - anchor[0], point[1] - anchor[1], -start.rotation)
@@ -121,28 +136,40 @@ def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int
     if not cw or not ch:
         return
     item.x, item.y, item.crop, item.rotation = start.x, start.y, start.crop, start.rotation
-    item.scale = max(MIN_SCALE, abs(lx) / cw, abs(ly) / ch)
+    sx, sy = max(MIN_SCALE, abs(lx) / cw), max(MIN_SCALE, abs(ly) / ch)
+    if corner in (4, 5):  # left or right side: only the width follows the mouse
+        sy = start.sy if not keep_aspect else sx * start.sy / start.scale
+    elif corner in (6, 7):
+        sx = start.scale if not keep_aspect else sy * start.scale / start.sy
+    elif keep_aspect:
+        k = max(sx / start.scale, sy / start.sy)
+        sx, sy = start.scale * k, start.sy * k
+    item.scale = sx
+    item.scale_y = None if abs(sy - sx) < 1e-6 else sy
     _pin(item, size, anchor_index, anchor)
 
 
 def crop_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int, point: Point) -> None:
-    """Crop by dragging a corner: the two edges at that corner move, the opposite corner stays put."""
+    """Crop by dragging a corner (its two edges move) or a side (only that edge moves).
+
+    The opposite corner or side stays put, so a camera can be cut to any shape."""
     anchor_index = OPPOSITE[corner]
     anchor = _corner(start, size, anchor_index)
     lx, ly = _rotate(point[0] - anchor[0], point[1] - anchor[1], -start.rotation)
     sw, sh = size
     left, top, right, bottom = start.crop
     want_w = abs(lx) / start.scale  # visible width in source pixels
-    want_h = abs(ly) / start.scale
-    if corner in (0, 2):  # left edge moves
+    want_h = abs(ly) / start.sy
+    if corner in (0, 2, 4):  # left edge moves
         left = int(round(min(max(0, sw - right - want_w), sw - right - MIN_CROPPED)))
-    else:  # right edge moves
+    elif corner in (1, 3, 5):  # right edge moves
         right = int(round(min(max(0, sw - left - want_w), sw - left - MIN_CROPPED)))
-    if corner in (0, 1):  # top edge moves
+    if corner in (0, 1, 6):  # top edge moves
         top = int(round(min(max(0, sh - bottom - want_h), sh - bottom - MIN_CROPPED)))
-    else:  # bottom edge moves
+    elif corner in (2, 3, 7):  # bottom edge moves
         bottom = int(round(min(max(0, sh - top - want_h), sh - top - MIN_CROPPED)))
-    item.x, item.y, item.scale, item.rotation = start.x, start.y, start.scale, start.rotation
+    item.x, item.y, item.scale, item.scale_y, item.rotation = (start.x, start.y, start.scale, start.scale_y,
+                                                              start.rotation)
     item.crop = (left, top, right, bottom)
     _pin(item, size, anchor_index, anchor)
 
