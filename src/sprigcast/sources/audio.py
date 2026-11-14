@@ -1,5 +1,10 @@
 """Microphone and desktop-audio sources through WASAPI (the PyAudioWPatch package).
 
+Desktop sound can also come from a sound mixer app's own outputs. Elgato Wave Link, for example,
+adds a playback device per channel (Wave Link Game, Music...: captured like speakers) and its mixes
+as recording devices (Wave Link Stream, Monitor): those are listed with desktop sound too, first,
+and a desktop sound set to one of them records from it directly.
+
 Each source converts whatever its device delivers (mono, 5.1, 44.1 kHz, ...) to 48 kHz stereo
 float32 in the device callback, and keeps it in a short buffer the mixer reads from.
 """
@@ -7,6 +12,7 @@ float32 in the device callback, and keeps it in a short buffer the mixer reads f
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -29,6 +35,18 @@ DEFAULT = "default"  # follow the Windows default device
 class AudioDevice:
     name: str
     loopback: bool  # True = an output device captured as "what you hear"
+
+    @property
+    def mixer_app(self) -> bool:
+        """One of a sound mixer app's devices (Elgato Wave Link)."""
+        return is_mixer_app_device(self.name)
+
+
+_MIXER_APP = re.compile(r"wave ?link|elgato virtual", re.IGNORECASE)  # never a plain Elgato mic
+
+
+def is_mixer_app_device(name: str) -> bool:
+    return bool(_MIXER_APP.search(name or ""))
 
 
 def _pyaudio():
@@ -78,8 +96,10 @@ class PortAudio:
 
 
 def list_audio_devices(loopback: bool, rescan: bool = True) -> list[AudioDevice]:
-    """WASAPI microphones (loopback=False) or speakers to capture (loopback=True).
+    """WASAPI microphones (loopback=False) or desktop sound to capture (loopback=True).
 
+    Desktop sound is every output device ("what you hear"), plus a mixer app's mixes, which Windows
+    lists as recording devices (Wave Link Stream...). Mixer app devices come first.
     rescan=False reuses the last scan: a rescan restarts PortAudio (a few hundred ms on Windows)."""
     try:
         pa_mod = _pyaudio()
@@ -87,13 +107,16 @@ def list_audio_devices(loopback: bool, rescan: bool = True) -> list[AudioDevice]
         return []
     with PortAudio.lock:
         pa = PortAudio.get(pa_mod, rescan=rescan)
-        devices = []
+        devices: dict[str, AudioDevice] = {}
         for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
-            if loopback and info.get("isLoopbackDevice"):
-                devices.append(AudioDevice(str(info["name"]).replace(" [Loopback]", ""), True))
-            elif not loopback and not info.get("isLoopbackDevice") and info["maxInputChannels"] > 0:
-                devices.append(AudioDevice(str(info["name"]), False))
-        return devices
+            is_loop = bool(info.get("isLoopbackDevice"))
+            name = str(info["name"]).replace(" [Loopback]", "")
+            if loopback and is_loop:
+                devices.setdefault(name, AudioDevice(name, True))
+            elif not is_loop and info["maxInputChannels"] > 0 and (not loopback or is_mixer_app_device(name)):
+                devices.setdefault(name, AudioDevice(name, False))
+        found = list(devices.values())
+        return sorted(found, key=lambda d: not d.mixer_app) if loopback else found
 
 
 def to_stereo(samples: np.ndarray) -> np.ndarray:
@@ -198,11 +221,16 @@ class _WasapiSource(Source):
         wanted = str(self.settings.get("device", DEFAULT))
         if wanted == DEFAULT:
             return pa.get_default_wasapi_loopback() if self.loopback else pa.get_default_wasapi_device(d_in=True)
+        fallback = None
         for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
             name = str(info["name"]).replace(" [Loopback]", "")
-            if name == wanted and bool(info.get("isLoopbackDevice")) == self.loopback:
+            if name != wanted:
+                continue
+            if bool(info.get("isLoopbackDevice")) == self.loopback:
                 return info
-        return None
+            if self.loopback and not info.get("isLoopbackDevice") and info["maxInputChannels"] > 0:
+                fallback = info  # desktop sound from a mixer app's mix (a recording device, e.g. Wave Link Stream)
+        return fallback
 
     def _run(self) -> None:
         try:

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.audio.mixer import is_monitor_only, source_tracks
 from sprigcast.core.scene import AUDIO_DEVICE_KINDS, AUDIO_TRACKS, TRACK_NAMES, SceneCollection, SourceConfig
+from sprigcast.sources.audio import is_mixer_app_device
 
 TRACK_TIPS = (
     "Everything on the stream. Players play this one.",
@@ -182,6 +183,10 @@ class AudioPage(QWidget):
         if not global_ids:
             form.addRow(_hint("No global devices. Add a mic or desktop sound in Build → + Add."))
         box.addLayout(form)
+        if any(is_mixer_app_device(n) for n in audio_devices.get("audio_output", [])):
+            box.addWidget(_hint("Elgato Wave Link is here. For Desktop audio, pick Wave Link Stream to take your "
+                                "stream mix as it is, or one channel (Game, Music…) for just that. The Stream mix "
+                                "already holds your mic, so turn the separate Mic off to hear it only once."))
         own = [s for s in c.sources if s.kind in AUDIO_DEVICE_KINDS and s.id not in global_ids]
         if own:
             box.addSpacing(6)
