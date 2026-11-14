@@ -131,6 +131,9 @@ def run() -> None:
     if sys.stderr is not None:
         faulthandler.enable()  # if a native library crashes, print where instead of closing silently
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from sprigcast.app import logbook
+
+    logbook.setup()  # Documents\SprigCast\Logs: today's log, one report per stream, crashes
     # Web docks (app/custom_docks.py) need these set before the app exists. Qt WebEngine is only
     # loaded when you have custom docks, so without any it costs no memory.
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
