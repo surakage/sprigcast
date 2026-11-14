@@ -115,6 +115,7 @@ class Mixer:
         self._monitor_taps: list[Callable[[np.ndarray], None]] = []
         self._taps: list[Callable[[np.ndarray], None]] = []
         self._sources: list = []
+        self._extras: list = []  # short-lived sounds that are not sources, like a stinger clip
         self._delays: dict[str, np.ndarray] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -124,6 +125,16 @@ class Mixer:
         """Called by the engine whenever sources change. Only sources with read_block() are mixed."""
         with self._lock:
             self._sources = [s for s in sources if hasattr(s, "read_block")]
+
+    def add_extra(self, player) -> None:
+        """Mix something with read_block(), gain, id and settings (a stinger clip) until remove_extra()."""
+        with self._lock:
+            if player not in self._extras:
+                self._extras = [*self._extras, player]
+
+    def remove_extra(self, player) -> None:
+        with self._lock:
+            self._extras = [p for p in self._extras if p is not player]
 
     def add_tap(self, callback: Callable[[np.ndarray], None]) -> None:
         """Hand every mixed block, float32 (BLOCK, 2), to callback on the mixer thread. It must not block."""
@@ -175,7 +186,7 @@ class Mixer:
     def tick(self) -> np.ndarray:
         """Mix one block. Returns it and collects per-source levels (after gain and ducking)."""
         with self._lock:
-            sources, taps, monitor_taps = list(self._sources), self._taps, self._monitor_taps
+            sources, taps, monitor_taps = self._sources + self._extras, self._taps, self._monitor_taps
         processed, meters = [], {}
         voice_db = FLOOR_DB
         for source in sources:

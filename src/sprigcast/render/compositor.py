@@ -7,7 +7,7 @@ import numpy as np
 import moderngl
 
 from sprigcast.core.filters import VideoEffects
-from sprigcast.core.scene import Canvas, Scene
+from sprigcast.core.scene import Canvas, Scene, Transition
 
 NO_EFFECTS = VideoEffects()
 
@@ -155,6 +155,152 @@ void main() {
 """
 
 
+# Transitions (core/scene.py Transition). Both scenes are drawn to their own textures first (colours
+# already multiplied by alpha), then this pass mixes them into the canvas. uv row 0 = top of the canvas.
+TRANSITION_FRAGMENT = """
+#version 330
+uniform sampler2D old_scene;
+uniform sampler2D new_scene;
+uniform sampler2D overlay;     // stinger frame (straight alpha)
+uniform sampler2D wipe_map;    // wipe: black and white image, dark changes first
+uniform vec2 out_size;
+uniform int mode;              // 1 fade, 2 slide, 3 swipe, 4 wipe, 5 leaf, 6 bloom, 7 stinger
+uniform float progress;        // 0 .. 1
+uniform vec2 dir;              // where slide/swipe/wipe move to
+uniform float softness;
+uniform bool use_map;
+uniform vec4 overlay_rect;     // stinger: texture uv = xy + canvas uv * zw (fills the canvas)
+uniform vec2 matte_offset;     // stinger: where the matte half starts, in texture uv; (0, 0) = no matte
+uniform bool show_overlay;
+uniform bool cut;              // stinger: past the cut point
+uniform float level_max;       // leaf and bloom: their level at the furthest edge point (see shape_reach)
+out vec4 color;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+const float LEAF_TURN = 0.785;
+const float LEAF_SPIN = 0.5;
+const float BLOOM_SPIN = 1.2;
+
+vec4 at(sampler2D t, vec2 uv) {
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return vec4(0.0);
+    return texture(t, uv);
+}
+
+bool inside(vec2 uv) {
+    return uv.x >= 0.0 && uv.y >= 0.0 && uv.x <= 1.0 && uv.y <= 1.0;
+}
+
+float ease(float p) {
+    return p * p * (3.0 - 2.0 * p);
+}
+
+// Leaf: (u along the midrib, v across) is inside a leaf of size r when r > |v| + length(u, v).
+float leaf_level(vec2 q, float angle) {
+    float c = cos(angle), s = sin(angle);
+    vec2 r = vec2(c * q.x + s * q.y, -s * q.x + c * q.y);
+    return abs(r.y) + length(r);
+}
+
+// Bloom: five petals; a point opens when the flower's size passes radius / petal reach.
+float bloom_level(vec2 q, float spin) {
+    float a = atan(q.y, q.x);
+    return length(q) / (0.72 + 0.28 * cos(5.0 * a + spin));
+}
+
+// The old scene over the new one at (1 - amount): where the old scene is see-through, the new one
+// already shows, so a half-empty scene never fades the other one through black.
+vec4 blend(vec4 a, vec4 b, float amount) {
+    vec4 old = a * (1.0 - amount);
+    return old + b * (1.0 - old.a);
+}
+
+float reveal(float level, float p) {
+    float s = max(softness, 0.001);
+    float edge = p * (1.0 + s);
+    return 1.0 - smoothstep(edge - s, edge, level);
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / out_size;
+    vec4 a = texture(old_scene, uv);
+    vec4 b = texture(new_scene, uv);
+    float p = clamp(progress, 0.0, 1.0);
+    vec2 q = (uv - 0.5) * vec2(out_size.x / out_size.y, 1.0);
+    if (mode == 2) {
+        float e = ease(p);
+        vec2 in_uv = uv + dir * (1.0 - e);
+        color = inside(in_uv) ? texture(new_scene, in_uv) : at(old_scene, uv - dir * e);
+    } else if (mode == 3) {
+        vec2 in_uv = uv + dir * (1.0 - ease(p));
+        color = inside(in_uv) ? texture(new_scene, in_uv) : a;
+    } else if (mode == 4) {
+        float level = use_map ? dot(texture(wipe_map, uv).rgb, LUMA)
+                              : dot(uv, dir) + max(0.0, -(dir.x + dir.y));
+        color = blend(a, b, reveal(level, p));
+    } else if (mode == 5) {
+        color = blend(a, b, reveal(leaf_level(q, LEAF_TURN + LEAF_SPIN * p) / level_max, p));
+    } else if (mode == 6) {
+        color = blend(a, b, reveal(bloom_level(q, BLOOM_SPIN * p) / level_max, p));
+    } else if (mode == 7) {
+        vec2 st = overlay_rect.xy + uv * overlay_rect.zw;
+        vec4 base;
+        if (matte_offset != vec2(0.0)) {
+            base = blend(a, b, dot(texture(overlay, st + matte_offset).rgb, LUMA));
+        } else {
+            base = cut ? b : a;
+        }
+        if (show_overlay) {
+            vec4 s = texture(overlay, st);
+            base = vec4(s.rgb * s.a, s.a) + base * (1.0 - s.a);
+        }
+        color = base;
+    } else {
+        color = blend(a, b, p);
+    }
+}
+"""
+
+MODES = {"fade": 1, "slide": 2, "swipe": 3, "wipe": 4, "leaf": 5, "bloom": 6, "stinger": 7}
+DIRECTIONS = {"left": (-1.0, 0.0), "right": (1.0, 0.0), "up": (0.0, -1.0), "down": (0.0, 1.0)}
+
+
+LEAF_TURN, LEAF_SPIN, BLOOM_SPIN = 0.785, 0.5, 1.2  # match the shader's constants
+
+
+def _edge_points(aspect: float, count: int = 64) -> np.ndarray:
+    """Points around the canvas edge, centred, height 1 (the shader's q space)."""
+    t = np.linspace(0.0, 1.0, count, endpoint=False)
+    hx, hy = aspect / 2, 0.5
+    sides = [np.stack([hx * (2 * t - 1), np.full_like(t, -hy)], 1), np.stack([hx * (2 * t - 1), np.full_like(t, hy)], 1),
+             np.stack([np.full_like(t, -hx), hy * (2 * t - 1)], 1), np.stack([np.full_like(t, hx), hy * (2 * t - 1)], 1)]
+    return np.concatenate(sides)
+
+
+def shape_reach(kind: str, size: tuple[int, int], progress: float) -> float:
+    """How big the leaf or bloom must grow to cover the whole canvas (its level at the furthest edge)."""
+    q = _edge_points(size[0] / max(1, size[1]))
+    if kind == "leaf":
+        angle = LEAF_TURN + LEAF_SPIN * progress
+        c, s = np.cos(angle), np.sin(angle)
+        u, v = c * q[:, 0] + s * q[:, 1], -s * q[:, 0] + c * q[:, 1]
+        level = np.abs(v) + np.hypot(u, v)
+    else:
+        a = np.arctan2(q[:, 1], q[:, 0])
+        level = np.hypot(q[:, 0], q[:, 1]) / (0.72 + 0.28 * np.cos(5 * a + BLOOM_SPIN * progress))
+    return float(level.max()) * 1.02
+
+
+def cover_rect(picture: tuple[float, float], canvas: tuple[int, int]) -> tuple[float, float, float, float]:
+    """(x, y, w, h) in picture uv of the centred part of the picture that fills the canvas."""
+    pa = picture[0] / max(1e-6, picture[1])
+    ca = canvas[0] / max(1, canvas[1])
+    if pa > ca:  # wider picture: crop the sides
+        w = ca / pa
+        return (1 - w) / 2, 0.0, w, 1.0
+    h = pa / ca
+    return 0.0, (1 - h) / 2, 1.0, h
+
+
 class _ScaledTarget:
     def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
         self.color = ctx.texture(size, 4)
@@ -192,16 +338,32 @@ class _CanvasTarget:
         self.fbo = ctx.framebuffer(color_attachments=[self.color])
         self.aux_color: moderngl.Texture | None = None  # the outgoing scene during a transition
         self.aux_fbo: moderngl.Framebuffer | None = None
+        self.in_color: moderngl.Texture | None = None  # the incoming scene during a transition
+        self.in_fbo: moderngl.Framebuffer | None = None
 
     def aux(self) -> moderngl.Framebuffer:
         if self.aux_fbo is None:
             self.aux_color = self.ctx.texture(self.size, 4)
-            self.aux_color.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            self.aux_color.filter = (moderngl.LINEAR, moderngl.LINEAR)
             self.aux_fbo = self.ctx.framebuffer(color_attachments=[self.aux_color])
         return self.aux_fbo
 
+    def incoming(self) -> moderngl.Framebuffer:
+        if self.in_fbo is None:
+            self.in_color = self.ctx.texture(self.size, 4)
+            self.in_color.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            self.in_fbo = self.ctx.framebuffer(color_attachments=[self.in_color])
+        return self.in_fbo
+
+    def release_transition(self) -> None:
+        """Let go of the two transition textures (16 MB for a 1080p canvas) until the next one."""
+        for obj in (self.aux_fbo, self.aux_color, self.in_fbo, self.in_color):
+            if obj is not None:
+                obj.release()
+        self.aux_fbo = self.aux_color = self.in_fbo = self.in_color = None
+
     def release(self) -> None:
-        for obj in (self.fbo, self.color, self.aux_fbo, self.aux_color):
+        for obj in (self.fbo, self.color, self.aux_fbo, self.aux_color, self.in_fbo, self.in_color):
             if obj is not None:
                 obj.release()
 
@@ -222,6 +384,10 @@ class Compositor:
         self.scale_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=SCALE_FRAGMENT)
         self.scale_vao = self.ctx.vertex_array(self.scale_program, [])
         self.scaled_targets: dict[tuple[str, tuple[int, int]], _ScaledTarget] = {}
+        self.transition_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=TRANSITION_FRAGMENT)
+        for unit, name in enumerate(("old_scene", "new_scene", "overlay", "wipe_map")):
+            self.transition_program[name].value = unit
+        self.transition_vao = self.ctx.vertex_array(self.transition_program, [])
         # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
         self.parts: dict[tuple[str, str], moderngl.Texture] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
@@ -290,32 +456,70 @@ class Compositor:
         source_sizes: dict[str, tuple[int, int]],
         previous: Scene | None = None,
         progress: float = 1.0,
+        transition: Transition | None = None,
+        overlay: str | None = None,
+        cut: bool = False,
+        wipe_map: str | None = None,
     ) -> None:
         """Draw a scene's visible items back to front onto its canvas.
 
         Empty canvas is see-through (alpha 0, colour black), so the previews can show a
         checkerboard there while the stream and recordings, which drop alpha, still get black.
 
-        During a fade, `previous` is the outgoing scene and `progress` runs from 0 to 1: the new
-        scene is drawn, then the old one on top at opacity 1 - progress.
+        During a transition, `previous` is the outgoing scene and `progress` runs from 0 to 1. Both
+        scenes are drawn to their own textures and mixed into the canvas the way `transition` says
+        (a fade when None). For a stinger, `overlay` is the texture key of the clip's current frame
+        and `cut` says whether the cut point has passed; `wipe_map` is the texture key of a wipe image.
         """
         target = self._target(canvas)
         size = (canvas.width, canvas.height)
-        self._draw_scene(target.fbo, size, scene, source_sizes)
         if previous is None or progress >= 1.0:
+            self._draw_scene(target.fbo, size, scene, source_sizes)
             return
-        aux = target.aux()
-        self._draw_scene(aux, size, previous, source_sizes)
+        self._draw_scene(target.aux(), size, previous, source_sizes)
+        self._draw_scene(target.incoming(), size, scene, source_sizes)
+        transition = transition or Transition()
+        mode = MODES.get(transition.kind, 1)
+        program = self.transition_program
+        overlay_tex = self.textures.get(overlay) if overlay else None
+        map_tex = self.textures.get(wipe_map) if wipe_map else None
+        if mode == MODES["stinger"]:
+            sting = transition.stinger
+            if overlay_tex is not None:
+                tw, th = overlay_tex.size
+                half_w = tw / 2 if sting.matte == "right" else tw
+                half_h = th / 2 if sting.matte == "below" else th
+                x, y, w, h = cover_rect((half_w, half_h), size)
+                sx, sy = half_w / tw, half_h / th
+                program["overlay_rect"].value = (x * sx, y * sy, w * sx, h * sy)
+                program["matte_offset"].value = {"right": (0.5, 0.0), "below": (0.0, 0.5)}.get(sting.matte, (0.0, 0.0))
+                program["show_overlay"].value = not (sting.matte != "none" and sting.matte_only)
+            else:  # the clip has not started (or failed): just cut at the cut point
+                program["matte_offset"].value = (0.0, 0.0)
+                program["show_overlay"].value = False
+            program["cut"].value = cut
+        if transition.kind in ("leaf", "bloom"):
+            program["level_max"].value = shape_reach(transition.kind, size, progress)
+        program["mode"].value = mode
+        program["progress"].value = float(progress)
+        program["dir"].value = DIRECTIONS.get(transition.direction, (-1.0, 0.0))
+        program["softness"].value = max(0.0, min(1.0, float(transition.softness)))
+        program["use_map"].value = map_tex is not None
+        program["out_size"].value = (float(size[0]), float(size[1]))
+        target.aux_color.use(location=0)
+        target.in_color.use(location=1)
+        (overlay_tex or target.aux_color).use(location=2)
+        (map_tex or target.aux_color).use(location=3)
         target.fbo.use()
         self.ctx.viewport = (0, 0, canvas.width, canvas.height)
-        self._blend()
-        w, h = float(canvas.width), float(canvas.height)
-        self.vbo.write(np.array([(0, 0, 0, 0), (w, 0, 1, 0), (0, h, 0, 1), (w, h, 1, 1)], dtype="f4").tobytes())
-        self.program["opacity"].value = max(0.0, min(1.0, 1.0 - progress))
-        self.program["premul"].value = True  # the outgoing scene was drawn over transparency
-        self._apply_effects(NO_EFFECTS, (1, 1))
-        target.aux_color.use(location=0)
-        self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
+        self.ctx.disable(moderngl.BLEND)
+        self.transition_vao.render(moderngl.TRIANGLES, vertices=3)
+
+    def end_transition(self, canvas_id: str) -> None:
+        """A canvas's transition finished: free its two extra textures."""
+        target = self.targets.get(canvas_id)
+        if target is not None:
+            target.release_transition()
 
     def _blend(self) -> None:
         self.ctx.enable(moderngl.BLEND)

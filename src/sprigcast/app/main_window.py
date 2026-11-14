@@ -492,35 +492,11 @@ class MainWindow(QMainWindow):
         TwitchConnectDialog(self).exec()  # the Chat panel hears about the new account itself
 
     def _build_transitions_dock(self) -> None:
-        panel = QWidget()
-        form = QFormLayout(panel)
-        form.setContentsMargins(0, 0, 0, 0)
-        self.transition_kind = QComboBox()
-        self.transition_kind.addItem("Fade", "fade")
-        self.transition_kind.addItem("Cut", "cut")
-        self.transition_kind.setCurrentIndex(max(0, self.transition_kind.findData(self.collection.transition.kind)))
-        self.transition_kind.currentIndexChanged.connect(self._on_transition_changed)
-        form.addRow("Type", self.transition_kind)
-        self.transition_ms = QSpinBox()
-        self.transition_ms.setRange(50, 5000)
-        self.transition_ms.setSingleStep(50)
-        self.transition_ms.setSuffix(" ms")
-        self.transition_ms.setValue(self.collection.transition.duration_ms)
-        self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
-        self.transition_ms.valueChanged.connect(self._on_transition_changed)
-        form.addRow("Duration", self.transition_ms)
-        wrapper = QWidget()
-        layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(panel)
-        layout.addStretch(1)
-        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", wrapper)))
+        from sprigcast.app.transitions_panel import TransitionsPanel
+        from sprigcast.render.stinger import probe
 
-    def _on_transition_changed(self) -> None:
-        self.collection.transition.kind = self.transition_kind.currentData()
-        self.collection.transition.duration_ms = self.transition_ms.value()
-        self.transition_ms.setEnabled(self.collection.transition.kind == "fade")
-        self._changed()
+        self.transitions_panel = TransitionsPanel(self.collection.transition, self._changed, probe)
+        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", self.transitions_panel)))
 
     # Window layout ---------------------------------------------------------------
 

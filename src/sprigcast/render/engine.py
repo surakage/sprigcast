@@ -9,6 +9,9 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass, field
+
+import numpy as np
 
 from sprigcast.audio.mixer import Ducking, Mixer
 from sprigcast.audio.monitor import Monitor
@@ -24,6 +27,7 @@ from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, SceneCollection
 from sprigcast.core.source import Source, create_source
+from sprigcast.render.stinger import StingerPlayer
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +49,30 @@ class Frame:
         self.canvas_size = canvas_size or (width, height)  # the canvas it shows (a preview may be smaller)
 
 
+STINGER_WAIT_S = 2.0  # a stinger clip that has not started by then is swapped for a quick fade
+
+
+def stinger_path(transition, canvas) -> str:
+    """The clip a canvas plays: the vertical one on a tall canvas when there is one."""
+    sting = transition.stinger
+    if canvas.height > canvas.width and sting.vertical_path:
+        return sting.vertical_path
+    return sting.path
+
+
+@dataclass
+class Running:
+    """A transition in progress on one canvas."""
+
+    outgoing: object  # the Scene it changes from
+    began: float | None  # perf_counter time; None while a stinger clip is still opening
+    duration: float  # seconds
+    settings: object  # the Transition
+    stinger: StingerPlayer | None = None
+    wipe_map: str = ""  # wipe image path
+    queued: float = field(default_factory=time.perf_counter)
+
+
 class Engine:
     def __init__(self, collection: SceneCollection):
         self.commands: queue.Queue = queue.Queue()  # UI -> engine
@@ -60,7 +88,9 @@ class Engine:
         self._monitoring = False
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
-        self._transitions: dict[str, tuple] = {}  # canvas id -> (outgoing scene, start time, duration s)
+        self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
+        self._wipe_maps: dict[str, np.ndarray] = {}  # wipe image path -> its small grey picture
+        self._release_later: list[tuple[str, str]] = []  # ("canvas" | "texture", key) to free on the next tick
         self._state_fades: dict[str, tuple] = {}
         # Studio mode: canvas id -> the scene lined up to go on air next. Rendered to "next:<canvas>".
         # The UI replaces the whole dict, so the render thread always sees a consistent one.
@@ -174,6 +204,8 @@ class Engine:
                     )
                     ticks, stats_at = 0, now
         finally:
+            for canvas_id in list(self._transitions):
+                self._finish_transition(canvas_id, compositor)
             for source in self._sources.values():
                 source.stop()
             compositor.release()
@@ -195,18 +227,133 @@ class Engine:
                 self._sync_sources(compositor)
 
     def _start_transitions(self, old: SceneCollection, new: SceneCollection) -> None:
-        """When a canvas's active scene changes, fade from the scene it showed until now."""
+        """When a canvas's active scene changes, run the transition from the scene it showed until now."""
         transition = new.transition
+        started: dict[str, StingerPlayer] = {}  # canvases switching together share one player per clip
         for canvas in new.canvases:
             before, after = old.active_scenes.get(canvas.id), new.active_scenes.get(canvas.id)
             if before == after or before is None:
                 continue
-            if transition.kind != "fade" or transition.duration_ms <= 0:
-                self._transitions.pop(canvas.id, None)
-                continue
+            self._finish_transition(canvas.id)
             outgoing = next((s for s in old.scenes if s.id == before), None)
-            if outgoing is not None:
-                self._transitions[canvas.id] = (outgoing, time.perf_counter(), transition.duration_ms / 1000)
+            if outgoing is None or transition.kind == "cut":
+                continue
+            now = time.perf_counter()
+            if transition.kind == "stinger":
+                path = stinger_path(transition, canvas)
+                if path:
+                    player = started.get(path)
+                    if player is None:
+                        player = started[path] = self._new_stinger(path, transition, new)
+                    self._transitions[canvas.id] = Running(outgoing, None, 0.0, transition, stinger=player)
+                    continue
+                transition = transition.model_copy(update={"kind": "fade"})  # no clip picked yet
+            if transition.duration_ms <= 0:
+                continue
+            wipe_map = transition.wipe_image if transition.kind == "wipe" and transition.wipe_image else ""
+            if wipe_map and self._wipe_map(wipe_map) is None:
+                wipe_map = ""
+            self._transitions[canvas.id] = Running(outgoing, now, transition.duration_ms / 1000, transition,
+                                                   wipe_map=wipe_map)
+
+    def _new_stinger(self, path: str, transition, collection: SceneCollection) -> StingerPlayer:
+        width = max(c.width for c in collection.canvases)
+        height = max(c.height for c in collection.canvases)
+        matte = transition.stinger.matte
+        limit = (width * (2 if matte == "right" else 1), height * (2 if matte == "below" else 1))
+        sting = transition.stinger
+        gain = 0.0 if sting.muted else 10 ** (sting.volume_db / 20)
+        player = StingerPlayer(path, limit, gain)
+        player.start()
+        return player
+
+    def _wipe_map(self, path: str) -> np.ndarray | None:
+        """A wipe image as a small grey RGB picture (it is a soft gradient: 960 px wide is plenty)."""
+        if path not in self._wipe_maps:
+            try:
+                from PIL import Image
+
+                with Image.open(path) as image:
+                    image = image.convert("L")
+                    image.thumbnail((960, 960))
+                    self._wipe_maps[path] = np.asarray(image.convert("RGB"))
+            except Exception as exc:
+                log.warning("wipe image %s could not be read: %s", path, exc)
+                return None
+        return self._wipe_maps[path]
+
+    def _finish_transition(self, canvas_id: str, compositor=None) -> None:
+        running = self._transitions.pop(canvas_id, None)
+        if running is None:
+            return
+        free = [("canvas", canvas_id)]
+        player = running.stinger
+        if player is not None and not any(r.stinger is player for r in self._transitions.values()):
+            self.mixer.remove_extra(player)
+            player.close()
+            free.append(("texture", player.id))
+        if running.wipe_map and not any(r.wipe_map == running.wipe_map for r in self._transitions.values()):
+            free.append(("texture", f"wipe:{running.wipe_map}"))
+        if compositor is None:  # called from a command: free them on the next tick, unless reused by then
+            self._release_later += free
+            return
+        for what, key in free:
+            if what == "canvas":
+                compositor.end_transition(key)
+            else:
+                compositor.forget(key)
+
+    def _release_unused(self, compositor) -> None:
+        later, self._release_later = self._release_later, []
+        busy_textures = {r.stinger.id for r in self._transitions.values() if r.stinger is not None}
+        busy_textures |= {f"wipe:{r.wipe_map}" for r in self._transitions.values() if r.wipe_map}
+        for what, key in later:
+            if what == "canvas" and key not in self._transitions:
+                compositor.end_transition(key)
+            elif what == "texture" and key not in busy_textures:
+                compositor.forget(key)
+
+    def _transition_step(self, compositor, canvas_id: str, now: float) -> dict | None:
+        """Advance a canvas's transition. Returns the extra render arguments, or None when there is none."""
+        running = self._transitions.get(canvas_id)
+        if running is None:
+            return None
+        player = running.stinger
+        if player is not None and running.began is None:
+            if player.ready.is_set() and player.error is None:
+                for other in self._transitions.values():  # canvases sharing the clip start together
+                    if other.stinger is player:
+                        other.began, other.duration = now, player.duration
+                self.mixer.add_extra(player)
+            elif player.ready.is_set() or now - running.queued > STINGER_WAIT_S:
+                # The clip would not open: fall back to a quick fade so the switch still happens.
+                fade = running.settings.model_copy(update={"kind": "fade"})
+                running.settings, running.stinger, running.began = fade, None, now
+                running.duration = max(0.05, fade.duration_ms / 1000)
+                if not any(r.stinger is player for r in self._transitions.values()):
+                    player.close()
+            else:
+                return {"previous": running.outgoing, "progress": 0.0, "transition": running.settings}
+        elapsed = now - running.began
+        progress = elapsed / running.duration
+        if progress >= 1.0:
+            self._finish_transition(canvas_id, compositor)
+            return None
+        extra = {"previous": running.outgoing, "progress": max(0.0, progress), "transition": running.settings}
+        if running.stinger is not None:
+            frame = running.stinger.frame_at(elapsed)
+            if frame is not None:
+                compositor.upload(running.stinger.id, frame)
+            extra["overlay"] = running.stinger.id
+            extra["cut"] = elapsed >= running.settings.stinger.cut_ms / 1000
+        if running.wipe_map:
+            key = f"wipe:{running.wipe_map}"
+            if key not in compositor.textures:
+                picture = self._wipe_map(running.wipe_map)
+                if picture is not None:
+                    compositor.upload(key, picture, "RGB")
+            extra["wipe_map"] = key
+        return extra
 
     def _start_state_fades(self, old: SceneCollection, new: SceneCollection) -> None:
         """When a sprig switches state, fade the items it shows or hides instead of popping them."""
@@ -378,9 +525,9 @@ class Engine:
                 scene = next((s for s in collection.scenes if s.id == scene_id), None)
                 if scene is not None and scene not in drawn:
                     drawn.append(scene)
-            transition = self._transitions.get(canvas.id)
-            if transition is not None and transition[0] is not None and transition[0] not in drawn:
-                drawn.append(transition[0])
+            running = self._transitions.get(canvas.id)
+            if running is not None and running.outgoing not in drawn:
+                drawn.append(running.outgoing)
         return drawn
 
     def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
@@ -501,6 +648,8 @@ class Engine:
 
     def _tick(self, compositor, now: float) -> None:
         compositor.time = now
+        if self._release_later:
+            self._release_unused(compositor)
         self._rest_sources(compositor, now)
         for source_id, source in self._sources.items():
             if source.asleep:
@@ -518,21 +667,13 @@ class Engine:
         for canvas in self._collection.canvases:
             if not canvas.enabled:
                 continue
-            previous, progress = None, 1.0
-            transition = self._transitions.get(canvas.id)
-            if transition is not None:
-                outgoing, began, duration = transition
-                progress = (now - began) / duration
-                if progress >= 1.0:
-                    del self._transitions[canvas.id]
-                else:
-                    previous, progress = outgoing, max(0.0, progress)
+            extra = self._transition_step(compositor, canvas.id, now) or {}
             outputs = taps.get(canvas.id, ())
             preview = self._preview_due(canvas.id, now)
             self._render_staged(compositor, canvas, sizes, now)
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
-            compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, previous, progress)
+            compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, **extra)
             frames: dict = {}  # nv12 size (None = RGBA) -> Frame, so outputs of one size share one readback
             if preview:
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height))

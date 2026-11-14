@@ -224,11 +224,39 @@ class AudioSettings(BaseModel):
     duck_hold_ms: float = 400.0
 
 
-class Transition(BaseModel):
-    """How a canvas changes scenes: a cut, or a fade that crossfades over duration_ms."""
+TRANSITION_KINDS = ("cut", "fade", "slide", "swipe", "wipe", "leaf", "bloom", "stinger")
 
-    kind: Literal["cut", "fade"] = "fade"
+
+class Stinger(BaseModel):
+    """A short video played over the change, usually with see-through parts (WebM VP9 or MOV ProRes 4444).
+
+    The scenes swap at cut_ms, while the video covers the screen. A track matte video holds the picture
+    in one half and a black and white matte in the other: white shows the new scene, black the old one.
+    """
+
+    path: str = ""
+    vertical_path: str = ""  # its own video for vertical canvases; empty = the main one, filled and centred
+    cut_ms: int = 500
+    matte: Literal["none", "right", "below"] = "none"  # where the matte sits in a track matte video
+    matte_only: bool = False  # use the matte to swap scenes, but do not show the picture half
+    volume_db: float = 0.0
+    muted: bool = False
+
+
+class Transition(BaseModel):
+    """How a canvas changes scenes.
+
+    cut swaps at once; fade crossfades; slide pushes the old scene out; swipe slides the new one over
+    the old; wipe sweeps a soft edge across (or follows a black and white image: a luma wipe); leaf and
+    bloom open the new scene through a growing leaf or flower; stinger plays a video over the swap.
+    """
+
+    kind: Literal["cut", "fade", "slide", "swipe", "wipe", "leaf", "bloom", "stinger"] = "fade"
     duration_ms: int = 300
+    direction: Literal["left", "right", "up", "down"] = "left"  # slide, swipe and wipe: where it moves to
+    softness: float = 0.15  # wipe, leaf and bloom: how soft the edge is, 0 sharp .. 1 very soft
+    wipe_image: str = ""  # wipe: a black and white image, dark parts change first
+    stinger: Stinger = Field(default_factory=Stinger)
 
 
 class SceneCollection(BaseModel):
