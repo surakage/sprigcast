@@ -17,9 +17,10 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, QSettings, QTimer
-from PySide6.QtNetwork import QHostAddress
+from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServer
 
+from sprigcast.control import web
 from sprigcast.control.api import ControlApi
 from sprigcast.control.native import NativeApi, NativeSession
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
@@ -33,10 +34,12 @@ ENABLED = "control/enabled"
 PORT = "control/port"
 PASSWORD = "control/password"
 USE_PASSWORD = "control/use_password"
+WEB_DOOR = "control/web_door"  # plain web links /api/<action> (needs the password)
 OBS_DOOR = "control/obs_door"  # also accept apps made for OBS (the frozen compatibility door)
 LAN = "control/lan"  # let phones and other PCs connect, not just apps on this PC
 DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use another if OBS runs too)
 NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
+WEB_TIMEOUT_MS = 5000  # a connection that hasn't said what it is by then is dropped
 WATCH_MS = 500  # how often stream/record/Studio states are compared while an app is connected
 
 
@@ -53,6 +56,7 @@ def saved_settings() -> dict[str, Any]:
         "use_password": q.value(USE_PASSWORD, True, type=bool),
         "lan": q.value(LAN, False, type=bool),
         "obs_door": q.value(OBS_DOOR, True, type=bool),
+        "web_door": q.value(WEB_DOOR, False, type=bool),
     }
 
 
@@ -204,6 +208,8 @@ class ControlServer(QObject):
         api.custom_event = lambda data: self.broadcast("CustomEvent", Sub.GENERAL, data)
         self.native.custom_event = lambda data: self.native_broadcast("custom", {"data": data})
         self.server: QWebSocketServer | None = None
+        self.tcp: QTcpServer | None = None
+        self.web_door = False  # plain web links (/api/<action>); Settings → Connections
         self.sessions: dict[QWebSocket, Session | NativeSession] = {}
         self.password = ""
         self.obs_door = True  # also accept apps made for OBS (Settings → Connections)
@@ -227,15 +233,19 @@ class ControlServer(QObject):
     def start(self, port: int, password: str = "", lan: bool = False) -> bool:
         self.stop()
         self.password = password
-        self.server = QWebSocketServer("SprigCast", QWebSocketServer.SslMode.NonSecureMode, self)
+        # One port for both: a plain TCP server looks at each new connection's first lines and hands
+        # WebSocket upgrades to the WebSocket server (which never listens itself) and web links to web.py.
+        self.tcp = QTcpServer(self)
         address = QHostAddress(QHostAddress.SpecialAddress.Any if lan else QHostAddress.SpecialAddress.LocalHost)
-        if not self.server.listen(address, port):
-            self.error = self.server.errorString() or f"port {port} is in use"
+        if not self.tcp.listen(address, port):
+            self.error = self.tcp.errorString() or f"port {port} is in use"
             log.warning("control: could not listen on port %d: %s", port, self.error)
-            self.server = None
+            self.tcp = None
             return False
         self.error = ""
+        self.server = QWebSocketServer("SprigCast", QWebSocketServer.SslMode.NonSecureMode, self)
         self.server.newConnection.connect(self._accept)
+        self.tcp.newConnection.connect(self._incoming)
         log.info("control: listening on %s:%d%s", "all addresses" if lan else "localhost", port,
                  " with a password" if password else " without a password")
         return True
@@ -251,18 +261,66 @@ class ControlServer(QObject):
         self.server.close()
         self.server.deleteLater()
         self.server = None
+        if self.tcp is not None:
+            self.tcp.close()
+            self.tcp.deleteLater()
+            self.tcp = None
         self.watch.stop()
         self.on_clients_changed(0)
 
     @property
     def listening(self) -> bool:
-        return self.server is not None and self.server.isListening()
+        return self.tcp is not None and self.tcp.isListening()
 
     @property
     def port(self) -> int:
-        return self.server.serverPort() if self.server is not None else 0
+        return self.tcp.serverPort() if self.tcp is not None else 0
 
     # Connections -----------------------------------------------------------------------
+
+    def _incoming(self) -> None:
+        while self.tcp is not None and self.tcp.hasPendingConnections():
+            sock = self.tcp.nextPendingConnection()
+            sock.readyRead.connect(lambda s=sock: self._sniff(s))
+            sock.disconnected.connect(sock.deleteLater)
+            QTimer.singleShot(WEB_TIMEOUT_MS, lambda s=sock: self._too_slow(s))
+
+    def _too_slow(self, sock: QTcpSocket) -> None:
+        try:
+            if sock.property("sprigcast_door") is None and sock.state() == QTcpSocket.SocketState.ConnectedState:
+                sock.abort()
+        except RuntimeError:
+            pass  # already gone
+
+    def _sniff(self, sock: QTcpSocket) -> None:
+        """WebSocket upgrade or web link? Peek without taking the bytes so the WebSocket server reads them."""
+        if sock.property("sprigcast_door") is not None:
+            return
+        raw = bytes(sock.peek(web.MAX_REQUEST + 1))
+        if web.header_end(raw) < 0 and len(raw) <= web.MAX_REQUEST:
+            return  # wait for the rest of the headers
+        if web.header_end(raw) >= 0 and web.is_websocket(raw):
+            sock.setProperty("sprigcast_door", "ws")
+            sock.readyRead.disconnect()
+            if self.server is not None:
+                self.server.handleConnection(sock)
+            return
+        try:
+            request = web.parse(raw)
+        except ValueError:
+            sock.setProperty("sprigcast_door", "bad")
+            sock.write(web.response(400, {"ok": False, "error": {"code": "bad_request", "message": "Not HTTP."}}))
+            sock.disconnectFromHost()
+            return
+        if request is None:
+            return  # the body is still arriving
+        sock.setProperty("sprigcast_door", "web")
+        sock.readAll()
+        status, body = web.handle(self.native, request, enabled=self.web_door, password=self.password)
+        log.info("control: web link %s %s -> %d", request.method, request.path, status)
+        sock.write(web.response(status, body))
+        sock.disconnectFromHost()
+        self.soon()
 
     def _accept(self) -> None:
         while self.server is not None and self.server.hasPendingConnections():
@@ -385,6 +443,7 @@ def apply_settings(server: ControlServer, window: MainWindow | None = None) -> N
         server.frame_seconds = 1 / max(1, window.collection.canvases[0].fps)
     password = settings["password"] if settings["use_password"] else ""
     server.obs_door = settings["obs_door"]
+    server.web_door = settings["web_door"]
     wanted = (settings["port"], password, settings["lan"])
     if not settings["enabled"]:
         server.stop()
