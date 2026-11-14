@@ -41,7 +41,7 @@ LISTEN_SECONDS = 3.0
 SILENT_DB = -50.0  # a mic that never peaks above this while you talk is probably the wrong device
 CLIPPING_DB = -1.0
 LOW_DISK_GB = 10.0
-OK_STATUSES = ("ok", "starting", "capturing", "waiting")
+OK_STATUSES = ("ok", "starting", "capturing", "waiting", "paused")  # paused: asleep while off screen (#87)
 
 
 @dataclass

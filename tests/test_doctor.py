@@ -107,3 +107,8 @@ def test_dialog_shows_findings():
     dialog.finish()
     assert dialog.headline.text().endswith("to fix") and dialog.badge.text() == "✕"
     assert not dialog.busy.isVisibleTo(dialog)
+
+
+def test_a_source_asleep_off_screen_is_not_a_problem():
+    findings = examine(_checkup(has_key=lambda ref: True, statuses={"cam": "paused (not on screen)"}))
+    assert not any(f.area == "Sources" for f in findings)
