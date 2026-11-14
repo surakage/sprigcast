@@ -299,10 +299,11 @@ def proven_kbps(streamers, audio_kbps: int, seconds: float) -> int | None:
 
 
 def remember_proven(settings, value: int | None) -> None:
+    """Keep the most a clean stream has carried: a lighter clean stream proves nothing new, trouble forgets it."""
     if value is None:
         return
     if value:
-        settings.setValue(PROVEN, value)
+        settings.setValue(PROVEN, max(value, load_proven(settings)))
     else:
         settings.remove(PROVEN)
 
