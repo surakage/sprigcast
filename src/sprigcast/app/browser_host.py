@@ -18,7 +18,9 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, QStandardPaths, Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtWidgets import QWidget
 
+from sprigcast.app import theme
 from sprigcast.sources import browser
 
 log = logging.getLogger(__name__)
@@ -141,6 +143,7 @@ class _Page:
         self.page.loadFinished.connect(self._loaded)
         self.view.setPage(self.page)
         self._Script = QWebEngineScript
+        self.interacting: InteractWindow | None = None
         self.sound = None  # PageSound while the page's sound goes to the mixer (app/browser_audio.py)
         self._channel = None
         self.timer = QTimer()
@@ -265,9 +268,59 @@ class _Page:
 
         self.timer.stop()
         self.host.set_sound(self.id, None)
+        if self.interacting is not None:
+            self.interacting.scroll.takeWidget()
+            self.interacting.close()
         # Deleted now, not later: Chromium complains (and can crash on exit) if the profile goes first.
         shiboken6.delete(self.page)
         shiboken6.delete(self.view)
+
+
+class InteractWindow(QWidget):
+    """The page itself, on screen, so you can click and type in it: sign in to a widget, close a
+    cookie banner, press a button. What you do shows on stream too. Closing puts it back off screen."""
+
+    def __init__(self, page: "_Page", title: str, parent: QWidget | None = None):
+        from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout
+
+        super().__init__(parent, Qt.WindowType.Window)
+        self.page = page
+        self.setWindowTitle(f"Interact: {title} · SprigCast")
+        self.setObjectName("interactWindow")
+        self.setStyleSheet(f"#interactWindow {{ background: {theme.BG}; }}")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
+        note = QLabel("Click and type in the page here. Everything you do shows on stream too.")
+        note.setStyleSheet(f"color: {theme.MUTED};")
+        layout.addWidget(note)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(False)
+        self.scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        layout.addWidget(self.scroll, 1)
+        view = page.view
+        size = view.size()
+        view.hide()
+        view.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
+        self.scroll.setWidget(view)
+        view.resize(size)
+        view.show()
+        view.setFocus()
+        self.resize(min(size.width() + 40, 1400), min(size.height() + 80, 900))
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        view = self.scroll.takeWidget()
+        if view is not None:
+            size = view.size()
+            view.hide()
+            view.setParent(None)
+            view.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            view.resize(size)
+            view.show()
+        self.page.interacting = None
+        super().closeEvent(event)
 
 
 class BrowserHost(QObject):
@@ -318,6 +371,22 @@ class BrowserHost(QObject):
                 self._sounds.pop(source_id, None)
             else:
                 self._sounds[source_id] = sound
+
+    def interact(self, source_id: str, settings: dict[str, Any], title: str, parent: QWidget | None = None):
+        """UI thread: open the page in a window you can click in (opening it first if it's asleep)."""
+        page = self.pages.get(source_id)
+        if page is None:
+            self._handle("open", source_id, dict(settings))
+            page = self.pages.get(source_id)
+        if page is None:
+            return None
+        if page.interacting is not None:
+            page.interacting.raise_()
+            page.interacting.activateWindow()
+            return page.interacting
+        page.interacting = InteractWindow(page, title, parent)
+        page.interacting.show()
+        return page.interacting
 
     def reload(self, source_id: str) -> None:
         self._request.emit("reload", source_id, None)
