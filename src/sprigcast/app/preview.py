@@ -497,6 +497,8 @@ class Preview(QWidget):
         self.selected.emit(self.canvas_id, -1 if index is None else index)
         if index is not None:
             self._drag = ("move", None, event.position(), self.scene.items[index].model_copy())
+            self._drag_prefs = snap_settings()  # read once per drag, not on every mouse move
+            self._drag_others = None
         self.update()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
@@ -516,10 +518,12 @@ class Preview(QWidget):
         if mode == "move":
             scale = self._scale()
             delta = ((event.position().x() - start_pos.x()) / scale, (event.position().y() - start_pos.y()) / scale)
-            prefs = snap_settings()
+            prefs = getattr(self, "_drag_prefs", None) or snap_settings()
             off = not prefs["enabled"] or event.modifiers() & Qt.KeyboardModifier.ControlModifier
             snap = 0.0 if off else prefs["distance"] / scale
-            others = self._other_rects(item) if prefs["sources"] else []
+            if prefs["sources"] and getattr(self, "_drag_others", None) is None:
+                self._drag_others = self._other_rects(item)  # the others stay put while this one moves
+            others = self._drag_others if prefs["sources"] else []
             edit.move(item, start_item, size, delta, self._bounds(), snap,
                       edges=prefs["edges"], center=prefs["center"], others=others)
         elif mode == "scale":

@@ -74,3 +74,31 @@ def test_app_sound_is_a_sound_everywhere():
     from sprigcast.core.scene import SOUND_KINDS
 
     assert config.kind in SOUND_KINDS
+
+
+def test_starter_vertical_versions_switch_the_vertical_canvas_on():
+    from sprigcast.app.starter import StarterChoice, build_starter
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080),
+                                    Canvas(id="vertical", width=1080, height=1920, enabled=False)],
+                          sources=[], scenes=[])
+    made = build_starter(col, StarterChoice(mic=None, blooms=["Ending"], vertical=True))
+    assert col.canvas("vertical").enabled and len(made) == 2
+    col.canvas("vertical").enabled = False
+    made = build_starter(col, StarterChoice(mic=None, blooms=["Gaming"], vertical=False))
+    assert not col.canvas("vertical").enabled and len(made) == 1
+
+
+def test_starter_dialog_always_offers_vertical_versions():
+    pytest.importorskip("PySide6.QtWidgets")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.starter import StarterDialog
+
+    _app = QApplication.instance() or QApplication([])
+    dlg = StarterDialog([], [], [], False, False)  # not a fresh install, vertical canvas off
+    assert not dlg.vertical.isHidden() and not dlg.vertical.isChecked()
+    dlg.vertical.setChecked(True)
+    assert dlg.choice(lambda d: {}).vertical
+    dlg.deleteLater()
