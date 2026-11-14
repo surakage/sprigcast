@@ -86,11 +86,13 @@ from sprigcast.app.build_stage import (
 )
 from sprigcast.app.library import (
     PART_ROOT,
+    SOUND_ROOT,
     ROLE_COLOUR,
     ROLE_FOLDER,
     ROLE_ID,
     ROLE_ON_AIR,
     ROLE_ROW,
+    ROLE_SOURCE_KIND,
     ROLE_THUMB,
     Library,
     LibraryTree,
@@ -145,6 +147,7 @@ from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
+LEARNED_AFTER = 5  # sessions before Build's hints stop showing
 BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
 FOLDER_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
 
@@ -164,7 +167,7 @@ def _dot(colour: str, size: int = 12) -> QIcon:
     p.end()
     return QIcon(pix)
 from sprigcast.app.sound_card import Sound, auto_group
-from sprigcast.app.names import ask_name, short_name, short_status, status_summary, window_name
+from sprigcast.app.names import ask_name, plain_problem, short_name, short_status, status_summary, window_name
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +233,15 @@ class MainWindow(QMainWindow):
         self.plugin_report = None  # set by main.run() after loading plugins
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
         self.last_bloom_id: str | None = self.selected_scene_id  # where a sprig's ← Back goes
+        self.selected_sound_id: str | None = None  # a sound picked in Build's library
+        self._undo: list[str] = []  # earlier collections as JSON, oldest first (Edit → Undo, Ctrl+Z)
+        self._redo: list[str] = []
+        self._undo_current: str | None = collection.model_dump_json()
+        self._undo_at = 0.0
+        # Hints and tips show for your first few sessions, then get out of the way.
+        sessions = QSettings().value("build/sessions", 0, type=int) + 1
+        QSettings().setValue("build/sessions", sessions)
+        self.learned = sessions > LEARNED_AFTER
         # A part being edited in place inside a show: canvas id, show id, placement source id, layout id.
         self.in_place: tuple[str, str, str, str] | None = None
         self._updating = False  # True while we fill widgets, so their signals do not echo back
@@ -334,19 +346,25 @@ class MainWindow(QMainWindow):
         part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
+        # Build's shape tabs: one shape at a time, each with its own blooms (they sit at the top of the library).
         self.canvas_tabs = QTabBar()
+        self.canvas_tabs.setObjectName("shapeTabs")
         self.canvas_tabs.setDrawBase(False)
-        self.canvas_tabs.setExpanding(False)
+        self.canvas_tabs.setExpanding(True)
+        self.canvas_tabs.setCursor(Qt.CursorShape.PointingHandCursor)
         self.canvas_tabs.setStyleSheet(
-            f"QTabBar::tab {{ padding: 6px 16px; margin-right: 4px; border: none; border-radius: 12px 12px 0 0;"
-            f" background: transparent; color: {theme.MUTED}; }}"
-            f"QTabBar::tab:hover {{ color: {theme.TEXT}; }}"
-            f"QTabBar::tab:selected {{ background: {theme.PANEL}; color: {theme.TEXT_BRIGHT}; font-weight: bold;"
-            f" border-top: 2px solid {theme.ACCENT}; }}"
+            f"#shapeTabs {{ background: {theme.PANEL}; border-radius: 19px; }}"
+            f"#shapeTabs::tab {{ padding: 8px 12px; margin: 3px; border: none; border-radius: 16px;"
+            f" background: transparent; color: {theme.MUTED}; font-weight: 600; }}"
+            f"#shapeTabs::tab:hover {{ color: {theme.TEXT}; }}"
+            f"#shapeTabs::tab:selected {{ background: {theme.RAISED_HOVER}; color: {theme.TEXT_BRIGHT}; }}"
         )
         for canvas in collection.canvases:
-            self.canvas_tabs.addTab(f"{canvas.id.capitalize()}   {canvas.width}×{canvas.height}")
-            self.canvas_tabs.setTabToolTip(self.canvas_tabs.count() - 1, f"Edit the {canvas.id} {SHOWS} and their sources")
+            mark = "▯" if canvas.height > canvas.width else "▭"
+            self.canvas_tabs.addTab(f"{mark}  {canvas.id.capitalize()}")
+            self.canvas_tabs.setTabToolTip(self.canvas_tabs.count() - 1,
+                                           f"Build the {canvas.id} {SHOWS} ({canvas.width}×{canvas.height}). "
+                                           f"Sound and {PARTS} are shared by both shapes.")
         self.canvas_tabs.setCurrentIndex(canvas_ids.index(self.build_canvas))
         self.canvas_tabs.currentChanged.connect(self._on_canvas_tab)
         canvas_page = QWidget()
@@ -356,7 +374,6 @@ class MainWindow(QMainWindow):
         page_layout.setSpacing(0)
         tabs_row = QHBoxLayout()
         tabs_row.setContentsMargins(8, 4, 8, 0)
-        tabs_row.addWidget(self.canvas_tabs)
         tabs_row.addStretch(1)
         # Safe zones: where TikTok / Shorts / Reels draw their own buttons over a vertical stream.
         self.safe_zone_button = QToolButton()
@@ -394,6 +411,7 @@ class MainWindow(QMainWindow):
         self.library = Library(self.scene_tree)
         self.build_bar = BuildBar()
         self.build_stage = BuildStage(self.library, self.build_bar)
+        self.build_stage.rail.insertWidget(0, self.canvas_tabs)
         self.build_stage.card_slot.addWidget(self.center)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
@@ -499,9 +517,12 @@ class MainWindow(QMainWindow):
         self.panels.shelve(bar)  # the list itself is Build's left rail; its old buttons stay off screen
 
     def _library_plus(self, key: str) -> None:
-        """The round + beside Blooms or Sprigs."""
+        """The round + beside Blooms, Sprigs or Sound."""
         menu = QMenu(self)
-        if key == PART_ROOT:
+        if key == SOUND_ROOT:
+            menu.addAction("Microphone…").triggered.connect(lambda: self._add_audio("audio_input"))
+            menu.addAction("Desktop sound…").triggered.connect(lambda: self._add_audio("audio_output"))
+        elif key == PART_ROOT:
             menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
             menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
         else:
@@ -649,7 +670,9 @@ class MainWindow(QMainWindow):
                                        lambda: self.add_source_menu.exec(QCursor.pos()), scale=0.8)
         self.inside_empty.hide()
         self.build_stage.left.addWidget(self.inside_empty)
-        tools = QHBoxLayout()
+        self.inside_tools = QWidget()  # only while something in Inside is picked
+        tools = QHBoxLayout(self.inside_tools)
+        tools.setContentsMargins(0, 0, 0, 0)
         tools.setSpacing(8)
         for text, tip, slot in (
             ("Settings", "Settings for the selected thing (or double-click it)", self._edit_source_settings),
@@ -668,30 +691,75 @@ class MainWindow(QMainWindow):
         self.inside_hint.setWordWrap(True)
         self.inside_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         self.build_stage.left.addWidget(self.inside_hint)
-        self.build_stage.left.addLayout(tools)
+        self.build_stage.left.addWidget(self.inside_tools)
         self.build_stage.left.addWidget(self.panels.cards["build"], 1)  # panels you choose for Build
 
     def _fill_add_source_menu(self) -> None:
+        """+ Add: your real cameras, screens and windows by name (one click adds them), then the rest.
+        The device lists are read when their submenu opens, so opening + Add stays instant."""
         menu = self.add_source_menu
         menu.clear()
-        for label, slot in (
-            ("Display capture", self._add_display),
-            ("Window capture", self._add_window),
-            ("Camera", self._add_camera),
-            ("Image", self._add_image),
-            ("Color", self._add_color),
-            ("Text", self._add_text),
-            ("Browser (web page)", self._add_browser),
-        ):
-            menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
-        parts_menu = menu.addMenu(cap(PART))
         scene = self._scene()
         parts = [p for p in self.collection.parts() if scene is None or not self.collection.contains(p, scene.id)]
+        parts_menu = menu.addMenu(f"{PART_MARK}  {cap(PART)}")
         for part in parts:
             parts_menu.addAction(part.name).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
         if not parts:
-            empty = parts_menu.addAction(f"No {PARTS} yet: Scenes → + → New {PART}")
-            empty.setEnabled(False)
+            parts_menu.addAction(f"No {PARTS} yet: + beside {cap(PARTS)} on the left").setEnabled(False)
+        menu.addSeparator()
+
+        def lazy(title: str, fill) -> None:
+            sub = menu.addMenu(title)
+            sub.aboutToShow.connect(lambda: (sub.clear(), fill(sub)) if not sub.actions() else None)
+
+        def cameras(sub: QMenu) -> None:
+            found = list_cameras()
+            for cam in found:
+                sub.addAction(cam.name).triggered.connect(lambda _=False, c=cam: self._add_camera(c))
+            if not found:
+                sub.addAction("No camera found (plugged in? in use?)").setEnabled(False)
+            sub.addSeparator()
+            sub.addAction("Pick size and frame rate…").triggered.connect(lambda: self._add_camera())
+
+        def screens(sub: QMenu) -> None:
+            found = list_monitors()
+            for monitor in found:
+                sub.addAction(monitor.label).triggered.connect(lambda _=False, m=monitor: self._add_display(m))
+            if not found:
+                sub.addAction("Screen capture works on Windows").setEnabled(False)
+
+        def windows(sub: QMenu) -> None:
+            found = list_windows()
+            for window in found[:30]:
+                sub.addAction(window_name(window.title, window.process)).triggered.connect(
+                    lambda _=False, w=window: self._add_window(w))
+            if not found:
+                sub.addAction("Window capture works on Windows").setEnabled(False)
+
+        lazy("Camera", cameras)
+        lazy("Screen", screens)
+        lazy("Window", windows)
+        menu.addSeparator()
+        for label, slot in (
+            ("Picture…", self._add_image),
+            ("Text", self._add_text),
+            ("Web page…", self._add_browser),
+            ("Colour…", self._add_color),
+        ):
+            menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
+        menu.addSeparator()
+
+        def sounds(sub: QMenu) -> None:
+            for kind, title in (("audio_input", "Microphone"), ("audio_output", "Desktop sound")):
+                sub.addSection(title)
+                found = list_audio_devices(loopback=kind == "audio_output")
+                sub.addAction("Default (follows Windows)").triggered.connect(
+                    lambda _=False, k=kind: self._add_audio(k, "default"))
+                for device in found:
+                    sub.addAction(device.name).triggered.connect(
+                        lambda _=False, k=kind, d=device.name: self._add_audio(k, d))
+
+        lazy("Sound (plays in every bloom)", sounds)
         plugins = menu.addMenu("Plugins")
         self.more_menu = plugins
         self._fill_more_menu()
@@ -1006,25 +1074,60 @@ class MainWindow(QMainWindow):
     def _build_properties_dock(self) -> None:
         """Build's inspector (right column): the selected thing's name, where it sits, its look,
         and which shapes show it."""
+        from sprigcast.app.sound_card import TunePage
+
+        self.build_tune = TunePage(self._build_tune_changed, lambda sid: self._open_filters(sid, "audio"),
+                                   self._close_build_sound)
+        note = QLabel("Plays in every bloom, on both shapes. Changes here change Live's Sound card too.")
+        note.setWordWrap(True)
+        note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 12px;")
+        self.build_stage.sound_slot.addWidget(note)
+        self.build_stage.sound_slot.addWidget(self.build_tune)
+        self.build_stage.sound_slot.addStretch(1)
         right = self.build_stage.right
         panel = QWidget()
         panel.setStyleSheet(theme.SOFT_FIELD_STYLE)
         col = QVBoxLayout(panel)
         col.setContentsMargins(6, 0, 16, 8)  # breathing room from the window edge
-        col.setSpacing(22)
+        col.setSpacing(14)
 
         self.prop_sections: list[QWidget] = []  # hidden while nothing is selected
+        self.prop_section_toggles: dict[str, tuple[QPushButton, QWidget]] = {}
 
         def section(title: str) -> QVBoxLayout:
+            """A foldable section: click its title to open or close it (remembered). Only Place starts open."""
             holder = QWidget()
-            box = QVBoxLayout(holder)
+            outer = QVBoxLayout(holder)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(10)
+            key = f"inspector/open/{title}"
+            is_open = QSettings().value(key, title == "Place", type=bool)
+            header = QPushButton()
+            header.setCursor(Qt.CursorShape.PointingHandCursor)
+            header.setStyleSheet(
+                f"QPushButton {{ background: transparent; border: none; color: {theme.MUTED}; font-weight: 600;"
+                f" text-align: left; padding: 2px 0; }} QPushButton:hover {{ color: {theme.TEXT}; }}")
+            body = QWidget()
+            box = QVBoxLayout(body)
             box.setContentsMargins(0, 0, 0, 0)
             box.setSpacing(10)
-            label = QLabel(title)
-            label.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600;")
-            box.addWidget(label)
+
+            def show(open_: bool) -> None:
+                header.setText(("▾  " if open_ else "▸  ") + title)
+                body.setVisible(open_)
+
+            def toggle() -> None:
+                open_ = not body.isVisible()
+                QSettings().setValue(key, open_)
+                show(open_)
+
+            header.clicked.connect(toggle)
+            show(is_open)
+            outer.addWidget(header)
+            outer.addWidget(body)
             col.addWidget(holder)
             self.prop_sections.append(holder)
+            self.prop_section_toggles[title] = (header, body)
             return box
 
         top = QVBoxLayout()
@@ -1040,6 +1143,24 @@ class MainWindow(QMainWindow):
         self.prop_status.setWordWrap(True)
         self.prop_status.setStyleSheet(theme.MUTED_STYLE)
         top.addWidget(self.prop_status)
+        # A problem, said plainly, with the one button that fixes it.
+        self.prop_problem = QFrame()
+        self.prop_problem.setObjectName("propProblem")
+        self.prop_problem.setStyleSheet(f"#propProblem {{ background: {theme.CARD}; border-radius: 14px; }}")
+        problem_box = QVBoxLayout(self.prop_problem)
+        problem_box.setContentsMargins(12, 10, 12, 10)
+        problem_box.setSpacing(8)
+        self.prop_problem_text = QLabel()
+        self.prop_problem_text.setWordWrap(True)
+        self.prop_problem_text.setStyleSheet(f"color: {theme.WARN};")
+        problem_box.addWidget(self.prop_problem_text)
+        self.prop_fix = QPushButton("Fix")
+        self.prop_fix.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.prop_fix.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.prop_fix.clicked.connect(self._fix_problem)
+        problem_box.addWidget(self.prop_fix, 0, Qt.AlignmentFlag.AlignLeft)
+        self.prop_problem.hide()
+        top.addWidget(self.prop_problem)
         # A sprig placement: open it, and see (and jump to) every bloom it's in.
         self.prop_sprig = QWidget()
         sprig_box = QVBoxLayout(self.prop_sprig)
@@ -1317,12 +1438,7 @@ class MainWindow(QMainWindow):
         order = [self.splitter.widget(i) for i in range(self.splitter.count())]
         by_column = {id(self.canvas_columns[c.id]): c for c in self.collection.canvases}
         ratios = {c.id: c.width / c.height for c in shown}
-        if self.mode == "build":  # the twin stays small next to the shape being edited
-            twins = [c for c in shown if c.id != self.build_canvas]
-            share = {c.id: int(total * (0.14 if c.height > c.width else 0.26)) for c in twins}
-            rest = total - sum(share.values())
-            canvases = [by_column[id(w)] for w in order]
-            self.splitter.setSizes([share.get(c.id, rest) if c in shown else 0 for c in canvases])
+        if self.mode == "build":  # one shape at a time: it gets the whole card
             return
         weight = sum(ratios.values())
         canvases = [by_column[id(w)] for w in order]
@@ -1348,6 +1464,8 @@ class MainWindow(QMainWindow):
                 continue
             if self.mode == "live":
                 scene_id = self.collection.active_scenes.get(canvas_id)
+            elif not preview.isVisible():
+                continue  # the other shape's preview isn't drawn in Build: its picture is stale
             else:
                 scene = preview.scene
                 scene_id = scene.id if scene is not None and scene.kind == "show" else None
@@ -1619,10 +1737,13 @@ class MainWindow(QMainWindow):
     def _apply_canvas_view(self) -> None:
         """Build shows only the canvas of the current tab; Live shows every canvas side by side."""
         build = self.mode == "build"
-        self.canvas_tabs_row.setVisible(False)  # Build swaps shapes by clicking the twin now
+        self.canvas_tabs_row.setVisible(False)
+        # The shape tabs only show when both shapes are on (nothing to switch between otherwise).
+        self.canvas_tabs.setVisible(sum(c.enabled for c in self.collection.canvases) > 1)
         for canvas in self.collection.canvases:
             column = self.canvas_columns[canvas.id]
-            column.setVisible(canvas.enabled)
+            # Build shows just the shape on the tab you're on; the other one isn't drawn (or rendered) at all.
+            column.setVisible(canvas.enabled and (not build or canvas.id == self.build_canvas))
             self.next_previews[canvas.id].setVisible(not build and self.studio)
             preview = self.previews[canvas.id]
             twin = build and canvas.id != self.build_canvas
@@ -1800,6 +1921,13 @@ class MainWindow(QMainWindow):
 
         # Edit: the selected thing in Build (the same actions and shortcuts as its right-click menu).
         edit_menu = bar.addMenu("&Edit")
+        undo = edit_menu.addAction("Undo")
+        undo.setShortcut(QKeySequence.StandardKey.Undo)
+        undo.triggered.connect(self.undo)
+        redo = edit_menu.addAction("Redo")
+        redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        redo.triggered.connect(self.redo)
+        edit_menu.addSeparator()
         a = self.item_actions
         for key in ("rename", "settings", "filters"):
             edit_menu.addAction(a[key])
@@ -1868,6 +1996,7 @@ class MainWindow(QMainWindow):
         open_settings = settings_menu.addAction("Settings…")
         open_settings.setShortcut(QKeySequence("Ctrl+,"))
         open_settings.triggered.connect(lambda: self._open_settings())
+        settings_menu.addAction("Starter kit…").triggered.connect(lambda: self.open_starter())
         settings_menu.addSeparator()
         for tab, label in (
             ("Stream", "Stream outputs…"),
@@ -2064,10 +2193,66 @@ class MainWindow(QMainWindow):
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
         if save:
             self.collection.save(self.scenes_path)
+            self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
         control = getattr(self, "control", None)
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
+
+    # Undo and redo ------------------------------------------------------------------------
+
+    UNDO_STEPS = 50
+    UNDO_MERGE_S = 0.8  # changes this close together (a slider, nudging with arrows) are one step
+
+    def _remember_for_undo(self) -> None:
+        now_json = self.collection.model_dump_json()
+        if self._undo_current is None or now_json == self._undo_current:
+            self._undo_current = now_json
+            return
+        at = time.monotonic()
+        if not (self._undo and at - self._undo_at < self.UNDO_MERGE_S):
+            self._undo.append(self._undo_current)
+            del self._undo[:-self.UNDO_STEPS]
+        self._undo_at = at
+        self._undo_current = now_json
+        self._redo.clear()
+
+    def undo(self) -> None:
+        if not self._undo:
+            self.statusBar().showMessage("Nothing to undo.", 3000)
+            return
+        self._redo.append(self._undo_current)
+        self._restore_state(self._undo.pop())
+        self.statusBar().showMessage("Undone. Ctrl+Y puts it back.", 3000)
+
+    def redo(self) -> None:
+        if not self._redo:
+            self.statusBar().showMessage("Nothing to redo.", 3000)
+            return
+        self._undo.append(self._undo_current)
+        self._restore_state(self._redo.pop())
+
+    def _restore_state(self, text: str) -> None:
+        """Put the whole collection back as it was (in place: everything holding it sees the change)."""
+        restored = SceneCollection.model_validate_json(text)
+        for name in type(self.collection).model_fields:
+            setattr(self.collection, name, getattr(restored, name))
+        self._undo_current = text
+        self._undo_at = 0.0
+        self.collection.save(self.scenes_path)
+        self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        ids = {s.id for s in self.collection.scenes}
+        if self.selected_scene_id not in ids:
+            self.selected_scene_id = self.collection.active_scenes.get(self.build_canvas)
+        if self.selected_sound_id not in {c.id for c in self.collection.sources}:
+            self._close_build_sound(refresh=False)
+        self._exit_in_place()
+        keep = self.source_list.currentRow()
+        self._refresh_all()
+        if 0 <= keep < self.source_list.count():
+            self.source_list.setCurrentRow(keep)
+        self._show_part_editor()
+        self.live_panel.show_scenes(self.collection)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         for projector in list(self.projectors):
@@ -2228,6 +2413,28 @@ class MainWindow(QMainWindow):
                 if part is selected_part:
                     child.setSelected(True)
         sprigs.setExpanded(True)
+
+        sound = heading_item("Sound", "both shapes", SOUND_ROOT)
+        sound.setFlags(Qt.ItemFlag.ItemIsEnabled)  # nothing is dragged in here
+        sound.setToolTip(0, "Mics, desktop sound and web pages with sound. They play in every bloom on both "
+                            "shapes, so adding the vertical shape never doubles them.")
+        self.scene_tree.addTopLevelItem(sound)
+        for config in self.collection.sources:
+            if not self._has_sound(config):
+                continue
+            muted = bool(config.settings.get("muted", False))
+            child = QTreeWidgetItem([config.name])
+            child.setData(0, ROLE_ID, config.id)
+            child.setData(0, ROLE_ROW, "sound")
+            child.setData(0, LIB_NAME, config.name)
+            child.setData(0, LIB_TAG, "muted" if muted else "")
+            child.setData(0, ROLE_SOURCE_KIND, config.kind)
+            child.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            child.setToolTip(0, f"{config.name}: click for volume, mute, who hears it and filters")
+            sound.addChild(child)
+            if config.id == self.selected_sound_id:
+                child.setSelected(True)
+        sound.setExpanded(True)
         for holder, folder in folder_items:
             holder.setExpanded(searching or not folder.collapsed)
         self.library.apply_filter()
@@ -2307,7 +2514,7 @@ class MainWindow(QMainWindow):
         empty = self.source_list.count() == 0
         self.source_list.setVisible(not empty)
         self.inside_empty.setVisible(empty)
-        self.inside_hint.setVisible(not empty)
+        self.inside_hint.setVisible(not empty and not self.learned)
         self._updating = False
         self._refresh_properties()
 
@@ -2401,7 +2608,8 @@ class MainWindow(QMainWindow):
         self.prop_extra.setVisible(enabled)
         for holder in self.prop_sections:
             holder.setVisible(enabled)
-        self.prop_empty.setVisible(not enabled)
+        self.prop_empty.setVisible(not enabled and not self.learned)  # after a few sessions: just a quiet column
+        self.inside_tools.setVisible(enabled)
         self.prop_name.setVisible(enabled)
         self.prop_locked.setEnabled(enabled)
         for canvas_id, state in self._shape_states(item).items():
@@ -2426,6 +2634,13 @@ class MainWindow(QMainWindow):
                 }.get(config.kind, "Settings")
             )
             self.prop_status.setText(self._status_text(item.source))
+            problem = plain_problem(self.source_statuses.get(item.source, ""), config.kind)
+            self.prop_problem.setVisible(problem is not None)
+            if problem is not None:
+                self.prop_problem_text.setText(problem[0])
+                self._problem_fix = problem[1]
+                self.prop_fix.setVisible(bool(problem[1]))
+                self.prop_fix.setText({"pick": "Pick it again", "retry": "Try again"}.get(problem[1], "Fix"))
             part = self.collection.part_of(config) if config.kind == PART_KIND else None
             self.prop_sprig.setVisible(part is not None)
             if part is not None:
@@ -2435,6 +2650,7 @@ class MainWindow(QMainWindow):
                     f"Also in {self._bloom_links(others)}" if others else f"Only in this {SHOW} so far.")
         else:
             self.prop_sprig.hide()
+            self.prop_problem.hide()
             self.prop_name.clear()
             self.prop_extra.setText("")
             self.prop_status.setText("")
@@ -2521,9 +2737,20 @@ class MainWindow(QMainWindow):
             return None
         return "default" if label == labels[0] else label
 
-    def _add_audio(self, kind: str) -> None:
-        device = self._pick_audio_device(kind)
+    def _add_audio(self, kind: str, device: str | None = None) -> None:
+        """Add a mic or desktop sound. Sound belongs to no bloom or shape: it plays everywhere, once."""
         if device is None:
+            device = self._pick_audio_device(kind)
+        if device is None:
+            return
+        same = next((c for c in self.collection.sources
+                     if c.kind == kind and str(c.settings.get("device", "default")) == device), None)
+        if same is not None:  # already here: one source serves every bloom on both shapes
+            self.statusBar().showMessage(f"{same.name!r} is already in Sound: it plays in every bloom, on both "
+                                         "shapes, so there's no need to add it again.", 8000)
+            if self.mode == "build":
+                self._open_build_sound(same.id)
+                self._refresh_scenes()
             return
         base = "Desktop audio" if kind == "audio_output" else "Mic"
         name = base if device == "default" else ask_name(self, short_name(device, base), f"{base} ({device})")
@@ -2537,6 +2764,7 @@ class MainWindow(QMainWindow):
         )
         self._changed()
         self._refresh_audio()
+        self._refresh_scenes()
 
     def _fill_quick_filter_menu(self, menu: QMenu, source_id: str, kind: str, key: str,
                                 choices: tuple[tuple[str, str], ...]) -> None:
@@ -2636,6 +2864,11 @@ class MainWindow(QMainWindow):
         if self._updating:
             return
         selected = self.scene_tree.selectedItems()
+        if selected and selected[0].data(0, ROLE_ROW) == "sound":
+            self._open_build_sound(selected[0].data(0, ROLE_ID))
+            return
+        if self.selected_sound_id is not None:
+            self._close_build_sound(refresh=False)
         scene_id = selected[0].data(0, ROLE_ID) if selected else None
         folder_id = selected[0].data(0, ROLE_FOLDER) if selected else None
         if folder_id:
@@ -2754,6 +2987,24 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_all()
 
+    def _fix_problem(self) -> None:
+        """The inspector's fix button: pick the device/window/file again, or start the source again."""
+        item = self._item()
+        if item is None:
+            return
+        config = self.collection.source(item.source)
+        if getattr(self, "_problem_fix", "") == "retry":
+            if config.kind == "browser" and self.browser_host:
+                self.browser_host.reload(config.id)
+            else:  # any settings change makes the engine start the source afresh
+                config.settings = {**config.settings, "retry": int(config.settings.get("retry", 0)) + 1}
+                self._changed()
+            self.source_statuses.pop(config.id, None)
+            self.statusBar().showMessage(f"Starting {config.name!r} again…", 4000)
+            self._refresh_properties()
+        else:
+            self._edit_source_settings()
+
     def _bloom_links(self, scenes) -> str:
         """Bloom names as links (click one to edit it), for rich-text labels."""
         import html
@@ -2769,6 +3020,27 @@ class MainWindow(QMainWindow):
         if canvas_id != self.build_canvas and canvas_id in self.previews:
             self._swap_shape(canvas_id)
         self._pick_bloom(scene_id)
+
+    def _open_build_sound(self, source_id: str) -> None:
+        """A sound picked in the library: its controls take the right column (Inside comes back with a bloom)."""
+        config = next((c for c in self.collection.sources if c.id == source_id), None)
+        if config is None:
+            return
+        self.selected_sound_id = source_id
+        self.build_tune.show_sound(self._sound_item(config))
+        self.build_stage.right_stack.setCurrentIndex(1)
+
+    def _close_build_sound(self, refresh: bool = True) -> None:
+        self.selected_sound_id = None
+        self.build_stage.right_stack.setCurrentIndex(0)
+        if refresh:
+            self._refresh_scenes()
+
+    def _build_tune_changed(self, source_id: str, changes: dict) -> None:
+        self._on_sound_changed(source_id, changes)
+        self._refresh_audio()  # Live's Sound card shows the same sound
+        if "muted" in changes:
+            self._refresh_scenes()
 
     def _sprig_dropped(self, _canvas_id: str, part_id: str) -> None:
         """A sprig dragged from the library onto the canvas or into Inside: put it in what you're editing."""
@@ -3230,12 +3502,12 @@ class MainWindow(QMainWindow):
         label, ok = QInputDialog.getItem(self, "Window capture", "Window:", labels, 0, False)
         return windows[labels.index(label)] if ok else None
 
-    def _add_display(self) -> None:
+    def _add_display(self, monitor=None) -> None:
         scene = self._scene()
         if scene is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        monitor = self._pick_monitor()
+        monitor = monitor or self._pick_monitor()
         if monitor is None:
             return
         config = SourceConfig(
@@ -3247,11 +3519,11 @@ class MainWindow(QMainWindow):
         self._add_item(config)
         self._fit_item(size=(monitor.width, monitor.height))
 
-    def _add_window(self) -> None:
+    def _add_window(self, window=None) -> None:
         if self._scene() is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        window = self._pick_window()
+        window = window or self._pick_window()
         if window is None:
             return
         name = ask_name(self, window_name(window.title, window.process), window.title)
@@ -3272,15 +3544,22 @@ class MainWindow(QMainWindow):
         dialog = CameraDialog(cameras, current, self)
         return dialog.settings() if dialog.exec() else None
 
-    def _add_camera(self) -> None:
+    def _add_camera(self, device=None) -> None:
+        """Add a camera: pick one and its mode, or (from + Add's list) that camera at its usual mode."""
         scene = self._scene()
         if scene is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        settings = self._camera_dialog()
-        if settings is None:
-            return
-        name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
+        if device is not None:
+            dialog = CameraDialog([device], {"name": device.name, "path": device.path}, self)
+            settings = dialog.settings()  # the mode it would suggest, without asking
+            dialog.deleteLater()
+            name = short_name(settings["name"], "Camera")
+        else:
+            settings = self._camera_dialog()
+            if settings is None:
+                return
+            name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
         self._add_item(SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings))
         # Start as a quarter-width overlay in the bottom-right corner, like a typical facecam.
         item, canvas = self._item(), self.collection.canvas(scene.canvas)
@@ -4049,6 +4328,39 @@ class MainWindow(QMainWindow):
             "Light settings are on." + (" Restart SprigCast for 30 fps." if fps else ""), 15000)
         return True
 
+    def open_starter(self) -> bool:
+        """Starter kit: the usual blooms from your camera, screen and mic. True if it made them."""
+        from PySide6.QtWidgets import QDialog
+
+        from sprigcast.app.starter import StarterDialog, build_starter, is_fresh
+
+        both = sum(c.enabled for c in self.collection.canvases) > 1
+        mics = [d.name for d in list_audio_devices(loopback=False)]
+        dialog = StarterDialog(list_cameras(), list_monitors(), mics, is_fresh(self.collection), both, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        def camera_settings(device) -> dict:
+            probe = CameraDialog([device], {"name": device.name, "path": device.path}, self)
+            settings = probe.settings()
+            probe.deleteLater()
+            return settings
+
+        made = build_starter(self.collection, dialog.choice(camera_settings))
+        if not made:
+            return False
+        self._exit_in_place()
+        self.selected_scene_id = next((sid for sid in made
+                                       if self.collection.scene(sid).canvas == self.build_canvas), made[0])
+        self.last_bloom_id = self.selected_scene_id
+        self._changed()
+        self._refresh_all()
+        self._show_part_editor()
+        self.live_panel.show_scenes(self.collection)
+        self.statusBar().showMessage(f"Made {len(made)} blooms. Change anything you like; Ctrl+Z undoes it all.",
+                                     8000)
+        return True
+
     def open_optimizer(self, first_run: bool = False) -> bool:
         """The Optimize for this PC wizard: check the PC, suggest settings. True if any were applied."""
         from sprigcast.app import lowend
@@ -4097,6 +4409,10 @@ class MainWindow(QMainWindow):
             return
         settings.setValue(optimize.DONE, True)
         self.open_optimizer(first_run=True)
+        from sprigcast.app.starter import is_fresh
+
+        if is_fresh(self.collection):  # only the example blooms: offer to make real ones
+            self.open_starter()
 
     def _open_palette(self) -> CommandPalette:
         palette = CommandPalette(self._palette_commands(), self)

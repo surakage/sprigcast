@@ -70,6 +70,33 @@ def short_status(status: str) -> str:
     return "problem"
 
 
+def plain_problem(status: str, kind: str) -> tuple[str, str] | None:
+    """What's wrong with a source, in plain words, and the fix to offer: "pick" (choose it again),
+    "retry" (start it again) or "" (nothing to press: it sorts itself out). None when it's fine."""
+    tag = short_status(status)
+    if not tag or tag in ("asleep", "starting"):
+        return None
+    thing = {"camera": "camera", "window_capture": "window", "display_capture": "screen", "browser": "page",
+             "audio_input": "mic", "audio_output": "sound device", "image": "picture"}.get(kind, "source")
+    if tag == "busy":
+        return (f"Another app is using this {thing}. Close it there (Camera app, Teams, Discord, OBS…), "
+                "then try again.", "retry")
+    if tag == "unplugged":
+        return f"The {thing} was unplugged. Plug it back in and it comes back by itself.", "pick"
+    if tag == "closed" or (tag == "not found" and kind == "window_capture"):
+        return "That window isn't open. Open the app, or pick another window.", "pick"
+    if tag == "not found":
+        if kind == "image":
+            return "The picture file was moved or deleted. Pick it again.", "pick"
+        return f"SprigCast can't find this {thing}. Is it plugged in and switched on?", "pick"
+    if tag == "lost":
+        return f"Lost the {thing} for a moment. SprigCast keeps trying; you can also try now.", "retry"
+    if tag == "waiting":
+        return f"Waiting for the {thing} to start.", ""
+    detail = (status or "").strip().rstrip(".")
+    return f"Something's wrong with this {thing}: {detail}.", "retry"
+
+
 def status_summary(status: str, size: tuple[int, int] | None = None) -> str:
     """One short line for the inspector: '1080p120 → 720p30', 'Working · 1280×720', 'Not found'."""
     m = _CAPTURE.search(status or "")

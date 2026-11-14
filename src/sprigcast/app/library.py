@@ -49,8 +49,10 @@ ROLE_TAG = Qt.ItemDataRole.UserRole + 32  # quiet text on the right: "on Live", 
 ROLE_COLOUR = Qt.ItemDataRole.UserRole + 33  # folder dot, or a bloom's swatch before it has a picture
 ROLE_ON_AIR = Qt.ItemDataRole.UserRole + 34  # a bloom on air gets a pink dot
 ROLE_THUMB = Qt.ItemDataRole.UserRole + 35  # a bloom's last on-air picture (QImage)
+ROLE_SOURCE_KIND = Qt.ItemDataRole.UserRole + 37  # sound rows: the source's kind, for its icon
 ROLE_NOTE = Qt.ItemDataRole.UserRole + 36  # headings: the quiet words after the title
 PART_ROOT = "~sprigs"
+SOUND_ROOT = "~sound"  # the Sound heading: mics, desktop sound and pages with sound, shared by both shapes
 SPRIG_MIME = "application/x-sprigcast-sprig"  # a sprig dragged out of the library: its part id
 
 HEADING_H, FOLDER_H, ROW_H = 44, 34, 34
@@ -134,6 +136,14 @@ class LibraryDelegate(QStyledItemDelegate):
             self._paint_swatch(p, QRectF(x, mid - SWATCH[1] / 2, *SWATCH), index.data(ROLE_COLOUR),
                                index.data(ROLE_THUMB))
             x += SWATCH[0] + 10
+            if selected:
+                font.setWeight(QFont.Weight.Bold)
+        elif row == "sound":
+            from sprigcast.app.build_stage import paint_kind_icon
+
+            paint_kind_icon(p, QRectF(x - 2, mid - 10, 20, 20), index.data(ROLE_SOURCE_KIND) or "audio_input",
+                            selected=selected)
+            x += 26
             if selected:
                 font.setWeight(QFont.Weight.Bold)
         else:  # sprig
@@ -314,7 +324,7 @@ class Library(QWidget):
 
     def _filter(self, item: QTreeWidgetItem, words: str) -> bool:
         row = item.data(0, ROLE_ROW)
-        if row in ("bloom", "sprig"):
+        if row in ("bloom", "sprig", "sound"):
             match = not words or words in (item.data(0, ROLE_NAME) or "").lower()
             item.setHidden(not match)
             return match

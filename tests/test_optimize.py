@@ -186,9 +186,10 @@ def test_first_run_offers_the_wizard_once(tmp_path, monkeypatch):
     try:
         opened = []
         monkeypatch.setattr(w, "open_optimizer", lambda first_run=False: opened.append(first_run))
+        monkeypatch.setattr(w, "open_starter", lambda: opened.append("starter"))
         w.first_run_optimizer()
         w.first_run_optimizer()
-        assert opened == [True]
+        assert opened == [True, "starter"]  # nothing of your own yet: the starter kit is offered next
         assert any(c.title == "Optimize for this PC" for c in w._palette_commands())
     finally:
         w.close()

@@ -240,7 +240,7 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
         shape = w._scene()
         assert shape.shape_of == part.id and shape.canvas == "vertical" and w.engine.editing_part == shape.id
         assert w.shape_buttons["vertical"].isChecked() and w.remove_shape_button.isVisibleTo(w)
-        assert "horizontal + vertical" in w.scene_tree.topLevelItem(w.scene_tree.topLevelItemCount() - 1).child(0).text(0)
+        assert "horizontal + vertical" in w.scene_tree.topLevelItem(1).child(0).text(0)
         w._edit_shape("horizontal")
         assert w._scene() is part
         w._edit_shape("vertical")
