@@ -316,3 +316,20 @@ def test_a_webm_ends_without_looping_or_errors(tmp_path):
         assert not frames and source.state == "ended" and source.status == "ok"
     finally:
         source.stop()
+
+
+def test_a_looping_webm_loops_without_errors(tmp_path, caplog):
+    # Each pass used to end in "End of file: avcodec_send_packet()" (the decoder was flushed twice),
+    # then a pause and a race through the file: Busy/Struggling on the user's PC.
+    if "libvpx-vp9" not in av.codecs_available:
+        pytest.skip("no libvpx")
+    source = MediaSource("m", {"path": _webm(tmp_path / "loop.webm", seconds=0.5), "loop": True})
+    source.start()
+    try:
+        source.play()
+        frames = []
+        _play(source, 1.7, frames)
+        assert source.status == "ok" and "could not be played" not in caplog.text, source.status
+        assert len(frames) > 30  # three passes of 15 frames, at their own pace
+    finally:
+        source.stop()
