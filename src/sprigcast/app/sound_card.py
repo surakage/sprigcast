@@ -1,0 +1,527 @@
+"""Live's Sound card: sounds in groups, showing only what's playing, with a Tune page per sound.
+
+    Sound                         Edit
+    ● Voice            1     [Mute]
+    ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+      Mic                    −6 dB
+      ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+    ● Alerts           6     [Mute]
+      ...
+      5 quiet ▸
+
+A group's meter is its loudest sound. A sound shows under its group while it is playing (and for a
+few seconds after), when it is pinned, or when it is muted (so a muted mic is never forgotten);
+the rest fold into "N quiet". Edit shows every sound. Clicking a sound opens its Tune page:
+volume, left/right, mono, delay, who hears it, filters, group, pin and ducking.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QSpinBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from sprigcast.app import theme
+from sprigcast.app.live_stage import Switch, ThinMeter, heading
+
+GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
+GROUP_COLOURS = {"Voice": theme.ACCENT, "Game": theme.INFO, "Alerts": theme.WARN, "Music": "#c79bff",
+                 "Other": theme.MUTED}
+HEARD_DB = -50.0  # RMS above this counts as playing
+LINGER_S = 4.0  # a sound stays listed this long after it goes quiet
+CHIP_STYLE = (
+    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 11px;"
+    f" padding: 3px 11px; min-height: 16px; font-size: 11px; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+)
+MUTED_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; }}"
+_MUSIC = re.compile(r"music|spotify|song|pretzel|playlist|radio", re.IGNORECASE)
+_ALERTS = re.compile(r"alert|tts|speech|ad break|chat|tikfinity|streamer\.?bot|speaker\.?bot|sound ?alert|browser|"
+                     r"donat|sub|follow|bits", re.IGNORECASE)
+_GAME = re.compile(r"game|desktop|discord|steam", re.IGNORECASE)
+
+
+def auto_group(name: str, kind: str) -> str:
+    """Where a sound goes until you move it: mics are Voice; names hint at the rest."""
+    if kind == "audio_input":
+        return "Voice"
+    if _MUSIC.search(name):
+        return "Music"
+    if _ALERTS.search(name):
+        return "Alerts"
+    if _GAME.search(name) or kind == "audio_output":
+        return "Game"
+    return "Other"
+
+
+@dataclass
+class Sound:
+    id: str
+    name: str
+    muted: bool = False
+    group: str = "Other"
+    pinned: bool = False
+    volume_db: float = 0.0
+    monitor: bool | str = False  # False: stream only; True: me + stream; "only": just me
+    mono: bool = False
+    balance: float = 0.0
+    delay_ms: int = 0
+    voice: bool = False
+    filters: list[str] = field(default_factory=list)
+    can_monitor: bool = True
+
+
+class ClickRow(QWidget):
+    """A sound's row: name, volume and a thin meter; a click opens its Tune page."""
+
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def click(self) -> None:
+        self.clicked.emit()
+
+
+def _chip(text: str, style: str = CHIP_STYLE, checkable: bool = False) -> QPushButton:
+    b = QPushButton(text)
+    b.setStyleSheet(style)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    b.setCheckable(checkable)
+    return b
+
+
+def _muted_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+    return label
+
+
+class SoundCard(QWidget):
+    """on_change(source_id, {setting: value}); on_filters(source_id) opens that sound's filters."""
+
+    def __init__(self, on_change: Callable[[str, dict], None], on_filters: Callable[[str], None]):
+        super().__init__()
+        self.on_change, self.on_filters = on_change, on_filters
+        self.sounds: dict[str, Sound] = {}
+        self.editing = False
+        self.heard: dict[str, float] = {}
+        self.open_groups: set[str] = set()  # groups showing their quiet sounds too
+        self.meters: dict[str, ThinMeter] = {}
+        self.group_meters: dict[str, ThinMeter] = {}
+        self.rows: dict[str, QWidget] = {}
+        self.quiet_buttons: dict[str, QPushButton] = {}
+        self.tuning: str | None = None
+        self._shape: tuple | None = None
+        self._visible: dict[str, bool] = {}
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.pages = QStackedWidget()
+        root.addWidget(self.pages)
+
+        # Page 0: the groups.
+        overview = QWidget()
+        col = QVBoxLayout(overview)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
+        top = QHBoxLayout()
+        top.addWidget(heading("Sound"), 1)
+        self.edit = QPushButton("Edit")
+        self.edit.setStyleSheet(theme.LINK_STYLE)
+        self.edit.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit.setToolTip("Show every sound, ready to tune")
+        self.edit.clicked.connect(lambda: self.set_editing(not self.editing))
+        top.addWidget(self.edit)
+        col.addLayout(top)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(16)
+        col.addLayout(self.body)
+        self.pages.addWidget(overview)
+
+        # Page 1: tune one sound.
+        self.tune = TunePage(self._tune_changed, lambda sid: self.on_filters(sid), self.close_tune)
+        self.pages.addWidget(self.tune)
+
+    # Data ---------------------------------------------------------------------------------
+
+    def show_sound(self, sounds: list) -> None:
+        """Sound items (or old-style (id, name, muted) tuples)."""
+        items = [s if isinstance(s, Sound) else Sound(s[0], s[1], bool(s[2])) for s in sounds]
+        self.sounds = {s.id: s for s in items}
+        shape = tuple((s.id, s.name, s.group, s.muted, s.pinned, s.volume_db) for s in items)
+        if shape != self._shape:
+            self._shape = shape
+            self._build()
+        if self.tuning in self.sounds:
+            self.tune.show_sound(self.sounds[self.tuning])
+        elif self.tuning is not None:
+            self.close_tune()
+        self._apply_visibility()
+
+    def set_levels(self, levels: dict[str, tuple[float, float]], now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        loudest: dict[str, float] = {}
+        for source_id, meter in self.meters.items():
+            if source_id not in levels:
+                continue
+            rms = levels[source_id][1]
+            meter.set_db(rms)
+            if rms > HEARD_DB:
+                self.heard[source_id] = now
+            group = self.sounds[source_id].group if source_id in self.sounds else "Other"
+            loudest[group] = max(loudest.get(group, -60.0), rms)
+        for group, meter in self.group_meters.items():
+            meter.set_db(loudest.get(group, -60.0))
+        if self.tuning in levels:
+            self.tune.meter.set_db(levels[self.tuning][1])
+        self._apply_visibility(now)
+
+    # Building -----------------------------------------------------------------------------
+
+    def _build(self) -> None:
+        while self.body.count():
+            widget = self.body.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.meters, self.group_meters, self.rows, self.quiet_buttons = {}, {}, {}, {}
+        self._visible = {}
+        if not self.sounds:
+            self.body.addWidget(_muted_label("No mic or desktop audio yet"))
+            return
+        for group in GROUPS:
+            members = [s for s in self.sounds.values() if s.group == group]
+            if members:
+                box = self._group_box(group, members)
+                self.body.addWidget(box)
+                box.show()  # a layout shows new children later; show now so visibility below sticks
+
+    def _group_box(self, group: str, members: list[Sound]) -> QWidget:
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(9)
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {GROUP_COLOURS[group]}; background: transparent;")
+        name = QLabel(group)
+        font = name.font()
+        font.setWeight(font.Weight.DemiBold)
+        name.setFont(font)
+        name.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
+        count = _muted_label(str(len(members)))
+        all_muted = all(s.muted for s in members)
+        mute = _chip("Muted" if all_muted else "Mute", MUTED_CHIP_STYLE if all_muted else CHIP_STYLE)
+        mute.setToolTip(f"Unmute every {group} sound" if all_muted else f"Mute every {group} sound")
+        mute.clicked.connect(lambda _=False, ids=[s.id for s in members], on=not all_muted: self._mute_all(ids, on))
+        head.addWidget(dot)
+        head.addWidget(name, 1)
+        head.addWidget(count)
+        head.addWidget(mute)
+        col.addLayout(head)
+        meter = ThinMeter()
+        meter.muted = all_muted
+        self.group_meters[group] = meter
+        col.addWidget(meter)
+        inner = QVBoxLayout()
+        inner.setContentsMargins(18, 4, 0, 0)
+        inner.setSpacing(10)
+        for sound in members:
+            row = self._sound_row(sound)
+            self.rows[sound.id] = row
+            inner.addWidget(row)
+        quiet = QPushButton()
+        quiet.setStyleSheet(theme.LINK_STYLE + "QPushButton { padding: 0px; text-align: left; }")
+        quiet.setCursor(Qt.CursorShape.PointingHandCursor)
+        quiet.clicked.connect(lambda _=False, g=group: self._toggle_quiet(g))
+        self.quiet_buttons[group] = quiet
+        inner.addWidget(quiet, 0, Qt.AlignmentFlag.AlignLeft)
+        col.addLayout(inner)
+        return box
+
+    def _sound_row(self, sound: Sound) -> QWidget:
+        row = ClickRow()
+        row.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.setToolTip("Tune this sound: volume, left/right, mono, delay, filters…")
+        row.clicked.connect(lambda sid=sound.id: self.open_tune(sid))
+        col = QVBoxLayout(row)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(6)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        name = QLabel(sound.name)
+        name.setStyleSheet(f"color: {theme.MUTED if sound.muted else theme.TEXT}; background: transparent;")
+        name.setWordWrap(True)
+        note = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+        right = QLabel(note)
+        right.setStyleSheet(f"color: {theme.LIVE_TEXT if sound.muted else theme.MUTED}; background: transparent;"
+                            " font-size: 12px;")
+        for label in (name, right):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        line.addWidget(name, 1)
+        line.addWidget(right)
+        col.addLayout(line)
+        meter = ThinMeter()
+        meter.setFixedHeight(4)
+        meter.muted = sound.muted
+        meter.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.meters[sound.id] = meter
+        col.addWidget(meter)
+        return row
+
+    # Showing only what's playing ----------------------------------------------------------
+
+    def is_shown(self, sound: Sound, now: float) -> bool:
+        if self.editing or sound.group in self.open_groups or sound.pinned or sound.muted:
+            return True
+        return now - self.heard.get(sound.id, -1e9) < LINGER_S
+
+    def _apply_visibility(self, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        quiet_counts: dict[str, int] = {}
+        for sound_id, row in self.rows.items():
+            sound = self.sounds[sound_id]
+            shown = self.is_shown(sound, now)
+            if self._visible.get(sound_id) != shown:
+                self._visible[sound_id] = shown
+                row.setVisible(shown)
+            if not shown:
+                quiet_counts[sound.group] = quiet_counts.get(sound.group, 0) + 1
+        for group, button in self.quiet_buttons.items():
+            hidden = quiet_counts.get(group, 0)
+            if group in self.open_groups and not self.editing:
+                text, show = "Hide quiet ▴", True
+            else:
+                text, show = f"{hidden} quiet ▸", hidden > 0
+            if button.text() != text:
+                button.setText(text)
+            if button.isVisibleTo(self) != show:
+                button.setVisible(show)
+
+    def _toggle_quiet(self, group: str) -> None:
+        self.open_groups ^= {group}
+        self._apply_visibility()
+
+    def set_editing(self, on: bool) -> None:
+        self.editing = on
+        self.edit.setText("Done" if on else "Edit")
+        self._apply_visibility()
+
+    def _mute_all(self, ids: list[str], on: bool) -> None:
+        for sound_id in ids:
+            self.on_change(sound_id, {"muted": on})
+
+    # Tune page ----------------------------------------------------------------------------
+
+    def open_tune(self, sound_id: str) -> None:
+        if sound_id not in self.sounds:
+            return
+        self.tuning = sound_id
+        self.tune.show_sound(self.sounds[sound_id])
+        self.pages.setCurrentIndex(1)
+
+    def close_tune(self) -> None:
+        self.tuning = None
+        self.pages.setCurrentIndex(0)
+
+    def _tune_changed(self, sound_id: str, changes: dict) -> None:
+        sound = self.sounds.get(sound_id)
+        if sound is not None:
+            for key, value in changes.items():
+                attr = {"volume_db": "volume_db", "muted": "muted", "monitor": "monitor", "mono": "mono",
+                        "balance": "balance", "delay_ms": "delay_ms", "duck_voice": "voice",
+                        "group": "group", "pinned": "pinned"}.get(key)
+                if attr:
+                    setattr(sound, attr, value)
+        self.on_change(sound_id, changes)
+
+
+class TunePage(QWidget):
+    """Everything about one sound, inside the card. Changes apply at once."""
+
+    def __init__(self, on_change: Callable[[str, dict], None], on_filters: Callable[[str], None],
+                 on_back: Callable[[], None]):
+        super().__init__()
+        self.on_change = on_change
+        self.sound_id = ""
+        self._loading = False
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
+
+        top = QHBoxLayout()
+        back = QPushButton("‹")
+        back.setStyleSheet(theme.LINK_STYLE + "QPushButton { font-size: 18px; padding: 0px 6px 0px 0px; }")
+        back.setCursor(Qt.CursorShape.PointingHandCursor)
+        back.setToolTip("Back to all sounds")
+        back.clicked.connect(on_back)
+        top.addWidget(back)
+        self.title = heading("")
+        self.title.setWordWrap(True)
+        top.addWidget(self.title, 1)
+        self.mute = _chip("Mute", checkable=True)
+        self.mute.toggled.connect(lambda on: self._send({"muted": on}))
+        top.addWidget(self.mute)
+        col.addLayout(top)
+        self.meter = ThinMeter()
+        col.addWidget(self.meter)
+
+        self.volume_label = _muted_label("")
+        self.volume = QSlider(Qt.Orientation.Horizontal)
+        self.volume.setRange(-60, 12)
+        self.volume.valueChanged.connect(self._volume_moved)
+        col.addLayout(self._labelled("Volume", self.volume_label))
+        col.addWidget(self.volume)
+
+        self.balance_label = _muted_label("")
+        self.balance = QSlider(Qt.Orientation.Horizontal)
+        self.balance.setRange(-100, 100)
+        self.balance.setPageStep(10)
+        self.balance.valueChanged.connect(self._balance_moved)
+        col.addLayout(self._labelled("Left · Right", self.balance_label))
+        col.addWidget(self.balance)
+
+        pair = QHBoxLayout()
+        pair.setSpacing(8)
+        self.mono = _chip("Mono", checkable=True)
+        self.mono.setToolTip("Both ears hear the same: for a mic that only comes out of one side")
+        self.mono.toggled.connect(lambda on: self._send({"mono": on}))
+        pair.addWidget(self.mono, 1)
+        delay_box = QHBoxLayout()
+        delay_box.setSpacing(6)
+        delay_box.addWidget(_muted_label("Delay"))
+        self.delay = QSpinBox()
+        self.delay.setRange(0, 2000)
+        self.delay.setSingleStep(10)
+        self.delay.setSuffix(" ms")
+        self.delay.setToolTip("Hold this sound back to line it up with a camera that runs late")
+        self.delay.setStyleSheet(
+            f"QSpinBox {{ background: {theme.RAISED}; border: none; border-radius: 11px; padding: 4px 8px;"
+            f" color: {theme.TEXT}; }} QSpinBox::up-button, QSpinBox::down-button {{ width: 0px; border: none; }}")
+        self.delay.valueChanged.connect(lambda v: self._send({"delay_ms": v}))
+        delay_box.addWidget(self.delay, 1)
+        pair.addLayout(delay_box, 1)
+        col.addLayout(pair)
+
+        col.addWidget(_muted_label("Who hears it"))
+        hear = QHBoxLayout()
+        hear.setSpacing(6)
+        self.hear: dict[object, QPushButton] = {}
+        for value, text, tip in ((False, "Stream", "On the stream and recordings, not your speakers"),
+                                 (True, "Me + stream", "On the stream and your speakers"),
+                                 ("only", "Just me", "Only your speakers: never on the stream")):
+            b = _chip(text, checkable=True)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, v=value: self._send({"monitor": v}))
+            self.hear[value] = b
+            hear.addWidget(b, 1)
+        col.addLayout(hear)
+
+        filters_top = QHBoxLayout()
+        filters_top.addWidget(_muted_label("Filters"), 1)
+        edit_filters = QPushButton("Edit filters")
+        edit_filters.setStyleSheet(theme.LINK_STYLE)
+        edit_filters.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_filters.clicked.connect(lambda: on_filters(self.sound_id))
+        filters_top.addWidget(edit_filters)
+        col.addLayout(filters_top)
+        self.filters = QLabel("")
+        self.filters.setWordWrap(True)
+        self.filters.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
+        col.addWidget(self.filters)
+
+        group_row = QHBoxLayout()
+        group_row.addWidget(_muted_label("Group"), 1)
+        self.group = QComboBox()
+        self.group.addItems(list(GROUPS))
+        self.group.currentTextChanged.connect(lambda g: self._send({"group": g}))
+        group_row.addWidget(self.group)
+        col.addLayout(group_row)
+
+        self.pin = Switch()
+        self.pin.toggled.connect(lambda on: self._send({"pinned": on}))
+        col.addLayout(self._switch_row("Always show", self.pin))
+        self.duck = Switch()
+        self.duck.toggled.connect(lambda on: self._send({"duck_voice": on}))
+        col.addLayout(self._switch_row("Lower other sounds when this talks", self.duck))
+
+    def _labelled(self, text: str, value: QLabel) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(_muted_label(text), 1)
+        row.addWidget(value)
+        return row
+
+    def _switch_row(self, text: str, switch: Switch) -> QHBoxLayout:
+        row = QHBoxLayout()
+        label = _muted_label(text)
+        label.setWordWrap(True)
+        row.addWidget(label, 1)
+        row.addWidget(switch)
+        return row
+
+    def show_sound(self, sound: Sound) -> None:
+        self._loading = True
+        self.sound_id = sound.id
+        self.title.setText(sound.name)
+        self.mute.setChecked(sound.muted)
+        self.mute.setText("Muted" if sound.muted else "Mute")
+        self.mute.setStyleSheet(MUTED_CHIP_STYLE if sound.muted else CHIP_STYLE)
+        self.volume.setValue(round(sound.volume_db))
+        self.volume_label.setText(f"{sound.volume_db:+.0f} dB" if sound.volume_db else "0 dB")
+        self.balance.setValue(round(sound.balance * 100))
+        self.balance_label.setText(self._balance_text(sound.balance))
+        self.mono.setChecked(sound.mono)
+        self.delay.setValue(int(sound.delay_ms))
+        for value, button in self.hear.items():
+            button.setChecked(sound.monitor == value or (value is True and sound.monitor is True))
+            if value is not False:
+                button.setEnabled(sound.can_monitor)
+        self.filters.setText(", ".join(sound.filters) if sound.filters else "None yet")
+        self.group.setCurrentText(sound.group)
+        self.pin.setChecked(sound.pinned)
+        self.duck.setChecked(sound.voice)
+        self._loading = False
+
+    @staticmethod
+    def _balance_text(balance: float) -> str:
+        if abs(balance) < 0.005:
+            return "Centre"
+        return f"{abs(balance) * 100:.0f}% {'left' if balance < 0 else 'right'}"
+
+    def _volume_moved(self, value: int) -> None:
+        self.volume_label.setText(f"{value:+d} dB" if value else "0 dB")
+        self._send({"volume_db": float(value)})
+
+    def _balance_moved(self, value: int) -> None:
+        self.balance_label.setText(self._balance_text(value / 100))
+        self._send({"balance": value / 100})
+
+    def _send(self, changes: dict) -> None:
+        if self._loading or not self.sound_id:
+            return
+        if "muted" in changes:
+            self.mute.setText("Muted" if changes["muted"] else "Mute")
+            self.mute.setStyleSheet(MUTED_CHIP_STYLE if changes["muted"] else CHIP_STYLE)
+        if "monitor" in changes:
+            for value, button in self.hear.items():
+                button.setChecked(value == changes["monitor"] and type(value) is type(changes["monitor"]))
+        self.on_change(self.sound_id, changes)
