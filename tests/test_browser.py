@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 
 import numpy as np
@@ -68,6 +69,13 @@ def test_sleep_closes_the_page_unless_kept_running():
         browser.set_host(None)
 
 
+def _skip_if_offscreen_windows(app):
+    """Chromium paints nothing under Qt's offscreen platform on Windows (it does in the app, with real
+    windows: checked on a Windows 11 PC), so these drawing checks only run on Linux CI."""
+    if sys.platform == "win32" and app.platformName() == "offscreen":
+        pytest.skip("Chromium doesn't paint under Qt's offscreen platform on Windows")
+
+
 def test_chromium_draws_the_page_see_through(tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
@@ -77,6 +85,7 @@ def test_chromium_draws_the_page_see_through(tmp_path):
 
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication.instance() or QApplication([])
+    _skip_if_offscreen_windows(app)
     from sprigcast.app.browser_host import start_host
 
     page = tmp_path / "overlay.html"
@@ -220,6 +229,7 @@ def test_interact_puts_the_page_on_screen_and_back(tmp_path):
 
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication.instance() or QApplication([])
+    _skip_if_offscreen_windows(app)
     from sprigcast.app.browser_host import start_host
 
     page = tmp_path / "widget.html"
