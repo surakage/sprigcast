@@ -495,8 +495,49 @@ class MainWindow(QMainWindow):
         from sprigcast.app.transitions_panel import TransitionsPanel
         from sprigcast.render.stinger import probe
 
-        self.transitions_panel = TransitionsPanel(self.collection.transition, self._changed, probe)
-        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", self.transitions_panel)))
+        self.transitions_panel = TransitionsPanel(self.collection.transition, self._transition_edited, probe)
+        scroll = QScrollArea()  # a short card (Build's left column) scrolls instead of squashing the pills
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        scroll.setWidget(self.transitions_panel)
+        self.panels.add(Panel("transitions", "Transitions", self._dock("Scene Transitions", scroll)))
+        self._build_transition_menu()
+
+    def _transition_edited(self) -> None:
+        self._show_transition_chip()
+        self._changed()
+
+    def _show_transition_chip(self) -> None:
+        from sprigcast.app.transitions_panel import summary
+
+        chip = getattr(getattr(self, "live_panel", None), "transition_chip", None)
+        if chip is not None:
+            chip.setText(f"{summary(self.collection.transition)}  ▾")
+
+    def _build_transition_menu(self) -> None:
+        """The Live chip's menu: pick a transition in one click, or open the panel for its settings."""
+        from sprigcast.app.transitions_panel import KINDS
+
+        if not hasattr(self, "transitions_panel") or not hasattr(self, "live_panel"):
+            return  # called again once both exist
+        chip = self.live_panel.transition_chip
+        menu = QMenu(chip)
+        picks = {}
+        for kind, label, tip in KINDS:
+            action = menu.addAction(label, lambda k=kind: self.transitions_panel.set_kind(k))
+            action.setToolTip(tip)
+            action.setCheckable(True)
+            picks[kind] = action
+        menu.addSeparator()
+        menu.addAction("Settings…", self._show_transitions_panel)
+        menu.aboutToShow.connect(lambda: [a.setChecked(k == self.collection.transition.kind) for k, a in picks.items()])
+        chip.setMenu(menu)
+        self._show_transition_chip()
+
+    def _show_transitions_panel(self) -> None:
+        self.panels.set_shown("transitions", True)
+        self.panels.select("transitions")
 
     # Window layout ---------------------------------------------------------------
 
@@ -1193,6 +1234,7 @@ class MainWindow(QMainWindow):
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
                                     self._edit_in_build)
+        self._build_transition_menu()
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
                                   lambda: self._open_settings(), self._on_sound_changed,

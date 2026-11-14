@@ -194,6 +194,13 @@ class LivePanel(QWidget):
         title.setFont(font)
         top.addWidget(title)
         top.addStretch(1)
+        # How blooms change: a pill with the transition's name; the window fills its menu.
+        self.transition_chip = QPushButton("Fade")
+        self.transition_chip.setToolTip("How blooms change on air")
+        self.transition_chip.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.transition_chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        top.addWidget(self.transition_chip)
+        top.addSpacing(12)
         self.studio = QCheckBox("Line up first")
         self.studio.setToolTip("Studio mode: click a bloom to line it up as Next, then press Bloom it to send it on air")
         self.studio.toggled.connect(lambda on: (on_studio or (lambda _on: None))(on))
