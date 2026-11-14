@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.app import safe_zones, theme
@@ -57,6 +57,8 @@ class Preview(QWidget):
         self.sizes: dict[str, tuple[int, int]] = {}
         self.selected_index: int | None = None
         self.transparent = True  # show see-through canvas areas as a checkerboard
+        self.live_look = False  # Live's stage: rounded corners, no checkerboard frame
+        self.ring: str | None = None  # a colour ring round the picture, such as LIVE pink while on air
         self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
         # Editing a part in place: where its layout sits on this canvas (see set_inner).
         self.inner: tuple[float, float, float, float, float] | None = None  # x, y, scale, crop left, crop top
@@ -123,11 +125,12 @@ class Preview(QWidget):
     def canvas_rect(self) -> QRectF:
         """Where the canvas is drawn inside the widget, leaving room for the title line."""
         top = 24.0
-        avail_w, avail_h = float(self.width()), float(self.height()) - top
+        pad = 6.0 if self.live_look else 0.0  # room for the on-air ring
+        avail_w, avail_h = float(self.width()) - 2 * pad, float(self.height()) - top - pad
         aw, ah = self.aspect
         scale = min(avail_w / aw, avail_h / ah)
         w, h = aw * scale, ah * scale
-        return QRectF((avail_w - w) / 2, top + (avail_h - h) / 2, w, h)
+        return QRectF(pad + (avail_w - w) / 2, top + (avail_h - h) / 2, w, h)
 
     def _space(self) -> tuple[float, float, float]:
         """Widget x, y of the editing space's origin and widget pixels per space pixel.
@@ -185,6 +188,12 @@ class Preview(QWidget):
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
         p.drawText(8, 17, label)
         rect = self.canvas_rect()
+        if self.live_look:
+            p.save()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            clip = QPainterPath()
+            clip.addRoundedRect(rect, 14, 14)
+            p.setClipPath(clip)
         if self._image is None:
             p.fillRect(rect, QColor("#000000"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.empty_text)
@@ -193,6 +202,13 @@ class Preview(QWidget):
                 self._paint_checker(p, rect)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(rect, self._image)
+        if self.live_look:
+            p.restore()
+            if self.ring:
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                p.setPen(QPen(QColor(self.ring), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), 16, 16)
         self._paint_inner(p)
         self._paint_safe_zones(p)
         self._paint_selection(p)

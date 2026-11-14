@@ -249,7 +249,9 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
         w._edit_shape("vertical")  # keep one for the removal below
         # Live lists shows only, never the part
         w._set_mode("live")
-        assert part.id not in w.live_panel.buttons and all(s in w.live_panel.buttons for s in shows)
+        tiles = set(w.live_panel.buttons)
+        assert part.id not in tiles
+        assert all(s in tiles or col.scene(s).linked_to in tiles for s in shows)  # linked ones share a tile
         w._set_mode("build")
         w._remove_part(part)
         assert not any(s.kind == "part" for s in col.scenes)

@@ -61,6 +61,33 @@ PRIMARY_STYLE = (  # the one big "do it" button on a panel, such as Go
 NOTE_STYLE = f"background: {SELECT_BG}; color: {SELECT_TEXT}; border-radius: 8px;"  # inline notes and banners
 MUTED_STYLE = f"color: {MUTED}"
 
+# Live screen (see live_stage.py): pill buttons, no borders.
+TRACK = "#1a221e"  # the empty part of thin level bars
+STAGE_EMPTY = "#1d3428"  # a bloom tile before it has a picture
+LIVE_TEXT = "#ff8fb4"  # pink text on dark, for the on-air clock
+PILL_STYLE = (
+    f"QPushButton {{ background: {PANEL}; color: {TEXT}; border: none; border-radius: 19px; padding: 10px 14px;"
+    f" font-weight: 600; }}"
+    f"QPushButton:hover {{ background: {RAISED}; }}"
+    f"QPushButton:pressed {{ background: {PRESSED}; }}"
+    f"QPushButton:disabled {{ color: {MUTED}; }}"
+)
+PILL_SELECTED_STYLE = PILL_STYLE + f"QPushButton {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}"
+PILL_ON_AIR_STYLE = PILL_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; }}" \
+    f"QPushButton:hover {{ background: {LIVE_HOVER}; }}"
+BIG_GO_STYLE = (
+    f"QPushButton {{ background: {ACCENT}; color: {ACCENT_TEXT}; border: none; border-radius: 24px; padding: 14px;"
+    f" font-size: 16px; font-weight: 700; }}"
+    f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
+    f"QPushButton:disabled {{ background: {PANEL}; color: {MUTED}; }}"
+)
+BIG_END_STYLE = BIG_GO_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; }}" \
+    f"QPushButton:hover {{ background: {LIVE_HOVER}; }}"
+LINK_STYLE = (
+    f"QPushButton {{ background: transparent; border: none; color: {MUTED}; padding: 2px 4px; }}"
+    f"QPushButton:hover {{ color: {ACCENT}; }}"
+)
+
 STYLESHEET = f"""
 QWidget {{ selection-background-color: {SELECT_BG}; selection-color: {SELECT_TEXT}; }}
 QMainWindow::separator {{ background: {BG}; width: 6px; height: 6px; }}
