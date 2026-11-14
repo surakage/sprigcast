@@ -394,3 +394,20 @@ def test_inspector_sizes_and_zoom(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_inspector_numbers_sit_centred(app):
+    from PySide6.QtWidgets import QDoubleSpinBox, QWidget, QVBoxLayout
+
+    from sprigcast.app import theme
+
+    holder = QWidget()
+    holder.setStyleSheet(theme.SOFT_FIELD_STYLE)
+    box = QDoubleSpinBox()
+    QVBoxLayout(holder).addWidget(box)
+    holder.resize(160, 60)
+    holder.show()
+    app.processEvents()
+    field = box.lineEdit().geometry()
+    assert field.x() == 0 and field.width() == box.width()  # no arrow space pushing the number left
+    holder.close()
