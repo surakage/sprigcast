@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -32,6 +33,31 @@ from sprigcast.app import theme
 
 SIDE_WIDTH = 280
 GAP = 20
+
+
+class Switch(QCheckBox):
+    """A small on/off switch: a pill with a knob, green when on."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedSize(30, 16)
+
+    def hitButton(self, pos) -> bool:  # noqa: N802 (Qt naming): the whole pill is clickable
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        on = self.isChecked()
+        track = QColor(theme.ACCENT if on else theme.EDGE_STRONG)
+        if not self.isEnabled():
+            track.setAlpha(110)
+        p.setBrush(track)
+        p.drawRoundedRect(QRectF(0, 0, 30, 16), 8, 8)
+        p.setBrush(QColor("#0d1210" if on else theme.MUTED))
+        p.drawEllipse(QRectF(16 if on else 2, 2, 12, 12))
+        p.end()
 
 
 def heading(text: str, size: int = 14) -> QLabel:
@@ -94,9 +120,12 @@ class LiveSide(QWidget):
     """The right-hand column: the big stream button, Record and Save clip, where it goes, and sound."""
 
     def __init__(self, on_live: Callable[[], None], on_record: Callable[[], None], on_clip: Callable[[], None],
-                 on_destination: Callable[[str | None], None]):
+                 on_destination: Callable[[str | None], None],
+                 on_toggle: Callable[[str, bool], None] | None = None):
         super().__init__()
         self.on_destination = on_destination
+        self.on_toggle = on_toggle or (lambda _id, _on: None)
+        self.is_live = False
         self.setFixedWidth(SIDE_WIDTH)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -128,10 +157,16 @@ class LiveSide(QWidget):
         where.setSpacing(10)
         top = QHBoxLayout()
         top.addWidget(heading("Where it goes"), 1)
+        self.add_place = QPushButton("+ Add")
+        self.add_place.setStyleSheet(theme.LINK_STYLE)
+        self.add_place.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_place.setToolTip("Add another place to stream")
+        self.add_place.clicked.connect(lambda: on_destination("new"))
+        top.addWidget(self.add_place)
         manage = QPushButton("Edit")
         manage.setStyleSheet(theme.LINK_STYLE)
         manage.setCursor(Qt.CursorShape.PointingHandCursor)
-        manage.setToolTip("Add or change where you stream")
+        manage.setToolTip("Change where you stream (nothing new is added)")
         manage.clicked.connect(lambda: on_destination(None))
         top.addWidget(manage)
         where.addLayout(top)
@@ -139,7 +174,7 @@ class LiveSide(QWidget):
         self.places.setSpacing(10)
         where.addLayout(self.places)
         root.addLayout(where)
-        self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel]] = {}
+        self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
 
         sound = QVBoxLayout()
         sound.setSpacing(12)
@@ -160,6 +195,10 @@ class LiveSide(QWidget):
     # The buttons ------------------------------------------------------------------------
 
     def set_live(self, live: bool) -> None:
+        self.is_live = live
+        self.add_place.setEnabled(not live)
+        for *_, switch in self.place_rows.values():
+            switch.setEnabled(not live)  # a place joins or leaves only between streams
         self.live.setText("End stream" if live else "Go live")
         self.live.setStyleSheet(theme.BIG_END_STYLE if live else theme.BIG_GO_STYLE)
 
@@ -191,7 +230,7 @@ class LiveSide(QWidget):
             if not places:
                 empty = QPushButton("+ Add a place to stream")
                 empty.setStyleSheet(theme.LINK_STYLE)
-                empty.clicked.connect(lambda: self.on_destination(None))
+                empty.clicked.connect(lambda: self.on_destination("new"))
                 self.places.addWidget(empty)
             for place in places:
                 box = QPushButton()
@@ -206,16 +245,25 @@ class LiveSide(QWidget):
                 for label in (dot, name, note):
                     label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+                switch = Switch()
+                switch.setCursor(Qt.CursorShape.PointingHandCursor)
+                switch.setToolTip("On: Go live sends here. Off: skipped.")
+                switch.toggled.connect(lambda on, pid=place.id: self.on_toggle(pid, on))
+                line.addWidget(switch)
                 line.addWidget(dot)
                 line.addWidget(name, 1)
                 line.addWidget(note)
                 box.setMinimumHeight(22)
                 self.places.addWidget(box)
-                self.place_rows[place.id] = (dot, name, note)
+                self.place_rows[place.id] = (dot, name, note, switch)
         from sprigcast.app.destinations import HEALTH_COLORS
 
         for place in places:
-            dot, name, note = self.place_rows[place.id]
+            dot, name, note, switch = self.place_rows[place.id]
+            switch.blockSignals(True)
+            switch.setChecked(place.on)
+            switch.blockSignals(False)
+            switch.setEnabled(not self.is_live)
             level = levels.get(place.id, "idle" if place.on else "off")
             dot.setStyleSheet(f"color: {HEALTH_COLORS.get(level, HEALTH_COLORS['idle'])}; background: transparent;")
             name.setText(place.name)

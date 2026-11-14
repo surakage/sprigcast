@@ -25,6 +25,10 @@ from sprigcast.output.stream import SERVICES, preset_size, sizes_for
 
 
 def output_label(output: Output) -> str:
+    return _output_label(output) + ("" if output.enabled else "  (off)")
+
+
+def _output_label(output: Output) -> str:
     service = SERVICES.get(output.service or "custom", SERVICES["custom"])
     label = f"{service.label}  ·  {output.canvas}"
     if output.enhanced and output.service == "twitch":
@@ -72,6 +76,9 @@ class StreamPage(QWidget):
         # Destination: where the stream goes and how SprigCast signs in.
         destination = QGroupBox("Destination")
         form = QFormLayout(destination)
+        self.enabled = QCheckBox("Go live here when I press Go live")
+        self.enabled.toggled.connect(self._edited)
+        form.addRow("On", self.enabled)
         self.service = QComboBox()
         for key, service in SERVICES.items():
             self.service.addItem(service.label, key)
@@ -276,6 +283,7 @@ class StreamPage(QWidget):
         if output is None or self._loading:
             return
         self._loading = True
+        self.enabled.setChecked(output.enabled)
         self.service.setCurrentIndex(max(0, self.service.findData(output.service or "custom")))
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(output.canvas)))
         self._fill_size_and_fps(output.size, output.fps)
@@ -374,6 +382,7 @@ class StreamPage(QWidget):
         if output is None or self._loading:
             return
         service = SERVICES.get(self.service.currentData(), SERVICES["custom"])
+        output.enabled = self.enabled.isChecked()
         output.service = self.service.currentData()
         output.server = "" if service.server else self.server.text().strip()
         output.canvas = self.canvas.currentData()
