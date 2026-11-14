@@ -115,6 +115,19 @@ def direct_nvenc_ok() -> bool:
         return _direct_ok
 
 
+MEASURE_S = 5.0  # a 1 s window swings 5,000-9,000 at 6,000 kbps: keyframes every 2 s and bursty network writes
+
+
+def measured_kbps(st, now: float) -> float:
+    """Bytes `st` sent over about the last MEASURE_S seconds, as kbps (keeps its samples on `st`)."""
+    samples = st.__dict__.setdefault("_measure_samples", [])
+    samples.append((now, st.bytes_out))
+    while len(samples) > 2 and now - samples[1][0] >= MEASURE_S:
+        samples.pop(0)
+    (t0, b0), (t1, b1) = samples[0], samples[-1]
+    return 0.0 if t1 <= t0 else (b1 - b0) * 8 / 1000 / (t1 - t0)
+
+
 class DirectVideo:
     """Video for a Recorder from SprigCast's own NVENC encoder instead of an FFmpeg one.
 
@@ -567,11 +580,8 @@ class Recorder:
         }
 
     def measure_kbps(self) -> float:
-        """Average output bitrate since the previous call (call it about once a second)."""
-        now, sent = time.monotonic(), self.bytes_out
-        last_t, last_b = getattr(self, "_measure", (now, sent))
-        self._measure = (now, sent)
-        return 0.0 if now <= last_t else (sent - last_b) * 8 / 1000 / (now - last_t)
+        """Output bitrate over about the last few seconds (call it about once a second)."""
+        return measured_kbps(self, time.monotonic())
 
     # Recorder thread ---------------------------------------------------------------
 

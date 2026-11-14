@@ -18,7 +18,7 @@ import threading
 import time
 
 from sprigcast.output.autopilot import Autopilot
-from sprigcast.output.recorder import rate_limits
+from sprigcast.output.recorder import measured_kbps, rate_limits
 from sprigcast.output.replay import ReplayBuffer, _Packet
 from sprigcast.output.stream import (
     GRACE_SECONDS,
@@ -217,10 +217,8 @@ class StreamLink:
         return text.replace(self._key, "****") if self._key else text
 
     def measure_kbps(self) -> float:
-        now, sent = time.monotonic(), self.bytes_out
-        last_t, last_b = getattr(self, "_measure", (now, sent))
-        self._measure = (now, sent)
-        return 0.0 if now <= last_t else (sent - last_b) * 8 / 1000 / (now - last_t)
+        """Output bitrate over about the last few seconds (call it about once a second)."""
+        return measured_kbps(self, time.monotonic())
 
     def stats(self) -> dict:
         total = self.frames + self.dropped
