@@ -17,21 +17,36 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
+    QListWidget,
     QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
 
 from sprigcast.app import theme
 from sprigcast.app.live_stage import heading
+from sprigcast.app.terms import PART_MARK
 
 LEFT_WIDTH = 240
 RIGHT_WIDTH = 290
@@ -150,8 +165,8 @@ class BuildStage(QWidget):
         self.setStyleSheet(f"#buildStage {{ background: {theme.CHROME}; }}")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 8, 24, 20)
-        root.setSpacing(18)
+        root.setContentsMargins(20, 6, 20, 16)
+        root.setSpacing(14)
         self.bar = bar
         root.addWidget(bar)
         body = QHBoxLayout()
@@ -169,9 +184,131 @@ class BuildStage(QWidget):
                                 "#buildCard QSplitter::handle { background: transparent; }")
         self.card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(16, 10, 16, 16)
+        card_layout.setContentsMargins(10, 6, 10, 10)
         self.card_slot = card_layout
         body.addWidget(self.card, 1)
         self.right_panel, self.right = side_panel(RIGHT_WIDTH)
         body.addWidget(self.right_panel)
         root.addLayout(body, 1)
+
+
+# Inside: the bloom's contents, sprigs shown open ---------------------------------------------
+
+ROLE_NAME = Qt.ItemDataRole.UserRole + 20  # the name alone, without the [kind] tag
+ROLE_TAG = Qt.ItemDataRole.UserRole + 21  # quiet text on the right: "2 hidden here", "filters", "no signal"
+ROLE_SPRIG = Qt.ItemDataRole.UserRole + 22  # True for a sprig placement
+ROLE_CHILDREN = Qt.ItemDataRole.UserRole + 23  # [(depth, name, is_sprig)]: what's inside a sprig
+ROW_H, CHILD_H, EYE_W = 34, 24, 30
+
+
+class InsideDelegate(QStyledItemDelegate):
+    """Draws an Inside row: a visibility dot, the name (❧ for sprigs), a quiet tag, then the sprig's
+    own contents underneath on branch lines, like the mockup."""
+
+    def sizeHint(self, option, index) -> QSize:  # noqa: N802
+        children = index.data(ROLE_CHILDREN) or []
+        return QSize(option.rect.width(), ROW_H + CHILD_H * len(children) + (4 if children else 0))
+
+    def paint(self, p: QPainter, option, index) -> None:
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(option.rect).adjusted(0, 1, 0, -1)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        if selected or hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.SELECT_BG if selected else theme.PANEL))
+            p.drawRoundedRect(r, 12, 12)
+        top = QRectF(r.x(), r.y(), r.width(), ROW_H - 2)
+        shown = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value or \
+            index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
+        eye = QRectF(top.x() + 10, top.center().y() - 5, 10, 10)
+        p.setPen(QPen(QColor(theme.ACCENT if shown else theme.MUTED), 1.5))
+        p.setBrush(QColor(theme.ACCENT) if shown else Qt.BrushStyle.NoBrush)
+        p.drawEllipse(eye)
+        name = index.data(ROLE_NAME) or index.data(Qt.ItemDataRole.DisplayRole) or ""
+        sprig = bool(index.data(ROLE_SPRIG))
+        x = top.x() + EYE_W
+        font = QFont(option.font)
+        font.setWeight(QFont.Weight.DemiBold if sprig or selected else QFont.Weight.Normal)
+        p.setFont(font)
+        metrics = QFontMetrics(font)
+        if sprig:
+            p.setPen(QColor(theme.ACCENT))
+            p.drawText(QRectF(x, top.y(), 16, top.height()), Qt.AlignmentFlag.AlignVCenter, PART_MARK)
+            x += 18
+        tag = index.data(ROLE_TAG) or ""
+        small = QFont(option.font)
+        small.setPixelSize(11)
+        tag_w = QFontMetrics(small).horizontalAdvance(tag) + 12 if tag else 0
+        colour = theme.SELECT_TEXT if selected else theme.TEXT if shown else theme.MUTED
+        p.setPen(QColor(colour))
+        width = int(top.right() - x - tag_w - 8)
+        p.drawText(QRectF(x, top.y(), width, top.height()), Qt.AlignmentFlag.AlignVCenter,
+                   metrics.elidedText(name, Qt.TextElideMode.ElideRight, width))
+        if tag:
+            p.setFont(small)
+            p.setPen(QColor(theme.MUTED))
+            p.drawText(QRectF(top.right() - tag_w - 4, top.y(), tag_w, top.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, tag)
+        children = index.data(ROLE_CHILDREN) or []
+        y = top.bottom()
+        p.setFont(QFont(option.font))
+        for depth, child, child_sprig in children:
+            indent = top.x() + 24 + depth * 16
+            p.setPen(QPen(QColor(theme.EDGE_STRONG), 2))
+            p.drawLine(int(indent), int(y), int(indent), int(y + CHILD_H))
+            tx = indent + 12
+            if child_sprig:
+                p.setPen(QColor(theme.ACCENT))
+                p.drawText(QRectF(tx, y, 16, CHILD_H), Qt.AlignmentFlag.AlignVCenter, PART_MARK)
+                tx += 18
+            p.setPen(QColor(theme.MUTED if not selected else theme.SELECT_TEXT))
+            p.drawText(QRectF(tx, y, top.right() - tx - 6, CHILD_H), Qt.AlignmentFlag.AlignVCenter, child)
+            y += CHILD_H
+        p.restore()
+
+    def editorEvent(self, event, model, option, index) -> bool:  # noqa: N802
+        """A click on the dot shows or hides the thing (like the old checkbox)."""
+        if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            if pos.x() - option.rect.x() < EYE_W and pos.y() - option.rect.y() < ROW_H:
+                state = index.data(Qt.ItemDataRole.CheckStateRole)
+                on = state in (Qt.CheckState.Checked, Qt.CheckState.Checked.value)
+                model.setData(index, Qt.CheckState.Unchecked if on else Qt.CheckState.Checked,
+                              Qt.ItemDataRole.CheckStateRole)
+                return True
+        return False
+
+
+class InsideList(QListWidget):
+    """The Inside list: drag a row to put it in front of or behind the others."""
+
+    moved = Signal(int, int)  # from row, to row (rows are top-most first)
+
+    def __init__(self):
+        super().__init__()
+        self.setItemDelegate(InsideDelegate(self))
+        self.setMouseTracking(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setSpacing(1)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        """Work out where the row was dropped and let the window reorder the bloom (it rebuilds the list)."""
+        source = self.currentRow()
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid():
+            target = self.count() - 1
+        else:
+            target = index.row()
+            below = self.dropIndicatorPosition() == QAbstractItemView.DropIndicatorPosition.BelowItem
+            if below and target < source:
+                target += 1
+            elif not below and target > source:
+                target -= 1
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()
+        if source >= 0 and target != source:
+            self.moved.emit(source, max(0, min(self.count() - 1, target)))

@@ -73,7 +73,16 @@ from sprigcast.app.hotkeys import (
     TOGGLE_STREAM,
     Hotkeys,
 )
-from sprigcast.app.build_stage import BloomBar, BloomPill, BuildStage
+from sprigcast.app.build_stage import (
+    ROLE_CHILDREN,
+    ROLE_NAME,
+    ROLE_SPRIG,
+    ROLE_TAG,
+    BloomBar,
+    BloomPill,
+    BuildStage,
+    InsideList,
+)
 from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.live_stage import Destination, LiveSide, LiveStage
 from sprigcast.app.palette import Command, CommandPalette
@@ -515,7 +524,8 @@ class MainWindow(QMainWindow):
         settings.setValue(self._state_key(self.mode), self.saveState(self.LAYOUT_VERSION))
 
     def _build_sources_dock(self) -> None:
-        self.source_list = QListWidget()
+        self.source_list = InsideList()
+        self.source_list.moved.connect(self._on_inside_moved)
         self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.source_list.itemSelectionChanged.connect(self._refresh_properties)
         self.source_list.itemChanged.connect(self._on_source_toggled)
@@ -527,10 +537,8 @@ class MainWindow(QMainWindow):
         # Build's left column: "Inside" with + Add, the list, then a quiet row of tools.
         self.source_list.setObjectName("insideList")
         self.source_list.setStyleSheet(
-            f"#insideList {{ background: transparent; border: none; }}"
-            f"#insideList::item {{ padding: 7px 10px; border-radius: 12px; color: {theme.TEXT}; }}"
-            f"#insideList::item:hover {{ background: {theme.PANEL}; }}"
-            f"#insideList::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}")
+            "#insideList { background: transparent; border: none; }"
+            "#insideList::item, #insideList::item:hover, #insideList::item:selected { background: transparent; }")
         add = QPushButton("+ Add")
         add.setStyleSheet(theme.SMALL_PILL_STYLE)
         add.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -539,20 +547,22 @@ class MainWindow(QMainWindow):
         self.build_stage.add_slot.addWidget(add)
         self.build_stage.left.addWidget(self.source_list, 1)
         tools = QHBoxLayout()
-        tools.setSpacing(2)
+        tools.setSpacing(8)
         for text, tip, slot in (
-            ("−", "Remove the selected source", self._remove_item),
-            ("⚙", "Source settings (or double-click it)", self._edit_source_settings),
-            ("▲", "Move up (in front)", lambda: self._move_item(+1)),
-            ("▼", "Move down (behind)", lambda: self._move_item(-1)),
+            ("Settings", "Settings for the selected thing (or double-click it)", self._edit_source_settings),
+            ("Remove", "Remove the selected thing from this bloom", self._remove_item),
         ):
             button = QPushButton(text)
             button.setToolTip(tip)
-            button.setFixedSize(34, 30)
-            button.setStyleSheet(theme.LINK_STYLE)
+            button.setStyleSheet(theme.SMALL_PILL_STYLE)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(slot)
             tools.addWidget(button)
         tools.addStretch(1)
+        self.inside_hint = QLabel("Drag to reorder: higher is in front. Right-click for more.")
+        self.inside_hint.setWordWrap(True)
+        self.inside_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        self.build_stage.left.addWidget(self.inside_hint)
         self.build_stage.left.addLayout(tools)
 
     def _fill_add_source_menu(self) -> None:
@@ -826,13 +836,18 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(22)
 
+        self.prop_sections: list[QWidget] = []  # hidden while nothing is selected
+
         def section(title: str) -> QVBoxLayout:
-            box = QVBoxLayout()
+            holder = QWidget()
+            box = QVBoxLayout(holder)
+            box.setContentsMargins(0, 0, 0, 0)
             box.setSpacing(10)
             label = QLabel(title)
             label.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600;")
             box.addWidget(label)
-            col.addLayout(box)
+            col.addWidget(holder)
+            self.prop_sections.append(holder)
             return box
 
         top = QVBoxLayout()
@@ -848,6 +863,11 @@ class MainWindow(QMainWindow):
         self.prop_status.setWordWrap(True)
         self.prop_status.setStyleSheet(theme.MUTED_STYLE)
         top.addWidget(self.prop_status)
+        self.prop_empty = QLabel("Click something on the canvas or in Inside to move it, change its look, "
+                                 "or see which shapes show it.")
+        self.prop_empty.setWordWrap(True)
+        self.prop_empty.setStyleSheet(theme.MUTED_STYLE)
+        top.addWidget(self.prop_empty)
         col.addLayout(top)
 
         place = section("Place")
@@ -925,7 +945,10 @@ class MainWindow(QMainWindow):
         sprig_menu.aboutToShow.connect(lambda: self._fill_sprig_menu(sprig_menu))
         sprigs.setMenu(sprig_menu)
         self.link_button.setText("⇄ Link")
-        for button in (sprigs, self.link_button, self.safe_zone_button):
+        self.on_air_button = QPushButton("▶ Put on air")
+        self.on_air_button.setToolTip("Show this bloom on its canvas now (and the blooms linked to it)")
+        self.on_air_button.clicked.connect(self._put_on_air)
+        for button in (self.on_air_button, sprigs, self.link_button, self.safe_zone_button):
             button.setStyleSheet(style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.bloom_bar.tools.addWidget(button)
@@ -956,7 +979,7 @@ class MainWindow(QMainWindow):
             partner = next((s for s in self.collection.linked_with(scene.id) if s.canvas == canvas_id), None)
             if partner is not None:
                 return partner
-        return self.collection.active_scene(canvas_id)
+        return self._shown_scene(canvas_id)
 
     def _build_audio_dock(self) -> None:
         layout = str(QSettings().value("audio/layout", HORIZONTAL))
@@ -1098,25 +1121,29 @@ class MainWindow(QMainWindow):
             for preview in self.previews.values():
                 preview.live_look = False
         self.modes.setCurrentIndex(1 if self.mode == "live" else 0)
+        self._sync_engine_staged()
         for preview in self.previews.values():
             preview.update()
 
     def _share_stage(self) -> None:
         """Give each canvas stage width in proportion to its shape, so a 16:9 and a 9:16 both fill the height."""
-        shown = [c for c in self.collection.canvases if self.canvas_columns[c.id].isVisible()]
+        shown = [c for c in self.collection.canvases if c.enabled]
         if len(shown) < 2:
             return
         total = self.splitter.width()
+        order = [self.splitter.widget(i) for i in range(self.splitter.count())]
+        by_column = {id(self.canvas_columns[c.id]): c for c in self.collection.canvases}
         ratios = {c.id: c.width / c.height for c in shown}
         if self.mode == "build":  # the twin stays small next to the shape being edited
             twins = [c for c in shown if c.id != self.build_canvas]
             share = {c.id: int(total * (0.14 if c.height > c.width else 0.26)) for c in twins}
             rest = total - sum(share.values())
-            self.splitter.setSizes([share.get(c.id, rest) if c in shown else 0 for c in self.collection.canvases])
+            canvases = [by_column[id(w)] for w in order]
+            self.splitter.setSizes([share.get(c.id, rest) if c in shown else 0 for c in canvases])
             return
         weight = sum(ratios.values())
-        self.splitter.setSizes([int(total * ratios[c.id] / weight) if c in shown else 0
-                                for c in self.collection.canvases])
+        canvases = [by_column[id(w)] for w in order]
+        self.splitter.setSizes([int(total * ratios[c.id] / weight) if c in shown else 0 for c in canvases])
 
     def _on_clip_clicked(self) -> None:
         """Save clip, or first start keeping the last seconds in memory."""
@@ -1171,9 +1198,36 @@ class MainWindow(QMainWindow):
         self.live_stage.card.set_next(names or [self.collection.scene(s).name for s in self.staged.values()][:1],
                                       self.studio)
 
+    def _build_view(self) -> dict[str, str]:
+        """Build mode: canvas id -> the bloom being edited there when it isn't the one on air.
+
+        Editing a bloom doesn't put it on air: the engine draws it for the preview only (like
+        Studio mode's Next), so you can build "Be right back" while "Just Chatting" stays live."""
+        scene = self._scene()
+        if getattr(self, "mode", "build") != "build" or scene is None or scene.kind != "show":
+            return {}
+        view = {}
+        for shown in self.collection.linked_with(scene.id):
+            if shown.id != self.collection.active_scenes.get(shown.canvas):
+                view[shown.canvas] = shown.id
+        return view
+
+    def _shown_scene(self, canvas_id: str) -> Scene | None:
+        """The bloom a canvas preview shows: the one being edited in Build, else the one on air."""
+        scene_id = self._build_view().get(canvas_id)
+        return self.collection.scene(scene_id) if scene_id else self.collection.active_scene(canvas_id)
+
+    def _sync_engine_staged(self) -> None:
+        view = self._build_view()
+        staged = view if view else dict(self.staged if getattr(self, "mode", "build") == "live" else {})
+        if staged != self.engine.staged:
+            self.engine.staged = staged  # a fresh dict: the render thread reads it without a lock
+            for canvas_id in staged:
+                self.previews[canvas_id]._image = None  # don't show the on-air picture as if it were this bloom
+
     def _stage(self, staged: dict[str, str]) -> None:
         self.staged = staged
-        self.engine.staged = dict(staged)  # a fresh dict: the render thread reads it without a lock
+        self._sync_engine_staged()
         self.live_panel.staged = set(staged.values())
         self.live_panel.go.setEnabled(bool(staged))
         for canvas_id, upcoming in self.next_previews.items():
@@ -1361,7 +1415,12 @@ class MainWindow(QMainWindow):
             preview.title = canvas.id.capitalize() + ("  ·  click to edit" if twin else "")
             preview.setCursor(Qt.CursorShape.PointingHandCursor if twin else Qt.CursorShape.ArrowCursor)
             preview.update()
+        # Build: the shape being edited comes first and the twin sits to its right; Live: canvas order.
+        first = self.build_canvas if build else self.collection.canvases[0].id
+        if self.splitter.indexOf(self.canvas_columns[first]) != 0:
+            self.splitter.insertWidget(0, self.canvas_columns[first])
         if build:
+            self._share_stage()  # now, so the swap doesn't show a frame of the old sizes
             QTimer.singleShot(0, self._share_stage)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
@@ -1430,7 +1489,10 @@ class MainWindow(QMainWindow):
         QSettings().setValue("build/canvas", canvas_id)
         scene = self._scene()
         if scene is None or (scene.kind == "show" and scene.canvas != canvas_id):
-            active = self.collection.active_scene(canvas_id)
+            # Keep editing the same bloom in its other shape when it has one (its linked partner).
+            partner = next((s for s in self.collection.linked_with(scene.id) if s.canvas == canvas_id),
+                           None) if scene is not None and scene.kind == "show" else None
+            active = partner or self.collection.active_scene(canvas_id)
             shows = self.collection.scenes_for(canvas_id)
             self.selected_scene_id = active.id if active else (shows[0].id if shows else None)
         self._apply_canvas_view()
@@ -1681,6 +1743,8 @@ class MainWindow(QMainWindow):
             return frozenset()
         keys = {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
         keys |= {f"next:{cid}" for cid, p in self.next_previews.items() if p.isVisible()}
+        if self.mode == "build":
+            keys |= {f"next:{cid}" for cid in self.engine.staged if self.previews[cid].isVisible()}
         if self.part_preview.isVisible() or self.in_place is not None:
             keys.add("part")
         return frozenset(keys)
@@ -1688,7 +1752,9 @@ class MainWindow(QMainWindow):
     def _preview_pixel_sizes(self) -> dict[str, tuple[int, int]]:
         """How many physical pixels each preview's canvas area covers, so the engine copies no more."""
         sizes = {}
-        for key, preview in [*self.previews.items(), *((f"next:{c}", p) for c, p in self.next_previews.items())]:
+        edited = [(f"next:{c}", self.previews[c]) for c in self.engine.staged] if self.mode == "build" else []
+        for key, preview in [*self.previews.items(), *((f"next:{c}", p) for c, p in self.next_previews.items()),
+                             *edited]:
             if preview.isVisible():
                 r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
                 sizes[key] = (int(r.width() * dpr), int(r.height() * dpr))
@@ -1705,8 +1771,12 @@ class MainWindow(QMainWindow):
             frame = mailbox.take()
             if frame is None:
                 continue
+            view = self.engine.staged if self.mode == "build" else {}
             if canvas_id in self.previews:
-                self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
+                if canvas_id not in view:  # else the preview shows the bloom being edited (next:)
+                    self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
+            elif canvas_id.startswith("next:") and canvas_id[5:] in view:
+                self.previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
             elif canvas_id.startswith("next:") and canvas_id[5:] in self.staged:
                 self.next_previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
         part_frame = self.engine.part_frames.take()
@@ -1800,11 +1870,12 @@ class MainWindow(QMainWindow):
         self._refresh_stream_boxes()
 
     def _refresh_previews(self) -> None:
+        self._sync_engine_staged()
         in_place = self._in_place_state()
         part_names = {s.id: s.name for s in self.collection.sources if s.kind == PART_KIND}
         for canvas_id, preview in self.previews.items():
             preview.part_names = part_names
-            scene = self.collection.active_scene(canvas_id)
+            scene = self._shown_scene(canvas_id)
             if in_place is not None and in_place[0] == canvas_id:
                 show, placement, layout, size = in_place[1:]
                 preview.subtitle = f"{show.name}  ›  {PART_MARK} {layout.name}   ·   Esc to finish"
@@ -1814,6 +1885,8 @@ class MainWindow(QMainWindow):
             if preview.inner is not None:
                 preview.set_inner(None, None)
             preview.subtitle = scene.name if scene else "no scene"
+            if scene is not None and scene.id != self.collection.active_scenes.get(canvas_id):
+                preview.subtitle += "  ·  not on air"
             if preview.twin:
                 preview.subtitle = ""  # the title already says "click to edit"
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
@@ -1906,21 +1979,27 @@ class MainWindow(QMainWindow):
                 pills.append(BloomPill(scene.id, scene.name, folder.colour if folder is not None else None,
                                        scene.id == selected_show, scene.id == active))
         self.bloom_bar.show_blooms(pills, self.live_panel.thumbs)
+        if hasattr(self, "on_air_button"):
+            self.on_air_button.setVisible(selected_show is not None and selected_show != active)
 
     def _pick_bloom(self, scene_id: str) -> None:
-        """A bloom pill: edit that bloom, and show it on its canvas unless you're live or recording."""
+        """A bloom pill: edit that bloom. It goes on air only with "Put on air" (or from Live)."""
         self.selected_scene_id = scene_id
         self.selected_folder_id = self.collection.scene(scene_id).folder
         if self.in_place is not None:
             self._exit_in_place()
-        if self.streaming is None and self.recording is None:
-            self._make_active()
-        else:
-            self.statusBar().showMessage("You're live, so this only opens it for editing. "
-                                         "Double-click it in Scenes (or use Live) to put it on air.", 6000)
         self._refresh_scenes()
         self._refresh_sources()
         self._show_part_editor()
+
+    def _put_on_air(self) -> None:
+        if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
+            scene = self._scene()
+            answer = QMessageBox.question(self, "SprigCast", f"You're live. Put “{scene.name}” on air now?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._make_active()
+        self._refresh_sources()
 
     def _pick_sprig(self, part_id: str) -> None:
         self.selected_scene_id = part_id
@@ -1942,7 +2021,11 @@ class MainWindow(QMainWindow):
         ids = [c.id for c in self.collection.canvases]
         if canvas_id in ids and self.mode == "build":
             selected = self._item()
-            self.canvas_tabs.setCurrentIndex(ids.index(canvas_id))
+            self.setUpdatesEnabled(False)  # swap in one repaint, not a flicker of half-done layouts
+            try:
+                self.canvas_tabs.setCurrentIndex(ids.index(canvas_id))
+            finally:
+                self.setUpdatesEnabled(True)
             scene = self._scene()
             if selected is not None and scene is not None:  # keep the same thing selected if it's here too
                 for row, item in enumerate(reversed(scene.items)):
@@ -1957,13 +2040,59 @@ class MainWindow(QMainWindow):
         if scene is not None:
             for item in reversed(scene.items):  # top-most first, like OBS
                 row = QListWidgetItem(self._source_label(item.source))
-                row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                self._inside_roles(row, item.source, scene.canvas)
+                row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
                 row.setCheckState(Qt.CheckState.Checked if item.visible else Qt.CheckState.Unchecked)
                 self.source_list.addItem(row)
         if keep_row is not None and 0 <= keep_row < self.source_list.count():
             self.source_list.setCurrentRow(keep_row)
+        empty = self.source_list.count() == 0
+        self.inside_hint.setText("Nothing here yet. Add a camera, screen, text or sprig with + Add." if empty
+                                 else "Drag to reorder: higher is in front. Right-click for more.")
         self._updating = False
         self._refresh_properties()
+
+    def _inside_roles(self, row: QListWidgetItem, source_id: str, canvas_id: str) -> None:
+        """What the Inside list draws: the plain name, a quiet tag, and a sprig's own contents."""
+        config = self.collection.source(source_id)
+        tags = []
+        hidden = len(self.collection.hidden_here(config)) if config.kind == PART_KIND else 0
+        if hidden:
+            tags.append(f"{hidden} hidden here")
+        if any(f.enabled for f in config.filters):
+            tags.append("filters")
+        status = self.source_statuses.get(source_id, "ok")
+        if status not in ("ok", "capturing"):
+            tags.append(status)
+        row.setData(ROLE_NAME, config.name)
+        row.setData(ROLE_TAG, " · ".join(tags))
+        row.setData(ROLE_SPRIG, config.kind == PART_KIND)
+        row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
+        row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind})")
+
+    def _sprig_children(self, config, canvas_id: str, depth: int = 0, seen: frozenset = frozenset()) -> list:
+        """(depth, name, is sprig) for what's inside a sprig, nested sprigs opened too (a few levels)."""
+        part = self.collection.part_of(config) if config.kind == PART_KIND else None
+        if part is None or part.id in seen or depth > 2:
+            return []
+        layout = self.collection.shape_for(part, canvas_id) if canvas_id else part
+        rows = []
+        for inner in reversed(layout.items):
+            child = self.collection.source(inner.source)
+            rows.append((depth, child.name, child.kind == PART_KIND))
+            rows += self._sprig_children(child, canvas_id, depth + 1, seen | {part.id})
+        return rows[:12]
+
+    def _on_inside_moved(self, source_row: int, target_row: int) -> None:
+        """A row was dragged in Inside: reorder the bloom (rows are top-most first, items bottom-most first)."""
+        scene = self._scene()
+        if scene is None or not (0 <= source_row < len(scene.items)) or not (0 <= target_row < len(scene.items)):
+            return
+        rows = list(reversed(scene.items))
+        rows.insert(target_row, rows.pop(source_row))
+        scene.items = list(reversed(rows))
+        self._changed()
+        self._refresh_sources(keep_row=target_row)
 
     def _source_label(self, source_id: str) -> str:
         config = self.collection.source(source_id)
@@ -1985,6 +2114,7 @@ class MainWindow(QMainWindow):
             text = self._source_label(item.source)
             if self.source_list.item(row).text() != text:
                 self.source_list.item(row).setText(text)
+                self._inside_roles(self.source_list.item(row), item.source, scene.canvas)
         self._updating = False
         item = self._item()
         if item is not None:
@@ -2006,6 +2136,10 @@ class MainWindow(QMainWindow):
         self.prop_fit.setEnabled(enabled)
         self.prop_filters.setEnabled(enabled)
         self.prop_extra.setVisible(enabled)
+        for holder in self.prop_sections:
+            holder.setVisible(enabled)
+        self.prop_empty.setVisible(not enabled)
+        self.prop_name.setVisible(enabled)
         self.prop_locked.setEnabled(enabled)
         for canvas_id, state in self._shape_states(item).items():
             label = self.prop_shapes[canvas_id]
@@ -2165,7 +2299,7 @@ class MainWindow(QMainWindow):
         elif canvas_id.startswith("part:"):
             scene = next((s for s in self.collection.part_scenes() if s.id == canvas_id[5:]), None)
         else:
-            scene = self.collection.active_scene(canvas_id)
+            scene = self._shown_scene(canvas_id)
         if scene is None:
             return
         if scene.id != self.selected_scene_id:
@@ -2453,7 +2587,7 @@ class MainWindow(QMainWindow):
         if self.in_place is None:
             return None
         canvas_id, show_id, placement_id, layout_id = self.in_place
-        show = self.collection.active_scene(canvas_id)
+        show = self._shown_scene(canvas_id)
         placement = next((i for i in show.items if i.source == placement_id), None) if show else None
         part = self.collection.part_of(self.collection.source(placement_id)) if placement else None
         layout = self.collection.shape_for(part, canvas_id) if part else None
@@ -2472,7 +2606,7 @@ class MainWindow(QMainWindow):
             if index < 0 or self.in_place[0] != canvas_id:
                 self._exit_in_place()
             return
-        show = self.collection.active_scene(canvas_id)
+        show = self._shown_scene(canvas_id)
         if show is None or not 0 <= index < len(show.items):
             return
         self._enter_in_place(canvas_id, show, show.items[index])
