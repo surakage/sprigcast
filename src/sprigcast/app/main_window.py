@@ -470,6 +470,10 @@ class MainWindow(QMainWindow):
         self.hotkeys = Hotkeys(self)
         self.hotkeys.triggered.connect(self._on_hotkey)
         self.hotkeys.apply(self.collection.hotkeys)
+        self.camera = None  # SprigCast Camera (Settings → Output → Virtual camera), see _sync_camera
+        self._camera_timer = QTimer(self, interval=1000)
+        self._camera_timer.timeout.connect(lambda: self.camera is not None and self.camera.poll())
+        QTimer.singleShot(1500, self._sync_camera)
 
         self.mode = "build"
         self._load_thumbs()
@@ -2303,6 +2307,10 @@ class MainWindow(QMainWindow):
         self.hotkeys.stop()
         self.meter.stop()
         self.control.stop()
+        if self.camera is not None:
+            self._camera_timer.stop()
+            self.camera.stop()
+            self.camera = None
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
@@ -4466,6 +4474,25 @@ class MainWindow(QMainWindow):
         window.applied.connect(self._after_settings)
         window.exec()
 
+    def _sync_camera(self) -> None:
+        """Turn SprigCast Camera on or off to match Settings (it's only added while SprigCast runs)."""
+        from sprigcast.app.output_page import camera_wanted
+        from sprigcast.output import virtualcam
+
+        want = camera_wanted() and virtualcam.supported()[0] and virtualcam.installed()
+        if want and self.camera is None:
+            camera = virtualcam.VirtualCamera(self.engine, lambda: self.collection.canvases)
+            if camera.start():
+                self.camera = camera
+                self._camera_timer.start()
+                self._say("SprigCast Camera is on")
+            else:
+                self._say(camera.error)
+        elif not want and self.camera is not None:
+            self._camera_timer.stop()
+            self.camera.stop()
+            self.camera = None
+
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""
         clips = getattr(self, "_clips_before", None)
@@ -4481,6 +4508,7 @@ class MainWindow(QMainWindow):
 
         self.engine.sleep_policy = sleep_policy()
         self._sync_canvas_choice()  # Settings → Video may have switched a canvas on or off (and sizes changed)
+        self._sync_camera()
         self._changed()
         self._refresh_stream_boxes()
         self._updating = True

@@ -256,10 +256,12 @@ class OutputPage(QWidget):
         box.addWidget(_hint("Clips use the Recording encoder and bitrate, so a clip looks exactly like a recording."))
         box.addStretch(1)
         self.tabs.addTab(clips_tab, "Clips (replay buffer)")
+        self.camera_tab = CameraTab()
+        self.tabs.addTab(self.camera_tab, "Virtual camera")
         self.streaming, self.recording = streaming, recording
 
     def show_tab(self, name: str) -> None:
-        self.tabs.setCurrentIndex({"Recording": 1, "Clips": 2, "Replay": 2}.get(name, 0))
+        self.tabs.setCurrentIndex({"Recording": 1, "Clips": 2, "Replay": 2, "Camera": 3}.get(name, 0))
 
     def apply_to(self, collection: SceneCollection) -> None:
         if not self.streaming:
@@ -269,6 +271,7 @@ class OutputPage(QWidget):
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()
+        self.camera_tab.apply()
 
     def _clips_group(self, collection: SceneCollection) -> QGroupBox:
         """Clips: how long, which shapes, and whether they're ready from the start."""
@@ -315,3 +318,104 @@ class OutputPage(QWidget):
 
 def enhanced_in_use(collection: SceneCollection) -> bool:
     return any(o.type == "stream" and o.enabled and o.service == "twitch" and o.enhanced for o in collection.outputs)
+
+
+CAMERA_ON = "camera/on"  # QSettings: show SprigCast as a camera while it runs
+
+
+def camera_wanted() -> bool:
+    from PySide6.QtCore import QSettings
+
+    return QSettings().value(CAMERA_ON, False, type=bool)
+
+
+class CameraTab(QWidget):
+    """Virtual camera: set it up once (administrator prompt), then switch it on or off."""
+
+    def __init__(self, parent: QWidget | None = None):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QPushButton
+
+        from sprigcast.output import virtualcam
+
+        super().__init__(parent)
+        self.vc = virtualcam
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 4, 0, 0)
+        box.setSpacing(14)
+        group = QGroupBox("SprigCast Camera")
+        inner = QVBoxLayout(group)
+        inner.setSpacing(12)
+        self.on = QCheckBox("Show SprigCast as a camera")
+        self.on.setChecked(camera_wanted())
+        inner.addWidget(self.on)
+        inner.addWidget(_hint("Zoom, Teams, Discord, Google Meet and the Camera app list it as "
+                              "\u201cSprigCast Camera\u201d. A landscape call shows your horizontal canvas, "
+                              "a portrait one your vertical canvas."))
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        inner.addWidget(self.status)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.setup = QPushButton("Set up the camera")
+        self.setup.setStyleSheet(theme.PILL_STYLE)
+        self.setup.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setup.clicked.connect(self._set_up)
+        row.addWidget(self.setup)
+        self.remove = QPushButton("Remove")
+        self.remove.setStyleSheet(theme.PILL_STYLE)
+        self.remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove.clicked.connect(self._remove)
+        row.addWidget(self.remove)
+        row.addStretch(1)
+        inner.addLayout(row)
+        inner.addWidget(_hint("Setting up copies the camera into Program Files and registers it with Windows. "
+                              "Windows asks for permission once. It uses no memory or CPU until an app opens it."))
+        box.addWidget(group)
+        box.addStretch(1)
+        self._timer = QTimer(self, interval=1500)  # after the admin prompt: notice when setup finished
+        self._timer.timeout.connect(self._tick)
+        self._ticks = 0
+        self.refresh()
+
+    def _tick(self) -> None:
+        self._ticks += 1
+        before = self.remove.isVisible()
+        self.refresh()
+        if self.remove.isVisible() != before or self._ticks > 40:  # finished, or the prompt was declined
+            self._timer.stop()
+
+    def refresh(self) -> None:
+        ok, why = self.vc.supported()
+        installed = self.vc.installed()
+        if not ok:
+            text = why
+        elif not installed:
+            text = "Not set up yet."
+        elif self.vc.needs_update():
+            text = "Set up, but this SprigCast has a newer camera. Press Update."
+        else:
+            text = "Set up. It turns on when you press Apply." if self.on.isChecked() else "Set up."
+        self.status.setText(text)
+        self.status.setStyleSheet(f"color: {theme.MUTED if installed or not ok else theme.TEXT}")
+        self.setup.setVisible(ok and (not installed or self.vc.needs_update()))
+        self.setup.setText("Update the camera" if installed else "Set up the camera")
+        self.remove.setVisible(ok and installed)
+        self.on.setEnabled(ok)
+
+    def _set_up(self) -> None:
+        if self.vc.set_up():
+            self.status.setText("Waiting for Windows… say Yes on its prompt.")
+            self._ticks = 0
+            self._timer.start()
+
+    def _remove(self) -> None:
+        self.on.setChecked(False)
+        if self.vc.remove():
+            self._ticks = 0
+            self._timer.start()
+
+    def apply(self) -> None:
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue(CAMERA_ON, self.on.isChecked())
