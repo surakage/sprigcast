@@ -6,6 +6,7 @@ The checks and suggestions themselves live in app/optimize.py; this is only the 
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 
@@ -28,6 +29,8 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import optimize, theme
+
+log = logging.getLogger(__name__)
 from sprigcast.core.scene import SceneCollection
 
 TITLE_STYLE = f"font-size: 15pt; font-weight: bold; color: {theme.TEXT_BRIGHT};"
@@ -401,6 +404,10 @@ class OptimizeWizard(QDialog):
         self._run_next()
 
     def show_plan(self) -> None:
+        p = self.profile
+        log.info("optimize: %s, %d threads, %.0f GB, %s, x264 %s ms/720p frame, upload %s kbps (%s)",
+                 p.cpu_name or "CPU", p.threads, p.memory_gb, p.codec, p.x264_ms_720, p.upload_kbps,
+                 p.extra.get("upload_source") or "not tested")
         self.upload_row.setVisible(self.profile.wants_stream)
         self.upload.blockSignals(True)
         self.upload.setValue((self.profile.upload_kbps or 0) / 1000)

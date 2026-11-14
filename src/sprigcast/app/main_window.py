@@ -1770,6 +1770,7 @@ class MainWindow(QMainWindow):
         settings_menu.addAction("Light settings for a slower PC…").triggered.connect(
             lambda: self.use_light_settings())
         settings_menu.addSeparator()
+        settings_menu.addAction("Open logs folder…").triggered.connect(lambda: self._open_logs())
         doctor_action = settings_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
@@ -3320,6 +3321,10 @@ class MainWindow(QMainWindow):
             return
         finally:
             self.record_button.setEnabled(True)
+        log.info("recording started: %s, %d kbps, %s, size %s, encoder %s preset %s",
+                 ", ".join(c.id for c in canvases), settings.bitrate_kbps, settings.container,
+                 f"{settings.short_side}p" if settings.short_side else "canvas", settings.encoder.rate_control,
+                 settings.encoder.preset)
         self.record_button.setText("Stop recording")
         self.record_button.setStyleSheet(ON_AIR_STYLE)
         self.live_side.set_recording("● REC 0:00:00")
@@ -3382,6 +3387,8 @@ class MainWindow(QMainWindow):
             box.setEnabled(True)
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
+        log.info("recording stopped after %.0f s: %s; %d frames dropped%s", session.elapsed, names or "no files",
+                 session.dropped, f"; errors: {errors}" if errors else "")
         if errors:
             self.record_status.setText("Recording failed")
             self.live_panel.set_recording("")
@@ -3486,6 +3493,9 @@ class MainWindow(QMainWindow):
             preview.ring = theme.LIVE
             preview.update()
         self.destinations.set_live(True)
+        from sprigcast.app.logbook import StreamReport
+
+        self._stream_report = StreamReport(self.streaming, self.collection)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
 
@@ -3575,6 +3585,9 @@ class MainWindow(QMainWindow):
         self.stream_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         for line in lines[1:]:
             log.info("stream summary: %s", line)
+        report, self._stream_report = getattr(self, "_stream_report", None), None
+        if report is not None:
+            report.finish(lines)
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()
@@ -3595,6 +3608,12 @@ class MainWindow(QMainWindow):
                                 {k: v[1].split(" · ")[0] for k, v in states.items()})
         names = ", ".join(html.escape(st.name) for _, st in session.streamers)
         self.stream_status.setText(f"{clock}<br>{names}")
+        report = getattr(self, "_stream_report", None)
+        if report is not None:
+            try:
+                report.tick(self._last_stats)
+            except Exception:
+                log.exception("stream report")
         self.live_panel.set_clock(clock, True)
         self._set_header_clock(clock.replace("● LIVE", "● Live") + ("" if worst == "good" else "  ·  check Where it goes"), True)
 
@@ -3753,12 +3772,24 @@ class MainWindow(QMainWindow):
         if wizard.exec() != QDialog.DialogCode.Accepted or not wizard.chosen:
             return False
         fps = wizard.plan.apply(wizard.chosen)
+        for change in wizard.chosen:
+            log.info("optimize: applied %s (was %s)", change.label, change.now)
         lowend.store_fps(fps)
         self.collection.save(self.scenes_path)
         self._after_settings()
         self.statusBar().showMessage(
             "Optimized for this PC." + (" Restart SprigCast for the new frame rate." if fps else ""), 15000)
         return True
+
+    def _open_logs(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from sprigcast.app.logbook import log_dir
+
+        folder = log_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def first_run_optimizer(self) -> None:
         """Once: offer the Optimize for this PC wizard (it also covers the old light-settings suggestion)."""
