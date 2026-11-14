@@ -280,3 +280,65 @@ def test_panel_fits_narrow_cards_and_live_chip_picks_a_transition(tmp_path):
     finally:
         w.close()
         QSettings().clear()
+
+
+# Transition table -------------------------------------------------------------------------------------
+
+
+def test_rules_pick_the_transition_for_each_switch():
+    from sprigcast.core.scene import TransitionRule
+
+    col = collection("a", vertical=True)
+    col.scenes[3].linked_to = "b"  # vb is b's vertical twin
+    col.scenes[2].linked_to = "a"
+    col.transition_rules = [
+        TransitionRule(from_scene="", to_scene="b", transition=Transition(kind="stinger")),
+        TransitionRule(from_scene="b", to_scene="a", transition=Transition(kind="bloom")),
+    ]
+    assert col.transition_for("a", "b").kind == "stinger"
+    assert col.transition_for("va", "vb").kind == "stinger"  # the twin follows its bloom's rule
+    assert col.transition_for("b", "a").kind == "bloom"
+    col.transition_rules.append(TransitionRule(from_scene="a", to_scene="b", transition=Transition(kind="cut")))
+    assert col.transition_for("a", "b").kind == "cut"  # from and to both named beats "any"
+    col.transition_rules = []
+    assert col.transition_for("a", "b") is col.transition
+
+
+def test_engine_uses_the_rule_and_rules_for_deleted_blooms_go(tmp_path):
+    from sprigcast.core.scene import TransitionRule
+
+    old = collection("a")
+    new = collection("b")
+    new.transition_rules = [TransitionRule(from_scene="a", to_scene="b", transition=Transition(kind="leaf"))]
+    engine = Engine(old)
+    engine._start_transitions(old, new)
+    assert engine._transitions["h"].settings.kind == "leaf"
+    data = new.model_dump()
+    data["transition_rules"].append({"from_scene": "gone", "to_scene": "b"})
+    assert len(SceneCollection.model_validate(data).transition_rules) == 1
+
+
+def test_rules_table_adds_edits_and_removes():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import RuleRow, TransitionsPanel
+
+    col = collection("a")
+    edits = []
+    panel = TransitionsPanel(col.transition, lambda: edits.append(1), collection=col)
+    table = panel.rules
+    assert table.hint.isVisibleTo(panel)
+    table.add()
+    rule = col.transition_rules[0]
+    assert rule.to_scene == "a" and rule.transition.kind == "stinger" and edits
+    row = table.rows.itemAt(0).widget()
+    assert isinstance(row, RuleRow) and row.to_pick.text().startswith("A")
+    row._set_end("from_scene", "b")
+    assert rule.from_scene == "b" and row.from_pick.text().startswith("B")
+    table.remove(rule)
+    assert col.transition_rules == [] and table.rows.count() == 0

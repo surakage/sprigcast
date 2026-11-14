@@ -501,7 +501,8 @@ class MainWindow(QMainWindow):
         from sprigcast.app.transitions_panel import TransitionsPanel
         from sprigcast.render.stinger import probe
 
-        self.transitions_panel = TransitionsPanel(self.collection.transition, self._transition_edited, probe)
+        self.transitions_panel = TransitionsPanel(self.collection.transition, self._transition_edited, probe,
+                                                  collection=self.collection)
         scroll = QScrollArea()  # a short card (Build's left column) scrolls instead of squashing the pills
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
