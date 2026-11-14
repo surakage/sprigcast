@@ -144,7 +144,10 @@ class TwitchChat(QObject):
         self._quiet.stop()
         if self.socket is not None:
             socket, self.socket = self.socket, None
-            socket.disconnected.disconnect()
+            try:
+                socket.disconnected.disconnect()
+            except (RuntimeError, TypeError):
+                pass
             socket.close()
             socket.deleteLater()
 

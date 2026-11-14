@@ -28,7 +28,8 @@ BASE = "https://www.youtube.com"
 AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
          "Chrome/140.0.0.0 Safari/537.36")
 FALLBACK_VERSION = "2.20251101.00.00"
-NOT_LIVE_RETRY = 60  # seconds between "is it live yet?" checks
+NOT_LIVE_RETRY = 60  # seconds between "is it live yet?" checks (each reads a ~1 MB page)
+NOT_LIVE_SLOW = 180  # after half an hour of not live, check less often
 POLL_MIN, POLL_MAX = 1.5, 10.0  # seconds between chat polls, whatever YouTube suggests
 BACKOFF = (5, 10, 20, 40, 60)
 
@@ -219,6 +220,7 @@ class YouTubeChat(QObject):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._step)
         self._stage = "find"
+        self._checks = 0  # "not live yet" checks in a row
 
     def start(self, handle: str) -> None:
         if self._wanted and handle == self.channel:
@@ -262,8 +264,10 @@ class YouTubeChat(QObject):
     def _found(self, page: str) -> None:
         video = video_from_live_page(page)
         if not video:
-            self._wait("not live yet", NOT_LIVE_RETRY)
+            self._checks += 1
+            self._wait("not live yet", NOT_LIVE_RETRY if self._checks < 30 else NOT_LIVE_SLOW)
             return
+        self._checks = 0
         self.video, self._stage = video, "open"
         self._step()
 

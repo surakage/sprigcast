@@ -163,3 +163,62 @@ def test_old_twitch_channel_setting_carries_over(app):
 
     QSettings().setValue(chat_panel.OLD_CHANNEL, "mossfriend")
     assert chat_panel.saved_names() == {"twitch": "mossfriend"}
+
+
+def test_mentions_stand_out_and_scrolling_up_shows_a_jump_pill(app):
+    from sprigcast.app import chat_panel
+
+    assert chat_panel.mentions("hey @Surakage, nice!", frozenset({"surakage"}))
+    assert chat_panel.mentions("surakage.", frozenset({"surakage"}))
+    assert not chat_panel.mentions("surakage2 hi", frozenset({"surakage"}))
+    html = chat_panel.message_html(ChatMessage("twitch", "a", "hi surakage"), names=frozenset({"surakage"}))
+    assert chat_panel.theme.SELECT_TEXT in html
+
+    view = chat_panel.ChatView()
+    view.resize(300, 200)
+    view.show()
+    for i in range(60):
+        view.add(ChatMessage("twitch", "a", f"line {i}"))
+    app.processEvents()
+    assert not view.jump.isVisible()  # following along: always at the newest line
+    view.verticalScrollBar().setValue(0)  # scrolled up to read
+    view.add(ChatMessage("twitch", "a", "new one"))
+    assert view.jump.isVisible() and view.verticalScrollBar().value() == 0
+    view.jump.click()
+    assert not view.jump.isVisible() and view.at_bottom()
+
+    view.names = frozenset({"surakage"})  # a line that mentions you is washed green, the next one isn't
+    view.add(ChatMessage("twitch", "a", "@surakage hi"))
+    view.add(ChatMessage("twitch", "a", "plain"))
+    last = view.document().lastBlock()
+    assert last.previous().blockFormat().background().color().name() == chat_panel.theme.SELECT_BG
+    assert not last.blockFormat().hasProperty(last.blockFormat().Property.BackgroundBrush)
+
+
+def test_emote_cache_starts_over_instead_of_growing(app, monkeypatch):
+    from sprigcast.app import chat_panel
+
+    monkeypatch.setattr(chat_panel, "EMOTE_CACHE", 3)
+    view = chat_panel.ChatView()
+    view._asked.update({"a", "b", "c", "d"})
+    view.add(ChatMessage("kick", "a", "hi", images={"kick-1": "https://files.kick.com/emotes/1/fullsize"}))
+    assert not view._asked and view._urls == {"kick-1": "https://files.kick.com/emotes/1/fullsize"}
+    assert [m.text for m in view.messages] == ["hi"]
+
+
+def test_panel_sleeps_when_taken_off_every_screen(app, monkeypatch):
+    from sprigcast.app import chat_panel
+    from sprigcast.output import twitch_auth
+
+    stopped = []
+    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: setattr(self, "channel", ch))
+    monkeypatch.setattr(twitch.TwitchChat, "stop", lambda self: stopped.append(self.channel))
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "surakage")
+    panel = chat_panel.ChatPanel()
+    panel.activate()
+    panel.view.add(ChatMessage("twitch", "a", "kept"))
+    assert set(panel.readers) == {"twitch"} and panel.view.names == frozenset({"surakage"})
+    panel.sleep()
+    assert stopped == ["surakage"] and not panel.readers and not panel.active
+    panel.activate()  # shown again: reads again, earlier lines still there
+    assert set(panel.readers) == {"twitch"} and [m.text for m in panel.view.messages] == ["kept"]
