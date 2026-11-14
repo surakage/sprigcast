@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QVBoxLayout,
@@ -140,12 +141,21 @@ class BuildStage(QWidget):
         self.right_panel.addWidget(inspector)
         self.right_panel.setStretchFactor(0, 2)
         self.right_panel.setStretchFactor(1, 3)
+        # A sound picked in the library swaps the right column for its controls (sound has no place on a canvas).
+        self.right_stack = QStackedWidget()
+        self.right_stack.setFixedWidth(RIGHT_WIDTH)
+        self.sound_page = QWidget()
+        self.sound_slot = QVBoxLayout(self.sound_page)
+        self.sound_slot.setContentsMargins(0, 0, 0, 0)
+        self.sound_slot.setSpacing(12)
         saved = QSettings().value("build/inside_split")
         if saved is not None:
             self.right_panel.restoreState(saved)  # where you last left the gap
         self.right_panel.splitterMoved.connect(
             lambda *_: QSettings().setValue("build/inside_split", self.right_panel.saveState()))
-        body.addWidget(self.right_panel)
+        self.right_stack.addWidget(self.right_panel)
+        self.right_stack.addWidget(self.sound_page)
+        body.addWidget(self.right_stack)
 
 
 # Inside: the bloom's contents, sprigs shown open ---------------------------------------------
