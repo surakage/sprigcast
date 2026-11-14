@@ -237,3 +237,24 @@ def test_proven_kbps_only_counts_clean_long_streams():
     assert optimize.proven_kbps([st(), st()], 160, 20) is None  # too short to prove anything
     assert optimize.proven_kbps([st(), st(dropped=50)], 160, 120) == 0  # the network struggled
     assert optimize.proven_kbps([st(autopilot=NS(steps_down=1))], 160, 120) == 0
+
+
+def test_a_lighter_clean_stream_keeps_the_most_proven():
+    class Settings(dict):
+        def setValue(self, k, v):
+            self[k] = v
+
+        def value(self, k, default=None):
+            return self.get(k, default)
+
+        def remove(self, k):
+            self.pop(k, None)
+
+    s = Settings()
+    optimize.remember_proven(s, 12320)
+    optimize.remember_proven(s, 4160)  # an hour at 4000 is clean, but 12320 already ran clean
+    assert optimize.load_proven(s) == 12320
+    optimize.remember_proven(s, None)
+    assert optimize.load_proven(s) == 12320
+    optimize.remember_proven(s, 0)  # network trouble: start over
+    assert optimize.load_proven(s) == 0
