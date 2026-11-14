@@ -1195,8 +1195,8 @@ class MainWindow(QMainWindow):
                                     self._edit_in_build)
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
-                                  lambda: self._open_settings(), self._on_sound_changed, self._open_filters,
-                                  self._set_mic_first)
+                                  lambda: self._open_settings(), self._on_sound_changed,
+                                  lambda sid: self._open_filters(sid, "audio"), self._set_mic_first)
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()
@@ -2321,6 +2321,16 @@ class MainWindow(QMainWindow):
 
     AUDIO_KINDS = ("audio_input", "audio_output")
 
+    def _has_sound(self, config) -> bool:
+        """Sounds the Sound card lists: mics, desktop audio, and browser pages whose sound comes here."""
+        if config.kind in self.AUDIO_KINDS:
+            return True
+        if config.kind == "browser":
+            from sprigcast.sources.browser import sound_to_mixer
+
+            return sound_to_mixer(config.settings)
+        return False
+
     def _refresh_audio(self) -> None:
         self.audio_panel.set_sources([
             AudioInfo(
@@ -2337,7 +2347,7 @@ class MainWindow(QMainWindow):
             if s.kind in self.AUDIO_KINDS
         ])
         self.live_side.show_sound([self._sound_item(s) for s in self.collection.sources
-                                   if s.kind in self.AUDIO_KINDS and not s.settings.get("hidden", False)])
+                                   if self._has_sound(s) and not s.settings.get("hidden", False)])
         self.live_side.sound.set_mic_first(self.collection.audio.ducking)
 
     def _set_mic_first(self, on: bool) -> None:
@@ -2350,7 +2360,8 @@ class MainWindow(QMainWindow):
         monitor = st.get("monitor", False)
         return Sound(
             id=config.id, name=config.name, muted=bool(st.get("muted", False)),
-            group=str(st.get("group") or auto_group(config.name, config.kind)),
+            group=str(st.get("group") or ("Alerts" if config.kind == "browser"
+                                          else auto_group(config.name, config.kind))),
             pinned=bool(st.get("pinned", False)),
             volume_db=float(st.get("volume_db", 0.0)),
             monitor="only" if monitor == "only" else bool(monitor),
@@ -2449,9 +2460,9 @@ class MainWindow(QMainWindow):
             return
         self._open_filters(item.source)
 
-    def _open_filters(self, source_id: str) -> None:
-        FiltersDialog(self.collection.source(source_id), self._changed, self).exec()
-        if self.collection.source(source_id).kind in self.AUDIO_KINDS:
+    def _open_filters(self, source_id: str, media: str | None = None) -> None:
+        FiltersDialog(self.collection.source(source_id), self._changed, self, media).exec()
+        if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
 

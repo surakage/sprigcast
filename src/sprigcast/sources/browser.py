@@ -4,7 +4,8 @@ Pages are drawn by Qt WebEngine (Chromium) on the UI thread by app/browser_host.
 asks for a page and picks up its newest frame. A page that nothing on screen shows is closed (its
 Chromium process ends) unless "Keep running when hidden" is on, which keeps an alert box connected.
 
-Settings: url, file (a local .html instead of a URL), width, height, fps, css, mute, keep_running.
+Settings: url, file (a local .html instead of a URL), width, height, fps, css, mute, audio_to_mixer
+(the page's sound goes to the Sound card instead of the desktop, app/browser_audio.py), keep_running.
 """
 
 from __future__ import annotations
@@ -26,8 +27,14 @@ DEFAULTS: dict[str, Any] = {
     "fps": 30,
     "css": DEFAULT_CSS,
     "mute": False,
+    "audio_to_mixer": True,
     "keep_running": False,
 }
+
+
+def sound_to_mixer(settings: dict[str, Any]) -> bool:
+    """Whether the page's sound goes through SprigCast's mixer (the Sound card) instead of the desktop."""
+    return bool(settings.get("audio_to_mixer", True)) and not settings.get("mute", False)
 
 
 class Host(Protocol):
@@ -40,6 +47,8 @@ class Host(Protocol):
     def pause(self, source_id: str, paused: bool) -> None: ...
 
     def take(self, source_id: str) -> np.ndarray | None: ...
+
+    def read_audio(self, source_id: str, n: int) -> np.ndarray | None: ...
 
 
 _host: Host | None = None
@@ -138,7 +147,21 @@ class BrowserSource(Source):
         else:
             self._start_page()
 
+    # Sound: read by the mixer like a mic (read_block, gain); silent unless the page sends sound here.
+    @property
+    def gain(self) -> float:
+        if self.settings.get("muted") or not sound_to_mixer(self.settings):
+            return 0.0
+        return float(10 ** (float(self.settings.get("volume_db", 0.0)) / 20))
+
+    def read_block(self, n: int) -> np.ndarray:
+        block = _host.read_audio(self.id, n) if _host is not None and self._open else None
+        return block if block is not None else np.zeros((n, 2), dtype=np.float32)
+
     def video_frame(self) -> np.ndarray | None:
+        note = getattr(_host, "sound_note", lambda _id: "")(self.id) if _host is not None else ""
+        if self.status in ("ok", "Sound plays on desktop audio"):
+            self.status = "Sound plays on desktop audio" if note else "ok"
         frame = _host.take(self.id) if _host is not None else None
         if frame is not None:
             self._blank = False

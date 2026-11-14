@@ -24,7 +24,7 @@ from sprigcast.sources import browser
 log = logging.getLogger(__name__)
 
 # Settings that need the page loaded again when they change. Size, fps and mute apply in place.
-RELOAD_KEYS = ("url", "file", "css")
+RELOAD_KEYS = ("url", "file", "css", "audio_to_mixer")
 
 SHIM = """
 (() => {
@@ -141,6 +141,8 @@ class _Page:
         self.page.loadFinished.connect(self._loaded)
         self.view.setPage(self.page)
         self._Script = QWebEngineScript
+        self.sound = None  # PageSound while the page's sound goes to the mixer (app/browser_audio.py)
+        self._channel = None
         self.timer = QTimer()
         self.timer.timeout.connect(self._tick)
         self.apply(settings)
@@ -156,20 +158,51 @@ class _Page:
             self.dirty = True
         fps = max(1, min(120, int(settings.get("fps", 30))))
         self.timer.start(max(4, round(1000 / fps)))
-        self.page.setAudioMuted(bool(settings.get("mute", False)))
         if any(old.get(k) != settings.get(k) for k in RELOAD_KEYS):
+            self._set_up_sound()
             self._scripts()
             url = browser.page_url(settings)
             self.page.setUrl(QUrl(url) if url else QUrl("about:blank"))
+        self._mute()
+
+    def _mute(self) -> None:
+        """Silent on the desktop when muted, or when the mixer plays the page's sound instead."""
+        to_mixer = self.sound is not None and not self.sound.on_desktop_reason
+        self.page.setAudioMuted(bool(self.settings.get("mute", False)) or to_mixer)
+
+    def _set_up_sound(self) -> None:
+        from sprigcast.sources.browser import sound_to_mixer
+
+        if not sound_to_mixer(self.settings):
+            self.sound = None
+            self.host.set_sound(self.id, None)
+            return
+        from PySide6.QtWebChannel import QWebChannel
+
+        from sprigcast.app.browser_audio import PageSound
+
+        self.sound = PageSound(on_desktop=lambda _why: self._mute())
+        if self._channel is not None:
+            self._channel.deleteLater()
+        self._channel = QWebChannel(self.page)
+        self.page.setWebChannel(self._channel)
+        self._channel.registerObject("sprigcastAudio", self.sound)
+        self.host.set_sound(self.id, self.sound)
 
     def _scripts(self) -> None:
         S = self._Script
         scripts = self.page.scripts()
         scripts.clear()
-        for name, source, point in (
+        wanted = [
             ("sprigcast-obs", SHIM, S.InjectionPoint.DocumentCreation),
             ("sprigcast-css", css_script(str(self.settings.get("css", "") or "")), S.InjectionPoint.DocumentReady),
-        ):
+        ]
+        if self.sound is not None:
+            from sprigcast.app.browser_audio import CAPTURE_JS, qwebchannel_js
+
+            wanted[1:1] = [("sprigcast-channel", qwebchannel_js(), S.InjectionPoint.DocumentCreation),
+                           ("sprigcast-sound", CAPTURE_JS, S.InjectionPoint.DocumentCreation)]
+        for name, source, point in wanted:
             script = S()
             script.setName(name)
             script.setSourceCode(source)
@@ -231,6 +264,7 @@ class _Page:
         import shiboken6
 
         self.timer.stop()
+        self.host.set_sound(self.id, None)
         # Deleted now, not later: Chromium complains (and can crash on exit) if the profile goes first.
         shiboken6.delete(self.page)
         shiboken6.delete(self.view)
@@ -245,6 +279,7 @@ class BrowserHost(QObject):
         super().__init__(parent)
         self.pages: dict[str, _Page] = {}
         self._frames: dict[str, np.ndarray] = {}
+        self._sounds: dict[str, Any] = {}  # source id -> PageSound, read by the audio thread
         self._lock = threading.Lock()
         self._request.connect(self._handle, Qt.ConnectionType.QueuedConnection)
 
@@ -264,6 +299,24 @@ class BrowserHost(QObject):
     def take(self, source_id: str) -> np.ndarray | None:
         with self._lock:
             return self._frames.pop(source_id, None)
+
+    def read_audio(self, source_id: str, n: int) -> np.ndarray | None:
+        """The page's next n frames of sound for the mixer, or None when it plays on the desktop."""
+        sound = self._sounds.get(source_id)
+        if sound is None or sound.on_desktop_reason:
+            return None
+        return sound.read(n)
+
+    def sound_note(self, source_id: str) -> str:
+        sound = self._sounds.get(source_id)
+        return "plays on desktop audio" if sound is not None and sound.on_desktop_reason else ""
+
+    def set_sound(self, source_id: str, sound) -> None:
+        with self._lock:
+            if sound is None:
+                self._sounds.pop(source_id, None)
+            else:
+                self._sounds[source_id] = sound
 
     def reload(self, source_id: str) -> None:
         self._request.emit("reload", source_id, None)

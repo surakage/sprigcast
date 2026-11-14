@@ -35,6 +35,7 @@ LABELS = {
     "fps": "Frames per second",
     "css": "Custom CSS",
     "mute": "Mute page sound",
+    "audio_to_mixer": "Sound in the Sound card",
     "keep_running": "Keep running when hidden",
 }
 
@@ -61,8 +62,9 @@ class SettingsDialog(QDialog):
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
         if "css" in defaults and "url" in defaults:
-            tip = QLabel("A local file is used instead of the URL when set. Page sound plays on your desktop "
-                         "audio. Keep running when hidden keeps alerts connected while another bloom is on.")
+            tip = QLabel("A local file is used instead of the URL when set. With Sound in the Sound card, the page's "
+                         "sound gets its own volume, mute and ducking there; off, it plays on your desktop audio. "
+                         "Keep running when hidden keeps alerts connected while another bloom is on.")
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
