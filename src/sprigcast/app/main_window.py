@@ -443,6 +443,9 @@ class MainWindow(QMainWindow):
         self._sync_canvas_choice()
         self._show_part_editor()
         self.live_panel.studio.setChecked(QSettings().value("live/studio", False, type=bool))
+        from sprigcast.app.control_server import start_for
+
+        self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
         if self.collection.recording.clips_on_start:  # once the renderer has its first frames
             QTimer.singleShot(1500, lambda: self.replay is None and self._toggle_replay(True))
 
@@ -1927,6 +1930,7 @@ class MainWindow(QMainWindow):
                 if self.mode == "live":
                     self.live_side.set_levels(event.levels)
                 self.peak_watch.feed(event.levels)
+                self.control.meters(event.levels)  # only when a connected app asked for meters
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
                 for preview in [*self.previews.values(), self.part_preview]:
@@ -1952,6 +1956,9 @@ class MainWindow(QMainWindow):
         if save:
             self.collection.save(self.scenes_path)
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.soon()  # apps connected to the control server hear what changed
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         for projector in list(self.projectors):
@@ -1961,6 +1968,7 @@ class MainWindow(QMainWindow):
         self._save_layout()
         self.hotkeys.stop()
         self.meter.stop()
+        self.control.stop()
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
@@ -3470,18 +3478,21 @@ class MainWindow(QMainWindow):
             self.replay = None
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
 
-    def _save_replay(self) -> None:
+    def _save_replay(self) -> list:
+        """Save a clip of the last seconds; returns the files (none when clips are off or it failed)."""
         if self.replay is None:
             self.statusBar().showMessage("Press Clip first to get clips ready.", 4000)
-            return
+            return []
         try:
             paths = self.replay.save()
         except Exception as exc:
             self.statusBar().showMessage(f"Couldn't save the replay: {exc}", 6000)
-            return
+            return []
         names = ", ".join(p.name for p in paths)
         self.statusBar().showMessage(f"Saved clip: {names}", 8000)
         self.live_side.clip_saved(len(paths))
+        self.control.replay_saved(paths)
+        return paths
 
     def _stop_recording(self) -> None:
         session, self.recording = self.recording, None
@@ -3733,6 +3744,7 @@ class MainWindow(QMainWindow):
             open_plugins_folder=self._open_plugins_folder if self.plugins_dir is not None else None,
             streaming=self.streaming is not None,
             recording=self.recording is not None,
+            control=self.control,
             tab=tab,
             parent=self,
         )
@@ -3764,6 +3776,9 @@ class MainWindow(QMainWindow):
         self._updating = False
         self._refresh_audio()
         self._apply_hotkeys()
+        from sprigcast.app.control_server import apply_settings
+
+        apply_settings(self.control, self)
 
     # Command palette -------------------------------------------------------------
 
