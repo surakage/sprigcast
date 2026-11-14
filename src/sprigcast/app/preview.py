@@ -56,6 +56,7 @@ class Preview(QWidget):
         self.canvas_id = canvas_id
         self.title = title
         self.subtitle = ""
+        self.show_title = True  # Build's big canvas hides it: the bloom's name is already above the card
         self.aspect = aspect
         self.scene: Scene | None = None
         self.sizes: dict[str, tuple[int, int]] = {}
@@ -144,7 +145,7 @@ class Preview(QWidget):
 
     def canvas_rect(self) -> QRectF:
         """Where the canvas is drawn inside the widget, leaving room for the title line."""
-        top = 24.0
+        top = 24.0 if self.show_title else 4.0
         pad = 6.0 if self.live_look else 0.0  # room for the on-air ring
         avail_w, avail_h = float(self.width()) - 2 * pad, float(self.height()) - top - pad
         aw, ah = self.aspect
@@ -253,7 +254,20 @@ class Preview(QWidget):
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
         if self.zoom > 1.0:
             label += f"   ·   {self.zoom * 100:.0f}%  (Ctrl+0 to fit)"
-        if self.live_look:  # the title starts where the canvas does, and never runs past it
+        if not self.show_title:
+            if self.zoom > 1.0:  # only the zoom, in a small chip in the corner
+                text = f"{self.zoom * 100:.0f}%  ·  Ctrl+0 to fit"
+                chip = QRectF(0, 0, p.fontMetrics().horizontalAdvance(text) + 20, 22)
+                chip.moveTopRight(QPointF(rect.right() - 8 if rect.right() < self.width() else self.width() - 8, 8))
+                p.save()
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(0, 0, 0, 150))
+                p.drawRoundedRect(chip, 11, 11)
+                p.setPen(QColor(theme.TEXT))
+                p.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
+                p.restore()
+        elif self.live_look:  # the title starts where the canvas does, and never runs past it
             left = max(8.0, rect.x() + 2)
             label = p.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, int(max(60.0, rect.width() - 4)))
             p.drawText(int(left), 17, label)
@@ -497,6 +511,8 @@ class Preview(QWidget):
         self.selected.emit(self.canvas_id, -1 if index is None else index)
         if index is not None:
             self._drag = ("move", None, event.position(), self.scene.items[index].model_copy())
+            self._drag_prefs = snap_settings()  # read once per drag, not on every mouse move
+            self._drag_others = None
         self.update()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
@@ -516,10 +532,12 @@ class Preview(QWidget):
         if mode == "move":
             scale = self._scale()
             delta = ((event.position().x() - start_pos.x()) / scale, (event.position().y() - start_pos.y()) / scale)
-            prefs = snap_settings()
+            prefs = getattr(self, "_drag_prefs", None) or snap_settings()
             off = not prefs["enabled"] or event.modifiers() & Qt.KeyboardModifier.ControlModifier
             snap = 0.0 if off else prefs["distance"] / scale
-            others = self._other_rects(item) if prefs["sources"] else []
+            if prefs["sources"] and getattr(self, "_drag_others", None) is None:
+                self._drag_others = self._other_rects(item)  # the others stay put while this one moves
+            others = self._drag_others if prefs["sources"] else []
             edit.move(item, start_item, size, delta, self._bounds(), snap,
                       edges=prefs["edges"], center=prefs["center"], others=others)
         elif mode == "scale":

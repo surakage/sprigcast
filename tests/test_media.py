@@ -284,3 +284,35 @@ def test_main_window_adds_and_controls_media(tmp_path, monkeypatch):
         app.processEvents()
     finally:
         w.close()
+
+
+def _webm(path, seconds=0.6, fps=30):
+    """A VP9 .webm (what animations and alerts use), decoded with libvpx to keep see-through parts."""
+    with av.open(str(path), "w") as out:
+        v = out.add_stream("libvpx-vp9", rate=fps)
+        v.width, v.height, v.pix_fmt = 64, 36, "yuv420p"
+        for n in range(int(seconds * fps)):
+            frame = av.VideoFrame.from_ndarray(np.full((36, 64, 3), min(255, n * 8), dtype=np.uint8), format="rgb24")
+            frame.pts = n
+            frame.time_base = Fraction(1, fps)
+            for packet in v.encode(frame):
+                out.mux(packet)
+        for packet in v.encode():
+            out.mux(packet)
+    return str(path)
+
+
+def test_a_webm_ends_without_looping_or_errors(tmp_path):
+    if "libvpx-vp9" not in av.codecs_available:
+        pytest.skip("no libvpx")
+    source = MediaSource("m", {"path": _webm(tmp_path / "2.webm"), "loop": False})
+    source.start()
+    try:
+        frames = []
+        _play(source, 1.2, frames)
+        assert source.state == "ended" and source.status == "ok", source.status
+        frames.clear()
+        _play(source, 6.0, frames)  # well past the old 5 s retry: nothing plays again
+        assert not frames and source.state == "ended" and source.status == "ok"
+    finally:
+        source.stop()

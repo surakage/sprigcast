@@ -127,6 +127,7 @@ from sprigcast.core.events import (
     SourceInfo,
     Stats,
 )
+from sprigcast.core.edit import cover
 from sprigcast.core.filters import filter_kind, settings_for
 from sprigcast.core.looks import LOOKS, SHAPES
 from sprigcast.core.scene import (
@@ -881,7 +882,7 @@ class MainWindow(QMainWindow):
                 self._fill_media_menu(menu, item.source)
             menu.addSeparator()
             size = menu.addMenu("Size and place")
-            for key in ("fit", "stretch", "center", "reset", "uncrop"):
+            for key in ("fit", "fill", "stretch", "center", "reset", "uncrop"):
                 size.addAction(acts[key])
             size.addSeparator()
             hint = size.addAction("Crop: hold Alt and drag a side")
@@ -1462,6 +1463,7 @@ class MainWindow(QMainWindow):
                 self.splitter.show()
             for preview in self.previews.values():
                 preview.live_look = True
+                preview.show_title = True
             QTimer.singleShot(0, self._fit_tiles)
             QTimer.singleShot(0, self._share_stage)
         else:
@@ -1471,6 +1473,7 @@ class MainWindow(QMainWindow):
             for preview in self.previews.values():
                 preview.live_look = False
                 preview.align = "center"
+                preview.show_title = preview.twin or self.in_place is not None
         self.modes.setCurrentIndex(1 if self.mode == "live" else 0)
         self._sync_engine_staged()
         for preview in self.previews.values():
@@ -2001,7 +2004,7 @@ class MainWindow(QMainWindow):
             edit_menu.addAction(a[key])
         edit_menu.addSeparator()
         size = edit_menu.addMenu("Size and place")
-        for key in ("fit", "stretch", "center", "reset", "uncrop"):
+        for key in ("fit", "fill", "stretch", "center", "reset", "uncrop"):
             size.addAction(a[key])
         order = edit_menu.addMenu("Order")
         for key in ("front", "up", "down", "back"):
@@ -2255,9 +2258,21 @@ class MainWindow(QMainWindow):
 
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
-        if save:
-            self.collection.save(self.scenes_path)
-            self._remember_for_undo()
+        if not save:  # mid-drag: at most one copy per frame, the newest (copying on every mouse move lagged)
+            timer = getattr(self, "_drag_send", None)
+            if timer is None:
+                timer = self._drag_send = QTimer(self)
+                timer.setSingleShot(True)
+                timer.setInterval(16)
+                timer.timeout.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
+            if not timer.isActive():
+                timer.start()
+            return
+        timer = getattr(self, "_drag_send", None)
+        if timer is not None:
+            timer.stop()  # this full send carries the drag's end
+        self.collection.save(self.scenes_path)
+        self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
         self._chat_sources_changed()
         control = getattr(self, "control", None)
@@ -2388,6 +2403,7 @@ class MainWindow(QMainWindow):
             if in_place is not None and in_place[0] == canvas_id:
                 show, placement, layout, size = in_place[1:]
                 preview.subtitle = f"{show.name}  ›  {layout.name}   ·   Esc to finish"
+                preview.show_title = True
                 preview.set_inner(placement, size)
                 preview.set_scene(layout, self._item_index() if layout.id == self.selected_scene_id else None)
                 continue
@@ -2398,6 +2414,8 @@ class MainWindow(QMainWindow):
                 preview.subtitle += "  ·  not on air"
             if preview.twin:
                 preview.subtitle = ""  # small: just the shape and its size (the tooltip says click to edit)
+            # Build's big canvas: the bloom's name and "on air" are right above the card already.
+            preview.show_title = self.mode != "build" or preview.twin
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
             preview.set_scene(scene, index)
             selected = self._item()
@@ -3851,6 +3869,14 @@ class MainWindow(QMainWindow):
             item.scale_y = None if abs(canvas[1] / ch - item.scale) < 1e-6 else canvas[1] / ch
         self._edit_item(change)
 
+    def _fill_item(self) -> None:
+        """Cover the whole canvas, keeping the shape: what sticks out is cropped evenly off both sides
+        (a 4:3 or 5:3 camera on a 16:9 canvas: no empty strips, nothing squashed)."""
+        def change(item, canvas, size):
+            item.rotation, item.x, item.y, item.scale_y = 0.0, 0.0, 0.0, None
+            item.crop, item.scale = cover(size, canvas)
+        self._edit_item(change)
+
     def _center_item(self) -> None:
         def change(item, canvas, size):
             w, h = item.drawn_size(size)
@@ -3888,6 +3914,7 @@ class MainWindow(QMainWindow):
         self.item_actions: dict[str, QAction] = {}
         table = (
             ("fit", "Fit to canvas", "Ctrl+F", self._fit_item),
+            ("fill", "Fill the canvas (crop the edges)", "Ctrl+Alt+F", self._fill_item),
             ("stretch", "Stretch to fill the canvas", "Ctrl+Shift+F", self._stretch_item),
             ("center", "Centre on the canvas", "Ctrl+E", self._center_item),
             ("reset", "Reset size, crop and rotation", "Ctrl+R", self._reset_item_size),
@@ -4708,6 +4735,7 @@ class MainWindow(QMainWindow):
             return settings
 
         made = build_starter(self.collection, dialog.choice(camera_settings))
+        self._sync_canvas_choice()  # vertical versions may have switched the vertical canvas on
         if not made:
             return False
         self._exit_in_place()
