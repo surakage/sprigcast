@@ -176,3 +176,37 @@ def test_shared_recording_and_replay_through_the_direct_encoder(tmp_path, direct
     with av.open(str(clip)) as f:
         assert sum(1 for _ in f.decode(video=0)) >= 60
     replay.stop()
+
+
+def test_encoder_check_waits_instead_of_racing(monkeypatch):
+    """A stream and a recording starting together: both must see the check's answer, not a half-done False."""
+    import threading
+
+    class Slow:
+        def __init__(self, *a, **k):
+            time.sleep(0.2)
+
+        def encode(self, nv12, keyframe=False):
+            return b"\x00\x00\x00\x01"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(nvenc_d3d11, "D3D11Encoder", Slow)
+    monkeypatch.setattr(recorder, "_direct_ok", None)
+    monkeypatch.setattr(recorder, "nvenc_device", lambda: "direct")
+    answers = []
+    threads = [threading.Thread(target=lambda: answers.append(recorder.direct_nvenc_ok())) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert answers == [True, True, True]
+
+
+def test_nvenc_works_without_cuda_when_our_encoder_does(monkeypatch):
+    monkeypatch.setattr(recorder, "_nvenc_ok", None)
+    monkeypatch.setattr(recorder, "nvenc_device", lambda: "direct")
+    monkeypatch.setattr(recorder, "direct_nvenc_ok", lambda: True)
+    monkeypatch.setattr(recorder, "_try_encoder", lambda *a, **k: pytest.fail("FFmpeg's NVENC was opened"))
+    assert recorder.nvenc_works()
