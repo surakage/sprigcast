@@ -37,6 +37,11 @@ LABELS = {
     "mute": "Mute page sound",
     "audio_to_mixer": "Sound in the Sound card",
     "keep_running": "Keep running when hidden",
+    "hide_after": "Hide after (seconds)",
+    "platform_marks": "Platform colours",
+    "text_color": "Text colour",
+    "bubble_color": "Bubble colour",
+    "background_color": "Box colour",
 }
 
 
@@ -65,6 +70,12 @@ class SettingsDialog(QDialog):
             tip = QLabel("A local file is used instead of the URL when set. With Sound in the Sound card, the page's "
                          "sound gets its own volume, mute and ducking there; off, it plays on your desktop audio. "
                          "Keep running when hidden keeps alerts connected while another bloom is on.")
+            tip.setWordWrap(True)
+            tip.setStyleSheet(f"color: {theme.MUTED}")
+            form.addRow("", tip)
+        if "hide_after" in defaults:
+            tip = QLabel("Shows the chats you picked in the Chat panel (⋯ → Channels…). Hide after 0 keeps "
+                         "messages up. A colour ending in 00 is see-through.")
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)

@@ -9,7 +9,8 @@ It shows one of two things, and switching never adds another panel:
 * **A chat link**: any web page that shows chat (a pop-out chat, StreamBridge, Streamer.bot,
   a multi-chat overlay), shown in the panel itself.
 
-Pasting a twitch.tv, youtube.com or kick.com link reads that chat natively instead.
+Pasting a twitch.tv, youtube.com, kick.com or tiktok.com link reads that chat natively instead.
+TikTok is unofficial (TikTok has no public chat API): TikFinity is used when it's running.
 
     ┌ Chat ───────────────────── ↗  × ┐
     │ ● Twitch  ● YouTube  ● Kick   ⋯ │
@@ -24,10 +25,9 @@ import html
 import json
 import logging
 import re
-import zlib
 from collections import deque
 
-from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QTextDocument
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.chat import PLATFORMS, ChatMessage, make_reader, name_for
+from sprigcast.chat import PLATFORMS, ChatMessage, name_for, readable_colour
 
 log = logging.getLogger(__name__)
 KEY = "chat"  # the panel's key in app/panels.py
@@ -50,14 +50,13 @@ SOURCE = "chat/source"  # "chat" (your channels, mixed) | "link" | "" (nothing p
 LINK = "chat/link"
 NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle", "kick": "name"}; an empty Twitch name = your account
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube and Kick: a Twitch channel picked by hand
-HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
+HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name",
+         "tiktok": "@your TikTok handle"}
 KEEP = 300  # messages kept on screen
 EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
 
-# Names with no colour of their own get one of these, always the same one for the same name.
-NAME_COLOURS = ("#7fd6a2", "#9cc9ff", "#f2b880", "#d8a6ff", "#f5d76e", "#7fe0d6", "#ff9fb8", "#b9e27a")
 URL_RE = re.compile(r"(https?://[^\s<]+)")
 
 CHIP_STYLE = (
@@ -75,19 +74,6 @@ GO_STYLE = (
     f" padding: 7px 16px; font-weight: 700; }}"
     f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}"
 )
-
-
-def readable_colour(colour: str, name: str) -> str:
-    """The chatter's colour, lifted if it would vanish on the dark panel; a steady pick if they have none."""
-    if not colour:
-        return NAME_COLOURS[zlib.crc32(name.lower().encode()) % len(NAME_COLOURS)]
-    c = QColor(colour)
-    if not c.isValid():
-        return NAME_COLOURS[0]
-    h, s, lightness, _ = c.getHsl()
-    if lightness < 140:
-        c.setHsl(max(h, 0), min(s, 200), 175)
-    return c.name()
 
 
 def mentions(text: str, names: frozenset[str]) -> bool:
@@ -323,10 +309,12 @@ class ChatPanel(QWidget):
     """The Chat panel's body. Nothing connects or loads until the panel is first shown (activate)."""
 
     def __init__(self, connect_twitch=None):
+        from sprigcast.chat.hub import ChatHub
+
         super().__init__()
         self.connect_twitch = connect_twitch  # opens Connect Twitch; the panel hears the result itself
-        self.readers: dict[str, object] = {}
-        self.states: dict[str, str] = {}
+        # The readers live in the hub, shared with chat sources on your stream (sources/chat.py).
+        self.hub = ChatHub(self.reading, self)
         self.web = None
         self.active = False
         root = QVBoxLayout(self)
@@ -357,10 +345,108 @@ class ChatPanel(QWidget):
         QVBoxLayout(self.web_holder).setContentsMargins(0, 0, 0, 0)
         for page in (self.empty, self.link_page, self.names_page, self.view, self.web_holder):
             self.pages.addWidget(page)
+        root.addWidget(self._say_row())
+        self.pages.currentChanged.connect(lambda _: self._show_say())
 
         from sprigcast.output import twitch_auth
 
         twitch_auth.account_events().changed.connect(self._account_changed)
+        self.hub.message.connect(self.view.add)
+        self.hub.deleted.connect(lambda platform, mid: self.view.remove(platform=platform, message_id=mid))
+        self.hub.cleared.connect(lambda platform, uid: self.view.remove(platform=platform, user_id=uid,
+                                                                        everything=not uid))
+        self.hub.changed.connect(self._hub_changed)
+
+    # Chatting back -----------------------------------------------------------------------
+
+    sent = Signal(str)  # "" when sent, else why not (from the sending thread)
+
+    def _say_row(self) -> QWidget:
+        """A box under the chat to say something on Twitch as your connected account."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.say = QLineEdit()
+        self.say.setStyleSheet(FIELD_STYLE)
+        self.say.setMaxLength(500)
+        self.say.returnPressed.connect(self.send)
+        layout.addWidget(self.say, 1)
+        self.say_button = QPushButton("Send")
+        self.say_button.setStyleSheet(GO_STYLE)
+        self.say_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.say_button.clicked.connect(self.send)
+        layout.addWidget(self.say_button)
+        self.sent.connect(self._sent)
+        self._sending = False
+        row.hide()
+        self.say_row = row
+        return row
+
+    def _say_target(self) -> str | None:
+        """The Twitch channel a message would go to, or None when there's nowhere to send."""
+        return self.hub.names().get("twitch") if self.pages.currentWidget() is self.view else None
+
+    def _show_say(self) -> None:
+        channel = self._say_target()
+        self.say_row.setVisible(channel is not None)
+        if channel is None:
+            return
+        mine = self._account()
+        if not mine:
+            self.say.setPlaceholderText("Connect Twitch to chat back")
+            self.say_button.setText("Connect")
+        else:
+            self.say.setPlaceholderText("Chat on Twitch…")
+            self.say.setToolTip(f"Sends to {channel}'s Twitch chat as you")
+            self.say_button.setText("Send")
+
+    def send(self) -> None:
+        from sprigcast.output import twitch_auth
+
+        channel = self._say_target()
+        if channel is None or self._sending:
+            return
+        if not self._account() or not twitch_auth.can_send_chat():
+            self.say.setToolTip("SprigCast needs your OK once to send chat: connect Twitch again.")
+            self._connect()
+            return
+        text = self.say.text().strip()
+        if not text:
+            return
+        self._sending = True
+        self.say.setEnabled(False)
+
+        def work():
+            try:
+                twitch_auth.send_chat(channel, text)
+                self.sent.emit("")
+            except Exception as exc:  # worded for you by twitch_auth, or a surprise
+                self.sent.emit(str(exc) or "Couldn't send")
+
+        import threading
+
+        threading.Thread(target=work, name="chat-send", daemon=True).start()
+
+    def _sent(self, problem: str) -> None:
+        self._sending = False
+        self.say.setEnabled(True)
+        if problem:
+            self.say.setToolTip(problem)
+            self.where.setText(f"<span style='color:{theme.BAD}'>●</span> {html.escape(problem)}")
+            QTimer.singleShot(5000, self._show_states)
+        else:
+            self.say.clear()
+            self.say.setToolTip("")
+        self.say.setFocus()
+
+    @property
+    def readers(self) -> dict[str, object]:
+        return self.hub.readers
+
+    @property
+    def states(self) -> dict[str, str]:
+        return self.hub.states
 
     # Pages ------------------------------------------------------------------------------
 
@@ -445,7 +531,8 @@ class ChatPanel(QWidget):
             row.addWidget(field, 1)
             self.name_fields[platform] = field
             layout.addLayout(row)
-        hint = QLabel("Just names: SprigCast reads public chat, no sign-in. Leave any empty.")
+        hint = QLabel("Just names: SprigCast reads public chat, no sign-in. Leave any empty. "
+                      "TikTok is unofficial and uses TikFinity when it's running.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
         layout.addWidget(hint)
@@ -467,10 +554,7 @@ class ChatPanel(QWidget):
         if not self.active:
             return
         self.active = False
-        for reader in self.readers.values():
-            reader.stop()
-        self.readers.clear()
-        self.states.clear()
+        self.hub.want("panel", False)  # chat sources on your stream may still want it
         if self.web is not None:
             self.web.set_url("about:blank")
 
@@ -519,7 +603,8 @@ class ChatPanel(QWidget):
             return
         lower = text.lower()
         is_link = "://" in text or "." in text or "/" in text
-        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com"))
+        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com"),
+                                                  ("tiktok", "tiktok.com"))
                          if host in lower), None) if is_link else "twitch"
         name = name_for(platform, text) if platform else None
         if name:
@@ -597,15 +682,12 @@ class ChatPanel(QWidget):
         if not self.active:
             return
         kind, value = self.source()
-        wanted = value if kind == "chat" else {}
-        for platform in list(self.readers):
-            if platform not in wanted:
-                self.readers.pop(platform).stop()
-                self.states.pop(platform, None)
         if kind != "link" and self.web is not None:
             self.web.set_url("about:blank")  # free the page's memory; the browser itself stays for later
+        self.hub.want("panel", kind == "chat")
+        self.hub.refresh()  # names may have changed
         if kind == "chat":
-            self._read(wanted)
+            self._read(value)
         elif kind == "link":
             self._show_link(value)
         else:
@@ -619,28 +701,13 @@ class ChatPanel(QWidget):
         if mixed != self.view.mixed or mine != self.view.names:
             self.view.mixed, self.view.names = mixed, mine
             self.view.redraw()  # with or without platform marks and mention highlights
-        for platform, name in names.items():
-            reader = self.readers.get(platform)
-            if reader is None:
-                reader = self.readers[platform] = make_reader(platform, self)
-                reader.message.connect(self.view.add)
-                reader.deleted.connect(lambda mid: self.view.remove(message_id=mid))
-                reader.cleared.connect(
-                    lambda uid, p=platform: self.view.remove(user_id=uid, platform=p) if uid
-                    else self.view.remove(platform=p, everything=True))
-                reader.status.connect(lambda state, p=platform: self._reader_status(p, state))
-            if reader.channel != name:
-                self.states[platform] = "connecting"
-            reader.start(name)
         self.pages.setCurrentWidget(self.view)
         self._show_states()
 
-    def _reader_status(self, platform: str, state: str) -> None:
-        if platform in self.readers:
-            if self.states.get(platform) != state:
-                log.info("chat %s %s: %s", platform, self.readers[platform].channel, state)  # in the logbook
-            self.states[platform] = state
+    def _hub_changed(self) -> None:
+        if self.active and self.pages.currentWidget() is self.view:
             self._show_states()
+        self._show_say()
 
     def _show_states(self) -> None:
         parts, tips = [], []
@@ -654,7 +721,8 @@ class ChatPanel(QWidget):
             label = f"{title} · {name}" if single else title
             parts.append(f"<span style='color:{dot}'>●</span> {label}")
             words = {"live": "reading chat", "connecting": "connecting…"}.get(state, state.split(":", 1)[-1].strip())
-            tips.append(f"{title} ({reader.channel}): {words}")
+            via = {"tikfinity": " via TikFinity", "direct": " straight from TikTok"}.get(getattr(reader, "via", ""), "")
+            tips.append(f"{title} ({reader.channel}): {words}{via}")
         self.where.setText("&nbsp;&nbsp;".join(parts))
         self.where.setToolTip("\n".join(tips))
 
@@ -701,6 +769,8 @@ class ChatPanel(QWidget):
         menu.addAction("Change link…" if saved else "Paste a link…").triggered.connect(self.ask_link)
         if not self._account():
             menu.addAction("Connect Twitch…").triggered.connect(self._connect)
+        if "tiktok" in self.reading():
+            menu.addAction("TikTok key…").triggered.connect(self._tiktok_key)
         menu.addSeparator()
         if kind == "chat":
             menu.addAction("Clear").triggered.connect(self.view.clear_chat)
@@ -708,6 +778,18 @@ class ChatPanel(QWidget):
             menu.addAction("Reload").triggered.connect(self.web.reload)
         return menu
 
+    def _tiktok_key(self) -> None:
+        """An optional Euler Stream key: steadier TikTok reading when TikFinity isn't running."""
+        from PySide6.QtWidgets import QInputDialog
+
+        from sprigcast.chat.tiktok import KEY_SETTING
+
+        key, ok = QInputDialog.getText(
+            self, "TikTok key", "Optional. Without TikFinity, TikTok chat goes through a free signing service "
+            "(eulerstream.com) with shared limits. Your own free key from there lifts them.",
+            QLineEdit.EchoMode.Password, str(QSettings().value(KEY_SETTING, "") or ""))
+        if ok:
+            QSettings().setValue(KEY_SETTING, key.strip())
+
     def shutdown(self) -> None:
-        for reader in self.readers.values():
-            reader.stop()
+        self.hub.stop()

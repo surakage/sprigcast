@@ -5,6 +5,7 @@ from sprigcast.sources import (  # noqa: F401
     browser,
     camera,
     capture,
+    chat,
     color,
     image,
     part,

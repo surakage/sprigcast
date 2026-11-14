@@ -34,6 +34,7 @@ PLATFORMS = {  # key -> (label, colour of its mark in the mixed list)
     "twitch": ("Twitch", "#a970ff"),
     "youtube": ("YouTube", "#ff5a52"),
     "kick": ("Kick", "#53fc18"),
+    "tiktok": ("TikTok", "#25f4ee"),
 }
 
 
@@ -51,6 +52,10 @@ def make_reader(platform: str, parent=None):
         from sprigcast.chat.kick import KickChat
 
         return KickChat(parent)
+    if platform == "tiktok":
+        from sprigcast.chat.tiktok import TikTokChat
+
+        return TikTokChat(parent)
     raise KeyError(platform)
 
 
@@ -68,4 +73,35 @@ def name_for(platform: str, text: str) -> str | None:
         from sprigcast.chat.kick import slug_from_text
 
         return slug_from_text(text)
+    if platform == "tiktok":
+        from sprigcast.chat.tiktok import handle_from_text
+
+        return handle_from_text(text)
     return None
+
+
+# Name colours ------------------------------------------------------------------------------
+
+# Names with no colour of their own get one of these, always the same one for the same name.
+NAME_COLOURS = ("#7fd6a2", "#9cc9ff", "#f2b880", "#d8a6ff", "#f5d76e", "#7fe0d6", "#ff9fb8", "#b9e27a")
+
+
+def readable_colour(colour: str, name: str) -> str:
+    """The chatter's colour, lifted if it would vanish on a dark background; a steady pick if they have none.
+    Plain Python (no Qt), so the chat source can use it on the render thread too."""
+    import colorsys
+    import zlib
+
+    if not colour:
+        return NAME_COLOURS[zlib.crc32(name.lower().encode()) % len(NAME_COLOURS)]
+    raw = colour.lstrip("#")
+    if len(raw) != 6:
+        return NAME_COLOURS[0]
+    try:
+        r, g, b = (int(raw[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return NAME_COLOURS[0]
+    if 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.4:  # how bright it looks (blue looks darkest)
+        h, _, s = colorsys.rgb_to_hls(r, g, b)
+        r, g, b = colorsys.hls_to_rgb(h, 0.72, min(s, 0.85))
+    return "#{:02x}{:02x}{:02x}".format(*(round(v * 255) for v in (r, g, b)))
