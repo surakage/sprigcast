@@ -27,9 +27,9 @@ class CanvasEncoder(ReplayBuffer):
     """A canvas's encoder: keeps `seconds` of packets for replays (0 = replay off) and can write a file."""
 
     def __init__(self, canvas_id, width, height, fps, bitrate_kbps, codec, start_time, container="mkv", encoder=None,
-                 out_size=None):
+                 out_size=None, tracks: tuple[str, ...] = ("recording", "clips")):
         super().__init__(canvas_id, width, height, fps, bitrate_kbps, codec, start_time, 0.0, container, encoder,
-                         out_size)
+                         out_size, tracks)
         self.file: PacketFile | None = None  # the recording being written, on the encoder thread
         self.file_path: Path | None = None  # asked for; the file opens at the next keyframe
         self.file_error: str | None = None
@@ -89,7 +89,8 @@ class CanvasEncoder(ReplayBuffer):
             if self.file is None:
                 if not (p.kind == "video" and p.keyframe):
                     return  # the file starts at a keyframe
-                self.file = PacketFile(self.file_path, self.container_kind, self._templates, p.seconds)
+                self.file = PacketFile(self.file_path, self.container_kind, self._templates, p.seconds,
+                                       self.audio_kinds("recording", "voice") or ("audio",))
             began = time.perf_counter()
             self.file.write(p)
             waited = time.perf_counter() - began
@@ -121,6 +122,11 @@ class EncoderPool:
         self.engine = engine
         self.encoders: dict[str, CanvasEncoder] = {}
         self._users: dict[str, set[str]] = {}
+        self.voice_track = False  # recordings also get your voice on its own audio track (for new encoders)
+
+    @property
+    def tracks(self) -> tuple[str, ...]:
+        return ("recording", "voice", "clips") if self.voice_track else ("recording", "clips")
 
     def acquire(self, user: str, canvas, bitrate_kbps: int, container: str, codec: str, encoder,
                 short_side: int | None = None) -> CanvasEncoder:
@@ -131,12 +137,12 @@ class EncoderPool:
         if enc is None:
             enc = CanvasEncoder(canvas.id, canvas.width, canvas.height, canvas.fps, bitrate_kbps, codec,
                                 time.perf_counter(), container, encoder,
-                                shrink_to(canvas.width, canvas.height, short_side))
+                                shrink_to(canvas.width, canvas.height, short_side), self.tracks)
             enc.start()
             self.encoders[canvas.id] = enc
             self._users[canvas.id] = set()
             self.engine.add_frame_tap(canvas.id, enc.push_frame, enc.gpu_size)
-            self.engine.mixer.add_tap(enc.push_audio)
+            self.engine.mixer.add_tap(enc.push_audio, enc.tracks)
         self._users[canvas.id].add(user)
         return enc
 

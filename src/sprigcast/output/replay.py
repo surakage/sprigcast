@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class _Packet:
-    kind: str  # "video" or "audio"
+    kind: str  # "video", "audio" (the first track) or "audio1", "audio2"... (the encoder's other tracks)
     data: bytes | None  # None once the bytes are in `spool`
     pts: int | None
     dts: int | None
@@ -111,9 +111,9 @@ class ReplayBuffer(Recorder):
 
     def __init__(self, canvas_id: str, width: int, height: int, fps: int, bitrate_kbps: int, codec: str,
                  start_time: float, seconds: float, container: str = "mkv", encoder=None,
-                 out_size: tuple[int, int] | None = None):
+                 out_size: tuple[int, int] | None = None, tracks: tuple[str, ...] = ("clips",)):
         super().__init__(Path(f"replay-{canvas_id}.{container}"), width, height, fps, bitrate_kbps, codec,
-                         start_time, container, out_size, encoder=encoder)
+                         start_time, container, out_size, encoder=encoder, tracks=tracks)
         self.canvas_id = canvas_id
         self.seconds = seconds
         self._packets: deque[_Packet] = deque()
@@ -121,7 +121,7 @@ class ReplayBuffer(Recorder):
         self._newest = float("-inf")  # time of the newest video packet
         self._spool: Spool | None = None
         self._spool_failed = False
-        self._templates = None  # (video stream, audio stream) of the in-memory container
+        self._templates = None  # (video stream, audio stream per track) of the in-memory container
         self._requests: queue.Queue = queue.Queue()
 
     # Called from other threads ------------------------------------------------------
@@ -162,13 +162,17 @@ class ReplayBuffer(Recorder):
         # Opening the in-memory file opens the encoders and fills in each stream's codec parameters
         # (size, SPS/PPS headers), which saved clips copy from these template streams.
         container.start_encoding()
-        self._templates = (video, audio)
+        self._templates = (video, audio, *self._extra_audio)
         return container, video, audio
 
+    def audio_kinds(self, *tracks: str) -> tuple[str, ...]:
+        """The packet kinds of these named tracks (those this encoder has), for PacketFile."""
+        return tuple(audio_kind(self.tracks.index(t)) for t in tracks if t in self.tracks)
+
     def _mux(self, container, packets) -> None:
-        video, audio = self._templates
+        kinds = {id(stream): "video" if i == 0 else audio_kind(i - 1) for i, stream in enumerate(self._templates)}
         for packet in packets:
-            kind = "video" if packet.stream is video else "audio"
+            kind = kinds.get(id(packet.stream), "audio")
             p = _Packet(kind, bytes(packet), packet.pts, packet.dts,
                         packet.time_base or packet.stream.time_base, bool(packet.is_keyframe))
             self._keep(p)
@@ -258,7 +262,8 @@ class ReplayBuffer(Recorder):
         if start is None or self._templates is None:
             raise RuntimeError("nothing buffered yet")
         packets = packets[packets.index(start):]
-        out = PacketFile(path, self.container_kind, self._templates, start.seconds)
+        out = PacketFile(path, self.container_kind, self._templates, start.seconds,
+                         self.audio_kinds("clips") or ("audio",))
         try:
             for p in packets:
                 out.write(p)
@@ -266,18 +271,31 @@ class ReplayBuffer(Recorder):
             out.close()
 
 
-class PacketFile:
-    """A video file written from already-encoded packets, with time 0 at `zero` seconds."""
+def audio_kind(index: int) -> str:
+    return "audio" if index == 0 else f"audio{index}"
 
-    def __init__(self, path: Path, container: str, templates, zero: float):
+
+class PacketFile:
+    """A video file written from already-encoded packets, with time 0 at `zero` seconds.
+
+    templates is (video stream, audio stream per track); `audio` picks which audio tracks go in, by
+    packet kind, in order. Packets of other kinds are left out."""
+
+    def __init__(self, path: Path, container: str, templates, zero: float, audio: tuple[str, ...] = ("audio",)):
         import av
 
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path, self.zero = path, zero
         self._out = av.open(str(path), "w", format=CONTAINERS[container])
-        video_t, audio_t = templates
-        self._streams = {"video": self._out.add_stream_from_template(video_t),
-                         "audio": self._out.add_stream_from_template(audio_t)}
+        video_t, *audio_t = templates
+        self._streams = {"video": self._out.add_stream_from_template(video_t)}
+        for kind in audio:
+            template = audio_t[0 if kind == "audio" else int(kind[5:])]
+            stream = self._out.add_stream_from_template(template)
+            title = template.metadata.get("title")
+            if title and len(audio) > 1:
+                stream.metadata["title"] = title
+            self._streams[kind] = stream
 
     def write(self, p: _Packet) -> None:
         import av
@@ -285,12 +303,15 @@ class PacketFile:
         offset = round(self.zero / p.time_base)
         if p.pts is not None and p.pts < offset:
             return  # audio from just before the first keyframe
+        stream = self._streams.get(p.kind)
+        if stream is None:
+            return  # a track this file leaves out
         packet = av.Packet(p.payload())
         packet.pts = None if p.pts is None else p.pts - offset
         packet.dts = None if p.dts is None else p.dts - offset
         packet.time_base = p.time_base
         packet.is_keyframe = p.keyframe
-        packet.stream = self._streams[p.kind]
+        packet.stream = stream
         self._out.mux(packet)
 
     def close(self) -> None:
@@ -316,7 +337,7 @@ class ReplaySession:
             buffers.append(buf)
         for buf in buffers:
             engine.add_frame_tap(buf.canvas_id, buf.push_frame, buf.gpu_size)
-            engine.mixer.add_tap(buf.push_audio)
+            engine.mixer.add_tap(buf.push_audio, buf.tracks)
         return cls(engine, buffers, folder, container)
 
     def save(self) -> list[Path]:

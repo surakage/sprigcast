@@ -22,7 +22,7 @@ class FakeEngine:
     def remove_frame_tap(self, cid, cb):
         self.taps[cid].remove(cb)
 
-    def add_tap(self, cb):
+    def add_tap(self, cb, tracks=("stream",)):
         self.audio.append(cb)
 
     def remove_tap(self, cb):
@@ -109,3 +109,58 @@ def test_recording_can_be_saved_smaller_than_the_canvas(tmp_path):
         with av.open(str(path)) as f:
             stream = f.streams.video[0]
             assert sorted((stream.width, stream.height)) == [18, 32]
+
+
+class TrackEngine(FakeEngine):
+    """Feeds each tap the tracks it asked for: recording 0.5, voice 0.25, clips 0.125 (constant tones)."""
+
+    LEVEL = {"stream": 0.0625, "recording": 0.5, "voice": 0.25, "clips": 0.125}
+
+    def add_tap(self, cb, tracks=("stream",)):
+        def feed(_block, cb=cb, tracks=tracks):
+            blocks = tuple(np.full((1600, 2), self.LEVEL[t], dtype=np.float32) for t in tracks)
+            cb(blocks[0] if len(blocks) == 1 else blocks)
+        feed.cb = cb
+        self.audio.append(feed)
+
+    def remove_tap(self, cb):
+        self.audio = [f for f in self.audio if f.cb != cb]
+
+
+def _audio_tracks(path):
+    with av.open(str(path)) as f:
+        out = []
+        for stream in f.streams.audio:
+            f.seek(0)
+            frames = [fr.to_ndarray() for fr in f.decode(stream)]
+            level = float(np.median(np.abs(np.concatenate(frames, axis=1)))) if frames else 0.0
+            out.append((stream.metadata.get("title", ""), round(level, 2)))
+        return out
+
+
+def test_recordings_carry_a_voice_track_and_clips_their_own_sound(tmp_path):
+    engine = TrackEngine()
+    pool = EncoderPool(engine)
+    pool.voice_track = True
+    replay = SharedReplay.start(pool, CANVASES[:1], tmp_path, 10, 800, codec="libx264")
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 800, codec="libx264")
+    assert pool.encoders["horizontal"].tracks == ("recording", "voice", "clips")
+    _feed(engine, time.perf_counter(), 40, pool=pool)
+    clip = replay.save()[0]
+    feeder = threading.Thread(target=_feed, args=(engine, time.perf_counter(), 20, 40, pool))
+    feeder.start()
+    rec.stop()
+    feeder.join()
+    replay.stop()
+    assert rec.errors == []
+    assert _audio_tracks(rec.paths[0]) == [("Recording", 0.5), ("Voice", 0.25)]
+    assert _audio_tracks(clip) == [("", 0.12)]
+
+
+def test_without_the_voice_track_a_recording_has_one_sound(tmp_path):
+    engine = TrackEngine()
+    pool = EncoderPool(engine)
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 800, codec="libx264")
+    _feed(engine, time.perf_counter(), 20, pool=pool)
+    rec.stop()
+    assert [level for _, level in _audio_tracks(rec.paths[0])] == [0.5]

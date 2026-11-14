@@ -85,6 +85,7 @@ class Sound:
     voice: bool = False
     filters: list[str] = field(default_factory=list)
     can_monitor: bool = True
+    tracks: tuple[str, ...] = ("stream", "recording", "clips")  # the named tracks it goes to
 
 
 class ClickRow(QWidget):
@@ -406,9 +407,9 @@ class SoundCard(QWidget):
             for key, value in changes.items():
                 attr = {"volume_db": "volume_db", "muted": "muted", "monitor": "monitor", "mono": "mono",
                         "balance": "balance", "delay_ms": "delay_ms", "duck_voice": "voice",
-                        "group": "group", "pinned": "pinned"}.get(key)
+                        "group": "group", "pinned": "pinned", "tracks": "tracks"}.get(key)
                 if attr:
-                    setattr(sound, attr, value)
+                    setattr(sound, attr, tuple(value) if attr == "tracks" else value)
         self.on_change(sound_id, changes)
 
 
@@ -493,6 +494,21 @@ class TunePage(QWidget):
             hear.addWidget(b, 1)
         col.addLayout(hear)
 
+        col.addWidget(_muted_label("Goes to"))
+        goes = QHBoxLayout()
+        goes.setSpacing(6)
+        self.goes: dict[str, QPushButton] = {}
+        for track, text, tip in (("stream", "Stream", "Your live stream"),
+                                 ("recording", "Recording", "The recording's main sound"),
+                                 ("voice", "Voice", "The recording's voice-only track (Settings → Output → Recording)"),
+                                 ("clips", "Clips", "Saved clips")):
+            b = _chip(text, checkable=True)
+            b.setToolTip(tip)
+            b.clicked.connect(self._tracks_clicked)
+            self.goes[track] = b
+            goes.addWidget(b, 1)
+        col.addLayout(goes)
+
         filters_top = QHBoxLayout()
         filters_top.addWidget(_muted_label("Filters"), 1)
         edit_filters = QPushButton("Edit filters")
@@ -552,11 +568,17 @@ class TunePage(QWidget):
             button.setChecked(sound.monitor == value or (value is True and sound.monitor is True))
             if value is not False:
                 button.setEnabled(sound.can_monitor)
+        for track, button in self.goes.items():
+            button.setChecked(track in sound.tracks)
+            button.setEnabled(sound.monitor != "only")  # "just me" goes nowhere but your speakers
         self.filters.setText(", ".join(sound.filters) if sound.filters else "None yet")
         self.group.setCurrentText(sound.group)
         self.pin.setChecked(sound.pinned)
         self.duck.setChecked(sound.voice)
         self._loading = False
+
+    def _tracks_clicked(self) -> None:
+        self._send({"tracks": [t for t, b in self.goes.items() if b.isChecked()]})
 
     @staticmethod
     def _balance_text(balance: float) -> str:
@@ -581,4 +603,6 @@ class TunePage(QWidget):
         if "monitor" in changes:
             for value, button in self.hear.items():
                 button.setChecked(value == changes["monitor"] and type(value) is type(changes["monitor"]))
+            for button in self.goes.values():
+                button.setEnabled(changes["monitor"] != "only")
         self.on_change(self.sound_id, changes)

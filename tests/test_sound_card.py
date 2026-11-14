@@ -94,13 +94,17 @@ def test_groups_show_only_what_is_playing(app):
     card.tune.balance.setValue(-50)
     card.tune.mono.click()
     card.tune.delay.setValue(120)
+    card.tune.goes["clips"].click()  # keep the mic out of saved clips
     card.tune.hear["only"].click()
+    assert ("mic", {"tracks": ["stream", "recording"]}) in changes
+    assert card.sounds["mic"].tracks == ("stream", "recording")
     card.tune.group.setCurrentText("Other")
     assert ("mic", {"balance": -0.5}) in changes and ("mic", {"mono": True}) in changes
     assert ("mic", {"delay_ms": 120}) in changes and ("mic", {"monitor": "only"}) in changes
     assert ("mic", {"group": "Other"}) in changes
     assert card.tune.balance_label.text() == "50% left"
     assert card.tune.hear["only"].isChecked() and not card.tune.hear[True].isChecked()
+    assert not card.tune.goes["stream"].isEnabled()  # "just me" goes nowhere else
     card.close_tune()
     assert card.pages.currentIndex() == 0
 

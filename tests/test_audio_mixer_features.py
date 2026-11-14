@@ -250,3 +250,26 @@ def test_main_window_mixer_controls(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_named_tracks_each_get_the_sources_that_go_to_them():
+    from sprigcast.audio.mixer import source_tracks
+
+    mic = Fake("mic", 0.25, kind="audio_input")
+    music = Fake("music", 0.5, tracks=["recording", "clips"])  # e.g. copyrighted music kept off the stream
+    alert = Fake("alert", 0.125, tracks=["stream"])
+    mine = Fake("mine", 0.0625, monitor="only")
+    assert source_tracks(mic) == ("stream", "recording", "clips", "voice")
+    assert source_tracks(music) == ("recording", "clips")
+    assert source_tracks(mine) == ()
+    mixer = Mixer(report=lambda levels: None)
+    mixer.set_sources([mic, music, alert, mine])
+    streamed, recorded = [], []
+    mixer.add_tap(streamed.append)
+    mixer.add_tap(recorded.append, ("recording", "voice", "clips"))
+    mixed = mixer.tick()
+    assert streamed[0][0, 0] == pytest.approx(0.375) and mixed is streamed[0]
+    rec, voice, clips = recorded[0]
+    assert rec[0, 0] == pytest.approx(0.75) and voice[0, 0] == pytest.approx(0.25)
+    assert clips is rec  # same sources: mixed once
+    assert mixer._meters["master"][1] == pytest.approx(levels(np.full((BLOCK, 2), 0.375, dtype=np.float32))[1])

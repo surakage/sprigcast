@@ -432,9 +432,9 @@ class StreamSession:
         for canvas_id, callback, *size in taps:
             engine.add_frame_tap(canvas_id, callback, *size)
         for _, st in streamers:
-            engine.mixer.add_tap(st.push_audio)
+            engine.mixer.add_tap(st.push_audio, ("stream",))
         for enc in shared:
-            engine.mixer.add_tap(enc.push_audio)
+            engine.mixer.add_tap(enc.push_audio, ("stream",))
         return session
 
     @property

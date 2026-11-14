@@ -60,7 +60,7 @@ class FakeEngine:
     def remove_frame_tap(self, cid, cb):
         self.taps[cid].remove(cb)
 
-    def add_tap(self, cb):
+    def add_tap(self, cb, tracks=("stream",)):
         self.audio = getattr(self, "audio", []) + [cb]
 
     def remove_tap(self, cb):

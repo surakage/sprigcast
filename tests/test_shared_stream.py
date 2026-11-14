@@ -131,7 +131,7 @@ class _Mixer:
     def __init__(self):
         self.taps = []
 
-    def add_tap(self, f):
+    def add_tap(self, f, tracks=("stream",)):
         self.taps.append(f)
 
     def remove_tap(self, f):
