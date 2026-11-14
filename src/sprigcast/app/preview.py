@@ -46,6 +46,8 @@ class Preview(QWidget):
     opened = Signal(str, int)
     # canvas id, item index (-1 = empty canvas), where on screen: right-click asks for a menu there
     menu_requested = Signal(str, int, QPoint)
+    # canvas id: the small "twin" of the other shape in Build was clicked (swap to editing it)
+    swap_requested = Signal(str)
 
     def __init__(self, canvas_id: str, title: str, aspect: tuple[int, int], parent: QWidget | None = None):
         super().__init__(parent)
@@ -58,7 +60,9 @@ class Preview(QWidget):
         self.selected_index: int | None = None
         self.transparent = True  # show see-through canvas areas as a checkerboard
         self.live_look = False  # Live's stage: rounded corners, no checkerboard frame
-        self.ring: str | None = None  # a colour ring round the picture, such as LIVE pink while on air
+        self.ring: str | None = None
+        self.twin = False  # Build's small view of the other shape: click to swap, never edited
+        self.ghost_index: int | None = None  # on a twin: the item matching the one selected, outlined  # a colour ring round the picture, such as LIVE pink while on air
         self.editable = True  # False in Live mode: the previews only show, so a stray click can't move things
         # Editing a part in place: where its layout sits on this canvas (see set_inner).
         self.inner: tuple[float, float, float, float, float] | None = None  # x, y, scale, crop left, crop top
@@ -287,7 +291,25 @@ class Preview(QWidget):
         p.drawRect(part)
         p.restore()
 
+    def _paint_ghost(self, p: QPainter) -> None:
+        """On a twin: a dashed outline round the same thing as is selected in the shape being edited."""
+        if not self.twin or self.scene is None or self.ghost_index is None or self.ghost_index >= len(self.scene.items):
+            return
+        item = self.scene.items[self.ghost_index]
+        size = self.sizes.get(item.source)
+        quad = item.quad(size) if size and size[0] and size[1] else None
+        if not quad:
+            return
+        tl, tr, bl, br = (self.to_widget(x, y) for x, y, _u, _v in quad)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(ACCENT, 1.5)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPolygon(QPolygonF([tl, tr, br, bl]))
+
     def _paint_selection(self, p: QPainter) -> None:
+        self._paint_ghost(p)
         selected = self._selected_item() if self.editable else None
         if selected is None:
             return
@@ -308,6 +330,10 @@ class Preview(QWidget):
     # Mouse and keyboard --------------------------------------------------------------------
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if self.twin:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.swap_requested.emit(self.canvas_id)
+            return
         if event.button() == Qt.MouseButton.RightButton and self.scene is not None and self.editable:
             index = edit.hit_test(self.scene.items, self.sizes, self.to_canvas(event.position()))
             if index != self.selected_index:

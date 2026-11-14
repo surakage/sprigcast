@@ -72,6 +72,13 @@ PILL_STYLE = (
     f"QPushButton:pressed {{ background: {PRESSED}; }}"
     f"QPushButton:disabled {{ color: {MUTED}; }}"
 )
+SMALL_PILL_STYLE = (  # chips and small tools; Qt draws square corners if the radius is over half the height
+    f"QPushButton, QToolButton {{ background: {PANEL}; color: {TEXT}; border: none; border-radius: 13px;"
+    f" padding: 6px 13px; font-weight: 600; }}"
+    f"QPushButton:hover, QToolButton:hover {{ background: {RAISED}; }}"
+    f"QPushButton:disabled {{ color: {MUTED}; }}"
+    "QPushButton::menu-indicator, QToolButton::menu-indicator { width: 0; image: none; }"
+)
 PILL_SELECTED_STYLE = PILL_STYLE + f"QPushButton {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}"
 PILL_ON_AIR_STYLE = PILL_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; }}" \
     f"QPushButton:hover {{ background: {LIVE_HOVER}; }}"
@@ -83,6 +90,18 @@ BIG_GO_STYLE = (
 )
 BIG_END_STYLE = BIG_GO_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; }}" \
     f"QPushButton:hover {{ background: {LIVE_HOVER}; }}"
+BLOOM_PILL_STYLE = (  # Build's bloom tabs: a swatch and a name
+    f"QPushButton {{ background: transparent; color: {MUTED}; border: none; border-radius: 18px;"
+    f" padding: 5px 16px 5px 5px; font-weight: 500; text-align: left; min-height: 26px; }}"
+    f"QPushButton:hover {{ color: {TEXT}; background: {PANEL}; }}"
+    f"QPushButton:checked {{ background: {RAISED_HOVER}; color: {TEXT_BRIGHT}; font-weight: 600; }}"
+)
+SOFT_FIELD_STYLE = (  # borderless inputs on the Build inspector
+    f"QLineEdit, QDoubleSpinBox {{ background: {PANEL}; border: none; border-radius: 12px; padding: 8px 10px;"
+    f" color: {TEXT}; }}"
+    f"QLineEdit:focus, QDoubleSpinBox:focus {{ background: {RAISED}; }}"
+    "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 14px; border: none; background: transparent; }"
+)
 LINK_STYLE = (
     f"QPushButton {{ background: transparent; border: none; color: {MUTED}; padding: 2px 4px; }}"
     f"QPushButton:hover {{ color: {ACCENT}; }}"
