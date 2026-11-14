@@ -68,3 +68,29 @@ def test_plain_progress_and_napping_sloth(tmp_path):
                   if image.pixelColor(x, y).alpha() > 0)
     assert painted > 20
     app.processEvents()
+
+
+def test_welcome_and_live_art():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.empty import ArtPicture, LiveCheer, art
+
+    for name in ("napping", "welcome", "live"):
+        assert not art(name).isNull(), name
+    welcome = ArtPicture("welcome", 240)
+    assert welcome.width() == 240 and 90 < welcome.height() < 130  # keeps the picture's shape
+    stage = QWidget()
+    stage.resize(900, 600)
+    stage.show()
+    cheer = LiveCheer(stage)
+    cheer.cheer("Twitch, YouTube")
+    app.processEvents()
+    assert cheer.isVisible() and cheer.where.text() == "On Twitch, YouTube"
+    assert cheer.y() == 24 and abs(cheer.x() + cheer.width() / 2 - 450) <= 1
+    cheer.picture._step()
+    assert cheer.picture.phase > 0
+    stage.close()

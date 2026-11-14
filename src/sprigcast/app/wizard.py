@@ -257,6 +257,11 @@ class OptimizeWizard(QDialog):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
+        from sprigcast.app.empty import ArtPicture
+
+        self.welcome_art = ArtPicture("welcome", 240 if first_run else 170)
+        box.addWidget(self.welcome_art, 0, Qt.AlignmentFlag.AlignHCenter)
+        box.addSpacing(4)
         box.addWidget(_label("Welcome to SprigCast" if first_run else "Optimize for this PC", TITLE_STYLE))
         box.addWidget(_label("SprigCast checks your PC and suggests stream and recording settings that fit it. "
                              "Takes about 15 seconds. Nothing changes until you press Apply."))

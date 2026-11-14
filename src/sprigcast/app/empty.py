@@ -7,7 +7,6 @@ inspector), so an empty spot reads as "ready for you" instead of broken.
 from __future__ import annotations
 
 from collections.abc import Callable
-
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, QSize, Qt
@@ -16,39 +15,52 @@ from PySide6.QtWidgets import QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWi
 
 from sprigcast.app import theme
 
-ART = Path(__file__).with_name("art") / "sloth-napping.png"
-_art: QPixmap | None = None
+ART_FOLDER = Path(__file__).with_name("art")
+_pictures: dict[str, QPixmap] = {}
+
+
+def art(name: str) -> QPixmap:
+    """A picture from app/art (loaded once): "napping", "welcome" or "live". Empty if it's missing."""
+    if name not in _pictures:
+        _pictures[name] = QPixmap(str(ART_FOLDER / f"sloth-{name}.png"))
+    return _pictures[name]
 
 
 def sloth_art() -> QPixmap:
-    """The napping sloth picture (loaded once). Empty if the file is missing."""
-    global _art
-    if _art is None:
-        _art = QPixmap(str(ART))
-    return _art
+    return art("napping")
 
 
-class NappingSloth(QWidget):
-    """A sloth asleep on a leafy vine branch, drawn to fit its box (aspect kept)."""
+class ArtPicture(QWidget):
+    """One of the sloth pictures, `width` px wide, drawn smoothly at any screen scale."""
+
+    def __init__(self, name: str, width: int, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.name = name
+        picture = art(name)
+        ratio = picture.height() / picture.width() if not picture.isNull() else 0.6
+        self.setFixedSize(width, round(width * ratio))
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
+        picture = art(self.name)
+        if picture.isNull():
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        size = picture.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        x, y = (self.width() - size.width()) / 2, (self.height() - size.height()) / 2
+        p.drawPixmap(QRectF(x, y, size.width(), size.height()), picture, QRectF(picture.rect()))
+        p.end()
+
+
+class NappingSloth(ArtPicture):
+    """A sloth asleep on a leafy vine branch."""
 
     BASE = QSize(150, 96)
 
     def __init__(self, scale: float = 1.0, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.scale_by = scale
+        super().__init__("napping", round(self.BASE.width() * scale), parent)
         self.setFixedSize(round(self.BASE.width() * scale), round(self.BASE.height() * scale))
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-    def paintEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
-        art = sloth_art()
-        if art.isNull():
-            return
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        size = art.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
-        x, y = (self.width() - size.width()) / 2, (self.height() - size.height()) / 2
-        p.drawPixmap(QRectF(x, y, size.width(), size.height()), art, QRectF(art.rect()))
-        p.end()
 
 
 class EmptyState(QWidget):
@@ -79,3 +91,119 @@ class EmptyState(QWidget):
 
     def set_text(self, text: str) -> None:
         self.label.setText(text)
+
+
+class LiveCheer(QWidget):
+    """"You're live!": the waving sloth with a softly pulsing live dot, shown a few seconds when a stream starts.
+
+    A child of the Live screen, floating over its top centre. It fades away by itself, and a click
+    sends it away at once.
+    """
+
+    SHOW_MS = 5000
+
+    def __init__(self, parent: QWidget):
+        from PySide6.QtCore import QPropertyAnimation, QTimer
+        from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout
+
+        super().__init__(parent)
+        self.setObjectName("liveCheer")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"#liveCheer {{ background: {theme.PANEL}; border-radius: 22px; }}")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(18, 12, 26, 12)
+        row.setSpacing(14)
+        self.picture = _PulsingLive(96)
+        row.addWidget(self.picture)
+        words = QVBoxLayout()
+        words.setSpacing(4)
+        words.addStretch(1)
+        self.title = QLabel("You're live!")
+        self.title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 18px; font-weight: 700;"
+                                 " background: transparent;")
+        self.where = QLabel("")
+        self.where.setWordWrap(True)
+        self.where.setMinimumWidth(170)
+        self.where.setMaximumWidth(280)
+        self.where.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        words.addWidget(self.title)
+        words.addWidget(self.where)
+        words.addStretch(1)
+        row.addLayout(words)
+        self.fade = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.fade)
+        self._anim = QPropertyAnimation(self.fade, b"opacity", self)
+        self._anim.finished.connect(self._faded)
+        self._timer = QTimer(self, singleShot=True, interval=self.SHOW_MS)
+        self._timer.timeout.connect(lambda: self._fade_to(0.0, 600))
+        self.hide()
+
+    def cheer(self, where: str) -> None:
+        self.where.setText(f"On {where}" if where else "")
+        self.where.setVisible(bool(where))
+        self.adjustSize()
+        parent = self.parentWidget()
+        self.move(max(0, (parent.width() - self.width()) // 2), 24)
+        self.raise_()
+        self.show()
+        self.picture.start()
+        self._fade_to(1.0, 250, start=0.0)
+        self._timer.start()
+
+    def mousePressEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
+        self._timer.stop()
+        self._fade_to(0.0, 250)
+
+    def _fade_to(self, value: float, ms: int, start: float | None = None) -> None:
+        self._anim.stop()
+        self._anim.setDuration(ms)
+        self._anim.setStartValue(self.fade.opacity() if start is None else start)
+        self._anim.setEndValue(value)
+        self._anim.start()
+
+    def _faded(self) -> None:
+        if self.fade.opacity() <= 0.01:
+            self.hide()
+            self.picture.stop()
+
+
+class _PulsingLive(ArtPicture):
+    """The waving sloth with SprigCast's own live dot by its paw, glowing in and out."""
+
+    def __init__(self, width: int):
+        from PySide6.QtCore import QTimer
+
+        super().__init__("live", width)
+        self.phase = 0.0
+        self._tick = QTimer(self, interval=50)
+        self._tick.timeout.connect(self._step)
+
+    def start(self) -> None:
+        self._tick.start()
+
+    def stop(self) -> None:
+        self._tick.stop()
+
+    def _step(self) -> None:
+        self.phase = (self.phase + 0.05) % 1.0
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        import math
+
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor
+
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        centre = QPointF(self.width() * 0.86, self.height() * 0.4)
+        r = max(3.0, self.width() * 0.045)
+        glow = QColor(theme.LIVE)
+        glow.setAlphaF(0.18 + 0.22 * (0.5 + 0.5 * math.sin(self.phase * 2 * math.pi)))
+        p.setBrush(glow)
+        p.drawEllipse(centre, r * 2.1, r * 2.1)
+        p.setBrush(QColor(theme.LIVE))
+        p.drawEllipse(centre, r, r)
+        p.end()
