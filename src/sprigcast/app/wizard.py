@@ -11,7 +11,7 @@ import queue
 import threading
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
@@ -81,24 +81,13 @@ class LeafChoice(QPushButton):
         p.setBrush(QColor(theme.SELECT_BG if on and enabled else theme.RAISED_HOVER if self.underMouse()
                           else theme.CARD))
         p.drawRoundedRect(r, 14, 14)
-        # The leaf: tip up and to the right, a vein down the middle
+        # The leaf (theme.paint_leaf): filled green when on, an outline when off
         cx, cy, size = r.left() + 32, r.center().y(), 22
-        leaf = QPainterPath(QPointF(cx - size * 0.5, cy + size * 0.5))
-        leaf.cubicTo(QPointF(cx - size * 0.6, cy - size * 0.2), QPointF(cx + size * 0.1, cy - size * 0.6),
-                     QPointF(cx + size * 0.55, cy - size * 0.55))
-        leaf.cubicTo(QPointF(cx + size * 0.6, cy + size * 0.05), QPointF(cx + size * 0.1, cy + size * 0.6),
-                     QPointF(cx - size * 0.5, cy + size * 0.5))
-        green = QColor(theme.ACCENT if enabled else theme.MUTED)
+        leaf = QRectF(cx - size * 0.6, cy - size * 0.6, size * 1.2, size * 1.2)
         if on:
-            p.setPen(QPen(green, 1.6))
-            p.setBrush(green)
+            theme.paint_leaf(p, leaf, True, theme.ACCENT if enabled else theme.MUTED)
         else:
-            p.setPen(QPen(QColor("#5d6b64"), 1.6))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(leaf)
-        vein = QColor(theme.ACCENT_TEXT if on else "#5d6b64")
-        p.setPen(QPen(vein, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.drawLine(QPointF(cx - size * 0.5, cy + size * 0.5), QPointF(cx + size * 0.3, cy - size * 0.3))
+            theme.paint_leaf(p, leaf, False, theme.LEAF_OFF)
         # Title and explanation
         text_left = r.left() + 62
         font = p.font()
@@ -148,21 +137,12 @@ class StageButton(QPushButton):
         size = 18 + self.index * 5  # the leaf grows stage by stage
         cx, base = r.center().x(), r.top() + 14 + 42
         p.setPen(QPen(colour, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawLine(QPointF(cx, base), QPointF(cx, base - size * 0.45))
-        leaf = QPainterPath(QPointF(cx, base - size * 0.45))
-        leaf.cubicTo(QPointF(cx, base - size * 1.0), QPointF(cx + size * 0.55, base - size * 1.1),
-                     QPointF(cx + size * 0.6, base - size * 1.15))
-        leaf.cubicTo(QPointF(cx + size * 0.6, base - size * 0.65), QPointF(cx + size * 0.2, base - size * 0.45),
-                     QPointF(cx, base - size * 0.45))
-        p.drawPath(leaf)
+        # A sprout: one leaf up and to the right, and from the second stage on a smaller one to the left
+        theme.paint_leaf(p, QRectF(cx, base - size * 1.15, size * 0.6, size * 0.7), False, colour, width=1.8)
         if self.index:
-            small = QPainterPath(QPointF(cx, base - size * 0.25))
-            small.cubicTo(QPointF(cx, base - size * 0.6), QPointF(cx - size * 0.4, base - size * 0.7),
-                          QPointF(cx - size * 0.45, base - size * 0.72))
-            small.cubicTo(QPointF(cx - size * 0.45, base - size * 0.4), QPointF(cx - size * 0.15, base - size * 0.25),
-                          QPointF(cx, base - size * 0.25))
-            p.drawPath(small)
+            theme.paint_leaf(p, QRectF(cx - size * 0.45, base - size * 0.72, size * 0.45, size * 0.47), False,
+                             colour, width=1.8, mirror=True)
         font = p.font()
         font.setBold(True)
         p.setFont(font)

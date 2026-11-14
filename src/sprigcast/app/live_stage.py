@@ -37,7 +37,7 @@ GAP = 20
 
 
 class Switch(QCheckBox):
-    """A small on/off switch: a pill with a knob, green when on."""
+    """A small on/off switch: a pill with a leaf for a knob, green when on."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -56,8 +56,10 @@ class Switch(QCheckBox):
             track.setAlpha(110)
         p.setBrush(track)
         p.drawRoundedRect(QRectF(0, 0, 30, 16), 8, 8)
-        p.setBrush(QColor("#0d1210" if on else theme.MUTED))
-        p.drawEllipse(QRectF(16 if on else 2, 2, 12, 12))
+        # The knob is a little leaf: dark on the green track when on, a soft grey one when off.
+        knob = QRectF(17 if on else 3, 2.5, 11, 11)
+        theme.paint_leaf(p, knob, True, "#0d1210" if on else theme.MUTED,
+                         vein=theme.ACCENT if on else theme.EDGE_STRONG, width=1.0)
         p.end()
 
 
