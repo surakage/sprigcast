@@ -36,7 +36,7 @@ def load_collection(path: Path) -> SceneCollection:
 
 
 def app_icon():
-    """The sloth-and-sprig logo (data/logo.svg) as the window and taskbar icon."""
+    """The SprigCast S on its dark green tile (data/logo.svg) as the window and taskbar icon."""
     from PySide6.QtGui import QIcon
 
     if sys.platform == "win32":
@@ -47,6 +47,14 @@ def app_icon():
         except Exception:
             pass
     with resources.as_file(resources.files("sprigcast.data").joinpath("logo.svg")) as path:
+        return QIcon(str(path))
+
+
+def brand_mark():
+    """The bare S (data/mark.svg, mint with the pink live dot) for the header, where a tile would look boxed in."""
+    from PySide6.QtGui import QIcon
+
+    with resources.as_file(resources.files("sprigcast.data").joinpath("mark.svg")) as path:
         return QIcon(str(path))
 
 

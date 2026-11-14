@@ -48,5 +48,8 @@ def test_row_stacks_when_squeezed():
 def test_logo_loads_as_the_app_icon():
     from sprigcast.app.main import app_icon
 
+    from sprigcast.app.main import brand_mark
+
     icon = app_icon()
     assert not icon.isNull() and not icon.pixmap(32, 32).isNull()
+    assert not brand_mark().pixmap(30, 30).isNull()
