@@ -1424,6 +1424,7 @@ class MainWindow(QMainWindow):
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
                                   lambda: self._open_settings(), self._on_sound_changed,
                                   lambda sid: self._open_filters(sid, "audio"), self._set_mic_first)
+        self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()

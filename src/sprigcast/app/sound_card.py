@@ -208,6 +208,7 @@ class SoundCard(QWidget):
                  on_mic_first: Callable[[bool], None] | None = None):
         super().__init__()
         self.on_change, self.on_filters = on_change, on_filters
+        self.on_settings: Callable[[], None] | None = None  # opens Settings → Audio → Sounds
         self.sounds: dict[str, Sound] = {}
         self.editing = False
         self.heard: dict[str, float] = {}
@@ -239,6 +240,12 @@ class SoundCard(QWidget):
         self.edit.setToolTip("Show every sound, ready to tune")
         self.edit.clicked.connect(lambda: self.set_editing(not self.editing))
         top.addWidget(self.edit)
+        self.settings = QPushButton("⚙")
+        self.settings.setStyleSheet(theme.LINK_STYLE)
+        self.settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings.setToolTip("Every sound in one table: volume, mono, balance, sync offset, tracks")
+        self.settings.clicked.connect(lambda: self.on_settings and self.on_settings())
+        top.addWidget(self.settings)
         col.addLayout(top)
         first = QHBoxLayout()
         first.setSpacing(10)
