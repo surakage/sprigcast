@@ -327,3 +327,9 @@ def test_media_controls_and_events():
     assert [m["media"] for m in _ok(api, "media.list")["media"]] == ["Intro", "Music"]
     assert _fails(api, "media.play", media="Cam") == "not_allowed"  # a camera isn't media
     assert _ok(api, "sound.mute", sound="Music")["muted"] is True  # media sound is in the Sound card
+
+
+def test_app_info_lists_only_the_shapes_that_are_on():
+    api, _ = _api()
+    api.col.canvas("vertical").enabled = False
+    assert _ok(api, "app.info")["shapes"] == ["horizontal"]

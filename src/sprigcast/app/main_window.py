@@ -4430,6 +4430,10 @@ class MainWindow(QMainWindow):
             return
         self._say("Ending stream…")
         session.stop()
+        delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)
+        if delayed > 0:
+            self.statusBar().showMessage(f"Stream delay: the last {delayed:g} s still go out to viewers.",
+                                         int(delayed * 1000) + 3000)
         from sprigcast.app import transitions_panel
 
         transitions_panel.set_quiet(False)

@@ -37,7 +37,17 @@ class C:
 CANVASES = [C("horizontal", 64, 36), C("vertical", 36, 64)]
 
 
+def _wait_open(pool, timeout=10.0):
+    # Frames that arrive while an encoder is still opening are let go on purpose (only the newest
+    # couple are kept), so under a loaded CPU a slow open would cost the first frame or two.
+    end = time.monotonic() + timeout
+    while any(enc._opening for enc in list(pool.encoders.values())) and time.monotonic() < end:
+        time.sleep(0.005)
+
+
 def _feed(engine, start, frames, first=0, pool=None):
+    if pool is not None:
+        _wait_open(pool)
     for i in range(first, first + frames):
         # Faster than real time, so let the encoders keep up: these tests are about what lands in files.
         while pool is not None and any(enc._video.qsize() > 5 for enc in list(pool.encoders.values())):
@@ -85,12 +95,14 @@ def test_recording_alone_then_again(tmp_path):
     engine = FakeEngine()
     pool = EncoderPool(engine)
     rec = SharedRecording.start(pool, CANVASES, tmp_path / "a", 800, codec="libx264")
+    _wait_open(pool)
     t = time.perf_counter()  # after the start: frames stamped before an encoder starts are skipped
     _feed(engine, t, 20, pool=pool)
     rec.stop()
     assert pool.encoders == {}
     assert [_frames(p) for p in rec.paths] == [20, 20]
     rec2 = SharedRecording.start(pool, CANVASES[:1], tmp_path / "b", 800, codec="libx264")
+    _wait_open(pool)
     _feed(engine, time.perf_counter(), 10, pool=pool)
     rec2.stop()
     assert rec2.errors == [] and _frames(rec2.paths[0]) == 10, _frames(rec2.paths[0])

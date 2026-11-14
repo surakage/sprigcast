@@ -277,10 +277,10 @@ class NativeApi:
 
     # App --------------------------------------------------------------------------------
 
-    @action("app.info", "Version, API version and the shapes this setup has.")
+    @action("app.info", "Version, API version and the shapes that are turned on.")
     def app_info(self, data):
         return {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
-                "shapes": self._shapes(),
+                "shapes": [c.id for c in self.col.canvases if c.enabled],
                 "events": list(EVENT_GROUPS + HIGH_VOLUME)}
 
     @action("app.actions", "Every action with what it does and its fields (fields starting with ? are optional).")

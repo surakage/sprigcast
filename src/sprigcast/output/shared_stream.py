@@ -208,6 +208,19 @@ class StreamLink:
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
+        line = self._delay_line
+        if line is not None and self._ready and self.delay_s > 0:
+            # Ending with a stream delay: the delayed part still goes out (like OBS), in the background.
+            self.status = f"ending: sending the last {self.delay_s:g} s"
+
+            def finish():
+                line.finish(self.delay_s + 5)
+                self._q.put(None)  # after everything released: the link sends it all, then ends
+                self._thread.join(timeout)
+                self._stop.set()
+
+            threading.Thread(target=finish, name=f"sprigcast-end-{self.name}", daemon=True).start()
+            return
         self._stop.set()
         self._q.put(None)
         self._thread.join(timeout)
