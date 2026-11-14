@@ -47,9 +47,9 @@ def test_right_click_in_a_preview_selects_and_asks_for_a_menu(app):
                         Qt.MouseButton.RightButton, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier)
     preview.mousePressEvent(event)
     assert selected == [0] and menus == [0] and preview._drag is None  # selected, nothing dragged
-    preview.editable = False  # Live mode: previews only show
+    preview.editable = False  # Live mode: previews only show, and right-click offers projectors
     preview.mousePressEvent(event)
-    assert menus == [0]
+    assert menus == [0, -1] and selected == [0]
 
 
 def test_live_scene_and_destination_menus(app):
@@ -94,7 +94,7 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
         size_menu = next(a.menu() for a in menu.actions() if a.text() == "Size and place")
         fit = next(a for a in size_menu.actions() if a.text() == "Fit to canvas")
         assert fit.shortcut().toString() == "Ctrl+F"  # the shortcut shows in the menu
-        assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Canvas size and frame rate…"]
+        assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Full screen on…", "Canvas size and frame rate…"]
         w._set_mode("live")
         w._edit_in_build("h2")
         assert w.mode == "build" and w.selected_scene_id == "h2"
