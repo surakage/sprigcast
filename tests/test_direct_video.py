@@ -126,9 +126,14 @@ def test_streams_use_the_direct_encoder_and_change_bitrate_in_place(tmp_path, di
                              encoder=EncoderSettings(rate_control="cbr", b_frames=0))
     assert st.uses_direct()
     st.start()
-    _nv12_frames(st, 320, 180, 15)
+    assert st._opened.wait(10)
+    # A stream restarts its clock when it connects (start_time = perf_counter()), so its frames must be
+    # stamped after that, like the engine's. Fixed times (1000.0) only worked while the machine had been
+    # up less than ~1000 s; past that every frame looked older than the stream and was skipped.
+    t = time.perf_counter() + 0.05
+    _nv12_frames(st, 320, 180, 15, start=t)
     st._want_kbps = 2000  # what auto-pilot asks for when the upload struggles
-    _nv12_frames(st, 320, 180, 15, start=1000.5)
+    _nv12_frames(st, 320, 180, 15, start=t + 0.5)
     st.stop()
     assert st.error is None
     assert direct.made[0].settings["bitrate_changes"] == [(2000, 2000, 2000)]  # CBR: max and buffer follow
