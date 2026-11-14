@@ -85,6 +85,7 @@ class ThinMeter(QWidget):
         super().__init__(parent)
         self.level = 0.0  # 0..1 of -60..0 dBFS
         self.muted = False
+        self.colour: str | None = None  # one calm colour (a sound group's) instead of green/yellow
         self.setFixedHeight(6)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -103,7 +104,10 @@ class ThinMeter(QWidget):
         p.setBrush(QColor(theme.TRACK))
         p.drawRoundedRect(r, 3, 3)
         if self.level > 0 and not self.muted:
-            colour = theme.ACCENT if self.level < 2 / 3 else theme.WARN if self.level < 0.85 else theme.LIVE
+            if self.colour:
+                colour = self.colour if self.level < 0.85 else theme.LIVE  # pink only near clipping
+            else:
+                colour = theme.ACCENT if self.level < 2 / 3 else theme.WARN if self.level < 0.85 else theme.LIVE
             p.setBrush(QColor(colour))
             p.drawRoundedRect(QRectF(0, 0, max(6.0, r.width() * self.level), r.height()), 3, 3)
         p.end()
@@ -150,7 +154,8 @@ class LiveSide(QWidget):
                  on_place: Callable[[str, str], None] | None = None,
                  on_settings: Callable[[], None] | None = None,
                  on_sound: Callable[[str, dict], None] | None = None,
-                 on_sound_filters: Callable[[str], None] | None = None):
+                 on_sound_filters: Callable[[str], None] | None = None,
+                 on_mic_first: Callable[[bool], None] | None = None):
         """on_destination(id): open Settings on a place (None: the first, "new:<service>": add one).
         on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"."""
         super().__init__()
@@ -232,7 +237,8 @@ class LiveSide(QWidget):
         from sprigcast.app.sound_card import SoundCard
 
         sound_card = side_card()
-        self.sound = SoundCard(on_sound or (lambda _id, _changes: None), on_sound_filters or (lambda _id: None))
+        self.sound = SoundCard(on_sound or (lambda _id, _changes: None), on_sound_filters or (lambda _id: None),
+                               on_mic_first)
         sound_card.layout().addWidget(self.sound)
         root.addWidget(sound_card)
 

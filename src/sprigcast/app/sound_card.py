@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -91,6 +92,10 @@ class ClickRow(QWidget):
 
     clicked = Signal()
 
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
             self.clicked.emit()
@@ -117,20 +122,21 @@ def _muted_label(text: str) -> QLabel:
 class SoundCard(QWidget):
     """on_change(source_id, {setting: value}); on_filters(source_id) opens that sound's filters."""
 
-    def __init__(self, on_change: Callable[[str, dict], None], on_filters: Callable[[str], None]):
+    def __init__(self, on_change: Callable[[str, dict], None], on_filters: Callable[[str], None],
+                 on_mic_first: Callable[[bool], None] | None = None):
         super().__init__()
         self.on_change, self.on_filters = on_change, on_filters
         self.sounds: dict[str, Sound] = {}
         self.editing = False
         self.heard: dict[str, float] = {}
-        self.open_groups: set[str] = set()  # groups showing their quiet sounds too
+        self.open_groups: set[str] = set()  # groups showing their sounds
         self.meters: dict[str, ThinMeter] = {}
         self.group_meters: dict[str, ThinMeter] = {}
         self.rows: dict[str, QWidget] = {}
-        self.quiet_buttons: dict[str, QPushButton] = {}
+        self.parts: dict[str, dict] = {}
         self.tuning: str | None = None
         self._shape: tuple | None = None
-        self._visible: dict[str, bool] = {}
+        self._lit: dict[str, tuple] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -151,14 +157,34 @@ class SoundCard(QWidget):
         self.edit.clicked.connect(lambda: self.set_editing(not self.editing))
         top.addWidget(self.edit)
         col.addLayout(top)
+        first = QHBoxLayout()
+        first.setSpacing(10)
+        label = QLabel("Mic first")
+        label.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
+        hint = _muted_label("others dip when you talk")
+        hint.setStyleSheet(hint.styleSheet() + " font-size: 12px;")
+        self.mic_first = Switch()
+        self.mic_first.setToolTip("Ducking: while your mic is talking, every other sound glides down, "
+                                  "then back up when you stop")
+        self.mic_first.toggled.connect(lambda on: (on_mic_first or (lambda _on: None))(on))
+        first.addWidget(label)
+        first.addWidget(hint, 1)
+        first.addWidget(self.mic_first)
+        col.addLayout(first)
         self.body = QVBoxLayout()
         self.body.setSpacing(16)
         col.addLayout(self.body)
+        col.addStretch(1)  # spare height goes below the groups, never between them
         self.pages.addWidget(overview)
 
         # Page 1: tune one sound.
         self.tune = TunePage(self._tune_changed, lambda sid: self.on_filters(sid), self.close_tune)
         self.pages.addWidget(self.tune)
+
+    def set_mic_first(self, on: bool) -> None:
+        self.mic_first.blockSignals(True)
+        self.mic_first.setChecked(on)
+        self.mic_first.blockSignals(False)
 
     # Data ---------------------------------------------------------------------------------
 
@@ -178,7 +204,7 @@ class SoundCard(QWidget):
 
     def set_levels(self, levels: dict[str, tuple[float, float]], now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
-        loudest: dict[str, float] = {}
+        loudest: dict[str, tuple[float, str]] = {}
         for source_id, meter in self.meters.items():
             if source_id not in levels:
                 continue
@@ -186,13 +212,14 @@ class SoundCard(QWidget):
             meter.set_db(rms)
             if rms > HEARD_DB:
                 self.heard[source_id] = now
-            group = self.sounds[source_id].group if source_id in self.sounds else "Other"
-            loudest[group] = max(loudest.get(group, -60.0), rms)
+            sound = self.sounds.get(source_id)
+            if sound is not None and not sound.muted and rms > loudest.get(sound.group, (-61.0, ""))[0]:
+                loudest[sound.group] = (rms, sound.name)
         for group, meter in self.group_meters.items():
-            meter.set_db(loudest.get(group, -60.0))
+            meter.set_db(loudest.get(group, (-60.0, ""))[0])
         if self.tuning in levels:
             self.tune.meter.set_db(levels[self.tuning][1])
-        self._apply_visibility(now)
+        self._apply_visibility(now, {g: name for g, (_, name) in loudest.items()})
 
     # Building -----------------------------------------------------------------------------
 
@@ -202,8 +229,8 @@ class SoundCard(QWidget):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        self.meters, self.group_meters, self.rows, self.quiet_buttons = {}, {}, {}, {}
-        self._visible = {}
+        self.meters, self.group_meters, self.rows, self.parts = {}, {}, {}, {}
+        self._lit = {}
         if not self.sounds:
             self.body.addWidget(_muted_label("No mic or desktop audio yet"))
             return
@@ -215,50 +242,56 @@ class SoundCard(QWidget):
                 box.show()  # a layout shows new children later; show now so visibility below sticks
 
     def _group_box(self, group: str, members: list[Sound]) -> QWidget:
+        colour = GROUP_COLOURS[group]
         box = QWidget()
         col = QVBoxLayout(box)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(9)
-        head = QHBoxLayout()
+        col.setSpacing(8)
+        head_row = ClickRow()
+        head_row.setCursor(Qt.CursorShape.PointingHandCursor)
+        head_row.setToolTip(f"Show the {group} sounds")
+        head_row.clicked.connect(lambda g=group: self.toggle_group(g))
+        head = QHBoxLayout(head_row)
+        head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(10)
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {GROUP_COLOURS[group]}; background: transparent;")
+        dot.setStyleSheet(f"color: {colour}; background: transparent;")
         name = QLabel(group)
         font = name.font()
         font.setWeight(font.Weight.DemiBold)
         name.setFont(font)
-        name.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
-        count = _muted_label(str(len(members)))
+        sub = QLabel("")
+        sub.setStyleSheet(f"color: {theme.MUTED}; background: transparent; font-size: 12px;")
+        for label in (dot, name, sub):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         all_muted = all(s.muted for s in members)
         mute = _chip("Muted" if all_muted else "Mute", MUTED_CHIP_STYLE if all_muted else CHIP_STYLE)
         mute.setToolTip(f"Unmute every {group} sound" if all_muted else f"Mute every {group} sound")
         mute.clicked.connect(lambda _=False, ids=[s.id for s in members], on=not all_muted: self._mute_all(ids, on))
         head.addWidget(dot)
-        head.addWidget(name, 1)
-        head.addWidget(count)
+        head.addWidget(name)
+        head.addWidget(sub, 1)
         head.addWidget(mute)
-        col.addLayout(head)
+        col.addWidget(head_row)
         meter = ThinMeter()
+        meter.colour = colour
         meter.muted = all_muted
         self.group_meters[group] = meter
         col.addWidget(meter)
-        inner = QVBoxLayout()
-        inner.setContentsMargins(18, 4, 0, 0)
-        inner.setSpacing(10)
+        inner_box = QWidget()
+        inner = QVBoxLayout(inner_box)
+        inner.setContentsMargins(20, 6, 0, 2)
+        inner.setSpacing(12)
         for sound in members:
-            row = self._sound_row(sound)
+            row = self._sound_row(sound, colour)
             self.rows[sound.id] = row
             inner.addWidget(row)
-        quiet = QPushButton()
-        quiet.setStyleSheet(theme.LINK_STYLE + "QPushButton { padding: 0px; text-align: left; }")
-        quiet.setCursor(Qt.CursorShape.PointingHandCursor)
-        quiet.clicked.connect(lambda _=False, g=group: self._toggle_quiet(g))
-        self.quiet_buttons[group] = quiet
-        inner.addWidget(quiet, 0, Qt.AlignmentFlag.AlignLeft)
-        col.addLayout(inner)
+        col.addWidget(inner_box)
+        self.parts[group] = {"name": name, "sub": sub, "inner": inner_box, "dot": dot,
+                             "muted": [s.name for s in members if s.muted], "count": len(members)}
         return box
 
-    def _sound_row(self, sound: Sound) -> QWidget:
+    def _sound_row(self, sound: Sound, colour: str) -> QWidget:
         row = ClickRow()
         row.setCursor(Qt.CursorShape.PointingHandCursor)
         row.setToolTip("Tune this sound: volume, left/right, mono, delay, filters…")
@@ -281,43 +314,58 @@ class SoundCard(QWidget):
         line.addWidget(right)
         col.addLayout(line)
         meter = ThinMeter()
-        meter.setFixedHeight(4)
+        meter.setFixedHeight(3)
+        meter.colour = colour
         meter.muted = sound.muted
         meter.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.meters[sound.id] = meter
         col.addWidget(meter)
         return row
 
-    # Showing only what's playing ----------------------------------------------------------
+    # Calm by default ----------------------------------------------------------------------
 
-    def is_shown(self, sound: Sound, now: float) -> bool:
-        if self.editing or sound.group in self.open_groups or sound.pinned or sound.muted:
-            return True
-        return now - self.heard.get(sound.id, -1e9) < LINGER_S
+    def is_open(self, group: str) -> bool:
+        return self.editing or group in self.open_groups
 
-    def _apply_visibility(self, now: float | None = None) -> None:
+    def _apply_visibility(self, now: float | None = None, playing: dict[str, str] | None = None) -> None:
+        """A group lights up (its colour) while one of its sounds plays, and names that sound;
+        a quiet group is dimmed. Its sounds show only when you open it (or press Edit)."""
         now = time.monotonic() if now is None else now
-        quiet_counts: dict[str, int] = {}
-        for sound_id, row in self.rows.items():
-            sound = self.sounds[sound_id]
-            shown = self.is_shown(sound, now)
-            if self._visible.get(sound_id) != shown:
-                self._visible[sound_id] = shown
-                row.setVisible(shown)
-            if not shown:
-                quiet_counts[sound.group] = quiet_counts.get(sound.group, 0) + 1
-        for group, button in self.quiet_buttons.items():
-            hidden = quiet_counts.get(group, 0)
-            if group in self.open_groups and not self.editing:
-                text, show = "Hide quiet ▴", True
+        playing = playing or {}
+        for group, part in self.parts.items():
+            opened = self.is_open(group)
+            any_row = False
+            for sid, s in self.sounds.items():
+                if s.group == group and sid in self.rows:
+                    show = opened or s.pinned  # "Always show" keeps a sound listed when its group is shut
+                    any_row |= show
+                    if self.rows[sid].isVisibleTo(self) != show:
+                        self.rows[sid].setVisible(show)
+            if part["inner"].isVisibleTo(self) != any_row:
+                part["inner"].setVisible(any_row)
+            heard = [sid for sid, s in self.sounds.items()
+                     if s.group == group and not s.muted and now - self.heard.get(sid, -1e9) < LINGER_S]
+            lit = bool(heard)
+            if part["muted"] and not lit:
+                text = f"{len(part['muted'])} muted" if len(part["muted"]) > 1 else f"{part['muted'][0]} muted"
+                style = f"color: {theme.LIVE_TEXT}; background: transparent; font-size: 12px;"
+            elif lit:
+                text = playing.get(group) or self.sounds[heard[0]].name
+                style = f"color: {theme.TEXT}; background: transparent; font-size: 12px;"
             else:
-                text, show = f"{hidden} quiet ▸", hidden > 0
-            if button.text() != text:
-                button.setText(text)
-            if button.isVisibleTo(self) != show:
-                button.setVisible(show)
+                text = f"{part['count']} quiet" if part["count"] > 1 else "quiet"
+                style = f"color: {theme.MUTED}; background: transparent; font-size: 12px;"
+            key = (lit, text, opened)
+            if self._lit.get(group) == key:
+                continue
+            self._lit[group] = key
+            part["sub"].setText(text)
+            part["sub"].setStyleSheet(style)
+            part["name"].setStyleSheet(
+                f"color: {GROUP_COLOURS[group] if lit else theme.MUTED}; background: transparent;")
+            part["dot"].setText("▾" if opened else "●")
 
-    def _toggle_quiet(self, group: str) -> None:
+    def toggle_group(self, group: str) -> None:
         self.open_groups ^= {group}
         self._apply_visibility()
 

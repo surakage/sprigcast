@@ -1205,7 +1205,8 @@ class MainWindow(QMainWindow):
                                     self._edit_in_build)
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
-                                  lambda: self._open_settings(), self._on_sound_changed, self._open_filters)
+                                  lambda: self._open_settings(), self._on_sound_changed, self._open_filters,
+                                  self._set_mic_first)
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()
@@ -2343,6 +2344,12 @@ class MainWindow(QMainWindow):
         ])
         self.live_side.show_sound([self._sound_item(s) for s in self.collection.sources
                                    if s.kind in self.AUDIO_KINDS and not s.settings.get("hidden", False)])
+        self.live_side.sound.set_mic_first(self.collection.audio.ducking)
+
+    def _set_mic_first(self, on: bool) -> None:
+        """Live's "Mic first" switch: ducking on or off (amounts stay as set in the Ducking window)."""
+        self.collection.audio.ducking = on
+        self._changed()
 
     def _sound_item(self, config) -> Sound:
         st = config.settings
@@ -2350,7 +2357,7 @@ class MainWindow(QMainWindow):
         return Sound(
             id=config.id, name=config.name, muted=bool(st.get("muted", False)),
             group=str(st.get("group") or auto_group(config.name, config.kind)),
-            pinned=bool(st.get("pinned", config.kind == "audio_input")),
+            pinned=bool(st.get("pinned", False)),
             volume_db=float(st.get("volume_db", 0.0)),
             monitor="only" if monitor == "only" else bool(monitor),
             mono=bool(st.get("mono", False)), balance=float(st.get("balance", 0.0) or 0.0),
