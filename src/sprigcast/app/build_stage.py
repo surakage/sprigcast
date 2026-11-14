@@ -171,7 +171,7 @@ ICON = 22
 
 KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "camera": "camera", "color": "colour",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
-              "audio_output": "desktop sound", "scene": "sprig", "media": "video"}
+              "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
 
 
 def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False) -> None:
@@ -230,7 +230,7 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         p.drawEllipse(QRectF(cx - 6, cy - 6, 12, 12))
         p.drawEllipse(QRectF(cx - 2.5, cy - 6, 5, 12))
         p.drawLine(QPointF(cx - 6, cy), QPointF(cx + 6, cy))
-    elif kind in ("audio_input", "audio_output"):
+    elif kind in ("audio_input", "audio_output", "app_audio"):
         if kind == "audio_input":  # a mic
             p.drawRoundedRect(QRectF(cx - 2.5, cy - 6.5, 5, 8.5), 2.5, 2.5)
             p.drawArc(QRectF(cx - 5, cy - 3, 10, 7), 180 * 16, 180 * 16)

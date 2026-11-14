@@ -77,7 +77,7 @@ def plain_problem(status: str, kind: str) -> tuple[str, str] | None:
     if not tag or tag in ("asleep", "starting"):
         return None
     thing = {"camera": "camera", "window_capture": "window", "display_capture": "screen", "browser": "page",
-             "audio_input": "mic", "audio_output": "sound device", "image": "picture"}.get(kind, "source")
+             "audio_input": "mic", "audio_output": "sound device", "app_audio": "app sound", "image": "picture"}.get(kind, "source")
     if tag == "busy":
         return (f"Another app is using this {thing}. Close it there (Camera app, Teams, Discord, OBS…), "
                 "then try again.", "retry")

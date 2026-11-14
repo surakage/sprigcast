@@ -214,7 +214,7 @@ def _encoder(c: Checkup) -> list[Finding]:
 
 def _audio(c: Checkup) -> list[Finding]:
     found = []
-    sources = [s for s in c.collection.sources if s.kind in ("audio_input", "audio_output")]
+    sources = [s for s in c.collection.sources if s.kind in ("audio_input", "audio_output", "app_audio")]
     mics = [s for s in sources if s.kind == "audio_input"]
     if not mics:
         found.append(Finding("info", "Audio", "No microphone added: add one with + in the Audio Mixer if you talk."))
