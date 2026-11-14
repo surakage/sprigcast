@@ -530,3 +530,26 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("MenuTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    w = MainWindow(_collection(), tmp_path / "scenes.json")
+    try:
+        titles = [a.text().replace("&", "") for a in w.menuBar().actions()]
+        assert titles == ["File", "Edit", "View", "Docks", "Tools", "Help"]
+        docks = w.menuBar().actions()[3].menu()
+        assert any("custom docks" in a.text().lower() for a in docks.actions())
+        lines = w.shortcut_lines()
+        assert lines and len(lines) == len(set(lines))
+        assert any("Ctrl+K" in str(line) for line in lines)
+    finally:
+        w.close()
+        QSettings().clear()
