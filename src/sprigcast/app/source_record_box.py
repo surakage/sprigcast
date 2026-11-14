@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QCheckBox, QGridLayout, QGroupBox, QLabel, QVBoxLayout
 
+from sprigcast.app.labels import literal
 from sprigcast.app import theme
 from sprigcast.app.audio_page import has_sound
 from sprigcast.core.scene import SceneCollection
@@ -37,7 +38,7 @@ class SourceRecordBox(QGroupBox):
         self.ticks: dict[str, QCheckBox] = {}
         hidden = set(settings.source_record_hide)
         for i, source in enumerate(pickable(collection)):
-            tick = QCheckBox(source.name)
+            tick = QCheckBox(literal(source.name))
             tick.setChecked(source.id in hidden)
             self.ticks[source.id] = tick
             grid.addWidget(tick, i // 2, i % 2)

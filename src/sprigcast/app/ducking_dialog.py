@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.labels import literal
 from sprigcast.app import theme
 from sprigcast.core.scene import AudioSettings, SceneCollection
 
@@ -57,7 +58,7 @@ class DuckingDialog(QDialog):
         self.voice_boxes: dict[str, QCheckBox] = {}
         sources = [s for s in collection.sources if s.kind in AUDIO_KINDS]
         for source in sources:
-            box = QCheckBox(source.name)
+            box = QCheckBox(literal(source.name))
             box.setChecked(is_voice(source.settings, source.kind))
             self.voice_boxes[source.id] = box
             voice_box.addWidget(box)

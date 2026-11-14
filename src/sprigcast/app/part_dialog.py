@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.labels import literal
 from sprigcast.app import theme
 from sprigcast.app.terms import PART, SHOWS
 from sprigcast.core.scene import Scene, SceneCollection
@@ -48,7 +49,7 @@ class NewPartDialog(QDialog):
         row.addStretch(1)
         shape_hint = QLabel("You can add the other shape later.")
         shape_hint.setStyleSheet(theme.MUTED_STYLE)
-        self.add_to_show = QCheckBox(f"Add it to “{show.name}” now" if show is not None else "")
+        self.add_to_show = QCheckBox(f"Add it to “{literal(show.name)}” now" if show is not None else "")
         self.add_to_show.setChecked(show is not None)
         self.add_to_show.setVisible(show is not None)
         form = QFormLayout()
