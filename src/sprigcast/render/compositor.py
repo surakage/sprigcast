@@ -301,14 +301,52 @@ def cover_rect(picture: tuple[float, float], canvas: tuple[int, int]) -> tuple[f
     return 0.0, (1 - h) / 2, 1.0, h
 
 
+class _Pbos:
+    """Two pixel buffers, used in turn, so reading a frame back from the GPU never waits for it.
+
+    Each tick the GPU copies the new frame into one buffer by itself while the CPU takes the frame copied
+    the tick before from the other, long finished by then. The cost is one tick of delay: a frame
+    reaches its preview or encoder a tick (16-33 ms) after it was drawn, with its own timestamp.
+    """
+
+    STALE_S = 0.5  # a frame waiting longer than this (a preview hidden for a while) is thrown away
+
+    def __init__(self, ctx: moderngl.Context, nbytes: int):
+        self.buffers = [ctx.buffer(reserve=nbytes), ctx.buffer(reserve=nbytes)]
+        self.tags: list[object] = [None, None]
+        self.when = [0.0, 0.0]
+        self.turn = 0
+
+    def fill(self, tag: object, now: float, read_into) -> None:
+        """Start copying this tick's frame into the free buffer (read_into(buffer) queues the copy)."""
+        read_into(self.buffers[self.turn])
+        self.tags[self.turn], self.when[self.turn] = tag, now
+
+    def take(self, now: float) -> tuple[bytes | None, object]:
+        """The frame queued the tick before, with its tag, or (None, None); then swap buffers."""
+        other = 1 - self.turn
+        data, tag = None, self.tags[other]
+        if tag is not None and now - self.when[other] <= self.STALE_S:
+            data = self.buffers[other].read()
+        self.tags[other] = None
+        self.turn = other
+        return data, (tag if data is not None else None)
+
+    def release(self) -> None:
+        for buffer in self.buffers:
+            buffer.release()
+
+
 class _ScaledTarget:
     def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
         self.color = ctx.texture(size, 4)
         self.fbo = ctx.framebuffer(color_attachments=[self.color])
+        self.pbos = _Pbos(ctx, size[0] * size[1] * 4)
 
     def release(self) -> None:
         self.fbo.release()
         self.color.release()
+        self.pbos.release()
 
 
 class _Nv12Target:
@@ -319,10 +357,12 @@ class _Nv12Target:
         self.uv = ctx.texture((w // 2, h // 2), 2)
         self.y_fbo = ctx.framebuffer(color_attachments=[self.y])
         self.uv_fbo = ctx.framebuffer(color_attachments=[self.uv])
+        self.pbos = _Pbos(ctx, w * h * 3 // 2)
 
     def release(self) -> None:
         for obj in (self.y_fbo, self.uv_fbo, self.y, self.uv):
             obj.release()
+        self.pbos.release()
 
 
 # How to read each source byte order as RGBA when sampling ("1" = fully opaque).
@@ -583,8 +623,7 @@ class Compositor:
         """Return the canvas as tightly packed RGBA rows, top row first."""
         return self.targets[canvas_id].fbo.read(components=4, alignment=1)
 
-    def read_scaled(self, canvas_id: str, size: tuple[int, int]) -> bytes:
-        """The canvas shrunk to size on the GPU, as RGBA rows top first: what a small preview needs."""
+    def _draw_scaled(self, canvas_id: str, size: tuple[int, int]) -> _ScaledTarget:
         source = self.targets[canvas_id]
         target = self.scaled_targets.get((canvas_id, size))
         if target is None:
@@ -598,10 +637,21 @@ class Compositor:
         target.fbo.use()
         self.ctx.viewport = (0, 0, *size)
         self.scale_vao.render(moderngl.TRIANGLES, vertices=3)
-        return target.fbo.read(components=4, alignment=1)
+        return target
 
-    def read_nv12(self, canvas_id: str, size: tuple[int, int]) -> bytearray:
-        """The canvas scaled to size (even width and height) as NV12: Y rows, then CbCr rows, top first."""
+    def read_scaled(self, canvas_id: str, size: tuple[int, int]) -> bytes:
+        """The canvas shrunk to size on the GPU, as RGBA rows top first: what a small preview needs."""
+        return self._draw_scaled(canvas_id, size).fbo.read(components=4, alignment=1)
+
+    def read_scaled_later(self, canvas_id: str, size: tuple[int, int], tag: object,
+                          now: float) -> tuple[bytes | None, object]:
+        """Like read_scaled without waiting for the GPU: returns the previous call's frame and tag (see _Pbos)."""
+        target = self._draw_scaled(canvas_id, size)
+        pbos = target.pbos
+        pbos.fill(tag, now, lambda buf: target.fbo.read_into(buf, components=4, alignment=1))
+        return pbos.take(now)
+
+    def _draw_nv12(self, canvas_id: str, size: tuple[int, int]) -> _Nv12Target:
         source = self.targets[canvas_id]
         target = self.nv12_targets.get((canvas_id, size))
         if target is None:
@@ -618,11 +668,30 @@ class Compositor:
             program["out_size"].value = plane
             program["chroma"].value = chroma
             self.nv12_vao.render(moderngl.TRIANGLES, vertices=3)
+        return target
+
+    def read_nv12(self, canvas_id: str, size: tuple[int, int]) -> bytearray:
+        """The canvas scaled to size (even width and height) as NV12: Y rows, then CbCr rows, top first."""
+        target = self._draw_nv12(canvas_id, size)
+        w, h = size
         # Both planes land in one buffer: one allocation per frame instead of three (Y, CbCr, joined).
         data = bytearray(w * h * 3 // 2)
         target.y_fbo.read_into(data, components=1, alignment=1)
         target.uv_fbo.read_into(data, components=2, alignment=1, write_offset=w * h)
         return data
+
+    def read_nv12_later(self, canvas_id: str, size: tuple[int, int], tag: object,
+                        now: float) -> tuple[bytes | None, object]:
+        """Like read_nv12 without waiting for the GPU: returns the previous call's frame and tag (see _Pbos)."""
+        target = self._draw_nv12(canvas_id, size)
+        w, h = size
+
+        def queue(buf):
+            target.y_fbo.read_into(buf, components=1, alignment=1)
+            target.uv_fbo.read_into(buf, components=2, alignment=1, write_offset=w * h)
+
+        target.pbos.fill(tag, now, queue)
+        return target.pbos.take(now)
 
     def release(self) -> None:
         for tex in self.textures.values():

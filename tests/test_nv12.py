@@ -109,3 +109,19 @@ def test_engine_picks_preview_sizes():
     assert eng._preview_size("horizontal", (1920, 1080)) == (720, 405)  # rounded up in 1/16 steps
     assert eng._preview_size("vertical", (1080, 1920)) is None  # shown at full size: no shrinking
     assert eng._preview_size("next:horizontal", (1920, 1080)) is None  # size unknown
+
+
+def test_wait_free_reads_hand_back_the_previous_frame(compositor):
+    canvas = _picture(compositor)
+    want_nv12 = bytes(compositor.read_nv12("c", (32, 18)))
+    want_small = compositor.read_scaled("c", (32, 18))
+    assert compositor.read_nv12_later("c", (32, 18), "first", 1.0) == (None, None)  # copying, nothing back yet
+    assert compositor.read_scaled_later("c", (32, 18), "first", 1.0) == (None, None)
+    compositor.upload("pic", np.zeros((canvas.height, canvas.width, 4), dtype=np.uint8))  # next frame differs
+    compositor.render(canvas, Scene(id="s", name="S", canvas="c", items=[SceneItem(source="pic")]), {"pic": (64, 36)})
+    data, tag = compositor.read_nv12_later("c", (32, 18), "second", 1.03)
+    assert tag == "first" and bytes(data) == want_nv12  # the first frame, copied without waiting
+    data, tag = compositor.read_scaled_later("c", (32, 18), "second", 1.03)
+    assert tag == "first" and data == want_small
+    data, tag = compositor.read_nv12_later("c", (32, 18), "third", 5.0)
+    assert (data, tag) == (None, None)  # "second" waited too long (a hidden preview): thrown away
