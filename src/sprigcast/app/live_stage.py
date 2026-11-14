@@ -78,9 +78,16 @@ def heading(text: str, size: int = 14) -> QLabel:
 
 
 # Pills on a PANEL card are one step lighter, so they read as buttons.
-CARD_PILL_STYLE = theme.PILL_STYLE + (
+def _snug(style: str) -> str:
+    """A pill a little shorter than the usual, so the Go live card fits beside the row under the canvas."""
+    return style.replace("padding: 10px 14px", "padding: 7px 14px").replace("border-radius: 19px", "border-radius: 16px")
+
+
+CARD_PILL_STYLE = _snug(theme.PILL_STYLE) + (
     f"QPushButton {{ background: {theme.RAISED}; }} QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
 )
+CARD_ON_AIR_STYLE = _snug(theme.PILL_ON_AIR_STYLE)
+CARD_SELECTED_STYLE = _snug(theme.PILL_SELECTED_STYLE)
 
 
 def pill(text: str, style: str = "") -> QPushButton:
@@ -157,7 +164,7 @@ def side_card() -> QFrame:
     return card
 
 
-PLACES_HEIGHT = 140  # about four destinations; more scroll inside the card
+PLACES_HEIGHT = 124  # five destinations; more scroll inside the card
 
 
 class FitScroll(QScrollArea):
@@ -195,7 +202,7 @@ class FitScroll(QScrollArea):
         return QSize(hint.width(), hint.height() if self.cap is None else min(hint.height(), self.cap))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        shortest = self.SHORTEST if self.cap is None else self.cap
+        shortest = self.SHORTEST if self.cap is None else 40  # a capped list may shrink and scroll
         return QSize(0, min(shortest, self.widget().sizeHint().height()))
 
 
@@ -223,17 +230,22 @@ class LiveSide(QWidget):
         self.setFixedWidth(SIDE_WIDTH)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(16)
+        root.setSpacing(GAP)
+        # Chat (and any other Live panels) on top, as tall as the canvas; the Go live card at the bottom,
+        # level with Blooms, Sound and Transitions (LiveStage sizes it with them).
+        self.panel_slot = QVBoxLayout()
+        self.panel_slot.setContentsMargins(0, 0, 0, 0)
+        root.addLayout(self.panel_slot, 1)
 
         # One card: Go live, Record / Clips / Settings, then where the stream goes. The list scrolls
         # inside the card past a few rows, so a long list never squeezes Chat below it.
         where_card = side_card()
         where = where_card.layout()
-        where.setSpacing(12)
+        where.setSpacing(10)
         buttons = QVBoxLayout()
         buttons.setSpacing(10)
         self.live = pill("Go live", theme.BIG_GO_STYLE)
-        self.live.setFixedHeight(52)
+        self.live.setFixedHeight(48)  # BIG_GO_STYLE radius is 24: any shorter and Qt squares the corners
         self.live.clicked.connect(on_live)
         buttons.addWidget(self.live)
         row = QHBoxLayout()
@@ -259,12 +271,7 @@ class LiveSide(QWidget):
         self.rec_note.setVisible(False)
         buttons.addWidget(self.rec_note)
         where.addLayout(buttons)
-        line = QFrame()
-        line.setFixedHeight(1)
-        line.setStyleSheet(f"background: {theme.EDGE};")
-        where.addSpacing(2)
-        where.addWidget(line)
-        where.addSpacing(2)
+        where.addSpacing(4)
         top = QHBoxLayout()
         top.addWidget(heading("Destinations"), 1)
         self.add_place = QPushButton("+ Add")
@@ -286,7 +293,7 @@ class LiveSide(QWidget):
         places_box = QWidget()
         self.places = QVBoxLayout(places_box)
         self.places.setContentsMargins(0, 0, 0, 0)
-        self.places.setSpacing(12)
+        self.places.setSpacing(8)
         self.places_scroll = FitScroll(places_box, cap=PLACES_HEIGHT)
         where.addWidget(self.places_scroll)
         self.all_settings = QPushButton("All stream settings…")
@@ -296,6 +303,7 @@ class LiveSide(QWidget):
         self.all_settings.setVisible(False)
         where.addWidget(self.all_settings, 0, Qt.AlignmentFlag.AlignLeft)
         root.addWidget(where_card)
+        self.where_card = where_card
         self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
         self.place_tools: dict[str, dict[str, QPushButton]] = {}
         self._shape_key: tuple | None = None
@@ -311,10 +319,7 @@ class LiveSide(QWidget):
         sound_card.layout().addStretch(1)  # a short list sits at the top, its title level with Blooms and Transitions
         self.sound_card = sound_card  # LiveStage shows it under the canvas, beside Blooms and Transitions
 
-        # Panels you choose for Live (chat, activity feed...) fill the rest of the column (app/panels.py).
-        self.panel_slot = QVBoxLayout()
-        self.panel_slot.setContentsMargins(0, 0, 0, 0)
-        root.addLayout(self.panel_slot, 1)
+        # Panels you choose for Live (chat, activity feed...) go in panel_slot, above (app/panels.py).
         self.stats = QLabel("")
         self.stats.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         self.stats.setWordWrap(True)
@@ -337,7 +342,7 @@ class LiveSide(QWidget):
     def set_recording(self, text: str) -> None:
         """'' when not recording, else the REC clock line."""
         self.record.setText("Stop recording" if text else "Record")
-        self.record.setStyleSheet(theme.PILL_ON_AIR_STYLE if text else CARD_PILL_STYLE)
+        self.record.setStyleSheet(CARD_ON_AIR_STYLE if text else CARD_PILL_STYLE)
         self.rec_note.setText(text)
         self.rec_note.setVisible(bool(text))
 
@@ -347,7 +352,7 @@ class LiveSide(QWidget):
         self.clip.setToolTip(f"Save the last {seconds} s as a clip (length and shapes: Settings → Recording)" if on
                              else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clip can save it")
         self.clip.setText(f"Clip {seconds}s" if on else "Clips")
-        self.clip.setStyleSheet(theme.PILL_SELECTED_STYLE if on else CARD_PILL_STYLE)
+        self.clip.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
 
     def clip_saved(self, files: int) -> None:
         """A moment of thanks on the button, then back to "Clip 30s"."""
@@ -550,6 +555,7 @@ class LiveStage(QWidget):
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             row.addWidget(card, 1)
         self.bottom.setFixedHeight(BOTTOM_HEIGHT)
+        side.where_card.setFixedHeight(BOTTOM_HEIGHT)
         left.addWidget(self.bottom)
         self.tiles_slot = self.blooms_card.layout()
         root.addLayout(left, 1)
@@ -559,4 +565,6 @@ class LiveStage(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         # About a third of the screen, so a small laptop screen still has a canvas worth looking at.
-        self.bottom.setFixedHeight(max(220, min(BOTTOM_HEIGHT, int(self.height() * 0.32))))
+        height = max(220, min(BOTTOM_HEIGHT, int(self.height() * 0.36)))
+        self.bottom.setFixedHeight(height)
+        self.side.where_card.setFixedHeight(height)  # the Go live card lines up with the row beside it
