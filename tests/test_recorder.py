@@ -70,7 +70,7 @@ class FakeMixer:
     def __init__(self):
         self.taps = []
 
-    def add_tap(self, cb):
+    def add_tap(self, cb, tracks=("stream",)):
         self.taps.append(cb)
 
     def remove_tap(self, cb):

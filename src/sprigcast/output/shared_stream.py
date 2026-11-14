@@ -51,7 +51,7 @@ class SharedStreamEncoder(ReplayBuffer):
         from sprigcast.core.scene import EncoderSettings
 
         super().__init__(f"stream-{canvas.id}", canvas.width, canvas.height, fps, bitrate_kbps, codec, start_time,
-                         0.0, "flv", encoder or EncoderSettings(), out_size)
+                         0.0, "flv", encoder or EncoderSettings(), out_size, tracks=("stream",))
         self.links: list[StreamLink] = []
         self.autopilot = Autopilot(bitrate_kbps) if auto_bitrate and self.encoder.rate_control != "cqp" else None
         self._want_kbps = self._applied_kbps = bitrate_kbps
@@ -320,7 +320,7 @@ class StreamLink:
         while self.shared._templates is None:  # the encoder is still opening
             if self._stop.wait(0.05) or time.monotonic() > deadline:
                 raise RuntimeError("the shared encoder did not start")
-        video_t, audio_t = self.shared._templates
+        video_t, audio_t = self.shared._templates[:2]
         streams = self.shared._ask(lambda: {"video": out.add_stream_from_template(video_t),
                                             "audio": out.add_stream_from_template(audio_t)})
         return out, streams

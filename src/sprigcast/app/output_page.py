@@ -174,6 +174,13 @@ class OutputPage(QWidget):
         self.record_form = EncoderForm("Encoder settings", collection.recording.encoder, encoder_name)
         self.record_form.setEnabled(not recording)
         box.addWidget(self.record_form)
+        self.voice_track = QCheckBox("Also record your voice on its own track")
+        self.voice_track.setToolTip("Recordings get a second audio track with only your mic (and anything set "
+                                    "to go to Voice in the Sound card), so you can fix it apart when editing. "
+                                    "Players play the first track: everything, as usual.")
+        self.voice_track.setChecked(collection.recording.voice_track)
+        self.voice_track.setEnabled(not recording)
+        box.addWidget(self.voice_track)
         box.addWidget(self._clips_group(collection))
         box.addStretch(1)
         self.tabs.addTab(record_tab, "Recording")
@@ -187,6 +194,7 @@ class OutputPage(QWidget):
             collection.stream_encoder = self.stream_form.values()
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
+            collection.recording.voice_track = self.voice_track.isChecked()
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()

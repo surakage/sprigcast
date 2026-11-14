@@ -101,6 +101,7 @@ from sprigcast.app.panels import Panel, Panels
 from sprigcast.app.stats_panel import StatsPanel, StatsStrip
 from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.app.theme import GO_LIVE_STYLE, ON_AIR_STYLE
+from sprigcast.audio.mixer import source_tracks
 from sprigcast.core.events import (
     AudioLevels,
     EngineError,
@@ -2422,6 +2423,7 @@ class MainWindow(QMainWindow):
             delay_ms=int(st.get("delay_ms", 0) or 0), voice=is_voice(st, config.kind),
             filters=[f.name for f in config.filters if f.enabled],
             can_monitor=config.kind != "audio_output",  # desktop audio already plays on your speakers
+            tracks=source_tracks(config),
         )
 
     def _on_sound_changed(self, source_id: str, changes: dict) -> None:
@@ -3469,6 +3471,7 @@ class MainWindow(QMainWindow):
             return
         self.record_button.setEnabled(False)
         self.record_status.setText("Starting…")
+        self.encoders.voice_track = settings.voice_track
         try:
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
@@ -3506,7 +3509,7 @@ class MainWindow(QMainWindow):
     def _restart_clips_if_changed(self, before: tuple) -> None:
         """Clip length or shapes changed in Settings while clips are ready: start again with the new ones."""
         settings = self.collection.recording
-        if self.replay is not None and before != (settings.replay_seconds, settings.clip_shapes):
+        if self.replay is not None and before != (settings.replay_seconds, settings.clip_shapes, settings.voice_track):
             self.replay_button.setChecked(False)
             self.replay_button.setChecked(True)
 
@@ -3518,6 +3521,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
                 self.replay_button.setChecked(False)
                 return
+            self.encoders.voice_track = settings.voice_track
             try:
                 self.replay = SharedReplay.start(
                     self.encoders, canvases, self._recordings_folder(), settings.replay_seconds,
@@ -3816,7 +3820,7 @@ class MainWindow(QMainWindow):
             "audio_output": [d.name for d in list_audio_devices(loopback=True, rescan=False)],  # one rescan
         }
         rec = self.collection.recording
-        self._clips_before = (rec.replay_seconds, rec.clip_shapes)
+        self._clips_before = (rec.replay_seconds, rec.clip_shapes, rec.voice_track)
         window = SettingsWindow(
             self.collection,
             default_recordings_folder=self._default_recordings_folder(),
@@ -3842,7 +3846,7 @@ class MainWindow(QMainWindow):
         if clips is not None:
             self._restart_clips_if_changed(clips)
             rec = self.collection.recording
-            self._clips_before = (rec.replay_seconds, rec.clip_shapes)
+            self._clips_before = (rec.replay_seconds, rec.clip_shapes, rec.voice_track)
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
         from sprigcast.app.theme import apply_theme
 

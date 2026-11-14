@@ -208,6 +208,7 @@ class RecordingSettings(BaseModel):
     replay_seconds: int = 30  # clip length (15, 30, 45 or 60 in Settings); saved clips land in the recordings folder
     clip_shapes: Literal["horizontal", "vertical", "both"] = "both"  # which canvases a clip saves
     clips_on_start: bool = False  # keep clips ready from the moment SprigCast opens
+    voice_track: bool = True  # recordings also carry your voice (mics) alone, as a second audio track
     short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,

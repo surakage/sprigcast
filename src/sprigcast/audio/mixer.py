@@ -9,6 +9,9 @@ Two extras on top of the plain mix:
   by a set amount, and glides back up a moment after you stop talking.
 - Monitoring: sources marked "monitor" are also summed into a second mix for your speakers. That
   mix never reaches the stream; the stream always gets every unmuted source.
+- Named tracks: each source goes to some of "stream", "recording", "voice" and "clips" (its
+  "tracks" setting; by default everything goes to stream, recording and clips, and voices also
+  to the voice track). Only the tracks some output asks for are mixed.
 """
 
 from __future__ import annotations
@@ -75,6 +78,22 @@ def is_monitored(source) -> bool:
     return bool((getattr(source, "settings", {}) or {}).get("monitor", False))
 
 
+TRACKS = ("stream", "recording", "voice", "clips")
+MAIN_TRACKS = ("stream", "recording", "clips")
+
+
+def source_tracks(source) -> tuple[str, ...]:
+    """The named tracks a source goes to: its "tracks" setting, or stream + recording + clips (+ voice
+    for a voice). A "just me" source goes to none."""
+    if is_monitor_only(source):
+        return ()
+    settings = getattr(source, "settings", {}) or {}
+    chosen = settings.get("tracks")
+    if chosen is None:
+        return (*MAIN_TRACKS, "voice") if is_voice(source) else MAIN_TRACKS
+    return tuple(t for t in TRACKS if t in chosen)
+
+
 def is_monitor_only(source) -> bool:
     """'Just me': on your speakers, never in the stream or recordings."""
     return (getattr(source, "settings", {}) or {}).get("monitor") == "only"
@@ -113,7 +132,7 @@ class Mixer:
         self.duck_gain = 1.0  # current gain on non-voice sources, 1.0 = not ducked
         self._hold_left = 0.0
         self._monitor_taps: list[Callable[[np.ndarray], None]] = []
-        self._taps: list[Callable[[np.ndarray], None]] = []
+        self._taps: list[tuple[Callable, tuple[str, ...]]] = []  # (callback, tracks it wants)
         self._sources: list = []
         self._extras: list = []  # short-lived sounds that are not sources, like a stinger clip
         self._delays: dict[str, np.ndarray] = {}
@@ -136,14 +155,16 @@ class Mixer:
         with self._lock:
             self._extras = [p for p in self._extras if p is not player]
 
-    def add_tap(self, callback: Callable[[np.ndarray], None]) -> None:
-        """Hand every mixed block, float32 (BLOCK, 2), to callback on the mixer thread. It must not block."""
-        with self._lock:
-            self._taps = [*self._taps, callback]
+    def add_tap(self, callback: Callable, tracks: tuple[str, ...] = ("stream",)) -> None:
+        """Hand every mixed block, float32 (BLOCK, 2), to callback on the mixer thread. It must not block.
 
-    def remove_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        With one track the callback gets that track's block; with several, a tuple of blocks in order."""
         with self._lock:
-            self._taps = [t for t in self._taps if t != callback]
+            self._taps = [*self._taps, (callback, tuple(tracks))]
+
+    def remove_tap(self, callback: Callable) -> None:
+        with self._lock:
+            self._taps = [t for t in self._taps if t[0] != callback]
 
     def set_ducking(self, ducking: Ducking) -> None:
         self.ducking = ducking
@@ -208,22 +229,31 @@ class Mixer:
                 voice_db = max(voice_db, levels(block * gain)[1])
             processed.append((source, block, gain, voice))
         duck = self._duck_ramp(voice_db)
-        blocks, monitored = [], []
+        wanted = {"stream"}.union(*(tracks for _, tracks in taps))
+        blocks: dict[str, list] = {track: [] for track in wanted}
+        monitored = []
         for source, block, gain, voice in processed:
             if not voice and not (isinstance(duck, float) and duck == 1.0):
                 block = block * duck
-            if not is_monitor_only(source):
-                blocks.append((block, gain))
+            for track in source_tracks(source):
+                if track in blocks:
+                    blocks[track].append((block, gain))
             meters[source.id] = levels(block * gain) if gain else (FLOOR_DB, FLOOR_DB)
             if monitor_taps and gain and is_monitored(source):
                 monitored.append((block, gain))
-        mixed = mix(blocks)
+        mixes, done = {}, {}
+        for track, parts in blocks.items():  # tracks with the same sources share one mix
+            key = tuple(id(b) for b, _ in parts)
+            if key not in done:
+                done[key] = mix(parts)
+            mixes[track] = done[key]
+        mixed = mixes["stream"]
         meters["master"] = levels(mixed)
         duck_db = to_db(self.duck_gain)
         meters["duck"] = (duck_db, duck_db)
         self._meters = meters
-        for tap in taps:
-            tap(mixed)
+        for tap, tracks in taps:
+            tap(mixes[tracks[0]] if len(tracks) == 1 else tuple(mixes[t] for t in tracks))
         if monitor_taps:
             monitor_mix = mix(monitored)
             for tap in monitor_taps:

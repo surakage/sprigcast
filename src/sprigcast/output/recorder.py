@@ -33,6 +33,8 @@ VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps);
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
 
+TRACK_TITLES = {"stream": "Stream", "recording": "Recording", "voice": "Voice", "clips": "Clips"}
+
 _nvenc_ok: bool | None = None
 
 
@@ -440,8 +442,11 @@ class Recorder:
         container: str = "mkv",
         out_size: tuple[int, int] | None = None,
         encoder=None,
+        tracks: tuple[str, ...] = ("stream",),
     ):
         self.encoder = encoder or self.default_encoder()
+        self.tracks = tuple(tracks) or ("stream",)  # the mixer's named tracks, one audio track each in the file
+        self._extra_audio: list = []  # audio streams for tracks[1:]
         self.path = path
         self.width, self.height, self.fps = width, height, fps  # canvas size; fps of the output
         self.out_width, self.out_height = out_size or (width, height)  # encoded size (scaled if different)
@@ -543,8 +548,8 @@ class Recorder:
     def _counts_drops(self) -> bool:
         return True
 
-    def push_audio(self, block: np.ndarray) -> None:
-        """block is float32 of shape (n, 2) at 48 kHz."""
+    def push_audio(self, block) -> None:
+        """block is float32 of shape (n, 2) at 48 kHz, or a tuple of them, one per track in self.tracks."""
         if self.error is not None or self._stop.is_set():
             return
         try:
@@ -622,10 +627,7 @@ class Recorder:
         if self._direct is not None:
             video = container.add_stream_from_template(self._direct.template)
             self._force_key = True  # the file starts with a keyframe
-            audio = container.add_stream("aac", rate=SAMPLE_RATE)
-            audio.layout = "stereo"
-            audio.bit_rate = self.encoder.audio_kbps * 1000
-            return container, video, audio
+            return container, video, self._add_audio(container)
         video = container.add_stream(self.codec, rate=self.fps, hwaccel=encoder_hwaccel(self.codec))
         video.width, video.height = self.out_width, self.out_height
         video.pix_fmt = "nv12"  # what the GPU hands over (render/compositor.py read_nv12); x264 takes it too
@@ -637,10 +639,20 @@ class Recorder:
         # Tag the colours so players read them as HD video (BT.709, limited range).
         ctx.colorspace, ctx.color_primaries, ctx.color_trc, ctx.color_range = 1, 1, 1, 1
         video.options = self._video_options()
-        audio = container.add_stream("aac", rate=SAMPLE_RATE)
-        audio.layout = "stereo"
-        audio.bit_rate = self.encoder.audio_kbps * 1000
-        return container, video, audio
+        return container, video, self._add_audio(container)
+
+    def _add_audio(self, container):
+        """An AAC stream per named track; returns the first (the others are in self._extra_audio)."""
+        streams = []
+        for track in self.tracks:
+            audio = container.add_stream("aac", rate=SAMPLE_RATE)
+            audio.layout = "stereo"
+            audio.bit_rate = self.encoder.audio_kbps * 1000
+            if len(self.tracks) > 1:
+                audio.metadata["title"] = TRACK_TITLES.get(track, track.title())
+            streams.append(audio)
+        self._extra_audio = streams[1:]
+        return streams[0]
 
     def _run(self) -> None:
         try:
@@ -673,6 +685,8 @@ class Recorder:
             if self._direct is None:  # SprigCast's own encoder holds nothing back (no B-frames)
                 self._mux(container, video.encode(None))
             self._mux(container, audio.encode(None))
+            for extra in self._extra_audio:
+                self._mux(container, extra.encode(None))
             finished = True
         finally:
             if self._direct is not None:
@@ -791,12 +805,15 @@ class Recorder:
                 block = self._audio.get_nowait()
             except queue.Empty:
                 return
-            planar = np.ascontiguousarray(block.T, dtype=np.float32)  # (2, n)
-            af = av.AudioFrame.from_ndarray(planar, format="fltp", layout="stereo")
-            af.sample_rate = SAMPLE_RATE
-            af.pts = self._samples
-            self._samples += block.shape[0]
-            self._mux(container, stream.encode(af))
+            streams = (stream, *self._extra_audio)
+            blocks = block if isinstance(block, tuple) else (block,) * len(streams)
+            for one, out in zip(blocks, streams):
+                planar = np.ascontiguousarray(one.T, dtype=np.float32)  # (2, n)
+                af = av.AudioFrame.from_ndarray(planar, format="fltp", layout="stereo")
+                af.sample_rate = SAMPLE_RATE
+                af.pts = self._samples
+                self._mux(container, out.encode(af))
+            self._samples += blocks[0].shape[0]
 
 
 class RecordingSession:
@@ -817,6 +834,7 @@ class RecordingSession:
         container: str = "mkv",
         codec: str | None = None,
         encoder=None,
+        tracks: tuple[str, ...] = ("recording",),
     ) -> "RecordingSession":
         codec = codec or pick_codec()
         now = datetime.now()
@@ -825,13 +843,13 @@ class RecordingSession:
         for canvas in canvases:
             path = recording_path(folder, canvas.id, now, container)
             rec = Recorder(path, canvas.width, canvas.height, canvas.fps, bitrate_kbps, codec, start_time, container,
-                           encoder=encoder)
+                           encoder=encoder, tracks=tracks)
             rec.start()
             recorders.append((canvas.id, rec))
         session = cls(engine, recorders)
         for canvas_id, rec in recorders:
             engine.add_frame_tap(canvas_id, rec.push_frame, rec.gpu_size)
-            engine.mixer.add_tap(rec.push_audio)
+            engine.mixer.add_tap(rec.push_audio, rec.tracks)
         return session
 
     @property
