@@ -70,6 +70,13 @@ def test_starter_kit_makes_blooms_once_per_sound(tmp_path):
     assert all(s.linked_to for s in shows if s.canvas == "vertical")
     assert "starting" not in {s.id for s in col.scenes} and "bg-moss" not in {c.id for c in col.sources}
     assert [p.name for p in col.parts()] == ["Webcam"]
+    chatting = {s.canvas: s for s in shows if s.name.startswith("Just Chatting")}
+    cam = next(c for c in col.sources if c.kind == "camera")
+    full = next(i for i in chatting["horizontal"].items if i.source == cam.id)
+    assert full.drawn_size((1280, 720)) == (1920, 1080)  # the camera fills the canvas: no empty strips
+    tall = next(i for i in chatting["vertical"].items if i.source == cam.id)
+    w, h = tall.drawn_size((1280, 720))
+    assert 1080 <= w < 1086 and 1920 <= h < 1926  # cropped to the tall shape, not squashed
     assert [c.kind for c in col.sources].count("audio_input") == 1  # the mic was already there
     assert [c.kind for c in col.sources].count("audio_output") == 1
     folders = col.folders_for("horizontal")
@@ -176,3 +183,12 @@ def test_tabs_hide_with_one_shape_and_hints_fade(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_cover_fills_a_canvas_by_cropping_evenly():
+    from sprigcast.core.edit import cover
+
+    crop, scale = cover((1200, 720), (1920, 1080))  # a 5:3 camera on a 16:9 canvas
+    item = SceneItem(source="cam", crop=crop, scale=scale)
+    w, h = item.drawn_size((1200, 720))
+    assert 1920 <= w < 1926 and 1080 <= h < 1086 and crop[0] == 0 and crop[1] == crop[3] > 0

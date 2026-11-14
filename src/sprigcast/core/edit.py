@@ -177,3 +177,13 @@ def crop_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int,
 def nudge(item: SceneItem, dx: float, dy: float) -> None:
     item.x += dx
     item.y += dy
+
+
+def cover(size: tuple[int, int], canvas: tuple[int, int]) -> tuple[tuple[int, int, int, int], float]:
+    """(crop, scale) that make a `size` picture cover a `canvas` exactly, cropping evenly what sticks out."""
+    w, h = max(1, size[0]), max(1, size[1])
+    scale = max(canvas[0] / w, canvas[1] / h)
+    # Rounded down: a pixel or two past the edge rather than a hairline gap.
+    cx = max(0, math.floor((w - canvas[0] / scale) / 2))
+    cy = max(0, math.floor((h - canvas[1] / scale) / 2))
+    return (cx, cy, cx, cy), scale

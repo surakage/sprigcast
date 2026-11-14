@@ -32,11 +32,13 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.core.edit import cover
 from sprigcast.core.scene import PART_KIND, Scene, SceneCollection, SceneItem, SourceConfig
 
 BLOOMS = ("Starting soon", "Just Chatting", "Gaming", "Be right back", "Ending")
 TITLES = {"Starting soon": "Starting soon", "Be right back": "Be right back", "Ending": "Thanks for watching!"}
 WITH_CAMERA = {"Just Chatting", "Gaming"}
+FULL_CAMERA = "Just Chatting"  # the camera fills this one; the others have it in a corner
 ART = {"Starting soon": "sloth-starting.png", "Be right back": "sloth-brb.png", "Ending": "sloth-ending.png"}
 BACKGROUND = "#16241dff"
 DEFAULT_IDS = {"starting", "starting-v", "brb", "brb-v"}  # the example blooms a fresh install starts with
@@ -114,7 +116,11 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
                 fit = min(canvas.width / max(1, _w), canvas.height / max(1, _h))
                 items.append(SceneItem(source=screen_src.id, scale=fit, x=(canvas.width - _w * fit) / 2,
                                        y=(canvas.height - _h * fit) / 2))
-            if name in WITH_CAMERA and placement is not None:
+            if name == FULL_CAMERA and camera_src is not None:
+                # Just Chatting: the camera fills the whole canvas (cropped to its shape, no empty strips).
+                crop, scale = cover((cam_w, cam_h), (canvas.width, canvas.height))
+                items.append(SceneItem(source=camera_src.id, crop=crop, scale=scale))
+            elif name in WITH_CAMERA and placement is not None:
                 fit = min(canvas.width / main.width, canvas.height / main.height)
                 items.append(SceneItem(source=placement.id, scale=fit))
             if name in TITLES:
