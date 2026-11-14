@@ -13,6 +13,7 @@ exception to "right away": like Settings → Video they change at the next start
 
 from __future__ import annotations
 
+import math
 import logging
 import time
 from dataclasses import dataclass, field
@@ -276,6 +277,53 @@ def _cpu_cost(ms_720: float, step: tuple[int, int]) -> float:
     return ms_720 * (short / 720) ** 2 * fps / 1000
 
 
+PROVEN = "upload/proven_kbps"  # QSettings: the upload (bitrates + audio) the last clean stream carried
+PROVEN_MIN_S = 60  # a stream must run this long, untroubled, to count
+
+
+def proven_kbps(streamers, audio_kbps: int, seconds: float) -> int | None:
+    """What a finished stream proved the upload carries: the sum of its bitrates when every destination ran
+    clean (no drops, no reconnects, auto-pilot never stepped down). 0 when the network struggled, None when
+    it proves nothing either way (too short, or nothing connected)."""
+    if seconds < PROVEN_MIN_S or not streamers:
+        return None
+    total = 0
+    for st in streamers:
+        if not st.frames:
+            return None
+        pilot = getattr(st, "autopilot", None)
+        if st.dropped > st.frames * 0.001 or st.reconnects or (pilot is not None and pilot.steps_down):
+            return 0
+        total += int(st.bitrate_kbps) + audio_kbps
+    return total
+
+
+def remember_proven(settings, value: int | None) -> None:
+    if value is None:
+        return
+    if value:
+        settings.setValue(PROVEN, value)
+    else:
+        settings.remove(PROVEN)
+
+
+def load_proven(settings) -> int:
+    try:
+        return int(settings.value(PROVEN, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def usable_upload(p: PcProfile) -> int | None:
+    """The upload to plan with: the test's result, or more when a past stream carried more without trouble.
+
+    A clean stream of X kbps proves X fits inside the UPLOAD_SHARE headroom, so it counts as X / UPLOAD_SHARE.
+    """
+    proven = int(p.extra.get("proven_kbps") or 0)
+    if not p.upload_kbps and not proven:
+        return None
+    return max(p.upload_kbps or 0, math.ceil(proven / UPLOAD_SHARE))
+
 QUALITY = "quality"  # PcProfile.extra key: the quality picked by hand in the wizard, overriding the suggestion
 
 
@@ -325,9 +373,10 @@ def _encodes(p: PcProfile, c: SceneCollection) -> int:
 def _budget(p: PcProfile, c: SceneCollection, honour_choice: bool = True) -> float:
     """Upload per stream for video, in kbps. Unlimited when untested, or when a quality was picked by hand."""
     outputs = _stream_outputs(c)
-    if not p.upload_kbps or not outputs or (honour_choice and p.extra.get(QUALITY)):
+    upload = usable_upload(p)
+    if not upload or not outputs or (honour_choice and p.extra.get(QUALITY)):
         return float("inf")
-    return p.upload_kbps * UPLOAD_SHARE / len(outputs) - c.stream_encoder.audio_kbps
+    return upload * UPLOAD_SHARE / len(outputs) - c.stream_encoder.audio_kbps
 
 
 class _Canvas1080:
@@ -366,21 +415,11 @@ def stream_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
     if not outputs:
         return []
     t = target(p, _encodes(p, c))
-    optimize_top = Target(LADDER[0], t.preset, False)
-    budget = _budget(p, c)
     canvases = {cv.id: cv for cv in c.canvases}
     changes = []
-    for o in outputs:
-        canvas = canvases.get(o.canvas)
-        if canvas is None:
-            continue
+    for o, step, kbps in _plan_streams(p, c, t, _budget(p, c)):
+        canvas = canvases[o.canvas]
         service = SERVICES.get(o.service or "custom", SERVICES["custom"])
-        step = _best_step(t, service, canvas, budget)
-        ideal = STEP_KBPS[step]
-        if step == _best_step(optimize_top, service, canvas, float("inf")):
-            ideal = max(ideal, service.kbps)  # the service's own best: its usual bitrate (YouTube 9000)
-        kbps = int(min(ideal, budget, service.max_kbps) // 100 * 100)
-        kbps = max(kbps, 800)
         size = shrink_to(canvas.width, canvas.height, step[0])
         fps = step[1]
         now_size = o.size or (canvas.width, canvas.height)
@@ -581,25 +620,42 @@ def _px(step: tuple[int, int]) -> float:
     return short * short * 16 / 9 * fps
 
 
-def stream_steps(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> list[tuple[object, tuple[int, int], int]]:
-    """Each stream at `step` (or its site's limit): (output, its step, kbps), ignoring the upload."""
+def _plan_streams(p: PcProfile, c: SceneCollection, t: Target, budget: float) -> list[tuple[object, tuple[int, int], int]]:
+    """Each stream's (output, step, kbps) for target `t` within `budget` kbps of video per stream.
+
+    Streams on the same canvas at the same step get one bitrate, the lowest of theirs, so they share one
+    encoder (output/shared_stream.py): YouTube follows Twitch's 6000 instead of costing a second encode at 9000.
+    """
     from sprigcast.output.stream import SERVICES
 
-    if not p.wants_stream:
-        return []
     canvases = {cv.id: cv for cv in c.canvases}
-    t = Target(step, "p5", False)
+    optimize_top = Target(LADDER[0], t.preset, False)
     out = []
     for o in _stream_outputs(c):
-        if o.canvas not in canvases:
+        canvas = canvases.get(o.canvas)
+        if canvas is None:
             continue
         service = SERVICES.get(o.service or "custom", SERVICES["custom"])
-        own = _best_step(t, service, canvases[o.canvas], float("inf"))
-        ideal = STEP_KBPS[own]
-        if own == _best_step(Target(LADDER[0], "p5", False), service, canvases[o.canvas], float("inf")):
-            ideal = max(ideal, service.kbps)
-        out.append((o, own, int(min(ideal, service.max_kbps))))
-    return out
+        step = _best_step(t, service, canvas, budget)
+        ideal = STEP_KBPS[step]
+        if step == _best_step(optimize_top, service, canvas, float("inf")):
+            ideal = max(ideal, service.kbps)  # the service's own best: its usual bitrate (YouTube 9000)
+        kbps = max(800, int(min(ideal, budget, service.max_kbps) // 100 * 100))
+        out.append((o, step, kbps))
+    shared: dict[tuple, int] = {}
+    for o, step, kbps in out:
+        if not getattr(o, "enhanced", False):
+            key = (o.canvas, step)
+            shared[key] = min(kbps, shared.get(key, kbps))
+    return [(o, step, shared.get((o.canvas, step), kbps)) for o, step, kbps in out]
+
+
+def stream_steps(p: PcProfile, c: SceneCollection, step: tuple[int, int],
+                 budget: float = float("inf")) -> list[tuple[object, tuple[int, int], int]]:
+    """Each stream at `step` (or its site's limit): (output, its step, kbps), the same as Apply would set."""
+    if not p.wants_stream:
+        return []
+    return _plan_streams(p, c, Target(step, "p5", False), budget)
 
 
 def room(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> tuple[int, int | None]:
@@ -608,7 +664,8 @@ def room(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> tuple[int, 
     100% on the PC means the most SprigCast should take next to a game: on x264 the CPU share the
     wizard allows, on a graphics-card encoder an estimate of its pixel rate.
     """
-    steps = [s for _, s, _ in stream_steps(p, c, step)]
+    streams = stream_steps(p, c, step, _budget(p, c))
+    steps = [s for _, s, _ in streams]
     if p.wants_record:
         steps += [step] * sum(1 for cv in c.canvases if cv.enabled and cv.id in c.recording.canvases)
     if p.hardware:
@@ -619,7 +676,8 @@ def room(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> tuple[int, 
         ms = (p.x264_ms_720 or 12.0) * (0.7 if weak else 1.0)
         pc = sum(_cpu_cost(ms, s) for s in steps) / (CPU_BUDGET_WEAK if weak else CPU_BUDGET)
     upload = None
-    if p.upload_kbps and p.wants_stream:
-        sent = sum(k + c.stream_encoder.audio_kbps for _, _, k in stream_steps(p, c, step))
-        upload = round(100 * sent / p.upload_kbps)
+    usable = usable_upload(p)
+    if usable and p.wants_stream:
+        sent = sum(k + c.stream_encoder.audio_kbps for _, _, k in streams)
+        upload = round(100 * sent / usable)
     return round(100 * pc), upload

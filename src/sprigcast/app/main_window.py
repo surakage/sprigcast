@@ -3680,6 +3680,13 @@ class MainWindow(QMainWindow):
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
         doctor.save_last_streams(QSettings(), session.streamers)
+        from sprigcast.app import optimize
+
+        streamers = [st for _, st in session.streamers]
+        proven = optimize.proven_kbps(streamers, self.collection.stream_encoder.audio_kbps, session.elapsed)
+        optimize.remember_proven(QSettings(), proven)
+        if proven is not None:
+            log.info("upload: this stream %s", f"proved {proven} kbps fits" if proven else "had network trouble")
         self.stream_status.setText("\n".join(lines))
         self.stream_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         for line in lines[1:]:
