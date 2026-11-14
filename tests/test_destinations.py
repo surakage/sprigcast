@@ -103,11 +103,15 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         w.show()
-        assert w.mode == "build" and w.docks["Sources"].isVisible() and not w.live_stage.isVisible()
-        assert w.docks["Destinations"].isVisible()
+        # Build has its own screen too: bloom pills, Inside, the canvas with its twin, the inspector.
+        assert w.mode == "build" and w.build_stage.isVisible() and w.source_list.isVisible()
+        assert not w.live_stage.isVisible() and not w.docks["Destinations"].isVisible()
+        assert set(w.bloom_bar.pills) == {"h1", "h2"} and w.bloom_bar.pills["h1"].isChecked()
+        assert w.previews["vertical"].twin and not w.previews["vertical"].editable
+        assert w.previews["horizontal"].editable and not w.previews["horizontal"].twin
         w._set_mode("live")
         # Live has its own screen: the stage, bloom tiles and side column, and no docks by default.
-        assert w.live_stage.isVisible() and w.live_panel.isVisible() and not w.docks["Sources"].isVisible()
+        assert w.live_stage.isVisible() and w.live_panel.isVisible() and not w.build_stage.isVisible()
         assert not w.docks["Scenes"].isVisible() and not w.docks["Audio Mixer"].isVisible()
         assert w.previews["horizontal"].isVisible() and w.previews["horizontal"].live_look
         assert w.docks["Audio Mixer"].toggleViewAction().isEnabled()  # still there if you want it
@@ -123,7 +127,7 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         w.live_panel.buttons["h2"].click()
         assert col.active_scenes["horizontal"] == "h2"
         w._set_mode("build")
-        assert w.docks["Sources"].isVisible() and all(p.editable for p in w.previews.values())
+        assert w.build_stage.isVisible() and w.previews["horizontal"].editable
         assert w.previews["horizontal"].isVisible() and not w.previews["horizontal"].live_look
         assert QSettings().value("window/mode") == "build"
     finally:
@@ -154,13 +158,17 @@ def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
         assert [a.text() for a in w.mode_actions.values()] == ["Live", "Build"]  # Live comes first
         # Build starts on the horizontal tab: only its preview and its blooms.
         assert w.build_canvas == "horizontal"
-        assert w.previews["horizontal"].isVisible() and not w.previews["vertical"].isVisible()
+        assert w.previews["horizontal"].editable and w.previews["vertical"].twin  # the other shape: a small twin
         assert "v1" not in {w.scene_tree.topLevelItem(0).child(i).data(0, 256) for i in range(2)}
         assert not w.link_button.isVisible()
         w.canvas_tabs.setCurrentIndex(1)
         assert w.build_canvas == "vertical" and w.selected_scene_id == "v1"
-        assert w.previews["vertical"].isVisible() and not w.previews["horizontal"].isVisible()
+        assert w.previews["vertical"].editable and w.previews["horizontal"].twin
         assert w.link_button.isVisible()
+        w._swap_shape("horizontal")  # clicking the twin swaps back
+        assert w.build_canvas == "horizontal" and w.previews["vertical"].twin
+        w.canvas_tabs.setCurrentIndex(1)
+        assert w.build_canvas == "vertical" and w.selected_scene_id == "v1"
         assert "🔗 Main" in w.scene_tree.topLevelItem(0).child(0).text(0)
         # Re-link the vertical bloom to BRB from the vertical tab; switching BRB on now brings it along.
         w._link_scene("v1", "h2")
