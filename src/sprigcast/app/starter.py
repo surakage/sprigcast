@@ -37,6 +37,7 @@ from sprigcast.core.scene import PART_KIND, Scene, SceneCollection, SceneItem, S
 BLOOMS = ("Starting soon", "Just Chatting", "Gaming", "Be right back", "Ending")
 TITLES = {"Starting soon": "Starting soon", "Be right back": "Be right back", "Ending": "Thanks for watching!"}
 WITH_CAMERA = {"Just Chatting", "Gaming"}
+ART = {"Starting soon": "sloth-starting.png", "Be right back": "sloth-brb.png", "Ending": "sloth-ending.png"}
 BACKGROUND = "#16241dff"
 DEFAULT_IDS = {"starting", "starting-v", "brb", "brb-v"}  # the example blooms a fresh install starts with
 
@@ -90,6 +91,7 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
         collection.sources.append(screen_src)
     made: list[str] = []
     first_ids: dict[str, str] = {}
+    pictures: dict[str, SourceConfig] = {}  # one sloth source per bloom name, shared by both shapes
     for canvas in canvases:
         folder = next((f for f in collection.folders_for(canvas.id) if f.name == "Main Scenes"), None) \
             or collection.add_folder(canvas.id, "Main Scenes")
@@ -117,6 +119,8 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
                                      settings={"text": TITLES[name], "size": max(48, canvas.width // 18)})
                 collection.sources.append(title)
                 items.append(SceneItem(source=title.id, x=canvas.width * 0.08, y=canvas.height * 0.42))
+            if name in ART:
+                items.append(_sloth_item(collection, pictures, name, canvas))
             label = name if canvas is main else f"{name} (vertical)"
             scene = Scene(id=collection.new_id("scene"), name=label, canvas=canvas.id, folder=folder.id,
                           items=items, linked_to=None if canvas is main else first_ids.get(name))
@@ -134,6 +138,28 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
         desktop = "default" if choice.desktop is True else (choice.desktop or None)
         _add_sound(collection, "audio_output", desktop, "Desktop audio")
     return made
+
+
+def _sloth_item(collection: SceneCollection, pictures: dict[str, SourceConfig], name: str, canvas) -> SceneItem:
+    """The bloom's sloth picture: bottom right of a wide canvas, in the lower middle of a tall one.
+
+    Never drawn bigger than the picture itself, so it stays sharp."""
+    from sprigcast.sources.image import ART_PREFIX, image_size, resolve
+
+    config = pictures.get(name)
+    if config is None:
+        config = SourceConfig(id=collection.new_id("art"), kind="image", name=f"Sloth ({name})",
+                              settings={"path": ART_PREFIX + ART[name]})
+        collection.sources.append(config)
+        pictures[name] = config
+    w, h = image_size(resolve(config.settings["path"])) or (480, 480)
+    if canvas.width >= canvas.height:
+        scale = min(1.0, canvas.height * 0.5 / h)
+        x, y = canvas.width * 0.94 - w * scale, canvas.height * 0.9 - h * scale  # bottom right, clear of the title
+    else:
+        scale = min(1.0, canvas.width * 0.6 / w)
+        x, y = (canvas.width - w * scale) / 2, canvas.height * 0.62
+    return SceneItem(source=config.id, scale=scale, x=x, y=y)
 
 
 def _add_app_sounds(collection: SceneCollection, picks: dict[str, list[str] | None]) -> None:

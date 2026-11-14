@@ -17,6 +17,15 @@ import numpy as np
 from sprigcast.core.source import Source, register
 
 _MISSING = (64, 64)
+ART_PREFIX = "art:"  # "art:sloth-ending.png" is a picture that ships with SprigCast (app/art), wherever it's installed
+ART_FOLDER = Path(__file__).resolve().parents[1] / "app" / "art"
+
+
+def resolve(path: str) -> Path:
+    """The file a `path` setting means: a SprigCast picture for "art:<name>", else the path itself."""
+    if path.startswith(ART_PREFIX):
+        return ART_FOLDER / Path(path[len(ART_PREFIX):]).name  # a bare name: never outside the art folder
+    return Path(path)
 
 
 def _missing() -> np.ndarray:
@@ -92,7 +101,7 @@ class ImageSource(Source):
         self._measure()
 
     def _path(self) -> Path:
-        return Path(str(self.settings.get("path", "")))
+        return resolve(str(self.settings.get("path", "")))
 
     def _measure(self) -> None:
         self._size = image_size(self._path()) or _MISSING
