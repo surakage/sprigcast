@@ -272,7 +272,10 @@ class SettingsWindow(QDialog):
         self.tabs.currentRowChanged.connect(self._tab_changed)
         self.output_page.show_tab(tab)
         tab = TAB_ALIASES.get(tab, tab)
+        tab, _, sub = tab.partition("/")  # "Audio/Sounds": the Audio page on its Sounds tab
         self.tabs.setCurrentRow(TABS.index(tab) if tab in TABS else 0)
+        if tab == "Audio" and sub:
+            self.audio_page.show_tab(sub)
 
         side = QVBoxLayout()
         side.setSpacing(14)

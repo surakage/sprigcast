@@ -4,7 +4,8 @@
   at all and leave the Sound list, so only the mics and desktop sounds you add yourself play.
 - Tracks: a recording can keep up to five sound tracks. 1 is everything, 2 is VOD-safe (everything
   but the sounds you keep out of it, music by default), 3 is your voice, 4 and 5 are yours to fill.
-- Sounds: a tick grid, one row per sound, one column per track.
+- Sounds: one row per sound, like OBS's Advanced Audio Properties: volume, mono, balance, sync
+  offset, who hears it and its tracks. The Sound card's ⚙ opens it.
 - Bitrate: how good the sound is on the stream and in recordings (clips and source record too).
 """
 
@@ -14,11 +15,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QLabel,
     QLineEdit,
+    QSlider,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -118,7 +122,7 @@ class AudioPage(QWidget):
     def _bitrate(self) -> QWidget:
         group = QGroupBox("Bitrate")
         box = QVBoxLayout(group)
-        box.setContentsMargins(18, 30, 18, 18)
+        box.setContentsMargins(0, 0, 0, 0)  # the card's own padding (settings_window style) is enough
         box.setSpacing(12)
         form = QFormLayout()
         form.setHorizontalSpacing(18)
@@ -126,9 +130,11 @@ class AudioPage(QWidget):
         c = self.collection
         self.stream_kbps = self._kbps(c.stream_encoder.audio_kbps)
         self.stream_kbps.setEnabled(not self.streaming)
+        self.stream_kbps.setFixedWidth(180)
         form.addRow("Stream", self.stream_kbps)
         self.recording_kbps = self._kbps(c.recording.encoder.audio_kbps)
         self.recording_kbps.setEnabled(not self.recording)
+        self.recording_kbps.setFixedWidth(180)
         form.addRow("Recordings and clips", self.recording_kbps)
         box.addLayout(form)
         notes = ["160 kbps is plenty for a stream. Recordings can go higher: every track uses this bitrate."]
@@ -156,7 +162,7 @@ class AudioPage(QWidget):
     def _devices(self, audio_devices: dict[str, list[str]]) -> QWidget:
         group = QGroupBox("Devices")
         box = QVBoxLayout(group)
-        box.setContentsMargins(18, 30, 18, 18)
+        box.setContentsMargins(0, 0, 0, 0)  # the card's own padding (settings_window style) is enough
         box.setSpacing(12)
         c = self.collection
         self.global_on = QCheckBox("Use global devices")
@@ -199,7 +205,7 @@ class AudioPage(QWidget):
     def _tracks(self, recording: bool) -> QWidget:
         group = QGroupBox("Tracks")
         box = QVBoxLayout(group)
-        box.setContentsMargins(18, 30, 18, 18)
+        box.setContentsMargins(0, 0, 0, 0)  # the card's own padding (settings_window style) is enough
         box.setSpacing(12)
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -218,6 +224,7 @@ class AudioPage(QWidget):
             name.setPlaceholderText(TRACK_NAMES[n - 1])
             name.setMaxLength(24)
             name.setToolTip(TRACK_TIPS[n - 1])
+            name.setFixedWidth(280)
             grid.addWidget(name, n, 1)
             keep = QCheckBox()
             keep.setChecked(n in kept or n == 1)
@@ -226,52 +233,104 @@ class AudioPage(QWidget):
             grid.addWidget(keep, n, 2, alignment=Qt.AlignmentFlag.AlignCenter)
             self.track_names.append(name)
             self.track_kept.append(keep)
-        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)  # spare width goes to the right, so names and ticks sit together
         box.addLayout(grid)
         box.addWidget(_hint("Track 2 leaves out music, so you can upload it without copyright strikes. "
                             "Pick which sounds go on each track in Sounds."
                             + (" Stop the recording to change which tracks it keeps." if recording else "")))
         return group
 
-    # Which sounds go where ---------------------------------------------------------------
+    # Sounds: one row per sound, like OBS's Advanced Audio Properties -------------------------
+
+    HEAR = (("Stream", False), ("Both", True), ("Just me", "only"))
 
     def _grid(self) -> QWidget:
-        group = QGroupBox("Which sounds go on each track")
+        group = QGroupBox("Sounds")
         box = QVBoxLayout(group)
-        box.setContentsMargins(18, 30, 18, 18)
-        box.setSpacing(12)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(10)
         sounds = [s for s in self.collection.sources if has_sound(s) and not self.collection.device_off(s)]
         self.track_ticks: dict[str, list[QCheckBox]] = {}
+        self.sound_rows: dict[str, dict] = {}
         if not sounds:
             box.addWidget(_hint("No sounds yet."))
             return group
         grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(8)
-        for n in range(1, len(AUDIO_TRACKS) + 1):
-            head = QLabel(self.collection.audio.track_name(n))
-            head.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            head.setToolTip(f"Track {n}")
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+        tracks = len(AUDIO_TRACKS)
+        heads = ["Sound", "Volume", "Mono", "Balance", "Sync offset", "Who hears it",
+                 *(str(n) for n in range(1, tracks + 1))]
+        for col, text in enumerate(heads):
+            head = QLabel(text)
             head.setStyleSheet(f"color: {theme.MUTED}")
-            grid.addWidget(head, 0, n)
+            if col >= 6:
+                head.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                head.setToolTip(f"Track {text}: {self.collection.audio.track_name(int(text))}")
+            grid.addWidget(head, 0, col)
         for row, source in enumerate(sounds, 1):
-            name = QLabel(source.name)
-            grid.addWidget(name, row, 0)
+            st = source.settings
+            grid.addWidget(QLabel(source.name), row, 0)
+            volume = QDoubleSpinBox()
+            volume.setRange(-60.0, 12.0)
+            volume.setSingleStep(0.5)
+            volume.setDecimals(1)
+            volume.setSuffix(" dB")
+            volume.setValue(float(st.get("volume_db", 0.0) or 0.0))
+            volume.setFixedWidth(108)
+            grid.addWidget(volume, row, 1)
+            mono = QCheckBox()
+            mono.setChecked(bool(st.get("mono", False)))
+            grid.addWidget(mono, row, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+            balance = QSlider(Qt.Orientation.Horizontal)
+            balance.setRange(-100, 100)
+            balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
+            balance.setFixedWidth(90)
+            balance.setToolTip("Left / right (double-click the Sound card's slider to centre)")
+            balance.valueChanged.connect(lambda v, b=balance: b.setToolTip(
+                "Centre" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
+            grid.addWidget(balance, row, 3)
+            sync = QSpinBox()
+            sync.setRange(0, 2000)
+            sync.setSingleStep(10)
+            sync.setSuffix(" ms")
+            sync.setValue(int(st.get("delay_ms", 0) or 0))
+            sync.setFixedWidth(100)
+            sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
+            grid.addWidget(sync, row, 4)
+            hear = QComboBox()
+            current = st.get("monitor", False)
+            for text, value in self.HEAR:
+                hear.addItem(text, value)
+            hear.setCurrentIndex(2 if current == "only" else 1 if current else 0)
+            hear.setEnabled(source.kind != "audio_output")  # desktop sound already plays on your speakers
+            hear.setFixedWidth(118)
+            grid.addWidget(hear, row, 5)
             ticks = []
-            only_me = is_monitor_only(source)
-            for n in range(1, len(AUDIO_TRACKS) + 1):
+            for n in range(1, tracks + 1):
                 tick = QCheckBox()
                 tick.setChecked(on_track(source, n))
-                tick.setEnabled(not only_me and (n != 2 or on_track(source, 1)))
-                tick.setToolTip("Only on your speakers (Sound → Who hears it)" if only_me
-                                else f"{source.name} on track {n}")
-                grid.addWidget(tick, row, n, alignment=Qt.AlignmentFlag.AlignCenter)
+                tick.setToolTip(f"{source.name} on {self.collection.audio.track_name(n)} (track {n})")
+                grid.addWidget(tick, row, 5 + n, alignment=Qt.AlignmentFlag.AlignCenter)
                 ticks.append(tick)
-            ticks[0].toggled.connect(lambda on, t=ticks[1]: t.setEnabled(on))  # VOD-safe is a part of track 1
             self.track_ticks[source.id] = ticks
+            self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
+                                          "hear": hear}
+            ticks[0].toggled.connect(lambda _on, sid=source.id: self._row_ticks(sid))
+            hear.currentIndexChanged.connect(lambda _i, sid=source.id: self._row_ticks(sid))
+            self._row_ticks(source.id)
         grid.setColumnStretch(0, 1)
         box.addLayout(grid)
+        legend = " · ".join(f"{n} {self.collection.audio.track_name(n)}" for n in range(1, tracks + 1))
+        box.addWidget(_hint(f"Tracks: {legend}"))
         return group
+
+    def _row_ticks(self, source_id: str) -> None:
+        """Just me: on no track. VOD-safe is a part of track 1, so it needs track 1."""
+        ticks = self.track_ticks[source_id]
+        only_me = self.sound_rows[source_id]["hear"].currentData() == "only"
+        for n, tick in enumerate(ticks, 1):
+            tick.setEnabled(not only_me and (n != 2 or ticks[0].isChecked()))
 
     # Saving ------------------------------------------------------------------------------
 
@@ -296,6 +355,15 @@ class AudioPage(QWidget):
                 source.settings = {**source.settings, "device": device}
                 base = device_label(source.kind)
                 source.name = base if device == "default" else f"{base} ({device})"
+            row = self.sound_rows.get(source.id)
+            if row is not None:
+                wanted = {"volume_db": round(row["volume"].value(), 1), "mono": row["mono"].isChecked(),
+                          "balance": row["balance"].value() / 100, "delay_ms": row["sync"].value(),
+                          "monitor": row["hear"].currentData()}
+                defaults = {"volume_db": 0.0, "mono": False, "balance": 0.0, "delay_ms": 0, "monitor": False}
+                changed = {k: v for k, v in wanted.items() if source.settings.get(k, defaults[k]) != v}
+                if changed:
+                    source.settings = {**source.settings, **changed}
             ticks = self.track_ticks.get(source.id)
             if ticks is not None and not is_monitor_only(source):
                 for n, tick in enumerate(ticks, 1):

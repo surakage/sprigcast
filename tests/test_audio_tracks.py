@@ -168,3 +168,51 @@ def test_audio_page_has_tabs_and_sets_both_bitrates():
     live.stream_kbps.setCurrentIndex(live.stream_kbps.findData(96))
     live.apply_to(col)
     assert col.stream_encoder.audio_kbps == 128  # not changed while live
+
+
+def test_sounds_tab_sets_volume_mono_balance_sync_and_who_hears_it():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage, on_track
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    page = AudioPage(col, {})
+    mic = page.sound_rows["mic"]
+    mic["volume"].setValue(-4.5)
+    mic["mono"].setChecked(True)
+    mic["balance"].setValue(-25)
+    mic["sync"].setValue(150)
+    mic["hear"].setCurrentIndex(mic["hear"].findData(True))
+    assert not page.sound_rows["desktop"]["hear"].isEnabled()  # desktop sound already plays on your speakers
+    wave = page.sound_rows["mic-2"]["hear"]
+    wave.setCurrentIndex(wave.findData("only"))
+    assert not any(t.isEnabled() for t in page.track_ticks["mic-2"])  # just me: on no track
+    page.apply_to(col)
+    st = col.source("mic").settings
+    assert (st["volume_db"], st["mono"], st["balance"], st["delay_ms"], st["monitor"]) == (-4.5, True, -0.25, 150, True)
+    assert col.source("mic-2").settings["monitor"] == "only" and not on_track(col.source("mic-2"), 1)
+    assert "volume_db" not in col.source("desktop").settings  # untouched rows stay as they were
+
+
+def test_settings_opens_on_audio_sounds_and_the_sound_card_has_a_way_there(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    import keyring
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.settings_window import SettingsWindow
+    from sprigcast.app.sound_card import SoundCard
+
+    w = SettingsWindow(_collection(), default_recordings_folder="x", encoder="NVENC", audio_devices={},
+                       tab="Audio/Sounds")
+    assert w.current_tab() == "Audio" and w.audio_page.tabs.tabText(w.audio_page.tabs.currentIndex()) == "Sounds"
+    card = SoundCard(lambda *_: None, lambda _id: None)
+    opened = []
+    card.on_settings = lambda: opened.append(True)
+    card.settings.click()
+    assert opened == [True]
