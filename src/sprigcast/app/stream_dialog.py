@@ -223,7 +223,7 @@ class StreamPage(QWidget):
         form.addRow(self.key_label, self.key_row)
         self.help = QLabel()
         self.help.setWordWrap(True)
-        self.help.setStyleSheet("color: gray")
+        self.help.setStyleSheet(f"color: {theme.MUTED}")
         form.addRow("", self.help)
         groups.addWidget(destination)
 
@@ -248,7 +248,7 @@ class StreamPage(QWidget):
         form.addRow("Bitrate", self.bitrate)
         self.video_note = QLabel("Encoder settings (rate control, preset, keyframes…) are on the Output page.")
         self.video_note.setWordWrap(True)
-        self.video_note.setStyleSheet("color: gray")
+        self.video_note.setStyleSheet(f"color: {theme.MUTED}")
         self.auto_bitrate = QCheckBox("Auto-pilot bitrate")
         self.auto_bitrate.setToolTip("When your upload can't keep up, lower the bitrate smoothly instead of "
                                      "dropping frames, then climb back to this bitrate once it recovers")
@@ -290,7 +290,7 @@ class StreamPage(QWidget):
             "Twitch sets sizes and bitrates; the Video settings above are the fallback. Needs an NVIDIA or Intel Arc GPU."
         )
         self.enhanced_note.setWordWrap(True)
-        self.enhanced_note.setStyleSheet("color: gray")
+        self.enhanced_note.setStyleSheet(f"color: {theme.MUTED}")
         form.addRow("", self.enhanced_note)
         groups.addWidget(self.enhanced_box)
 
@@ -306,7 +306,7 @@ class StreamPage(QWidget):
         form.addRow("", self.limits)
         note = QLabel("Keys are saved in Windows Credential Manager, never in the scenes file.")
         note.setWordWrap(True)
-        note.setStyleSheet("color: gray")
+        note.setStyleSheet(f"color: {theme.MUTED}")
         form.addRow("", note)
         groups.addWidget(advanced)
 

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
 from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
 from sprigcast.core.scene import Filter, SourceConfig
 
@@ -204,7 +205,7 @@ class FiltersDialog(QDialog):
             else "Effects run on the GPU in a fixed order: scroll, sharpen, key, then color correction."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray")
+        hint.setStyleSheet(f"color: {theme.MUTED}")
         right = QVBoxLayout()
         right.addWidget(self.title)
         right.addWidget(self.form_area, 1)

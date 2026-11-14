@@ -18,8 +18,10 @@ except ImportError:  # optional: the panel just leaves out CPU and memory
 
 
 def _row(label: str, value: str, warn: bool = False) -> str:
-    color = theme.BAD if warn else "inherit"
-    return f"<tr><td>{html.escape(label)}</td><td style='padding-left:12px; color:{color}'>{value}</td></tr>"
+    # Qt's rich text has no "inherit": an unknown colour draws near-black, unreadable on the dark theme.
+    color = theme.BAD if warn else theme.TEXT
+    return (f"<tr><td style='color:{theme.MUTED}'>{html.escape(label)}</td>"
+            f"<td style='padding-left:12px; color:{color}'>{value}</td></tr>")
 
 
 class StatsPanel(QWidget):
@@ -76,5 +78,5 @@ class StatsPanel(QWidget):
             if "backlog_s" in st and label.startswith("Stream"):
                 rows.append(_row("Send buffer", f"{st['backlog_s']:.1f} s waiting to upload", st["backlog_s"] > 1.0))
         if not outputs:
-            rows.append("<tr><td colspan=2 style='padding-top:8px; color:gray'>Not streaming or recording.</td></tr>")
+            rows.append(f"<tr><td colspan=2 style='padding-top:8px; color:{theme.MUTED}'>Not streaming or recording.</td></tr>")
         self.label.setText("<table>" + "".join(rows) + "</table>")

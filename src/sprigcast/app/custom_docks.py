@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import theme
+
 log = logging.getLogger(__name__)
 SETTINGS_KEY = "docks/custom"
 PREFIX = "custom:"  # dock objectName prefix, so saved layouts remember where each one sits
@@ -110,7 +112,7 @@ class WebDockBody(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self.placeholder = QLabel("Loading…")
         self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.placeholder.setStyleSheet("color: gray")
+        self.placeholder.setStyleSheet(f"color: {theme.MUTED}")
         self._layout.addWidget(self.placeholder)
 
     def ensure_loaded(self) -> None:

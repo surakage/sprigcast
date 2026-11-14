@@ -1116,7 +1116,7 @@ class MainWindow(QMainWindow):
         self.stream_status.setWordWrap(True)
         layout.addWidget(self.stream_status)
         hint = QLabel("Where to stream: the Destinations dock.")
-        hint.setStyleSheet("color: gray")
+        hint.setStyleSheet(f"color: {theme.MUTED}")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.record_status = QLabel("Not recording")
