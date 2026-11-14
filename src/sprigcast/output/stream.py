@@ -131,11 +131,16 @@ class Streamer(Recorder):
         self._backlog_bytes = 0
         self._congested = False
         self._sender: threading.Thread | None = None
+        self.delay_s = 0.0  # Settings → Advanced → Stream delay: packets wait this long before they're sent
+        self._delay_line = None
         self._connected_at = 0.0
         # Auto-pilot needs a target bitrate to steer; constant-quality encoding has none.
         self.autopilot = Autopilot(bitrate_kbps) if auto_bitrate and self.encoder.rate_control != "cqp" else None
         self._want_kbps = self._applied_kbps = bitrate_kbps
         self._autopilot_at = 0.0
+
+    def _live_text(self) -> str:
+        return f"live, {self.delay_s:g} s delay" if self.delay_s > 0 else "live"
 
     def health(self) -> tuple[str, str]:
         """("good" | "warning" | "bad", short reason), comparing against the previous call (about 1 s ago).
@@ -158,7 +163,7 @@ class Streamer(Recorder):
         if not self.connected:
             return ("warning" if self.status.startswith(("connecting", "reconnecting")) else "bad"), self.status
         if last is None or now <= last[0] or now - self._connected_at < GRACE_SECONDS:
-            return "good", "live"
+            return "good", self._live_text()
         sent, lost = sample[1] - last[1], sample[2] - last[2]
         waiting_on_network = (sample[3] - last[3]) / (now - last[0]) > 0.5
         backlog = self._video.qsize() / self._video.maxsize
@@ -171,7 +176,7 @@ class Streamer(Recorder):
             return "warning", f"falling behind: {why}"
         if behind > 1.0:
             return "warning", f"network slow, {behind:.1f} s behind"
-        return "good", "live"
+        return "good", self._live_text()
 
     def redact(self, text: str) -> str:
         """Error text from FFmpeg can contain the URL; never let the key reach the screen or a log."""
@@ -291,16 +296,33 @@ class Streamer(Recorder):
         self._send_q = queue.Queue()
         self._send_error = None
         self._backlog_bytes = 0
+        self._delay_line = self._new_delay_line(self._send_q)
         self._sender = threading.Thread(
             target=self._send_loop, args=(container,), name=f"sprigcast-send-{self.name}", daemon=True
         )
         self._sender.start()
         return container, video, audio
 
+    def _new_delay_line(self, send_q):
+        """With a stream delay, packets wait in a DelayLine and only then join the send queue (and count as
+        backlog, so the wait isn't mistaken for a slow network)."""
+        if self.delay_s <= 0:
+            return None
+        from sprigcast.output.delay import DelayLine
+
+        def release(packet):
+            self._backlog_bytes += packet.size
+            send_q.put(packet)
+        return DelayLine(self.delay_s, release, f"delay-{self.name}")
+
     def _mux(self, container, packets) -> None:
         if self._send_error is not None:
             raise self._send_error  # the connection failed: end this session so _run reconnects
+        line = self._delay_line
         for packet in packets:
+            if line is not None:
+                line.put(packet)
+                continue
             self._backlog_bytes += packet.size
             self._send_q.put(packet)
 
@@ -325,6 +347,9 @@ class Streamer(Recorder):
 
     def _before_close(self, container) -> bool:
         """Let the sender finish what is queued (briefly), then stop it before the container closes."""
+        if self._delay_line is not None:  # what's still delayed is never sent: stopping cuts there
+            self._delay_line.close()
+            self._delay_line = None
         self._send_q.put(None)
         self._sender.join(timeout=3.0 if self._send_error is None else 0.5)
         if self._sender.is_alive():
@@ -381,7 +406,8 @@ class StreamSession:
         self.started_at = time.monotonic()
 
     @classmethod
-    def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None) -> "StreamSession":
+    def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None,
+              delay_s: float = 0.0) -> "StreamSession":
         from sprigcast.output.enhanced_stream import EnhancedStreamer
         from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
 
@@ -407,6 +433,7 @@ class StreamSession:
             for t in group:
                 link = StreamLink(t.name, t.server, t.key, enc, t.bandwidth_test)
                 link.output_id = t.output_id or t.name
+                link.delay_s = delay_s
                 enc.links.append(link)
                 streamers.append((c.id, link))
                 done.add(id(t))
@@ -429,6 +456,7 @@ class StreamSession:
                               t.size, t.bandwidth_test, encoder, auto_bitrate=t.auto_bitrate)
                 taps.append((c.id, st.push_frame, st.gpu_size))
             st.output_id = t.output_id or t.name
+            st.delay_s = delay_s
             st.start()
             streamers.append((c.id, st))
         session = cls(engine, streamers)
