@@ -16,6 +16,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QDialog,
+    QFrame,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -31,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.core.scene import Transition
+from sprigcast.core.scene import ANY, SceneCollection, Transition, TransitionRule
 
 KINDS = [  # (kind, label, tooltip)
     ("cut", "Cut", "Swap at once"),
@@ -225,16 +227,20 @@ class TransitionsPanel(QWidget):
     """Edits `transition` in place; calls changed() after every edit."""
 
     def __init__(self, transition: Transition, changed: Callable[[], None],
-                 probe: Callable[[str], float | None] | None = None, parent: QWidget | None = None):
+                 probe: Callable[[str], float | None] | None = None, parent: QWidget | None = None,
+                 collection: SceneCollection | None = None):
         super().__init__(parent)
         self.transition = transition
         self.changed = changed
         self.probe = probe
+        self.collection = collection
         self._updating = False
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(12)
         self.setStyleSheet(FIELD_STYLE)
+        if collection is not None:
+            root.addWidget(section_title("Usually", "Between blooms with no rule below"))
 
         grid = QGridLayout()
         grid.setSpacing(6)
@@ -344,6 +350,11 @@ class TransitionsPanel(QWidget):
         sound_layout.addWidget(self.mute)
         form.addRow("Sound", sound)
         root.addLayout(form)
+        self.rules: RulesTable | None = None
+        if collection is not None:
+            self.rules = RulesTable(collection, changed, probe)
+            root.addSpacing(6)
+            root.addWidget(self.rules)
         root.addStretch(1)
         self.load(transition)
 
@@ -511,3 +522,176 @@ class TransitionsPanel(QWidget):
         self.transition.stinger.vertical_path = path
         self._show_file(self.tall_clip, path)
         self.changed()
+
+
+def section_title(text: str, tip: str = "") -> QLabel:
+    label = QLabel(text)
+    font = label.font()
+    font.setPixelSize(14)
+    font.setWeight(QFont.Weight.DemiBold)
+    label.setFont(font)
+    label.setToolTip(tip)
+    return label
+
+
+def bloom_choices(collection: SceneCollection) -> list[tuple[str, str]]:
+    """(scene id, name) of every main bloom: shows that are not just another canvas's twin."""
+    return [(s.id, s.name) for s in collection.scenes if s.kind == "show" and s.linked_to is None]
+
+
+ROW_STYLE = f"#ruleRow {{ background: {theme.CARD}; border-radius: 14px; }}"
+
+
+class RuleRow(QFrame):
+    """One line of the table: from bloom → to bloom, and the transition between them."""
+
+    def __init__(self, table: "RulesTable", rule: TransitionRule):
+        super().__init__()
+        self.table, self.rule = table, rule
+        self.setObjectName("ruleRow")
+        self.setStyleSheet(ROW_STYLE)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        ends = QHBoxLayout()
+        ends.setSpacing(6)
+        self.from_pick = self._end_button("from_scene")
+        self.to_pick = self._end_button("to_scene")
+        arrow = QLabel("→")
+        arrow.setStyleSheet(theme.MUTED_STYLE)
+        ends.addWidget(self.from_pick, 1)
+        ends.addWidget(arrow)
+        ends.addWidget(self.to_pick, 1)
+        layout.addLayout(ends)
+        how = QHBoxLayout()
+        how.setSpacing(6)
+        self.how = QPushButton()
+        self.how.setStyleSheet(CHOICE_STYLE)
+        self.how.setToolTip("Change how this switch looks")
+        self.how.clicked.connect(self._edit)
+        remove = QPushButton("×")
+        remove.setStyleSheet(PILL_STYLE)
+        remove.setToolTip("Remove this rule")
+        remove.clicked.connect(lambda: table.remove(rule))
+        how.addWidget(self.how, 1)
+        how.addWidget(remove)
+        layout.addLayout(how)
+        self.show_values()
+
+    def _end_button(self, end: str) -> QPushButton:
+        button = QPushButton()
+        button.setStyleSheet(PILL_STYLE)
+        button.setProperty("end", end)
+        menu = QMenu(button)
+        menu.aboutToShow.connect(lambda: self._fill_menu(menu, end))
+        button.setMenu(menu)
+        return button
+
+    def _fill_menu(self, menu: QMenu, end: str) -> None:
+        menu.clear()
+        current = getattr(self.rule, end)
+        for scene_id, name in [(ANY, "Any bloom"), *bloom_choices(self.table.collection)]:
+            action = menu.addAction(name, lambda sid=scene_id: self._set_end(end, sid))
+            action.setCheckable(True)
+            action.setChecked(scene_id == current)
+
+    def _set_end(self, end: str, scene_id: str) -> None:
+        setattr(self.rule, end, scene_id)
+        self.show_values()
+        self.table.changed()
+
+    def _name(self, scene_id: str) -> str:
+        if scene_id == ANY:
+            return "Any bloom"
+        scene = next((s for s in self.table.collection.scenes if s.id == scene_id), None)
+        return short_name(scene.name, "?") if scene is not None else "Removed"
+
+    def show_values(self) -> None:
+        self.from_pick.setText(self._name(self.rule.from_scene) + "  ▾")
+        self.to_pick.setText(self._name(self.rule.to_scene) + "  ▾")
+        text = summary(self.rule.transition)
+        if self.rule.transition.kind == "stinger" and self.rule.transition.stinger.path:
+            text += " · " + short_name(self.rule.transition.stinger.path)
+        self.how.setText(text)
+
+    def _edit(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Transition")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(section_title(f"{self._name(self.rule.from_scene)} → {self._name(self.rule.to_scene)}"))
+
+        def edited() -> None:
+            self.show_values()
+            self.table.changed()
+
+        layout.addWidget(TransitionsPanel(self.rule.transition, edited, self.table.probe))
+        done = QPushButton("Done")
+        done.setStyleSheet(theme.PRIMARY_STYLE)
+        done.clicked.connect(dialog.accept)
+        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.resize(380, 560)
+        dialog.exec()
+
+
+class RulesTable(QWidget):
+    """Between blooms: transitions for particular switches, like a stinger only into BRB."""
+
+    def __init__(self, collection: SceneCollection, changed: Callable[[], None],
+                 probe: Callable[[str], float | None] | None = None):
+        super().__init__()
+        self.collection, self.changed, self.probe = collection, changed, probe
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        top = QHBoxLayout()
+        top.addWidget(section_title("Between blooms", "Use another transition for particular switches"))
+        top.addStretch(1)
+        add = QPushButton("+ Add")
+        add.setStyleSheet(PILL_STYLE)
+        add.setToolTip("Add a rule: from one bloom to another, its own transition")
+        add.clicked.connect(self.add)
+        top.addWidget(add)
+        layout.addLayout(top)
+        self.hint = QLabel("Every switch uses the transition above. Add a rule to give some switches "
+                           "their own, like a stinger into BRB.")
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet(theme.MUTED_STYLE)
+        layout.addWidget(self.hint)
+        self.rows = QVBoxLayout()
+        self.rows.setSpacing(8)
+        layout.addLayout(self.rows)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Rebuild the rows (after rules were added or removed, or blooms renamed)."""
+        while self.rows.count():
+            widget = self.rows.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        for rule in self.collection.transition_rules:
+            self.rows.addWidget(RuleRow(self, rule))
+        self.hint.setVisible(not self.collection.transition_rules)
+
+    def add(self) -> None:
+        usual = self.collection.transition
+        blooms = bloom_choices(self.collection)
+        transition = Transition(kind="stinger", stinger=usual.stinger.model_copy())
+        rule = TransitionRule(from_scene=ANY, to_scene=blooms[0][0] if blooms else ANY, transition=transition)
+        self.collection.transition_rules.append(rule)
+        self.refresh()
+        self.changed()
+
+    def remove(self, rule: TransitionRule) -> None:
+        self.collection.transition_rules = [r for r in self.collection.transition_rules if r is not rule]
+        self.refresh()
+        self.changed()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        for i in range(self.rows.count()):
+            row = self.rows.itemAt(i).widget()
+            if isinstance(row, RuleRow):
+                row.show_values()  # bloom names may have changed

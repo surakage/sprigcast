@@ -228,12 +228,12 @@ class Engine:
 
     def _start_transitions(self, old: SceneCollection, new: SceneCollection) -> None:
         """When a canvas's active scene changes, run the transition from the scene it showed until now."""
-        transition = new.transition
         started: dict[str, StingerPlayer] = {}  # canvases switching together share one player per clip
         for canvas in new.canvases:
             before, after = old.active_scenes.get(canvas.id), new.active_scenes.get(canvas.id)
             if before == after or before is None:
                 continue
+            transition = new.transition_for(before, after)
             self._finish_transition(canvas.id)
             outgoing = next((s for s in old.scenes if s.id == before), None)
             if outgoing is None or transition.kind == "cut":

@@ -259,6 +259,21 @@ class Transition(BaseModel):
     stinger: Stinger = Field(default_factory=Stinger)
 
 
+ANY = ""  # a TransitionRule end that matches every bloom
+
+
+class TransitionRule(BaseModel):
+    """Use `transition` when going from one bloom to another, instead of the usual one.
+
+    Ends are scene ids of main blooms; ANY matches every bloom. A rule set on a bloom also covers
+    its linked twins on other canvases, so the horizontal and vertical change together.
+    """
+
+    from_scene: str = ANY
+    to_scene: str = ANY
+    transition: Transition = Field(default_factory=lambda: Transition(kind="stinger"))
+
+
 class SceneCollection(BaseModel):
     version: int = FORMAT_VERSION
     canvases: list[Canvas]
@@ -270,6 +285,7 @@ class SceneCollection(BaseModel):
     recording: RecordingSettings = Field(default_factory=RecordingSettings)
     stream_encoder: EncoderSettings = Field(default_factory=EncoderSettings)
     transition: Transition = Field(default_factory=Transition)
+    transition_rules: list[TransitionRule] = Field(default_factory=list)  # first match wins, see transition_for
     audio: AudioSettings = Field(default_factory=AudioSettings)
     hotkeys: dict[str, str] = Field(default_factory=dict)  # action -> key combo, e.g. "scene:brb" -> "Ctrl+Alt+2"
 
@@ -302,6 +318,9 @@ class SceneCollection(BaseModel):
         for output in self.outputs:
             if output.canvas not in canvas_ids:
                 raise ValueError(f"output {output.id!r} uses unknown canvas {output.canvas!r}")
+        # Rules for blooms that were deleted since are dropped quietly.
+        self.transition_rules = [r for r in self.transition_rules
+                                 if r.from_scene in scene_ids | {ANY} and r.to_scene in scene_ids | {ANY}]
         return self
 
     # Lookups -------------------------------------------------------------
@@ -576,6 +595,25 @@ class SceneCollection(BaseModel):
                 item.scale_y = None if item.scale_y is None else item.scale_y * fit_new / fit_old
                 item.x = cx - new[0] * item.scale / 2
                 item.y = cy - new[1] * item.sy / 2
+
+    def bloom_key(self, scene_id: str | None) -> str | None:
+        """The main bloom a scene belongs to: itself, or the scene it is linked to."""
+        scene = next((s for s in self.scenes if s.id == scene_id), None)
+        return (scene.linked_to or scene.id) if scene is not None else scene_id
+
+    def transition_for(self, before: str | None, after: str | None) -> Transition:
+        """The transition for switching from scene `before` to `after`.
+
+        The most exact rule wins: from and to both named, then just the to bloom, then just the from
+        bloom; with no rule it is the usual transition.
+        """
+        if self.transition_rules:
+            a, b = self.bloom_key(before), self.bloom_key(after)
+            for wanted in ((a, b), (ANY, b), (a, ANY)):
+                for rule in self.transition_rules:
+                    if (rule.from_scene, rule.to_scene) == wanted:
+                        return rule.transition
+        return self.transition
 
     def active_scene(self, canvas_id: str) -> Scene | None:
         scene_id = self.active_scenes.get(canvas_id)
