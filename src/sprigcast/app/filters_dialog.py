@@ -38,6 +38,10 @@ AUDIO_KINDS = {"audio_input", "audio_output", "app_audio"}
 
 
 def media_of(source: SourceConfig) -> str:
+    if source.kind == "media":  # a sound file takes sound filters; a video, picture filters
+        from sprigcast.sources.media import is_sound_file
+
+        return "audio" if is_sound_file(source.settings.get("path", "")) else "video"
     return "audio" if source.kind in AUDIO_KINDS else "video"
 
 

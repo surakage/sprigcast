@@ -47,6 +47,7 @@ class FakeHost:
         self.clips = False
         self.saved = []
         self.shots = []
+        self.media = {}  # source id -> info, for loaded media
 
     def commit(self, what):
         self.commits.append(what)
@@ -98,6 +99,18 @@ class FakeHost:
 
     def source_sizes(self):
         return {"cam": (16, 9)}
+
+    def media_info(self, source_id):
+        return dict(self.media[source_id]) if source_id in self.media else None
+
+    def media_control(self, source_id, what, seconds=None):
+        if source_id not in self.media:
+            return None
+        info = self.media[source_id]
+        info["state"] = {"play": "playing", "pause": "paused", "restart": "playing", "stop": "stopped",
+                         "toggle": "paused" if info["state"] == "playing" else "playing"}.get(what, info["state"])
+        info["position"] = 0.0 if what in ("restart", "stop") else seconds if what == "seek" else info["position"]
+        return dict(info)
 
     def screenshot(self, shapes, width, save, as_data):
         self.shots.append((shapes, width, save, as_data))

@@ -9,6 +9,7 @@ from sprigcast.sources import (  # noqa: F401
     chat,
     color,
     image,
+    media,
     part,
     text,
 )

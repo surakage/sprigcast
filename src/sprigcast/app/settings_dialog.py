@@ -42,6 +42,10 @@ LABELS = {
     "text_color": "Text colour",
     "bubble_color": "Bubble colour",
     "background_color": "Box colour",
+    "path": "File",
+    "restart_on_show": "Start over when shown",
+    "clear_on_end": "Show nothing when it ends",
+    "play_on_start": "Play when SprigCast opens",
 }
 
 
@@ -76,6 +80,12 @@ class SettingsDialog(QDialog):
         if "hide_after" in defaults:
             tip = QLabel("Shows the chats you picked in the Chat panel (⋯ → Channels…). Hide after 0 keeps "
                          "messages up. A colour ending in 00 is see-through.")
+            tip.setWordWrap(True)
+            tip.setStyleSheet(f"color: {theme.MUTED}")
+            form.addRow("", tip)
+        if "restart_on_show" in defaults:
+            tip = QLabel("A video plays while its bloom is on screen. A sound file lives in Sound: right-click it, "
+                         "use a hotkey or an app to play it. Play when SprigCast opens is for sound files.")
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
