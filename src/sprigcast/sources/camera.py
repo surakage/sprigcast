@@ -90,8 +90,18 @@ def _dshow_list():
     return module.DSHOW_enumerate_cameras() or []
 
 
+OWN_CAMERA = "SprigCast Camera"  # our own virtual camera: showing it in SprigCast would loop the picture
+
+
 def list_cameras() -> list[CameraDevice]:
-    """Cameras visible to DirectShow, in DirectShow's order. Empty when the lookup is unavailable."""
+    """Cameras visible to DirectShow, in DirectShow's order, without SprigCast's own camera.
+
+    Each keeps its DirectShow index, so leaving ours out doesn't shift the others.
+    """
+    return [c for c in _all_cameras() if c.name != OWN_CAMERA]
+
+
+def _all_cameras() -> list[CameraDevice]:
     try:
         found = _dshow_list()
     except Exception as exc:  # driver hiccup while listing

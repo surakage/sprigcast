@@ -223,6 +223,7 @@ class VirtualCamera:
         self.block: SharedBlock | None = None
         # (tap id, picture size, camera size): "horizontal", "view:camera"...; picture fits inside camera size
         self.tap: tuple[str, tuple[int, int], tuple[int, int]] | None = None
+        self._view = self._shown = None  # (canvas id, "bloom"|"source", ref) for a view tap
         self._retired: SharedBlock | None = None  # unmapped a poll later, so a frame mid-copy can't fault
         self.error = ""
         self.frames = 0
@@ -296,14 +297,14 @@ class VirtualCamera:
                 self._retired, self.block = block, None  # the camera closed it; open again when watched
             return
         want = self._want(width, height)
-        if want != self.tap:
+        if want != self.tap or self._view != self._shown:  # a bloom or source view keeps the same tap id
             self._untap()
             if want is not None:
                 tap_id, picture, _camera = want
                 if tap_id == VIEW_TAP:
                     self.engine.set_view(VIEW, *self._view)
                 self.engine.add_frame_tap(tap_id, self._on_frame, picture)
-                self.tap = want
+                self.tap, self._shown = want, self._view
                 log.info("virtual camera: an app is watching at %dx%d, showing %s", width, height, self.choice())
 
     def _canvas_for(self, width: int, height: int):
@@ -345,7 +346,7 @@ class VirtualCamera:
             self.engine.remove_frame_tap(self.tap[0], self._on_frame)
             if self.tap[0] == VIEW_TAP:
                 self.engine.set_view(VIEW, None)
-            self.tap = None
+            self.tap = self._shown = None
             log.info("virtual camera: nobody watching")
 
     # Render thread -----------------------------------------------------------------------
