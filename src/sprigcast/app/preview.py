@@ -263,9 +263,19 @@ class Preview(QWidget):
         self._paint_selection(p)
         p.end()
 
+    _mark = None  # the SprigCast S (data/mark.svg), loaded once
+
+    @classmethod
+    def _brand_mark(cls):
+        if cls._mark is None:
+            from sprigcast.app.main import brand_mark
+
+            cls._mark = brand_mark()
+        return cls._mark
+
     def _paint_empty_pages(self, p: QPainter) -> None:
-        """A browser source with no page yet: a dashed card with a leaf and its size, so it can be placed
-        and sized before the page exists. Only here in the editor: viewers see nothing."""
+        """A browser source with no page yet: a solid card with the SprigCast S and its size, so it can be
+        placed and sized before the page exists. Only here in the editor: viewers see nothing."""
         if not self.editable or self.scene is None or self._image is None:
             return
         for item in self.scene.items:
@@ -280,22 +290,21 @@ class Preview(QWidget):
             box = shape.boundingRect()
             p.save()
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            p.setPen(QPen(QColor(theme.ACCENT), 1.5, Qt.PenStyle.DashLine))
-            p.setBrush(QColor(79, 216, 143, 28))
+            p.setPen(QPen(QColor(theme.ACCENT), 1.5))
+            p.setBrush(QColor(theme.STAGE_EMPTY))
             p.drawPolygon(shape)
             side = min(box.width(), box.height())
             if side >= 24:
-                leaf = min(56.0, side * 0.35)
-                text_h = 34 if box.height() >= leaf + 44 else 0
-                top = box.center().y() - (leaf + text_h) / 2
-                theme.paint_leaf(p, QRectF(box.center().x() - leaf / 2, top, leaf, leaf), True,
-                                 QColor(79, 216, 143, 170))
+                mark = min(72.0, side * 0.4)
+                text_h = 34 if box.height() >= mark + 44 else 0
+                top = box.center().y() - (mark + text_h) / 2
+                self._brand_mark().paint(p, QRectF(box.center().x() - mark / 2, top, mark, mark).toRect())
                 if text_h and box.width() >= 90:
                     p.setPen(QColor(theme.TEXT))
                     font = p.font()
                     font.setPointSizeF(max(7.0, font.pointSizeF() * 0.9))
                     p.setFont(font)
-                    p.drawText(QRectF(box.left() + 4, top + leaf + 4, box.width() - 8, text_h),
+                    p.drawText(QRectF(box.left() + 4, top + mark + 4, box.width() - 8, text_h),
                                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
                                f"Browser · {size[0]}×{size[1]}\nAdd a link in Sources")
             p.restore()
