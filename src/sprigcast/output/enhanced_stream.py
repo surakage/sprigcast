@@ -163,6 +163,7 @@ class EnhancedStreamer(Streamer):
         self._send_q = queue.Queue()
         self._send_error = None
         self._backlog_bytes = 0
+        self._delay_line = self._new_delay_line(self._send_q)
         self._sender = threading.Thread(
             target=self._send_loop, args=(container,), name=f"sprigcast-send-{self.name}", daemon=True
         )
@@ -172,7 +173,11 @@ class EnhancedStreamer(Streamer):
     def _mux(self, container, packets) -> None:
         if self._send_error is not None:
             raise self._send_error
+        line = self._delay_line
         for packet in packets:
+            if line is not None:
+                line.put(packet)
+                continue
             with self._lock:
                 self._backlog_bytes += packet.size
             self._send_q.put(packet)

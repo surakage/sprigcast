@@ -175,12 +175,20 @@ ADV_FILENAME = "advanced/filename"
 ADV_REPLAY_PREFIX = "advanced/replay_prefix"
 ADV_REMUX = "advanced/remux_mp4"
 ADV_REMUX_DELETE = "advanced/remux_delete_mkv"
+ADV_STREAM_DELAY = "advanced/stream_delay_s"
 
 
 def apply_naming() -> None:
     """Hand the saved file-name patterns to the recorders (at startup and after Settings)."""
     q = QSettings()
     naming.set_patterns(q.value(ADV_FILENAME, "", type=str), q.value(ADV_REPLAY_PREFIX, "", type=str))
+
+
+def stream_delay() -> float:
+    """Seconds every stream waits before it goes out (0: no delay)."""
+    from sprigcast.output.delay import MAX_DELAY
+
+    return float(min(MAX_DELAY, max(0, QSettings().value(ADV_STREAM_DELAY, 0, type=int))))
 
 
 def remux_choice() -> tuple[bool, bool]:
@@ -431,6 +439,25 @@ class SettingsWindow(QDialog):
         self.replay_prefix.textChanged.connect(example)
         example()
 
+        delay = QGroupBox("Stream delay")
+        dform = QFormLayout(delay)
+        from sprigcast.output.delay import MAX_DELAY
+
+        self.stream_delay = QSpinBox()
+        self.stream_delay.setRange(0, MAX_DELAY)
+        self.stream_delay.setSingleStep(5)
+        self.stream_delay.setSpecialValueText("Off")
+        self.stream_delay.setSuffix(" s")
+        self.stream_delay.setValue(int(stream_delay()))
+        self.stream_delay.setFixedWidth(130)
+        self.stream_delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stream_delay.setStyleSheet("QSpinBox { padding: 7px 14px; }"
+                                        " QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
+        self.stream_delay.setEnabled(not self.streaming)
+        dform.addRow("Delay", self.stream_delay)
+        dform.addRow("", _hint("Viewers see everything this many seconds late, so nobody can use your stream to "
+                               "find you in a game. Recordings and clips aren't delayed. Starts with your next stream."))
+
         colour = QGroupBox("Colour")
         cform = QFormLayout(colour)
         for name, value in (("Colour format", "NV12 (4:2:0)"), ("Colour space", "Rec. 709 (HD)"),
@@ -440,7 +467,7 @@ class SettingsWindow(QDialog):
             cform.addRow(name, chip)
         cform.addRow("", _hint("What Twitch, YouTube, TikTok and every player expect, so colours look the same "
                                "everywhere."))
-        return _page(process, files, colour)
+        return _page(process, files, delay, colour)
 
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
         files = QGroupBox("Installed plugins")
@@ -653,6 +680,7 @@ class SettingsWindow(QDialog):
         settings.setValue(ADV_REPLAY_PREFIX, self.replay_prefix.text().strip() or naming.REPLAY_PREFIX)
         settings.setValue(ADV_REMUX, self.remux.isChecked())
         settings.setValue(ADV_REMUX_DELETE, self.remux_delete.isChecked())
+        settings.setValue(ADV_STREAM_DELAY, self.stream_delay.value())
         apply_naming()
         level = self.priority.currentData()
         if level != priority.chosen():

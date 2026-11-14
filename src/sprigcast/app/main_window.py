@@ -4304,9 +4304,11 @@ class MainWindow(QMainWindow):
             return
         self._say("Connecting…")
         try:
+            from sprigcast.app.settings_window import stream_delay
+
             self.streaming = StreamSession.start(self.engine, targets,
                                                  resolve_codec(self.collection.stream_encoder, streaming=True),
-                                                 self.collection.stream_encoder)
+                                                 self.collection.stream_encoder, delay_s=stream_delay())
         except Exception as exc:
             self.streaming = None
             QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
