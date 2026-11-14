@@ -3943,7 +3943,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Optimize for this PC", "Stop streaming, recording and the replay buffer first.")
             return False
         wizard = OptimizeWizard(self.collection, lowend.waiting_fps(), first_run=first_run, parent=self)
-        if wizard.exec() != QDialog.DialogCode.Accepted or not wizard.chosen:
+        accepted = wizard.exec() == QDialog.DialogCode.Accepted
+        plan = getattr(wizard, "plan", None)
+        height, fps_q = getattr(plan, "quality", (0, 0))
+        log.info("optimize: %s; quality %dp%d, %d change(s) ticked",
+                 "applied" if accepted and wizard.chosen else "closed without changes",
+                 height, fps_q, len(wizard.chosen) if accepted else 0)
+        if not accepted or not wizard.chosen:
             return False
         fps = wizard.plan.apply(wizard.chosen)
         for change in wizard.chosen:
