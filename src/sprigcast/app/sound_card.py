@@ -64,6 +64,11 @@ def auto_group(name: str, kind: str) -> str:
     """Where a sound goes until you move it: mics are Voice; names hint at the rest."""
     if kind == "audio_input":
         return "Voice"
+    if kind == "app_audio":  # named for its type: Music, Voice chat, SFX & alerts...
+        if re.search(r"voice chat", name, re.IGNORECASE):
+            return "Voice"
+        if re.search(r"text to speech|sfx", name, re.IGNORECASE):
+            return "Alerts"
     if _MUSIC.search(name):
         return "Music"
     if _ALERTS.search(name):
@@ -89,6 +94,7 @@ class Sound:
     filters: list[str] = field(default_factory=list)
     can_monitor: bool = True
     tracks: tuple[str, ...] = ("stream", "recording", "clips")  # the named tracks it goes to
+    apps: str | None = None  # an app sound: what it catches ("Spotify, Apple Music…"); None for other sounds
 
 
 class VolumeMeter(ThinMeter):
@@ -542,7 +548,7 @@ class TunePage(QWidget):
     """Everything about one sound, inside the card. Changes apply at once."""
 
     def __init__(self, on_change: Callable[[str, dict], None], on_filters: Callable[[str], None],
-                 on_back: Callable[[], None]):
+                 on_back: Callable[[], None], on_apps: Callable[[str], None] | None = None):
         super().__init__()
         self.on_change = on_change
         self.sound_id = ""
@@ -567,6 +573,23 @@ class TunePage(QWidget):
         col.addLayout(top)
         self.meter = ThinMeter()
         col.addWidget(self.meter)
+
+        # An app sound (Games, Music, Voice chat...): which apps it catches, and a way to change them.
+        self.apps_card, box = self._section(col)
+        apps_top = QHBoxLayout()
+        apps_top.addWidget(_section_title("Comes from"), 1)
+        change = QPushButton("Change")
+        change.setStyleSheet(theme.LINK_STYLE)
+        change.setCursor(Qt.CursorShape.PointingHandCursor)
+        change.setToolTip("Pick the apps this sound catches")
+        change.clicked.connect(lambda: on_apps and on_apps(self.sound_id))
+        change.setVisible(on_apps is not None)
+        apps_top.addWidget(change)
+        box.addLayout(apps_top)
+        self.apps = _muted_label("")
+        self.apps.setWordWrap(True)
+        box.addWidget(self.apps)
+        self.apps_card.hide()
 
         # Four calm sections, each its own soft card with room inside: how loud, where it goes,
         # filters, and the rest. Nothing touches an edge.
@@ -703,6 +726,8 @@ class TunePage(QWidget):
         self._loading = True
         self.sound_id = sound.id
         self.title.setText(sound.name)
+        self.apps_card.setVisible(sound.apps is not None)
+        self.apps.setText(sound.apps or "")
         self.mute.setChecked(sound.muted)
         self.mute.setText("Muted" if sound.muted else "Mute")
         self.mute.setStyleSheet(MUTED_CHIP_STYLE if sound.muted else CHIP_STYLE)

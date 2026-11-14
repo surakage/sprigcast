@@ -44,7 +44,7 @@ def _hint(text: str) -> QLabel:
 
 def has_sound(source: SourceConfig) -> bool:
     """Sounds that reach the mixer: mics, desktop sounds, videos and sound files, browser pages sending sound."""
-    if source.kind in AUDIO_DEVICE_KINDS or source.kind == "media":
+    if source.kind in AUDIO_DEVICE_KINDS or source.kind in ("app_audio", "media"):
         return True
     if source.kind == "browser":
         from sprigcast.sources.browser import sound_to_mixer

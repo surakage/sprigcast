@@ -177,7 +177,7 @@ log = logging.getLogger(__name__)
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
 BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output",
-                  "scene", "browser", "chat", "media"}
+                  "app_audio", "scene", "browser", "chat", "media"}
 
 
 def _name_from(settings: dict, fallback: str) -> str:
@@ -454,9 +454,10 @@ class MainWindow(QMainWindow):
 
         self.browser_host = start_host(self)  # draws browser sources; Chromium loads with the first one
         self.engine = Engine(collection)
-        from sprigcast.app.settings_window import sleep_policy
+        from sprigcast.app.settings_window import apply_naming, sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
+        apply_naming()  # file-name patterns from Settings → Advanced
         # Nothing is on screen yet: don't copy full-size frames back until _poll_engine says which
         # previews are showing and how big they are (each early one was an 8 MB frame).
         self.engine.previews = frozenset()
@@ -526,6 +527,7 @@ class MainWindow(QMainWindow):
             menu.addAction("Microphone…").triggered.connect(lambda: self._add_audio("audio_input"))
             menu.addAction("Desktop sound…").triggered.connect(lambda: self._add_audio("audio_output"))
             menu.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
+            self._fill_app_sound_menu(menu.addMenu("App sound"))
         elif key == PART_ROOT:
             menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
             menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
@@ -533,6 +535,14 @@ class MainWindow(QMainWindow):
             menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
             menu.addAction(f"New {SHOW} folder…").triggered.connect(lambda: self._add_folder())
         menu.exec(QCursor.pos())
+
+    def _fill_app_sound_menu(self, menu: QMenu) -> None:
+        from sprigcast.sources.app_audio import SOUND_TYPES
+
+        for kind in SOUND_TYPES:
+            action = menu.addAction(kind.name)
+            action.setToolTip(kind.hint)
+            action.triggered.connect(lambda _=False, k=kind.key: self._add_app_sound(k))
 
     def _build_chat_panel(self) -> None:
         """Chat on Live: your Twitch, YouTube and Kick chats mixed, or any chat link, in this one panel."""
@@ -773,6 +783,9 @@ class MainWindow(QMainWindow):
                         lambda _=False, k=kind, d=device.name: self._add_audio(k, d))
             sub.addSection("File")
             sub.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
+
+            sub.addSection("App sound")
+            self._fill_app_sound_menu(sub)
 
         lazy("Sound (plays in every bloom)", sounds)
         plugins = menu.addMenu("Plugins")
@@ -1100,7 +1113,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.sound_card import TunePage
 
         self.build_tune = TunePage(self._build_tune_changed, lambda sid: self._open_filters(sid, "audio"),
-                                   self._close_build_sound)
+                                   self._close_build_sound, self._pick_app_sound_apps)
         note = QLabel("Plays in every bloom, on both shapes. Changes here change Live's Sound card too.")
         note.setWordWrap(True)
         note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 12px;")
@@ -2686,7 +2699,7 @@ class MainWindow(QMainWindow):
 
     # Audio -------------------------------------------------------------------------
 
-    AUDIO_KINDS = ("audio_input", "audio_output")
+    AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 
     def _has_sound(self, config) -> bool:
         """Sounds the Sound card lists: mics, desktop audio, and browser pages whose sound comes here."""
@@ -2725,7 +2738,82 @@ class MainWindow(QMainWindow):
             filters=[f.name for f in config.filters if f.enabled],
             can_monitor=config.kind != "audio_output",  # desktop audio already plays on your speakers
             tracks=source_tracks(config),
+            apps=self._app_sound_text(config) if config.kind == "app_audio" else None,
         )
+
+    @staticmethod
+    def _app_sound_text(config) -> str:
+        from sprigcast.sources.app_audio import describe, follows_game
+
+        text = describe(config.settings)
+        if follows_game(config.settings) and config.settings.get("apps"):
+            text += ", and the full-screen game in front"
+        return text
+
+    def _add_app_sound(self, key: str) -> None:
+        """A type of sound (Games, Music, Voice chat...) on its own row, catching only its apps."""
+        from sprigcast.sources.app_audio import TYPES
+
+        same = next((c for c in self.collection.sources
+                     if c.kind == "app_audio" and c.settings.get("preset") == key), None)
+        if same is not None:
+            self.statusBar().showMessage(f"{same.name!r} is already in Sound. Change its apps there.", 6000)
+            if self.mode == "build":
+                self._open_build_sound(same.id)
+                self._refresh_scenes()
+            return
+        kind = TYPES[key]
+        config = SourceConfig(id=self.collection.new_id(f"sound-{key}"), kind="app_audio", name=kind.name,
+                              settings={"preset": key, "apps": [], "volume_db": 0.0, "muted": False})
+        self.collection.sources.append(config)
+        self._changed()
+        self._refresh_audio()
+        self._refresh_scenes()
+        if self.mode == "build":
+            self._open_build_sound(config.id)
+
+    def _pick_app_sound_apps(self, source_id: str) -> None:
+        """Tick the apps an app sound catches: its usual ones, the game in front, or apps open now."""
+        from sprigcast.sources.app_audio import TYPES, follows_game, running_apps
+
+        config = self.collection.source(source_id)
+        kind = TYPES.get(str(config.settings.get("preset", "")))
+        picked = [str(a) for a in config.settings.get("apps") or []]
+        menu = QMenu(self)
+        usual = menu.addAction(f"Usual apps ({kind.hint})" if kind and kind.apps else "Usual apps")
+        usual.setCheckable(True)
+        usual.setChecked(not picked)
+        usual.setEnabled(bool(kind and kind.apps))
+        usual.triggered.connect(lambda: self._set_app_sound(source_id, apps=[]))
+        game = menu.addAction("The full-screen game in front")
+        game.setCheckable(True)
+        game.setChecked(follows_game(config.settings))
+        game.triggered.connect(lambda on: self._set_app_sound(source_id, auto_game=on))
+        menu.addSection("Apps open now")
+        lower = {a.lower() for a in picked}
+        apps = running_apps() or []
+        for app in sorted(set(apps) | set(picked), key=str.lower):
+            action = menu.addAction(app[:-4] if app.lower().endswith(".exe") else app)
+            action.setCheckable(True)
+            action.setChecked(app.lower() in lower)
+            action.triggered.connect(lambda on, a=app: self._set_app_sound(
+                source_id, apps=[p for p in picked if p.lower() != a.lower()] + ([a] if on else [])))
+        if not apps and not picked:
+            menu.addAction("Open the app, then come back here").setEnabled(False)
+        menu.exec(QCursor.pos())
+
+    def _set_app_sound(self, source_id: str, **changes) -> None:
+        config = self.collection.source(source_id)
+        settings = {**config.settings, **changes}
+        if "apps" in changes and "auto_game" not in config.settings:  # picking apps by hand: just those
+            from sprigcast.sources.app_audio import follows_game
+
+            settings["auto_game"] = follows_game(config.settings) and not changes["apps"]
+        config.settings = settings
+        self._changed()
+        self._refresh_audio()
+        if self.selected_sound_id == source_id:
+            self._open_build_sound(source_id)
 
     def _on_sound_changed(self, source_id: str, changes: dict) -> None:
         """Live's Sound card changed a sound; volume and left/right apply without rebuilding the card."""
@@ -4105,6 +4193,14 @@ class MainWindow(QMainWindow):
         else:
             self._say(f"Saved {names}")
             self.live_panel.set_recording("")
+            from sprigcast.app.settings_window import remux_choice
+
+            remux, delete = remux_choice()
+            mkvs = [p for p in session.paths if p.suffix.lower() == ".mkv"]
+            if remux and mkvs:
+                from sprigcast.output.naming import remux_later
+
+                remux_later(mkvs, delete)  # the result is logged; the files appear next to the MKVs
 
     def _refresh_recording_status(self) -> None:
         session = self.recording
@@ -4505,7 +4601,11 @@ class MainWindow(QMainWindow):
 
         both = sum(c.enabled for c in self.collection.canvases) > 1
         mics = [d.name for d in list_audio_devices(loopback=False)]
-        dialog = StarterDialog(list_cameras(), list_monitors(), mics, is_fresh(self.collection), both, self)
+        speakers = [d.name for d in list_audio_devices(loopback=True, rescan=False)]
+        from sprigcast.sources.app_audio import running_apps
+
+        dialog = StarterDialog(list_cameras(), list_monitors(), mics, is_fresh(self.collection), both, self,
+                               speakers=speakers, running_apps=running_apps())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
 

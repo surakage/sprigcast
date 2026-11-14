@@ -28,6 +28,7 @@ def test_vod_safe_track_leaves_out_music_and_tracks_4_and_5_take_only_what_is_pu
     assert "vod" in source_tracks(game) and "vod" in source_tracks(mic)
     assert "vod" in source_tracks(Fake("x", 0, name="Spotify", group="Game"))  # its group wins over the name
     assert "vod" not in source_tracks(Fake("g", 0, name="Game", vod=False))  # kept out by hand
+    assert "vod" not in source_tracks(Fake("m", 0, kind="app_audio", name="Tunes", preset="music"))
     assert "vod" not in source_tracks(Fake("g", 0, tracks=["stream"]))  # not recorded: not in VOD-safe either
     mixer = Mixer(report=lambda levels: None)
     mixer.set_sources([game, music, alert, mic])

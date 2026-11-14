@@ -93,6 +93,8 @@ def is_music(source) -> bool:
     group = settings.get("group")
     if group:
         return group == "Music"
+    if settings.get("preset") == "music":  # the Music sound by type (sources/app_audio.py)
+        return True
     return getattr(source, "kind", "") != "audio_input" and bool(_MUSIC.search(getattr(source, "name", "") or ""))
 
 

@@ -155,6 +155,7 @@ class SceneFolder(BaseModel):
 
 
 PART_KIND = "scene"  # source kind that places a part inside another scene
+SOUND_KINDS = ("audio_input", "audio_output", "app_audio")  # sounds: global, in no bloom, both shapes
 
 
 def _bounds(items: list[SceneItem], sizes: dict[str, tuple[int, int]]) -> tuple[float, float, float, float] | None:

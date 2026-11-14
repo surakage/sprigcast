@@ -368,14 +368,11 @@ def shrink_to(width: int, height: int, short_side: int | None) -> tuple[int, int
 
 
 def recording_path(folder: Path, canvas_id: str, when: datetime, container: str) -> Path:
-    """`SprigCast 2026-11-10 19-30-05 horizontal.mkv`, with a counter if that name is taken."""
-    base = f"SprigCast {when:%Y-%m-%d %H-%M-%S} {canvas_id}"
-    path = folder / f"{base}.{container}"
-    n = 2
-    while path.exists():
-        path = folder / f"{base} ({n}).{container}"
-        n += 1
-    return path
+    """`SprigCast 2026-11-10 19-30-05 horizontal.mkv` (pattern from Settings → Advanced), with a counter
+    if that name is taken."""
+    from sprigcast.output import naming
+
+    return naming.unique(folder, naming.recording_name(canvas_id, when), container)
 
 
 X264_PRESETS = {"p1": "ultrafast", "p2": "superfast", "p3": "veryfast", "p4": "veryfast", "p5": "veryfast",
