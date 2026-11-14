@@ -59,8 +59,11 @@ def test_plain_progress_and_napping_sloth(tmp_path):
     empty.button.click()
     assert clicked == [1] and empty.label.text() == "Nothing here yet"
     sloth = NappingSloth(0.5)
-    assert (sloth.width(), sloth.height()) == (66, 39)
+    assert (sloth.width(), sloth.height()) == (75, 48)
     image = sloth.grab().toImage()
+    from sprigcast.app.empty import sloth_art
+
+    assert not sloth_art().isNull()
     painted = sum(1 for x in range(0, image.width(), 3) for y in range(0, image.height(), 3)
                   if image.pixelColor(x, y).alpha() > 0)
     assert painted > 20
