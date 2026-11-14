@@ -220,3 +220,23 @@ def test_advanced_page_names_remux_and_priority(app):
         naming.set_patterns()
         for key in ("advanced/filename", "advanced/replay_prefix", "advanced/remux_mp4", "advanced/remux_delete_mkv"):
             QSettings().remove(key)
+
+
+def test_hotkeys_page_cards_search_and_sound_keys(app):
+    from PySide6.QtGui import QKeySequence
+
+    from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE, sections
+
+    col = _collection()
+    titles = [t for t, _ in sections(col)]
+    assert titles[:2] == ["Going live", "Clips and screenshots"] and "Sound" in titles and "SprigCast" in titles
+    w = _window(col, tab="Hotkeys")
+    page = w.hotkeys_page
+    for action in (TOGGLE_CLIPS, TOGGLE_MODE, MUTE_ALL, f"{SOUND_PREFIX}mic-1:toggle"):
+        assert action in page.edits
+    page.search.setText("mic mute")
+    shown = [r.action for r in page.rows if not r.isHidden()]
+    assert shown and all(a.startswith(SOUND_PREFIX + "mic-1") for a in shown)
+    page.edits[f"{SOUND_PREFIX}mic-1:toggle"].setKeySequence(QKeySequence("Ctrl+M"))
+    assert page.count.text() == "1 key set"
+    assert w.apply() and col.hotkeys == {f"{SOUND_PREFIX}mic-1:toggle": "Ctrl+M"}

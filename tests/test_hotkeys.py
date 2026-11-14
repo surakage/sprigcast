@@ -33,7 +33,8 @@ def test_actions_list_every_scene_and_the_toggles():
         scenes=[Scene(id="a", name="Live", canvas="horizontal"), Scene(id="b", name="Live V", canvas="vertical")],
     )
     ids = [a for a, _ in actions(col)]
-    assert ids == ["toggle_stream", "toggle_record", "studio_go", "save_replay", "screenshot", "scene:a", "scene:b"]
+    assert ids == ["toggle_stream", "toggle_record", "toggle_studio", "studio_go", "save_replay", "toggle_clips",
+                   "screenshot", "scene:a", "scene:b", "mute_all", "toggle_mode"]
 
 
 def test_falls_back_to_window_shortcuts_without_a_global_hook(monkeypatch):
@@ -81,3 +82,44 @@ def test_global_hook_gets_pynput_combos(monkeypatch):
     assert fired == ["toggle_stream"]
     hk.stop()
     assert started["running"] is False
+
+
+def test_new_hotkeys_mute_switch_mode_and_studio(tmp_path, monkeypatch):
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+
+    from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_MODE, TOGGLE_STUDIO
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SourceConfig
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("HotkeyActions")
+    QSettings().clear()
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=16, height=9)],
+        scenes=[Scene(id="a", name="Live", canvas="horizontal")],
+        sources=[SourceConfig(id="m", kind="audio_input", name="Mic", settings={"device": "default"}),
+                 SourceConfig(id="d", kind="audio_output", name="Desk", settings={"device": "default", "muted": True})],
+    )
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        muted = lambda: [bool(c.settings.get("muted")) for c in col.sources]  # noqa: E731
+        w._on_hotkey(f"{SOUND_PREFIX}m:toggle")
+        assert muted() == [True, True]
+        w._on_hotkey(MUTE_ALL)  # everything muted: unmute all
+        assert muted() == [False, False]
+        w._on_hotkey(MUTE_ALL)
+        assert muted() == [True, True]
+        w._on_hotkey(f"{SOUND_PREFIX}d:unmute")
+        assert muted() == [True, False]
+        start = w.mode
+        w._on_hotkey(TOGGLE_MODE)
+        assert w.mode != start
+        studio = w.studio
+        w._on_hotkey(TOGGLE_STUDIO)
+        assert w.studio != studio
+    finally:
+        w.close()
+        QSettings().clear()

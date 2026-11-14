@@ -22,7 +22,12 @@ TOGGLE_RECORD = "toggle_record"
 STUDIO_GO = "studio_go"  # Studio mode: send the lined-up scenes on air
 SAVE_REPLAY = "save_replay"  # save the replay buffer's last seconds as clips
 SCREENSHOT = "screenshot"  # a PNG of each shape on air, in the recordings folder
+TOGGLE_CLIPS = "toggle_clips"  # keep clips ready (replay buffer) on / off
+TOGGLE_STUDIO = "toggle_studio"  # Studio mode (line up first) on / off
+TOGGLE_MODE = "toggle_mode"  # switch between Build and Live
+MUTE_ALL = "mute_all"  # mute every sound, or unmute them all when everything is muted
 SCENE_PREFIX = "scene:"
+SOUND_PREFIX = "sound:"  # "sound:<source id>:<toggle|mute|unmute>"
 MEDIA_PREFIX = "media:"  # "media:<source id>:<toggle|restart|stop>"
 STATE_PREFIX = "state:"  # "state:<sprig id>:<state name>"; an empty name goes back to as built
 
@@ -36,23 +41,48 @@ _NAMED = {
 }
 
 
-def actions(collection: SceneCollection) -> list[tuple[str, str]]:
-    """(action id, label) for everything a hotkey can do."""
-    items = [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording"),
-             (STUDIO_GO, "Studio mode: Go (send Next on air)"), (SAVE_REPLAY, "Save replay"), (SCREENSHOT, "Take a screenshot")]
-    for canvas in collection.canvases:
-        for scene in collection.scenes_for(canvas.id):
-            items.append((SCENE_PREFIX + scene.id, f"Show scene: {scene.name} ({canvas.id})"))
+AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
+
+
+def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Everything a hotkey can do, grouped as the Hotkeys page shows it: (title, [(action id, label)])."""
+    groups: list[tuple[str, list[tuple[str, str]]]] = [
+        ("Going live", [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording"),
+                        (TOGGLE_STUDIO, "Line up first (Studio mode) on / off"),
+                        (STUDIO_GO, "Bloom it (send Next on air)")]),
+        ("Clips and screenshots", [(SAVE_REPLAY, "Save a clip"), (TOGGLE_CLIPS, "Keep clips ready on / off"),
+                                   (SCREENSHOT, "Take a screenshot")]),
+    ]
+    blooms = [(SCENE_PREFIX + scene.id, f"{scene.name} ({canvas.id})")
+              for canvas in collection.canvases for scene in collection.scenes_for(canvas.id)]
+    groups.append(("Show a bloom", blooms))
+    sounds = [(MUTE_ALL, "Mute everything / unmute")]
+    for source in collection.sources:
+        if source.kind in AUDIO_KINDS:
+            sounds += [(f"{SOUND_PREFIX}{source.id}:toggle", f"{source.name}: mute / unmute"),
+                       (f"{SOUND_PREFIX}{source.id}:mute", f"{source.name}: mute"),
+                       (f"{SOUND_PREFIX}{source.id}:unmute", f"{source.name}: unmute")]
+    groups.append(("Sound", sounds))
+    looks = []
+    for part in collection.parts():
+        if part.states:
+            looks.append((f"{STATE_PREFIX}{part.id}:", f"{part.name}: as built"))
+        for state in part.states:
+            looks.append((f"{STATE_PREFIX}{part.id}:{state.name}", f"{part.name}: {state.name}"))
+    groups.append(("Sprig looks", looks))
+    media = []
     for source in collection.sources:
         if source.kind == "media":
             for what, label in (("toggle", "play / pause"), ("restart", "start over"), ("stop", "stop")):
-                items.append((f"{MEDIA_PREFIX}{source.id}:{what}", f"{source.name}: {label}"))
-    for part in collection.parts():
-        if part.states:
-            items.append((f"{STATE_PREFIX}{part.id}:", f"Sprig {part.name}: as built"))
-        for state in part.states:
-            items.append((f"{STATE_PREFIX}{part.id}:{state.name}", f"Sprig {part.name}: {state.name}"))
-    return items
+                media.append((f"{MEDIA_PREFIX}{source.id}:{what}", f"{source.name}: {label}"))
+    groups.append(("Videos", media))
+    groups.append(("SprigCast", [(TOGGLE_MODE, "Switch Build / Live")]))
+    return [(title, items) for title, items in groups if items]
+
+
+def actions(collection: SceneCollection) -> list[tuple[str, str]]:
+    """(action id, label) for everything a hotkey can do."""
+    return [item for _title, items in sections(collection) for item in items]
 
 
 def to_pynput(combo: str) -> str | None:
