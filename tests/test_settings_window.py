@@ -158,3 +158,18 @@ def test_clip_length_shapes_and_ready_on_open(app):
     assert w.apply()
     rec = col.recording
     assert (rec.replay_seconds, rec.clip_shapes, rec.clips_on_start) == (15, "vertical", True)
+
+
+def test_settings_look_titles_pills_and_folded_encoder(app):
+    from sprigcast.app.settings_window import ABOUT, TABS
+
+    w = _window(_collection(), tab="Output")
+    assert set(ABOUT) == set(TABS) and w.objectName() == "settingsWindow"
+    assert [b.text() for b in (w.cancel_button, w.apply_button, w.save_button)] == ["Cancel", "Apply", "Save"]
+    form = w.output_page.stream_form
+    w.show()
+    app.processEvents()
+    assert not form.preset.isVisible() and form.rate_control.isVisible()  # fine controls fold away
+    form.more.click()
+    assert form.preset.isVisible() and form.more.text() == "Hide advanced"
+    w.close()

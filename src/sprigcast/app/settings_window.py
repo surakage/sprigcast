@@ -1,4 +1,4 @@
-"""The Settings window: one place for every option, in tabs down the left side like OBS.
+"""The Settings window: one place for every option, a page for each topic picked from the side.
 
 Tabs: General, Stream, Recording, Audio, Video, Hotkeys. OK and Apply write the changes into the
 scene collection and QSettings; the main window then refreshes itself (see MainWindow._after_settings).
@@ -9,13 +9,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from PySide6.QtCore import QSettings, Signal
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -34,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import autostart, priority, theme
 from sprigcast.app.hotkeys_dialog import HotkeysPage
+from sprigcast.app.live_stage import heading
 from sprigcast.app.output_page import OutputPage
 from sprigcast.app.recording_dialog import RecordingPage
 from sprigcast.app.stream_dialog import StreamPage
@@ -44,10 +44,55 @@ from sprigcast.core.source import known_kinds, source_class
 
 TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Plugins"]
 TAB_ALIASES = {"Recording": "Output"}  # older menu entries
+ABOUT = {  # one line under each page's title
+    "General": "Look, startup, snapping and the questions SprigCast asks first.",
+    "Stream": "The places you go live, and what each one gets.",
+    "Output": "Encoder quality for streams, and how recordings and clips are saved.",
+    "Audio": "Which mic and desktop audio each sound uses.",
+    "Video": "Your canvases: their size, frame rate and which ones are on.",
+    "Hotkeys": "Keys that work even while you're in a game.",
+    "Plugins": "Extra sources and filters from the plugins folder.",
+}
+
+
+def window_style() -> str:
+    """The Settings look: a pill menu on the left, soft cards with titles inside, borderless fields."""
+    t = theme
+    return f"""
+#settingsWindow {{ background: {t.BG}; border: none; }}
+#settingsNav {{ background: transparent; border: none; padding: 0px; outline: none; }}
+#settingsNav::item {{ color: {t.MUTED}; padding: 10px 16px; margin: 2px 0px; border-radius: 18px; border: none; }}
+#settingsNav::item:hover {{ background: {t.PANEL}; color: {t.TEXT}; }}
+#settingsNav::item:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600; }}
+#settingsWindow QGroupBox {{ background: {t.CARD}; border: none; border-radius: 18px; margin-top: 0px;
+    padding: 46px 18px 16px 18px; font-weight: 400; }}
+#settingsWindow QGroupBox::title {{ subcontrol-origin: padding; subcontrol-position: top left; left: 18px;
+    top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: 14px; font-weight: 600; }}
+#settingsWindow QLineEdit, #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox,
+#settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.PANEL}; border: none;
+    border-radius: 10px; padding: 6px 10px; }}
+#settingsWindow QLineEdit:focus, #settingsWindow QSpinBox:focus, #settingsWindow QDoubleSpinBox:focus,
+#settingsWindow QComboBox:focus {{ background: {t.RAISED}; }}
+#settingsWindow QComboBox::drop-down {{ border: none; width: 26px; background: transparent; }}
+#settingsWindow QSpinBox::up-button, #settingsWindow QSpinBox::down-button,
+#settingsWindow QDoubleSpinBox::up-button, #settingsWindow QDoubleSpinBox::down-button {{
+    border: none; background: transparent; width: 18px; }}
+#settingsWindow QTabWidget::pane {{ border: none; background: transparent; top: 8px; }}
+#settingsWindow QTabBar::tab {{ background: transparent; color: {t.MUTED}; border: none; border-radius: 15px;
+    padding: 7px 18px; margin-right: 6px; min-height: 18px; }}
+#settingsWindow QTabBar::tab:hover {{ background: {t.PANEL}; color: {t.TEXT}; }}
+#settingsWindow QTabBar::tab:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600; }}
+#settingsWindow QScrollArea {{ background: transparent; border: none; }}
+#settingsWindow QScrollArea > QWidget > QWidget {{ background: transparent; }}
+"""
 FPS_CHOICES = [24, 25, 30, 48, 50, 60]
 AUDIO_KINDS = ("audio_input", "audio_output")
 
 # QSettings keys
+SAVE_STYLE = theme.PILL_STYLE + (
+    f"QPushButton {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; }}"
+    f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}")
+
 CONFIRM_STREAM = "general/confirm_end_stream"
 CONFIRM_RECORDING = "general/confirm_stop_recording"
 PENDING_VIDEO = "video/pending"  # canvas changes saved here, applied at the next start
@@ -142,17 +187,20 @@ class SettingsWindow(QDialog):
     ):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.resize(900, 600)
+        self.setObjectName("settingsWindow")
+        self.setStyleSheet(window_style())
+        self.resize(1060, 700)
         self.collection = collection
         self.default_recordings_folder = default_recordings_folder
         self.streaming, self.recording = streaming, recording
 
-        self.tabs = QListWidget()
-        self.tabs.setObjectName("settingsTabs")
-        self.tabs.setFixedWidth(160)
-        self.tabs.setStyleSheet("#settingsTabs::item { padding: 9px 12px; }")
+        self.tabs = QListWidget()  # the side menu (a list, so keys and screen readers work)
+        self.tabs.setObjectName("settingsNav")
+        self.tabs.setFixedWidth(156)
+        self.tabs.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.tabs.setCursor(Qt.CursorShape.PointingHandCursor)
         font = self.tabs.font()
-        font.setPointSizeF(font.pointSizeF() * 1.15)
+        font.setPointSizeF(font.pointSizeF() * 1.1)
         self.tabs.setFont(font)
         self.stack = QStackedWidget()
         for name, page in (
@@ -165,34 +213,67 @@ class SettingsWindow(QDialog):
             ("Plugins", self._plugins_page(plugin_report, open_plugins_folder)),
         ):
             QListWidgetItem(name, self.tabs)
-            if name == "Stream":  # scrolls its own form; the place list and + Add stay put
-                self.stack.addWidget(page)
-                continue
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            scroll.setWidget(page)
-            self.stack.addWidget(scroll)
+            if name != "Stream":  # Stream scrolls its own form; the place list and + Add stay put
+                scroll = QScrollArea()
+                scroll.setWidgetResizable(True)
+                scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                inner = QWidget()  # room on the right so the scroll bar never sits on a card
+                pad = QVBoxLayout(inner)
+                pad.setContentsMargins(0, 0, 14, 0)
+                pad.addWidget(page)
+                scroll.setWidget(inner)
+                page = scroll
+            self.stack.addWidget(self._titled(name, page))
         self.tabs.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.tabs.currentRowChanged.connect(self._tab_changed)
         self.output_page.show_tab(tab)
         tab = TAB_ALIASES.get(tab, tab)
         self.tabs.setCurrentRow(TABS.index(tab) if tab in TABS else 0)
 
+        side = QVBoxLayout()
+        side.setSpacing(14)
+        side.addWidget(heading("Settings", 18))
+        side.addWidget(self.tabs, 1)
         body = QHBoxLayout()
-        body.addWidget(self.tabs)
+        body.setSpacing(28)
+        body.addLayout(side)
         body.addWidget(self.stack, 1)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel
-            | QDialogButtonBox.StandardButton.Apply
-        )
-        buttons.accepted.connect(self._ok)
-        buttons.rejected.connect(self.reject)
-        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.apply)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch(1)
+        self.cancel_button = QPushButton("Cancel")
+        self.apply_button = QPushButton("Apply")
+        self.save_button = QPushButton("Save")
+        for button, style, slot in ((self.cancel_button, theme.PILL_STYLE, self.reject),
+                                    (self.apply_button, theme.PILL_STYLE, self.apply),
+                                    (self.save_button, SAVE_STYLE, self._ok)):
+            button.setStyleSheet(style)
+            button.setMinimumWidth(96)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setAutoDefault(False)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        self.save_button.setDefault(True)
         root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 20)
+        root.setSpacing(16)
         root.addLayout(body, 1)
-        root.addWidget(buttons)
+        root.addLayout(buttons)
+
+    @staticmethod
+    def _titled(name: str, page: QWidget) -> QWidget:
+        """A page with its title and a one-line note about what it holds."""
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        col.addWidget(heading(name, 20))
+        note = _hint(ABOUT.get(name, ""))
+        col.addWidget(note)
+        col.addSpacing(12)
+        col.addWidget(page, 1)
+        return holder
 
     def current_tab(self) -> str:
         return TABS[self.tabs.currentRow()]
