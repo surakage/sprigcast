@@ -51,7 +51,7 @@ ABOUT = {  # one line under each page's title
     "Audio": "Which mic and desktop audio each sound uses.",
     "Video": "Your canvases: their size, frame rate and which ones are on.",
     "Hotkeys": "Keys that work even while you're in a game.",
-    "Connections": "Let Streamer.bot, Stream Deck and other apps control SprigCast.",
+    "Connections": "Let other apps on your PC control SprigCast.",
     "Plugins": "Extra sources and filters from the plugins folder.",
 }
 
