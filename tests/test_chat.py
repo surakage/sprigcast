@@ -92,10 +92,14 @@ def test_message_html_escapes_and_lifts_dark_names():
 
 def test_panel_switches_between_link_twitch_and_account(app, monkeypatch):
     from sprigcast.app import chat_panel
+    from sprigcast.chat.kick import KickChat
+    from sprigcast.chat.youtube import YouTubeChat
     from sprigcast.output import twitch_auth
 
     started = []
-    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: (started.append(ch), setattr(self, "channel", ch)))
+    for cls in (twitch.TwitchChat, YouTubeChat, KickChat):
+        monkeypatch.setattr(cls, "start", lambda self, ch: (started.append((self.platform, ch)),
+                                                            setattr(self, "channel", ch)))
     monkeypatch.setattr(chat_panel.ChatPanel, "_show_link",
                         lambda self, url: self.pages.setCurrentWidget(self.web_holder))
     QSettings().setValue(twitch_auth.LOGIN_SETTING, "")
@@ -109,20 +113,53 @@ def test_panel_switches_between_link_twitch_and_account(app, monkeypatch):
     assert panel.source() == ("link", "http://127.0.0.1:8787/overlay/chat/dock")
     assert panel.pages.currentWidget() is panel.web_holder
 
-    twitch_auth._announce("surakage")  # connecting Twitch switches chat to your channel
-    assert panel.source() == ("twitch", "surakage") and started[-1] == "surakage"
-    assert panel.pages.currentWidget() is panel.view
+    twitch_auth._announce("Surakage")  # connecting Twitch switches chat to your channel
+    assert panel.source() == ("chat", {"twitch": "surakage"}) and started[-1] == ("twitch", "surakage")
+    assert panel.pages.currentWidget() is panel.view and not panel.view.mixed
 
     panel.use_link()  # the saved link is one click away
     assert panel.source()[0] == "link"
 
-    panel.ask_link()  # a pasted Twitch link reads that channel natively
-    panel.link_field.setText("twitch.tv/popout/mossfriend/chat")
-    panel._use_link()
-    assert panel.source() == ("twitch", "mossfriend")
+    panel.ask_names()  # just names: YouTube and Kick join the same chat
+    assert panel.name_fields["twitch"].placeholderText() == "surakage (connected)"
+    panel.name_fields["youtube"].setText("youtube.com/@SlothBloom")
+    panel.name_fields["kick"].setText("kick.com/slothbloom")
+    panel._use_names()
+    assert panel.source() == ("chat", {"twitch": "surakage", "youtube": "@SlothBloom", "kick": "slothbloom"})
+    assert set(panel.readers) == {"twitch", "youtube", "kick"} and panel.view.mixed
+    assert "Twitch" in panel.where.text() and "Kick" in panel.where.text()
 
-    twitch_auth._announce("")  # disconnecting keeps a hand-picked channel
-    assert panel.source() == ("twitch", "mossfriend")
-    panel.use_twitch("")  # your own channel, but nobody is connected: falls back to the link
+    panel.ask_link()  # a pasted YouTube video link reads that stream's chat
+    panel.link_field.setText("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    panel._use_link()
+    assert panel.source()[1]["youtube"] == "v:dQw4w9WgXcQ"
+
+    panel.ask_names()
+    panel.name_fields["youtube"].setText("")
+    panel.name_fields["kick"].setText("")
+    panel._use_names()
+    assert set(panel.readers) == {"twitch"} and not panel.view.mixed  # the others stop
+
+    twitch_auth._announce("")  # disconnecting with no names left falls back to the link
     assert panel.source()[0] == "link"
-    assert [a.text() for a in panel.build_menu().actions() if a.text()][:1] == ["Connect Twitch…"]
+    texts = [a.text() for a in panel.build_menu().actions() if a.text()]
+    assert "Connect Twitch…" in texts and "Channels…" in texts
+
+
+def test_mixed_lines_carry_a_platform_mark_and_mods_clear_per_platform(app):
+    from sprigcast.app import chat_panel
+
+    view = chat_panel.ChatView()
+    view.mixed = True
+    view.add(ChatMessage("twitch", "a", "hi", user_id="1", id="t1"))
+    view.add(ChatMessage("kick", "b", "yo", user_id="1", id="k1"))
+    assert "▍" in chat_panel.message_html(view.messages[0], True)
+    view.remove(user_id="1", platform="kick")
+    assert [m.platform for m in view.messages] == ["twitch"]
+
+
+def test_old_twitch_channel_setting_carries_over(app):
+    from sprigcast.app import chat_panel
+
+    QSettings().setValue(chat_panel.OLD_CHANNEL, "mossfriend")
+    assert chat_panel.saved_names() == {"twitch": "mossfriend"}

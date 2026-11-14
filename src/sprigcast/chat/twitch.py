@@ -114,6 +114,7 @@ class TwitchChat(QObject):
     deleted = Signal(str)  # a message id a moderator removed
     cleared = Signal(str)  # a user id whose messages were cleared (timeout/ban), "" = whole chat
     status = Signal(str)  # "connecting", "live", "offline: why"
+    platform = "twitch"
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
