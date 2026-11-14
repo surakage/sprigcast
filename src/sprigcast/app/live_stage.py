@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -149,6 +150,40 @@ def side_card() -> QFrame:
     return card
 
 
+class FitScroll(QScrollArea):
+    """Scrolls its widget only when the column is too short: as tall as the content when there is room,
+    down to SHORTEST when there isn't. Never scrolls sideways."""
+
+    SHORTEST = 150
+
+    def __init__(self, widget: QWidget):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        self.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.setWidget(widget)
+        widget.installEventFilter(self)
+        self._fit()
+
+    def _fit(self) -> None:
+        self.setMaximumHeight(max(1, self.widget().sizeHint().height()))  # never taller than the content
+        self.updateGeometry()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self._fit()  # rows came or went: ask the column for a new height
+        return super().eventFilter(watched, event)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        hint = self.widget().sizeHint()
+        return QSize(hint.width(), hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(0, min(self.SHORTEST, self.widget().sizeHint().height()))
+
+
 class LiveSide(QWidget):
     """The right-hand column: the big stream button, Record and Save clip, where it goes, and sound."""
 
@@ -244,7 +279,9 @@ class LiveSide(QWidget):
         sound_card = side_card()
         self.sound = SoundCard(on_sound or (lambda _id, _changes: None), on_sound_filters or (lambda _id: None),
                                on_mic_first)
-        sound_card.layout().addWidget(self.sound)
+        # A long sound list (Edit shows all of them) scrolls inside its card instead of pushing the
+        # panels below (Chat, Transitions) off the bottom of the window.
+        sound_card.layout().addWidget(FitScroll(self.sound))
         sound_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)  # panels get the rest
         root.addWidget(sound_card)
 
