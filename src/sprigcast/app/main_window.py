@@ -161,6 +161,8 @@ def _dot(colour: str, size: int = 12) -> QIcon:
     p.drawEllipse(1, 1, size - 2, size - 2)
     p.end()
     return QIcon(pix)
+from sprigcast.app.names import ask_name, short_name, short_status, status_summary, window_name
+
 log = logging.getLogger(__name__)
 
 
@@ -2110,13 +2112,14 @@ class MainWindow(QMainWindow):
         if any(f.enabled for f in config.filters):
             tags.append("filters")
         status = self.source_statuses.get(source_id, "ok")
-        if status not in ("ok", "capturing"):
-            tags.append(status)
+        if short_status(status):
+            tags.append(short_status(status))
         row.setData(ROLE_NAME, config.name)
         row.setData(ROLE_TAG, " · ".join(tags))
         row.setData(ROLE_SPRIG, config.kind == PART_KIND)
         row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
-        row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind})")
+        detail = "" if status in ("ok", "") else f"\n{status}"
+        row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind}){detail}")
 
     def _sprig_children(self, config, canvas_id: str, depth: int = 0, seen: frozenset = frozenset()) -> list:
         """(depth, name, is sprig) for what's inside a sprig, nested sprigs opened too (a few levels)."""
@@ -2150,8 +2153,8 @@ class MainWindow(QMainWindow):
         hidden = len(self.collection.hidden_here(config)) if config.kind == PART_KIND else 0
         if hidden:
             label += f"   · {hidden} hidden here"
-        status = self.source_statuses.get(source_id, "ok")
-        return label if status in ("ok", "capturing") else f"{label}   ({status})"
+        tag = short_status(self.source_statuses.get(source_id, "ok"))
+        return f"{label}   ({tag})" if tag else label
 
     def _refresh_source_labels(self) -> None:
         scene = self._scene()
@@ -2169,9 +2172,10 @@ class MainWindow(QMainWindow):
             self.prop_status.setText(self._status_text(item.source))
 
     def _status_text(self, source_id: str) -> str:
-        size = self.source_sizes.get(source_id)
+        """Short: '1080p120 → 720p30'. The full status is the label's tooltip."""
         status = self.source_statuses.get(source_id, "")
-        return f"{status}" + (f"  ·  {size[0]}x{size[1]}" if size and size[0] else "")
+        self.prop_status.setToolTip(status)
+        return status_summary(status, self.source_sizes.get(source_id))
 
     def _refresh_properties(self) -> None:
         item = self._item()
@@ -2281,7 +2285,7 @@ class MainWindow(QMainWindow):
         if device is None:
             return
         base = "Desktop audio" if kind == "audio_output" else "Mic"
-        name = base if device == "default" else f"{base} ({device})"
+        name = base if device == "default" else ask_name(self, short_name(device, base), f"{base} ({device})")
         self.collection.sources.append(
             SourceConfig(
                 id=self.collection.new_id("desktop" if kind == "audio_output" else "mic"),
@@ -2871,7 +2875,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._add_item(
-            SourceConfig(id=self.collection.new_id("image"), kind="image", name=Path(path).stem, settings={"path": path})
+            SourceConfig(id=self.collection.new_id("image"), kind="image",
+                         name=ask_name(self, short_name(Path(path).stem.replace("_", " "), "Image"), Path(path).stem),
+                         settings={"path": path})
         )
 
     def _pick_monitor(self, current: int | None = None):
@@ -2917,7 +2923,7 @@ class MainWindow(QMainWindow):
         window = self._pick_window()
         if window is None:
             return
-        name = window.title if len(window.title) <= 40 else window.title[:37] + "…"
+        name = ask_name(self, window_name(window.title, window.process), window.title)
         self._add_item(
             SourceConfig(
                 id=self.collection.new_id("window"),
@@ -2943,9 +2949,8 @@ class MainWindow(QMainWindow):
         settings = self._camera_dialog()
         if settings is None:
             return
-        self._add_item(
-            SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=settings["name"], settings=settings)
-        )
+        name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
+        self._add_item(SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings))
         # Start as a quarter-width overlay in the bottom-right corner, like a typical facecam.
         item, canvas = self._item(), self.collection.canvas(scene.canvas)
         if item is not None:
@@ -3187,14 +3192,19 @@ class MainWindow(QMainWindow):
             settings = self._camera_dialog(config.settings)
             if settings is None:
                 return
+            old = str(config.settings.get("name", ""))
             config.settings = settings
-            config.name = settings["name"]
+            if config.name in (old, short_name(old, "Camera")):  # a name you chose stays
+                config.name = short_name(settings["name"], "Camera")
         elif config.kind == "window_capture":
             window = self._pick_window()
             if window is None:
                 return
+            old = window_name(str(config.settings.get("title", "")), str(config.settings.get("process", "")))
+            old_title = str(config.settings.get("title", ""))
             config.settings = {**config.settings, "title": window.title, "process": window.process}
-            config.name = window.title if len(window.title) <= 40 else window.title[:37] + "…"
+            if config.name in (old, old_title, old_title[:37] + "…"):  # a name you chose stays
+                config.name = window_name(window.title, window.process)
         else:
             cls = source_class(config.kind)
             defaults = getattr(cls, "defaults", None) if cls is not None else None
