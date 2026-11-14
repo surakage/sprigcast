@@ -342,6 +342,40 @@ def paint_leaf(p: QPainter, rect: QRectF, filled: bool, colour: str | QColor = A
     p.restore()
 
 
+ACCENT_DARK = "#2a9c5e"  # a deeper leaf green, for a sprout drawn on a light knob
+
+
+def paint_sprout(p: QPainter, rect: QRectF, colour: str | QColor = ACCENT_DARK) -> None:
+    """Two small leaves on a stem, filling `rect` (the same sprout as a picked radio seed)."""
+    colour = QColor(colour)
+    x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+    at = lambda u, v: QPointF(x + u / 24 * w, y + v / 24 * h)  # noqa: E731 (24 px design grid)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(colour, max(1.0, w / 14), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.drawLine(at(12, 18), at(12, 11))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    right = QPainterPath(at(12, 12))
+    right.cubicTo(at(12, 8), at(15, 6), at(18, 6))
+    right.cubicTo(at(18, 9.5), at(15.5, 11.5), at(12, 12))
+    left = QPainterPath(at(12, 13.5))
+    left.cubicTo(at(12, 10.5), at(9.5, 9), at(6.5, 9))
+    left.cubicTo(at(6.5, 12), at(9, 13.5), at(12, 13.5))
+    p.drawPath(right)
+    p.drawPath(left)
+    p.restore()
+
+
+def _seed_handle_svg() -> str:
+    """The slider handle: a light seed with a green ring and a sprout, round so nothing clips it."""
+    return ('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+            f'<circle cx="12" cy="12" r="10" fill="{TEXT_BRIGHT}" stroke="{ACCENT}" stroke-width="2.5"/>'
+            f'<path d="M12,18 L12,11" stroke="{ACCENT_DARK}" stroke-width="1.8" stroke-linecap="round"/>'
+            f'<path d="M12,12 C12,8 15,6 18,6 C18,9.5 15.5,11.5 12,12 Z" fill="{ACCENT_DARK}"/>'
+            f'<path d="M12,13.5 C12,10.5 9.5,9 6.5,9 C6.5,12 9,13.5 12,13.5 Z" fill="{ACCENT_DARK}"/></svg>')
+
+
 def _leaf_svg(fill: str, stroke: str, vein: str) -> str:
     def pt(x, y):  # unit leaf -> a 24 px box with a 1 px margin
         return f"{12 + x * 18.3:.2f},{12 + y * 18.3:.2f}"
@@ -376,7 +410,7 @@ NATURE_PICTURES = {
     "seed_on": lambda: _seed_svg(ACCENT, ACCENT, ACCENT_TEXT),
     "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
     "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
-    "leaf_handle": lambda: _leaf_svg(ACCENT, TEXT_BRIGHT, ACCENT_TEXT),
+    "seed_handle": _seed_handle_svg,
 }
 
 
@@ -418,8 +452,14 @@ def nature_rules(folder: str | None = None) -> str:
             f"{widget}::indicator:disabled {{ {clear} image: url({pic[kind + '_off_disabled']}); }}",
             f"{widget}::indicator:checked:disabled {{ {clear} image: url({pic[kind + '_on_disabled']}); }}",
         ]
+    # Sliders: a round seed handle. The slider is made tall enough for it, so it's never cut off.
+    rules.append("QSlider:horizontal { min-height: 22px; } QSlider:vertical { min-width: 22px; }")
     rules.append(f"QSlider::handle:horizontal {{ background: transparent; border: none; width: 18px; height: 18px;"
-                 f" margin: -7px 0; border-radius: 0; image: url({pic['leaf_handle']}); }}")
+                 f" margin: -7px 0; border-radius: 9px; image: url({pic['seed_handle']}); }}")
     rules.append(f"QSlider::handle:vertical {{ background: transparent; border: none; width: 18px; height: 18px;"
-                 f" margin: 0 -7px; border-radius: 0; image: url({pic['leaf_handle']}); }}")
+                 f" margin: 0 -7px; border-radius: 9px; image: url({pic['seed_handle']}); }}")
+    # Tick lists get room to breathe: nothing touches the box's edge, rows aren't packed together.
+    rules.append("QListWidget, QTreeWidget { padding: 6px; }")
+    rules.append("QListWidget::item, QTreeWidget::item { padding: 5px 8px; min-height: 22px; }")
+    rules.append("QListWidget::indicator, QTreeWidget::indicator { margin-right: 6px; }")
     return "\n".join(rules) + "\n"

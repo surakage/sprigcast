@@ -40,4 +40,4 @@ def test_style_sheet_uses_leaf_and_seed_pictures(tmp_path):
         assert path.endswith(".svg") and "<svg" in open(path, encoding="utf-8").read()
         assert "\\" not in path
     assert "QCheckBox::indicator:checked {" in rules and pictures["leaf_on"] in rules
-    assert pictures["seed_on"] in rules and pictures["leaf_handle"] in rules
+    assert pictures["seed_on"] in rules and pictures["seed_handle"] in rules
