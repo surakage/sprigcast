@@ -186,8 +186,9 @@ class LiveSide(QWidget):
         self.record = pill("Record")
         self.record.setToolTip("Record the canvases ticked in Controls, to your recordings folder")
         self.record.clicked.connect(on_record)
-        self.clip = pill("Save clip")
+        self.clip = pill("Clips")
         self.clip.clicked.connect(on_clip)
+        self._clip_on, self._clip_seconds = False, 30
         row.addWidget(self.record)
         row.addWidget(self.clip)
         self.settings = pill("⚙")
@@ -278,10 +279,19 @@ class LiveSide(QWidget):
         self.rec_note.setVisible(bool(text))
 
     def set_clip(self, on: bool, seconds: int) -> None:
-        self.clip.setToolTip(f"Save the last {seconds} s as a clip" if on else
-                             f"Start keeping the last {seconds} s in memory, ready to save as a clip")
-        self.clip.setText("Save clip" if on else "Clip buffer")
+        """Ready: "Clip 30s" saves the last 30 s. Not ready: "Clips" gets them ready (Settings sets the length)."""
+        self._clip_on, self._clip_seconds = on, seconds
+        self.clip.setToolTip(f"Save the last {seconds} s as a clip (length and shapes: Settings → Recording)" if on
+                             else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clip can save it")
+        self.clip.setText(f"Clip {seconds}s" if on else "Clips")
         self.clip.setStyleSheet(theme.PILL_SELECTED_STYLE if on else theme.PILL_STYLE)
+
+    def clip_saved(self, files: int) -> None:
+        """A moment of thanks on the button, then back to "Clip 30s"."""
+        from PySide6.QtCore import QTimer
+
+        self.clip.setText("Saved ✓" if files else "Nothing saved")
+        QTimer.singleShot(1800, lambda: self.set_clip(self._clip_on, self._clip_seconds))
 
     # Where it goes --------------------------------------------------------------------------
 
