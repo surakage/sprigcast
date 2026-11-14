@@ -381,10 +381,37 @@ class StreamSession:
     @classmethod
     def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None) -> "StreamSession":
         from sprigcast.output.enhanced_stream import EnhancedStreamer
+        from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
 
         start_time = time.perf_counter()
-        streamers, taps = [], []
+        streamers, taps, shared = [], [], []
+        # Destinations that want the same picture (canvas, size, fps, bitrate) share one encoder.
+        groups: dict[tuple, list[StreamTarget]] = {}
         for t in targets:
+            key = share_key(t)
+            if key is not None:
+                groups.setdefault(key, []).append(t)
+        done: set[int] = set()
+        for (canvas_id, size, fps, kbps, auto), group in groups.items():
+            if len(group) < 2:
+                continue
+            c = group[0].canvas
+            enc = SharedStreamEncoder(c, fps, kbps, codec, start_time, group[0].size, encoder, auto_bitrate=auto)
+            for t in group:
+                link = StreamLink(t.name, t.server, t.key, enc, t.bandwidth_test)
+                link.output_id = t.output_id or t.name
+                enc.links.append(link)
+                streamers.append((c.id, link))
+                done.add(id(t))
+            log.info("streams %s share one encoder", ", ".join(t.name for t in group))
+            enc.start()
+            for link in enc.links:
+                link.start()
+            taps.append((c.id, enc.push_frame, enc.gpu_size))
+            shared.append(enc)
+        for t in targets:
+            if id(t) in done:
+                continue
             c = t.canvas
             if t.enhanced is not None:
                 st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
@@ -399,10 +426,13 @@ class StreamSession:
             streamers.append((c.id, st))
         session = cls(engine, streamers)
         session.taps = taps
+        session.shared = shared
         for canvas_id, callback, *size in taps:
             engine.add_frame_tap(canvas_id, callback, *size)
         for _, st in streamers:
             engine.mixer.add_tap(st.push_audio)
+        for enc in shared:
+            engine.mixer.add_tap(enc.push_audio)
         return session
 
     @property
@@ -413,7 +443,12 @@ class StreamSession:
         taps = getattr(self, "taps", None) or [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
         for canvas_id, callback, *_ in taps:
             self.engine.remove_frame_tap(canvas_id, callback)
+        shared = getattr(self, "shared", [])
         for _, st in self.streamers:
             self.engine.mixer.remove_tap(st.push_audio)
+        for enc in shared:
+            self.engine.mixer.remove_tap(enc.push_audio)
         for _, st in self.streamers:
             st.stop(timeout=5)
+        for enc in shared:  # after the links: nothing is waiting on its packets any more
+            enc.stop(timeout=5)
