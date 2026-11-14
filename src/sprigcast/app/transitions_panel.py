@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
     QFormLayout,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -92,10 +94,11 @@ class TransitionPicture(QWidget):
 
     LOOP_MS = 1800
 
-    def __init__(self, transition: Callable[[], Transition], parent: QWidget | None = None):
+    def __init__(self, transition: Callable[[], Transition], parent: QWidget | None = None, wide: bool = False):
         super().__init__(parent)
         self.transition = transition
-        self.setFixedHeight(56)
+        self.wide = wide  # a miniature 1280x720 screen (the pop-up) rather than a thin strip
+        self.setFixedHeight(56 if not wide else 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
@@ -113,12 +116,21 @@ class TransitionPicture(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if self.wide:
+            self.play(1000)  # the pop-up's screen keeps showing it while open (it stops when hidden)
         if self._loops_left:
             self._timer.start()
 
     def hideEvent(self, event) -> None:  # noqa: N802
         self._timer.stop()
         super().hideEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.wide:
+            height = round(self.width() * 9 / 16)
+            if self.height() != height:
+                self.setFixedHeight(height)
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self.play(1)
@@ -190,6 +202,16 @@ class TransitionPicture(QWidget):
                 x = box.left() - size + (box.width() + size) * progress
                 theme.paint_leaf(p, QRectF(x, box.center().y() - size / 2, size, size), True,
                                  theme.ACCENT_DARK, vein=theme.ACCENT, tilt=-20)
+        if self.wide:
+            p.setClipping(False)
+            p.setOpacity(1.0)
+            tag = QRectF(box.right() - 84, box.top() + 8, 76, 22)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 120))
+            p.drawRoundedRect(tag, 11, 11)
+            p.setPen(QColor(theme.TEXT))
+            p.setFont(self.font())
+            p.drawText(tag, Qt.AlignmentFlag.AlignCenter, "1280×720")
 
     def _card(self, p: QPainter, rect: QRectF, label: str, fill: str, ink: str, clear: bool = False) -> None:
         p.save()
@@ -199,6 +221,15 @@ class TransitionPicture(QWidget):
         font = QFont(self.font())
         font.setPointSizeF(font.pointSizeF() * 1.4)
         font.setBold(True)
+        p.setFont(font)
+        if self.wide:  # a little stream scene: a camera box and a name bar, so it reads as a screen
+            font.setPointSizeF(font.pointSizeF() * 2.2)
+            unit = rect.height() / 9
+            p.setBrush(QColor(ink))
+            p.setOpacity(0.18)
+            p.drawRoundedRect(QRectF(rect.right() - 4.6 * unit, rect.bottom() - 3.8 * unit, 4 * unit, 3 * unit), 6, 6)
+            p.drawRoundedRect(QRectF(rect.left() + 0.6 * unit, rect.bottom() - 1.6 * unit, 5 * unit, 0.9 * unit), 5, 5)
+            p.setOpacity(1.0)
         p.setFont(font)
         p.setPen(QColor(ink))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
@@ -229,7 +260,7 @@ class TransitionsPanel(QWidget):
 
     def __init__(self, transition: Transition, changed: Callable[[], None],
                  probe: Callable[[str], float | None] | None = None, parent: QWidget | None = None,
-                 collection: SceneCollection | None = None, compact: bool = False):
+                 collection: SceneCollection | None = None, compact: bool = False, wide: bool = False):
         super().__init__(parent)
         self.compact = compact  # Live's short card: the type and length here, the rest in a pop-up
         self.transition = transition
@@ -281,7 +312,7 @@ class TransitionsPanel(QWidget):
             menu.aboutToShow.connect(lambda: [a.setChecked(k == self.transition.kind) for k, a in picks.items()])
             self.kind_pick.setMenu(menu)
 
-        self.picture = TransitionPicture(lambda: self.transition)
+        self.picture = TransitionPicture(lambda: self.transition, wide=wide)
         self.picture.setVisible(not compact)  # Live's card is short: the choices say enough there
         root.addWidget(self.picture)
 
@@ -533,66 +564,44 @@ class TransitionsPanel(QWidget):
         count = len(self.collection.transition_rules)
         self.rules_count.setText(f"{count} rule{'s' if count != 1 else ''}" if count else "None")
 
-    def rules_dialog(self) -> QDialog:
-        """The pop-up with the bloom-to-bloom table (built fresh each time, so names are current)."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Between blooms")
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+    def popup(self, tab: str = "transition") -> "PopUp":
+        """The pop-up: a "Transition" tab with every setting and a "Between blooms" tab with the table.
 
-        def edited() -> None:
-            self.show_rule_count()
-            self.changed()
+        Live's card opens it on either tab. Build already shows the settings, so its pop-up has only the
+        table. Built fresh each time, so bloom names are current.
+        """
+        dialog = PopUp("Transitions", self)
+        if self.compact:
+            def edited() -> None:
+                self.load(self.transition)
+                self.changed()
 
-        table = RulesTable(self.collection, edited, self.probe)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        scroll.setWidget(table)
-        layout.addWidget(scroll, 1)
-        done = QPushButton("Done")
-        done.setStyleSheet(theme.PRIMARY_STYLE)
-        done.clicked.connect(dialog.accept)
-        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
-        dialog.table = table
-        dialog.resize(420, 520)
+            panel = TransitionsPanel(self.transition, edited, self.probe, wide=True)
+            panel.layout().setContentsMargins(0, 0, 0, 0)
+            dialog.add_tab("transition", "Transition", scrolled(panel))
+            dialog.panel = panel
+        if self.collection is not None:
+            def rules_edited() -> None:
+                self.show_rule_count()
+                self.changed()
+
+            table = RulesTable(self.collection, rules_edited, self.probe)
+            dialog.add_tab("rules", "Between blooms", scrolled(table))
+            dialog.table = table
+        dialog.show_tab(tab)
+        dialog.resize(480, 640)
         return dialog
 
-    def settings_dialog(self) -> QDialog:
-        """The pop-up with every setting for the current transition (Live's card only shows the basics)."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Transition settings")
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+    def rules_dialog(self) -> "PopUp":
+        return self.popup("rules")
 
-        def edited() -> None:
-            self.load(self.transition)
-            self.changed()
-
-        panel = TransitionsPanel(self.transition, edited, self.probe, dialog)
-        panel.layout().setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        scroll.setWidget(panel)
-        layout.addWidget(scroll, 1)
-        done = QPushButton("Done")
-        done.setStyleSheet(theme.PRIMARY_STYLE)
-        done.clicked.connect(dialog.accept)
-        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
-        dialog.panel = panel
-        dialog.resize(440, 600)
-        return dialog
+    def settings_dialog(self) -> "PopUp":
+        return self.popup("transition")
 
     def open_settings(self) -> None:
         self.settings_dialog().exec()
         self.load(self.transition)
+        self.show_rule_count()
 
     def open_rules(self) -> None:
         self.rules_dialog().exec()
@@ -657,6 +666,101 @@ class TransitionsPanel(QWidget):
         self.transition.stinger.vertical_path = path
         self._show_file(self.tall_clip, path)
         self.changed()
+
+
+def scrolled(widget: QWidget) -> QScrollArea:
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+    scroll.setWidget(widget)
+    return scroll
+
+
+TAB_STYLE = CHOICE_STYLE.replace("padding: 6px 8px", "padding: 7px 16px")
+
+
+class PopUp(QDialog):
+    """A rounded, raised pop-up card with pill tabs along the top. Drag it by any empty spot."""
+
+    def __init__(self, title: str, parent: QWidget | None = None):
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowTitle(title)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 14, 20, 26)  # room for the shadow
+        card = QFrame()
+        card.setObjectName("popCard")
+        card.setStyleSheet(f"#popCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
+                           " border-radius: 18px; }")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(36)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 190))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 18)
+        layout.setSpacing(14)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        name = QLabel(title)
+        name.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 16px; font-weight: 700;")
+        head.addWidget(name)
+        head.addSpacing(10)
+        self.tab_row = QHBoxLayout()
+        self.tab_row.setSpacing(6)
+        head.addLayout(self.tab_row)
+        head.addStretch(1)
+        close = QPushButton("×")
+        close.setStyleSheet(PILL_STYLE)
+        close.setFixedSize(28, 28)
+        close.setToolTip("Close")
+        close.clicked.connect(self.accept)
+        head.addWidget(close)
+        layout.addLayout(head)
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack, 1)
+        done = QPushButton("Done")
+        done.setStyleSheet(theme.PRIMARY_STYLE)
+        done.clicked.connect(self.accept)
+        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        self.tabs: dict[str, QPushButton] = {}
+        self._group = QButtonGroup(self)
+        self._drag = None
+
+    def add_tab(self, key: str, label: str, page: QWidget) -> None:
+        button = QPushButton(label)
+        button.setCheckable(True)
+        button.setStyleSheet(TAB_STYLE)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        index = self.stack.addWidget(page)
+        button.clicked.connect(lambda: self.stack.setCurrentIndex(index))
+        self._group.addButton(button)
+        self.tab_row.addWidget(button)
+        self.tabs[key] = button
+        for b in self.tabs.values():  # one page needs no tabs
+            b.setVisible(len(self.tabs) > 1)
+
+    def show_tab(self, key: str) -> None:
+        button = self.tabs.get(key) or next(iter(self.tabs.values()))
+        button.setChecked(True)
+        button.click()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = None
+        super().mouseReleaseEvent(event)
 
 
 def section_title(text: str, tip: str = "") -> QLabel:
@@ -789,7 +893,7 @@ class RulesTable(QWidget):
         add.clicked.connect(self.add)
         top.addWidget(add)
         layout.addLayout(top)
-        self.hint = QLabel("Every switch uses the transition above. Add a rule to give some switches "
+        self.hint = QLabel("Every switch uses the usual transition. Add a rule to give some switches "
                            "their own, like a stinger into BRB.")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet(theme.MUTED_STYLE)
@@ -797,6 +901,7 @@ class RulesTable(QWidget):
         self.rows = QVBoxLayout()
         self.rows.setSpacing(8)
         layout.addLayout(self.rows)
+        layout.addStretch(1)  # rows keep their size; the space stays below them
         self.refresh()
 
     def refresh(self) -> None:
