@@ -22,6 +22,7 @@ PANEL = "#151c19"  # docks, lists, cards and pop-ups
 RAISED = "#1c2420"  # buttons
 RAISED_HOVER = "#232d28"
 PRESSED = "#18201c"
+CARD = "#19221e"  # a soft card on a pop-up (pop-ups are PANEL)
 EDGE = "#1f2825"  # hairline borders
 EDGE_STRONG = "#2b3631"  # borders that must read (inputs, pop-up frames)
 HIGHLIGHT = "#28322d"  # the faint lit top edge on raised things
