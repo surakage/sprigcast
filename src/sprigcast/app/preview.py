@@ -387,6 +387,9 @@ class Preview(QWidget):
             self.menu_requested.emit(self.canvas_id, -1 if index is None else index,
                                      event.globalPosition().toPoint())
             return
+        if event.button() == Qt.MouseButton.RightButton and not self.editable and not self.twin:
+            self.menu_requested.emit(self.canvas_id, -1, event.globalPosition().toPoint())  # Live: projector menu
+            return
         if event.button() != Qt.MouseButton.LeftButton or self.scene is None or not self.editable:
             return
         point = self.to_canvas(event.position())
