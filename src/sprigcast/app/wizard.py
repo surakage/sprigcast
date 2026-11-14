@@ -293,6 +293,7 @@ class OptimizeWizard(QDialog):
         box.addWidget(self.check_list, 1)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
+        self.progress.setMaximumHeight(6)
         box.addWidget(self.progress)
         return page
 
