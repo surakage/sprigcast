@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 
-SIDE_WIDTH = 300
+SIDE_WIDTH = 350  # Chat on top, the Go live card below
 BOTTOM_HEIGHT = 300  # the Blooms | Sound | Transitions row under the canvas
 GAP = 20
 
@@ -544,16 +544,17 @@ class LiveStage(QWidget):
         left.setSpacing(GAP)
         self.card = StageCard()
         left.addWidget(self.card, 1)
-        # Under the canvas: three cards the same size, Blooms | Sound | Transitions. The main window
+        # Under the canvas: Blooms | Sound | Transitions (narrower). The main window
         # fills the Blooms and Transitions cards; the right column keeps Go live, Destinations and Chat.
         self.bottom = QWidget()
         row = QHBoxLayout(self.bottom)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(GAP)
         self.blooms_card, self.transitions_card = side_card(), side_card()
-        for card in (self.blooms_card, side.sound_card, self.transitions_card):
+        # Blooms and Sound get the most room; Transitions only needs its few settings.
+        for card, share in ((self.blooms_card, 4), (side.sound_card, 4), (self.transitions_card, 3)):
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            row.addWidget(card, 1)
+            row.addWidget(card, share)
         self.bottom.setFixedHeight(BOTTOM_HEIGHT)
         side.where_card.setFixedHeight(BOTTOM_HEIGHT)
         left.addWidget(self.bottom)

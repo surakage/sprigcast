@@ -459,12 +459,7 @@ class TransitionsPanel(QWidget):
             root.addSpacing(4)
             root.addLayout(row)
             self.show_rule_count()
-        if compact:
-            self.picture.fill()
-            root.addSpacing(2)
-            root.addWidget(self.picture, 1)
-        else:
-            root.addStretch(1)
+        root.addStretch(1)
         self.load(transition)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
