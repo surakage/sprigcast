@@ -416,3 +416,31 @@ def test_live_card_picks_the_transition_from_a_drop_down():
     assert not panel.kind_buttons["fade"].parentWidget().isVisibleTo(panel)  # no pill grid on the short card
     next(a for a in panel.kind_pick.menu().actions() if a.text() == "Stinger").trigger()
     assert t.kind == "stinger" and panel.kind_pick.text().startswith("Stinger")
+
+
+def test_live_card_keeps_deeper_settings_in_a_pop_up():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import TransitionsPanel
+
+    t = Transition(kind="slide")
+    seen = []
+    panel = TransitionsPanel(t, lambda: seen.append(t.kind), compact=True)
+    panel.resize(300, 400)
+    panel.show()
+    assert panel.length.isVisibleTo(panel)
+    assert not panel.direction_buttons["left"].isVisibleTo(panel)  # direction lives in the pop-up
+    assert not panel.softness.isVisibleTo(panel) and not panel.clip.isVisibleTo(panel)
+    dialog = panel.settings_dialog()
+    dialog.panel.direction_buttons["up"].click()
+    assert t.direction == "up" and seen
+    dialog.panel.set_kind("stinger")
+    assert panel.kind_pick.text().startswith("Stinger")  # the card follows the pop-up
+    assert panel.clip_note.isVisibleTo(panel) and not panel.length.isVisibleTo(panel)
+    assert dialog.panel.clip.isVisibleTo(dialog.panel) or not dialog.isVisible()
+    panel.close()

@@ -231,6 +231,7 @@ class TransitionsPanel(QWidget):
                  probe: Callable[[str], float | None] | None = None, parent: QWidget | None = None,
                  collection: SceneCollection | None = None, compact: bool = False):
         super().__init__(parent)
+        self.compact = compact  # Live's short card: the type and length here, the rest in a pop-up
         self.transition = transition
         self.changed = changed
         self.probe = probe
@@ -371,6 +372,19 @@ class TransitionsPanel(QWidget):
         sound_layout.addWidget(self.mute)
         form.addRow("Sound", sound)
         root.addLayout(form)
+        self.more_button: QPushButton | None = None
+        self.clip_note: QLabel | None = None
+        if compact:
+            # Everything deeper (direction, edge, images, stinger clips and sound) lives in a pop-up.
+            self.clip_note = QLabel("")
+            self.clip_note.setStyleSheet(theme.MUTED_STYLE)
+            form.insertRow(2, "Clip", self.clip_note)
+            self.more_button = QPushButton("More settings…")
+            self.more_button.setStyleSheet(PILL_STYLE)
+            self.more_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.more_button.setToolTip("Direction, edge, wipe image, stinger clips and sound")
+            self.more_button.clicked.connect(self.open_settings)
+            root.addWidget(self.more_button)
         self.rules_button: QPushButton | None = None
         if collection is not None:
             # The table of bloom-to-bloom rules opens in its own pop-up: there's no room for it here.
@@ -496,6 +510,11 @@ class TransitionsPanel(QWidget):
             self.matte: stinger, self.volume.parentWidget(): stinger,
             self.matte_only: stinger and self.transition.stinger.matte != "none",
         }
+        if self.compact:
+            rows = {widget: False for widget in rows}
+            rows[self.length] = kind in TIMED
+            rows[self.clip_note] = stinger
+            self.clip_note.setText(short_name(self.transition.stinger.path, "None yet"))
         for widget, shown in rows.items():
             self.form.setRowVisible(widget, shown)
 
@@ -541,6 +560,39 @@ class TransitionsPanel(QWidget):
         dialog.table = table
         dialog.resize(420, 520)
         return dialog
+
+    def settings_dialog(self) -> QDialog:
+        """The pop-up with every setting for the current transition (Live's card only shows the basics)."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Transition settings")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        def edited() -> None:
+            self.load(self.transition)
+            self.changed()
+
+        panel = TransitionsPanel(self.transition, edited, self.probe, dialog)
+        panel.layout().setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        scroll.setWidget(panel)
+        layout.addWidget(scroll, 1)
+        done = QPushButton("Done")
+        done.setStyleSheet(theme.PRIMARY_STYLE)
+        done.clicked.connect(dialog.accept)
+        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.panel = panel
+        dialog.resize(440, 600)
+        return dialog
+
+    def open_settings(self) -> None:
+        self.settings_dialog().exec()
+        self.load(self.transition)
 
     def open_rules(self) -> None:
         self.rules_dialog().exec()
