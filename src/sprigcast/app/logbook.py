@@ -211,7 +211,7 @@ class StreamReport:
             stats = st.stats() if hasattr(st, "stats") else {}
             pilot = getattr(st, "autopilot", None)
             pilot_text = f"{pilot.current_kbps}" if pilot is not None else "off"
-            status = "live" if st.connected else st.status
+            status = "live" if st.connected else getattr(st, "waiting_text", lambda: st.status)()
             self._write(f"{stamp}  {st.name}: {status}, {kbps:.0f} / {average:.0f} kbps, "
                         f"{frames} frames (+{frames - last_f}), {st.dropped} dropped, "
                         f"backlog {stats.get('backlog_s', 0.0):.2f} s, auto-pilot {pilot_text}, "

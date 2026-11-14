@@ -56,3 +56,21 @@ def test_a_delayed_link_sends_late_and_its_wait_is_not_backlog(tmp_path):
         enc.stop()
     with av.open(str(path)) as f:
         assert sum(1 for p in f.demux(video=0) if p.size) > 5
+
+
+def test_waiting_out_the_delay_is_not_connecting():
+    import time
+
+    from sprigcast.app.destinations import live_line
+    from sprigcast.output.stream import Streamer
+
+    st = Streamer("T", "rtmp://x/app", "k", 16, 16, 30, 1000, "libx264", 0.0)
+    st.delay_s = 30.0
+    assert st.delay_left() > 25
+    assert st.health() == ("good", "going out in 30 s (stream delay)")
+    level, text = live_line(st)
+    assert level == "good" and text.startswith("Going out in")
+    st.started_at = time.monotonic() - 31  # the delay has passed and still nothing went out: connecting
+    assert st.delay_left() == 0 and st.health()[0] == "warning"
+    st.started_at, st.reconnects = time.monotonic(), 1  # after a drop it's a reconnect, not the delay
+    assert st.delay_left() == 0

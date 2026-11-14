@@ -121,7 +121,8 @@ class WindowHost:
             "frames": sum(getattr(st, "frames", 0) for st in streamers),
             "skipped": sum(getattr(st, "dropped", 0) for st in streamers),
             "bytes": sum(getattr(st, "bytes_out", 0) for st in streamers),
-            "reconnecting": any(not getattr(st, "connected", True) for st in streamers),
+            "reconnecting": any(not getattr(st, "connected", True) and not getattr(st, "delay_left", lambda: 0.0)()
+                                for st in streamers),
         }
 
     def record_status(self) -> dict[str, Any] | None:
