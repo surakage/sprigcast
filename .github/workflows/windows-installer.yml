@@ -23,8 +23,26 @@ jobs:
           $py = "packaging\build\python\python.exe"
           & $py -c "import sprigcast, av, moderngl, PySide6.QtWidgets, numpy; print('imports OK', sprigcast.__file__)"
           & $py -m sprigcast.tools.check
+      - name: Fingerprints and a Microsoft Defender scan
+        shell: pwsh
+        run: |
+          Get-FileHash packaging\out\*.exe, packaging\build\python\Lib\site-packages\sprigcast\camera\*.dll -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash, (Split-Path $_.Path -Leaf) } | Tee-Object packaging\out\SHA256.txt
+          $mp = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
+          if (-not (Test-Path $mp)) { Write-Warning "Microsoft Defender isn't on this runner: no scan"; exit 0 }
+          & $mp -SignatureUpdate | Out-Host
+          $failed = $false
+          foreach ($target in (Resolve-Path packaging\out).Path, (Resolve-Path packaging\build\python).Path) {
+            & $mp -Scan -ScanType 3 -File $target -DisableRemediation | Out-Host
+            if ($LASTEXITCODE -eq 2) { $failed = $true; Write-Error "Defender flagged something in $target" -ErrorAction Continue }
+          }
+          if ($failed) { Get-MpThreatDetection | Format-List | Out-Host; exit 1 }
+          "Defender found nothing" | Tee-Object -Append packaging\out\SHA256.txt
+          exit 0
       - uses: actions/upload-artifact@v4
         with:
           name: SprigCast-Setup
-          path: packaging/out/*.exe
+          path: |
+            packaging/out/*.exe
+            packaging/out/SHA256.txt
           retention-days: 14
