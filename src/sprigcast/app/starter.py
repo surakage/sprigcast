@@ -14,11 +14,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -149,16 +152,53 @@ def _drop_example(collection: SceneCollection) -> None:
                                    if r.from_scene not in gone and r.to_scene not in gone]
 
 
+def combo_style() -> str:
+    """Rounded pill boxes with a soft chevron (the plain drop-down button squares off the round end)."""
+    try:
+        arrow = f"QComboBox::down-arrow {{ image: url({theme.nature_pictures()['chevron']}); width: 12px; height: 12px; }}"
+    except OSError:
+        arrow = ""
+    return (f"QComboBox {{ background: {theme.CHROME}; color: {theme.TEXT}; border: 1px solid {theme.EDGE_STRONG};"
+            " border-radius: 16px; padding: 6px 14px; min-height: 20px; }"
+            f"QComboBox:focus, QComboBox:hover {{ border-color: {theme.ACCENT}; }}"
+            "QComboBox::drop-down { border: none; background: transparent; width: 30px; }" + arrow)
+
+
+def _row_label(text: str, box: QWidget) -> QLabel:
+    """A form label as tall as its box, so the words sit level with the box's text."""
+    label = QLabel(text)
+    label.setMinimumHeight(box.sizeHint().height())
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    return label
+
+
 class StarterDialog(QDialog):
-    """The few choices; the main window lists the devices and calls build_starter with the answer."""
+    """The few choices; the main window lists the devices and calls build_starter with the answer.
+
+    A rounded, raised card like the app's other pop-ups (no square window frame); drag it by any empty spot.
+    """
 
     def __init__(self, cameras: list, monitors: list, mics: list[str], fresh: bool, both_shapes: bool,
                  parent: QWidget | None = None):
-        super().__init__(parent)
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Starter kit")
-        self.setMinimumWidth(520)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMinimumWidth(560)
         self.cameras, self.monitors = cameras, monitors
-        root = QVBoxLayout(self)
+        self._drag = None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 14, 20, 26)  # room for the shadow
+        card = QFrame()
+        card.setObjectName("starterCard")
+        card.setStyleSheet(f"#starterCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
+                           " border-radius: 24px; }")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(36)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 190))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+        root = QVBoxLayout(card)
         root.setContentsMargins(26, 22, 26, 22)
         root.setSpacing(14)
         title = QLabel("Set up your blooms in one go")
@@ -175,26 +215,34 @@ class StarterDialog(QDialog):
         form = QFormLayout()
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        style = combo_style()
         self.camera = QComboBox()
+        self.camera.setStyleSheet(style)
+        self.camera.setCursor(Qt.CursorShape.PointingHandCursor)
         self.camera.addItem("No camera", None)
         for cam in cameras:
             self.camera.addItem(cam.name, cam)
         if cameras:
             self.camera.setCurrentIndex(1)
-        form.addRow("Camera", self.camera)
+        form.addRow(_row_label("Camera", self.camera), self.camera)
         self.screen = QComboBox()
+        self.screen.setStyleSheet(style)
+        self.screen.setCursor(Qt.CursorShape.PointingHandCursor)
         self.screen.addItem("No screen", None)
         for monitor in monitors:
             self.screen.addItem(monitor.label, monitor)
         if monitors:
             self.screen.setCurrentIndex(1 + next((i for i, m in enumerate(monitors) if m.primary), 0))
-        form.addRow("Screen (for Gaming)", self.screen)
+        form.addRow(_row_label("Screen (for Gaming)", self.screen), self.screen)
         self.mic = QComboBox()
+        self.mic.setStyleSheet(style)
+        self.mic.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic.addItem("Default mic (follows Windows)", "default")
         for name in mics:
             self.mic.addItem(name, name)
         self.mic.addItem("No mic", None)
-        form.addRow("Mic", self.mic)
+        form.addRow(_row_label("Mic", self.mic), self.mic)
         root.addLayout(form)
         self.desktop = QCheckBox("Desktop sound (games, music, alerts)")
         self.desktop.setChecked(True)
@@ -233,6 +281,20 @@ class StarterDialog(QDialog):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             buttons.addWidget(b)
         root.addLayout(buttons)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = None
+        super().mouseReleaseEvent(event)
 
     def choice(self, camera_settings) -> StarterChoice:
         """The answer. `camera_settings(device)` turns the picked camera into source settings."""

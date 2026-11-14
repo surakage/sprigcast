@@ -411,6 +411,9 @@ NATURE_PICTURES = {
     "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
     "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
     "seed_handle": _seed_handle_svg,
+    "chevron": lambda: (f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
+                        f'<path d="M3,4.5 L6,7.5 L9,4.5" fill="none" stroke="{MUTED}" stroke-width="1.6"'
+                        ' stroke-linecap="round" stroke-linejoin="round"/></svg>'),
 }
 
 
