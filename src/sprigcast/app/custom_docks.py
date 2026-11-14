@@ -1,7 +1,7 @@
-"""Custom docks: your own web pages (Twitch chat, an activity feed, alerts) as docks you can place anywhere.
+"""Web panels: your own web pages (Twitch chat, an activity feed, alerts) as panels (app/panels.py).
 
 The list lives in QSettings ("docks/custom") as JSON. A dock's browser is only created the first time
-the dock is shown, and Qt WebEngine is only loaded when at least one custom dock exists, so having none
+the panel is shown, and Qt WebEngine is only loaded when at least one custom dock exists, so having none
 costs nothing. Pages share one saved browser profile, so signing in to Twitch once is remembered.
 """
 
@@ -11,7 +11,6 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 from PySide6.QtCore import QSettings, QStandardPaths, Qt, QUrl
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDockWidget,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -35,7 +33,7 @@ from sprigcast.app import theme
 
 log = logging.getLogger(__name__)
 SETTINGS_KEY = "docks/custom"
-PREFIX = "custom:"  # dock objectName prefix, so saved layouts remember where each one sits
+PREFIX = "custom:"  # panel key prefix, so saved panels remember where each one sits
 
 # Ready-made pages: label -> (dock name, URL with {channel}).
 PRESETS = {
@@ -102,7 +100,7 @@ def _shared_profile():
 
 
 class WebDockBody(QWidget):
-    """Holds the page. The browser is made the first time the dock is shown, never before."""
+    """Holds the page. The browser is made the first time the panel is shown, never before."""
 
     def __init__(self, url: str):
         super().__init__()
@@ -141,27 +139,17 @@ class WebDockBody(QWidget):
             self.view.reload()
 
 
-def make_dock(parent, spec: CustomDock) -> QDockWidget:
-    dock = QDockWidget(spec.name, parent)
-    dock.setObjectName(PREFIX + spec.id)
-    body = WebDockBody(spec.url)
-    dock.setWidget(body)
-    dock.setMinimumWidth(160)
-    dock.visibilityChanged.connect(lambda shown: shown and body.ensure_loaded())
-    return dock
-
-
 class CustomDocksDialog(QDialog):
-    """Add, rename, re-point and remove custom docks."""
+    """Add, rename, re-point and remove web panels."""
 
     def __init__(self, docks: list[CustomDock], parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Custom docks")
+        self.setWindowTitle("Web panels")
         self.setMinimumWidth(560)
         self.docks = [CustomDock(**asdict(d)) for d in docks]
         root = QVBoxLayout(self)
-        intro = QLabel("Web pages as docks: Twitch chat, your activity feed, alerts or any page. "
-                       "Each shows up in the Docks menu and can sit anywhere, in Build or Live.")
+        intro = QLabel("Web pages as panels: Twitch chat, your activity feed, alerts or any page. "
+                       "Each shows up in the Panels menu; a new one appears on Live, and ↗ pops it out.")
         intro.setWordWrap(True)
         root.addWidget(intro)
         body = QHBoxLayout()
@@ -183,12 +171,12 @@ class CustomDocksDialog(QDialog):
         self.url.textEdited.connect(self._edited)
         form.addRow("Page", self.preset)
         form.addRow("Channel", self.channel)
-        form.addRow("Dock name", self.name)
+        form.addRow("Panel name", self.name)
         form.addRow("URL", self.url)
         body.addWidget(form_box, 2)
         root.addLayout(body)
         row = QHBoxLayout()
-        add = QPushButton("+ Add dock")
+        add = QPushButton("+ Add panel")
         add.clicked.connect(self._add)
         self.remove = QPushButton("− Remove")
         self.remove.clicked.connect(self._remove)
@@ -276,25 +264,26 @@ class CustomDocksDialog(QDialog):
         return [d for d in self.docks if d.url]
 
 
-def apply(window, docks: list[CustomDock], menu_hook: Callable[[], None]) -> None:
-    """Make window's custom docks match `docks`: add new ones, update changed ones, remove deleted ones."""
-    current = {name[len(PREFIX):]: dock for name, dock in window.docks.items() if name.startswith(PREFIX)}
+def apply(window, docks: list[CustomDock]) -> None:
+    """Make window's web panels match `docks`: add new ones (shown on Live), update changed ones,
+    remove deleted ones."""
+    from sprigcast.app.panels import Panel
+
+    panels = window.panels
+    current = {key[len(PREFIX):]: panel for key, panel in panels.panels.items() if key.startswith(PREFIX)}
     wanted = {d.id: d for d in docks}
-    for dock_id, dock in current.items():
+    for dock_id in current:
         if dock_id not in wanted:
-            window.removeDockWidget(dock)
-            dock.deleteLater()
-            del window.docks[PREFIX + dock_id]
+            panels.remove(PREFIX + dock_id)
     for spec in docks:
-        dock = current.get(spec.id)
-        if dock is None:
-            dock = make_dock(window, spec)
-            window.docks[PREFIX + spec.id] = dock
-            window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-            dock.show()
+        panel = current.get(spec.id)
+        if panel is None:
+            body = WebDockBody(spec.url)
+            panels.add(Panel(PREFIX + spec.id, spec.name, body, on_show=body.ensure_loaded), shown_in=("live",))
         else:
-            dock.setWindowTitle(spec.name)
-            if dock.widget().url != spec.url:
-                dock.widget().set_url(spec.url)
+            if panel.title != spec.name:
+                panel.title = spec.name
+                panels.refresh()
+            if panel.widget.url != spec.url:
+                panel.widget.set_url(spec.url)
     save(docks)
-    menu_hook()

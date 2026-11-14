@@ -105,24 +105,16 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         w.show()
         # Build has its own screen too: bloom pills, Inside, the canvas with its twin, the inspector.
         assert w.mode == "build" and w.build_stage.isVisible() and w.source_list.isVisible()
-        assert not w.live_stage.isVisible() and not w.docks["Destinations"].isVisible()
+        assert not w.live_stage.isVisible() and not w.dock_bodies["Destinations"].isVisible()
         assert set(w.bloom_bar.pills) == {"h1", "h2"} and w.bloom_bar.pills["h1"].isChecked()
         assert w.previews["vertical"].twin and not w.previews["vertical"].editable
         assert w.previews["horizontal"].editable and not w.previews["horizontal"].twin
         w._set_mode("live")
-        # Live has its own screen: the stage, bloom tiles and side column, and no docks by default.
+        # Live has its own screen: the stage, bloom tiles and side column, and no panels by default.
         assert w.live_stage.isVisible() and w.live_panel.isVisible() and not w.build_stage.isVisible()
-        assert not w.docks["Scenes"].isVisible() and not w.docks["Audio Mixer"].isVisible()
+        assert not w.dock_bodies["Scenes"].isVisible() and not w.dock_bodies["Audio Mixer"].isVisible()
+        assert not w.panels.cards["live"].isVisible()
         assert w.previews["horizontal"].isVisible() and w.previews["horizontal"].live_look
-        assert w.docks["Audio Mixer"].toggleViewAction().isEnabled()  # still there if you want it
-        assert not w.docks["Scenes"].toggleViewAction().isEnabled()
-        # Even a saved Live layout that shows Scenes (from an older version) gets it hidden again.
-        w._set_mode("build")
-        w._set_mode("live")
-        w.docks["Scenes"].show()
-        w._set_mode("build")
-        w._set_mode("live")
-        assert not w.docks["Scenes"].isVisible()
         assert not any(p.editable for p in w.previews.values())
         w.live_panel.buttons["h2"].click()
         assert col.active_scenes["horizontal"] == "h2"
@@ -270,9 +262,9 @@ def test_command_palette_lists_scenes_menus_and_switches(app, tmp_path, monkeypa
         w.show()
         palette = w._open_palette()
         groups = {c.group for c in palette.commands}
-        assert {"Scene", "Action", "Mode", "Add", "Tools", "Dock", "File"} <= groups
+        assert {"Scene", "Action", "Mode", "Add", "Tools", "Panel", "File"} <= groups
         titles = [c.title for c in palette.commands]
-        assert "Go live" in titles and "Dock: Scenes" not in titles and "Scenes" in titles
+        assert "Go live" in titles and "Transitions" in titles
         palette.search.setText("brb")
         assert palette.shown()[0].group == "Scene"
         palette._run(palette.list.currentItem())
@@ -544,9 +536,9 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
     w = MainWindow(_collection(), tmp_path / "scenes.json")
     try:
         titles = [a.text().replace("&", "") for a in w.menuBar().actions()]
-        assert titles == ["File", "Edit", "View", "Docks", "Tools", "Help"]
-        docks = w.menuBar().actions()[3].menu()
-        assert any("custom docks" in a.text().lower() for a in docks.actions())
+        assert titles == ["File", "Edit", "View", "Panels", "Tools", "Help"]
+        panels = w.menuBar().actions()[3].menu()
+        assert any("web panels" in a.text().lower() for a in panels.actions())
         lines = w.shortcut_lines()
         assert lines and len(lines) == len(set(lines))
         assert any("Ctrl+K" in str(line) for line in lines)

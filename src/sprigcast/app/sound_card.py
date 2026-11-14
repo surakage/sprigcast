@@ -180,6 +180,15 @@ class SoundCard(QWidget):
         # Page 1: tune one sound.
         self.tune = TunePage(self._tune_changed, lambda sid: self.on_filters(sid), self.close_tune)
         self.pages.addWidget(self.tune)
+        self.pages.currentChanged.connect(self._fit_page)
+        self._fit_page(0)
+
+    def _fit_page(self, index: int) -> None:
+        """The card is as tall as the page showing, not the tallest page, so panels below get the rest."""
+        for i in range(self.pages.count()):
+            policy = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
+            self.pages.widget(i).setSizePolicy(QSizePolicy.Policy.Preferred, policy)
+        self.pages.updateGeometry()
 
     def set_mic_first(self, on: bool) -> None:
         self.mic_first.blockSignals(True)

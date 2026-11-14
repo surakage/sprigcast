@@ -7,8 +7,8 @@
     [Just Chatting] [Gaming] [BRB] [Ending] …      │ CPU · RAM   │
 
 No docks: the main window moves its canvas previews and the Live panel (bloom tiles) in here when
-Live mode starts, and back when Build mode starts. The docks are still in the Docks menu for anyone
-who wants them, but none show by default.
+Live mode starts, and back when Build mode starts. Panels you pick in the Panels menu (chat, activity)
+fill the bottom of the right column (app/panels.py); CPU and memory live in the strip along the bottom.
 """
 
 from __future__ import annotations
@@ -240,12 +240,17 @@ class LiveSide(QWidget):
         self.sound = SoundCard(on_sound or (lambda _id, _changes: None), on_sound_filters or (lambda _id: None),
                                on_mic_first)
         sound_card.layout().addWidget(self.sound)
+        sound_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)  # panels get the rest
         root.addWidget(sound_card)
 
-        root.addStretch(1)
+        # Panels you choose for Live (chat, activity feed...) fill the rest of the column (app/panels.py).
+        self.panel_slot = QVBoxLayout()
+        self.panel_slot.setContentsMargins(0, 0, 0, 0)
+        root.addLayout(self.panel_slot, 1)
         self.stats = QLabel("")
         self.stats.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         self.stats.setWordWrap(True)
+        self.stats.hide()  # the stats strip along the bottom of the window shows these now
         root.addWidget(self.stats)
 
     # The buttons ------------------------------------------------------------------------
