@@ -217,12 +217,13 @@ class Preview(QWidget):
         rect = self.canvas_rect()
         p.save()
         p.setClipRect(QRectF(0, 22, self.width(), self.height() - 22))  # zoomed in, the canvas stays under the title
-        if self.live_look:
+        rounded = self.zoom <= 1.0  # zoomed in to edit, the canvas runs past the view: keep it square then
+        if rounded:
             p.save()
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             clip = QPainterPath()
-            clip.addRoundedRect(rect, 14, 14)
-            p.setClipPath(clip)
+            clip.addRoundedRect(rect, 20, 20)
+            p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
         if self._image is None:
             p.fillRect(rect, QColor("#000000"))
             p.setPen(QColor(theme.MUTED))
@@ -232,7 +233,7 @@ class Preview(QWidget):
                 self._paint_checker(p, rect)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(rect, self._image)
-        if self.live_look:
+        if rounded:
             p.restore()
         p.restore()
         p.setPen(QColor(theme.MUTED))
@@ -245,7 +246,7 @@ class Preview(QWidget):
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)
                 p.setPen(QPen(QColor(self.ring), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), 16, 16)
+                p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), 23, 23)
         self._paint_inner(p)
         self._paint_safe_zones(p)
         self._paint_selection(p)

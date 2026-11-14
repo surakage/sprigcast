@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
         self.canvas_tabs.setDrawBase(False)
         self.canvas_tabs.setExpanding(False)
         self.canvas_tabs.setStyleSheet(
-            f"QTabBar::tab {{ padding: 6px 16px; margin-right: 4px; border: none; border-radius: 7px 7px 0 0;"
+            f"QTabBar::tab {{ padding: 6px 16px; margin-right: 4px; border: none; border-radius: 12px 12px 0 0;"
             f" background: transparent; color: {theme.MUTED}; }}"
             f"QTabBar::tab:hover {{ color: {theme.TEXT}; }}"
             f"QTabBar::tab:selected {{ background: {theme.PANEL}; color: {theme.TEXT_BRIGHT}; font-weight: bold;"

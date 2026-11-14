@@ -65,7 +65,7 @@ def window_style() -> str:
 #settingsNav::item {{ color: {t.MUTED}; padding: 10px 16px; margin: 2px 0px; border-radius: 18px; border: none; }}
 #settingsNav::item:hover {{ background: {t.PANEL}; color: {t.TEXT}; }}
 #settingsNav::item:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600; }}
-#settingsWindow QGroupBox {{ background: {t.CARD}; border: none; border-radius: 18px; margin-top: 0px;
+#settingsWindow QGroupBox {{ background: {t.CARD}; border: none; border-radius: 20px; margin-top: 0px;
     padding: 46px 18px 16px 18px; font-weight: 400; }}
 #settingsWindow QGroupBox::title {{ subcontrol-origin: padding; subcontrol-position: top left; left: 18px;
     top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: 14px; font-weight: 600; }}

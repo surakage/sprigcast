@@ -180,7 +180,7 @@ class BuildStage(QWidget):
         body.addWidget(self.left_panel)
         self.card = QFrame()
         self.card.setObjectName("buildCard")
-        self.card.setStyleSheet(f"#buildCard {{ background: {theme.PANEL}; border: none; border-radius: 24px; }}"
+        self.card.setStyleSheet(f"#buildCard {{ background: {theme.PANEL}; border: none; border-radius: 28px; }}"
                                 "#buildCard QSplitter::handle { background: transparent; }")
         self.card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card_layout = QVBoxLayout(self.card)

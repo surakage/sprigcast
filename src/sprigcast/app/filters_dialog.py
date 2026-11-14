@@ -319,7 +319,7 @@ class FiltersDialog(QDialog):
         hint.setStyleSheet(f"color: {theme.MUTED}")
         card = QFrame()
         card.setObjectName("filterCard")
-        card.setStyleSheet(f"#filterCard {{ background: {theme.CARD}; border-radius: 16px; }}" + NUMBER_STYLE)
+        card.setStyleSheet(f"#filterCard {{ background: {theme.CARD}; border-radius: 20px; }}" + NUMBER_STYLE)
         right = QVBoxLayout(card)
         right.setContentsMargins(18, 16, 18, 16)
         right.setSpacing(12)

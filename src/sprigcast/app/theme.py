@@ -46,11 +46,11 @@ BARK, MOSS, LICHEN, LEAF, BLOOM, INPUT, PETAL, DUSK = BG, PANEL, EDGE_STRONG, AC
 
 ON_AIR_STYLE = (
     f"background: {LIVE}; color: #ffffff; font-weight: bold; border: 1px solid {LIVE_EDGE};"
-    f" border-top-color: {LIVE_HOVER}; border-radius: 8px;"
+    f" border-top-color: {LIVE_HOVER}; border-radius: 14px;"
 )
 GO_LIVE_STYLE = (  # Go live waits in calm green; once on air the button turns LIVE pink (ON_AIR_STYLE)
     f"QPushButton {{ background: {ACCENT}; color: {ACCENT_TEXT}; font-weight: bold; border: 1px solid {ACCENT};"
-    f" border-radius: 8px; }}"
+    f" border-radius: 14px; }}"
     f"QPushButton:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}"
     f"QPushButton:disabled {{ background: {PANEL}; color: {MUTED}; border-color: {EDGE}; }}"
 )
@@ -59,7 +59,7 @@ PRIMARY_STYLE = (  # the one big "do it" button on a panel, such as Go
     f"QPushButton:enabled {{ background: {ACCENT}; color: {ACCENT_TEXT}; border: 1px solid {ACCENT}; }}"
     f"QPushButton:enabled:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}"
 )
-NOTE_STYLE = f"background: {SELECT_BG}; color: {SELECT_TEXT}; border-radius: 8px;"  # inline notes and banners
+NOTE_STYLE = f"background: {SELECT_BG}; color: {SELECT_TEXT}; border-radius: 12px;"  # inline notes and banners
 MUTED_STYLE = f"color: {MUTED}"
 
 # Live screen (see live_stage.py): pill buttons, no borders.
@@ -115,14 +115,14 @@ LINK_STYLE = (
 STYLESHEET = f"""
 QWidget {{ selection-background-color: {SELECT_BG}; selection-color: {SELECT_TEXT}; }}
 QMainWindow::separator {{ background: {BG}; width: 6px; height: 6px; }}
-QToolTip {{ color: {TEXT}; background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 6px; padding: 4px 6px; }}
+QToolTip {{ color: {TEXT}; background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 10px; padding: 5px 9px; }}
 QDockWidget {{ color: {MUTED}; }}
 QDockWidget::title {{ background: {CHROME}; padding: 6px 8px; border-bottom: 1px solid {EDGE}; }}
 QToolBar {{ background: {CHROME}; border: none; border-bottom: 1px solid {EDGE}; spacing: 4px; padding: 2px; }}
 QPushButton {{
     background: {RAISED}; color: {TEXT};
     border: 1px solid {EDGE_STRONG}; border-top-color: {HIGHLIGHT}; border-bottom-color: {CHROME};
-    border-radius: 8px; padding: 6px 14px; min-height: 18px; text-align: center;
+    border-radius: 13px; padding: 6px 14px; min-height: 18px; text-align: center;
 }}
 QPushButton:hover {{ background: {RAISED_HOVER}; }}
 QPushButton:pressed {{ background: {PRESSED}; border-top-color: {CHROME}; padding-top: 7px; padding-bottom: 5px; }}
@@ -131,7 +131,7 @@ QPushButton:default {{ background: {ACCENT}; color: {ACCENT_TEXT}; border-color:
 QPushButton:default:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
 QPushButton:disabled {{ color: {MUTED}; background: {PANEL}; border-color: {EDGE}; }}
 QPushButton::menu-indicator {{ subcontrol-position: right center; right: 6px; }}
-QToolButton {{ border: 1px solid transparent; border-radius: 6px; padding: 3px 6px; color: {TEXT}; }}
+QToolButton {{ border: 1px solid transparent; border-radius: 10px; padding: 3px 6px; color: {TEXT}; }}
 QToolButton:hover {{ background: {RAISED_HOVER}; border-color: {EDGE_STRONG}; }}
 QToolButton[autoRaise="false"] {{
     background: {RAISED}; border: 1px solid {EDGE_STRONG}; border-top-color: {HIGHLIGHT}; padding: 3px 10px;
@@ -140,16 +140,16 @@ QToolButton:pressed {{ background: {PRESSED}; }}
 QToolButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}
 QDialog, QMessageBox {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; }}
 QGroupBox {{
-    background: {BG}; border: 1px solid {EDGE}; border-radius: 10px; margin-top: 16px; padding: 12px 10px 10px 10px;
+    background: {BG}; border: 1px solid {EDGE}; border-radius: 16px; margin-top: 16px; padding: 12px 10px 10px 10px;
 }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {MUTED}; font-weight: 600; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background: {CHROME}; color: {TEXT}; border: 1px solid {EDGE_STRONG}; border-radius: 6px; padding: 3px 6px;
+    background: {CHROME}; color: {TEXT}; border: 1px solid {EDGE_STRONG}; border-radius: 10px; padding: 3px 8px;
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
 }}
-QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; outline: none; }}
+QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 12px; outline: none; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 14px; height: 14px; border: 1px solid {EDGE_STRONG}; background: {CHROME};
 }}
@@ -159,23 +159,23 @@ QCheckBox::indicator:checked, QRadioButton::indicator:checked {{ background: {AC
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
 QCheckBox, QRadioButton {{ spacing: 8px; }}
 QListWidget, QTreeWidget, QListView, QTreeView, QTableView {{
-    background: {PANEL}; border: 1px solid {EDGE}; border-radius: 8px; outline: none;
+    background: {PANEL}; border: 1px solid {EDGE}; border-radius: 14px; outline: none;
 }}
-QListWidget::item, QTreeWidget::item {{ padding: 3px 4px; border-radius: 5px; }}
+QListWidget::item, QTreeWidget::item {{ padding: 3px 6px; border-radius: 9px; }}
 QListWidget::item:hover, QTreeWidget::item:hover {{ background: {RAISED}; }}
 QListWidget::item:selected, QTreeWidget::item:selected {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}
 QListWidget::indicator {{ width: 12px; height: 12px; border: 1px solid {EDGE_STRONG}; border-radius: 3px; background: {CHROME}; }}
 QListWidget::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QHeaderView::section {{ background: {CHROME}; color: {MUTED}; border: none; border-bottom: 1px solid {EDGE}; padding: 4px; }}
-QTabWidget::pane {{ border: 1px solid {EDGE}; border-radius: 8px; top: -1px; }}
+QTabWidget::pane {{ border: 1px solid {EDGE}; border-radius: 14px; top: -1px; }}
 QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 6px 14px; border: none; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabBar::tab:selected {{ color: {TEXT_BRIGHT}; border-bottom: 2px solid {ACCENT}; }}
 QMenuBar {{ background: {CHROME}; color: {MUTED}; border-bottom: 1px solid {EDGE}; }}
-QMenuBar::item {{ padding: 4px 10px; border-radius: 5px; }}
+QMenuBar::item {{ padding: 4px 10px; border-radius: 9px; }}
 QMenuBar::item:selected {{ background: {RAISED}; color: {TEXT}; }}
-QMenu {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 8px; padding: 4px; }}
-QMenu::item {{ padding: 5px 20px 5px 14px; border-radius: 5px; color: {TEXT}; }}
+QMenu {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 14px; padding: 6px; }}
+QMenu::item {{ padding: 5px 20px 5px 14px; border-radius: 9px; color: {TEXT}; }}
 QMenu::item:selected {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}
 QMenu::item:disabled {{ color: {MUTED}; }}
 QMenu::separator {{ height: 1px; background: {EDGE}; margin: 4px 8px; }}
@@ -184,8 +184,8 @@ QSlider::handle:horizontal {{
     background: {TEXT_BRIGHT}; border: 2px solid {ACCENT}; width: 10px; margin: -6px 0; border-radius: 7px;
 }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
-QProgressBar {{ background: {CHROME}; border: 1px solid {EDGE}; border-radius: 4px; text-align: center; color: {TEXT}; }}
-QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+QProgressBar {{ background: {CHROME}; border: 1px solid {EDGE}; border-radius: 7px; text-align: center; color: {TEXT}; }}
+QProgressBar::chunk {{ background: {ACCENT}; border-radius: 6px; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background: {EDGE_STRONG}; border-radius: 3px; }}

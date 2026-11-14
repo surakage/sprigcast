@@ -144,7 +144,7 @@ def side_card() -> QFrame:
     """A soft rounded card for a side-column section, padded so nothing touches its edges."""
     card = QFrame()
     card.setObjectName("sideCard")
-    card.setStyleSheet(f"#sideCard {{ background: {theme.PANEL}; border: none; border-radius: 18px; }}")
+    card.setStyleSheet(f"#sideCard {{ background: {theme.PANEL}; border: none; border-radius: 22px; }}")
     layout = QVBoxLayout(card)
     layout.setContentsMargins(18, 16, 18, 18)
     layout.setSpacing(14)
@@ -466,7 +466,7 @@ class StageCard(QFrame):
     def __init__(self):
         super().__init__()
         self.setObjectName("stageCard")
-        self.setStyleSheet(f"#stageCard {{ background: {theme.PANEL}; border: none; border-radius: 24px; }}"
+        self.setStyleSheet(f"#stageCard {{ background: {theme.PANEL}; border: none; border-radius: 28px; }}"
                            "#stageCard QSplitter::handle { background: transparent; }")
         self.root = QVBoxLayout(self)
         self.root.setContentsMargins(20, 16, 20, 20)

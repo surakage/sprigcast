@@ -88,7 +88,7 @@ class PanelCard(QFrame):
         super().__init__()
         self.manager, self.mode = manager, mode
         self.setObjectName("panelCard")
-        self.setStyleSheet(f"#panelCard {{ background: {theme.PANEL}; border: none; border-radius: 18px; }}")
+        self.setStyleSheet(f"#panelCard {{ background: {theme.PANEL}; border: none; border-radius: 22px; }}")
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 14)
         root.setSpacing(10)

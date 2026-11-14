@@ -73,7 +73,7 @@ def _section(title: str) -> tuple[QWidget, QFormLayout]:
     """A soft rounded card with its title inside (no OBS-style group box frame)."""
     card = QFrame()
     card.setObjectName("streamCard")
-    card.setStyleSheet(f"#streamCard {{ background: {theme.CARD}; border-radius: 18px; }}")
+    card.setStyleSheet(f"#streamCard {{ background: {theme.CARD}; border-radius: 20px; }}")
     outer = QVBoxLayout(card)
     outer.setContentsMargins(26, 20, 26, 22)
     outer.setSpacing(14)
