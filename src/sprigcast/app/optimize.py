@@ -231,7 +231,20 @@ def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=No
 
 
 def _check_upload(p: PcProfile) -> str:
+    """Twitch's bandwidth test when a Twitch key is set (a real stream, never shown), else Cloudflare's."""
+    from sprigcast.output import upload_test
+
+    collection = p.extra.get("collection")
+    key = upload_test.twitch_key(collection) if collection is not None else None
+    if key:
+        p.upload_kbps = upload_test.twitch_upload(key)
+        if p.upload_kbps:
+            capped = p.upload_kbps >= upload_test.CEILING_KBPS * 0.9
+            p.extra["upload_source"] = "Twitch"
+            mbps = f"{upload_test.CEILING_KBPS / 1000:.0f}+" if capped else f"{p.upload_kbps / 1000:.1f}"
+            return f"{mbps} Mbps (Twitch test stream)"
     p.upload_kbps = upload_speed()
+    p.extra["upload_source"] = "Cloudflare" if p.upload_kbps else None
     return f"{p.upload_kbps / 1000:.1f} Mbps" if p.upload_kbps else "Couldn't test: type it in on the next page"
 
 
