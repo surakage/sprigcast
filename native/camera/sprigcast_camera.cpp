@@ -42,7 +42,7 @@ static const CLSID CLSID_SprigCastCamera = {0x6f3c5a0e, 0x2b9d, 0x4c6b, {0x9f, 0
 static const wchar_t* CLSID_TEXT = L"{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}";
 static const wchar_t* SHARED_NAME = L"Global\\SprigCastCamera";
 static const UINT32 MAGIC = 0x43565053;  // 'SPVC'
-static const UINT32 VERSION = 1;
+static const UINT32 VERSION = 2;
 static const UINT32 MAX_W = 1920;
 static const UINT32 HEADER = 64;
 static const UINT32 FPS = 30;
@@ -202,8 +202,14 @@ public:
     STDMETHODIMP KsMethod(PKSMETHOD, ULONG, LPVOID, ULONG, ULONG*) override { return KS_NOT_FOUND; }
     STDMETHODIMP KsEvent(PKSEVENT, ULONG, LPVOID, ULONG, ULONG*) override { return KS_NOT_FOUND; }
 
-    // Called by the source
-    HRESULT Start(const PROPVARIANT* at) {
+    // Called by the source. The Frame Server hands us its sample allocator (IMFSampleAllocatorControl);
+    // samples from it cross into the app's process cheaply. Without one we fall back to memory buffers.
+    HRESULT SetAllocator(IUnknown* allocator) {
+        Guard g(lock_);
+        SafeRelease(allocator_);
+        return allocator ? allocator->QueryInterface(IID_PPV_ARGS(&allocator_)) : S_OK;
+    }
+    HRESULT Start() {
         Guard g(lock_);
         if (!queue_) return MF_E_SHUTDOWN;
         IMFMediaTypeHandler* handler = nullptr;
@@ -211,6 +217,10 @@ public:
         HRESULT hr = sd_->GetMediaTypeHandler(&handler);
         if (SUCCEEDED(hr)) hr = handler->GetCurrentMediaType(&type);
         if (SUCCEEDED(hr)) hr = MFGetAttributeSize(type, MF_MT_FRAME_SIZE, &width_, &height_);
+        if (SUCCEEDED(hr) && allocator_) {
+            allocator_->UninitializeSampleAllocator();
+            if (FAILED(allocator_->InitializeSampleAllocator(10, type))) SafeRelease(allocator_);
+        }
         SafeRelease(type);
         SafeRelease(handler);
         if (FAILED(hr)) return hr;
@@ -223,17 +233,19 @@ public:
         last_new_ = GetTickCount64();
         next_due_ = 0;
         state_ = MF_STREAM_STATE_RUNNING;
-        return queue_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, at);
+        return queue_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr);
     }
     HRESULT Stop() {
         Guard g(lock_);
         if (!queue_) return MF_E_SHUTDOWN;
         state_ = MF_STREAM_STATE_STOPPED;
+        if (allocator_) allocator_->UninitializeSampleAllocator();
         return queue_->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr);
     }
     void Shutdown() {
         Guard g(lock_);
         if (queue_) { queue_->Shutdown(); queue_->Release(); queue_ = nullptr; }
+        if (allocator_) { allocator_->UninitializeSampleAllocator(); SafeRelease(allocator_); }
         state_ = MF_STREAM_STATE_STOPPED;
     }
     UINT32 Width() { Guard g(lock_); return width_; }
@@ -248,6 +260,7 @@ private:
 
     ~Stream() {
         if (queue_) { queue_->Shutdown(); queue_->Release(); }
+        SafeRelease(allocator_);
         SafeRelease(sd_);
         delete[] frame_;
         InterlockedDecrement(&g_objects);
@@ -264,6 +277,7 @@ private:
     Source* source_;  // not owned: the source outlives its stream's use
     IMFStreamDescriptor* sd_;
     IMFMediaEventQueue* queue_ = nullptr;
+    IMFVideoSampleAllocatorEx* allocator_ = nullptr;
     MF_STREAM_STATE state_ = MF_STREAM_STATE_STOPPED;
     UINT32 width_ = 0, height_ = 0;
     BYTE* frame_ = nullptr;
@@ -276,12 +290,12 @@ private:
 // ---------------------------------------------------------------------------------------------
 // Media source
 
-class Source : public IMFMediaSourceEx, public IMFGetService, public IKsControl {
+class Source : public IMFMediaSource2, public IMFGetService, public IKsControl, public IMFSampleAllocatorControl {
 public:
-    static HRESULT Create(Source** out) {
+    static HRESULT Create(IMFAttributes* from, Source** out) {
         Source* s = new (std::nothrow) Source();
         if (!s) return E_OUTOFMEMORY;
-        HRESULT hr = s->Init();
+        HRESULT hr = s->Init(from);
         if (FAILED(hr)) { s->Release(); return hr; }
         *out = s;
         return S_OK;
@@ -291,8 +305,10 @@ public:
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
         if (riid == IID_IUnknown || riid == __uuidof(IMFMediaEventGenerator) || riid == __uuidof(IMFMediaSource) ||
-            riid == __uuidof(IMFMediaSourceEx))
-            *ppv = static_cast<IMFMediaSourceEx*>(this);
+            riid == __uuidof(IMFMediaSourceEx) || riid == __uuidof(IMFMediaSource2))
+            *ppv = static_cast<IMFMediaSource2*>(this);
+        else if (riid == __uuidof(IMFSampleAllocatorControl))
+            *ppv = static_cast<IMFSampleAllocatorControl*>(this);
         else if (riid == __uuidof(IMFGetService))
             *ppv = static_cast<IMFGetService*>(this);
         else if (riid == __uuidof(IKsControl))
@@ -366,11 +382,15 @@ public:
         if (!shared_.Open()) return HRESULT_FROM_WIN32(GetLastError());
         hr = queue_->QueueEventParamUnk(started_once_ ? MEUpdatedStream : MENewStream, GUID_NULL, S_OK,
                                         static_cast<IMFMediaStream2*>(stream_));
-        if (SUCCEEDED(hr)) hr = stream_->Start(at);
+        if (SUCCEEDED(hr)) hr = stream_->Start();
         if (SUCCEEDED(hr)) {
             shared_.Want(stream_->Width(), stream_->Height());
             started_once_ = true;
-            hr = queue_->QueueEventParamVar(MESourceStarted, GUID_NULL, S_OK, at);
+            PROPVARIANT now;
+            PropVariantInit(&now);
+            now.vt = VT_I8;
+            now.hVal.QuadPart = MFGetSystemTime();
+            hr = queue_->QueueEventParamVar(MESourceStarted, GUID_NULL, S_OK, &now);
         }
         return hr;
     }
@@ -412,6 +432,31 @@ public:
     }
     STDMETHODIMP SetD3DManager(IUnknown*) override { return S_OK; }  // system-memory samples only
 
+    // IMFMediaSource2
+    STDMETHODIMP SetMediaType(DWORD id, IMFMediaType* type) override {
+        if (id != 0) return MF_E_INVALIDSTREAMNUMBER;
+        if (!type) return E_POINTER;
+        Lock g(this);
+        if (!queue_) return MF_E_SHUTDOWN;
+        return S_OK;  // Start() picks up the type from the presentation descriptor
+    }
+
+    // IMFSampleAllocatorControl
+    STDMETHODIMP SetDefaultAllocator(DWORD id, IUnknown* allocator) override {
+        if (id != 0) return MF_E_INVALIDSTREAMNUMBER;
+        if (!allocator) return E_POINTER;
+        Lock g(this);
+        if (!queue_) return MF_E_SHUTDOWN;
+        return stream_->SetAllocator(allocator);
+    }
+    STDMETHODIMP GetAllocatorUsage(DWORD id, DWORD* input, MFSampleAllocatorUsage* usage) override {
+        if (id != 0) return MF_E_INVALIDSTREAMNUMBER;
+        if (!input || !usage) return E_POINTER;
+        *input = id;
+        *usage = MFSampleAllocatorUsage_UsesProvidedAllocator;
+        return S_OK;
+    }
+
     // IMFGetService
     STDMETHODIMP GetService(REFGUID, REFIID, LPVOID*) override { return MF_E_UNSUPPORTED_SERVICE; }
 
@@ -441,9 +486,24 @@ private:
         InterlockedDecrement(&g_objects);
     }
 
-    HRESULT Init() {
+    HRESULT Init(IMFAttributes* from) {
         HRESULT hr = MFCreateEventQueue(&queue_);
-        if (SUCCEEDED(hr)) hr = MFCreateAttributes(&attributes_, 4);
+        if (SUCCEEDED(hr)) hr = MFCreateAttributes(&attributes_, 8);
+        // The Frame Server expects the activator's attributes on the source, plus a sensor profile list.
+        if (SUCCEEDED(hr) && from) hr = from->CopyAllItems(attributes_);
+        IMFSensorProfileCollection* profiles = nullptr;
+        IMFSensorProfile* profile = nullptr;
+        if (SUCCEEDED(hr)) hr = MFCreateSensorProfileCollection(&profiles);
+        if (SUCCEEDED(hr)) hr = MFCreateSensorProfile(KSCAMERAPROFILE_Legacy, 0, nullptr, &profile);
+        if (SUCCEEDED(hr)) hr = profile->AddProfileFilter(0, L"((RES==;FRT<=30,1;SUT==))");
+        if (SUCCEEDED(hr)) hr = profiles->AddProfile(profile);
+        SafeRelease(profile);
+        if (SUCCEEDED(hr)) hr = MFCreateSensorProfile(KSCAMERAPROFILE_HighFrameRate, 0, nullptr, &profile);
+        if (SUCCEEDED(hr)) hr = profile->AddProfileFilter(0, L"((RES==;FRT>=60,1;SUT==))");
+        if (SUCCEEDED(hr)) hr = profiles->AddProfile(profile);
+        SafeRelease(profile);
+        if (SUCCEEDED(hr)) hr = attributes_->SetUnknown(MF_DEVICEMFT_SENSORPROFILE_COLLECTION, profiles);
+        SafeRelease(profiles);
         const DWORD n = ARRAYSIZE(SIZES);
         IMFMediaType* types[n] = {};
         for (DWORD i = 0; SUCCEEDED(hr) && i < n; i++) {
@@ -453,6 +513,7 @@ private:
             if (SUCCEEDED(hr)) hr = t->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
             if (SUCCEEDED(hr)) hr = MFSetAttributeSize(t, MF_MT_FRAME_SIZE, SIZES[i].cx, SIZES[i].cy);
             if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(t, MF_MT_FRAME_RATE, FPS, 1);
+            if (SUCCEEDED(hr)) hr = t->SetUINT32(MF_MT_AVG_BITRATE, SIZES[i].cx * SIZES[i].cy * 12 * FPS);
             if (SUCCEEDED(hr)) hr = MFSetAttributeRatio(t, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
             if (SUCCEEDED(hr)) hr = t->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
             if (SUCCEEDED(hr)) hr = t->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
@@ -499,7 +560,7 @@ STDMETHODIMP Stream::GetMediaSource(IMFMediaSource** out) {
     if (!out) return E_POINTER;
     Guard g(lock_);
     if (!queue_) return MF_E_SHUTDOWN;
-    *out = static_cast<IMFMediaSourceEx*>(source_);
+    *out = static_cast<IMFMediaSource2*>(source_);
     (*out)->AddRef();
     return S_OK;
 }
@@ -523,26 +584,56 @@ STDMETHODIMP Stream::RequestSample(IUnknown* token) {
     DWORD bytes = w * h * 3 / 2;
     IMFSample* sample = nullptr;
     IMFMediaBuffer* buffer = nullptr;
-    HRESULT hr = MFCreateSample(&sample);
-    if (SUCCEEDED(hr)) hr = MFCreateMemoryBuffer(bytes, &buffer);
-    BYTE* data = nullptr;
-    if (SUCCEEDED(hr)) hr = buffer->Lock(&data, nullptr, nullptr);
-    if (SUCCEEDED(hr)) {
+    HRESULT hr = S_OK;
+    bool pooled = false;
+    {
         Guard g(lock_);
-        if (frame_ && width_ == w && height_ == h) {
-            if (shared.Read(frame_, w, h, last_seq_)) {
-                have_frame_ = true;
-                last_new_ = GetTickCount64();
-            } else if (have_frame_ && GetTickCount64() - last_new_ > 2000) {
-                Placeholder();  // SprigCast stopped sending (closed, or the camera was turned off)
-                have_frame_ = false;
-            }
-            memcpy(data, frame_, bytes);
-        }
-        buffer->Unlock();
-        hr = buffer->SetCurrentLength(bytes);
+        if (allocator_ && SUCCEEDED(allocator_->AllocateSample(&sample))) pooled = true;
     }
-    if (SUCCEEDED(hr)) hr = sample->AddBuffer(buffer);
+    if (pooled) {
+        hr = sample->GetBufferByIndex(0, &buffer);
+    } else {
+        hr = MFCreateSample(&sample);
+        if (SUCCEEDED(hr)) hr = MFCreateMemoryBuffer(bytes, &buffer);
+        if (SUCCEEDED(hr)) hr = sample->AddBuffer(buffer);
+    }
+    if (SUCCEEDED(hr)) {
+        // Copy row by row: the allocator's buffers may have a wider pitch than the picture.
+        IMF2DBuffer2* two_d = nullptr;
+        BYTE* data = nullptr;
+        BYTE* start = nullptr;
+        LONG pitch = (LONG)w;
+        DWORD length = 0;
+        bool locked_2d = SUCCEEDED(buffer->QueryInterface(IID_PPV_ARGS(&two_d))) &&
+                         SUCCEEDED(two_d->Lock2DSize(MF2DBuffer_LockFlags_Write, &data, &pitch, &start, &length));
+        if (!locked_2d) {
+            SafeRelease(two_d);
+            hr = buffer->Lock(&data, nullptr, nullptr);
+            pitch = (LONG)w;
+        }
+        if (SUCCEEDED(hr) && pitch > 0) {
+            Guard g(lock_);
+            if (frame_ && width_ == w && height_ == h) {
+                if (shared.Read(frame_, w, h, last_seq_)) {
+                    have_frame_ = true;
+                    last_new_ = GetTickCount64();
+                } else if (have_frame_ && GetTickCount64() - last_new_ > 2000) {
+                    Placeholder();  // SprigCast stopped sending (closed, or the camera was turned off)
+                    have_frame_ = false;
+                }
+                if ((UINT32)pitch == w) memcpy(data, frame_, bytes);
+                else {
+                    for (UINT32 row = 0; row < h; row++) memcpy(data + (size_t)row * pitch, frame_ + (size_t)row * w, w);
+                    BYTE* uv = data + (size_t)pitch * h;
+                    const BYTE* src = frame_ + (size_t)w * h;
+                    for (UINT32 row = 0; row < h / 2; row++) memcpy(uv + (size_t)row * pitch, src + (size_t)row * w, w);
+                }
+            }
+        }
+        if (locked_2d) { two_d->Unlock2D(); SafeRelease(two_d); }
+        else if (SUCCEEDED(hr)) buffer->Unlock();
+        if (SUCCEEDED(hr)) hr = buffer->SetCurrentLength(locked_2d ? length : bytes);
+    }
     if (SUCCEEDED(hr)) hr = sample->SetSampleTime(MFGetSystemTime());
     if (SUCCEEDED(hr)) hr = sample->SetSampleDuration(10000000LL / FPS);
     if (SUCCEEDED(hr) && token) hr = sample->SetUnknown(MFSampleExtension_Token, token);
@@ -560,7 +651,14 @@ STDMETHODIMP Stream::RequestSample(IUnknown* token) {
 
 class Activator : public IMFActivate {
 public:
-    Activator() { MFCreateAttributes(&attrs_, 1); InterlockedIncrement(&g_objects); }
+    Activator() { InterlockedIncrement(&g_objects); }
+    HRESULT Init() {
+        HRESULT hr = MFCreateAttributes(&attrs_, 4);
+        if (SUCCEEDED(hr)) hr = attrs_->SetUINT32(MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES, 1);
+        if (SUCCEEDED(hr)) hr = attrs_->SetGUID(MFT_TRANSFORM_CLSID_Attribute, CLSID_SprigCastCamera);
+        if (SUCCEEDED(hr)) hr = Source::Create(attrs_, &source_);
+        return hr;
+    }
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
@@ -582,17 +680,13 @@ public:
     STDMETHODIMP ActivateObject(REFIID riid, void** ppv) override {
         AcquireSRWLockExclusive(&lock_);
         HRESULT hr = S_OK;
-        if (!source_) hr = Source::Create(&source_);
+        if (!source_) hr = Source::Create(attrs_, &source_);
         if (SUCCEEDED(hr)) hr = source_->QueryInterface(riid, ppv);
         ReleaseSRWLockExclusive(&lock_);
         return hr;
     }
-    STDMETHODIMP ShutdownObject() override {
-        AcquireSRWLockExclusive(&lock_);
-        if (source_) { source_->Shutdown(); SafeRelease(source_); }
-        ReleaseSRWLockExclusive(&lock_);
-        return S_OK;
-    }
+    // The Frame Server shuts the source down itself; shutting it down here too broke Start (MF_E_SHUTDOWN).
+    STDMETHODIMP ShutdownObject() override { return S_OK; }
     STDMETHODIMP DetachObject() override {
         AcquireSRWLockExclusive(&lock_);
         SafeRelease(source_);
@@ -634,7 +728,7 @@ public:
 
 private:
     ~Activator() {
-        if (source_) { source_->Shutdown(); source_->Release(); }
+        SafeRelease(source_);
         SafeRelease(attrs_);
         InterlockedDecrement(&g_objects);
     }
@@ -658,7 +752,8 @@ public:
         if (outer) return CLASS_E_NOAGGREGATION;
         Activator* a = new (std::nothrow) Activator();
         if (!a) return E_OUTOFMEMORY;
-        HRESULT hr = a->QueryInterface(riid, ppv);
+        HRESULT hr = a->Init();
+        if (SUCCEEDED(hr)) hr = a->QueryInterface(riid, ppv);
         a->Release();
         return hr;
     }
@@ -714,28 +809,63 @@ STDAPI DllRegisterServer() { return Register(true); }
 STDAPI DllUnregisterServer() { return Register(false); }
 
 // Called by SprigCast itself (ctypes): add the camera for this session, or remove it.
+// The camera object lives in the multithreaded apartment, so both calls run on a short-lived MTA thread
+// whatever thread Python calls from (Qt's UI thread is single-threaded, which Media Foundation dislikes).
 static IMFVirtualCamera* g_camera = nullptr;
+static volatile LONG g_stage = 0;  // last step SC_Start reached: 1 startup, 2 create, 3 start, 4 running
+static CO_MTA_USAGE_COOKIE g_mta = nullptr;
 
-extern "C" __declspec(dllexport) HRESULT __stdcall SC_Start(const wchar_t* friendly_name) {
-    if (g_camera) return S_FALSE;
+struct Call { HRESULT (*fn)(const wchar_t*); const wchar_t* arg; HRESULT hr; };
+
+static DWORD WINAPI MtaThread(LPVOID p) {
+    Call* call = static_cast<Call*>(p);
     HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    call->hr = call->fn(call->arg);
+    if (SUCCEEDED(co)) CoUninitialize();
+    return 0;
+}
+
+static HRESULT OnMta(HRESULT (*fn)(const wchar_t*), const wchar_t* arg) {
+    Call call = {fn, arg, E_FAIL};
+    HANDLE t = CreateThread(nullptr, 0, MtaThread, &call, 0, nullptr);
+    if (!t) return HRESULT_FROM_WIN32(GetLastError());
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+    return call.hr;
+}
+
+static HRESULT StartCamera(const wchar_t* friendly_name) {
+    if (g_camera) return S_FALSE;
+    if (!g_mta && FAILED(CoIncrementMTAUsage(&g_mta))) g_mta = nullptr;  // keep the MTA alive between calls
+    g_stage = 1;
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
-    if (SUCCEEDED(hr))
+    if (SUCCEEDED(hr)) {
+        g_stage = 2;
         hr = MFCreateVirtualCamera(MFVirtualCameraType_SoftwareCameraSource, MFVirtualCameraLifetime_Session,
                                    MFVirtualCameraAccess_CurrentUser, friendly_name ? friendly_name : L"SprigCast Camera",
                                    CLSID_TEXT, nullptr, 0, &g_camera);
-    if (SUCCEEDED(hr)) hr = g_camera->Start(nullptr);
-    if (FAILED(hr) && g_camera) { g_camera->Shutdown(); SafeRelease(g_camera); }
-    if (SUCCEEDED(co) && FAILED(hr)) CoUninitialize();
+    }
+    if (SUCCEEDED(hr)) { g_stage = 3; hr = g_camera->Start(nullptr); }
+    if (SUCCEEDED(hr)) g_stage = 4;
+    if (FAILED(hr) && g_camera) { g_camera->Remove(); SafeRelease(g_camera); }
     return hr;
 }
 
-extern "C" __declspec(dllexport) HRESULT __stdcall SC_Stop() {
+static HRESULT StopCamera(const wchar_t*) {
     if (!g_camera) return S_FALSE;
-    g_camera->Remove();
-    g_camera->Shutdown();
+    // Remove only: Shutdown as well shuts the media source down twice and the camera lingers.
+    HRESULT hr = g_camera->Remove();
     SafeRelease(g_camera);
-    return S_OK;
+    g_stage = 0;
+    return hr;
 }
+
+extern "C" __declspec(dllexport) HRESULT __stdcall SC_Start(const wchar_t* friendly_name) {
+    return OnMta(StartCamera, friendly_name);
+}
+
+extern "C" __declspec(dllexport) HRESULT __stdcall SC_Stop() { return OnMta(StopCamera, nullptr); }
+
+extern "C" __declspec(dllexport) UINT32 __stdcall SC_Stage() { return (UINT32)g_stage; }
 
 extern "C" __declspec(dllexport) UINT32 __stdcall SC_Version() { return VERSION; }
