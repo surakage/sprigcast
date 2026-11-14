@@ -33,7 +33,8 @@ VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps);
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
 
-TRACK_TITLES = {"stream": "Stream", "recording": "Recording", "voice": "Voice", "clips": "Clips"}
+TRACK_TITLES = {"stream": "Stream", "recording": "Everything", "vod": "VOD-safe", "voice": "Voice", "clips": "Clips",
+                "track4": "Track 4", "track5": "Track 5"}
 
 _nvenc_ok: bool | None = None
 
@@ -513,6 +514,7 @@ class Recorder:
         self.encoder = encoder or self.default_encoder()
         self.tracks = tuple(tracks) or ("stream",)  # the mixer's named tracks, one audio track each in the file
         self._extra_audio: list = []  # audio streams for tracks[1:]
+        self.track_titles = dict(TRACK_TITLES)  # each audio track's name in the file (set before start())
         self.path = path
         self.width, self.height, self.fps = width, height, fps  # canvas size; fps of the output
         self.out_width, self.out_height = out_size or (width, height)  # encoded size (scaled if different)
@@ -715,7 +717,7 @@ class Recorder:
             audio.layout = "stereo"
             audio.bit_rate = self.encoder.audio_kbps * 1000
             if len(self.tracks) > 1:
-                audio.metadata["title"] = TRACK_TITLES.get(track, track.title())
+                audio.metadata["title"] = self.track_titles.get(track, track.title())
             streams.append(audio)
         self._extra_audio = streams[1:]
         return streams[0]

@@ -153,7 +153,7 @@ def test_recordings_carry_a_voice_track_and_clips_their_own_sound(tmp_path):
     feeder.join()
     replay.stop()
     assert rec.errors == []
-    assert _audio_tracks(rec.paths[0]) == [("Recording", 0.5), ("Voice", 0.25)]
+    assert _audio_tracks(rec.paths[0]) == [("Everything", 0.5), ("Voice", 0.25)]
     assert _audio_tracks(clip) == [("", 0.12)]
 
 
