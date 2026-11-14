@@ -541,8 +541,8 @@ class LiveStage(QWidget):
         self.setStyleSheet(f"#liveStage {{ background: {theme.CHROME}; }}")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         root = QHBoxLayout(self)
-        root.setContentsMargins(24, 12, 24, 20)
-        root.setSpacing(24)
+        root.setContentsMargins(GAP, 8, GAP, GAP)  # one gap size around and between every card
+        root.setSpacing(GAP)
         left = QVBoxLayout()
         left.setSpacing(GAP)
         self.card = StageCard()
