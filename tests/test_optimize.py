@@ -101,6 +101,15 @@ def test_new_checks_and_rules_can_be_added():
         optimize.RULES.remove(rule)
 
 
+def test_room_grows_with_the_stage():
+    c = _collection()
+    p = optimize.PcProfile(**STRONG, upload_kbps=18400)
+    rooms = [optimize.room(p, c, step) for _, step in optimize.STAGES]
+    assert rooms[0][0] < rooms[-1][0] and rooms[0][1] < rooms[-1][1]
+    assert rooms[-1][0] <= 60 and rooms[-1][1] <= 60  # the suggestion for a strong PC sits in the green
+    assert optimize.room(optimize.PcProfile(**STRONG), c, (1080, 60))[1] is None  # upload untested
+
+
 def test_upload_speed_uses_the_big_blocks():
     import time as t
 
@@ -143,10 +152,15 @@ def test_wizard_runs_checks_and_applies_ticked_changes(monkeypatch):
     w.upload.setValue(6.0)  # retyped: the suggestions follow
     assert any("2000 kbps" in w.change_list.item(i).text() for i in range(w.change_list.count()))
     w.change_list.item(0).setCheckState(Qt.CheckState.Unchecked)
-    assert w.plan.recommended == (720, 30) and w.quality.currentData() == (720, 30)
-    w.quality.setCurrentIndex(0)  # 1080p60 picked by hand: every stream follows, TikTok keeps its limit
+    assert w.plan.recommended == (720, 30)
+    assert [b.isChecked() for b in w.stages] == [False, True, False, False, False]  # Sprout
+    assert "Sprout" in w.stage_title.text() and w.upload_gauge.pct is not None
+    w.stages[-1].click()  # Bloom picked by hand: every stream follows, TikTok keeps its limit
     assert w.plan.quality == (1080, 60) and any("dropped frames" in n for n in w.plan.notes)
-    assert "TikTok: 720p · 30 fps (its limit)" in w.follows.text()
+    assert w.stages[-1].isChecked() and "YOU PICKED" in w.grow_label.text()
+    chips = [w.chips.itemAt(i).widget().text() for i in range(w.chips.count()) if w.chips.itemAt(i).widget()]
+    assert any("TikTok · 720p30, its limit" in t for t in chips)
+    assert w.upload_gauge.pct > 85  # 6 Mbps can't carry it: the gauge goes red
     assert any("Twitch: 1920×1080, 60 fps, 6000 kbps" in w.change_list.item(i).text()
                for i in range(w.change_list.count()))
     w.change_list.item(0).setCheckState(Qt.CheckState.Unchecked)

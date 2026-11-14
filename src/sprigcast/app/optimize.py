@@ -546,3 +546,67 @@ def site_limits(p: PcProfile, c: SceneCollection, quality: tuple[int, int]) -> l
         if step != quality:
             lines.append(f"{service.label}: {step_text(step)} (its limit)")
     return list(dict.fromkeys(lines))
+
+
+# Stages and room -------------------------------------------------------------------------------
+
+# Quality steps by name, lightest first, for the wizard's Seed-to-Bloom row.
+STAGES: list[tuple[str, tuple[int, int]]] = [
+    ("Seed", (480, 30)), ("Sprout", (720, 30)), ("Leaf", (1080, 30)), ("Sprig", (720, 60)), ("Bloom", (1080, 60)),
+]
+STAGE_NAME = {step: name for name, step in STAGES}
+# Graphics-card encoders: how many pixels a second count as "full", leaving room for a game. An estimate
+# from the soak tests (stream, recording and replay at 1080p60 on NVENC used a small share of the chip).
+_PX_1080P60 = 1920 * 1080 * 60
+_PX_720P30 = 1280 * 720 * 30
+HW_ROOM = 6 * _PX_1080P60
+HW_ROOM_WEAK = 3 * _PX_720P30
+
+
+def _px(step: tuple[int, int]) -> float:
+    short, fps = step
+    return short * short * 16 / 9 * fps
+
+
+def stream_steps(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> list[tuple[object, tuple[int, int], int]]:
+    """Each stream at `step` (or its site's limit): (output, its step, kbps), ignoring the upload."""
+    from sprigcast.output.stream import SERVICES
+
+    if not p.wants_stream:
+        return []
+    canvases = {cv.id: cv for cv in c.canvases}
+    t = Target(step, "p5", False)
+    out = []
+    for o in _stream_outputs(c):
+        if o.canvas not in canvases:
+            continue
+        service = SERVICES.get(o.service or "custom", SERVICES["custom"])
+        own = _best_step(t, service, canvases[o.canvas], float("inf"))
+        ideal = STEP_KBPS[own]
+        if own == _best_step(Target(LADDER[0], "p5", False), service, canvases[o.canvas], float("inf")):
+            ideal = max(ideal, service.kbps)
+        out.append((o, own, int(min(ideal, service.max_kbps))))
+    return out
+
+
+def room(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> tuple[int, int | None]:
+    """How full this quality makes the PC and the upload, in percent (upload None when untested).
+
+    100% on the PC means the most SprigCast should take next to a game: on x264 the CPU share the
+    wizard allows, on a graphics-card encoder an estimate of its pixel rate.
+    """
+    steps = [s for _, s, _ in stream_steps(p, c, step)]
+    if p.wants_record:
+        steps += [step] * sum(1 for cv in c.canvases if cv.enabled and cv.id in c.recording.canvases)
+    if p.hardware:
+        full = HW_ROOM_WEAK if p.weak_reasons else HW_ROOM
+        pc = sum(_px(s) for s in steps) / full
+    else:
+        weak = bool(p.weak_reasons)
+        ms = (p.x264_ms_720 or 12.0) * (0.7 if weak else 1.0)
+        pc = sum(_cpu_cost(ms, s) for s in steps) / (CPU_BUDGET_WEAK if weak else CPU_BUDGET)
+    upload = None
+    if p.upload_kbps and p.wants_stream:
+        sent = sum(k + c.stream_encoder.audio_kbps for _, _, k in stream_steps(p, c, step))
+        upload = round(100 * sent / p.upload_kbps)
+    return round(100 * pc), upload
