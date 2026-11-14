@@ -110,6 +110,22 @@ class EncoderForm(QGroupBox):
             form.addRow("", _hint("Multipass is NVIDIA-only and is ignored with this encoder."))
         self.rate_control.currentIndexChanged.connect(self._rate_changed)
         self._rate_changed()
+        # The fine controls fold away: most people only ever touch rate control and audio.
+        self._form = form
+        self._advanced = [self.keyint, self.preset, self.tuning, self.multipass, self.profile, self.lookahead,
+                          self.adaptive_quant, self.b_frames]
+        self.more = QPushButton("Show advanced")
+        self.more.setCheckable(True)
+        self.more.setStyleSheet(theme.LINK_STYLE)
+        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more.toggled.connect(self.show_advanced)
+        form.addRow("", self.more)
+        self.show_advanced(False)
+
+    def show_advanced(self, on: bool) -> None:
+        for widget in self._advanced:
+            self._form.setRowVisible(widget, on)
+        self.more.setText("Hide advanced" if on else "Show advanced  ·  preset, keyframes, B-frames…")
 
     def _rate_changed(self) -> None:
         cqp = self.rate_control.currentData() == "cqp"
