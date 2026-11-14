@@ -9,14 +9,13 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QSettings, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QColor,
     QCursor,
     QDesktopServices,
-    QFont,
     QGuiApplication,
     QIcon,
     QKeySequence,
@@ -52,7 +51,6 @@ from PySide6.QtWidgets import (
     QTabBar,
     QToolBar,
     QToolButton,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -78,11 +76,24 @@ from sprigcast.app.build_stage import (
     ROLE_NAME,
     ROLE_SPRIG,
     ROLE_TAG,
-    BloomBar,
-    BloomPill,
+    BuildBar,
     BuildStage,
     InsideList,
 )
+from sprigcast.app.library import (
+    PART_ROOT,
+    ROLE_COLOUR,
+    ROLE_FOLDER,
+    ROLE_ID,
+    ROLE_ON_AIR,
+    ROLE_ROW,
+    ROLE_THUMB,
+    Library,
+    LibraryTree,
+    heading_item,
+)
+from sprigcast.app.library import ROLE_NAME as LIB_NAME
+from sprigcast.app.library import ROLE_TAG as LIB_TAG
 from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.live_stage import Destination, LiveSide, LiveStage
 from sprigcast.app.palette import Command, CommandPalette
@@ -130,28 +141,10 @@ from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
-ROLE_ID = Qt.ItemDataRole.UserRole
-ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1  # a folder row in the Scenes list
 BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
 FOLDER_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
 
 
-class SceneTree(QTreeWidget):
-    """The Scenes list. Blooms can be dragged to reorder them or into and out of folders;
-    after a drop, `dropped` fires and the main window reads the new order back from the rows."""
-
-    dropped = Signal()
-
-    def __init__(self):
-        super().__init__()
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setDropIndicatorShown(True)
-        self.invisibleRootItem().setFlags(Qt.ItemFlag.ItemIsEnabled)  # nothing lands at the very top level
-
-    def dropEvent(self, event) -> None:  # noqa: N802 (Qt naming)
-        super().dropEvent(event)
-        self.dropped.emit()
 COLOUR_NAMES = dict(zip(FOLDER_COLOURS, ("Pink", "Green", "Blue", "Yellow", "Orange", "Purple"), strict=True))
 
 
@@ -232,6 +225,7 @@ class MainWindow(QMainWindow):
         self.plugins_dir = plugins_dir
         self.plugin_report = None  # set by main.run() after loading plugins
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
+        self.last_bloom_id: str | None = self.selected_scene_id  # where a sprig's ← Back goes
         # A part being edited in place inside a show: canvas id, show id, placement source id, layout id.
         self.in_place: tuple[str, str, str, str] | None = None
         self._updating = False  # True while we fill widgets, so their signals do not echo back
@@ -292,7 +286,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         header.setContentsMargins(8, 4, 8, 0)
         self.part_path = QLabel()
-        self.part_path.setStyleSheet("font-weight: bold")
+        self.part_path.setStyleSheet(f"color: {theme.MUTED};")
         header.addWidget(self.part_path, 1)
         # One button per canvas shape: switch to that layout, or make it ("+ Vertical layout").
         self.shape_buttons: dict[str, QPushButton] = {}
@@ -310,11 +304,20 @@ class MainWindow(QMainWindow):
         states.setToolTip(f"Looks for this {PART} that you switch between in Live, like “Alert showing”")
         states.clicked.connect(lambda: self._scene() is not None and self._edit_states(self._scene().id))
         header.addWidget(states)
-        done = QPushButton("Done")
-        done.setToolTip("Back to the canvases")
-        done.clicked.connect(self._close_part)
-        header.addWidget(done)
+        self.part_back = QPushButton("← Back")
+        self.part_back.setToolTip(f"Back to the {SHOW} you came from")
+        self.part_back.clicked.connect(self._close_part)
+        header.insertWidget(0, self.part_back)
+        for button in (self.part_back, *self.shape_buttons.values(), self.remove_shape_button, states):
+            button.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton:checked {{ background: {theme.SELECT_BG};"
+                                 f" color: {theme.SELECT_TEXT}; }}")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         part_layout.addLayout(header)
+        # Nesting, said plainly: what you change here changes in every bloom that uses this sprig.
+        self.part_uses_note = QLabel()
+        self.part_uses_note.setWordWrap(True)
+        self.part_uses_note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 14px; margin: 4px 8px 0 8px;")
+        part_layout.addWidget(self.part_uses_note)
         self.part_empty = QLabel(
             f"Empty {PART}: add sources with Sources → +, or right-click sources in {a(SHOW)} → Turn into {a(PART)}."
         )
@@ -378,8 +381,11 @@ class MainWindow(QMainWindow):
         self.new_menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
         self.new_menu.addAction("New folder…").triggered.connect(lambda: self._add_folder())
         self.new_menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
-        self.bloom_bar = BloomBar(self._pick_bloom, self.new_menu)
-        self.build_stage = BuildStage(self.bloom_bar)
+        self.new_menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
+        self.scene_tree = LibraryTree()  # every bloom and sprig, on Build's left (app/library.py)
+        self.library = Library(self.scene_tree)
+        self.build_bar = BuildBar()
+        self.build_stage = BuildStage(self.library, self.build_bar)
         self.build_stage.card_slot.addWidget(self.center)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
@@ -452,9 +458,9 @@ class MainWindow(QMainWindow):
     # Building the UI ------------------------------------------------------
 
     def _build_scenes_dock(self) -> None:
-        self.scene_tree = SceneTree()
         self.scene_tree.dropped.connect(lambda: QTimer.singleShot(0, self._scenes_dropped))
-        self.scene_tree.setHeaderHidden(True)
+        self.scene_tree.delegate.plus_clicked.connect(self._library_plus)
+        self.library.search.textChanged.connect(lambda _text: self._refresh_scenes())
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
         self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -481,7 +487,18 @@ class MainWindow(QMainWindow):
         self.link_button.setMenu(self.link_menu)
         self.link_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         bar.layout().insertWidget(bar.layout().count() - 1, self.link_button)
-        self._dock("Scenes", self.scene_tree, bar)
+        self.panels.shelve(bar)  # the list itself is Build's left rail; its old buttons stay off screen
+
+    def _library_plus(self, key: str) -> None:
+        """The round + beside Blooms or Sprigs."""
+        menu = QMenu(self)
+        if key == PART_ROOT:
+            menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
+            menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
+        else:
+            menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
+            menu.addAction(f"New {SHOW} folder…").triggered.connect(lambda: self._add_folder())
+        menu.exec(QCursor.pos())
 
     def _build_chat_panel(self) -> None:
         """Chat on Live: your Twitch, YouTube and Kick chats mixed, or any chat link, in this one panel."""
@@ -798,26 +815,31 @@ class MainWindow(QMainWindow):
                 states = menu.addAction("Live states…" + (f"  ({len(part.states)})" if part.states else ""))
                 states.setToolTip(f"Looks for this {PART} that you switch between in Live, like “Alert showing”")
                 states.triggered.connect(lambda _=False, pid=part.id: self._edit_states(pid))
+                self._fill_move_menu(menu.addMenu("Move to folder"), part)
                 menu.addSeparator()
             menu.addAction("Rename…").triggered.connect(self._rename_scene)
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
-        menu.addAction(f"New {SHOW}…").triggered.connect(self._add_scene)
-        menu.addAction("New folder…").triggered.connect(self._add_folder)
-        menu.addAction(f"New {PART}…").triggered.connect(self._add_part)
+        menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
+        menu.addAction(f"New {SHOW} folder…").triggered.connect(lambda: self._add_folder())
+        menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
+        menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
 
     # Folders -------------------------------------------------------------------------
 
     def _folder_menu(self, menu: QMenu, folder) -> None:
-        menu.addAction(f"New {SHOW} in “{folder.name}”…").triggered.connect(
-            lambda: (setattr(self, "selected_folder_id", folder.id), self._add_scene()))
+        sprigs = folder.holds == "part"
+        add = self._add_part if sprigs else self._add_scene
+        menu.addAction(f"New {PART if sprigs else SHOW} in “{folder.name}”…").triggered.connect(
+            lambda: (setattr(self, "selected_folder_id", folder.id), add()))
         menu.addSeparator()
-        live = menu.addAction("Show in Live")
-        live.setCheckable(True)
-        live.setChecked(folder.live)
-        live.setToolTip(f"Its {SHOWS} become the buttons in Live mode")
-        live.toggled.connect(lambda on: self._set_folder_live(folder.id, on))
+        if not sprigs:
+            live = menu.addAction("Show in Live")
+            live.setCheckable(True)
+            live.setChecked(folder.live)
+            live.setToolTip(f"Its {SHOWS} become the buttons in Live mode")
+            live.toggled.connect(lambda on: self._set_folder_live(folder.id, on))
         menu.addAction("Rename folder…").triggered.connect(lambda: self._rename_folder(folder.id))
         colours = menu.addMenu("Colour")
         for colour in FOLDER_COLOURS:
@@ -826,14 +848,14 @@ class MainWindow(QMainWindow):
             action.setChecked(folder.colour == colour)
             action.triggered.connect(lambda _=False, c=colour: self._recolour_folder(folder.id, c))
         menu.addSeparator()
-        menu.addAction(f"Remove folder (keeps its {SHOWS})").triggered.connect(lambda: self._remove_folder(folder.id))
+        menu.addAction(f"Remove folder (keeps its {PARTS if sprigs else SHOWS})").triggered.connect(lambda: self._remove_folder(folder.id))
 
     def _fill_move_menu(self, menu: QMenu, scene: Scene) -> None:
         loose = menu.addAction("No folder")
         loose.setCheckable(True)
         loose.setChecked(scene.folder is None)
         loose.triggered.connect(lambda: self._move_to_folder(scene.id, None))
-        folders = self.collection.folders_for(scene.canvas)
+        folders = self.collection.part_folders() if scene.kind == "part" else self.collection.folders_for(scene.canvas)
         if folders:
             menu.addSeparator()
         for folder in folders:
@@ -842,13 +864,15 @@ class MainWindow(QMainWindow):
             action.setChecked(scene.folder == folder.id)
             action.triggered.connect(lambda _=False, fid=folder.id: self._move_to_folder(scene.id, fid))
         menu.addSeparator()
-        menu.addAction("New folder…").triggered.connect(lambda: self._add_folder(move=scene.id))
+        menu.addAction("New folder…").triggered.connect(lambda: self._add_folder(move=scene.id, holds=scene.kind))
 
-    def _add_folder(self, move: str | None = None) -> None:
-        name, ok = QInputDialog.getText(self, "New folder", f"Folder name (e.g. Main {cap(SHOWS)}):")
+    def _add_folder(self, move: str | None = None, holds: str = "show") -> None:
+        example = "Browser Scenes" if holds == "part" else f"Main {cap(SHOWS)}"
+        title = f"New {PART} folder" if holds == "part" else "New folder"
+        name, ok = QInputDialog.getText(self, title, f"Folder name (e.g. {example}):")
         if not ok or not name.strip():
             return
-        folder = self.collection.add_folder(self.build_canvas, name.strip())
+        folder = self.collection.add_folder(self.build_canvas, name.strip(), holds=holds)
         self.selected_folder_id = folder.id
         if move is not None:
             self.collection.scene(move).folder = folder.id
@@ -904,30 +928,41 @@ class MainWindow(QMainWindow):
         self._refresh_scenes()
 
     def _scenes_dropped(self) -> None:
-        """Read the order and folders back from the Scenes list after a drag. Anything odd is undone."""
-        top = next((self.scene_tree.topLevelItem(i) for i in range(self.scene_tree.topLevelItemCount())
-                    if self.scene_tree.topLevelItem(i).data(0, ROLE_FOLDER) == ""), None)
-        placed: list[tuple[str, str | None]] = []
-        if top is not None:
+        """Read the order and folders back from the library after a drag. Anything odd is undone."""
+        def read(heading_key: str) -> list[tuple[str, str | None]]:
+            top = next((self.scene_tree.topLevelItem(i) for i in range(self.scene_tree.topLevelItemCount())
+                        if self.scene_tree.topLevelItem(i).data(0, ROLE_FOLDER) == heading_key), None)
+            placed: list[tuple[str, str | None]] = []
+            if top is None:
+                return placed
             for i in range(top.childCount()):
                 row = top.child(i)
                 if row.data(0, ROLE_ID):
+                    if row.childCount():
+                        return []  # dropped onto a bloom or sprig
                     placed.append((row.data(0, ROLE_ID), None))
                 elif row.data(0, ROLE_FOLDER):
                     folder_id = row.data(0, ROLE_FOLDER)
                     for j in range(row.childCount()):
-                        if row.child(j).data(0, ROLE_ID) and not row.child(j).childCount():
-                            placed.append((row.child(j).data(0, ROLE_ID), folder_id))
-        shows = self.collection.scenes_for(self.build_canvas)
-        if sorted(sid for sid, _ in placed) != sorted(s.id for s in shows):
-            self._refresh_scenes()  # dropped somewhere it can't go (onto a bloom, into Sprigs): put it back
+                        child = row.child(j)
+                        if not child.data(0, ROLE_ID) or child.childCount():
+                            return []  # a folder in a folder, or something dropped onto a row
+                        placed.append((child.data(0, ROLE_ID), folder_id))
+            return placed
+
+        shows, parts = self.collection.scenes_for(self.build_canvas), self.collection.parts()
+        placed_shows, placed_parts = read(""), read(PART_ROOT)
+        if (sorted(sid for sid, _ in placed_shows) != sorted(s.id for s in shows)
+                or sorted(pid for pid, _ in placed_parts) != sorted(p.id for p in parts)):
+            self._refresh_scenes()  # dropped somewhere it can't go (a bloom among sprigs, onto a row): put it back
             return
-        slots = [i for i, s in enumerate(self.collection.scenes) if s in shows]
-        by_id = {s.id: s for s in shows}
-        for slot, (scene_id, folder_id) in zip(slots, placed, strict=True):
-            scene = by_id[scene_id]
-            scene.folder = folder_id
-            self.collection.scenes[slot] = scene
+        for group, placed in ((shows, placed_shows), (parts, placed_parts)):
+            slots = [i for i, s in enumerate(self.collection.scenes) if s in group]
+            by_id = {s.id: s for s in group}
+            for slot, (scene_id, folder_id) in zip(slots, placed, strict=True):
+                scene = by_id[scene_id]
+                scene.folder = folder_id
+                self.collection.scenes[slot] = scene
         self._changed()
         self._refresh_scenes()
         self.live_panel.show_scenes(self.collection)
@@ -1094,21 +1129,16 @@ class MainWindow(QMainWindow):
         right.addWidget(scroll, 1)
 
     def _fill_bloom_tools(self) -> None:
-        """Right of the bloom pills: Sprigs (open a reusable piece), Link (vertical blooms) and Safe zones."""
+        """Above the canvas, on the right: Put on air, Link (vertical blooms) and Safe zones."""
         style = theme.SMALL_PILL_STYLE
-        sprigs = QPushButton(f"{PART_MARK} {cap(PARTS)}")
-        sprigs.setToolTip(f"Open {a(PART)} to edit it: it updates in every {SHOW} that uses it")
-        sprig_menu = QMenu(self)
-        sprig_menu.aboutToShow.connect(lambda: self._fill_sprig_menu(sprig_menu))
-        sprigs.setMenu(sprig_menu)
         self.link_button.setText("⇄ Link")
         self.on_air_button = QPushButton("▶ Put on air")
         self.on_air_button.setToolTip("Show this bloom on its canvas now (and the blooms linked to it)")
         self.on_air_button.clicked.connect(self._put_on_air)
-        for button in (self.on_air_button, sprigs, self.link_button, self.safe_zone_button):
+        for button in (self.on_air_button, self.link_button, self.safe_zone_button):
             button.setStyleSheet(style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.bloom_bar.tools.addWidget(button)
+            self.build_bar.tools.addWidget(button)
 
     def _shape_states(self, item: SceneItem | None) -> dict[str, str]:
         """For the inspector: is the selected thing in each shape's bloom right now?"""
@@ -2048,82 +2078,99 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._fit_tiles)
 
     def _refresh_scenes(self) -> None:
+        """Build's left rail: Blooms (this shape's, by folder), then Sprigs (by folder)."""
         self._updating = True
         self.scene_tree.clear()
-        bold = QFont()
-        bold.setBold(True)
-        for canvas in self.collection.canvases:
-            if canvas.id != self.build_canvas:
-                continue  # the other shape has its own tab
-            parent = QTreeWidgetItem([f"{cap(SHOWS)}  ·  {canvas.id}"])
-            parent.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
-            parent.setData(0, ROLE_FOLDER, "")  # the canvas's own list: blooms dropped here have no folder
-            self.scene_tree.addTopLevelItem(parent)
-            active = self.collection.active_scenes.get(canvas.id)
-            folder_items = []
-            for folder, scenes in self.collection.grouped_scenes(canvas.id):
-                holder = parent
-                if folder is not None:
-                    holder = QTreeWidgetItem([f"{folder.name}   ({len(scenes)})" + ("   · Live" if folder.live else "")])
-                    holder.setData(0, ROLE_FOLDER, folder.id)
-                    holder.setFlags(FOLDER_FLAGS)
-                    holder.setIcon(0, _dot(folder.colour, 14))
-                    holder.setFont(0, bold)
-                    holder.setToolTip(0, f"Folder: right-click to rename, recolour or remove. {cap(SHOWS)} move in "
-                                         "with right-click → Move to folder.")
-                    parent.addChild(holder)
-                    folder_items.append((holder, folder))
-                    if folder.id == self.selected_folder_id and self.selected_scene_id is None:
-                        holder.setSelected(True)
-                for scene in scenes:
-                    label = scene.name + self._link_label(scene)
-                    child = QTreeWidgetItem([label])
-                    child.setData(0, ROLE_ID, scene.id)
-                    child.setFlags(BLOOM_FLAGS)
-                    if folder is not None:
-                        child.setIcon(0, _dot(folder.colour))
-                    if scene.id == active:
-                        child.setFont(0, bold)
-                        child.setText(0, "▶ " + label)
-                    holder.addChild(child)
-                    if scene.id == self.selected_scene_id:
-                        child.setSelected(True)
-            parent.setExpanded(True)
-            for holder, folder in folder_items:
-                holder.setExpanded(not folder.collapsed)
-        parts = self.collection.parts()
-        if parts:
-            group = QTreeWidgetItem([f"{cap(PARTS)}  (reusable pieces for {SHOWS})"])
-            group.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            self.scene_tree.addTopLevelItem(group)
-            selected = self.collection.scene(self.selected_scene_id) if self.selected_scene_id in {
-                s.id for s in self.collection.scenes} else None
-            selected_part = self.collection.main_part(selected) if selected is not None else None
+        canvas_id = self.build_canvas
+        searching = bool(self.library.search.text().strip())
+        thumbs = self.live_panel.thumbs
+        active = self.collection.active_scenes.get(canvas_id)
+        folder_items: list[tuple[QTreeWidgetItem, object]] = []
+
+        def folder_row(holder: QTreeWidgetItem, folder, count: int) -> QTreeWidgetItem:
+            row = QTreeWidgetItem([f"{folder.name}   ({count})" + ("   · Live" if folder.live else "")])
+            row.setData(0, ROLE_ROW, "folder")
+            row.setData(0, ROLE_FOLDER, folder.id)
+            row.setData(0, LIB_NAME, folder.name)
+            row.setData(0, LIB_TAG, "on Live" if folder.live else str(count))
+            row.setData(0, ROLE_COLOUR, folder.colour)
+            row.setFlags(FOLDER_FLAGS)
+            row.setToolTip(0, "Folder: click to open or fold it, drag things in, right-click to rename, "
+                              "recolour or remove.")
+            holder.addChild(row)
+            folder_items.append((row, folder))
+            if folder.id == self.selected_folder_id and self.selected_scene_id is None:
+                row.setSelected(True)
+            return row
+
+        blooms = heading_item(cap(SHOWS), "your scenes", "")
+        blooms.setToolTip(0, f"{cap(SHOWS)} are the scenes you put on air. + adds one, or a folder.")
+        self.scene_tree.addTopLevelItem(blooms)
+        for folder, scenes in self.collection.grouped_scenes(canvas_id):
+            holder = blooms if folder is None else folder_row(blooms, folder, len(scenes))
+            for scene in scenes:
+                label = scene.name + self._link_label(scene)
+                child = QTreeWidgetItem([("▶ " if scene.id == active else "") + label])
+                child.setData(0, ROLE_ID, scene.id)
+                child.setData(0, ROLE_ROW, "bloom")
+                child.setData(0, LIB_NAME, scene.name)
+                child.setData(0, LIB_TAG, self._link_label(scene).strip())
+                child.setData(0, ROLE_COLOUR, folder.colour if folder is not None else None)
+                child.setData(0, ROLE_ON_AIR, scene.id == active)
+                child.setData(0, ROLE_THUMB, thumbs.get(scene.id))
+                child.setFlags(BLOOM_FLAGS)
+                child.setToolTip(0, f"{scene.name}: click to edit it" + ("  ·  on air" if scene.id == active else ""))
+                holder.addChild(child)
+                if scene.id == self.selected_scene_id:
+                    child.setSelected(True)
+        blooms.setExpanded(True)
+
+        sprigs = heading_item(cap(PARTS), "scenes you reuse", PART_ROOT)
+        sprigs.setToolTip(0, f"{cap(PARTS)} are scenes you build once and put inside {SHOWS} (nested scenes). "
+                             f"Change one and every {SHOW} using it changes too.")
+        self.scene_tree.addTopLevelItem(sprigs)
+        selected = self._scene()
+        selected_part = self.collection.main_part(selected) if selected is not None and selected.kind == "part" else None
+        for folder, parts in self.collection.grouped_parts():
+            holder = sprigs if folder is None else folder_row(sprigs, folder, len(parts))
             for part in parts:
                 uses = len(self.collection.part_uses(part.id))
                 shapes = " + ".join(s.canvas for s in self.collection.shapes(part))
                 child = QTreeWidgetItem([f"{PART_MARK} {part.name}   ({shapes} · used in {uses})"])
                 child.setData(0, ROLE_ID, part.id)
-                child.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-                child.setToolTip(0, f"{cap(a(PART))}: add it to {SHOWS} with Sources → + → {cap(PART)}. Select it to edit it.")
-                group.addChild(child)
+                child.setData(0, ROLE_ROW, "sprig")
+                child.setData(0, LIB_NAME, part.name)
+                child.setData(0, LIB_TAG, f"in {uses}" if uses else "unused")
+                child.setFlags(BLOOM_FLAGS)
+                child.setToolTip(0, f"{cap(a(PART))} ({shapes}), in {uses} {SHOW if uses == 1 else SHOWS}. Click to "
+                                    f"edit it: every {SHOW} using it changes too.")
+                holder.addChild(child)
                 if part is selected_part:
                     child.setSelected(True)
-            group.setExpanded(True)
+        sprigs.setExpanded(True)
+        for holder, folder in folder_items:
+            holder.setExpanded(searching or not folder.collapsed)
+        self.library.apply_filter()
         self._updating = False
         self.live_panel.show_scenes(self.collection)
-        self._refresh_bloom_bar()
+        self._refresh_build_bar()
 
-    def _refresh_bloom_bar(self) -> None:
+    def _refresh_build_bar(self) -> None:
+        """Above the canvas: the bloom you're editing and whether it's on air; Inside's heading names it too."""
         active = self.collection.active_scenes.get(self.build_canvas)
         selected = self._scene()
         selected_show = selected.id if selected is not None and selected.kind == "show" else None
-        pills = []
-        for folder, scenes in self.collection.grouped_scenes(self.build_canvas):
-            for scene in scenes:
-                pills.append(BloomPill(scene.id, scene.name, folder.colour if folder is not None else None,
-                                       scene.id == selected_show, scene.id == active))
-        self.bloom_bar.show_blooms(pills, self.live_panel.thumbs)
+        if selected is None:
+            self.build_bar.show_place("", f"Pick {a(SHOW)} or {a(PART)} on the left")
+            self.build_stage.inside_note.setText("")
+        elif selected.kind == "part":
+            main = self.collection.main_part(selected)
+            uses = len(self.collection.part_uses(main.id))
+            self.build_bar.show_place(main.name, f"{PART}  ·  in {uses} {SHOW if uses == 1 else SHOWS}", sprig=True)
+            self.build_stage.inside_note.setText(f"{PART_MARK} {main.name}")
+        else:
+            self.build_bar.show_place(selected.name, "on air" if selected.id == active else "not on air")
+            self.build_stage.inside_note.setText(selected.name)
         if hasattr(self, "on_air_button"):
             self.on_air_button.setVisible(selected_show is not None and selected_show != active)
 
@@ -2131,6 +2178,7 @@ class MainWindow(QMainWindow):
         """A bloom pill: edit that bloom. It goes on air only with "Put on air" (or from Live)."""
         self.selected_scene_id = scene_id
         self.selected_folder_id = self.collection.scene(scene_id).folder
+        self.last_bloom_id = scene_id
         if self.in_place is not None:
             self._exit_in_place()
         self._refresh_scenes()
@@ -2145,21 +2193,6 @@ class MainWindow(QMainWindow):
                 return
         self._make_active()
         self._refresh_sources()
-
-    def _pick_sprig(self, part_id: str) -> None:
-        self.selected_scene_id = part_id
-        self._refresh_scenes()
-        self._refresh_sources()
-        self._show_part_editor()
-
-    def _fill_sprig_menu(self, menu: QMenu) -> None:
-        menu.clear()
-        parts = self.collection.parts()
-        for part in parts:
-            menu.addAction(f"{PART_MARK} {part.name}").triggered.connect(lambda _=False, pid=part.id: self._pick_sprig(pid))
-        if parts:
-            menu.addSeparator()
-        menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
 
     def _swap_shape(self, canvas_id: str) -> None:
         """The twin was clicked: edit that shape instead (the old one becomes the twin)."""
@@ -2519,7 +2552,9 @@ class MainWindow(QMainWindow):
             self.selected_folder_id = folder_id  # new blooms go in here
         if scene_id:
             scene = self.collection.scene(scene_id)
-            self.selected_folder_id = scene.folder if scene.kind == "show" else None
+            self.selected_folder_id = self.collection.main_part(scene).folder if scene.kind == "part" else scene.folder
+            if scene.kind == "show":
+                self.last_bloom_id = scene.id
             if self.in_place is not None:
                 self.in_place = None
                 self.engine.editing_part = None
@@ -2575,7 +2610,10 @@ class MainWindow(QMainWindow):
         if answer is None:
             return
         name, canvas_id, add_to_show = answer
-        part = Scene(id=self.collection.new_id("part"), name=name, canvas=canvas_id, kind="part")
+        folder = self.selected_folder_id
+        if folder is not None and all(f.id != folder for f in self.collection.part_folders()):
+            folder = None
+        part = Scene(id=self.collection.new_id("part"), name=name, canvas=canvas_id, kind="part", folder=folder)
         self.collection.scenes.append(part)
         if add_to_show and show is not None:
             self._add_part_source(part.id, show.id)
@@ -2700,10 +2738,15 @@ class MainWindow(QMainWindow):
         canvas = self.collection.canvas(scene.canvas)
         main = self.collection.main_part(scene)
         uses = self.collection.part_uses(main.id)
-        self.part_path.setText(
-            f"{PART_MARK} {scene.name}   ·   {scene.canvas.capitalize()} {canvas.width}×{canvas.height}   ·   "
-            + (f"in {', '.join(s.name for s in uses)}" if uses else f"not in any {SHOW} yet")
-        )
+        self.part_path.setText(f"{scene.canvas.capitalize()} {canvas.width}×{canvas.height}")
+        names = ", ".join(s.name for s in uses)
+        self.part_uses_note.setText(
+            f"{PART_MARK} This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
+            "What you change here changes in all of them." if uses else
+            f"{PART_MARK} This {PART} isn't in any {SHOW} yet. Put it in one with Inside → + Add → {cap(PART)}.")
+        back = getattr(self, "last_bloom_id", None)
+        back_scene = next((s for s in self.collection.scenes if s.id == back and s.kind == "show"), None)
+        self.part_back.setText(f"← {back_scene.name}" if back_scene else "← Back")
         shapes = {s.canvas: s for s in self.collection.shapes(main)}
         for canvas_id, button in self.shape_buttons.items():
             has = canvas_id in shapes
@@ -2851,8 +2894,12 @@ class MainWindow(QMainWindow):
         self._refresh_previews()
 
     def _close_part(self) -> None:
+        """Back to the bloom you came from (or the one on air)."""
         canvas_id = self.collection.canvases[0].id
-        self.selected_scene_id = self.collection.active_scenes.get(canvas_id)
+        back = getattr(self, "last_bloom_id", None)
+        if back not in {s.id for s in self.collection.scenes if s.kind == "show"}:
+            back = self.collection.active_scenes.get(canvas_id)
+        self.selected_scene_id = back
         self._refresh_scenes()
         self._refresh_sources()
         self._show_part_editor()

@@ -114,7 +114,7 @@ class Scene(BaseModel):
     kind: Literal["show", "part"] = "show"
     linked_to: str | None = None  # switching to that scene also switches to this one
     shape_of: str | None = None  # parts only: this is the layout of that part for another canvas
-    folder: str | None = None  # shows only: the SceneFolder it's listed under (just for tidiness)
+    folder: str | None = None  # shows and main parts: the SceneFolder it's listed under (just for tidiness)
     states: list[SprigState] = Field(default_factory=list)  # main parts only: looks to switch between in Live
     state: str | None = None  # main parts only: the current state's name; None shows the sprig as built
     items: list[SceneItem] = Field(default_factory=list)  # index 0 draws first (bottom)
@@ -124,9 +124,10 @@ FOLDER_COLOURS = ("#ff5fa2", "#3ddc84", "#4cc9f0", "#ffd23f", "#ff8c42", "#b388f
 
 
 class SceneFolder(BaseModel):
-    """A named group of shows on one canvas, like "Main Scenes" or "Browser Scenes".
+    """A named group of shows on one canvas, like "Main Scenes", or of parts, like "Browser Scenes".
 
-    Folders only organise the lists; they never change what's on air.
+    Folders only organise the lists; they never change what's on air. Part folders hold parts of
+    every shape, so their canvas is just where they were made.
     """
 
     id: str
@@ -135,6 +136,7 @@ class SceneFolder(BaseModel):
     colour: str = FOLDER_COLOURS[0]
     collapsed: bool = False
     live: bool = False  # its shows are the buttons in Live mode (see live_scenes)
+    holds: Literal["show", "part"] = "show"
 
 
 PART_KIND = "scene"  # source kind that places a part inside another scene
@@ -297,13 +299,13 @@ class SceneCollection(BaseModel):
         canvas_ids = {c.id for c in self.canvases}
         source_ids = {s.id for s in self.sources}
         scene_ids = {s.id for s in self.scenes}
-        folder_canvas = {f.id: f.canvas for f in self.folders}
+        folders = {f.id: f for f in self.folders}
         for folder in self.folders:
             if folder.canvas not in canvas_ids:
                 raise ValueError(f"folder {folder.id!r} uses unknown canvas {folder.canvas!r}")
         for scene in self.scenes:
-            if scene.folder is not None and folder_canvas.get(scene.folder) != scene.canvas:
-                scene.folder = None  # a missing or other-canvas folder: just list it loose
+            if scene.folder is not None and not self._fits_folder(scene, folders.get(scene.folder)):
+                scene.folder = None  # a missing or wrong folder: just list it loose
             if scene.canvas not in canvas_ids:
                 raise ValueError(f"scene {scene.id!r} uses unknown canvas {scene.canvas!r}")
             if scene.shape_of is not None and scene.shape_of not in scene_ids:
@@ -326,6 +328,14 @@ class SceneCollection(BaseModel):
                                  if r.from_scene in scene_ids | {ANY} and r.to_scene in scene_ids | {ANY}]
         return self
 
+    @staticmethod
+    def _fits_folder(scene: Scene, folder: SceneFolder | None) -> bool:
+        if folder is None or folder.holds != scene.kind:
+            return False
+        if scene.kind == "part":
+            return scene.shape_of is None  # a part's other shapes are listed with it
+        return folder.canvas == scene.canvas
+
     # Lookups -------------------------------------------------------------
 
     def canvas(self, canvas_id: str) -> Canvas:
@@ -338,21 +348,27 @@ class SceneCollection(BaseModel):
         return next(s for s in self.scenes if s.id == scene_id)
 
     def folders_for(self, canvas_id: str) -> list[SceneFolder]:
-        return [f for f in self.folders if f.canvas == canvas_id]
+        """The bloom folders on a canvas."""
+        return [f for f in self.folders if f.canvas == canvas_id and f.holds == "show"]
+
+    def part_folders(self) -> list[SceneFolder]:
+        """The sprig folders, like "Nested Scenes", "Audio Scenes" or "Browser Scenes"."""
+        return [f for f in self.folders if f.holds == "part"]
 
     def folder(self, folder_id: str) -> SceneFolder:
         return next(f for f in self.folders if f.id == folder_id)
 
-    def add_folder(self, canvas_id: str, name: str) -> SceneFolder:
-        used = len(self.folders_for(canvas_id))
-        # The first folder on a canvas is its Live folder, like "Main Scenes"; change it any time.
-        folder = SceneFolder(id=self.new_id("folder"), name=name, canvas=canvas_id,
-                             colour=FOLDER_COLOURS[used % len(FOLDER_COLOURS)], live=used == 0)
+    def add_folder(self, canvas_id: str, name: str, holds: str = "show") -> SceneFolder:
+        used = len(self.folders_for(canvas_id) if holds == "show" else self.part_folders())
+        # The first bloom folder on a canvas is its Live folder, like "Main Scenes"; change it any time.
+        folder = SceneFolder(id=self.new_id("folder"), name=name, canvas=canvas_id, holds=holds,
+                             colour=FOLDER_COLOURS[(used + (holds == "part")) % len(FOLDER_COLOURS)],
+                             live=holds == "show" and used == 0)
         self.folders.append(folder)
         return folder
 
     def remove_folder(self, folder_id: str) -> None:
-        """The folder goes; its shows stay, listed loose."""
+        """The folder goes; what was in it stays, listed loose."""
         self.folders = [f for f in self.folders if f.id != folder_id]
         for scene in self.scenes:
             if scene.folder == folder_id:
@@ -372,6 +388,13 @@ class SceneCollection(BaseModel):
         """
         live = [(f, shows) for f, shows in self.grouped_scenes(canvas_id) if f is not None and f.live]
         return live if live else self.grouped_scenes(canvas_id)
+
+    def grouped_parts(self) -> list[tuple[SceneFolder | None, list[Scene]]]:
+        """The main parts as (folder, parts): loose ones first (folder None), then each sprig folder."""
+        parts = self.parts()
+        groups: list[tuple[SceneFolder | None, list[Scene]]] = [(None, [p for p in parts if p.folder is None])]
+        groups += [(f, [p for p in parts if p.folder == f.id]) for f in self.part_folders()]
+        return groups
 
     def scenes_for(self, canvas_id: str) -> list[Scene]:
         """The shows on a canvas (parts are listed by parts())."""

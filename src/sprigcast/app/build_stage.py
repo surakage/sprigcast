@@ -1,43 +1,36 @@
-"""Build mode's own screen: bloom pills on top, what's inside on the left, the canvas in the middle
-and the inspector on the right.
+"""Build mode's own screen: every bloom and sprig on the left, the canvas in the middle, and what's
+inside the picked one on the right with the inspector under it.
 
-    [Just Chatting] [Gaming] [Starting soon] [+]                       ❧ Sprigs  Link  Safe zones
-    ┌ Inside ─┐ ┌ canvas ───────────────────────────┐ ┌ Facecam ─────┐
-    │ Frame   │ │  the shape you edit      [twin]   │ │ Place  X  Y  │
-    │ Chat    │ │                                   │ │ Look   …     │
-    └─────────┘ └───────────────────────────────────┘ └──────────────┘
+    ┌ Library ──────┐ ┌ Just Chatting ───────────── ▶ Put on air ┐ ┌ Inside ──────┐
+    │ ⌕ Find…       │ │  the shape you edit            [twin]    │ │ ❧ Webcam     │
+    │ Blooms     +  │ │                                          │ │ ▣ Game       │
+    │  ▾ Main Scenes│ │                                          │ ├──────────────┤
+    │ ❧ Sprigs   +  │ │                                          │ │ Place  X  Y  │
+    └───────────────┘ └──────────────────────────────────────────┘ └──────────────┘
 
-The big canvas is the shape being edited. The other shape sits beside it as a small "twin" you
-can't edit by accident: click it to swap. Whatever you select is outlined in both, but moving it in
-one shape never moves it in the other. The main window builds the widgets that go in the slots.
+Scenes (blooms and sprigs) are on the left, sources on the right, so the two never mix. The big
+canvas is the shape being edited; the other shape sits beside it as a small "twin" you can't edit
+by accident: click it to swap. The main window builds the widgets that go in the slots.
 """
 
 from __future__ import annotations
-
-from collections.abc import Callable
-from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
-    QIcon,
-    QImage,
     QPainter,
-    QPainterPath,
     QPen,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
+    QLabel,
     QListWidget,
-    QMenu,
-    QPushButton,
-    QScrollArea,
     QSizePolicy,
+    QSplitter,
     QStyle,
     QStyledItemDelegate,
     QVBoxLayout,
@@ -48,106 +41,35 @@ from sprigcast.app import theme
 from sprigcast.app.live_stage import heading
 from sprigcast.app.terms import PART_MARK
 
-LEFT_WIDTH = 240
-RIGHT_WIDTH = 290
-SWATCH = (44, 25)
+LEFT_WIDTH = 290
+RIGHT_WIDTH = 320
 
 
-@dataclass(frozen=True)
-class BloomPill:
-    id: str
-    name: str
-    colour: str | None
-    selected: bool
-    on_air: bool
+class BuildBar(QWidget):
+    """Above the canvas: what you're editing on the left, tools (Put on air, Link, Safe zones) on the right."""
 
-
-def swatch(colour: str | None, image: QImage | None) -> QIcon:
-    """A little rounded picture of a bloom: its last on-air frame, or its folder colour."""
-    w, h = SWATCH
-    pixmap = QPixmap(w * 2, h * 2)
-    pixmap.setDevicePixelRatio(2)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-    path = QPainterPath()
-    path.addRoundedRect(QRectF(0, 0, w, h), h / 2, h / 2)
-    p.setClipPath(path)
-    p.fillRect(QRectF(0, 0, w, h), QColor(colour or theme.STAGE_EMPTY))
-    if image is not None and not image.isNull():
-        size = QSize(image.width(), image.height()).scaled(QSize(w, h), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
-        p.drawImage(QRectF((w - size.width()) / 2, (h - size.height()) / 2, size.width(), size.height()), image)
-    p.end()
-    return QIcon(pixmap)
-
-
-class BloomBar(QWidget):
-    """One pill per bloom on the shape being edited; click to edit it. Tools sit on the right."""
-
-    def __init__(self, on_pick: Callable[[str], None], add_menu: QMenu):
+    def __init__(self):
         super().__init__()
-        self.on_pick = on_pick
-        self.pills: dict[str, QPushButton] = {}
-        self._shape: list | None = None
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(6, 0, 0, 0)
         row.setSpacing(8)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        self.scroll.setFixedHeight(46)
-        inner = QWidget()
-        self.pill_row = QHBoxLayout(inner)
-        self.pill_row.setContentsMargins(0, 0, 0, 0)
-        self.pill_row.setSpacing(8)
-        self.pill_row.addStretch(1)
-        self.scroll.setWidget(inner)
-        row.addWidget(self.scroll, 1)
-        self.add = QPushButton("+")
-        self.add.setFixedSize(36, 36)
-        self.add.setToolTip("New bloom, folder or sprig")
-        self.add.setStyleSheet(
-            f"QPushButton {{ background: {theme.PANEL}; color: {theme.MUTED}; border: none; border-radius: 18px;"
-            f" font-size: 17px; padding: 0; }}"
-            f"QPushButton:hover {{ background: {theme.RAISED}; color: {theme.TEXT}; }}"
-            "QPushButton::menu-indicator { width: 0; }")
-        self.add.setMenu(add_menu)
-        self.pill_row.insertWidget(0, self.add)
-        self.tools = QHBoxLayout()  # sprigs, link and safe zones (filled by the main window)
+        self.where = heading("", 15)
+        self.note = QLabel("")
+        self.note.setStyleSheet(f"color: {theme.MUTED};")
+        row.addWidget(self.where)
+        row.addWidget(self.note)
+        row.addStretch(1)
+        self.tools = QHBoxLayout()
         self.tools.setSpacing(6)
         row.addLayout(self.tools)
+        self.setFixedHeight(40)
 
-    def show_blooms(self, pills: list[BloomPill], thumbs: dict[str, QImage]) -> None:
-        shape = [(b.id, b.name, b.colour, id(thumbs.get(b.id))) for b in pills]
-        if shape != self._shape:
-            self._shape = shape
-            for pill in self.pills.values():
-                self.pill_row.removeWidget(pill)
-                pill.setParent(None)
-                pill.deleteLater()
-            self.pills = {}
-            for i, bloom in enumerate(pills):
-                pill = QPushButton(bloom.name)
-                pill.setCheckable(True)
-                pill.setIcon(swatch(bloom.colour, thumbs.get(bloom.id)))
-                pill.setIconSize(QSize(*SWATCH))
-                pill.setCursor(Qt.CursorShape.PointingHandCursor)
-                pill.setStyleSheet(theme.BLOOM_PILL_STYLE)
-                pill.clicked.connect(lambda _=False, sid=bloom.id: self.on_pick(sid))
-                self.pill_row.insertWidget(i, pill)
-                self.pills[bloom.id] = pill
-        for bloom in pills:
-            pill = self.pills[bloom.id]
-            pill.setChecked(bloom.selected)
-            pill.setToolTip(bloom.name + ("  ·  on air" if bloom.on_air else ""))
-            pill.setText(bloom.name + ("  ●" if bloom.on_air else ""))
+    def show_place(self, title: str, note: str, sprig: bool = False) -> None:
+        self.where.setText(f"{PART_MARK} {title}" if sprig and title else title)
+        self.note.setText(note)
 
 
-def side_panel(width: int) -> tuple[QWidget, QVBoxLayout]:
+def column(width: int) -> tuple[QWidget, QVBoxLayout]:
     panel = QWidget()
     panel.setFixedWidth(width)
     layout = QVBoxLayout(panel)
@@ -157,27 +79,26 @@ def side_panel(width: int) -> tuple[QWidget, QVBoxLayout]:
 
 
 class BuildStage(QWidget):
-    """The whole Build screen. `left`, `card` and `right` are filled by the main window."""
+    """The whole Build screen. `rail`, `card_slot`, `left` (Inside) and `right` (inspector) are filled
+    by the main window."""
 
-    def __init__(self, bar: BloomBar):
+    def __init__(self, library: QWidget, bar: BuildBar):
         super().__init__()
         self.setObjectName("buildStage")
         self.setStyleSheet(f"#buildStage {{ background: {theme.CHROME}; }}")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(20, 6, 20, 16)
-        root.setSpacing(14)
+        body = QHBoxLayout(self)
+        body.setContentsMargins(20, 8, 20, 16)
+        body.setSpacing(22)
         self.bar = bar
-        root.addWidget(bar)
-        body = QHBoxLayout()
-        body.setSpacing(24)
-        self.left_panel, self.left = side_panel(LEFT_WIDTH)
-        top = QHBoxLayout()
-        top.addWidget(heading("Inside", 16), 1)
-        self.add_slot = QHBoxLayout()
-        top.addLayout(self.add_slot)
-        self.left.addLayout(top)
-        body.addWidget(self.left_panel)
+        # Left: every bloom and sprig.
+        self.rail_panel, self.rail = column(LEFT_WIDTH)
+        self.rail.addWidget(library, 3)
+        body.addWidget(self.rail_panel)
+        # Middle: what you're editing, then the canvas.
+        middle = QVBoxLayout()
+        middle.setSpacing(10)
+        middle.addWidget(bar)
         self.card = QFrame()
         self.card.setObjectName("buildCard")
         self.card.setStyleSheet(f"#buildCard {{ background: {theme.PANEL}; border: none; border-radius: 28px; }}"
@@ -186,10 +107,38 @@ class BuildStage(QWidget):
         card_layout = QVBoxLayout(self.card)
         card_layout.setContentsMargins(10, 6, 10, 10)
         self.card_slot = card_layout
-        body.addWidget(self.card, 1)
-        self.right_panel, self.right = side_panel(RIGHT_WIDTH)
+        middle.addWidget(self.card, 1)
+        body.addLayout(middle, 1)
+        # Right: what's inside, then the inspector for the picked thing. Drag the gap to share the room.
+        self.right_panel = QSplitter(Qt.Orientation.Vertical)
+        self.right_panel.setFixedWidth(RIGHT_WIDTH)
+        self.right_panel.setChildrenCollapsible(False)
+        self.right_panel.setHandleWidth(18)
+        self.right_panel.setStyleSheet(
+            f"QSplitter::handle {{ background: transparent; border-top: 1px solid {theme.EDGE};"
+            " margin: 8px 12px; }")
+        inside = QWidget()
+        self.left = QVBoxLayout(inside)  # "left" for history: Inside used to be the left column
+        self.left.setContentsMargins(0, 0, 0, 0)
+        self.left.setSpacing(10)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(heading("Inside", 15))
+        self.inside_note = QLabel("")
+        self.inside_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+        top.addWidget(self.inside_note, 1)
+        self.add_slot = QHBoxLayout()
+        top.addLayout(self.add_slot)
+        self.left.addLayout(top)
+        inspector = QWidget()
+        self.right = QVBoxLayout(inspector)
+        self.right.setContentsMargins(0, 0, 0, 0)
+        self.right.setSpacing(10)
+        self.right_panel.addWidget(inside)
+        self.right_panel.addWidget(inspector)
+        self.right_panel.setStretchFactor(0, 2)
+        self.right_panel.setStretchFactor(1, 3)
         body.addWidget(self.right_panel)
-        root.addLayout(body, 1)
 
 
 # Inside: the bloom's contents, sprigs shown open ---------------------------------------------
