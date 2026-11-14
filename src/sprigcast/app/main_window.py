@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, QStandardPaths, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import custom_docks, doctor, safe_zones, theme
+from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import live_line
 from sprigcast.app.ducking_dialog import DuckingDialog, is_voice
@@ -118,7 +118,7 @@ from sprigcast.app.settings_window import (
 from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.panels import Panel, Panels
 from sprigcast.app.stats_panel import StatsPanel, StatsStrip
-from sprigcast.app.terms import PART, PART_MARK, PARTS, SHOW, SHOWS, a, cap
+from sprigcast.app.terms import PART, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.audio.mixer import source_tracks
 from sprigcast.core.events import (
     AudioLevels,
@@ -511,7 +511,7 @@ class MainWindow(QMainWindow):
         self.link_menu = QMenu(self)
         self.link_menu.aboutToShow.connect(lambda: self._fill_link_menu(self.link_menu))
         self.link_button = QToolButton()
-        self.link_button.setText("🔗 Link")
+        self.link_button.setText("⇄ Link")
         self.link_button.setAutoRaise(True)
         self.link_button.setMinimumSize(30, 28)
         self.link_button.setMenu(self.link_menu)
@@ -688,7 +688,7 @@ class MainWindow(QMainWindow):
         for text, tip, slot in (
             ("Settings", "Settings for the selected thing (or double-click it)", self._edit_source_settings),
             ("Remove", "Remove the selected thing from this bloom", self._remove_item),
-            (f"{PART_MARK} Make {PART}", f"Turn the selected things into a {PART} you can reuse in other {SHOWS} "
+            (f"Make {PART}", f"Turn the selected things into a {PART} you can reuse in other {SHOWS} "
                                          "(Ctrl+click to pick several)", self._turn_into_part),
         ):
             button = QPushButton(text)
@@ -712,7 +712,7 @@ class MainWindow(QMainWindow):
         menu.clear()
         scene = self._scene()
         parts = [p for p in self.collection.parts() if scene is None or not self.collection.contains(p, scene.id)]
-        parts_menu = menu.addMenu(f"{PART_MARK}  {cap(PART)}")
+        parts_menu = menu.addMenu(icons.icon("sprig", theme.ACCENT), cap(PART))
         for part in parts:
             parts_menu.addAction(part.name).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
         if not parts:
@@ -903,7 +903,7 @@ class MainWindow(QMainWindow):
                 down = menu.addAction("Move down")
                 down.triggered.connect(lambda: self._move_scene(scene.id, 1))
                 if scene.canvas != self.collection.canvases[0].id:
-                    link = menu.addMenu("🔗 Switch together with")
+                    link = menu.addMenu(icons.icon("link"), "Switch together with")
                     self._fill_link_menu(link)
             else:
                 part = self.collection.main_part(scene)
@@ -1189,7 +1189,8 @@ class MainWindow(QMainWindow):
         sprig_box = QVBoxLayout(self.prop_sprig)
         sprig_box.setContentsMargins(0, 10, 0, 0)
         sprig_box.setSpacing(8)
-        self.prop_open_sprig = QPushButton(f"{PART_MARK}  Open {PART} to edit inside")
+        self.prop_open_sprig = QPushButton(f"Open {PART} to edit inside")
+        self.prop_open_sprig.setIcon(icons.icon("sprig", theme.ACCENT_TEXT, 16))
         self.prop_open_sprig.setStyleSheet(theme.PRIMARY_STYLE + "QPushButton { border-radius: 17px; padding: 9px 14px; }")
         self.prop_open_sprig.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prop_open_sprig.setToolTip(f"Edit what's inside this {PART} (or double-click it)")
@@ -1241,7 +1242,8 @@ class MainWindow(QMainWindow):
             cell.addWidget(name)
             cell.addWidget(box)
             grid.addLayout(cell, row, column)
-        self.keep_shape = QPushButton("🔒 Keep shape")
+        self.keep_shape = QPushButton("Keep shape")
+        self.keep_shape.setIcon(icons.icon("lock", size=14))
         self.keep_shape.setCheckable(True)
         self.keep_shape.setChecked(QSettings().value("edit/keep_aspect", True, type=bool))
         self.keep_shape.setToolTip("On: resizing keeps the width and height in proportion. "
@@ -1719,7 +1721,8 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
         self.palette_button = QToolButton()
-        self.palette_button.setText("🔍")
+        self.palette_button.setIcon(icons.icon("search", theme.MUTED, 18))
+        self.palette_button.setIconSize(QSize(18, 18))
         self.palette_button.setFixedSize(38, 38)
         self.palette_button.setToolTip("Search commands, blooms and settings (Ctrl+K)")
         self.palette_button.setStyleSheet(
@@ -1867,10 +1870,10 @@ class MainWindow(QMainWindow):
         return next((s for s in self.collection.scenes if s.id == scene.linked_to), None) if scene.linked_to else None
 
     def _link_label(self, scene: Scene) -> str:
-        """'🔗 Other name' for the scenes that switch together with this one."""
+        """'⇄ Other name' for the scenes that switch together with this one (⇄ like the Link button)."""
         target = self._link_target(scene)
         names = [target.name] if target else [s.name for s in self.collection.scenes if s.linked_to == scene.id]
-        return f"   🔗 {', '.join(names)}" if names else ""
+        return f"   ⇄ {', '.join(names)}" if names else ""
 
     def _fill_link_menu(self, menu: QMenu) -> None:
         """Pick which bloom on the main canvas this one switches together with."""
@@ -2089,11 +2092,9 @@ class MainWindow(QMainWindow):
         box.exec()
 
     def _show_about(self) -> None:
-        from sprigcast import __version__
+        from sprigcast.app.about import show_about
 
-        QMessageBox.about(self, "About SprigCast",
-                          f"<b>SprigCast {__version__}</b><br>One show, every shape: stream and record "
-                          "horizontal and vertical at once.<br><br>Open source under the GPL 3.0 or later.")
+        show_about(self)
 
     def _fill_docks_menu(self) -> None:
         """Each panel this screen offers (ticked when shown), Pop out, then adding web panels and Stats."""
@@ -2343,7 +2344,7 @@ class MainWindow(QMainWindow):
             scene = self._shown_scene(canvas_id)
             if in_place is not None and in_place[0] == canvas_id:
                 show, placement, layout, size = in_place[1:]
-                preview.subtitle = f"{show.name}  ›  {PART_MARK} {layout.name}   ·   Esc to finish"
+                preview.subtitle = f"{show.name}  ›  {layout.name}   ·   Esc to finish"
                 preview.set_inner(placement, size)
                 preview.set_scene(layout, self._item_index() if layout.id == self.selected_scene_id else None)
                 continue
@@ -2426,7 +2427,8 @@ class MainWindow(QMainWindow):
             for part in parts:
                 uses = len(self.collection.part_uses(part.id))
                 shapes = " + ".join(s.canvas for s in self.collection.shapes(part))
-                child = QTreeWidgetItem([f"{PART_MARK} {part.name}   ({shapes} · used in {uses})"])
+                child = QTreeWidgetItem([f"{part.name}   ({shapes} · used in {uses})"])
+                child.setIcon(0, icons.icon("sprig", theme.ACCENT))
                 child.setData(0, ROLE_ID, part.id)
                 child.setData(0, ROLE_ROW, "sprig")
                 child.setData(0, LIB_NAME, part.name)
@@ -2479,7 +2481,7 @@ class MainWindow(QMainWindow):
             main = self.collection.main_part(selected)
             uses = len(self.collection.part_uses(main.id))
             self.build_bar.show_place(main.name, f"{PART}  ·  in {uses} {SHOW if uses == 1 else SHOWS}", sprig=True)
-            self.build_stage.inside_note.setText(f"{PART_MARK} {main.name}")
+            self.build_stage.inside_note.setText(main.name)
         else:
             self.build_bar.show_place(selected.name, "on air" if selected.id == active else "not on air")
             self.build_stage.inside_note.setText(selected.name)
@@ -2590,7 +2592,7 @@ class MainWindow(QMainWindow):
 
     def _source_label(self, source_id: str) -> str:
         config = self.collection.source(source_id)
-        label = f"{PART_MARK} {config.name}   [{PART}]" if config.kind == PART_KIND else f"{config.name}   [{config.kind}]"
+        label = f"{config.name}   [{PART}]" if config.kind == PART_KIND else f"{config.name}   [{config.kind}]"
         if any(f.enabled for f in config.filters):
             label += "   ✦ filters"
         hidden = len(self.collection.hidden_here(config)) if config.kind == PART_KIND else 0
@@ -3172,9 +3174,9 @@ class MainWindow(QMainWindow):
         self.part_path.setText(f"{scene.canvas.capitalize()} {canvas.width}×{canvas.height}")
         names = self._bloom_links(uses)
         self.part_uses_note.setText(
-            f"{PART_MARK} This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
+            f"This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
             "What you change here changes in all of them." if uses else
-            f"{PART_MARK} This {PART} isn't in any {SHOW} yet. Put it in one with Inside → + Add → {cap(PART)}.")
+            f"This {PART} isn't in any {SHOW} yet. Put it in one with Inside → + Add → {cap(PART)}.")
         back = getattr(self, "last_bloom_id", None)
         back_scene = next((s for s in self.collection.scenes if s.id == back and s.kind == "show"), None)
         self.part_back.setText(f"← {back_scene.name}" if back_scene else "← Back")
@@ -3865,7 +3867,8 @@ class MainWindow(QMainWindow):
 
     def _set_keep_shape(self, on: bool) -> None:
         QSettings().setValue("edit/keep_aspect", on)
-        self.keep_shape.setText("🔒 Keep shape" if on else "🔓 Free shape")
+        self.keep_shape.setText("Keep shape" if on else "Free shape")
+        self.keep_shape.setIcon(icons.icon("lock" if on else "unlock", size=14))
         for preview in [*self.previews.values(), self.part_preview]:
             preview.keep_aspect = on
 

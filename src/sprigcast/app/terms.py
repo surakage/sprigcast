@@ -6,7 +6,6 @@ inside other scenes); only what people read uses these words.
 
 SHOW, SHOWS = "bloom", "blooms"  # a scene that goes on air
 PART, PARTS = "sprig", "sprigs"  # a reusable piece placed inside blooms (or other sprigs)
-PART_MARK = "❧"  # shown before a sprig's name in lists
 
 
 def cap(word: str) -> str:

@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
+from sprigcast.app import icons, theme
 
 SIDE_WIDTH = 350  # Chat on top, the Go live card below
 BOTTOM_HEIGHT = 300  # the Blooms | Sound | Transitions row under the canvas
@@ -258,7 +258,8 @@ class LiveSide(QWidget):
         self._clip_on, self._clip_seconds = False, 30
         row.addWidget(self.record)
         row.addWidget(self.clip)
-        self.settings = pill("⚙", CARD_PILL_STYLE)
+        self.settings = pill("", CARD_PILL_STYLE)
+        self.settings.setIcon(icons.icon("gear"))
         self.settings.setFixedWidth(44)
         self.settings.setToolTip("Settings (Ctrl+,)")
         self.settings.setVisible(on_settings is not None)
@@ -468,7 +469,9 @@ class LiveSide(QWidget):
                 test = chip("test", "Test", "Bandwidth test: send to Twitch without going live")
                 test.setCheckable(True)
                 test.toggled.connect(lambda _on, pid=place.id: self.on_place(pid, "test"))
-            chip("settings", "⚙", "Key, bitrate and everything else").clicked.connect(
+            gear = chip("settings", "", "Key, bitrate and everything else")
+            gear.setIcon(icons.icon("gear", size=14))
+            gear.clicked.connect(
                 lambda _=False, pid=place.id: self.on_destination(pid))
             tools_row.addStretch(1)
             remove = chip("remove", "Remove", "Remove this place (click twice)", REMOVE_CHIP_STYLE)

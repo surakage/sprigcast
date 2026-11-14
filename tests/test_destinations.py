@@ -149,7 +149,7 @@ def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
         assert w.build_canvas == "horizontal" and w.previews["vertical"].twin
         w.canvas_tabs.setCurrentIndex(1)
         assert w.build_canvas == "vertical" and w.selected_scene_id == "v1"
-        assert "🔗 Main" in w.scene_tree.topLevelItem(0).child(0).text(0)
+        assert "⇄ Main" in w.scene_tree.topLevelItem(0).child(0).text(0)
         # Re-link the vertical bloom to BRB from the vertical tab; switching BRB on now brings it along.
         w._link_scene("v1", "h2")
         assert col.scene("v1").linked_to == "h2"

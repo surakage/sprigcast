@@ -32,8 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
-from sprigcast.app.terms import PART_MARK, PARTS, cap
+from sprigcast.app import icons, theme
+from sprigcast.app.terms import PARTS, cap
 from sprigcast.core.scene import SceneCollection
 
 BUTTON_HEIGHT = 30
@@ -401,7 +401,10 @@ class LivePanel(QWidget):
             row = QHBoxLayout(row_box)
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
-            name = QLabel(f"{PART_MARK} {part.name}")
+            mark = QLabel()
+            mark.setPixmap(icons.pixmap("sprig", theme.ACCENT, 14))
+            row.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
+            name = QLabel(part.name)
             name.setFixedWidth(110)
             row.addWidget(name, 0, Qt.AlignmentFlag.AlignTop)
             flow_box = QWidget()
