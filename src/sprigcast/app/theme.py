@@ -100,8 +100,11 @@ SOFT_FIELD_STYLE = (  # borderless inputs on the Build inspector
     f"QLineEdit, QDoubleSpinBox {{ background: {PANEL}; border: none; border-radius: 12px; padding: 8px 10px;"
     f" color: {TEXT}; }}"
     f"QLineEdit:focus, QDoubleSpinBox:focus {{ background: {RAISED}; }}"
-    "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 14px; border: none; background: transparent; }"
-    "QDoubleSpinBox { padding: 6px 0 6px 14px; }"  # balances the (invisible) arrows so numbers sit centred
+    # No arrow buttons (type, scroll or use the arrow keys), so the number is centred on the whole box.
+    # setButtonSymbols(NoButtons) can't be used: with the app stylesheet it shrinks the text field to 1 px.
+    "QDoubleSpinBox { padding: 6px 0px; }"
+    "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {"
+    " subcontrol-origin: margin; width: 0px; height: 0px; border: none; }"
 )
 LINK_STYLE = (
     f"QPushButton {{ background: transparent; border: none; color: {MUTED}; padding: 2px 4px; }}"
