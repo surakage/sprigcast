@@ -1,5 +1,7 @@
 """Shows and parts: the model rules and the GPU drawing a part inside scenes on both canvases."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -450,3 +452,52 @@ def test_sprigs_of_blooms_not_on_air_are_not_rendered():
     engine.staged = {"h": "show-h"}  # Studio mode lines up a bloom that does
     engine._render_parts(fake, {}, 1.0)
     assert fake.rendered == ["p-badge", "p-cam"]
+
+
+def test_screenshot_pictures_the_program(compositor, app, tmp_path):
+    import threading
+
+    from sprigcast.app import screenshot
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    engine = Engine(col)
+    engine._sync_sources(compositor)
+    shots = []
+    worker = threading.Thread(target=lambda: shots.extend(screenshot.take(engine, ["h", "v"], tmp_path, width=32)))
+    worker.start()
+    for n in range(20):  # the render thread's job: draw until both shapes were handed over
+        if not worker.is_alive():
+            break
+        engine._tick(compositor, 1.0 + n / 30)
+        worker.join(0.02)
+    worker.join(2)
+    assert [s["shape"] for s in shots] == ["h", "v"]
+    assert (shots[0]["width"], shots[0]["height"]) == (32, 18)
+    assert all(Path(s["path"]).stat().st_size > 0 for s in shots)
+
+
+def test_window_screenshot_through_the_api(app, tmp_path, monkeypatch):
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+
+    from sprigcast.app.control_server import WindowHost
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.control.native import NativeApi
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ScreenshotTest")
+    QSettings().clear()
+    col = load_collection(tmp_path / "scenes.json")
+    col.recording.folder = str(tmp_path / "videos")
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        api = NativeApi(WindowHost(w))
+        shots = api.run("screenshot.take", {"width": 64})["shots"]
+        assert {s["shape"] for s in shots} == {c.id for c in col.canvases if c.enabled}
+        assert all(Path(s["path"]).parent == tmp_path / "videos" / "Screenshots" for s in shots)
+        assert all(Path(s["path"]).exists() and s["width"] == 64 for s in shots)
+    finally:
+        w.close()

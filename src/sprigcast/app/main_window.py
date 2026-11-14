@@ -66,6 +66,7 @@ from sprigcast.app.fit import FitButton
 from sprigcast.app.hotkeys import (
     SAVE_REPLAY,
     SCENE_PREFIX,
+    SCREENSHOT,
     STATE_PREFIX,
     STUDIO_GO,
     TOGGLE_RECORD,
@@ -3610,6 +3611,18 @@ class MainWindow(QMainWindow):
     def _recordings_folder(self) -> Path:
         return Path(self.collection.recording.folder or self._default_recordings_folder())
 
+    def _screenshot(self, shapes: list[str] | None = None, width: int | None = None, save: bool = True,
+                    as_data: bool = False) -> list[dict]:
+        """A PNG of what's on air in each shape (or just shapes), in the recordings folder's Screenshots."""
+        from sprigcast.app import screenshot
+
+        ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
+        folder = self._recordings_folder() / "Screenshots" if save else None
+        shots = screenshot.take(self.engine, ids, folder, width, as_data)
+        if save:
+            self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+        return shots
+
     def _open_recordings_folder(self) -> None:
         folder = self._recordings_folder()
         folder.mkdir(parents=True, exist_ok=True)
@@ -4143,6 +4156,8 @@ class MainWindow(QMainWindow):
             self._studio_go()
         elif action == SAVE_REPLAY:
             self._save_replay()
+        elif action == SCREENSHOT:
+            self._screenshot()
         elif action == TOGGLE_STREAM:
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:

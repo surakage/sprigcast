@@ -712,6 +712,31 @@ class NativeApi:
         self.last_clip = self.host.save_clip()
         return {"saved": self.last_clip, "started": False}
 
+    # Screenshots ---------------------------------------------------------------------------------
+
+    @action("screenshot.take", "A picture of what's on air in each shape.",
+            shape="?both (default), horizontal or vertical",
+            width="?shrink to this width in pixels (keeps the shape)",
+            save="?true (default): save PNGs in the recordings folder, under Screenshots",
+            data="?true: send the picture back as base64 PNG (for bots and pages; large)")
+    def screenshot_take(self, data):
+        shape = self._shape(data)
+        width = _get(data, "width", int, optional=True)
+        if width is not None and not 16 <= width <= 7680:
+            raise _bad("width must be between 16 and 7680.")
+        save = _get(data, "save", bool, optional=True, default=True)
+        as_data = _get(data, "data", bool, optional=True, default=False)
+        if not save and not as_data:
+            raise _bad("Nothing to do: give save or data.")
+        shapes = self._shapes() if shape == "both" else [shape]
+        try:
+            shots = self.host.screenshot(shapes, width, save, as_data)
+        except OSError as exc:
+            raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
+        if not shots:
+            raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
+        return {"shots": shots}
+
     # Transitions ---------------------------------------------------------------------------------
 
     @action("transition.set", "Change the usual transition and/or its length.", kind="?" + ", ".join(TRANSITION_KINDS),
