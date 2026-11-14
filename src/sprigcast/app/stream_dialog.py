@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -65,22 +66,39 @@ def _heading(text: str, size: int) -> QLabel:
     return label
 
 
+LABEL_W = 104  # every card's labels share one column, so the fields line up down the page
+
+
 def _section(title: str) -> tuple[QWidget, QFormLayout]:
-    """A heading over a soft rounded card (no OBS-style group box frame)."""
-    holder = QWidget()
-    outer = QVBoxLayout(holder)
-    outer.setContentsMargins(0, 0, 0, 0)
-    outer.setSpacing(8)
-    outer.addWidget(_heading(title, 15))
+    """A soft rounded card with its title inside (no OBS-style group box frame)."""
     card = QFrame()
     card.setObjectName("streamCard")
-    card.setStyleSheet(f"#streamCard {{ background: {theme.PANEL}; border-radius: 16px; }}")
-    form = QFormLayout(card)
-    form.setContentsMargins(18, 16, 18, 16)
-    form.setHorizontalSpacing(16)
-    form.setVerticalSpacing(10)
-    outer.addWidget(card)
-    return holder, form
+    card.setStyleSheet(f"#streamCard {{ background: {theme.CARD}; border-radius: 18px; }}")
+    outer = QVBoxLayout(card)
+    outer.setContentsMargins(26, 20, 26, 22)
+    outer.setSpacing(14)
+    outer.addWidget(_heading(title, 15))
+    form = QFormLayout()
+    form.setContentsMargins(0, 0, 0, 0)
+    form.setHorizontalSpacing(18)
+    form.setVerticalSpacing(12)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    outer.addLayout(form)
+    _FORMS.append(form)
+    return card, form
+
+
+_FORMS: list[QFormLayout] = []
+
+
+def _line_up_labels(forms: list[QFormLayout]) -> None:
+    for form in forms:
+        for row in range(form.rowCount()):
+            item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if item is not None and item.widget() is not None:
+                item.widget().setFixedWidth(LABEL_W)
+                item.widget().setStyleSheet(theme.MUTED_STYLE)
 
 
 def place_card_text(output: Output) -> str:
@@ -111,7 +129,8 @@ class StreamPage(QWidget):
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(18)
+        root.setSpacing(0)
+        _FORMS.clear()
 
         # Left: the places you stream to, as cards. "+ Add" sits on top so it never scrolls away.
         left = QVBoxLayout()
@@ -132,12 +151,18 @@ class StreamPage(QWidget):
         self.list.currentRowChanged.connect(self._load)
         left.addWidget(self.list, 1)
         root.addLayout(left)
+        root.addSpacing(22)
+        divider = QFrame()
+        divider.setFixedWidth(1)
+        divider.setStyleSheet(f"background: {theme.EDGE};")
+        root.addWidget(divider)
+        root.addSpacing(6)
 
         # Right: the chosen place, scrolling on its own.
         self.form_widget = QWidget()
         groups = QVBoxLayout(self.form_widget)
-        groups.setContentsMargins(0, 0, 8, 0)
-        groups.setSpacing(18)
+        groups.setContentsMargins(18, 2, 14, 12)
+        groups.setSpacing(16)
         hero = QHBoxLayout()
         hero.setSpacing(12)
         self.hero = _heading("", 22)
@@ -155,6 +180,7 @@ class StreamPage(QWidget):
         self.remove_button.clicked.connect(self._remove)
         hero.addWidget(self.remove_button)
         groups.addLayout(hero)
+        groups.addSpacing(2)
 
         # Account: which service and how SprigCast signs in.
         destination, form = _section("Account")
@@ -288,8 +314,14 @@ class StreamPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setObjectName("streamScroll")
+        self.form_widget.setObjectName("streamForm")
+        scroll.setStyleSheet("#streamScroll, #streamForm { background: transparent; }")
+        scroll.viewport().setAutoFillBackground(False)
         scroll.setWidget(self.form_widget)
         root.addWidget(scroll, 1)
+        _line_up_labels(_FORMS)
+        _FORMS.clear()
 
         self._refresh_list(0)
 
