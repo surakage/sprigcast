@@ -36,12 +36,20 @@ CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
 _nvenc_ok: bool | None = None
 
 
+_checks = threading.RLock()  # encoders open on several threads at once; each check runs once, the rest wait
+
+
 def nvenc_works() -> bool:
-    """True when h264_nvenc can open and encode a frame on this machine. Checked once per run."""
+    """True when NVENC can open and encode a frame on this machine. Checked once per run.
+
+    SprigCast's own encoder is tried first: it needs no CUDA, so a PC that only streams and records
+    without B-frames never loads FFmpeg's CUDA side at all.
+    """
     global _nvenc_ok
-    if _nvenc_ok is None:
-        _nvenc_ok = _try_encoder("h264_nvenc")
-    return _nvenc_ok
+    with _checks:
+        if _nvenc_ok is None:
+            _nvenc_ok = (nvenc_device() == "direct" and direct_nvenc_ok()) or _try_encoder("h264_nvenc")
+        return _nvenc_ok
 
 
 _shared_gpu_ok: bool | None = None
@@ -60,8 +68,9 @@ def nvenc_hwaccel():
     global _shared_gpu_ok
     if nvenc_device() == "own":
         return None
-    if _shared_gpu_ok is None:
-        _shared_gpu_ok = nvenc_works() and _try_encoder("h264_nvenc", _make_hwaccel())
+    with _checks:
+        if _shared_gpu_ok is None:
+            _shared_gpu_ok = nvenc_works() and _try_encoder("h264_nvenc", _make_hwaccel())
     return _make_hwaccel() if _shared_gpu_ok else None
 
 
@@ -88,20 +97,22 @@ def direct_nvenc_ok() -> bool:
     SPRIGCAST_NVENC_DEVICE=cuda goes back to FFmpeg for everything.
     """
     global _direct_ok
-    if _direct_ok is None:
-        _direct_ok = False
-        if nvenc_device() == "direct":
-            try:
-                from sprigcast.output.nvenc_d3d11 import D3D11Encoder
-
-                enc = D3D11Encoder(256, 256, 30)
+    with _checks:  # a stream and a recording starting together used to race here: one saw False mid-check
+        if _direct_ok is None:
+            ok = False
+            if nvenc_device() == "direct":
                 try:
-                    _direct_ok = bool(enc.encode(bytes(256 * 256 * 3 // 2), keyframe=True))
-                finally:
-                    enc.close()
-            except Exception as exc:  # not Windows, no NVIDIA driver, old driver, sessions in use, ...
-                log.info("direct NVENC unavailable, using FFmpeg's: %s", exc)
-    return _direct_ok
+                    from sprigcast.output.nvenc_d3d11 import D3D11Encoder
+
+                    enc = D3D11Encoder(256, 256, 30)
+                    try:
+                        ok = bool(enc.encode(bytes(256 * 256 * 3 // 2), keyframe=True))
+                    finally:
+                        enc.close()
+                except Exception as exc:  # not Windows, no NVIDIA driver, old driver, sessions in use, ...
+                    log.info("direct NVENC unavailable, using FFmpeg's: %s", exc)
+            _direct_ok = ok
+        return _direct_ok
 
 
 class DirectVideo:
