@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import QSettings
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QPointF, QRectF, QSettings, QStandardPaths, Qt
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen, QTransform
 from PySide6.QtWidgets import QApplication
 
 # Night Canopy: near-neutral deep greens, hairline edges, one green accent for actions and
@@ -157,6 +157,7 @@ QCheckBox::indicator {{ border-radius: 4px; }}
 QRadioButton::indicator {{ border-radius: 8px; }}
 QCheckBox::indicator:checked, QRadioButton::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox, QRadioButton {{ spacing: 8px; }}
 QListWidget, QTreeWidget, QListView, QTreeView, QTableView {{
     background: {PANEL}; border: 1px solid {EDGE}; border-radius: 8px; outline: none;
 }}
@@ -280,5 +281,145 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(MUTED))
     app.setPalette(palette)
-    app.setStyleSheet(STYLESHEET)
+    app.setStyleSheet(STYLESHEET + nature_rules())
     return True
+
+
+# Nature shapes ---------------------------------------------------------------------------------
+# SprigCast's controls grow instead of click: a tick box is a leaf (an outline when off, a filled
+# leaf when on), a radio choice is a seed that sprouts, and sliders and switches carry a leaf. The
+# style sheet can only show pictures for checkbox, radio and slider parts, so those are small SVGs
+# written once to the cache folder; painted widgets use leaf_path()/paint_leaf().
+
+LEAF_OFF = "#5d6b64"  # an unpicked leaf's outline: reads on PANEL and CARD without shouting
+
+# One leaf in unit space: stem end bottom-left, tip top-right, both edges curved.
+_LEAF = ((-0.5, 0.5), (-0.6, -0.2), (0.1, -0.6), (0.55, -0.55), (0.6, 0.05), (0.1, 0.6))
+_VEIN_END = (0.3, -0.3)
+
+
+def _leaf_map(rect: QRectF, mirror: bool):
+    sx = rect.width() / 1.2 * (-1 if mirror else 1)
+    sy = rect.height() / 1.2
+    cx, cy = rect.center().x(), rect.center().y()
+    return lambda x, y: QPointF(cx + x * sx, cy + y * sy)
+
+
+def leaf_path(rect: QRectF, tilt: float = 0.0, mirror: bool = False) -> QPainterPath:
+    """A leaf filling `rect`: stem end at the bottom-left corner, tip at the top-right (or the other
+    way round with mirror). `tilt` turns it about the rect's centre, in degrees clockwise."""
+    at = _leaf_map(rect, mirror)
+    (x0, y0), c1, c2, end, c3, c4 = _LEAF
+    path = QPainterPath(at(x0, y0))
+    path.cubicTo(at(*c1), at(*c2), at(*end))
+    path.cubicTo(at(*c3), at(*c4), at(x0, y0))
+    if tilt:
+        c = rect.center()
+        path = QTransform().translate(c.x(), c.y()).rotate(tilt).translate(-c.x(), -c.y()).map(path)
+    return path
+
+
+def paint_leaf(p: QPainter, rect: QRectF, filled: bool, colour: str | QColor = ACCENT,
+               vein: str | QColor | None = None, width: float = 1.6, tilt: float = 0.0,
+               mirror: bool = False) -> None:
+    """Draw a leaf: filled in `colour` with a dark vein, or as an outline with a matching vein."""
+    colour = QColor(colour)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(colour, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    p.setBrush(colour if filled else Qt.BrushStyle.NoBrush)
+    p.drawPath(leaf_path(rect, tilt, mirror))
+    at = _leaf_map(rect, mirror)
+    line = QPainterPath(at(*_LEAF[0]))
+    line.lineTo(at(*_VEIN_END))
+    if tilt:
+        c = rect.center()
+        line = QTransform().translate(c.x(), c.y()).rotate(tilt).translate(-c.x(), -c.y()).map(line)
+    p.setPen(QPen(QColor(vein or (ACCENT_TEXT if filled else colour)), width * 0.85, Qt.PenStyle.SolidLine,
+                  Qt.PenCapStyle.RoundCap))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(line)
+    p.restore()
+
+
+def _leaf_svg(fill: str, stroke: str, vein: str) -> str:
+    def pt(x, y):  # unit leaf -> a 24 px box with a 1 px margin
+        return f"{12 + x * 18.3:.2f},{12 + y * 18.3:.2f}"
+
+    (x0, y0), c1, c2, end, c3, c4 = _LEAF
+    d = f"M{pt(x0, y0)} C{pt(*c1)} {pt(*c2)} {pt(*end)} C{pt(*c3)} {pt(*c4)} {pt(x0, y0)} Z"
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+            f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="1.8" stroke-linejoin="round"/>'
+            f'<path d="M{pt(x0, y0)} L{pt(*_VEIN_END)}" stroke="{vein}" stroke-width="1.5" '
+            f'stroke-linecap="round" fill="none"/></svg>')
+
+
+def _seed_svg(ring: str, fill: str, sprout: str | None) -> str:
+    """A round seed; picked, it sprouts two small leaves."""
+    leaves = ""
+    if sprout:
+        leaves = (f'<path d="M12,17 L12,11" stroke="{sprout}" stroke-width="1.6" stroke-linecap="round"/>'
+                  f'<path d="M12,12 C12,8 15,6.5 17,6.5 C17,9.5 15,11.5 12,12 Z" fill="{sprout}"/>'
+                  f'<path d="M12,13.5 C12,10.5 9.5,9.5 7.5,9.5 C7.5,12 9.5,13.5 12,13.5 Z" fill="{sprout}"/>')
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+            f'<circle cx="12" cy="12" r="10" fill="{fill}" stroke="{ring}" stroke-width="1.8"/>{leaves}</svg>')
+
+
+NATURE_PICTURES = {
+    "leaf_off": lambda: _leaf_svg(CHROME, LEAF_OFF, LEAF_OFF),
+    "leaf_hover": lambda: _leaf_svg(CHROME, ACCENT, ACCENT),
+    "leaf_on": lambda: _leaf_svg(ACCENT, ACCENT, ACCENT_TEXT),
+    "leaf_off_disabled": lambda: _leaf_svg(PANEL, EDGE_STRONG, EDGE_STRONG),
+    "leaf_on_disabled": lambda: _leaf_svg(MUTED, MUTED, PANEL),
+    "seed_off": lambda: _seed_svg(LEAF_OFF, CHROME, None),
+    "seed_hover": lambda: _seed_svg(ACCENT, CHROME, None),
+    "seed_on": lambda: _seed_svg(ACCENT, ACCENT, ACCENT_TEXT),
+    "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
+    "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
+    "leaf_handle": lambda: _leaf_svg(ACCENT, TEXT_BRIGHT, ACCENT_TEXT),
+}
+
+
+def nature_pictures(folder: str | None = None) -> dict[str, str]:
+    """Write the control pictures (once) and return name -> path with forward slashes for the style sheet."""
+    import hashlib
+    import tempfile
+    from pathlib import Path
+
+    base = Path(folder or QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+                or tempfile.gettempdir()) / "theme"
+    base.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for name, make in NATURE_PICTURES.items():
+        svg = make()
+        path = base / f"{name}-{hashlib.sha1(svg.encode()).hexdigest()[:8]}.svg"  # new colours, new file
+        if not path.exists():
+            path.write_text(svg, encoding="utf-8")
+        out[name] = path.as_posix()
+    return out
+
+
+def nature_rules(folder: str | None = None) -> str:
+    """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaves and seeds."""
+    try:
+        pic = nature_pictures(folder)
+    except OSError:  # can't write the pictures: keep the plain shapes
+        return ""
+    rules = []
+    clear = "border: none; background: transparent;"  # the plain rules above fill a checked box green
+    for widget, kind in (("QCheckBox", "leaf"), ("QRadioButton", "seed"), ("QListWidget", "leaf"),
+                         ("QTreeWidget", "leaf")):
+        size = 18 if widget in ("QCheckBox", "QRadioButton") else 16
+        rules += [
+            f"{widget}::indicator {{ width: {size}px; height: {size}px; border: none; background: transparent;"
+            f" border-radius: 0; image: url({pic[kind + '_off']}); }}",
+            f"{widget}::indicator:hover {{ {clear} image: url({pic[kind + '_hover']}); }}",
+            f"{widget}::indicator:checked {{ {clear} image: url({pic[kind + '_on']}); }}",
+            f"{widget}::indicator:disabled {{ {clear} image: url({pic[kind + '_off_disabled']}); }}",
+            f"{widget}::indicator:checked:disabled {{ {clear} image: url({pic[kind + '_on_disabled']}); }}",
+        ]
+    rules.append(f"QSlider::handle:horizontal {{ background: transparent; border: none; width: 18px; height: 18px;"
+                 f" margin: -7px 0; border-radius: 0; image: url({pic['leaf_handle']}); }}")
+    rules.append(f"QSlider::handle:vertical {{ background: transparent; border: none; width: 18px; height: 18px;"
+                 f" margin: 0 -7px; border-radius: 0; image: url({pic['leaf_handle']}); }}")
+    return "\n".join(rules) + "\n"
