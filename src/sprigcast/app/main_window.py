@@ -171,7 +171,7 @@ log = logging.getLogger(__name__)
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
 BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output",
-                  "scene"}
+                  "scene", "browser"}
 
 
 def _name_from(settings: dict, fallback: str) -> str:
@@ -418,6 +418,9 @@ class MainWindow(QMainWindow):
         self.meter_timer.start(2000)
 
         # Engine --------------------------------------------------------------
+        from sprigcast.app.browser_host import start_host
+
+        self.browser_host = start_host(self)  # draws browser sources; Chromium loads with the first one
         self.engine = Engine(collection)
         from sprigcast.app.settings_window import sleep_policy
 
@@ -582,6 +585,7 @@ class MainWindow(QMainWindow):
             ("Image", self._add_image),
             ("Color", self._add_color),
             ("Text", self._add_text),
+            ("Browser (web page)", self._add_browser),
         ):
             menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
         parts_menu = menu.addMenu(cap(PART))
@@ -659,6 +663,9 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
                 menu.addAction(f"Edit {PART} in place").triggered.connect(self._open_part_item)
                 self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
+            if item is not None and self.collection.source(item.source).kind == "browser" and self.browser_host:
+                menu.addAction("Refresh page").triggered.connect(
+                    lambda _=False, sid=item.source: self.browser_host.reload(sid))
             count = len(self.source_list.selectedItems())
             turn = menu.addAction(f"Turn into {a(PART)}…" if count < 2 else f"Turn these {count} into {a(PART)}…")
             turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
@@ -2078,6 +2085,8 @@ class MainWindow(QMainWindow):
             self.replay = None
         self.timer.stop()
         self.engine.stop()
+        if self.browser_host is not None:
+            self.browser_host.shutdown()
         super().closeEvent(event)
 
     # Selection helpers -----------------------------------------------------
@@ -2404,6 +2413,7 @@ class MainWindow(QMainWindow):
                     "window_capture": "Window",
                     "camera": "Camera",
                     "text": "Text",
+                    "browser": "Page",
                 }.get(config.kind, "Settings")
             )
             self.prop_status.setText(self._status_text(item.source))
@@ -3044,6 +3054,19 @@ class MainWindow(QMainWindow):
 
     def _add_text(self) -> None:
         self._add_from_class("text", "Text")
+
+    def _add_browser(self) -> None:
+        if self.browser_host is None:
+            QMessageBox.information(self, "SprigCast", "Browser sources need Qt WebEngine, which isn't installed.")
+            return
+        self._add_from_class("browser", "Browser")
+        config = self.collection.sources[-1] if self.collection.sources else None
+        if config is not None and config.kind == "browser":
+            from sprigcast.sources.browser import page_name
+
+            config.name = page_name(config.settings)
+            self._changed()
+            self._refresh_sources(keep_row=self.source_list.currentRow())
 
     def _add_from_class(self, kind: str, name: str) -> None:
         """Add a source whose settings form is described by its class's `defaults` (text and plugins)."""

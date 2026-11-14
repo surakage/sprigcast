@@ -6,7 +6,7 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "pyside6>=6.7",
+    "pyside6>=6.12",  # Qt WebEngine 6.12 = Chromium 140 for browser sources and web docks
     "moderngl>=5.10",
     "numpy>=1.26",
     "pydantic>=2.6",

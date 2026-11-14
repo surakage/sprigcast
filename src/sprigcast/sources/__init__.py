@@ -2,6 +2,7 @@
 
 from sprigcast.sources import (  # noqa: F401
     audio,
+    browser,
     camera,
     capture,
     color,
