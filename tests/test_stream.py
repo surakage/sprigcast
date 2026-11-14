@@ -143,20 +143,20 @@ def test_health_grace_after_connect_and_warnings_are_held(monkeypatch):
     st.connected, st._connected_at = True, time.monotonic()
     st.health()
     st.frames, st.dropped = 20, 10  # backlog from the handshake: inside the grace period
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     assert st.health() == ("good", "live")
     st._connected_at -= 10  # well after connecting
     st.health()
     st.frames, st.dropped = 40, 11
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     level, reason = st.health()
     assert level == "warning" and "falling behind" in reason
     st.frames += 30
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     assert st.health() == (level, reason)  # recovered, but still shown for a while
     st._held = (level, reason, time.monotonic() - 1)
     st.frames += 30
-    time.sleep(0.01)
+    time.sleep(0.05)  # Windows clock ticks every ~16 ms
     assert st.health() == ("good", "live")
 
 
