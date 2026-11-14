@@ -43,7 +43,7 @@ from sprigcast.core.scene import SceneCollection
 from sprigcast.core.source import known_kinds, source_class
 
 TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Connections", "Plugins"]
-TAB_ALIASES = {"Recording": "Output"}  # older menu entries
+TAB_ALIASES = {"Recording": "Output", "Clips": "Output"}  # older menu entries and Output's own tabs
 ABOUT = {  # one line under each page's title
     "General": "Look, startup, snapping and the questions SprigCast asks first.",
     "Stream": "The places you go live, and what each one gets.",
@@ -71,7 +71,8 @@ def window_style() -> str:
     top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: 14px; font-weight: 600; }}
 #settingsWindow QLineEdit, #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox,
 #settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.PANEL}; border: none;
-    border-radius: 10px; padding: 6px 10px; }}
+    border-radius: 10px; padding: 7px 14px; min-height: 20px; }}
+#settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox {{ padding-right: 24px; }}
 #settingsWindow QLineEdit:focus, #settingsWindow QSpinBox:focus, #settingsWindow QDoubleSpinBox:focus,
 #settingsWindow QComboBox:focus {{ background: {t.RAISED}; }}
 #settingsWindow QComboBox::drop-down {{ border: none; width: 26px; background: transparent; }}
@@ -86,7 +87,15 @@ def window_style() -> str:
 #settingsWindow QScrollArea {{ background: transparent; border: none; }}
 #settingsWindow QScrollArea > QWidget > QWidget {{ background: transparent; }}
 """
-FPS_CHOICES = [24, 25, 30, 48, 50, 60]
+FPS_CHOICES = [24, 25, 30, 48, 50, 60, 120]
+# Output (scaled) resolution: the short side viewers and recordings get. None = the base size.
+OUTPUT_SIDES = [None, 1440, 1080, 936, 900, 864, 720, 540, 480, 360]
+DOWNSCALE_LABELS = {
+    "bilinear": "Bilinear (fastest, a little soft)",
+    "area": "Area (smooth, no shimmer)",
+    "bicubic": "Bicubic (sharp, 16 samples)",
+    "lanczos": "Lanczos (sharpest, 36 samples)",
+}
 AUDIO_KINDS = ("audio_input", "audio_output")
 
 # QSettings keys
@@ -443,46 +452,96 @@ class SettingsWindow(QDialog):
         return _page(group, hint)
 
     def _video_page(self) -> QWidget:
+        """One card per canvas: base size (what you build on), output size (what viewers get), filter, fps."""
         pending = pending_video()
-        group = QGroupBox("Canvases")
-        grid = QFormLayout(group)
+        locked = self.streaming or self.recording
+        cards: list[QWidget] = []
         self.video_fields: dict[str, tuple[QCheckBox, QSpinBox, QSpinBox, QComboBox]] = {}
+        self.video_output: dict[str, tuple[QComboBox, QComboBox]] = {}
         for canvas in self.collection.canvases:
-            values = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps, "enabled": canvas.enabled}
-            values.update(pending.get(canvas.id, {}))
-            values["enabled"] = canvas.enabled  # on/off applies right away, never waits for a restart
+            values = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps}
+            values.update({k: v for k, v in pending.get(canvas.id, {}).items() if k in values})
+            card = QGroupBox(f"{canvas.id.capitalize()} canvas")
+            form = QFormLayout(card)
+            form.setVerticalSpacing(12)
+            form.setHorizontalSpacing(18)
             enabled = QCheckBox("On")
-            enabled.setChecked(bool(values["enabled"]))
+            enabled.setChecked(canvas.enabled)
+            enabled.setToolTip("Off: this canvas stops rendering and leaves the window right away")
+            form.addRow("Canvas", enabled)
             width, height = QSpinBox(), QSpinBox()
             for box, value in ((width, values["width"]), (height, values["height"])):
                 box.setRange(16, 7680)
                 box.setSingleStep(2)
                 box.setValue(int(value))
+                box.setFixedWidth(112)
+                # NoButtons + the window stylesheet collapses the text to nothing, so hide the arrows instead.
+                box.setStyleSheet("QSpinBox { padding: 7px 14px; }"
+                                  " QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
+                box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            size_row = QHBoxLayout()
+            size_row.setSpacing(10)
+            size_row.addWidget(width)
+            times = QLabel("×")
+            times.setStyleSheet(f"color: {theme.MUTED}")
+            size_row.addWidget(times)
+            size_row.addWidget(height)
+            size_row.addStretch(1)
+            form.addRow("Base (canvas) size", size_row)
+            form.addRow("", _hint("What you see and build on."))
+            out = QComboBox()
+            out.setMinimumWidth(240)
+            form.addRow("Output (scaled) size", out)
+            out_note = _hint("")
+            form.addRow("", out_note)
+            downscale = QComboBox()
+            for key, label in DOWNSCALE_LABELS.items():
+                downscale.addItem(label, key)
+            downscale.setCurrentIndex(max(0, downscale.findData(canvas.downscale)))
+            form.addRow("Downscale filter", downscale)
             fps = QComboBox()
             for choice in FPS_CHOICES:
                 fps.addItem(f"{choice} fps", choice)
             if fps.findData(int(values["fps"])) < 0:
                 fps.addItem(f"{values['fps']} fps", int(values["fps"]))
             fps.setCurrentIndex(fps.findData(int(values["fps"])))
-            row = QHBoxLayout()
-            row.addWidget(enabled)
-            row.addWidget(width)
-            row.addWidget(QLabel("×"))
-            row.addWidget(height)
-            row.addWidget(fps)
-            row.addStretch(1)
-            grid.addRow(canvas.id.capitalize(), row)
+            form.addRow("Frame rate", fps)
+
+            def fill(_=None, out=out, width=width, height=height, note=out_note, current=canvas.output_short_side,
+                     downscale=downscale):
+                keep = out.currentData() if out.count() else current
+                w, h = width.value(), height.value()
+                short = min(w, h)
+                out.blockSignals(True)
+                out.clear()
+                out.addItem(f"Same as base ({w}×{h})", None)
+                for side in OUTPUT_SIDES[1:]:
+                    if side < short:
+                        k = side / short
+                        out.addItem(f"{round(w * k / 2) * 2}×{round(h * k / 2) * 2}", side)
+                out.setCurrentIndex(max(0, out.findData(keep)))
+                out.blockSignals(False)
+                scaled = out.currentData() is not None
+                downscale.setEnabled(scaled and not locked)
+                note.setText("What viewers and recordings get. Each place in Settings → Stream can still pick "
+                             "its own size." if not scaled else
+                             "Viewers and recordings get this smaller size: lighter on the encoder and upload.")
+            width.valueChanged.connect(fill)
+            height.valueChanged.connect(fill)
+            out.currentIndexChanged.connect(fill)
+            fill()
             self.video_fields[canvas.id] = (enabled, width, height, fps)
-            if self.streaming or self.recording:
-                for widget in (enabled, width, height, fps):
+            self.video_output[canvas.id] = (out, downscale)
+            if locked:
+                for widget in (enabled, width, height, fps, out, downscale):
                     widget.setEnabled(False)
-        note = ("Untick a canvas to work with just one: it stops rendering and leaves the window right away "
-                "(also in Settings → Show canvases). Size and frame rate change the next time SprigCast starts.")
+            cards.append(card)
+        note = "Base size and frame rate change the next time SprigCast starts. Output size and filter apply to the next stream or recording."
         if pending:
             note += " Changes are waiting for a restart."
-        if self.streaming or self.recording:
+        if locked:
             note = "Stop streaming and recording to change the canvases. " + note
-        return _page(group, _hint(note))
+        return _page(*cards, _hint(note))
 
     def _connections_page(self, control) -> QWidget:
         from sprigcast.app.connections_page import ConnectionsPage
@@ -559,6 +618,10 @@ class SettingsWindow(QDialog):
                 current = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps}
                 if wanted != current:
                     changes[canvas.id] = wanted
+            for canvas in self.collection.canvases:
+                out, downscale = self.video_output[canvas.id]
+                canvas.output_short_side = out.currentData()
+                canvas.downscale = downscale.currentData()
             if changes:
                 settings.setValue(PENDING_VIDEO, json.dumps(changes))
             else:

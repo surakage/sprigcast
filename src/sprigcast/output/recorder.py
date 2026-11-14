@@ -249,6 +249,57 @@ CODEC_LABELS = {
 }
 CODEC_SHORT = {"h264_nvenc": "NVENC", "h264_amf": "AMF", "h264_qsv": "Quick Sync", "h264_mf": "Media Foundation",
                "libx264": "x264 (CPU)"}
+# Every encoder Settings → Output can offer, grouped by chip. H.264 works everywhere; HEVC and AV1 make smaller
+# files for the same quality and are offered for recordings and clips (most streaming sites want H.264).
+ENCODER_FAMILIES = {
+    "nvenc": ("h264_nvenc", "hevc_nvenc", "av1_nvenc"),
+    "amf": ("h264_amf", "hevc_amf", "av1_amf"),
+    "qsv": ("h264_qsv", "hevc_qsv", "av1_qsv"),
+    "mf": ("h264_mf",),
+}
+ENCODER_NAMES = {
+    "h264_nvenc": "NVIDIA NVENC H.264", "hevc_nvenc": "NVIDIA NVENC HEVC (H.265)", "av1_nvenc": "NVIDIA NVENC AV1",
+    "h264_amf": "AMD AMF H.264", "hevc_amf": "AMD AMF HEVC (H.265)", "av1_amf": "AMD AMF AV1",
+    "h264_qsv": "Intel Quick Sync H.264", "hevc_qsv": "Intel Quick Sync HEVC (H.265)", "av1_qsv": "Intel Quick Sync AV1",
+    "h264_mf": "Windows Media Foundation H.264",
+    "libx264": "x264 (CPU)",
+}
+X264_PRESET_NAMES = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow")
+X264_TUNES = ("", "film", "animation", "grain", "stillimage", "zerolatency")
+
+
+def family(codec: str) -> str:
+    """"nvenc", "amf", "qsv", "mf" or "x264"."""
+    return "x264" if codec == "libx264" else codec.rsplit("_", 1)[-1]
+
+
+def is_h264(codec: str) -> bool:
+    return codec.startswith("h264_") or codec == "libx264"
+
+
+def encoder_choices(streaming: bool) -> list[str]:
+    """The encoders to offer: this PC's graphics-card family (all its formats), then x264 on the CPU.
+
+    Streams get H.264 only: every site takes it, and RTMP has no room for the others on most of them.
+    """
+    found = family(pick_codec())
+    codecs = list(ENCODER_FAMILIES.get(found, ()))
+    if streaming:
+        codecs = [c for c in codecs if is_h264(c)]
+    return codecs + ["libx264"]
+
+
+def resolve_codec(enc=None, streaming: bool = False) -> str:
+    """The encoder a stream or recording uses: the one picked in Settings if it works here, else the best one."""
+    wanted = getattr(enc, "encoder", "auto") or "auto"
+    if wanted == "auto" or (streaming and not is_h264(wanted)):
+        return pick_codec()
+    if wanted in ENCODER_NAMES and encoder_works(wanted):
+        return wanted
+    log.info("%s isn't available here: using %s", wanted, codec_label(pick_codec()))
+    return pick_codec()
+
+
 _works: dict[str, bool] = {}  # codec -> it opened and encoded a frame (checked once per run)
 _plain: set[str] = set()  # codecs that only open without our options: video_options() gives them none
 _picked: str | None = None
@@ -265,7 +316,7 @@ def encoder_works(codec: str) -> bool:
     if codec not in _works:
         from sprigcast.core.scene import EncoderSettings
 
-        if codec == "libx264":
+        if codec == "libx264" or codec.startswith(("hevc_nvenc", "av1_nvenc")):
             _works[codec] = _try_encoder(codec)
         elif _try_encoder(codec, options=video_options(codec, EncoderSettings(b_frames=0), 2000)):
             _works[codec] = True
@@ -295,11 +346,15 @@ def pick_codec() -> str:
 
 
 def codec_label(codec: str) -> str:
-    return CODEC_LABELS.get(codec, codec)
+    return CODEC_LABELS.get(codec) or ENCODER_NAMES.get(codec, codec)
 
 
 def codec_short(codec: str) -> str:
-    return CODEC_SHORT.get(codec, codec)
+    if codec in CODEC_SHORT:
+        return CODEC_SHORT[codec]
+    fam = {"nvenc": "NVENC", "amf": "AMF", "qsv": "Quick Sync"}.get(family(codec), codec)
+    fmt = "HEVC" if codec.startswith("hevc") else "AV1" if codec.startswith("av1") else ""
+    return f"{fam} {fmt}".strip()
 
 
 def shrink_to(width: int, height: int, short_side: int | None) -> tuple[int, int] | None:
@@ -377,7 +432,7 @@ def rate_limits(codec: str, enc, bitrate_kbps: int) -> tuple[int, int]:
     k = bitrate_kbps
     if enc.rate_control == "cbr":
         return k, k
-    if enc.rate_control == "vbr" and codec in ("h264_nvenc", "h264_amf", "h264_qsv"):
+    if enc.rate_control == "vbr" and family(codec) in ("nvenc", "amf", "qsv"):
         return int(k * 1.5), k * 2
     return 0, 0
 
@@ -388,9 +443,13 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
     hrd=False leaves out x264's strict CBR signalling, which would stop the bitrate changing mid-stream.
     """
     k = bitrate_kbps
-    if codec == "h264_nvenc":
-        opts = {"preset": enc.preset, "tune": enc.tuning, "profile": enc.profile,
-                "multipass": enc.multipass, "spatial-aq": "1" if enc.adaptive_quant else "0"}
+    if family(codec) == "nvenc":
+        opts = {"preset": enc.preset, "tune": enc.tuning, "multipass": enc.multipass,
+                "spatial-aq": "1" if enc.adaptive_quant else "0"}
+        if codec == "h264_nvenc":
+            opts["profile"] = enc.profile
+        elif codec == "hevc_nvenc":
+            opts["profile"] = "main"
         if enc.rate_control == "cqp":
             opts.update(rc="constqp", qp=str(enc.cq_level))
         elif enc.rate_control == "cbr":
@@ -407,14 +466,24 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
         return opts
     if codec in _plain:
         return dict(BASE_OPTIONS.get(codec, {}))
-    if codec == "h264_amf":
-        return _amf_options(enc, k)
-    if codec == "h264_qsv":
-        return _qsv_options(enc, k)
+    if family(codec) == "amf":
+        opts = _amf_options(enc, k)
+        if codec != "h264_amf":
+            opts.pop("profile", None)  # HEVC and AV1 have their own profiles: leave them to the driver
+        return opts
+    if family(codec) == "qsv":
+        opts = _qsv_options(enc, k)
+        if codec != "h264_qsv":
+            opts.pop("profile", None)
+        return opts
     if codec == "h264_mf":
         return _mf_options(enc, k)
-    opts = {"preset": X264_PRESETS.get(enc.preset, "veryfast"), "profile": enc.profile}
-    if enc.tuning in ("ll", "ull"):
+    preset = getattr(enc, "x264_preset", "") or X264_PRESETS.get(enc.preset, "veryfast")
+    opts = {"preset": preset if preset in X264_PRESET_NAMES else "veryfast", "profile": enc.profile}
+    tune = getattr(enc, "x264_tune", "")
+    if tune in X264_TUNES and tune:
+        opts["tune"] = tune
+    elif enc.tuning in ("ll", "ull"):
         opts["tune"] = "zerolatency"
     if enc.rate_control == "cqp":
         opts["crf"] = str(enc.cq_level)

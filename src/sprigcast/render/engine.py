@@ -408,6 +408,7 @@ class Engine:
             elif existing.settings != config.settings:
                 existing.update(config.settings)
         self._sync_filters(compositor, wanted)
+        compositor.downscale = {c.id: c.downscale for c in self._collection.canvases}
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
         self._sync_audio_options()

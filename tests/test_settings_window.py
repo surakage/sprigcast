@@ -169,7 +169,27 @@ def test_settings_look_titles_pills_and_folded_encoder(app):
     form = w.output_page.stream_form
     w.show()
     app.processEvents()
-    assert not form.preset.isVisible() and form.rate_control.isVisible()  # fine controls fold away
-    form.more.click()
-    assert form.preset.isVisible() and form.more.text() == "Hide advanced"
+    assert form.rate_control.isVisible() and not hasattr(form, "more")  # everything shows, no fold
+    x264 = form.encoder.findData("libx264")
+    assert x264 >= 0 and form.encoder.findData("hevc_nvenc") < 0  # streams: H.264 encoders only
+    form.encoder.setCurrentIndex(x264)
+    app.processEvents()
+    assert form.x264_preset.isVisible() and not form.multipass.isVisible()
+    form.x264_preset.setCurrentIndex(form.x264_preset.findData("faster"))
+    assert form.values().encoder == "libx264" and form.values().x264_preset == "faster"
+    assert [w.output_page.tabs.tabText(i) for i in range(w.output_page.tabs.count())] == [
+        "Streaming", "Recording", "Clips (replay buffer)"]
     w.close()
+
+
+def test_video_page_base_and_output_size(app):
+    col = _collection()
+    w = _window(col, tab="Video")
+    out, downscale = w.video_output["horizontal"]
+    assert out.itemText(0).startswith("Same as base (1920×1080)")
+    out.setCurrentIndex(out.findData(720))
+    assert out.currentText() == "1280×720" and downscale.isEnabled()
+    downscale.setCurrentIndex(downscale.findData("lanczos"))
+    assert w.apply()
+    assert col.canvases[0].output_short_side == 720 and col.canvases[0].downscale == "lanczos"
+    assert col.canvases[0].output_size() == (1280, 720)

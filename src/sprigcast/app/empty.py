@@ -198,7 +198,7 @@ class _PulsingLive(ArtPicture):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        centre = QPointF(self.width() * 0.86, self.height() * 0.4)
+        centre = QPointF(self.width() * 0.9, self.height() * 0.565)  # cupped in the waving paw
         r = max(3.0, self.width() * 0.045)
         glow = QColor(theme.LIVE)
         glow.setAlphaF(0.18 + 0.22 * (0.5 + 0.5 * math.sin(self.phase * 2 * math.pi)))
