@@ -32,6 +32,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Horizontal and Vertical tabs, one shared Sound list, undo and redo, a smart + Add button (#186).
 - Starter kit: pick what you want and SprigCast builds the first blooms for you (#186, #188, #191, #194).
 - Bloom pictures, drag a sprig in, source icons, and "used in" links (#175).
+- Fill the canvas (Ctrl+Alt+F) crops a camera evenly so no empty strips show; smoother webcam dragging (#220, #221).
+- Starter kit always offers Vertical versions, and Just Chatting's camera fills the canvas (#220, #221).
 
 ### Settings
 
@@ -44,6 +46,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Hotkeys page: grouped cards, search, and keys for sounds, clips, Studio mode and Build/Live (#204).
 - Advanced page: process priority, recording file names, MP4 copies, colour, and a stream delay (#202, #206).
   While the delay runs, the Go live card says "Going out in N s" instead of Connecting (#215).
+  Stopping a delayed stream sends its last seconds instead of dropping them (#216).
+- Number fields have room inside so numbers don't touch the edge (#224).
 
 ### Sound
 
@@ -52,7 +56,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - "Mic first" ducking: other sounds dip while you talk (#135).
 - Named tracks: Stream, Recording, Voice and Clips, chosen per sound (#154).
 - Tracks 1 to 5, including a VOD-safe track, and each recording picks its tracks (#203).
-- Source record: record one sound or source on its own (#209).
+- Source record: a second recording without the sources you pick, like alerts (#209).
+- Capture sound: right-click a game or window capture → Sound to bring the app's own sound, or any output, as its own row (#225).
+- Elgato Wave Link channels and mixes are offered first for desktop sound, named like "Game · Elgato Wave Link" (#223, #225).
 - Browser sources can play sound (#147).
 - Cheaper level meters (#199).
 
@@ -86,6 +92,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Color looks (LUTs) and shapes for any source (#168).
 - Media source: video and sound files, with play and pause from menus, hotkeys and the API (#198).
 - SprigCast Camera: a Windows 11 virtual camera, set up in Output → Virtual camera (#208).
+- Virtual camera Shows list: match the app, a whole canvas, one bloom or one source; fixed the camera not starting in TikTok LIVE Studio (#224).
+- Media files no longer loop with Loop off, and .webm files end cleanly (#220, #222).
 
 ### Chat
 
@@ -116,6 +124,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 ### Tests
 
 - The test suite passes on Windows 11 too (#210, #214).
+- Recordings no longer skip their second frame, which also fixed a flaky test (#216, #218).
 
 ## 0.1.0
 
