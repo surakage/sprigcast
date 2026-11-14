@@ -1,0 +1,38 @@
+name: Camera DLL
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["native/camera/**", ".github/workflows/camera.yml"]
+  pull_request:
+    paths: ["native/camera/**", ".github/workflows/camera.yml"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake -S native/camera -B build/camera -A x64
+          cmake --build build/camera --config Release
+      - name: Check the exports
+        shell: pwsh
+        run: |
+          $dll = "build/camera/Release/sprigcast_camera.dll"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
+          $out = & $dumpbin.FullName /exports $dll | Out-String
+          foreach ($name in "DllGetClassObject", "DllRegisterServer", "SC_Start", "SC_Stop", "SC_Version") {
+            if ($out -notmatch $name) { throw "missing export $name" }
+          }
+          $deps = & $dumpbin.FullName /dependents $dll | Out-String
+          if ($deps -match "VCRUNTIME|MSVCP") { throw "the DLL must not need the VC++ runtime: $deps" }
+          Write-Output $deps
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sprigcast-camera
+          path: build/camera/Release/sprigcast_camera.dll
+          retention-days: 14

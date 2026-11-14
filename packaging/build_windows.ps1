@@ -32,6 +32,13 @@ Pop-Location
 uv pip install --python $python --break-system-packages -r (Join-Path $build "requirements.txt")
 uv pip install --python $python --break-system-packages --no-deps $root
 
+# 2b. The virtual camera (a Windows 11 media source DLL) next to the sprigcast package.
+cmake -S (Join-Path $root "native\camera") -B (Join-Path $build "camera") -A x64
+cmake --build (Join-Path $build "camera") --config Release
+$camDir = Join-Path $build "python\Lib\site-packages\sprigcast\camera"
+New-Item -ItemType Directory -Force $camDir | Out-Null
+Copy-Item (Join-Path $build "camera\Release\sprigcast_camera.dll") $camDir
+
 # 3. Leave out what never runs on a user's PC (tests, caches, headers, pip itself).
 $py = Join-Path $build "python"
 Get-ChildItem $py -Recurse -Directory -Include "__pycache__", "tests", "test" -ErrorAction SilentlyContinue |

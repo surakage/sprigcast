@@ -179,7 +179,7 @@ def test_settings_look_titles_pills_and_folded_encoder(app):
     form.x264_preset.setCurrentIndex(form.x264_preset.findData("faster"))
     assert form.values().encoder == "libx264" and form.values().x264_preset == "faster"
     assert [w.output_page.tabs.tabText(i) for i in range(w.output_page.tabs.count())] == [
-        "Streaming", "Recording", "Clips (replay buffer)"]
+        "Streaming", "Recording", "Clips (replay buffer)", "Virtual camera"]
     w.close()
 
 
@@ -241,3 +241,16 @@ def test_hotkeys_page_cards_search_and_sound_keys(app):
     page.edits[f"{SOUND_PREFIX}mic-1:toggle"].setKeySequence(QKeySequence("Ctrl+M"))
     assert page.count.text() == "1 key set"
     assert w.apply() and col.hotkeys == {f"{SOUND_PREFIX}mic-1:toggle": "Ctrl+M"}
+
+
+def test_virtual_camera_tab(app):
+    from sprigcast.app.output_page import camera_wanted
+
+    w = _window(_collection(), tab="Output")
+    w.output_page.show_tab("Camera")
+    tab = w.output_page.camera_tab
+    assert w.output_page.tabs.tabText(w.output_page.tabs.currentIndex()) == "Virtual camera"
+    assert "Windows 11" in tab.status.text() and not tab.setup.isVisible() and not tab.on.isEnabled()
+    tab.on.setEnabled(True)
+    tab.on.setChecked(True)
+    assert w.apply() and camera_wanted()
