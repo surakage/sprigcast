@@ -208,14 +208,22 @@ class VirtualCamera:
     poll() runs once a second on the UI thread; frames are copied on the render thread.
     """
 
-    def __init__(self, engine, canvases, open_block=open_block, clock=now_ms):
+    def __init__(self, engine, canvases, open_block=open_block, clock=now_ms, choice=lambda: "auto",
+                 scenes=lambda: []):
         self.engine = engine
         self.canvases = canvases  # callable: the collection's canvases (id, width, height, enabled)
+        # callable: what to show: "auto" (the canvas shaped like the app's request), "canvas:<id>",
+        # "bloom:<scene id>" or "source:<source id>" (Settings → Output → Virtual camera)
+        self.choice = choice
+        self.scenes = scenes  # callable: the collection's scenes (id, canvas), to find a bloom's canvas
+        self._pad = None  # (size, numpy NV12 buffer) for letter/pillarboxing a picture of another shape
         self._open_block = open_block
         self._clock = clock
         self._dll = None
         self.block: SharedBlock | None = None
-        self.tap: tuple[str, tuple[int, int]] | None = None  # (canvas id, size) being fed
+        # (tap id, picture size, camera size): "horizontal", "view:camera"...; picture fits inside camera size
+        self.tap: tuple[str, tuple[int, int], tuple[int, int]] | None = None
+        self._view = self._shown = None  # (canvas id, "bloom"|"source", ref) for a view tap
         self._retired: SharedBlock | None = None  # unmapped a poll later, so a frame mid-copy can't fault
         self.error = ""
         self.frames = 0
@@ -238,11 +246,20 @@ class VirtualCamera:
             return False
         if hr < 0:
             self.error = f"Windows refused the camera (0x{hr & 0xFFFFFFFF:08X})."
-            log.warning("virtual camera: SC_Start failed 0x%08X", hr & 0xFFFFFFFF)
+            log.warning("virtual camera: SC_Start failed 0x%08X at step %s", hr & 0xFFFFFFFF, self._stage())
             return False
         self.error = ""
         log.info("virtual camera on")
         return True
+
+    def _stage(self) -> str:
+        """Which step of SC_Start went wrong (newer DLLs only), for the log."""
+        try:
+            stage = self._dll.SC_Stage
+        except (AttributeError, OSError):
+            return "?"
+        stage.restype = ctypes.c_uint32
+        return {1: "startup", 2: "create", 3: "start"}.get(stage(), str(stage()))
 
     def stop(self) -> None:
         self._untap()
@@ -279,35 +296,106 @@ class VirtualCamera:
             if not block.valid or not (width and height):
                 self._retired, self.block = block, None  # the camera closed it; open again when watched
             return
-        canvas_id = self._canvas_for(width, height)
-        want = (canvas_id, (width, height)) if canvas_id else None
-        if want != self.tap:
+        want = self._want(width, height)
+        if want != self.tap or self._view != self._shown:  # a bloom or source view keeps the same tap id
             self._untap()
             if want is not None:
-                self.engine.add_frame_tap(want[0], self._on_frame, want[1])
-                self.tap = want
-                log.info("virtual camera: an app is watching, %dx%d from the %s canvas", width, height, want[0])
+                tap_id, picture, _camera = want
+                if tap_id == VIEW_TAP:
+                    self.engine.set_view(VIEW, *self._view)
+                self.engine.add_frame_tap(tap_id, self._on_frame, picture)
+                self.tap, self._shown = want, self._view
+                log.info("virtual camera: an app is watching at %dx%d, showing %s", width, height, self.choice())
 
-    def _canvas_for(self, width: int, height: int) -> str | None:
+    def _canvas_for(self, width: int, height: int):
         """The canvas with the same shape as what the app asked for, else any canvas that's on."""
         on = [c for c in self.canvases() if getattr(c, "enabled", True)]
         portrait = height > width
         for canvas in on:
             if (canvas.height > canvas.width) == portrait:
-                return canvas.id
-        return on[0].id if on else None
+                return canvas
+        return on[0] if on else None
+
+    def _want(self, width: int, height: int):
+        """(tap id, picture size, camera size) for the current choice, or None when there's nothing to show."""
+        kind, _, ref = (self.choice() or "auto").partition(":")
+        canvases = {c.id: c for c in self.canvases()}
+        self._view = None
+        if kind == "canvas" and ref in canvases:
+            canvas, tap_id = canvases[ref], ref
+        elif kind == "bloom":
+            scene = next((sc for sc in self.scenes() if sc.id == ref), None)
+            canvas = canvases.get(scene.canvas) if scene is not None else None
+            if canvas is None:
+                return None
+            tap_id, self._view = VIEW_TAP, (canvas.id, "bloom", ref)
+        elif kind == "source":
+            canvas = self._canvas_for(width, height)
+            if canvas is None:
+                return None
+            tap_id, self._view = VIEW_TAP, (canvas.id, "source", ref)
+        else:
+            canvas = self._canvas_for(width, height)
+            if canvas is None:
+                return None
+            tap_id = canvas.id
+        return tap_id, fit_inside((canvas.width, canvas.height), (width, height)), (width, height)
 
     def _untap(self) -> None:
         if self.tap is not None:
             self.engine.remove_frame_tap(self.tap[0], self._on_frame)
-            self.tap = None
+            if self.tap[0] == VIEW_TAP:
+                self.engine.set_view(VIEW, None)
+            self.tap = self._shown = None
             log.info("virtual camera: nobody watching")
 
     # Render thread -----------------------------------------------------------------------
 
     def _on_frame(self, frame) -> None:
-        block = self.block
-        if block is None or getattr(frame, "fmt", "") != "nv12":
+        block, tap = self.block, self.tap
+        if block is None or tap is None or getattr(frame, "fmt", "") != "nv12":
             return
-        if block.write(frame.width, frame.height, frame.data):
+        width, height = tap[2]
+        data = frame.data
+        if (frame.width, frame.height) != (width, height):
+            data = self._boxed(frame, width, height)
+            if data is None:
+                return
+        if block.write(width, height, data):
             self.frames += 1
+
+    def _boxed(self, frame, width: int, height: int):
+        """A picture of another shape in the middle of the camera's frame, with black bars around it."""
+        import numpy as np
+
+        fw, fh = frame.width, frame.height
+        if fw > width or fh > height:
+            return None
+        if self._pad is None or self._pad[0] != (width, height):
+            buf = np.empty(width * height * 3 // 2, np.uint8)
+            buf[: width * height] = 16  # black, limited range
+            buf[width * height:] = 128
+            self._pad = ((width, height), buf)
+        buf = self._pad[1]
+        x0, y0 = (width - fw) // 4 * 2, (height - fh) // 4 * 2  # even, so chroma lines up
+        src = np.frombuffer(frame.data, np.uint8)
+        y = buf[: width * height].reshape(height, width)
+        y[y0:y0 + fh, x0:x0 + fw] = src[: fw * fh].reshape(fh, fw)
+        uv = buf[width * height:].reshape(height // 2, width)
+        uv[y0 // 2:(y0 + fh) // 2, x0:x0 + fw] = src[fw * fh: fw * fh * 3 // 2].reshape(fh // 2, fw)
+        return buf.tobytes()
+
+
+VIEW = "camera"
+VIEW_TAP = f"view:{VIEW}"
+
+
+def fit_inside(picture: tuple[int, int], box: tuple[int, int]) -> tuple[int, int]:
+    """The biggest even size with the picture's shape that fits in the box (the box itself if same shape)."""
+    pw, ph = picture
+    bw, bh = box
+    k = min(bw / max(1, pw), bh / max(1, ph))
+    w, h = min(bw, round(pw * k / 2) * 2), min(bh, round(ph * k / 2) * 2)
+    if abs(w - bw) <= 2 and abs(h - bh) <= 2:
+        return bw, bh
+    return max(2, w), max(2, h)

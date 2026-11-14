@@ -112,6 +112,10 @@ class Engine:
         # Source record: canvas id -> sources left out of its clean copy ("clean:<canvas id>"), which
         # frame taps on that id get. Replaced whole by the UI (see set_clean).
         self.clean_hidden: dict[str, frozenset[str]] = {}
+        # Extra pictures for taps on "view:<name>" (the virtual camera): name -> (canvas id, kind, ref),
+        # kind "bloom" (a bloom drawn whether or not it's on air) or "source" (one source, fitted).
+        # Replaced whole by the UI (see set_view); drawn only while something taps them.
+        self.views: dict[str, tuple[str, str, str]] = {}
 
     # Called from the UI thread ----------------------------------------------
 
@@ -145,6 +149,53 @@ class Engine:
         else:
             clean[canvas_id] = frozenset(hidden)
         self.clean_hidden = clean
+
+    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref: str = "") -> None:
+        """Draw a bloom or a single source on a canvas's size for taps on "view:<name>" (None: stop)."""
+        views = dict(self.views)
+        if canvas_id is None:
+            views.pop(name, None)
+        else:
+            views[name] = (canvas_id, kind, ref)
+        self.views = views
+
+    def _view_scene(self, name: str, sizes: dict | None = None):
+        """The scene a view draws, or None when what it names is gone."""
+        from sprigcast.core.scene import Scene, SceneItem
+
+        canvas_id, kind, ref = self.views[name]
+        collection = self._collection
+        canvas = next((c for c in collection.canvases if c.id == canvas_id), None)
+        if canvas is None:
+            return None, None
+        if kind == "bloom":
+            return canvas, next((sc for sc in collection.scenes if sc.id == ref), None)
+        if kind == "source" and any(src.id == ref for src in collection.sources):
+            w, h = (sizes or {}).get(ref) or (canvas.width, canvas.height)
+            k = min(canvas.width / max(1, w), canvas.height / max(1, h))
+            item = SceneItem(source=ref, x=(canvas.width - w * k) / 2, y=(canvas.height - h * k) / 2, scale=k)
+            return canvas, Scene(id=f"view:{name}", name=name, canvas=canvas_id, items=[item])
+        return canvas, None
+
+    def _render_views(self, compositor, sizes, now: float, taps: dict) -> None:
+        for name in list(self.views):
+            outputs = taps.get(f"view:{name}", ())
+            if not outputs:
+                continue
+            canvas, scene = self._view_scene(name, sizes)
+            if canvas is None:
+                continue
+            target = canvas.model_copy(update={"id": f"view:{name}"})
+            compositor.render(target, scene, sizes)
+            frames: dict = {}
+            for callback, nv12_size in outputs:
+                frame = self._frame(compositor, target, nv12_size, now, frames)
+                if frame is None:
+                    continue
+                try:
+                    callback(frame)
+                except Exception:
+                    log.exception("frame tap for view %s failed", name)
 
     def stop(self, timeout: float = 2.0) -> None:
         self.commands.put(Shutdown())
@@ -553,6 +604,10 @@ class Engine:
             running = self._transitions.get(canvas.id)
             if running is not None and running.outgoing not in drawn:
                 drawn.append(running.outgoing)
+        for name in list(self.views):  # what the virtual camera shows wakes its sources (and sprigs)
+            _canvas, scene = self._view_scene(name)
+            if scene is not None and scene not in drawn:
+                drawn.append(scene)
         return drawn
 
     def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
@@ -750,3 +805,4 @@ class Engine:
                     callback(frame)
                 except Exception:
                     log.exception("frame tap for %s failed", canvas.id)
+        self._render_views(compositor, sizes, now, taps)

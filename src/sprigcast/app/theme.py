@@ -243,6 +243,32 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
     app.setFont(font)
 
 
+def roomy_style():
+    """Fusion, plus room inside every number box in the app.
+
+    Qt ignores stylesheet padding for the text of a spin box (its inner line edit sits flush against the
+    left edge), so numbers would touch the edge of their rounded box. Every spin box gets text margins
+    when it is polished instead: one place, so no number box anywhere can miss it.
+    """
+    from PySide6.QtWidgets import QAbstractSpinBox, QProxyStyle, QStyleFactory
+
+    class RoomyStyle(QProxyStyle):
+        def polish(self, target, *rest):
+            if not rest and isinstance(target, QAbstractSpinBox):
+                edit = target.lineEdit()
+                if edit is not None:
+                    centred = bool(target.alignment() & Qt.AlignmentFlag.AlignHCenter)
+                    edit.setTextMargins(*((NUMBER_PAD // 2, 0, NUMBER_PAD // 2, 0) if centred
+                                          else (NUMBER_PAD, 0, 4, 0)))
+            return super().polish(target, *rest)
+
+    # A new one each time: QApplication.setStyle takes ownership and deletes the style it replaces.
+    return RoomyStyle(QStyleFactory.create("Fusion"))
+
+
+NUMBER_PAD = 12  # px between a number and the left edge of its box, the same as text fields
+
+
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
     global _system_style, _applied
@@ -258,7 +284,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
         app.setStyle(_system_style)
         app.setPalette(app.style().standardPalette())
         return False
-    app.setStyle("Fusion")
+    app.setStyle(roomy_style())
     palette = QPalette()
     roles = {
         QPalette.ColorRole.Window: BG,

@@ -25,7 +25,7 @@ jobs:
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
           $out = & $dumpbin.FullName /exports $dll | Out-String
-          foreach ($name in "DllGetClassObject", "DllRegisterServer", "SC_Start", "SC_Stop", "SC_Version") {
+          foreach ($name in "DllGetClassObject", "DllRegisterServer", "SC_Start", "SC_Stop", "SC_Stage", "SC_Version") {
             if ($out -notmatch $name) { throw "missing export $name" }
           }
           $deps = & $dumpbin.FullName /dependents $dll | Out-String

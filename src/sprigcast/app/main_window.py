@@ -4562,12 +4562,13 @@ class MainWindow(QMainWindow):
 
     def _sync_camera(self) -> None:
         """Turn SprigCast Camera on or off to match Settings (it's only added while SprigCast runs)."""
-        from sprigcast.app.output_page import camera_wanted
+        from sprigcast.app.output_page import camera_choice, camera_wanted
         from sprigcast.output import virtualcam
 
         want = camera_wanted() and virtualcam.supported()[0] and virtualcam.installed()
         if want and self.camera is None:
-            camera = virtualcam.VirtualCamera(self.engine, lambda: self.collection.canvases)
+            camera = virtualcam.VirtualCamera(self.engine, lambda: self.collection.canvases, choice=camera_choice,
+                                              scenes=lambda: self.collection.scenes)
             if camera.start():
                 self.camera = camera
                 self._camera_timer.start()
