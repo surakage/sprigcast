@@ -146,6 +146,8 @@ class StreamLink:
         self._ready = False  # connected and has stream headers: packets are wanted
         self._started = False  # the first keyframe went out (everything before it is skipped)
         self._congested = False
+        self.delay_s = 0.0  # Settings → Advanced → Stream delay
+        self._delay_line = None
         self._zero = 0.0  # seconds of the first packet sent on this connection
         self._connected_at = 0.0
         self._health: tuple | None = None
@@ -253,7 +255,7 @@ class StreamLink:
         if not self.connected:
             return ("warning" if self.status.startswith(("connecting", "reconnecting")) else "bad"), self.status
         if last is None or now <= last[0] or now - self._connected_at < GRACE_SECONDS:
-            return "good", "live"
+            return "good", f"live, {self.delay_s:g} s delay" if self.delay_s > 0 else "live"
         sent, lost = sample[1] - last[1], sample[2] - last[2]
         loss = lost / max(1, sent + lost)
         if loss > 0.05:
@@ -263,7 +265,7 @@ class StreamLink:
         behind = self.backlog_seconds()
         if behind > 1.0:
             return "warning", f"network slow, {behind:.1f} s behind"
-        return "good", "live"
+        return "good", f"live, {self.delay_s:g} s delay" if self.delay_s > 0 else "live"
 
     def summary(self) -> str:
         total = self.frames + self.dropped
@@ -304,8 +306,16 @@ class StreamLink:
                 self.dropped += 1
             return
         size = len(p.data or b"") or p.size
+        line = self._delay_line
+        if line is not None:
+            line.put((p, size))
+            return
         self._backlog_bytes += size
         self._q.put((p, size))
+
+    def _release(self, item) -> None:  # from the DelayLine, once the delay has passed
+        self._backlog_bytes += item[1]
+        self._q.put(item)
 
     # Link thread: connect, send, reconnect -----------------------------------------------
 
@@ -353,6 +363,10 @@ class StreamLink:
         try:
             out, streams = self._connect()
             self._started, self._congested = False, False
+            if self.delay_s > 0:
+                from sprigcast.output.delay import DelayLine
+
+                self._delay_line = DelayLine(self.delay_s, self._release, f"delay-{self.name}")
             self._ready = True
             self.shared.request_keyframe()
             while not self._stop.is_set():
@@ -367,6 +381,9 @@ class StreamLink:
         finally:
             self._ready = False
             self.connected = False
+            if self._delay_line is not None:
+                self._delay_line.close()
+                self._delay_line = None
             self._drain()
             if out is not None:
                 try:
