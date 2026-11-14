@@ -24,9 +24,11 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSlider,
@@ -112,6 +114,12 @@ def _chip(text: str, style: str = CHIP_STYLE, checkable: bool = False) -> QPushB
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     b.setCheckable(checkable)
     return b
+
+
+def _section_title(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet(f"color: {theme.TEXT}; background: transparent; font-weight: 600;")
+    return label
 
 
 def _muted_label(text: str) -> QLabel:
@@ -415,6 +423,37 @@ class SoundCard(QWidget):
         self.on_change(sound_id, changes)
 
 
+class PillPick(QPushButton):
+    """A pill showing one choice; clicking it lists the others. Speaks QComboBox's text API."""
+
+    currentTextChanged = Signal(str)  # noqa: N815 (Qt naming)
+
+    def __init__(self, choices: tuple[str, ...] | list[str]):
+        super().__init__()
+        self.choices = list(choices)
+        self._text = self.choices[0]
+        self.setStyleSheet(CHIP_STYLE + "QPushButton::menu-indicator { width: 0; image: none; }")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu = QMenu(self)
+        for choice in self.choices:
+            menu.addAction(choice, lambda c=choice: self.setCurrentText(c))
+        self.setMenu(menu)
+        self._show()
+
+    def currentText(self) -> str:  # noqa: N802
+        return self._text
+
+    def setCurrentText(self, text: str) -> None:  # noqa: N802
+        if text not in self.choices or text == self._text:
+            return
+        self._text = text
+        self._show()
+        self.currentTextChanged.emit(text)
+
+    def _show(self) -> None:
+        self.setText(f"{self._text}  ▾")
+
+
 class TunePage(QWidget):
     """Everything about one sound, inside the card. Changes apply at once."""
 
@@ -445,99 +484,119 @@ class TunePage(QWidget):
         self.meter = ThinMeter()
         col.addWidget(self.meter)
 
+        # Four calm sections, each its own soft card with room inside: how loud, where it goes,
+        # filters, and the rest. Nothing touches an edge.
+        level, box = self._section(col)
         self.volume_label = _muted_label("")
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setRange(-60, 12)
         self.volume.valueChanged.connect(self._volume_moved)
-        col.addLayout(self._labelled("Volume", self.volume_label))
-        col.addWidget(self.volume)
-
+        box.addLayout(self._labelled("Volume", self.volume_label))
+        box.addWidget(self.volume)
+        box.addSpacing(4)
         self.balance_label = _muted_label("")
         self.balance = QSlider(Qt.Orientation.Horizontal)
         self.balance.setRange(-100, 100)
         self.balance.setPageStep(10)
         self.balance.valueChanged.connect(self._balance_moved)
-        col.addLayout(self._labelled("Left · Right", self.balance_label))
-        col.addWidget(self.balance)
-
+        box.addLayout(self._labelled("Left · Right", self.balance_label))
+        box.addWidget(self.balance)
+        box.addSpacing(4)
         pair = QHBoxLayout()
-        pair.setSpacing(8)
+        pair.setSpacing(10)
         self.mono = _chip("Mono", checkable=True)
         self.mono.setToolTip("Both ears hear the same: for a mic that only comes out of one side")
         self.mono.toggled.connect(lambda on: self._send({"mono": on}))
         pair.addWidget(self.mono, 1)
-        delay_box = QHBoxLayout()
-        delay_box.setSpacing(6)
-        delay_box.addWidget(_muted_label("Delay"))
+        pair.addWidget(_muted_label("Delay"))
         self.delay = QSpinBox()
         self.delay.setRange(0, 2000)
         self.delay.setSingleStep(10)
         self.delay.setSuffix(" ms")
+        self.delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.delay.setToolTip("Hold this sound back to line it up with a camera that runs late")
         self.delay.setStyleSheet(
-            f"QSpinBox {{ background: {theme.RAISED}; border: none; border-radius: 11px; padding: 4px 8px;"
-            f" color: {theme.TEXT}; }} QSpinBox::up-button, QSpinBox::down-button {{ width: 0px; border: none; }}")
+            f"QSpinBox {{ background: {theme.RAISED}; border: none; border-radius: 13px; padding: 6px 12px;"
+            f" color: {theme.TEXT}; }} QSpinBox:hover, QSpinBox:focus {{ background: {theme.RAISED_HOVER}; }}"
+            "QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px;"
+            " border: none; }")
         self.delay.valueChanged.connect(lambda v: self._send({"delay_ms": v}))
-        delay_box.addWidget(self.delay, 1)
-        pair.addLayout(delay_box, 1)
-        col.addLayout(pair)
+        pair.addWidget(self.delay, 1)
+        box.addLayout(pair)
 
-        col.addWidget(_muted_label("Who hears it"))
+        _route, box = self._section(col, "Who hears it")
         hear = QHBoxLayout()
         hear.setSpacing(6)
         self.hear: dict[object, QPushButton] = {}
         for value, text, tip in ((False, "Stream", "On the stream and recordings, not your speakers"),
-                                 (True, "Me + stream", "On the stream and your speakers"),
+                                 (True, "Both", "On the stream and your speakers"),
                                  ("only", "Just me", "Only your speakers: never on the stream")):
             b = _chip(text, checkable=True)
             b.setToolTip(tip)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # share the width, never overflow
             b.clicked.connect(lambda _=False, v=value: self._send({"monitor": v}))
             self.hear[value] = b
             hear.addWidget(b, 1)
-        col.addLayout(hear)
-
-        col.addWidget(_muted_label("Goes to"))
-        goes = QHBoxLayout()
+        box.addLayout(hear)
+        box.addSpacing(6)
+        box.addWidget(_section_title("Goes to"))
+        goes = QGridLayout()
         goes.setSpacing(6)
         self.goes: dict[str, QPushButton] = {}
-        for track, text, tip in (("stream", "Stream", "Your live stream"),
-                                 ("recording", "Recording", "The recording's main sound"),
-                                 ("voice", "Voice", "The recording's voice-only track (Settings → Output → Recording)"),
-                                 ("clips", "Clips", "Saved clips")):
+        for i, (track, text, tip) in enumerate((("stream", "Stream", "Your live stream"),
+                                                ("recording", "Recording", "The recording's main sound"),
+                                                ("voice", "Voice", "The recording's voice-only track (Settings → Output → Recording)"),
+                                                ("clips", "Clips", "Saved clips"))):
             b = _chip(text, checkable=True)
             b.setToolTip(tip)
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             b.clicked.connect(self._tracks_clicked)
             self.goes[track] = b
-            goes.addWidget(b, 1)
-        col.addLayout(goes)
+            goes.addWidget(b, i // 2, i % 2)
+        box.addLayout(goes)
 
+        _filters, box = self._section(col)
         filters_top = QHBoxLayout()
-        filters_top.addWidget(_muted_label("Filters"), 1)
-        edit_filters = QPushButton("Edit filters")
+        filters_top.addWidget(_section_title("Filters"), 1)
+        edit_filters = QPushButton("Edit")
         edit_filters.setStyleSheet(theme.LINK_STYLE)
         edit_filters.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_filters.setToolTip("Noise gate, compressor, EQ...")
         edit_filters.clicked.connect(lambda: on_filters(self.sound_id))
         filters_top.addWidget(edit_filters)
-        col.addLayout(filters_top)
+        box.addLayout(filters_top)
         self.filters = QLabel("")
         self.filters.setWordWrap(True)
-        self.filters.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
-        col.addWidget(self.filters)
+        self.filters.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        box.addWidget(self.filters)
 
+        _more, box = self._section(col)
         group_row = QHBoxLayout()
         group_row.addWidget(_muted_label("Group"), 1)
-        self.group = QComboBox()
-        self.group.addItems(list(GROUPS))
+        self.group = PillPick(GROUPS)
         self.group.currentTextChanged.connect(lambda g: self._send({"group": g}))
         group_row.addWidget(self.group)
-        col.addLayout(group_row)
-
+        box.addLayout(group_row)
         self.pin = Switch()
         self.pin.toggled.connect(lambda on: self._send({"pinned": on}))
-        col.addLayout(self._switch_row("Always show", self.pin))
+        box.addLayout(self._switch_row("Always show", self.pin))
         self.duck = Switch()
         self.duck.toggled.connect(lambda on: self._send({"duck_voice": on}))
-        col.addLayout(self._switch_row("Lower other sounds when this talks", self.duck))
+        box.addLayout(self._switch_row("Lowers others when it talks", self.duck))
+
+    @staticmethod
+    def _section(col: QVBoxLayout, title: str = "") -> tuple[QFrame, QVBoxLayout]:
+        """A soft card inside the Sound card, padded so nothing touches its edges."""
+        frame = QFrame()
+        frame.setObjectName("tuneSection")
+        frame.setStyleSheet(f"#tuneSection {{ background: {theme.CARD}; border-radius: 14px; }}")
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(14, 12, 14, 14)
+        box.setSpacing(8)
+        if title:
+            box.addWidget(_section_title(title))
+        col.addWidget(frame)
+        return frame, box
 
     def _labelled(self, text: str, value: QLabel) -> QHBoxLayout:
         row = QHBoxLayout()
