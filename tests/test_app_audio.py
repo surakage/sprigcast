@@ -102,3 +102,25 @@ def test_starter_dialog_always_offers_vertical_versions():
     dlg.vertical.setChecked(True)
     assert dlg.choice(lambda d: {}).vertical
     dlg.deleteLater()
+
+
+def test_process_list_is_shared_and_cheap(monkeypatch):
+    import os
+    import sys
+    import time
+
+    from sprigcast.sources import app_audio
+
+    calls = []
+    monkeypatch.setattr(app_audio, "_shared", None)
+    monkeypatch.setattr(app_audio, "_list_processes", lambda: calls.append(1) or [(1, 0, "a.exe")])
+    assert app_audio.running_processes() == app_audio.running_processes() == [(1, 0, "a.exe")]
+    assert len(calls) == 1  # six App sound rows scanning together share one list
+    monkeypatch.setattr(app_audio, "_shared", (time.monotonic() - 5, []))
+    app_audio.running_processes()
+    assert len(calls) == 2  # an old list is taken again
+    if sys.platform == "win32":  # one snapshot, not psutil's walk per parent (8 s on a PC with 450 processes)
+        started = time.perf_counter()
+        procs = app_audio._toolhelp_processes()
+        assert time.perf_counter() - started < 1.0
+        assert any(pid == os.getpid() and parent == os.getppid() for pid, parent, _name in procs)
