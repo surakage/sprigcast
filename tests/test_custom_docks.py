@@ -24,8 +24,10 @@ def app(tmp_path):
 def test_urls_and_presets():
     assert cd.normalise_url("streamelements.com/overlay") == "https://streamelements.com/overlay"
     assert cd.normalise_url("http://localhost:8080") == "http://localhost:8080"
-    assert cd.preset_url("Twitch chat", " Surakage ") == "https://www.twitch.tv/popout/surakage/chat"
-    assert cd.preset_url("Twitch chat", "") == ""
+    assert cd.preset_url("Twitch activity feed", " Surakage ") == \
+        "https://dashboard.twitch.tv/popout/u/surakage/stream-manager/activity-feed"
+    assert cd.preset_url("Twitch activity feed", "") == ""
+    assert "Twitch chat" not in cd.PRESETS  # chat lives in the Chat panel, never a second panel
 
 
 def test_saved_list_round_trips(app):
@@ -34,15 +36,16 @@ def test_saved_list_round_trips(app):
     assert cd.load() == [cd.CustomDock("a1", "Chat", "https://www.twitch.tv/popout/x/chat")]
 
 
-def test_dialog_adds_a_twitch_chat_from_a_channel_name(app):
+def test_dialog_adds_an_activity_feed_from_a_channel_name(app):
     dialog = cd.CustomDocksDialog([])
     dialog._add()
     dialog.channel.setText("surakage")
     dialog._channel_edited()
     docks = dialog.result_docks()
-    assert [(d.name, d.url) for d in docks] == [("Chat", "https://www.twitch.tv/popout/surakage/chat")]
+    assert [(d.name, d.url) for d in docks] == [
+        ("Activity", "https://dashboard.twitch.tv/popout/u/surakage/stream-manager/activity-feed")]
     again = cd.CustomDocksDialog(docks)  # reopening recognises the preset and the channel
-    assert again.preset.currentText() == "Twitch chat" and again.channel.text() == "surakage"
+    assert again.preset.currentText() == "Twitch activity feed" and again.channel.text() == "surakage"
     again._remove()
     assert again.result_docks() == []
 

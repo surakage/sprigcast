@@ -115,6 +115,11 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         assert not w.dock_bodies["Scenes"].isVisible() and not w.dock_bodies["Audio Mixer"].isVisible()
         assert w.panels.cards["live"].isVisible() and list(w.panels.cards["live"].buttons) == ["chat"]
         assert w.chat_panel.pages.currentWidget() is w.chat_panel.empty  # nothing connected: nothing to read
+        assert w.chat_panel.active
+        w.panels.set_shown("chat", False, "live")  # off every screen: chat stops reading
+        assert not w.chat_panel.active
+        w.panels.set_shown("chat", True, "live")
+        assert w.chat_panel.active
         assert w.previews["horizontal"].isVisible() and w.previews["horizontal"].live_look
         assert not any(p.editable for p in w.previews.values())
         w.live_panel.buttons["h2"].click()

@@ -1,4 +1,7 @@
-"""Web panels: your own web pages (Twitch chat, an activity feed, alerts) as panels (app/panels.py).
+"""Web panels: your own web pages (an activity feed, alerts, Streamer.bot) as panels (app/panels.py).
+
+Chat isn't one of these: the built-in Chat panel (app/chat_panel.py) reads your chats natively or
+shows a chat link itself, so chat never needs a second panel.
 
 The list lives in QSettings ("docks/custom") as JSON. A dock's browser is only created the first time
 the panel is shown, and Qt WebEngine is only loaded when at least one custom dock exists, so having none
@@ -37,7 +40,6 @@ PREFIX = "custom:"  # panel key prefix, so saved panels remember where each one 
 
 # Ready-made pages: label -> (dock name, URL with {channel}).
 PRESETS = {
-    "Twitch chat": ("Chat", "https://www.twitch.tv/popout/{channel}/chat"),
     "Twitch activity feed": ("Activity", "https://dashboard.twitch.tv/popout/u/{channel}/stream-manager/activity-feed"),
     "Twitch quick actions": ("Quick actions", "https://dashboard.twitch.tv/popout/u/{channel}/stream-manager/quick-actions"),
     "Custom page": ("", ""),
@@ -148,8 +150,8 @@ class CustomDocksDialog(QDialog):
         self.setMinimumWidth(560)
         self.docks = [CustomDock(**asdict(d)) for d in docks]
         root = QVBoxLayout(self)
-        intro = QLabel("Web pages as panels: Twitch chat, your activity feed, alerts or any page. "
-                       "Each shows up in the Panels menu; a new one appears on Live, and ↗ pops it out.")
+        intro = QLabel("Web pages as panels: your activity feed, alerts or any page. Each shows up in the "
+                       "Panels menu; a new one appears on Live, and ↗ pops it out. Chat has its own panel.")
         intro.setWordWrap(True)
         root.addWidget(intro)
         body = QHBoxLayout()
@@ -225,10 +227,10 @@ class CustomDocksDialog(QDialog):
         self._loading = False
 
     def _add(self) -> None:
-        self.docks.append(CustomDock(uuid.uuid4().hex[:8], "Chat", ""))
+        self.docks.append(CustomDock(uuid.uuid4().hex[:8], "Activity", ""))
         self._refill(len(self.docks) - 1)
-        self.preset.setCurrentText("Twitch chat")
-        self._preset_changed("Twitch chat")
+        self.preset.setCurrentText("Twitch activity feed")
+        self._preset_changed("Twitch activity feed")
         self.channel.setFocus()
 
     def _remove(self) -> None:

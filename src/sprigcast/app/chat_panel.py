@@ -27,7 +27,7 @@ import re
 import zlib
 from collections import deque
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QTextDocument
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -52,6 +52,7 @@ NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle", "kick": "name"}; an
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube and Kick: a Twitch channel picked by hand
 HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
 KEEP = 300  # messages kept on screen
+EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
 
@@ -89,9 +90,18 @@ def readable_colour(colour: str, name: str) -> str:
     return c.name()
 
 
-def message_html(message: ChatMessage, mark: bool = False) -> str:
+def mentions(text: str, names: frozenset[str]) -> bool:
+    """Does the line say one of your names ("@surakage", "Surakage")?"""
+    if not names:
+        return False
+    words = {w.lstrip("@").strip(".-").lower() for w in re.findall(r"@?[\w.-]+", text)}
+    return not words.isdisjoint(names)
+
+
+def message_html(message: ChatMessage, mark: bool = False, names: frozenset[str] = frozenset()) -> str:
     """One chat line as rich text: coloured name, then the words with emotes and links.
-    `mark`: start with the platform's colour, for when several chats are mixed."""
+    `mark`: start with the platform's colour, for when several chats are mixed.
+    `names`: your own names, so lines that mention you stand out."""
     colour = readable_colour(message.color, message.user)
     start = ""
     if mark and message.platform in PLATFORMS:
@@ -112,6 +122,8 @@ def message_html(message: ChatMessage, mark: bool = False) -> str:
     body = _body(message)
     if message.action:
         body = f"<span style='color:{colour}'><i>{body}</i></span>"
+    if mentions(message.text, names):  # ChatView also washes the whole line soft green
+        body = f"<span style='color:{theme.SELECT_TEXT}'>{body}</span>"
     return f"<p style='margin:3px 0'>{start}{marks}{name}&nbsp; {body}</p>"
 
 
@@ -137,7 +149,9 @@ def _words(text: str) -> str:
 
 
 class ChatView(QTextBrowser):
-    """The native chat list. Emote pictures load once each and are kept for the session."""
+    """The native chat list. Keeps the last KEEP lines; emote pictures load once each.
+
+    Scrolled up to read? New lines don't yank you down: a "New messages" pill appears instead."""
 
     def __init__(self):
         super().__init__()
@@ -148,18 +162,64 @@ class ChatView(QTextBrowser):
         self.document().setMaximumBlockCount(KEEP)  # the oldest line leaves as a new one comes
         self.messages: deque[ChatMessage] = deque(maxlen=KEEP)
         self.mixed = False  # several chats at once: mark each line with its platform
+        self.names: frozenset[str] = frozenset()  # your channel names, lowercase, for mention highlights
         self._urls: dict[str, str] = {}  # emote id -> picture, for platforms that send their own
         self._net = None
         self._asked: set[str] = set()
+        self._relayout = QTimer(self)  # pictures arriving together cost one re-layout, not one each
+        self._relayout.setSingleShot(True)
+        self._relayout.setInterval(120)
+        self._relayout.timeout.connect(self._pictures_arrived)
+        self.jump = QPushButton("New messages ↓", self)
+        self.jump.setStyleSheet(GO_STYLE.replace("padding: 7px 16px", "padding: 5px 14px")
+                                .replace("border-radius: 15px", "border-radius: 13px"))
+        self.jump.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.jump.clicked.connect(self.to_bottom)
+        self.jump.hide()
+        self.verticalScrollBar().valueChanged.connect(self._scrolled)
+
+    def at_bottom(self) -> bool:
+        bar = self.verticalScrollBar()
+        return bar.value() >= bar.maximum() - 4
 
     def add(self, message: ChatMessage) -> None:
-        bar = self.verticalScrollBar()
-        at_bottom = bar.value() >= bar.maximum() - 4
+        stay = self.at_bottom()
+        if len(self._asked) > EMOTE_CACHE:
+            self._fresh_cache()
         self.messages.append(message)
         self._urls.update(message.images)
-        self.append(message_html(message, self.mixed))
-        if at_bottom:
-            bar.setValue(bar.maximum())
+        self.append(message_html(message, self.mixed, self.names))
+        self._wash(self.document().lastBlock(), mentions(message.text, self.names))
+        if stay:
+            self.to_bottom()
+        else:
+            self.jump.show()
+            self._place_jump()
+
+    def to_bottom(self) -> None:
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+        self.jump.hide()
+
+    def _scrolled(self) -> None:
+        if self.jump.isVisible() and self.at_bottom():
+            self.jump.hide()
+
+    def _place_jump(self) -> None:
+        self.jump.adjustSize()
+        self.jump.move((self.width() - self.jump.width()) // 2, self.height() - self.jump.height() - 10)
+        self.jump.raise_()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().resizeEvent(event)
+        if self.jump.isVisible():
+            self._place_jump()
+
+    def _fresh_cache(self) -> None:
+        """Forget emote pictures (the document keeps every one it was given), then redraw what's on screen."""
+        self._asked.clear()
+        self._urls = {k: v for m in self.messages for k, v in m.images.items()}
+        self.document().clear()  # also drops the pictures it holds
+        self.redraw()
 
     def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False) -> None:
         """A moderator deleted a message, timed someone out, or cleared chat (on one platform)."""
@@ -174,12 +234,33 @@ class ChatView(QTextBrowser):
             self.redraw()
 
     def redraw(self) -> None:
-        self.setHtml("".join(message_html(m, self.mixed) for m in self.messages))
-        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+        self.setHtml("".join(message_html(m, self.mixed, self.names) for m in self.messages))
+        block = self.document().firstBlock()
+        for message in self.messages:
+            self._wash(block, mentions(message.text, self.names))
+            block = block.next()
+        self.to_bottom()
+
+    @staticmethod
+    def _wash(block, on: bool) -> None:
+        """Lines that mention you get a soft green background across the whole width (a new line
+        copies the one before it, so every line sets it either way)."""
+        from PySide6.QtGui import QTextCursor
+
+        cursor = QTextCursor(block)
+        fmt = cursor.blockFormat()
+        if on:
+            fmt.setBackground(QColor(theme.SELECT_BG))
+        elif fmt.hasProperty(fmt.Property.BackgroundBrush):
+            fmt.clearBackground()
+        else:
+            return
+        cursor.setBlockFormat(fmt)
 
     def clear_chat(self) -> None:
         self.messages.clear()
         self.clear()
+        self.jump.hide()
 
     def loadResource(self, kind, url: QUrl):  # noqa: N802 (Qt override)
         if url.scheme() == "emote" and kind == QTextDocument.ResourceType.ImageResource:
@@ -208,9 +289,15 @@ class ChatView(QTextBrowser):
         image = QImage()
         if image.loadFromData(reply.readAll().data()):
             self.document().addResource(QTextDocument.ResourceType.ImageResource, url, image)
-            self.document().markContentsDirty(0, self.document().characterCount())
-            self.viewport().update()
+            self._relayout.start()
         reply.deleteLater()
+
+    def _pictures_arrived(self) -> None:
+        stay = self.at_bottom()
+        self.document().markContentsDirty(0, self.document().characterCount())
+        self.viewport().update()
+        if stay:
+            self.to_bottom()
 
 
 def saved_names() -> dict[str, str]:
@@ -372,6 +459,18 @@ class ChatPanel(QWidget):
         self.active = True
         self.refresh()
 
+    def sleep(self) -> None:
+        """The panel was taken off every screen: stop reading and free the page until it's shown again."""
+        if not self.active:
+            return
+        self.active = False
+        for reader in self.readers.values():
+            reader.stop()
+        self.readers.clear()
+        self.states.clear()
+        if self.web is not None:
+            self.web.set_url("about:blank")
+
     def ask_link(self) -> None:
         self.link_field.setText(str(QSettings().value(LINK, "") or ""))
         self.pages.setCurrentWidget(self.link_page)
@@ -513,9 +612,10 @@ class ChatPanel(QWidget):
 
     def _read(self, names: dict[str, str]) -> None:
         mixed = len(names) > 1
-        if mixed != self.view.mixed:
-            self.view.mixed = mixed
-            self.view.redraw()  # with or without platform marks
+        mine = frozenset(n.lstrip("@").lower() for n in names.values() if not n.startswith(("v:", "channel/")))
+        if mixed != self.view.mixed or mine != self.view.names:
+            self.view.mixed, self.view.names = mixed, mine
+            self.view.redraw()  # with or without platform marks and mention highlights
         for platform, name in names.items():
             reader = self.readers.get(platform)
             if reader is None:

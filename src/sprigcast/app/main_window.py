@@ -480,11 +480,17 @@ class MainWindow(QMainWindow):
         self._dock("Scenes", self.scene_tree, bar)
 
     def _build_chat_panel(self) -> None:
-        """Chat on Live: Twitch read natively, or any chat link, in this one panel (app/chat_panel.py)."""
+        """Chat on Live: your Twitch, YouTube and Kick chats mixed, or any chat link, in this one panel."""
         from sprigcast.app.chat_panel import KEY, ChatPanel
 
         self.chat_panel = ChatPanel(self._connect_twitch)
         self.panels.add(Panel(KEY, "Chat", self.chat_panel, on_show=self.chat_panel.activate), shown_in=("live",))
+
+        def chat_in_use() -> None:  # off every screen and not popped out: stop reading until it's back
+            if not self.panels.is_popped(KEY) and not any(KEY in keys for keys in self.panels.state.shown.values()):
+                self.chat_panel.sleep()
+
+        self.panels.changed.connect(chat_in_use)
 
     def _connect_twitch(self) -> None:
         from sprigcast.app.twitch_connect import TwitchConnectDialog
@@ -1795,7 +1801,7 @@ class MainWindow(QMainWindow):
         self.reset_layout_action = QAction("Reset panels", self)
         self.reset_layout_action.triggered.connect(lambda: self.panels.reset())
         self.custom_docks_action = QAction("Add or edit web panels…", self)
-        self.custom_docks_action.setToolTip("A web page as a panel: chat, activity feed, Streamer.bot, TikFinity…")
+        self.custom_docks_action.setToolTip("A web page as a panel: activity feed, Streamer.bot, TikFinity…")
         self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
         self.docks_menu.aboutToShow.connect(self._fill_docks_menu)
         self._fill_docks_menu()
