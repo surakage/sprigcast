@@ -561,7 +561,7 @@ class MainWindow(QMainWindow):
         from sprigcast.sources.app_audio import SOUND_TYPES
 
         for kind in SOUND_TYPES:
-            action = menu.addAction(kind.name)
+            action = menu.addAction(literal(kind.name))
             action.setToolTip(kind.hint)
             action.triggered.connect(lambda _=False, k=kind.key: self._add_app_sound(k))
 
@@ -3926,7 +3926,12 @@ class MainWindow(QMainWindow):
             return
         cls = source_class(kind)
         defaults = dict(getattr(cls, "defaults", {}) or {})
-        dialog = SettingsDialog(f"New {name}", defaults, defaults, self)
+        if kind == "browser":
+            from sprigcast.app.web_page_dialog import WebPageDialog
+
+            dialog = WebPageDialog("New web page", defaults, self, primary="Add")
+        else:
+            dialog = SettingsDialog(f"New {name}", defaults, defaults, self)
         if not dialog.exec():
             return
         settings = dialog.values()
@@ -4437,7 +4442,14 @@ class MainWindow(QMainWindow):
             if not defaults:
                 QMessageBox.information(self, "SprigCast", f"{config.kind!r} sources have no settings to edit.")
                 return
-            dialog = SettingsDialog(config.name, defaults, config.settings, self)
+            if config.kind == "browser":
+                from sprigcast.app.web_page_dialog import WebPageDialog
+
+                host = self.browser_host
+                dialog = WebPageDialog(config.name, config.settings, self,
+                                       on_reload=(lambda: host.reload(config.id)) if host else None)
+            else:
+                dialog = SettingsDialog(config.name, defaults, config.settings, self)
             if not dialog.exec():
                 return
             old_auto = _name_from(config.settings, config.name)

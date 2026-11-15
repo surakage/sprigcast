@@ -64,7 +64,7 @@ def auto_group(name: str, kind: str) -> str:
     """Where a sound goes until you move it: mics are Voice; names hint at the rest."""
     if kind == "audio_input":
         return "Voice"
-    if kind == "app_audio":  # named for its type: Music, Voice chat, SFX & alerts...
+    if kind == "app_audio":  # named for its type: Music, Voice chat, SFX...
         if re.search(r"voice chat", name, re.IGNORECASE):
             return "Voice"
         if re.search(r"text to speech|sfx", name, re.IGNORECASE):

@@ -4,8 +4,10 @@ Pages are drawn by Qt WebEngine (Chromium) on the UI thread by app/browser_host.
 asks for a page and picks up its newest frame. A page that nothing on screen shows is closed (its
 Chromium process ends) unless "Keep running when hidden" is on, which keeps an alert box connected.
 
-Settings: url, file (a local .html instead of a URL), width, height, fps, css, mute, audio_to_mixer
-(the page's sound goes to the Sound card instead of the desktop, app/browser_audio.py), keep_running.
+Settings: url, file (a local .html instead of a URL), width, height, fps (used when custom_fps is on,
+else STANDARD_FPS), css, mute, audio_to_mixer (the page's sound goes to its own strip in SprigCast
+instead of the desktop, app/browser_audio.py), keep_running (off: the page sleeps while not on screen),
+reload_on_air (reload the page each time a bloom showing it goes on air).
 """
 
 from __future__ import annotations
@@ -19,17 +21,30 @@ from sprigcast.core.source import Source, register
 # Same idea as OBS's default, so overlays made for OBS look the same here.
 DEFAULT_CSS = "body { background-color: rgba(0, 0, 0, 0); margin: 0px auto; overflow: hidden; }"
 
+STANDARD_FPS = 30  # smooth enough for alerts and widgets, and light
+
 DEFAULTS: dict[str, Any] = {
     "url": "https://",
     "file": "",
     "width": 800,
     "height": 600,
-    "fps": 30,
+    "custom_fps": False,
+    "fps": STANDARD_FPS,
     "css": DEFAULT_CSS,
     "mute": False,
     "audio_to_mixer": True,
     "keep_running": False,
+    "reload_on_air": False,
 }
+
+
+def page_fps(settings: dict[str, Any]) -> int:
+    """Frames per second the page is drawn at: its own rate when custom, else STANDARD_FPS.
+
+    Older pages have no custom_fps: a rate other than the standard one counts as custom."""
+    fps = int(settings.get("fps", STANDARD_FPS) or STANDARD_FPS)
+    custom = settings.get("custom_fps", fps != STANDARD_FPS)
+    return max(1, min(120, fps)) if custom else STANDARD_FPS
 
 
 def sound_to_mixer(settings: dict[str, Any]) -> bool:
@@ -49,6 +64,8 @@ class Host(Protocol):
     def take(self, source_id: str) -> np.ndarray | None: ...
 
     def read_audio(self, source_id: str, n: int) -> np.ndarray | None: ...
+
+    def reload(self, source_id: str) -> None: ...
 
 
 _host: Host | None = None
@@ -138,6 +155,11 @@ class BrowserSource(Source):
         super().update(settings)
         if self._open or self._wanted:
             self._start_page()  # the host reloads only when something that matters changed
+
+    def reload(self) -> None:
+        """Load the page again (its bloom went on air with "Reload when on air")."""
+        if _host is not None and self._open:
+            _host.reload(self.id)
 
     def sleep(self) -> None:
         if not self._open or _host is None:

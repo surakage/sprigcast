@@ -381,6 +381,9 @@ class SceneCollection(BaseModel):
         for output in self.outputs:
             if output.canvas not in canvas_ids:
                 raise ValueError(f"output {output.id!r} uses unknown canvas {output.canvas!r}")
+        for source in self.sources:  # "SFX & alerts" is just "SFX" now (a name you typed yourself stays)
+            if source.kind == "app_audio" and source.name == "SFX & alerts" and source.settings.get("preset") == "sfx":
+                source.name = "SFX"
         # Rules for blooms that were deleted since are dropped quietly.
         self.transition_rules = [r for r in self.transition_rules
                                  if r.from_scene in scene_ids | {ANY} and r.to_scene in scene_ids | {ANY}]
