@@ -1,4 +1,4 @@
-"""Store plugins that change how things look or add a show: Hide it, Barrel Roll and Snap."""
+"""Store plugins that change how things look or add a show: Hide it, Barrel Roll, Snap and Death count."""
 
 import numpy as np
 import pytest
@@ -249,6 +249,113 @@ def test_snap_frames_hold_a_big_picture(added):
     card, window = snap.compose(picture, "polaroid")
     assert window.width() >= 999 and card.width() > window.width() and card.height() > window.height()
     assert snap.snap_name(__import__("pathlib").Path("x")).name.startswith("snap ")
+
+
+# Death count -------------------------------------------------------------------------------------
+
+
+def _dc_setup(added, tmp_path, count=0):
+    added("death_count")
+    col = _collection()
+    col.sources.append(SourceConfig(id="dc-1", kind="death_count", name="Death count", settings={"count": count}))
+    host = Host(col, tmp_path)
+    instance = host.instances["dc-1"] = create_source("death_count", "dc-1", {"count": count, "seconds": 1.0})
+    api = NativeApi(host)
+    return col, host, instance, api
+
+
+def test_its_only_there_once_added():
+    assert "death_count" not in known_kinds()
+    assert "deaths.add" not in NativeApi(Host(_collection())).all_actions()
+
+
+def test_apps_change_the_count_and_it_is_kept(added, tmp_path):
+    col, host, _dc, api = _dc_setup(added, tmp_path, 4)
+    assert api.run("deaths.get", {}) == {"count": 4}
+    assert api.run("deaths.add", {}) == {"count": 5}
+    assert col.source("dc-1").settings["count"] == 5 and "sources" in host.commits  # saved with the blooms
+    assert api.run("deaths.add", {"amount": "3"}) == {"count": 8}  # web links send text
+    assert api.run("deaths.remove", {}) == {"count": 7}
+    assert api.run("deaths.remove", {"amount": 50}) == {"count": 0}  # never below 0
+    assert api.run("deaths.set", {"count": 12}) == {"count": 12}
+    assert api.run("deaths.show", {}) == {"count": 12}
+    assert api.run("deaths.reset", {"source": "Death count"}) == {"count": 0}
+    with pytest.raises(ApiError):
+        api.run("deaths.set", {"count": -1})
+    with pytest.raises(ApiError):
+        api.run("deaths.add", {"amount": "lots"})
+    with pytest.raises(ApiError):
+        api.run("deaths.add", {"source": "Cam"})  # not a death count
+    # A restart: a new source made from the saved settings starts at the saved count.
+    assert create_source("death_count", "dc-1", col.source("dc-1").settings)._count == 0
+
+
+def test_no_death_count_added_yet(added):
+    added("death_count")
+    with pytest.raises(ApiError) as err:
+        NativeApi(Host(_collection())).run("deaths.add", {})
+    assert err.value.code == "not_found"
+
+
+def test_the_gravestone_rises_flips_the_number_and_sinks(added, tmp_path):
+    _col, _host, dc, api = _dc_setup(added, tmp_path, 6)
+    to_array = __import__("sys").modules["sprigcast_plugin_death_count"].to_array
+    first = dc.video_frame()
+    assert first.shape == (1000, 800, 4) and not first[..., 3].any()  # see-through until it changes
+    assert dc.video_frame() is None
+
+    api.run("deaths.add", {})
+    assert dc.video_frame() is not None and dc.busy
+    job = dc._job
+    assert (job.old, job.new) == (6, 7)
+    low = to_array(dc.paint(job, 0.05))
+    up = to_array(dc.paint(job, 2.0))
+    assert up[..., 3].sum() > low[..., 3].sum()  # the stone is out of the ground
+    assert up[600, 400, 3] == 255  # the stone's face, middle of the box
+    assert not up[:300, :, 3].any()  # it only takes the lower part of the box
+    assert dc._showing(job, 1.0) == 6 and dc._showing(job, 2.0) == 7
+
+    # Another death while it's up: the number changes again and it stays up longer.
+    sink_before = dc._sink_at(job)
+    job.started -= 2.0
+    api.run("deaths.add", {})
+    assert dc._job is job and job.new == 8 and not dc._queue and dc._sink_at(job) > sink_before
+
+    job.started -= 100
+    assert not dc.video_frame()[..., 3].any() and not dc.busy  # back in the ground
+
+
+def test_changing_the_count_in_its_settings_pops_it_up(added, tmp_path):
+    _col, _host, dc, _api = _dc_setup(added, tmp_path, 2)
+    dc.update({"count": 2, "seconds": 1.0})
+    assert not dc.busy  # nothing changed
+    dc.update({"count": 9, "seconds": 1.0})
+    assert dc.busy and dc._queue[0].new == 9
+
+
+def test_hotkeys_and_right_click(added, tmp_path):
+    from sprigcast.app import hotkeys
+
+    col, _host, _dc, api = _dc_setup(added, tmp_path, 1)
+    actions = dict(hotkeys.actions(col))
+    assert {"plugin:deaths:add", "plugin:deaths:remove", "plugin:deaths:reset", "plugin:deaths:show"} <= set(actions)
+    assert plugin_hooks.run_hotkey(api, "plugin:deaths:add")
+    assert col.source("dc-1").settings["count"] == 2
+    entries = {}
+    plugin_hooks.fill_item_menu(api, col.source("dc-1"), lambda label, fn: entries.setdefault(label, fn))
+    entries["Reset to 0"]()
+    assert col.source("dc-1").settings["count"] == 0
+    assert not any(a.startswith("plugin:deaths:") for a, _ in hotkeys.actions(_collection()))  # none until added
+
+
+def test_apps_hear_when_the_count_changes(added, tmp_path):
+    _col, _host, _dc, api = _dc_setup(added, tmp_path, 0)
+    sent = []
+    api.plugin_event = lambda name, data: sent.append((name, data))
+    api.run("deaths.add", {"amount": 2})
+    assert sent == [("deaths.changed", {"count": 2})]
+    listed = {p["plugin"]: p for p in api.run("plugins.list", {})["plugins"]}
+    assert "deaths.add" in listed["death_count"]["actions"]
 
 
 # GPU ----------------------------------------------------------------------------------------------
