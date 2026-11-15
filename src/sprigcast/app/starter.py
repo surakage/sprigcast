@@ -33,8 +33,10 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.core.device_makers import label as camera_label
 from sprigcast.core.edit import cover
 from sprigcast.core.scene import PART_KIND, Scene, SceneCollection, SceneItem, SourceConfig
+from sprigcast.sources.audio import device_label as sound_label
 
 BLOOMS = ("Starting soon", "Just Chatting", "Gaming", "Be right back", "Ending")
 TITLES = {"Starting soon": "Starting soon", "Be right back": "Be right back", "Ending": "Thanks for watching!"}
@@ -336,7 +338,7 @@ class StarterDialog(QDialog):
         self.camera.setCursor(Qt.CursorShape.PointingHandCursor)
         self.camera.addItem("No camera", None)
         for cam in cameras:
-            self.camera.addItem(cam.name, cam)
+            self.camera.addItem(camera_label(cam.name), cam)
         if cameras:
             self.camera.setCurrentIndex(1)
         form.addRow(_row_label("Camera", self.camera), self.camera)
@@ -354,7 +356,7 @@ class StarterDialog(QDialog):
         self.mic.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic.addItem("Default mic (follows Windows)", "default")
         for name in mics:
-            self.mic.addItem(name, name)
+            self.mic.addItem(sound_label(name), name)
         self.mic.addItem("No mic", None)
         form.addRow(_row_label("Mic", self.mic), self.mic)
         for box in (self.camera, self.screen, self.mic):
@@ -496,7 +498,7 @@ class StarterDialog(QDialog):
         self.desktop.setCursor(Qt.CursorShape.PointingHandCursor)
         self.desktop.addItem("Default speakers (follows Windows)", "default")
         for name in speakers:
-            self.desktop.addItem(name, name)
+            self.desktop.addItem(sound_label(name), name)
         self.desktop.addItem("No desktop sound", None)
         body.addWidget(self.desktop)
         self.desktop.hide()

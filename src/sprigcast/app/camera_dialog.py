@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.core.device_makers import label as camera_label
 from sprigcast.sources.camera import (
     SIZES,
     CameraDevice,
@@ -41,7 +42,7 @@ class CameraDialog(QDialog):
 
         self.device = QComboBox()
         for cam in cameras:
-            self.device.addItem(cam.name)
+            self.device.addItem(camera_label(cam.name))
         index = next((i for i, c in enumerate(cameras) if c.path and c.path == current.get("path")), None)
         if index is None:
             index = next((i for i, c in enumerate(cameras) if c.name == current.get("name")), 0)
