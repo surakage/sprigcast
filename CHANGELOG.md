@@ -97,6 +97,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   A full-screen popout draws its frame straight, without scaling or a copy, when it already matches the screen.
 - Slide show leaves out SprigCast's own screenshots and Snap polaroids. Pointed at the Screenshots folder in the soak,
   it played pictures of the canvas back onto the canvas, which looked like trails of old frames.
+- The clips buffer no longer keeps sound forever while no picture keyframe comes (a stalled video encoder): it holds
+  the clip length plus 10 s. When a recording or the stream stops, the log now says what Task Manager shows, what is
+  committed, how many Python objects there are (and which kinds) and how many threads, so long shows can be compared.
 - A sprig nothing has shown for a few seconds lets go of its full-canvas texture (they stayed until SprigCast closed),
   and removing a plugin stops its sources straight away instead of at the next restart. Stopping a recording or
   stream logs the app's memory, so long sessions can be compared.

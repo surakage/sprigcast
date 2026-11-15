@@ -90,6 +90,9 @@ class Spool:
         self.file.close()
 
 
+KEY_SLACK_S = 10.0  # sound kept past `seconds` while waiting for a keyframe (several keyframe intervals)
+
+
 def spool_capacity(bitrate_kbps: int, seconds: float) -> int:
     """Room for `seconds` plus a keyframe interval, twice over for VBR peaks and audio; at least 16 MB."""
     return max(16 << 20, int(bitrate_kbps * 1000 / 8 * (seconds + 10) * 2))
@@ -218,6 +221,14 @@ class ReplayBuffer(Recorder):
         # until frames piled up).
         keys = self._keys
         if not keys:
+            # No picture keyframe yet (the video encoder is stalled or every frame was dropped): a clip
+            # can't start anywhere, so don't let the sound pile up behind it. In a local soak where video
+            # never got through, audio packets grew by ~1,500 a minute until stopped.
+            packets = self._packets
+            if packets:
+                newest = packets[-1].seconds
+                while packets and packets[0].seconds < newest - max(self.seconds, 1.0) - KEY_SLACK_S:
+                    self._pop_oldest()
             return
         cutoff = self._newest - self.seconds
         while len(keys) > 1 and keys[1].seconds <= cutoff:

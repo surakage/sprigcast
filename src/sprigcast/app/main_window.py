@@ -4914,10 +4914,10 @@ class MainWindow(QMainWindow):
         self.live_side.set_recording("")
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
-        from sprigcast.core.pacing import private_mb
+        from sprigcast.core.pacing import memory_line
 
-        log.info("recording stopped after %.0f s: %s; %d frames dropped%s; memory %.0f MB", session.elapsed,
-                 names or "no files", session.dropped, f"; errors: {errors}" if errors else "", private_mb())
+        log.info("recording stopped after %.0f s: %s; %d frames dropped%s; memory: %s", session.elapsed,
+                 names or "no files", session.dropped, f"; errors: {errors}" if errors else "", memory_line())
         if errors:
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
@@ -5128,9 +5128,9 @@ class MainWindow(QMainWindow):
             self._cheer_goodbye(seconds)
         for line in lines[1:]:
             log.info("stream summary: %s", line)
-        from sprigcast.core.pacing import private_mb
+        from sprigcast.core.pacing import memory_line
 
-        log.info("stream stopped; memory %.0f MB", private_mb())
+        log.info("stream stopped; memory: %s", memory_line())
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:
             report.finish(lines)
