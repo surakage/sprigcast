@@ -13,27 +13,46 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_game_dialog_modes_and_more(app):
-    from sprigcast.app.game_dialog import GameCaptureDialog
+def _pick(d, mode, process=""):
+    box = d.capture
+    i = next(i for i in range(box.count()) if box.itemData(i) and box.itemData(i)[0] == mode
+             and (not process or box.itemData(i)[2] == process))
+    box.setCurrentIndex(i)
+
+
+def test_game_dialog_one_dropdown(app):
+    from sprigcast.app.game_dialog import AUTO, HOTKEY, GameCaptureDialog
     from sprigcast.sources.win32_enum import WindowInfo
 
-    windows = [WindowInfo(hwnd=1, title="Elden Ring", process="eldenring.exe")]
-    d = GameCaptureDialog({"mode": "any", "cursor": False}, windows, True)
-    assert d.mode() == "any" and not d.window_box.isVisibleTo(d) and not d.more.isVisibleTo(d)
+    windows = [WindowInfo(hwnd=1, title="Zed", process="zed.exe"),
+               WindowInfo(hwnd=2, title="Elden Ring", process="eldenring.exe")]
+    d = GameCaptureDialog({"mode": "any", "cursor": False, "fps_limit": 30}, windows, True)
+    names = [d.capture.itemText(i) for i in range(d.capture.count()) if d.capture.itemData(i)]
+    assert names[0] == AUTO and names[-1] == HOTKEY and names[1].startswith("Elden")  # A to Z between
+    assert not hasattr(d, "more") and d.mode() == "any" and not d.hotkey_note.isVisibleTo(d)
     changes, sound = d.values()
     assert sound and changes == {"mode": "any", "cursor": False, "see_through": False, "fps_limit": 0,
                                  "border": False, "title": "", "process": ""}
-    next(b for b in d.mode_group.buttons() if b.property("mode") == "window").click()
-    assert d.window_box.isVisibleTo(d)
-    d.more_button.click()
-    assert d.more.isVisibleTo(d)
-    d.fps.setCurrentIndex(2)
+    _pick(d, "window", "eldenring.exe")
     d.sound.setChecked(False)
     changes, sound = d.values()
-    assert not sound and changes["fps_limit"] == 60 and (changes["title"], changes["process"]) == \
-        ("Elden Ring", "eldenring.exe")
-    next(b for b in d.mode_group.buttons() if b.property("mode") == "hotkey").click()
+    assert not sound and (changes["mode"], changes["title"], changes["process"]) == \
+        ("window", "Elden Ring", "eldenring.exe")
+    _pick(d, "hotkey")
     assert d.hotkey_note.isVisibleTo(d) and d.values()[0]["process"] == ""  # empty until its key is pressed
+
+
+def test_game_dialog_keeps_closed_window_and_relists(app):
+    from sprigcast.app.game_dialog import GameCaptureDialog
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    later = [WindowInfo(hwnd=3, title="Hades", process="hades.exe")]
+    d = GameCaptureDialog({"mode": "window", "title": "Elden Ring", "process": "eldenring.exe"}, [], True,
+                          list_windows=lambda: later)
+    assert d.capture.currentData() == ("window", "Elden Ring", "eldenring.exe")  # not open now, still kept
+    d._reload()  # what opening the drop-down does
+    assert d.capture.currentData() == ("window", "Elden Ring", "eldenring.exe")
+    assert any(d.capture.itemData(i) == ("window", "Hades", "hades.exe") for i in range(d.capture.count()))
 
 
 def test_game_capture_source_options():

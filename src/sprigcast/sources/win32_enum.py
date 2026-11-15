@@ -28,6 +28,7 @@ class WindowInfo:
     hwnd: int
     title: str
     process: str  # executable name, e.g. "obs64.exe"
+    path: str = ""  # full path to the executable (for its icon)
 
     @property
     def label(self) -> str:
@@ -88,7 +89,7 @@ def list_windows() -> list[WindowInfo]:
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     own_pid = kernel32.GetCurrentProcessId()
 
-    def process_name(pid: int) -> str:
+    def process_path(pid: int) -> str:
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return ""
@@ -96,7 +97,7 @@ def list_windows() -> list[WindowInfo]:
             size = wintypes.DWORD(1024)
             buf = ctypes.create_unicode_buffer(size.value)
             if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-                return buf.value.rsplit("\\", 1)[-1]
+                return buf.value
             return ""
         finally:
             kernel32.CloseHandle(handle)
@@ -120,7 +121,8 @@ def list_windows() -> list[WindowInfo]:
         length = user32.GetWindowTextLengthW(hwnd)
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
-        windows.append(WindowInfo(hwnd=int(hwnd), title=buf.value, process=process_name(pid.value)))
+        path = process_path(pid.value)
+        windows.append(WindowInfo(hwnd=int(hwnd), title=buf.value, process=path.rsplit("\\", 1)[-1], path=path))
         return True
 
     user32.EnumWindows(callback_type(callback), 0)
