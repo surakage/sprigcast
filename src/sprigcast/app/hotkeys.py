@@ -30,6 +30,7 @@ SCENE_PREFIX = "scene:"
 SOUND_PREFIX = "sound:"  # "sound:<source id>:<toggle|mute|unmute>"
 MEDIA_PREFIX = "media:"  # "media:<source id>:<toggle|restart|stop>"
 STATE_PREFIX = "state:"  # "state:<sprig id>:<state name>"; an empty name goes back to as built
+GAME_PREFIX = "game:"  # "game:<source id>": a game capture takes the window in front
 
 _MODIFIERS = {"ctrl": "<ctrl>", "alt": "<alt>", "shift": "<shift>", "meta": "<cmd>"}
 _NAMED = {
@@ -76,6 +77,10 @@ def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str
             for what, label in (("toggle", "play / pause"), ("restart", "start over"), ("stop", "stop")):
                 media.append((f"{MEDIA_PREFIX}{source.id}:{what}", f"{source.name}: {label}"))
     groups.append(("Videos", media))
+    games = [(f"{GAME_PREFIX}{source.id}", f"{source.name}: capture the window in front")
+             for source in collection.sources if source.kind == "game_capture"
+             and source.settings.get("mode") == "hotkey"]
+    groups.append(("Game capture", games))
     from sprigcast import plugin_hooks
 
     groups.append(("Plugins", plugin_hooks.hotkey_actions(collection)))

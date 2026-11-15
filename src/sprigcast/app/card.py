@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -47,11 +48,12 @@ class CardDialog(QDialog):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(title)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedWidth(width)
         self._drag = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 14, 20, 26)  # room for the shadow
+        outer.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)  # always just fits what's showing
         card = QFrame()
+        card.setFixedWidth(width - 40)
         card.setObjectName("popCard")
         card.setStyleSheet(f"#popCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
                            " border-radius: 24px; }")

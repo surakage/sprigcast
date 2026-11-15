@@ -661,7 +661,7 @@ class _Nv12Target:
 
 
 # How to read each source byte order as RGBA when sampling ("1" = fully opaque).
-SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1"}
+SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1", "BGRX": "BGR1"}  # X: alpha ignored
 # Colour matrices for planar YUV sources: Kr, Kb.
 YUV_MATRICES = {"601": (0.299, 0.114), "709": (0.2126, 0.0722), "2020": (0.2627, 0.0593)}
 
