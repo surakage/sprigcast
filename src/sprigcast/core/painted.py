@@ -52,6 +52,12 @@ def art(path: Path, width: float, height: float):
     return image
 
 
+def forget_art() -> None:
+    """Let the cached art go (when the show ends); it's drawn again the next time it's needed."""
+    _ART.clear()
+    _SVG.clear()
+
+
 def draw(p, path: Path, rect, sharp_at: float = 1.0) -> None:
     """Draw the SVG into rect (painter units). sharp_at: how many pixels one unit covers at most."""
     from PySide6.QtCore import QRectF

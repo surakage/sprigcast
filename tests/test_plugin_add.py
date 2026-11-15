@@ -65,3 +65,30 @@ def test_the_plugins_menu_is_not_rebuilt_while_it_opens(window):
     w.more_menu.aboutToShow.emit()
     assert w.more_menu.actions() == before  # same entries under the pointer: the first click lands
     assert any(a.text() == "Slide show" for a in before)
+
+
+def test_at_rest_the_show_lets_go_of_what_it_held(window, monkeypatch):
+    """2-hour soak: an hour after stopping, the app sat at ~415 MB against ~200 MB fresh."""
+    from sprigcast.core import pacing, painted
+
+    w, _col = window
+    trims = []
+    monkeypatch.setattr(pacing, "trim_working_set", lambda: trims.append(1) or True)
+    painted._ART[("x", 1, 1)] = object()
+    w.recording = object()  # still recording: nothing is let go
+    w._rest_if_idle()
+    assert not trims and painted._ART
+    w.recording = None
+    w._rest_if_idle()
+    assert trims == [1] and not painted._ART
+
+
+def test_one_hitch_in_a_second_does_not_read_busy(window):
+    from types import SimpleNamespace
+
+    w, _col = window
+    w._late_before = 0
+    w._show_render_health(SimpleNamespace(fps=60, dropped_ticks=1, render_ms=3.0))
+    assert "Smooth" in w.status.text()
+    w._show_render_health(SimpleNamespace(fps=60, dropped_ticks=3, render_ms=3.0))
+    assert "Busy" in w.status.text()
