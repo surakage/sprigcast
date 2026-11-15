@@ -5093,6 +5093,9 @@ class MainWindow(QMainWindow):
 
         transitions_panel.set_quiet(True)  # its picture plays only when pointed at while live
         self._cheer_live()
+        # Chats still waiting for your stream to start look again once the platforms have noticed it.
+        for seconds in (15, 45):
+            QTimer.singleShot(seconds * 1000, self.chat_panel.hub.check_now)
         for preview in self.previews.values():
             preview.ring = theme.LIVE
             preview.update()

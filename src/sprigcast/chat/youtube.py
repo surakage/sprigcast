@@ -235,6 +235,12 @@ class YouTubeChat(QObject):
         self.status.emit("connecting")
         self._step()
 
+    def check_now(self) -> None:
+        """You just went live: if this is only waiting for the stream to start, look right away."""
+        if self._wanted and self._stage == "find" and self._reply is None and self._timer.isActive():
+            self._checks = 0
+            self._timer.start(0)
+
     def stop(self) -> None:
         self._wanted = False
         self._timer.stop()

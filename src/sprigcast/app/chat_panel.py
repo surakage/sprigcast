@@ -162,7 +162,26 @@ class ChatView(QTextBrowser):
         self.jump.setCursor(Qt.CursorShape.PointingHandCursor)
         self.jump.clicked.connect(self.to_bottom)
         self.jump.hide()
+        # "Twitch chat reconnecting…": a chat that dropped shouldn't look like a quiet one
+        self.notice = QLabel(self)
+        self.notice.setStyleSheet(f"background: {theme.PANEL}; color: {theme.WARN}; border-radius: 12px;"
+                                  " padding: 4px 12px; font-size: 12px;")
+        self.notice.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.notice.hide()
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
+
+    def set_notice(self, text: str) -> None:
+        if not text:
+            self.notice.hide()
+            return
+        self.notice.setText(text)
+        self.notice.show()
+        self._place_notice()
+
+    def _place_notice(self) -> None:
+        self.notice.adjustSize()
+        self.notice.move((self.width() - self.notice.width()) // 2, 10)
+        self.notice.raise_()
 
     def at_bottom(self) -> bool:
         bar = self.verticalScrollBar()
@@ -199,6 +218,8 @@ class ChatView(QTextBrowser):
         super().resizeEvent(event)
         if self.jump.isVisible():
             self._place_jump()
+        if self.notice.isVisible():
+            self._place_notice()
 
     def _fresh_cache(self) -> None:
         """Forget emote pictures (the document keeps every one it was given), then redraw what's on screen."""
@@ -315,6 +336,7 @@ class ChatPanel(QWidget):
         self.connect_twitch = connect_twitch  # opens Connect Twitch; the panel hears the result itself
         # The readers live in the hub, shared with chat sources on your stream (sources/chat.py).
         self.hub = ChatHub(self.reading, self)
+        self._was_live: set[tuple[str, str]] = set()  # (platform, channel) chats that have read since starting
         self.web = None
         self.active = False
         root = QVBoxLayout(self)
@@ -704,13 +726,35 @@ class ChatPanel(QWidget):
         self.pages.setCurrentWidget(self.view)
         self._show_states()
 
+    def reconnecting(self) -> list[str]:
+        """Platforms whose chat was reading and has dropped (not ones simply waiting for a stream)."""
+        out = []
+        for platform, reader in self.hub.readers.items():
+            key = (platform, reader.channel)
+            state = self.hub.states.get(platform, "connecting")
+            if state == "live":
+                self._was_live.add(key)
+            elif key in self._was_live and not state.startswith("waiting"):
+                out.append(platform)
+            elif state.startswith("waiting"):
+                self._was_live.discard(key)  # the stream ended: nothing to reconnect to
+        self._was_live &= {(p, r.channel) for p, r in self.hub.readers.items()}
+        return out
+
     def _hub_changed(self) -> None:
+        dropped = self.reconnecting()
+        if dropped:
+            titles = " and ".join(PLATFORMS[p][0] for p in dropped)
+            self.view.set_notice(f"● {titles} chat reconnecting…")
+        else:
+            self.view.set_notice("")
         if self.active and self.pages.currentWidget() is self.view:
             self._show_states()
         self._show_say()
 
     def _show_states(self) -> None:
         parts, tips = [], []
+        dropped = self.reconnecting()
         single = len(self.readers) == 1
         for platform, reader in self.readers.items():
             state = self.states.get(platform, "connecting")
@@ -720,6 +764,8 @@ class ChatPanel(QWidget):
             name = html.escape(reader.channel.removeprefix("v:"))
             label = f"{title} · {name}" if single else title
             parts.append(f"<span style='color:{dot}'>●</span> {label}")
+            if state != "live" and platform in dropped:
+                dot, state = theme.BAD, "reconnecting"
             words = {"live": "reading chat", "connecting": "connecting…"}.get(state, state.split(":", 1)[-1].strip())
             via = {"tikfinity": " via TikFinity", "direct": " straight from TikTok"}.get(getattr(reader, "via", ""), "")
             tips.append(f"{title} ({reader.channel}): {words}{via}")

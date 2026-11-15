@@ -175,3 +175,26 @@ def test_tiktok_falls_back_to_tiktok_itself_when_tikfinity_is_not_running(monkey
     old = reader._run
     reader._direct_ended(old - 1, "stream ended", True)  # an old run ending changes nothing
     reader.stop()
+
+
+def test_tiktok_not_live_checks_slow_down_and_going_live_checks_now(monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+
+    from sprigcast.chat import tiktok
+
+    QCoreApplication.instance() or QCoreApplication([])
+    assert [tiktok.not_live_wait(n) for n in (1, 10, 11, 30, 31, 500)] == [60, 60, 120, 120, 300, 300]
+    reader = tiktok.TikTokChat()
+    states = []
+    reader.status.connect(states.append)
+    monkeypatch.setattr(reader, "_open_tikfinity", lambda: None)
+    reader.start("sloth.bloom")
+    for _ in range(12):
+        reader._direct_ended(reader._run, "not live yet", True)
+    assert reader._retry.interval() == 120_000
+    assert states.count("connecting") == 1  # quiet rechecks don't flip the state (or fill the log)
+    reader.check_now()
+    assert reader._checks == 0 and reader._retry.interval() == 0
+    reader.stop()
+    reader.check_now()  # stopped: nothing to do
+    assert not reader._retry.isActive()
