@@ -174,8 +174,10 @@ QTabBar::tab:selected {{ color: {TEXT_BRIGHT}; border-bottom: 2px solid {ACCENT}
 QMenuBar {{ background: {CHROME}; color: {MUTED}; border-bottom: 1px solid {EDGE}; }}
 QMenuBar::item {{ padding: 4px 10px; border-radius: 9px; }}
 QMenuBar::item:selected {{ background: {RAISED}; color: {TEXT}; }}
-QMenu {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 14px; padding: 6px; }}
-QMenu::item {{ padding: 5px 20px 5px 14px; border-radius: 9px; color: {TEXT}; }}
+QMenu {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 14px; padding: 7px; }}
+QMenu::item {{ padding: 7px 26px 7px 14px; border-radius: 9px; color: {TEXT}; }}
+QMenu::icon {{ padding-left: 10px; }}
+QMenu::right-arrow {{ width: 8px; height: 8px; margin-right: 6px; }}
 QMenu::item:selected {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}
 QMenu::item:disabled {{ color: {MUTED}; }}
 QMenu::separator {{ height: 1px; background: {EDGE}; margin: 4px 8px; }}
@@ -250,10 +252,16 @@ def roomy_style():
     left edge), so numbers would touch the edge of their rounded box. Every spin box gets text margins
     when it is polished instead: one place, so no number box anywhere can miss it.
     """
-    from PySide6.QtWidgets import QAbstractSpinBox, QProxyStyle, QStyleFactory
+    from PySide6.QtWidgets import QAbstractSpinBox, QMenu, QProxyStyle, QStyleFactory
 
     class RoomyStyle(QProxyStyle):
         def polish(self, target, *rest):
+            if not rest and isinstance(target, QMenu) and not target.testAttribute(
+                    Qt.WidgetAttribute.WA_TranslucentBackground):
+                # Every menu is a true rounded card: no square window corners or square shadow behind it.
+                target.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+                target.setWindowFlags(target.windowFlags() | Qt.WindowType.FramelessWindowHint
+                                      | Qt.WindowType.NoDropShadowWindowHint)
             if not rest and isinstance(target, QAbstractSpinBox):
                 edit = target.lineEdit()
                 if edit is not None:

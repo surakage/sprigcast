@@ -370,10 +370,10 @@ def test_new_part_dialog(app):
     dialog.name.setText("  Brand bar ")
     assert dialog.ok.isEnabled()
     assert dialog.values() == ("Brand bar", "v", True)  # the show's shape, and add it there
-    assert "Gaming (v)" in dialog.add_to_show.text()
+    assert "Gaming (v)" in dialog.add_label.text()
     dialog = NewPartDialog(col, None)
     dialog.name.setText("x")
-    assert dialog.values() == ("x", "h", False) and not dialog.add_to_show.isVisibleTo(dialog)
+    assert dialog.values() == ("x", "h", False) and not dialog.add_row.isVisibleTo(dialog)
 
 
 def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):

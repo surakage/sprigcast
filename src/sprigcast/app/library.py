@@ -235,6 +235,7 @@ class LibraryTree(QTreeWidget):
     after a drop, `dropped` fires and the main window reads the new order back from the rows."""
 
     dropped = Signal()
+    dot_clicked = Signal(str, object)  # a folder's id and the global point under its dot: pick a colour
 
     def __init__(self):
         super().__init__()
@@ -263,6 +264,24 @@ class LibraryTree(QTreeWidget):
         """One click opens or folds a folder (there's no arrow to aim for)."""
         if item.data(0, ROLE_ROW) == "folder":
             item.setExpanded(not item.isExpanded())
+
+    def dot_rect(self, item: QTreeWidgetItem) -> QRectF:
+        """Where a folder's colour dot is drawn (a little larger, so it's easy to hit)."""
+        depth, parent = 0, item.parent()
+        while parent is not None:
+            depth, parent = depth + 1, parent.parent()
+        rect = self.visualItemRect(item)
+        x = 4 + max(0, depth - 1) * INDENT + 10 + 16
+        return QRectF(x - 5, rect.center().y() - 9.5, 19, 19)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        item = self.itemAt(event.position().toPoint())
+        if (event.button() == Qt.MouseButton.LeftButton and item is not None
+                and item.data(0, ROLE_ROW) == "folder" and self.dot_rect(item).contains(event.position())):
+            self.dot_clicked.emit(item.data(0, ROLE_FOLDER), event.globalPosition().toPoint())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mimeData(self, items):  # noqa: N802 (Qt naming)
         """A dragged sprig also carries its id, so the canvas or Inside can take it."""
