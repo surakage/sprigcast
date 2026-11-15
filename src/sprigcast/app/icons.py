@@ -144,6 +144,18 @@ def _draw(p: QPainter, name: str) -> None:
         needle.lineTo(P(11, 11))
         needle.closeSubpath()
         p.drawPath(needle)
+    elif name == "trash":  # a bin with a lid
+        p.drawLine(P(4.5, 7), P(19.5, 7))
+        p.drawLine(P(9.5, 7), P(10, 4.5))
+        p.drawLine(P(10, 4.5), P(14, 4.5))
+        p.drawLine(P(14, 4.5), P(14.5, 7))
+        bin_ = QPainterPath(P(6.5, 7))
+        bin_.lineTo(P(7.5, 19.5))
+        bin_.lineTo(P(16.5, 19.5))
+        bin_.lineTo(P(17.5, 7))
+        p.drawPath(bin_)
+        p.drawLine(P(10.5, 10.5), P(10.5, 16))
+        p.drawLine(P(13.5, 10.5), P(13.5, 16))
     elif name == "folder":
         path = QPainterPath(P(3.5, 17.5))
         for x, y in ((3.5, 6.5), (9, 6.5), (11, 8.5), (20.5, 8.5), (20.5, 17.5)):
@@ -155,7 +167,7 @@ def _draw(p: QPainter, name: str) -> None:
 
 
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
-         "camera", "disk", "bolt", "panel", "plus", "compass", "folder")
+         "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:

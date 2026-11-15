@@ -167,10 +167,22 @@ def test_tabs_hide_with_one_shape_and_hints_fade(tmp_path, monkeypatch):
         w.show()
         w.show_canvases("horizontal")
         assert not w.canvas_tabs.isVisible()
-        assert not w.inside_tools.isVisible()  # nothing picked in Inside: no tool row
+        assert not hasattr(w, "inside_tools")  # no button row: each row has its own icons
         w.source_list.setCurrentRow(0)
-        assert w.inside_tools.isVisible()
-        assert w.inside_hint.isVisible() and not w.learned
+        assert not w.learned
+        from sprigcast.app.build_stage import ROLE_LOCKED, ROLE_TAG
+
+        scene = w._scene()
+        top = scene.items[-1]
+        assert not top.locked and not w.source_list.item(0).data(ROLE_LOCKED)
+        assert w.source_list.item(0).data(ROLE_TAG) in ("", None)  # no "colour"/"sprig" type tags
+        w.source_list.action_clicked.emit(0, "lock")  # the lock at the end of the top row
+        assert w._scene().items[-1].locked and w.source_list.item(0).data(ROLE_LOCKED)
+        w.source_list.action_clicked.emit(0, "lock")
+        assert not w._scene().items[-1].locked
+        count = len(w._scene().items)
+        w.source_list.action_clicked.emit(0, "remove")  # the bin
+        assert len(w._scene().items) == count - 1
     finally:
         w.close()
     QSettings().setValue("build/sessions", 9)
@@ -179,7 +191,7 @@ def test_tabs_hide_with_one_shape_and_hints_fade(tmp_path, monkeypatch):
     w = MainWindow(_collection(), tmp_path / "scenes2.json")
     try:
         w.show()
-        assert w.learned and not w.inside_hint.isVisible() and not w.prop_empty.isVisible()
+        assert w.learned and not w.prop_empty.isVisible()
     finally:
         w.close()
         QSettings().clear()

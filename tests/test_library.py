@@ -152,7 +152,7 @@ def test_sprig_drops_copies_icons_and_links(tmp_path, monkeypatch):
         placed = [col.source(i.source) for i in col.scene("h1").items]
         assert [c.settings.get("scene") for c in placed] == ["p2"]
         assert w.source_list.item(0).data(ROLE_KIND) == "scene"
-        assert w.source_list.item(0).data(ROLE_TAG) == "sprig"
+        assert not w.source_list.item(0).data(ROLE_TAG)  # no type tags: you know what you added
         mime = QMimeData()
         mime.setData(SPRIG_MIME, b"p1")
         assert mime.hasFormat(SPRIG_MIME)

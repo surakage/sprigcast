@@ -81,6 +81,7 @@ from sprigcast.app.build_stage import (
     ROLE_KIND,
     ROLE_NAME,
     ROLE_SPRIG,
+    ROLE_LOCKED,
     ROLE_SWATCH,
     ROLE_TAG,
     BuildBar,
@@ -671,6 +672,7 @@ class MainWindow(QMainWindow):
     def _build_sources_dock(self) -> None:
         self.source_list = InsideList()
         self.source_list.moved.connect(self._on_inside_moved)
+        self.source_list.action_clicked.connect(self._row_action)
         self.source_list.sprig_dropped.connect(lambda part_id: self._sprig_dropped("", part_id))
         self.source_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.source_list.itemSelectionChanged.connect(self._refresh_properties)
@@ -698,28 +700,6 @@ class MainWindow(QMainWindow):
                                        lambda: self.add_source_menu.exec(QCursor.pos()), scale=0.8)
         self.inside_empty.hide()
         self.build_stage.left.addWidget(self.inside_empty)
-        self.inside_tools = QWidget()  # only while something in Inside is picked
-        tools = QHBoxLayout(self.inside_tools)
-        tools.setContentsMargins(0, 0, 0, 0)
-        tools.setSpacing(8)
-        for text, tip, slot in (
-            ("Settings", "Settings for the selected thing (or double-click it)", self._edit_source_settings),
-            ("Remove", "Remove the selected thing from this bloom", self._remove_item),
-            (f"Make {PART}", f"Turn the selected things into a {PART} you can reuse in other {SHOWS} "
-                                         "(Ctrl+click to pick several)", self._turn_into_part),
-        ):
-            button = QPushButton(text)
-            button.setToolTip(tip)
-            button.setStyleSheet(theme.SMALL_PILL_STYLE)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.clicked.connect(slot)
-            tools.addWidget(button)
-        tools.addStretch(1)
-        self.inside_hint = QLabel("Drag to reorder: higher is in front. Right-click for more.")
-        self.inside_hint.setWordWrap(True)
-        self.inside_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
-        self.build_stage.left.addWidget(self.inside_hint)
-        self.build_stage.left.addWidget(self.inside_tools)
         self.build_stage.left.addWidget(self.panels.cards["build"], 1)  # panels you choose for Build
 
     def _fill_add_source_menu(self) -> None:
@@ -1261,7 +1241,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.prop_sprig)
         from sprigcast.app.empty import EmptyState
 
-        self.prop_empty = EmptyState("Click something on the canvas or in Inside to move it, change its look, "
+        self.prop_empty = EmptyState("Click something on the canvas or in Leaves to move it, change its look, "
                                      "or see which shapes show it.", scale=0.8)
         top.addWidget(self.prop_empty)
         col.addLayout(top)
@@ -1315,7 +1295,7 @@ class MainWindow(QMainWindow):
         place.addLayout(grid)
         self.prop_locked = QCheckBox("Locked (clicks pass through it)")
         self.prop_locked.toggled.connect(self._on_locked_toggled)
-        place.addWidget(self.prop_locked)
+        self.prop_locked.hide()  # kept for Ctrl+L; the lock lives on each Leaves row
 
         look = section("Look")
         chips = QHBoxLayout()
@@ -2501,7 +2481,7 @@ class MainWindow(QMainWindow):
                 row.setSelected(True)
             return row
 
-        blooms = heading_item(cap(SHOWS), "your scenes", "")
+        blooms = heading_item(cap(SHOWS), "", "")
         blooms.setToolTip(0, f"{cap(SHOWS)} are the scenes you put on air. + adds one, or a folder.")
         self.scene_tree.addTopLevelItem(blooms)
         for folder, scenes in self.collection.grouped_scenes(canvas_id):
@@ -2523,7 +2503,7 @@ class MainWindow(QMainWindow):
                     child.setSelected(True)
         blooms.setExpanded(True)
 
-        sprigs = heading_item(cap(PARTS), "scenes you reuse", PART_ROOT)
+        sprigs = heading_item(cap(PARTS), "", PART_ROOT)
         sprigs.setToolTip(0, f"{cap(PARTS)} are scenes you build once and put inside {SHOWS} (nested scenes). "
                              f"Change one and every {SHOW} using it changes too.")
         self.scene_tree.addTopLevelItem(sprigs)
@@ -2548,7 +2528,7 @@ class MainWindow(QMainWindow):
                     child.setSelected(True)
         sprigs.setExpanded(True)
 
-        sound = heading_item("Sound", "both shapes", SOUND_ROOT)
+        sound = heading_item("Sound", "", SOUND_ROOT)
         sound.setFlags(Qt.ItemFlag.ItemIsEnabled)  # nothing is dragged in here
         sound.setToolTip(0, "Mics, desktop sound and web pages with sound. They play in every bloom on both "
                             "shapes, so adding the vertical shape never doubles them.")
@@ -2642,13 +2622,13 @@ class MainWindow(QMainWindow):
                 self._inside_roles(row, item.source, scene.canvas)
                 row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsDragEnabled)
                 row.setCheckState(Qt.CheckState.Checked if item.visible else Qt.CheckState.Unchecked)
+                row.setData(ROLE_LOCKED, bool(item.locked))
                 self.source_list.addItem(row)
         if keep_row is not None and 0 <= keep_row < self.source_list.count():
             self.source_list.setCurrentRow(keep_row)
         empty = self.source_list.count() == 0
         self.source_list.setVisible(not empty)
         self.inside_empty.setVisible(empty)
-        self.inside_hint.setVisible(not empty and not self.learned)
         self._updating = False
         self._refresh_properties()
 
@@ -2665,7 +2645,7 @@ class MainWindow(QMainWindow):
         if short_status(status):
             tags.append(short_status(status))
         row.setData(ROLE_NAME, config.name)
-        row.setData(ROLE_TAG, " · ".join(tags) or KIND_NAMES.get(config.kind, ""))  # quiet: what it is
+        row.setData(ROLE_TAG, " · ".join(tags))  # only what needs saying: problems, hidden bits, filters
         row.setData(ROLE_SPRIG, config.kind == PART_KIND)
         row.setData(ROLE_KIND, config.kind)
         row.setData(ROLE_SWATCH, config.settings.get("color") if config.kind == "color" else None)
@@ -2743,7 +2723,6 @@ class MainWindow(QMainWindow):
         for holder in self.prop_sections:
             holder.setVisible(enabled)
         self.prop_empty.setVisible(not enabled and not self.learned)  # after a few sessions: just a quiet column
-        self.inside_tools.setVisible(enabled)
         self.prop_name.setVisible(enabled)
         self.prop_locked.setEnabled(enabled)
         for canvas_id, state in self._shape_states(item).items():
@@ -3080,12 +3059,36 @@ class MainWindow(QMainWindow):
         self._show_spin_values(item)
         self._updating = False
 
+    def _row_action(self, row: int, action: str) -> None:
+        """An icon at the end of a Leaves row: lock, settings (gear) or remove (bin)."""
+        if action == "lock":
+            self._toggle_lock_row(row)
+            return
+        self.source_list.setCurrentRow(row)
+        if action == "settings":
+            self._edit_source_settings()
+        elif action == "remove":
+            self._remove_item()
+
+    def _toggle_lock_row(self, row: int) -> None:
+        """The lock at the end of a Leaves row: locked leaves can't be moved or picked on the canvas."""
+        scene = self._scene()
+        if scene is None or not 0 <= row < len(scene.items):
+            return
+        item = list(reversed(scene.items))[row]
+        item.locked = not item.locked
+        self._changed()
+        self._refresh_sources(keep_row=row)
+
     def _on_locked_toggled(self, locked: bool) -> None:
         item = self._item()
         if self._updating or item is None:
             return
         item.locked = locked
         self._changed()
+        row = self.source_list.currentItem()
+        if row is not None:
+            row.setData(ROLE_LOCKED, locked)
 
     # Scene actions ---------------------------------------------------------------
 
@@ -3377,7 +3380,7 @@ class MainWindow(QMainWindow):
         self.part_uses_note.setText(
             f"This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
             "What you change here changes in all of them." if uses else
-            f"This {PART} isn't in any {SHOW} yet. Put it in one with Inside → + Add → {cap(PART)}.")
+            f"This {PART} isn't in any {SHOW} yet. Put it in one with Leaves → + Add → {cap(PART)}.")
         back = getattr(self, "last_bloom_id", None)
         back_scene = next((s for s in self.collection.scenes if s.id == back and s.kind == "show"), None)
         self.part_back.setText(f"← {back_scene.name}" if back_scene else "← Back")
