@@ -175,3 +175,29 @@ def test_an_app_with_the_camera_open_twice_doesnt_flip_it_every_second():
         _camera_side(block, 32, 18, clock[0])
         cam.poll()
     assert [(c, s) for c, _, s in engine.taps] == [("horizontal", (32, 18))]
+
+
+def test_install_step_moves_a_loaded_dll_aside_under_a_fresh_name():
+    # A DLL an app still has loaded can only be renamed. A fixed ".old" name may itself still be loaded,
+    # which made the rename fail and left the old 64-bit camera in place (unregistered).
+    dll = virtualcam.Path(r"C:\Program Files\SprigCast Camera\sprigcast_camera.dll")
+    a = virtualcam._install_step(virtualcam.Path("new.dll"), dll, "aaaa")
+    assert f'move /y "{dll}" "{dll}.aaaa.old"' in a
+    assert f'move /y "{dll}.new" "{dll}"' in a
+    assert "regsvr32 /u" not in a  # never left unregistered
+    # Registering runs whatever happened before it (joined with "&", not "&&").
+    assert a.endswith(f'& regsvr32 /s "{dll}"')
+    b, c = (virtualcam._install_step(virtualcam.Path("new.dll"), dll) for _ in range(2))
+    assert b != c  # a new aside name each time
+
+
+def test_set_up_registers_both_even_if_the_first_fails(monkeypatch, tmp_path):
+    (tmp_path / "sprigcast_camera.dll").write_bytes(b"64")
+    (tmp_path / "sprigcast_camera32.dll").write_bytes(b"32")
+    monkeypatch.setattr(virtualcam, "bundled_dll", lambda name=virtualcam.DLL_NAME: tmp_path / name)
+    commands = []
+    monkeypatch.setattr(virtualcam, "_elevated", lambda c: commands.append(c) or True)
+    virtualcam.set_up()
+    steps = commands[0].split(" & ")
+    assert steps[-1].startswith("regsvr32 /s") and "camera32" in steps[-1]
+    assert sum(s.startswith("regsvr32 /s") for s in steps) == 2

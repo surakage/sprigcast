@@ -186,10 +186,22 @@ def set_up() -> bool:
     return _elevated(" & ".join(steps))
 
 
-def _install_step(src: Path, dll: Path) -> str:
-    # A loaded DLL can't be overwritten: unregister first, rename the old file aside, then copy and register.
-    return (f'regsvr32 /u /s "{dll}" 2>nul & move /y "{dll}" "{dll}.old" 2>nul & '
-            f'copy /y "{src}" "{dll}" && regsvr32 /s "{dll}"')
+def _install_step(src: Path, dll: Path, stamp: str | None = None) -> str:
+    """cmd steps that put one DLL in place and register it, even while an app has the old one loaded.
+
+    A loaded DLL can't be overwritten or deleted, but it can be renamed. So: clear out earlier
+    leftovers that are no longer loaded, stage the new copy, rename the current DLL aside under a name
+    that's new every time (a fixed ".old" name may itself still be loaded, which made the rename fail
+    and left the old DLL in place), move the new one in, and always register what's there.
+    """
+    if stamp is None:
+        import uuid
+
+        stamp = uuid.uuid4().hex[:8]
+    new = f"{dll}.new"
+    return (f'del /q "{dll}.*.old" "{dll}.old" 2>nul & '
+            f'copy /y "{src}" "{new}" && (move /y "{dll}" "{dll}.{stamp}.old" 2>nul & move /y "{new}" "{dll}") & '
+            f'regsvr32 /s "{dll}"')
 
 
 def remove() -> bool:

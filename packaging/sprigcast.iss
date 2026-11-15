@@ -185,6 +185,8 @@ end;
 // own Settings > Output > Virtual camera button stays as a repair path (output/virtualcam.py does the same).
 const
   CameraClsid = '{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}';
+  // The DirectShow camera apps list, under DirectShow's video capture category (both bitnesses).
+  CameraListing = 'Software\Classes\CLSID\{860BB310-5D01-11D0-BD3B-00A0C911CE86}\Instance\{622E03C7-86C4-4F91-82C0-6EB79B42DCBF}';
 
 function CameraDir: String;
 begin
@@ -209,12 +211,20 @@ begin
     Result := '';
 end;
 
+function CameraListed: Boolean;
+begin
+  Result := RegKeyExists(HKLM64, CameraListing) and
+            (not FileExists(BundledCamera32()) or RegKeyExists(HKLM32, CameraListing));
+end;
+
+// Set up once and kept: registered, listed for 64-bit and 32-bit apps, and the same files this Setup ships.
+// An update with the same camera changes nothing; a new camera, or a half-done one, is (re)done.
 function CameraIsCurrent: Boolean;
 var
   Registered: String;
 begin
   Registered := RegisteredCamera();
-  Result := (Registered <> '') and FileExists(BundledCamera()) and
+  Result := (Registered <> '') and CameraListed() and FileExists(BundledCamera()) and
             (GetSHA256OfFile(Registered) = GetSHA256OfFile(BundledCamera())) and
             (not FileExists(BundledCamera32()) or
              (FileExists(CameraDir() + '\sprigcast_camera32.dll') and
@@ -229,25 +239,39 @@ begin
   Result := ShellExec('runas', ExpandConstant('{cmd}'), '/c ' + Command, '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
-// cmd steps that put one DLL in place and register it. A loaded DLL can't be overwritten: unregister
-// first, rename the old file aside, then copy and register. regsvr32 runs the 32-bit one itself.
-function InstallDll(const Src, Dll: String): String;
+// cmd steps that put one DLL in place and register it (the same steps as output/virtualcam.py). A
+// loaded DLL can't be overwritten or deleted, only renamed: clear leftovers no app still holds, stage the
+// new copy, rename the current DLL aside under a fresh name (a fixed ".old" may itself still be loaded,
+// which left the old 64-bit DLL in place), move the new one in, and always register what's there.
+function InstallDll(const Src, Dll, Stamp: String): String;
 begin
-  Result := 'regsvr32 /u /s "' + Dll + '" 2>nul & move /y "' + Dll + '" "' + Dll + '.old" 2>nul & ' +
-            'copy /y "' + Src + '" "' + Dll + '" && regsvr32 /s "' + Dll + '"';
+  Result := 'del /q "' + Dll + '.*.old" "' + Dll + '.old" 2>nul & ' +
+            'copy /y "' + Src + '" "' + Dll + '.new" && (move /y "' + Dll + '" "' + Dll + '.' + Stamp + '.old" 2>nul & ' +
+            'move /y "' + Dll + '.new" "' + Dll + '") & regsvr32 /s "' + Dll + '"';
 end;
 
 procedure SetUpCamera;
 var
-  Command: String;
+  Command, Stamp: String;
 begin
   if not FileExists(BundledCamera()) or CameraIsCurrent() then
     exit;
-  Command := 'mkdir "' + CameraDir() + '" 2>nul & ' + InstallDll(BundledCamera(), CameraDir() + '\sprigcast_camera.dll');
+  Stamp := GetDateTimeString('yyyymmddhhnnss', #0, #0);
+  Command := 'mkdir "' + CameraDir() + '" 2>nul & ' + InstallDll(BundledCamera(), CameraDir() + '\sprigcast_camera.dll', Stamp);
   if FileExists(BundledCamera32()) then
-    Command := Command + ' & ' + InstallDll(BundledCamera32(), CameraDir() + '\sprigcast_camera32.dll');
+    Command := Command + ' & ' + InstallDll(BundledCamera32(), CameraDir() + '\sprigcast_camera32.dll', Stamp);
   if not RunElevated(Command) then
-    Log('SprigCast Camera: not set up (permission declined or it failed); Settings > Output > Virtual camera can retry');
+  begin
+    Log('SprigCast Camera: not set up (permission declined); Settings > Output > Virtual camera can retry');
+    exit;
+  end;
+  // Check the result: both cameras registered and current. Say so if not, rather than leave it half done.
+  if not CameraIsCurrent() then
+  begin
+    Log('SprigCast Camera: set up incomplete (registered: ' + RegisteredCamera() + ')');
+    SuppressibleMsgBox('SprigCast Camera couldn''t be fully set up. Close apps that use cameras, then use ' +
+                       'Settings > Output > Virtual camera in SprigCast to finish.', mbError, MB_OK, IDOK);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
