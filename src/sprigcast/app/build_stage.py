@@ -115,6 +115,7 @@ class BuildStage(QWidget):
         card_layout.setContentsMargins(10, 6, 10, 10)
         self.card_slot = card_layout
         middle.addWidget(self.card, 1)
+        self.below_card = middle  # Sound's strips go under the canvas
         body.addLayout(middle, 1)
         # Right: what's inside, then the inspector for the picked thing. Drag the gap to share the room.
         self.right_panel = QSplitter(Qt.Orientation.Vertical)

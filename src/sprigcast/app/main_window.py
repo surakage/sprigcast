@@ -415,6 +415,10 @@ class MainWindow(QMainWindow):
         self.build_stage = BuildStage(self.library, self.build_bar)
         self.build_stage.rail.insertWidget(0, self.canvas_tabs)
         self.build_stage.card_slot.addWidget(self.center)
+        from sprigcast.app.sound_strips import SoundStrips
+
+        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound)
+        self.build_stage.below_card.addWidget(self.sound_strips)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
         self.setCentralWidget(self.modes)
@@ -2440,6 +2444,8 @@ class MainWindow(QMainWindow):
             elif isinstance(event, AudioLevels):
                 if self.mode == "live":
                     self.live_side.set_levels(event.levels)
+                else:
+                    self.sound_strips.set_levels(event.levels)
                 self.peak_watch.feed(event.levels)
                 self.control.meters(event.levels)  # only when a connected app asked for meters
             elif isinstance(event, SourceInfo):
@@ -2996,8 +3002,11 @@ class MainWindow(QMainWindow):
         return False
 
     def _refresh_audio(self) -> None:
-        self.live_side.show_sound([self._sound_item(s) for s in self.collection.sources
-                                   if self._has_sound(s)])
+        sounds = [s for s in self.collection.sources if self._has_sound(s)]
+        self.live_side.show_sound([self._sound_item(s) for s in sounds])
+        if hasattr(self, "sound_strips"):
+            ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
+            self.sound_strips.show_sound([self._sound_item(s) for s in ordered], {s.id: s.kind for s in ordered})
         self.live_side.sound.set_mic_first(self.collection.audio.ducking)
 
     def _set_mic_first(self, on: bool) -> None:
