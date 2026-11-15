@@ -83,12 +83,6 @@ class SettingsDialog(QDialog):
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
-        if "restart_on_show" in defaults:
-            tip = QLabel("A video plays while its bloom is on screen. A sound file lives in Sound: right-click it, "
-                         "use a hotkey or an app to play it. Play when SprigCast opens is for sound files.")
-            tip.setWordWrap(True)
-            tip.setStyleSheet(f"color: {theme.MUTED}")
-            form.addRow("", tip)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
