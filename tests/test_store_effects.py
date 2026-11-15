@@ -179,7 +179,7 @@ def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     assert frame.shape == (1000, 800, 4) and snap.busy
     job = snap._job
     assert to_array(snap.paint(job, 0.5))[..., 3].any()  # the camera
-    held = to_array(snap.paint(job, 3.2))
+    held = to_array(snap.paint(job, 3.6))  # developed, not yet leaving
     assert held[500, 400, 3] == 255 and held[500, 400, 0] > 180  # the red screenshot in the middle
     job.started -= 100
     assert not snap.video_frame()[..., 3].any() and not snap.busy  # gone again
@@ -203,7 +203,7 @@ def test_snap_reads_nothing_but_the_screenshot(added):
 
     module = sys.modules["sprigcast_plugin_snap"]
     assert not any(name.startswith("snap.") for name in NativeApi(FakeHost(_collection())).all_actions())
-    assert set(module.SnapSource.defaults) == {"frame", "seconds", "flash", "save_polaroid"}
+    assert set(module.SnapSource.defaults) == {"seconds", "flash", "save_polaroid"}
 
 
 def test_apps_can_list_plugins_and_hear_their_events(added):
@@ -246,9 +246,8 @@ def test_snap_frames_hold_a_big_picture(added):
     added("snap")
     snap = __import__("sys").modules["sprigcast_plugin_snap"]
     picture = np.full((720, 1280, 4), 255, dtype=np.uint8)
-    for frame in ("vintage", "white"):
-        card, window = snap.compose(picture, frame)
-        assert window.width() >= 999 and card.width() > window.width() and card.height() > window.height()
+    card, window = snap.compose(picture, "polaroid")
+    assert window.width() >= 999 and card.width() > window.width() and card.height() > window.height()
     assert snap.snap_name(__import__("pathlib").Path("x")).name.startswith("snap ")
 
 

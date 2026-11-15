@@ -6,7 +6,7 @@ the API), the camera pops in, the button goes down, the flash goes off and the s
 out of the slot as a polaroid. It develops, grows to the middle, holds for a few seconds and slides
 away. The screenshot is saved as usual (recordings folder → Screenshots, named by date and time).
 
-Settings: Frame (white, wide like a screenshot; or vintage, square), Seconds (how long the polaroid stays up), Flash, and Save a
+Settings: Seconds (how long the polaroid stays up), Flash, and Save a
 polaroid copy (also saves the framed picture next to the screenshot). It's only an animation:
 nothing about your viewers is read or kept.
 
@@ -44,8 +44,7 @@ CAM_SLOT_Y, CAM_SLOT_X = 200, (52, 208)
 CAM_FLASH = (213, 77)
 FRAMES = {
     # file, size, photo window (x, y, w, h)
-    "vintage": ("frame_vintage.svg", (387, 470), (22, 30, 348, 340)),
-    "white": ("frame_white.svg", (1064, 776), (67, 33, 933, 583)),
+    "polaroid": ("frame.svg", (1060, 960), (80, 80, 900, 640)),
 }
 
 # The show, in seconds from the trigger.
@@ -100,10 +99,10 @@ def draw_art(p, name: str, rect) -> None:
 
 
 def frame_art(frame: str):
-    """(SVG file, (w, h), window QRect) for "vintage" or "white"."""
+    """(SVG file, (w, h), window QRect) for a frame ("polaroid")."""
     from PySide6.QtCore import QRect
 
-    name, size, window = FRAMES.get(frame, FRAMES["vintage"])
+    name, size, window = FRAMES.get(frame, FRAMES["polaroid"])
     return name, size, QRect(*window)
 
 
@@ -198,7 +197,7 @@ class _Job:
 @register("snap")
 class SnapSource(Source):
     label = "Snap"
-    defaults = {"frame": "white", "seconds": 6.0, "flash": True, "save_polaroid": False}
+    defaults = {"seconds": 6.0, "flash": True, "save_polaroid": False}
     sleeps = False  # a screenshot can come while it's hidden; it costs nothing until then
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
 
@@ -252,7 +251,7 @@ class SnapSource(Source):
         job.started = time.monotonic()
 
     def _picture_in(self, job: _Job) -> None:
-        frame = str(self.settings.get("frame", "white"))
+        frame = "polaroid"
         _art, (art_w, art_h), _w = frame_art(frame)
         width = min(W * 0.86, art_w * (H * 0.80) / art_h)
         job.card = compose(job.picture, frame, int(width))
@@ -261,7 +260,7 @@ class SnapSource(Source):
     def _save(self, job: _Job) -> None:
         if job.path is None:
             return
-        args = (job.picture, str(self.settings.get("frame", "white")), job.path)
+        args = (job.picture, "polaroid", job.path)
 
         def run():
             if save(*args):
@@ -321,7 +320,7 @@ class SnapSource(Source):
             if card is not None:
                 img, win = card
             else:
-                img, win = compose(None, str(self.settings.get("frame", "white")), 400)
+                img, win = compose(None, "polaroid", 400)
             small_w = (CAM_SLOT_X[1] - CAM_SLOT_X[0]) * k * 0.92
             small_h = small_w * img.height() / img.width()
             out = _smooth(_phase(t, PRINT))
@@ -342,12 +341,6 @@ class SnapSource(Source):
             sx, sy = rect.width() / img.width(), rect.height() / img.height()
             p.scale(sx, sy)
             p.translate(-img.width() / 2, -img.height() / 2)
-            # a soft shadow, then the card
-            shadow = QColor(0, 0, 0, int(70 * g))
-            if g > 0:
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(shadow)
-                p.drawRoundedRect(QRectF(6 / sx, 10 / sy, img.width(), img.height()), 4 / sx, 4 / sy)
             p.drawImage(QPointF(0, 0), img)
             develop = 1 - _smooth(_phase(t, DEVELOP))
             if develop > 0:

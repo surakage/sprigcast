@@ -1,3 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <rect x="88" y="46" width="84" height="13" rx="4" fill="#1E1E23"/>
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8a5530"/><stop offset="1" stop-color="#6a3f22"/>
+    </linearGradient>
+  </defs>
+  <!-- sprout -->
+  <path d="M172 38 C172 28 175 20 180 14" fill="none" stroke="#5d9a35" stroke-width="3" stroke-linecap="round"/>
+  <path d="M180 14 C186 7 196 7 200 12 C194 19 185 19 180 14 Z" fill="#8cc152"/>
+  <path d="M176 22 C170 15 161 15 158 20 C163 26 171 26 176 22 Z" fill="#6fa53d"/>
+  <!-- plate -->
+  <path d="M72 60 V46 Q72 36 84 36 H182 Q194 36 194 46 V60 Z" fill="url(#plate)"/>
+  <rect x="78" y="39" width="110" height="3" rx="1.5" fill="#ffffff" opacity="0.15"/>
+  <!-- leafy clump -->
+  <ellipse cx="92" cy="37" rx="12" ry="6" fill="#6fa53d"/>
+  <ellipse cx="104" cy="35" rx="10" ry="5.5" fill="#8cc152"/>
+  <ellipse cx="96" cy="33" rx="6" ry="3" fill="#a5d36a"/>
 </svg>
