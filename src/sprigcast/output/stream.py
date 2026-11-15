@@ -53,6 +53,8 @@ SERVICES: dict[str, Service] = {
     "tiktok": Service("TikTok", "", 6000, "vertical",
                       "Server and key: TikTok LIVE Producer (needs LIVE access), copy Server URL and Stream key.",
                       1280, 30, 4000),
+    "x": Service("X", "", 9000, "horizontal",
+                 "Server and key: X Media Studio → Producer → Sources → Create source.", 1920, 30, 6000),
     "custom": Service("Custom RTMP", "", 50000, "horizontal", "Any RTMP or RTMPS server URL plus its stream key.",
                       1920, 60, 6000),
 }

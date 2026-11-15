@@ -2431,6 +2431,7 @@ class MainWindow(QMainWindow):
         open_settings = settings_menu.addAction("Settings…")
         open_settings.setShortcut(QKeySequence("Ctrl+,"))
         open_settings.triggered.connect(lambda: self._open_settings())
+        settings_menu.addAction("Get started…").triggered.connect(lambda: self.open_getting_started())
         settings_menu.addAction("Starter kit…").triggered.connect(lambda: self.open_starter())
         settings_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
         settings_menu.addSeparator()
@@ -5630,14 +5631,18 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
 
-        def camera_settings(device) -> dict:
-            probe = CameraDialog([device], {"name": device.name, "path": device.path}, self,
-                                 max_fps=self._camera_max_fps())
-            settings = probe.settings()
-            probe.deleteLater()
-            return settings
+        return self._after_starter(build_starter(self.collection, dialog.choice(self._camera_settings)))
 
-        made = build_starter(self.collection, dialog.choice(camera_settings))
+    def _camera_settings(self, device) -> dict:
+        """A camera (or capture card) as source settings: its best mode, as the camera window picks it."""
+        probe = CameraDialog([device], {"name": device.name, "path": device.path}, self,
+                             max_fps=self._camera_max_fps())
+        settings = probe.settings()
+        probe.deleteLater()
+        return settings
+
+    def _after_starter(self, made: list[str]) -> bool:
+        """Show the blooms the Starter kit just made."""
         self._sync_canvas_choice()  # vertical versions may have switched the vertical canvas on
         if not made:
             return False
@@ -5653,7 +5658,7 @@ class MainWindow(QMainWindow):
                                      8000)
         return True
 
-    def open_optimizer(self, first_run: bool = False) -> bool:
+    def open_optimizer(self, first_run: bool = False, wants: tuple[bool, bool] | None = None) -> bool:
         """The Optimize for this PC wizard: check the PC, suggest settings. True if any were applied."""
         from sprigcast.app import lowend
         from PySide6.QtWidgets import QDialog
@@ -5664,6 +5669,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Optimize for this PC", "Stop streaming, recording and the replay buffer first.")
             return False
         wizard = OptimizeWizard(self.collection, lowend.waiting_fps(), first_run=first_run, parent=self)
+        if wants is not None:  # Get started already asked: live, record
+            wizard.wants_stream.setChecked(wants[0])
+            wizard.wants_record.setChecked(wants[1])
         accepted = wizard.exec() == QDialog.DialogCode.Accepted
         plan = getattr(wizard, "plan", None)
         height, fps_q = getattr(plan, "quality", (0, 0))
@@ -5706,18 +5714,159 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def first_run_optimizer(self) -> None:
-        """Once: offer the Optimize for this PC wizard (it also covers the old light-settings suggestion)."""
-        from sprigcast.app import optimize
+        """Once on a fresh install: Get started (which makes the blooms too), then Optimize for this PC
+        (it also covers the old light-settings suggestion), each offered only once."""
+        from sprigcast.app import getting_started, optimize
+        from sprigcast.app.starter import is_fresh
 
         settings = QSettings()
+        answers = None
+        if not settings.value(getting_started.DONE, False, type=bool):
+            settings.setValue(getting_started.DONE, True)
+            if is_fresh(self.collection):  # only the example blooms: a new install
+                answers = self.open_getting_started()
         if settings.value(optimize.DONE, False, type=bool):
             return
         settings.setValue(optimize.DONE, True)
+        if answers is not None:
+            self.open_optimizer(wants=(answers.live, answers.record))
+            return
         self.open_optimizer(first_run=True)
-        from sprigcast.app.starter import is_fresh
-
         if is_fresh(self.collection):  # only the example blooms: offer to make real ones
             self.open_starter()
+
+    def open_getting_started(self):
+        """Get started: what you make, live or record, which shape, where to. Sets up a garden named after
+        the show, a path named after where it goes (with a place per pick), the canvases, then makes the
+        blooms that fit with the gear picked in step 2. Returns the answers, or None if closed."""
+        from PySide6.QtWidgets import QDialog
+
+        from sprigcast.app import getting_started as gs
+        from sprigcast.app.starter import is_fresh
+        from sprigcast.core.gardens import DEFAULT_GARDEN, DEFAULT_PATH, ShelfError
+        from sprigcast.output import twitch_auth
+
+        if self.gardens.busy():
+            QMessageBox.information(self, "Get started", "Stop streaming and recording first.")
+            return None
+
+        def connect_twitch(parent):
+            from sprigcast.app.twitch_connect import TwitchConnectDialog
+
+            dialog = TwitchConnectDialog(parent)
+            return (dialog.account, dialog.stream_key) if dialog.exec() and dialog.account else None
+
+        def twitch_account():
+            try:
+                return twitch_auth.connected_account()
+            except Exception:  # noqa: BLE001 (no keyring: just not signed in)
+                return None
+
+        def list_gear() -> gs.Gear:
+            return gs.Gear(cameras=list_cameras(), mics=[d.name for d in list_audio_devices(loopback=False)],
+                           speakers=[d.name for d in list_audio_devices(loopback=True, rescan=False)])
+
+        dialog = gs.GettingStartedDialog(self, twitch_account=twitch_account, connect_twitch=connect_twitch,
+                                         list_gear=list_gear)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            log.info("get started: closed")
+            return None
+        answers = dialog.answers()
+        log.info("get started: %s, live %s, record %s, %s, places %s", answers.content, answers.live,
+                 answers.record, answers.shape, ",".join(answers.places) or "none")
+        shelf = self.gardens.shelf
+        fresh = is_fresh(self.collection)
+        try:
+            # Garden: a fresh install's garden takes the show's name; otherwise a new one is made for it.
+            garden_name = gs.free_name(gs.content_label(answers.content),
+                                       [g.name for g in shelf.gardens() if g.id != shelf.garden().id])
+            if fresh:
+                if shelf.garden().name == DEFAULT_GARDEN:
+                    shelf.rename("garden", shelf.garden().id, garden_name)
+            else:
+                garden_name = gs.free_name(garden_name, [g.name for g in shelf.gardens()])
+                entry = self.gardens._new("garden", garden_name)
+                problem = self.gardens.switch("garden", entry.id)
+                if problem:
+                    QMessageBox.information(self, "Get started", problem)
+                    return None
+            # Path: a new install's (or one with no places yet) takes the new name; otherwise a new one is made.
+            path_name = gs.plan_path_name(answers)
+            current = shelf.path()
+            has_places = any(o.type == "stream" for o in self.collection.outputs)
+            if (fresh or not has_places) and current.name == DEFAULT_PATH:
+                shelf.rename("path", current.id,
+                             gs.free_name(path_name, [p.name for p in shelf.paths() if p.id != current.id]))
+            else:
+                entry = self.gardens._new("path", gs.free_name(path_name, [p.name for p in shelf.paths()]))
+                problem = self.gardens.switch("path", entry.id)
+                if problem:
+                    QMessageBox.information(self, "Get started", problem)
+                    return None
+        except ShelfError as exc:
+            QMessageBox.information(self, "Get started", str(exc))
+            return None
+        places = gs.apply_path(answers, self.collection, self.gardens.taken_output_ids())
+        if dialog.twitch is not None:
+            account, key = dialog.twitch
+            for output in places:
+                if output.service == "twitch":
+                    output.twitch_account = True
+                    if key:
+                        try:
+                            from sprigcast.output.keys import set_key
+
+                            set_key(output.key_ref, key)
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("get started: couldn't save the Twitch key: %s", exc)
+        elif any(o.service == "twitch" for o in places) and twitch_account():
+            for output in places:
+                if output.service == "twitch":
+                    output.twitch_account = True
+        self.show_canvases(answers.shape)
+        shelf.sync_path(self.collection)
+        self._changed()
+        self._refresh_stream_boxes()
+        self.gardens._changed()
+        self._grow_from_gear(answers, dialog.gear(), dialog.found or gs.Gear())
+        self.show_canvases(answers.shape)  # vertical versions switch both canvases on: keep the shape picked
+        from sprigcast.app.destinations import problem
+        from sprigcast.output.keys import get_key
+
+        def has_key(ref):
+            try:
+                return bool(get_key(ref))
+            except Exception:  # noqa: BLE001
+                return False
+
+        waiting = next((o for o in self.collection.outputs if o.type == "stream"
+                        and problem(o, self.collection, has_key)), None)
+        if waiting is not None:  # a key or server still to paste: straight to that place
+            self._open_settings("Stream", waiting.id)
+        self.statusBar().showMessage(f"Set up {garden_name} on {shelf.path().name}.", 8000)
+        return answers
+
+    def _grow_from_gear(self, answers, picks, gear) -> list[str]:
+        """Get started's step 2: the blooms for the show, made with the camera, capture card, mic and sound."""
+        from sprigcast.app import getting_started as gs
+        from sprigcast.app.starter import StarterChoice, build_starter, is_fresh
+
+        blooms, names = gs.plan_blooms(answers)
+        monitor = None
+        if "Gaming" in blooms and picks.capture is None:  # the screen, for the Gaming (or Screen) bloom
+            monitors = list_monitors()
+            m = next((m for m in monitors if m.primary), monitors[0] if monitors else None)
+            monitor = (m.index, m.width, m.height) if m is not None else None
+        app_sounds, desktop = gs.plan_sound(picks.sound, gear.speakers)
+        choice = StarterChoice(
+            camera=self._camera_settings(picks.camera) if picks.camera is not None else None,
+            monitor=monitor, mic=picks.mic, desktop=desktop, app_sounds=app_sounds, blooms=blooms,
+            vertical=answers.shape != "horizontal", replace_example=is_fresh(self.collection), names=names,
+            capture=self._camera_settings(picks.capture) if picks.capture is not None else None,
+            capture_audio=gs.capture_audio(picks.capture.name, gear.mics) if picks.capture is not None else None)
+        made = build_starter(self.collection, choice)
+        self._after_starter(made)
+        return made
 
     def _open_palette(self) -> CommandPalette:
         palette = CommandPalette(self._palette_commands(), self)

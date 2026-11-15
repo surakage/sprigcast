@@ -57,12 +57,18 @@ class StarterChoice:
     blooms: list[str] = field(default_factory=lambda: list(BLOOMS))
     vertical: bool = True
     replace_example: bool = True
+    names: dict[str, str] = field(default_factory=dict)  # a bloom's own name instead ("Gaming" -> "Screen")
+    capture: dict | None = None  # a capture card (camera source settings): fills the Gaming bloom instead of the screen
+    capture_audio: str | None = None  # the capture card's sound (an input device), added once like the mic
 
 
 def is_fresh(collection: SceneCollection) -> bool:
     """Only the example blooms that come with a new install (nothing of the person's own yet)."""
     shows = {s.id for s in collection.scenes if s.kind == "show"}
-    return shows <= DEFAULT_IDS and not collection.parts()
+    # the example blooms' own sprigs (named after them, made when blooms began holding sprigs only) don't count
+    own = {s.name for s in collection.scenes if s.id in DEFAULT_IDS}
+    own |= {n.removesuffix(" (vertical)") for n in own}
+    return shows <= DEFAULT_IDS and all(p.name in own for p in collection.parts())
 
 
 def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[str]:
@@ -89,8 +95,14 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
             SceneItem(source=camera_src.id, scale=scale, x=main.width - cam_w * scale - 40,
                       y=main.height - cam_h * scale - 40)])
         collection.scenes.append(webcam)
+    capture_src = None
+    if choice.capture is not None:
+        capture_src = SourceConfig(id=collection.new_id("capture"), kind="camera", name="Capture card",
+                                   settings=dict(choice.capture))
+        collection.sources.append(capture_src)
+        cap_w, cap_h = int(choice.capture.get("width", 1920)), int(choice.capture.get("height", 1080))
     screen_src = None
-    if choice.monitor is not None:
+    if choice.monitor is not None and capture_src is None:
         index, _w, _h = choice.monitor
         screen_src = SourceConfig(id=collection.new_id("display"), kind="display_capture", name=f"Screen {index}",
                                   settings={"monitor": index, "cursor": True})
@@ -112,7 +124,10 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
             collection.sources.append(placement)
         for name in choice.blooms:
             items = [SceneItem(source=background.id)]
-            if name == "Gaming" and screen_src is not None:
+            if name == "Gaming" and capture_src is not None:  # the console fills the canvas (cropped to its shape)
+                crop, scale = cover((cap_w, cap_h), (canvas.width, canvas.height))
+                items.append(SceneItem(source=capture_src.id, crop=crop, scale=scale))
+            elif name == "Gaming" and screen_src is not None:
                 _w, _h = choice.monitor[1], choice.monitor[2]
                 fit = min(canvas.width / max(1, _w), canvas.height / max(1, _h))
                 items.append(SceneItem(source=screen_src.id, scale=fit, x=(canvas.width - _w * fit) / 2,
@@ -131,7 +146,8 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
                 items.append(SceneItem(source=title.id, x=canvas.width * 0.08, y=canvas.height * 0.42))
             if name in ART:
                 items.append(_sloth_item(collection, pictures, name, canvas))
-            label = name if canvas is main else f"{name} (vertical)"
+            shown = choice.names.get(name) or name
+            label = shown if canvas is main else f"{shown} (vertical)"
             scene = Scene(id=collection.new_id("scene"), name=label, canvas=canvas.id, folder=folder.id,
                           items=items, linked_to=None if canvas is main else first_ids.get(name))
             collection.scenes.append(scene)
@@ -142,6 +158,7 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
             first = next(s for s in collection.scenes if s.id in made and s.canvas == canvas.id)
             collection.active_scenes[canvas.id] = first.id
     _add_sound(collection, "audio_input", choice.mic, "Mic")
+    _add_sound(collection, "audio_input", choice.capture_audio, "Capture sound")
     if choice.app_sounds is not None:
         _add_app_sounds(collection, choice.app_sounds)
     else:
