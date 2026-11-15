@@ -486,9 +486,9 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         w.show()
         w._set_mode("live")
         menu = w._preview_menu("vertical", -1)
-        full = next(a for a in menu.actions() if a.text() == "Show full screen on").menu()
+        full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
         labels = [a.text() for a in full.actions() if a.text()]
-        assert labels[0].startswith("Monitor 1:") and "In a window" in labels
+        assert labels[0].startswith("Full screen on Screen 1") and "In a window" in labels
         assert len(menu.actions()) == 1  # Live: only the projector, no editing items
         projector = w.open_projector("vertical", None)
         assert w.projectors == [projector] and "vertical" in w._watched_previews()
@@ -530,7 +530,7 @@ def test_projector_shows_a_bloom_or_a_source_from_its_right_click_menu(app, tmp_
         w.show()
         w._set_mode("live")
         menu = w.live_panel.scene_menu("h2")  # a bloom tile that isn't on air
-        full = next(a for a in menu.actions() if a.text() == "Show full screen on").menu()
+        full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
         next(a for a in full.actions() if a.text() == "In a window").trigger()
         bloom = w.projectors[-1]
         assert bloom.view and w.engine.views[bloom.view] == ("horizontal", "bloom", "h2")

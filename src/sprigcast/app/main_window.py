@@ -870,7 +870,7 @@ class MainWindow(QMainWindow):
         if index < 0 and not canvas_id.startswith("part:"):
             if menu.actions():
                 menu.addSeparator()
-            self._fill_projector_menu(menu.addMenu("Show full screen on"), canvas_id)
+            self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
             if self.mode != "live":
                 menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
         return menu
@@ -883,17 +883,26 @@ class MainWindow(QMainWindow):
         from sprigcast.app.projector import screen_label
 
         target = (kind, ref or canvas_id)
+        menu.setToolTipsVisible(True)
         for i, screen in enumerate(QGuiApplication.screens()):
-            menu.addAction(screen_label(i, screen)).triggered.connect(
-                lambda _=False, sc=screen: self.open_projector(canvas_id, sc, kind, ref))
-        menu.addSeparator()
-        menu.addAction("In a window").triggered.connect(lambda: self.open_projector(canvas_id, None, kind, ref))
+            act = menu.addAction(icons.icon("monitor", theme.MUTED), screen_label(i, screen))
+            act.setToolTip("Fills that screen. Press Esc to close it.")
+            act.triggered.connect(lambda _=False, sc=screen: self.open_projector(canvas_id, sc, kind, ref))
+        menu.addAction(icons.icon("panel", theme.MUTED), "In a window").triggered.connect(
+            lambda: self.open_projector(canvas_id, None, kind, ref))
         if any(p.target == target for p in self.projectors):
-            menu.addAction("Close its projectors").triggered.connect(
+            menu.addSeparator()
+            menu.addAction("Close pop-outs").triggered.connect(
                 lambda: [p.close() for p in list(self.projectors) if p.target == target])
 
+    def _pop_out_menu(self, menu: QMenu) -> QMenu:
+        """ "Pop out": show it big on another screen, or in its own window (a projector)."""
+        sub = menu.addMenu(icons.icon("monitor", theme.MUTED), "Pop out")
+        sub.menuAction().setToolTip("Show it on its own: full screen on a monitor, or in a window")
+        return sub
+
     def _projector_menu(self, menu: QMenu, kind: str, ref: str) -> None:
-        """Add "Show full screen on" for a bloom, sprig or source."""
+        """Add "Pop out" for a bloom, sprig or source."""
         if kind == "bloom":
             scene = next((sc for sc in self.collection.scenes if sc.id == ref), None)
             if scene is None:
@@ -902,7 +911,7 @@ class MainWindow(QMainWindow):
         else:  # a source: on the shape of the bloom it's in
             scene = self._scene()
             canvas_id = scene.canvas if scene is not None else self.collection.canvases[0].id
-        self._fill_projector_menu(menu.addMenu("Show full screen on"), canvas_id, kind, ref)
+        self._fill_projector_menu(self._pop_out_menu(menu), canvas_id, kind, ref)
 
     def open_projector(self, canvas_id: str, screen, kind: str = "canvas", ref: str = ""):
         """Show a canvas (or a bloom, sprig or source on that canvas's size) full screen on `screen`
@@ -2299,7 +2308,7 @@ class MainWindow(QMainWindow):
             shown_group.addAction(action)
             action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
             self.canvas_choice_actions[key] = action
-        projectors = view_menu.addMenu("Full screen projector")
+        projectors = view_menu.addMenu("Pop out a canvas")
         projectors.aboutToShow.connect(lambda: self._fill_projectors_menu(projectors))
         self._fill_projectors_menu(projectors)
         view_menu.addSeparator()
