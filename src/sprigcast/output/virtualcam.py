@@ -83,6 +83,11 @@ def registered_path() -> Path | None:
     return path if path.exists() else None
 
 
+def camera_log() -> Path:
+    """Where the camera DLL writes its steps (made writable for Windows' Frame Server when registered)."""
+    return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / NAME / "camera.log"
+
+
 def installed() -> bool:
     return registered_path() is not None
 
@@ -248,11 +253,22 @@ class VirtualCamera:
             self.error = f"Windows refused the camera (0x{hr & 0xFFFFFFFF:08X})."
             if needs_update():
                 self.error += " Click Update the camera, then restart SprigCast."
-            log.warning("virtual camera: SC_Start failed 0x%08X at step %s", hr & 0xFFFFFFFF, self._stage())
+            log.warning("virtual camera: SC_Start failed 0x%08X at step %s; in-process self test %s; "
+                        "camera log: %s", hr & 0xFFFFFFFF, self._stage(), self._self_test(), camera_log())
             return False
         self.error = ""
         log.info("virtual camera on")
         return True
+
+    def _self_test(self) -> str:
+        """Can this process make and describe the camera's source itself (newer DLLs only)?"""
+        try:
+            test = self._dll.SC_SelfTest
+        except (AttributeError, OSError):
+            return "unavailable"
+        test.restype = ctypes.c_long
+        hr = test()
+        return "ok" if hr >= 0 else f"0x{hr & 0xFFFFFFFF:08X}"
 
     def _stage(self) -> str:
         """Which step of SC_Start went wrong (newer DLLs only), for the log."""

@@ -29,6 +29,8 @@
 #include <new>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
+#include <cstdarg>
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfuuid.lib")
@@ -53,6 +55,53 @@ static volatile LONG g_objects = 0;
 static volatile LONG g_locks = 0;
 
 template <class T> static void SafeRelease(T*& p) { if (p) { p->Release(); p = nullptr; } }
+
+// ---------------------------------------------------------------------------------------------
+// Diagnostics: one line per step in %ProgramData%\SprigCast Camera\camera.log (made writable for the
+// Frame Server and users by DllRegisterServer), plus OutputDebugString. Shows whether Windows loaded us.
+
+static void LogPath(wchar_t* out, DWORD n) {
+    wchar_t base[MAX_PATH] = L"C:\\ProgramData";
+    GetEnvironmentVariableW(L"ProgramData", base, MAX_PATH);
+    _snwprintf_s(out, n, _TRUNCATE, L"%s\\SprigCast Camera\\camera.log", base);
+}
+
+static void Log(const char* fmt, ...) {
+    char text[600];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    char exe[MAX_PATH] = "";
+    GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const char* name = strrchr(exe, '\\');
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char line[900];
+    int len = _snprintf_s(line, sizeof(line), _TRUNCATE, "%02d:%02d:%02d.%03d %s[%lu] %s\r\n", t.wHour, t.wMinute,
+                          t.wSecond, t.wMilliseconds, name ? name + 1 : exe, GetCurrentProcessId(), text);
+    OutputDebugStringA(line);
+    wchar_t path[MAX_PATH];
+    LogPath(path, MAX_PATH);
+    HANDLE f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER size;
+    if (GetFileSizeEx(f, &size) && size.QuadPart > 2 * 1024 * 1024) {  // keep it small: start over
+        CloseHandle(f);
+        f = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE) return;
+    }
+    DWORD wrote = 0;
+    if (len > 0) WriteFile(f, line, (DWORD)len, &wrote, nullptr);
+    CloseHandle(f);
+}
+
+static void Guid(REFGUID g, char* out, size_t n) {
+    _snprintf_s(out, n, _TRUNCATE, "{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", g.Data1, g.Data2, g.Data3,
+                g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3], g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Shared memory
@@ -383,6 +432,7 @@ public:
         hr = queue_->QueueEventParamUnk(started_once_ ? MEUpdatedStream : MENewStream, GUID_NULL, S_OK,
                                         static_cast<IMFMediaStream2*>(stream_));
         if (SUCCEEDED(hr)) hr = stream_->Start();
+        Log("source start %ux%u: 0x%08lX", stream_->Width(), stream_->Height(), hr);
         if (SUCCEEDED(hr)) {
             shared_.Want(stream_->Width(), stream_->Height());
             started_once_ = true;
@@ -404,6 +454,7 @@ public:
     }
     STDMETHODIMP Pause() override { return MF_E_INVALID_STATE_TRANSITION; }
     STDMETHODIMP Shutdown() override {
+        Log("source shutdown");
         Lock g(this);
         if (!queue_) return MF_E_SHUTDOWN;
         if (stream_) stream_->Shutdown();
@@ -445,6 +496,7 @@ public:
     STDMETHODIMP SetDefaultAllocator(DWORD id, IUnknown* allocator) override {
         if (id != 0) return MF_E_INVALIDSTREAMNUMBER;
         if (!allocator) return E_POINTER;
+        Log("allocator provided");
         Lock g(this);
         if (!queue_) return MF_E_SHUTDOWN;
         return stream_->SetAllocator(allocator);
@@ -504,6 +556,7 @@ private:
         SafeRelease(profile);
         if (SUCCEEDED(hr)) hr = attributes_->SetUnknown(MF_DEVICEMFT_SENSORPROFILE_COLLECTION, profiles);
         SafeRelease(profiles);
+        if (FAILED(hr)) Log("source attributes failed: 0x%08lX", hr);
         const DWORD n = ARRAYSIZE(SIZES);
         IMFMediaType* types[n] = {};
         for (DWORD i = 0; SUCCEEDED(hr) && i < n; i++) {
@@ -683,6 +736,9 @@ public:
         if (!source_) hr = Source::Create(attrs_, &source_);
         if (SUCCEEDED(hr)) hr = source_->QueryInterface(riid, ppv);
         ReleaseSRWLockExclusive(&lock_);
+        char iid[48];
+        Guid(riid, iid, sizeof(iid));
+        Log("activate %s: 0x%08lX", iid, hr);
         return hr;
     }
     // The Frame Server shuts the source down itself; shutting it down here too broke Start (MF_E_SHUTDOWN).
@@ -754,6 +810,9 @@ public:
         if (!a) return E_OUTOFMEMORY;
         HRESULT hr = a->Init();
         if (SUCCEEDED(hr)) hr = a->QueryInterface(riid, ppv);
+        char iid[48];
+        Guid(riid, iid, sizeof(iid));
+        Log("create activator as %s: 0x%08lX", iid, hr);
         a->Release();
         return hr;
     }
@@ -772,11 +831,15 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_module = module;
         DisableThreadLibraryCalls(module);
+        Log("loaded (version %u)", VERSION);
     }
     return TRUE;
 }
 
 STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, LPVOID* ppv) {
+    char id[48];
+    Guid(clsid, id, sizeof(id));
+    Log("class object for %s", id);
     if (clsid != CLSID_SprigCastCamera) return CLASS_E_CLASSNOTAVAILABLE;
     return g_factory.QueryInterface(riid, ppv);
 }
@@ -790,6 +853,20 @@ static HRESULT Register(bool on) {
         LSTATUS s = RegDeleteTreeW(HKEY_LOCAL_MACHINE, key);
         return (s == ERROR_SUCCESS || s == ERROR_FILE_NOT_FOUND) ? S_OK : HRESULT_FROM_WIN32(s);
     }
+    // A log folder the Frame Server (Local Service) and users may write to; regsvr32 runs elevated.
+    wchar_t log[MAX_PATH];
+    LogPath(log, MAX_PATH);
+    *wcsrchr(log, L'\\') = 0;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;BU)", SDDL_REVISION_1, &sd,
+            nullptr)) {
+        SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
+        if (!CreateDirectoryW(log, &sa) && GetLastError() == ERROR_ALREADY_EXISTS)
+            SetFileSecurityW(log, DACL_SECURITY_INFORMATION, sd);
+        LocalFree(sd);
+    }
+    Log("registered");
     wchar_t path[MAX_PATH];
     if (!GetModuleFileNameW(g_module, path, MAX_PATH)) return HRESULT_FROM_WIN32(GetLastError());
     wchar_t inproc[160];
@@ -845,7 +922,8 @@ static HRESULT StartCamera(const wchar_t* friendly_name) {
                                    MFVirtualCameraAccess_CurrentUser, friendly_name ? friendly_name : L"SprigCast Camera",
                                    CLSID_TEXT, nullptr, 0, &g_camera);
     }
-    if (SUCCEEDED(hr)) { g_stage = 3; hr = g_camera->Start(nullptr); }
+    Log("create virtual camera: 0x%08lX", hr);
+    if (SUCCEEDED(hr)) { g_stage = 3; hr = g_camera->Start(nullptr); Log("start virtual camera: 0x%08lX", hr); }
     if (SUCCEEDED(hr)) g_stage = 4;
     if (FAILED(hr) && g_camera) { g_camera->Remove(); SafeRelease(g_camera); }
     return hr;
@@ -865,6 +943,26 @@ extern "C" __declspec(dllexport) HRESULT __stdcall SC_Start(const wchar_t* frien
 }
 
 extern "C" __declspec(dllexport) HRESULT __stdcall SC_Stop() { return OnMta(StopCamera, nullptr); }
+
+// Make the camera the way Windows would (COM from the registry, activate, describe), but in this process.
+// 0 when the source itself works, so a failing SC_Start points at Windows rather than at the camera.
+static HRESULT SelfTest(const wchar_t*) {
+    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
+    IMFActivate* activate = nullptr;
+    IMFMediaSource* source = nullptr;
+    IMFPresentationDescriptor* pd = nullptr;
+    if (SUCCEEDED(hr)) hr = CoCreateInstance(CLSID_SprigCastCamera, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&activate));
+    Log("self test: create 0x%08lX", hr);
+    if (SUCCEEDED(hr)) hr = activate->ActivateObject(IID_PPV_ARGS(&source));
+    if (SUCCEEDED(hr)) hr = source->CreatePresentationDescriptor(&pd);
+    Log("self test: source 0x%08lX", hr);
+    SafeRelease(pd);
+    if (source) { source->Shutdown(); SafeRelease(source); }
+    if (activate) { activate->ShutdownObject(); SafeRelease(activate); }
+    return hr;
+}
+
+extern "C" __declspec(dllexport) HRESULT __stdcall SC_SelfTest() { return OnMta(SelfTest, nullptr); }
 
 extern "C" __declspec(dllexport) UINT32 __stdcall SC_Stage() { return (UINT32)g_stage; }
 
