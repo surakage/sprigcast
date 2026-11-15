@@ -258,7 +258,7 @@ class LivePanel(QWidget):
         super().__init__()
         self.on_scene = on_scene
         self.on_edit = on_edit  # open a scene in Build mode (right-click menu)
-        self.on_project: Callable | None = None  # (menu, scene id): adds "Pop out"
+        self.on_project: Callable | None = None  # (menu, scene id): adds the Live options for a bloom
         self.on_state = on_state or (lambda part_id, name: None)
         self.staged: set[str] = set()
         self.buttons: dict[str, QPushButton] = {}
@@ -451,15 +451,20 @@ class LivePanel(QWidget):
         self.rows.addWidget(flow_box)
 
     def scene_menu(self, scene_id: str) -> QMenu:
+        """A bloom tile's right-click menu: things you do with a bloom while live (editing is in Build)."""
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        label = "Line up next" if self.studio.isChecked() else "Show now"
-        menu.addAction(icons.icon("bloom", theme.ACCENT), label).triggered.connect(lambda: self.on_scene(scene_id))
-        if self.on_edit is not None:
-            menu.addAction(icons.icon("leaf", theme.MUTED), "Edit in Build").triggered.connect(
-                lambda: self.on_edit(scene_id))
+        collection = getattr(self, "_collection", None)
+        on_air = collection is not None and scene_id in collection.active_scenes.values()
+        if self.studio.isChecked():
+            go = menu.addAction(icons.icon("bloom", theme.ACCENT), "Line up next")
+            go.setToolTip("Get it ready; Go puts it on air")
+        else:
+            go = menu.addAction(icons.icon("bloom", theme.ACCENT), "On air now" if on_air else "Put on air")
+            go.setToolTip("Switch to this bloom (same as clicking it)")
+            go.setEnabled(not on_air)
+        go.triggered.connect(lambda: self.on_scene(scene_id))
         if self.on_project is not None:
-            menu.addSeparator()
             self.on_project(menu, scene_id)
         return menu
 

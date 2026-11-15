@@ -862,7 +862,7 @@ class MainWindow(QMainWindow):
 
     def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
         """Right-click in a preview: the same menu as the Sources list for what's under the mouse.
-        In Live (nothing to edit) it only offers projectors."""
+        In Live (nothing to edit) it offers a screenshot and Pop out."""
         if canvas_id.startswith("part:") or (self.mode == "live" and canvas_id in self.previews):
             menu = QMenu(self)
         else:
@@ -870,6 +870,11 @@ class MainWindow(QMainWindow):
         if index < 0 and not canvas_id.startswith("part:"):
             if menu.actions():
                 menu.addSeparator()
+            if self.mode == "live":
+                menu.setToolTipsVisible(True)
+                shot = menu.addAction(icons.icon("camera", theme.MUTED), "Save screenshot")
+                shot.setToolTip("A PNG of what's on air here, in your Screenshots folder")
+                shot.triggered.connect(lambda: self._screenshot([canvas_id]))
             self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
             if self.mode != "live":
                 menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
@@ -894,6 +899,89 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             menu.addAction("Close pop-outs").triggered.connect(
                 lambda: [p.close() for p in list(self.projectors) if p.target == target])
+
+    def _live_bloom_menu(self, menu: QMenu, scene_id: str) -> None:
+        """Live's bloom tile menu, after Put on air: how it comes in, a screenshot, pop out, its name and key."""
+        from sprigcast.app.transitions_panel import KINDS
+        from sprigcast.core.scene import ANY
+
+        scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
+        if scene is None:
+            return
+        menu.addSeparator()
+        into = menu.addMenu(icons.icon("leaf", theme.MUTED), "Comes in with")
+        into.setToolTipsVisible(True)
+        rule = next((r for r in self.collection.transition_rules
+                     if r.from_scene == ANY and r.to_scene == scene_id), None)
+        usual = into.addAction(f"Usual ({self.collection.transition.kind.capitalize()})")
+        usual.setCheckable(True)
+        usual.setChecked(rule is None)
+        usual.triggered.connect(lambda: self._bloom_transition(scene_id, None))
+        into.addSeparator()
+        for kind, label, tip in KINDS:
+            if kind == "stinger":  # needs a clip: set it up in the rules
+                continue
+            act = into.addAction(label)
+            act.setToolTip(tip)
+            act.setCheckable(True)
+            act.setChecked(rule is not None and rule.transition.kind == kind)
+            act.triggered.connect(lambda _=False, k=kind: self._bloom_transition(scene_id, k))
+        into.addSeparator()
+        more = getattr(self, "live_transitions", None)
+        if more is not None:
+            into.addAction("More, like a stinger…").triggered.connect(more.open_rules)
+        shot = menu.addAction(icons.icon("camera", theme.MUTED), "Save screenshot")
+        shot.setToolTip("A PNG of this bloom, on air or not, in your Screenshots folder")
+        shot.triggered.connect(lambda: self._bloom_screenshot(scene_id))
+        self._projector_menu(menu, "bloom", scene_id)
+        menu.addSeparator()
+        menu.addAction("Rename…").triggered.connect(lambda: self._rename_bloom(scene_id))
+        menu.addAction(icons.icon("key", theme.MUTED), "Set a key…").triggered.connect(
+            lambda: self._open_settings("Hotkeys"))
+
+    def _bloom_transition(self, scene_id: str, kind: str | None) -> None:
+        """Going to this bloom uses `kind` (None: the usual transition), from any bloom."""
+        from sprigcast.core.scene import ANY, Transition, TransitionRule
+
+        rules = [r for r in self.collection.transition_rules if not (r.from_scene == ANY and r.to_scene == scene_id)]
+        if kind is not None:
+            usual = self.collection.transition
+            rules.append(TransitionRule(from_scene=ANY, to_scene=scene_id,
+                                        transition=Transition(kind=kind, duration_ms=usual.duration_ms)))
+        self.collection.transition_rules = rules
+        panel = getattr(self, "live_transitions", None)
+        if panel is not None:
+            panel.show_rule_count()
+        self._changed()
+
+    def _bloom_screenshot(self, scene_id: str) -> None:
+        """Save a PNG of one bloom, drawn once off air if need be (an engine view, gone right after)."""
+        from sprigcast.app import screenshot
+
+        scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
+        if scene is None:
+            return
+        self.engine.set_view("screenshot", scene.canvas, "bloom", scene_id)
+        try:
+            image = screenshot.grab(self.engine, ["view:screenshot"]).get("view:screenshot")
+        finally:
+            self.engine.set_view("screenshot", None)
+        if image is None:
+            self._say("Couldn't take a screenshot: nothing is drawing.")
+            return
+        folder = self._recordings_folder() / "Screenshots"
+        path = screenshot.save(image, folder, scene.name)
+        self._say(f"Screenshot saved to {path}")
+
+    def _rename_bloom(self, scene_id: str) -> None:
+        scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
+        if scene is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename", f"{cap(SHOW)} name:", text=scene.name)
+        if ok and name.strip() and name.strip() != scene.name:
+            scene.name = name.strip()
+            self._changed()
+            self._refresh_all()
 
     def _pop_out_menu(self, menu: QMenu) -> QMenu:
         """ "Pop out": show it big on another screen, or in its own window (a projector)."""
@@ -1679,7 +1767,7 @@ class MainWindow(QMainWindow):
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
                                     self._edit_in_build)
-        self.live_panel.on_project = lambda menu, sid: self._projector_menu(menu, "bloom", sid)
+        self.live_panel.on_project = self._live_bloom_menu
         self._build_transition_menu()
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
