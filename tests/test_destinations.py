@@ -630,12 +630,19 @@ def test_clip_saves_the_shapes_chosen_in_settings(app, tmp_path, monkeypatch):
         assert [c.id for c in w._clip_canvases()] == ["vertical"]
         col.recording.clip_shapes = "horizontal"
         assert [c.id for c in w._clip_canvases()] == ["horizontal"]
-        w.live_side.set_clip(True, 45)
-        assert w.live_side.clip.text() == "Clip 45s"
+        from sprigcast.app.live_stage import CARD_PILL_STYLE, CARD_SELECTED_STYLE
+
+        w.live_side.set_clip(True, 45)  # on and off show by colour; the label never changes
+        assert w.live_side.clip.text() == "Clips" and w.live_side.clip.styleSheet() == CARD_SELECTED_STYLE
+        assert "45 s" in w.live_side.clip.toolTip()
         w.live_side.set_clip(False, 45)
-        assert w.live_side.clip.text() == "Clips"
+        assert w.live_side.clip.text() == "Clips" and w.live_side.clip.styleSheet() == CARD_PILL_STYLE
         w.live_side.clip_saved(2)
-        assert w.live_side.clip.text() == "Saved ✓"
+        assert w.live_side.clip.text() == "Clips"
+        w.live_side.set_recording("● REC 0:00:01")
+        assert w.live_side.record.text() == "Record"
+        w.live_side.set_recording("")
+        assert w.live_side.record.text() == "Record"
     finally:
         w.close()
         QSettings().clear()

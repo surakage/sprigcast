@@ -287,7 +287,7 @@ class LiveSide(QWidget):
         card_row.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
         self.camera_settings = pill("", CAM_GEAR_STYLE)
         self.camera_settings.setIcon(icons.icon("gear"))
-        self.camera_settings.setFixedWidth(38)
+        self.camera_settings.setFixedWidth(40)
         self.camera_settings.setToolTip("Virtual camera settings: what it shows")
         if on_camera_settings is not None:
             self.camera_settings.clicked.connect(on_camera_settings)
@@ -377,7 +377,8 @@ class LiveSide(QWidget):
 
     def set_camera(self, on: bool, error: str = "") -> None:
         """Camera on (highlighted, not pink: pink is only for Live and Recording), or off with a short reason."""
-        self.camera.setText("Cam on" if on else "Virtual Cam")
+        self.camera.setToolTip("Virtual camera on. Click to turn it off." if on else
+                               "Virtual camera: show SprigCast as a camera in Zoom, Discord, TikTok LIVE Studio…")
         self.camera.setStyleSheet(CAM_ON_STYLE if on else CAM_STYLE)
         from sprigcast.output.virtualcam import PRIVACY_HINT, PRIVACY_PAGE
 
@@ -387,26 +388,27 @@ class LiveSide(QWidget):
         self.camera_note.setVisible(bool(error) and not on)
 
     def set_recording(self, text: str) -> None:
-        """'' when not recording, else the REC clock line."""
-        self.record.setText("Stop recording" if text else "Record")
+        """'' when not recording, else the REC clock line. The button always says Record: pink means on."""
         self.record.setStyleSheet(CARD_ON_AIR_STYLE if text else CARD_PILL_STYLE)
+        self.record.setToolTip("Recording. Click to stop." if text else
+                               "Record the canvases ticked in Controls, to your recordings folder")
         self.rec_note.setText(text)
         self.rec_note.setVisible(bool(text))
 
     def set_clip(self, on: bool, seconds: int) -> None:
-        """Ready: "Clip 30s" saves the last 30 s. Not ready: "Clips" gets them ready (Settings sets the length)."""
+        """The button always says Clips: highlighted when ready (a click saves the last `seconds`)."""
         self._clip_on, self._clip_seconds = on, seconds
-        self.clip.setToolTip(f"Save the last {seconds} s as a clip (length and shapes: Settings → Recording)" if on
-                             else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clip can save it")
-        self.clip.setText(f"Clip {seconds}s" if on else "Clips")
+        self.clip.setToolTip(f"Clips on. Click to save the last {seconds} s (length and shapes: Settings → Recording)"
+                             if on else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clips can save it")
         self.clip.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
 
     def clip_saved(self, files: int) -> None:
-        """A moment of thanks on the button, then back to "Clip 30s"."""
+        """A short flash of the button (the status bar names the files); the label stays Clips."""
         from PySide6.QtCore import QTimer
 
-        self.clip.setText("Saved ✓" if files else "Nothing saved")
-        QTimer.singleShot(1800, lambda: self.set_clip(self._clip_on, self._clip_seconds))
+        if files:
+            self.clip.setStyleSheet(CARD_PILL_STYLE)
+            QTimer.singleShot(250, lambda: self.set_clip(self._clip_on, self._clip_seconds))
 
     # Destinations ---------------------------------------------------------------------------
 

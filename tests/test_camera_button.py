@@ -79,7 +79,7 @@ def test_button_shows_on_and_a_short_reason_when_it_cant_start(app):
     side.camera_settings.click()
     assert clicks == ["cam", "gear"]
     side.set_camera(True)
-    assert side.camera.text() == "Cam on" and side.camera.styleSheet() == CAM_ON_STYLE
+    assert side.camera.text() == "Virtual Cam" and side.camera.styleSheet() == CAM_ON_STYLE
     assert not side.camera_note.isVisible()
     side.set_camera(False, "Windows refused the camera (0x80070005).")
     assert side.camera.text() == "Virtual Cam" and side.camera.styleSheet() == CAM_STYLE
