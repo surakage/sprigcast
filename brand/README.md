@@ -12,6 +12,7 @@ Vector files, safe to scale to any size (print, embroidery, web).
 | `sprigcast-sloth.svg` | Mascot, full colour. |
 | `sprigcast-sloth-white.svg` | Mascot in one colour, white, for dark shirts (the face shows the shirt through). |
 | `sprigcast-sloth-onecolor.svg` | Mascot in one colour, dark green. |
+| `art/sloth-*.svg` | The sloth illustrations as vectors (starting, brb, ending, trouble, happy, napping, welcome, live, climb). The app's PNGs in `src/sprigcast/app/art/` are rendered from these at 1024 px. |
 | `sprigcast-banner.png` | 1280 x 640 banner for the README and GitHub's social preview (Settings → General → Social preview). |
 
 The app's own icons (`.ico` for the installer and shortcuts) are made from `src/sprigcast/data/logo.svg` by `packaging/make_icon.py`. The installer's brand art (the tall Welcome/Finish picture and the small header icon) is drawn from these files by `packaging/make_wizard_images.py` at build time.
