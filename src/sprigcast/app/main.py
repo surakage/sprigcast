@@ -182,6 +182,12 @@ def run() -> None:
         ensure_example(plugins_dir)
     except OSError as exc:
         logging.warning("could not create %s: %s", plugins_dir, exc)
+    try:
+        from sprigcast.plugin_store import refresh_installed
+
+        refresh_installed(plugins_dir)  # store plugins you added get this version's fixes
+    except OSError as exc:
+        logging.warning("could not update store plugins: %s", exc)
     plugins = load_plugins(plugins_dir)
 
     from sprigcast.app.main_window import MainWindow

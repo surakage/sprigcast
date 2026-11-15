@@ -104,6 +104,21 @@ def install(plugins_dir: Path, plugin: StorePlugin, report: PluginReport | None 
     return error
 
 
+def refresh_installed(plugins_dir: Path | None) -> list[str]:
+    """Bring store plugins you added up to the version that ships with this SprigCast (before they
+    load, at start). Your own plugins and ones you never added are left alone. Returns the ids updated."""
+    if plugins_dir is None or not plugins_dir.is_dir():
+        return []
+    updated = []
+    for plugin in catalog():
+        have = installed_version(plugins_dir, plugin.id)
+        if have is not None and have < plugin.version:
+            shutil.copyfile(plugin.file, installed_path(plugins_dir, plugin.id))
+            log.info("plugin store: updated %s v%d -> v%d", plugin.id, have, plugin.version)
+            updated.append(plugin.id)
+    return updated
+
+
 def remove(plugins_dir: Path, plugin_id: str, report: PluginReport | None = None) -> None:
     target = installed_path(plugins_dir, plugin_id)
     if target.exists():

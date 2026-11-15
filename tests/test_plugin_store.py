@@ -89,7 +89,12 @@ def test_slide_show_fits_each_picture_and_moves_on(tmp_path, app):
         assert first.shape == (200, 400, 4) and first[100, 200, 0] > 200  # red, fitted
         assert show.video_frame() is None  # nothing new until its time is up
         show._next_at = 0
-        second = show.video_frame()
+        import time
+
+        deadline, second = time.monotonic() + 5, None
+        while second is None and time.monotonic() < deadline:  # the next one is made in the background
+            second = show.video_frame()
+            time.sleep(0.01)
         assert second[100, 200, 2] > 200 and second[100, 10, 3] == 0  # blue in the middle, see-through sides
     finally:
         plugin_store.remove(tmp_path / "plugins", "slide_show")
@@ -118,3 +123,18 @@ def test_store_page_adds_and_removes(tmp_path, app, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     row.button.click()
     assert row.button.text() == "Add" and "slideshow" not in known_kinds()
+
+
+def test_added_store_plugins_get_the_new_version_at_start(tmp_path):
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    snap = next(p for p in plugin_store.catalog() if p.id == "snap")
+    old = plugin_store.installed_path(folder, "snap")
+    old.write_text(snap.file.read_text(encoding="utf-8").replace(f'"version": {snap.version}', '"version": 1'),
+                   encoding="utf-8")
+    mine = folder / "my_own.py"
+    mine.write_text('PLUGIN = {"id": "my_own", "version": 1}', encoding="utf-8")
+    assert plugin_store.refresh_installed(folder) == ["snap"]
+    assert plugin_store.installed_version(folder, "snap") == snap.version
+    assert not plugin_store.installed_path(folder, "death_count").exists()  # never added: left alone
+    assert plugin_store.refresh_installed(folder) == []

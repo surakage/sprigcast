@@ -59,6 +59,10 @@ def test_feeds_the_canvas_that_matches_the_shape_only_while_watched():
     clock[0] += 2500
     _camera_side(block, 18, 32, clock[0])  # the app switched to portrait (landscape no longer asked for)
     cam.poll()
+    assert engine.taps[0][2] == (32, 18)  # could be a second copy at another size: keep the first a while
+    clock[0] += virtualcam.STILL_WANTED_MS
+    _camera_side(block, 18, 32, clock[0])
+    cam.poll()
     assert [(c, s) for c, _, s in engine.taps] == [("vertical", (18, 32))]
     clock[0] += 5000  # heartbeat went stale: the app closed the camera
     cam.poll()
@@ -170,7 +174,13 @@ def test_an_app_with_the_camera_open_twice_doesnt_flip_it_every_second():
         _camera_side(block, 32, 18, clock[0])  # ...and the landscape copy wrote last when polled
         cam.poll()
         assert engine.taps == [tap], second
-    for _ in range(3):  # the portrait copy closed: only landscape is asked for now
+    for _ in range(8):  # the two copies fall into step: landscape writes last for 8 s (soak 2026-11-15)
+        clock[0] += 1000
+        _camera_side(block, 32, 18, clock[0])
+        tap[1](frame)
+        cam.poll()
+    assert engine.taps == [tap]
+    for _ in range(16):  # the portrait copy closed: only landscape is asked for now
         clock[0] += 1000
         _camera_side(block, 32, 18, clock[0])
         cam.poll()

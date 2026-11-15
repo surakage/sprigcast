@@ -4040,6 +4040,10 @@ class MainWindow(QMainWindow):
             return
         cls = source_class(kind)
         defaults = dict(getattr(cls, "defaults", {}) or {})
+        fills = getattr(cls, "fills_canvas", False)  # like a slide show: starts the size of the canvas, at 0, 0
+        if fills and {"width", "height"} <= set(defaults):
+            canvas = self.collection.canvas(self._scene().canvas)
+            defaults.update(width=canvas.width, height=canvas.height)
         if kind == "browser":
             from sprigcast.app.web_page_dialog import WebPageDialog
 
@@ -4064,25 +4068,43 @@ class MainWindow(QMainWindow):
             self._refresh_all()
             return
         self._add_item(config)
-        # Start each new one a little lower so several don't pile up in the corner.
+        scene = self._scene() or scene  # a bloom sends it into its sprig: place it there
+        item = next((i for i in scene.items if i.source == config.id), None)
+        if item is None:
+            return
         canvas = self.collection.canvas(scene.canvas)
-        stacked = sum(1 for i in scene.items[:-1] if self.collection.source(i.source).kind == kind)
-        scene.items[-1].x = round(canvas.width * 0.05)
-        scene.items[-1].y = round(canvas.height * 0.05) + (stacked * 100) % max(1, canvas.height // 2)
+        if fills:
+            w, h = int(settings.get("width") or canvas.width), int(settings.get("height") or canvas.height)
+            item.scale = min(canvas.width / max(1, w), canvas.height / max(1, h))
+            item.scale_y = None
+            item.x = (canvas.width - w * item.scale) / 2
+            item.y = (canvas.height - h * item.scale) / 2
+            self._changed()
+            self._refresh_properties()
+            return
+        # Start each new one a little lower so several don't pile up in the corner.
+        stacked = sum(1 for i in scene.items if i is not item and self.collection.source(i.source).kind == kind)
+        item.x = round(canvas.width * 0.05)
+        item.y = round(canvas.height * 0.05) + (stacked * 100) % max(1, canvas.height // 2)
         self._changed()
         self._refresh_properties()
 
     def _fill_more_menu(self) -> None:
         """List source kinds from plugins (any registered class with a `label` that has no button of its own)."""
-        self.more_menu.clear()
         entries = sorted(
             (getattr(source_class(kind), "label", None), kind)
             for kind in known_kinds()
             if kind not in BUILT_IN_KINDS and getattr(source_class(kind), "label", None)
         )
+        if self.more_menu.actions() and getattr(self.more_menu, "_entries", None) == entries:
+            return  # rebuilding a menu as it opens swaps the entries under the pointer: the first click was lost
+        self.more_menu._entries = entries
+        self.more_menu.clear()
         for label, kind in entries:
             action = self.more_menu.addAction(label)
-            action.triggered.connect(lambda _=False, k=kind, n=label: self._add_from_class(k, n))
+            # After the menu has closed: a window opened from inside a closing menu could swallow the click.
+            action.triggered.connect(
+                lambda _=False, k=kind, n=label: QTimer.singleShot(0, lambda: self._add_from_class(k, n)))
         if not entries:
             empty = self.more_menu.addAction("No plugin sources installed")
             empty.setEnabled(False)

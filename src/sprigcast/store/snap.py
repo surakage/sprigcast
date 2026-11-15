@@ -25,12 +25,13 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import register_item_menu, register_on_screenshot
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "snap", "name": "Snap", "version": 1, "adds": "Source",
+PLUGIN = {"id": "snap", "name": "Snap", "version": 2, "adds": "Source",
           "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot."}
 
 W, H = 800, 1000  # the Snap's box
@@ -56,6 +57,7 @@ CAMERA_OUT = (2.1, 2.5)
 GROW = (2.1, 2.7)
 DEVELOP = (1.0, 3.5)
 LEAVE = 0.5
+STILL_FROM = max(GROW[1], DEVELOP[1], CAMERA_OUT[1], FLASH[1], PRINT[1])  # from here it's held still
 
 
 def _assets_dir() -> Path:
@@ -82,20 +84,9 @@ def _back(x: float) -> float:
     return 1 + (c + 1) * x * x * x + c * x * x
 
 
-_SVG: dict[str, bytes] = {}  # the SVG files' text, read once
-
-
-def draw_art(p, name: str, rect) -> None:
-    """Draw one of the SVGs into rect (in the painter's units), sharp at any size."""
-    from PySide6.QtCore import QByteArray
-    from PySide6.QtSvg import QSvgRenderer
-
-    data = _SVG.get(name)
-    if data is None:
-        data = _SVG[name] = (_assets_dir() / name).read_bytes()
-    renderer = QSvgRenderer(QByteArray(data))  # made and dropped here: Qt objects stay on one thread
-    renderer.render(p, rect)
-    del renderer
+def draw_art(p, name: str, rect, sharp_at: float = 1.0) -> None:
+    """Draw one of the SVGs into rect (in the painter's units), sharp at sharp_at pixels per unit."""
+    painted.draw(p, _assets_dir() / name, rect, sharp_at)  # drawn once per size, then reused
 
 
 def frame_art(frame: str):
@@ -207,15 +198,24 @@ class SnapSource(Source):
         self._queue: deque[_Job] = deque()
         self._job: _Job | None = None
         self._clear = True  # send one see-through frame
-        self.status = "ready"
+        self._frame = painted.Frame()
+        self._still: int | None = None  # the job whose still frame was sent (the polaroid held up)
+        self.status = "ok"
         self.last_saved: Path | None = None
 
     @property
     def size(self) -> tuple[int, int]:
         return W, H
 
+    channel_order = painted.Frame.channel_order
+
     def wake(self) -> None:
         self._clear = True
+        self._still = None
+
+    def update(self, settings: dict[str, Any]) -> None:
+        super().update(settings)
+        self._still = None
 
     # Triggers (UI thread) ------------------------------------------------------------------------
 
@@ -278,7 +278,8 @@ class SnapSource(Source):
         if job is None:
             if self._clear:
                 self._clear = False
-                return np.zeros((H, W, 4), dtype=np.uint8)
+                self._frame.release()
+                return painted.clear_frame(W, H)
             return None
         if job.card is None:
             self._picture_in(job)
@@ -287,10 +288,14 @@ class SnapSource(Source):
             with self._lock:
                 if self._job is job:
                     self._job = None
-            self.status = f"saved {job.path.name}" if job.saved and job.path else "ready"
-            return np.zeros((H, W, 4), dtype=np.uint8)
-        self.status = "snapping"
-        return to_array(self.paint(job, t))
+            self._still = None
+            self._frame.release()
+            return painted.clear_frame(W, H)
+        if STILL_FROM <= t < GROW[1] + self._hold():
+            if self._still == id(job):
+                return None  # the polaroid is held up: nothing moves until it leaves
+            self._still = id(job)
+        return self._frame(self.paint(job, t))
 
     def paint(self, job: _Job, t: float):
         """The Snap at t seconds into this snap, as a QImage."""
@@ -356,8 +361,8 @@ class SnapSource(Source):
             p.translate(-CAM_SIZE / 2, -CAM_SIZE / 2)
             press = _phase(t, PRESS)
             dip = 5 * (1 - abs(2 * press - 1)) if 0 < press < 1 else 0
-            draw_art(p, "button.svg", QRectF(0, dip, CAM_SIZE, CAM_SIZE))
-            draw_art(p, "camera.svg", QRectF(0, 0, CAM_SIZE, CAM_SIZE))
+            draw_art(p, "button.svg", QRectF(0, dip, CAM_SIZE, CAM_SIZE), k)
+            draw_art(p, "camera.svg", QRectF(0, 0, CAM_SIZE, CAM_SIZE), k)
             p.restore()
 
         # The flash.
@@ -369,8 +374,10 @@ class SnapSource(Source):
             alpha = min(1.0, f * 10) * (1 - _smooth(f))
             p.save()
             p.setOpacity(alpha)
-            draw_art(p, "flash.svg", QRectF(fx - size / 2, fy - size / 2, size, size))
-            draw_art(p, "flash.svg", QRectF(fx - size / 4, fy - size / 4, size / 2, size / 2))  # a hot centre
+            glow = painted.art(_assets_dir() / "flash.svg", 512, 512)  # one size, scaled: it grows every frame
+            whole = QRectF(0, 0, 512, 512)
+            p.drawImage(QRectF(fx - size / 2, fy - size / 2, size, size), glow, whole)
+            p.drawImage(QRectF(fx - size / 4, fy - size / 4, size / 2, size / 2), glow, whole)  # a hot centre
             p.restore()
         p.end()
         return image

@@ -32,12 +32,13 @@ from typing import Any
 import numpy as np
 
 from sprigcast.control.native import ApiError, register_action, send_event
+from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 1, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 2, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down."}
 
 KIND = "death_count"
@@ -89,19 +90,8 @@ def _back(x: float) -> float:
     return 1 + (c + 1) * x * x * x + c * x * x
 
 
-_SVG: dict[str, bytes] = {}
-
-
-def draw_art(p, name: str, rect) -> None:
-    from PySide6.QtCore import QByteArray
-    from PySide6.QtSvg import QSvgRenderer
-
-    data = _SVG.get(name)
-    if data is None:
-        data = _SVG[name] = (_assets_dir() / name).read_bytes()
-    renderer = QSvgRenderer(QByteArray(data))  # made and dropped here: Qt objects stay on one thread
-    renderer.render(p, rect)
-    del renderer
+def draw_art(p, name: str, rect, sharp_at: float = 1.0) -> None:
+    painted.draw(p, _assets_dir() / name, rect, sharp_at)  # drawn once per size, then reused
 
 
 def to_array(image) -> np.ndarray:
@@ -145,17 +135,23 @@ class DeathCountSource(Source):
         self._job: _Job | None = None
         self._clear = True
         self._count = count_of(self.settings)  # the number last shown (or asked for)
-        self.status = "ready"
+        self._frame = painted.Frame()
+        self._still: tuple | None = None  # the still frame already sent (nothing moves until it sinks)
+        self.status = "ok"
 
     @property
     def size(self) -> tuple[int, int]:
         return W, H
 
+    channel_order = painted.Frame.channel_order
+
     def wake(self) -> None:
         self._clear = True
+        self._still = None
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
+        self._still = None  # a new label or hold time: draw it again
         new = count_of(self.settings)
         if new != self._count:  # changed in its settings window: show it
             self.show(self._count, new)
@@ -221,17 +217,31 @@ class DeathCountSource(Source):
         if job is None:
             if self._clear:
                 self._clear = False
-                return np.zeros((H, W, 4), dtype=np.uint8)
+                self._frame.release()
+                return painted.clear_frame(W, H)
             return None
         t = time.monotonic() - job.started
         if t >= self._length(job):
             with self._lock:
                 if self._job is job:
                     self._job = None
-            self.status = "ready"
-            return np.zeros((H, W, 4), dtype=np.uint8)
-        self.status = "showing"
-        return to_array(self.paint(job, t))
+            self._still = None
+            self._frame.release()
+            return painted.clear_frame(W, H)
+        if self._still_from(job) <= t < self._sink_at(job):
+            key = (id(job), job.flip_at, job.new)
+            if self._still == key:
+                return None  # standing still: the last frame is still right
+            self._still = key
+        return self._frame(self.paint(job, t))
+
+    @staticmethod
+    def _still_from(job: _Job) -> float:
+        """When it stops moving: risen, the dirt landed, the number flipped and the thud over."""
+        settled = max(RISE[1], GROUND_IN[1], RISE[0] + 1.05)
+        if job.flip_at >= 0:
+            settled = max(settled, job.flip_at + max(FLIP, 0.4))
+        return settled
 
     def paint(self, job: _Job, t: float):
         """The death count at t seconds into this trip, as a QImage."""
@@ -278,7 +288,7 @@ class DeathCountSource(Source):
             p.rotate(shake * 0.4)
             p.translate(-STONE_W / 2, -stone_h)
             p.scale(k, k)
-            draw_art(p, "stone.svg", QRectF(0, 0, *STONE))
+            draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
             self._engrave(p, job, t, QFont, QColor, QRectF, Qt)
             p.restore()
 
@@ -292,7 +302,7 @@ class DeathCountSource(Source):
             p.scale(max(0.0, ground), max(0.0, min(1.2, ground)))
             p.translate(-MOUND_W / 2, -MOUND[1] * mound_k)
             p.scale(mound_k, mound_k)
-            draw_art(p, "mound.svg", QRectF(0, 0, *MOUND))
+            draw_art(p, "mound.svg", QRectF(0, 0, *MOUND), mound_k * 1.2)
             p.restore()
         p.end()
         return image
