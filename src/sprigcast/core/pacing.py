@@ -88,6 +88,37 @@ def raise_thread_priority() -> bool:
         return False
 
 
+def memory_line() -> str:
+    """Where memory is, for the log when a recording or the stream stops: what Task Manager shows, what is
+    committed, how many Python objects (and which kinds most), and how many threads. Next to each other
+    over a long show they tell a leak (one count climbing) from the graphics driver or the heap holding on."""
+    import collections
+    import threading
+
+    parts = []
+    try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        shown = None
+        if sys.platform == "win32":
+            from sprigcast.app.resources import windows_private_working_set
+
+            shown = windows_private_working_set()
+        parts.append(f"Task Manager {(shown or info.rss) / 1e6:.0f} MB")
+        committed = getattr(info, "private", None)
+        if committed:
+            parts.append(f"committed {committed / 1e6:.0f} MB")
+    except Exception:
+        pass
+    objects = gc.get_objects()
+    kinds = collections.Counter(map(type, objects)).most_common(5)
+    parts.append(f"python objects {len(objects):,} (" + ", ".join(f"{k.__name__} {n:,}" for k, n in kinds) + ")")
+    del objects
+    parts.append(f"python threads {threading.active_count()}")
+    return "; ".join(parts)
+
+
 def private_mb() -> float:
     """The app's private memory in MB (Task Manager's "Memory" is close to it), for log lines; 0 if unknown."""
     try:

@@ -146,3 +146,18 @@ def test_trim_keeps_from_the_last_keyframe_before_the_cutoff_and_stays_cheap():
     assert 30.0 <= buf._newest - first.seconds < 32.0
     assert list(buf._keys) == [p for p in buf._packets if p.kind == "video" and p.keyframe]
     assert elapsed < 2.0  # scanning the whole buffer each frame took far longer
+
+
+def test_sound_does_not_pile_up_while_no_picture_keyframe_comes():
+    """Local soak: with video stalled, audio packets grew ~1,500 a minute until the buffer was stopped."""
+    from fractions import Fraction
+
+    from sprigcast.output.replay import KEY_SLACK_S, ReplayBuffer, _Packet
+
+    buf = ReplayBuffer("h", 64, 36, 30, 1000, "libx264", 0.0, seconds=5)
+    tb = Fraction(1, 48000)
+    for n in range(48000 * 120 // 1024):  # two minutes of 1024-sample AAC packets, no video at all
+        buf._keep(_Packet("audio", b"x", n * 1024, n * 1024, tb, True))
+        buf._trim()
+    span = buf._packets[-1].seconds - buf._packets[0].seconds
+    assert span <= 5 + KEY_SLACK_S + 0.1
