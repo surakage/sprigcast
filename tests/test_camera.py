@@ -297,9 +297,10 @@ def test_picks_the_lightest_mode_that_gives_what_was_asked():
     assert choose_modes(modes, 1920, 1080, 30)[0] == {"video_size": "1920x1080", "framerate": "30",
                                                        "pixel_format": "yuyv422"}
     # 1080p50 isn't offered: the slowest faster mode (60) before 120
-    assert [m["framerate"] for m in choose_modes(modes, 1920, 1080, 50)] == ["60", "120", "30"]  # slower last
+    assert [m.get("framerate") for m in choose_modes(modes, 1920, 1080, 50)][:3] == ["60", "120", "30"]  # slower last
     # MJPEG wins when it has the size and rate
-    assert choose_modes(modes, 1280, 720, 60) == [{"video_size": "1280x720", "framerate": "60", "vcodec": "mjpeg"}]
+    assert choose_modes(modes, 1280, 720, 60) == [{"video_size": "1280x720", "framerate": "60", "vcodec": "mjpeg"},
+                                                  {"video_size": "1280x720", "vcodec": "mjpeg"}]
     assert choose_modes([], 1920, 1080, 30) == []
 
 
@@ -317,7 +318,9 @@ def test_facecam_that_only_does_1080p120():
     # 720p30 asked: the 1080p mode it has, NV12 (less data) first
     assert choose_modes(modes, 1280, 720, 30) == [
         {"video_size": "1920x1080", "framerate": "120", "pixel_format": "nv12"},
-        {"video_size": "1920x1080", "framerate": "120", "pixel_format": "yuyv422"}]
+        {"video_size": "1920x1080", "framerate": "120", "pixel_format": "yuyv422"},
+        {"video_size": "1920x1080", "pixel_format": "nv12"},  # then the same without a rate (see below)
+        {"video_size": "1920x1080", "pixel_format": "yuyv422"}]
     assert shrunk_size((1920, 1080), (1280, 720)) == (1280, 720)
     assert shrunk_size((1920, 1080), (640, 480)) == (640, 360)  # aspect kept
     assert shrunk_size((1280, 720), (1280, 720)) is None
@@ -414,3 +417,18 @@ def test_a_camera_at_59_9999_fps_opens_in_its_own_mode():
         r = Fraction(_rate(rate))
         assert r.denominator * 10_000_000 // r.numerator == interval, rate
     assert _rate(30.0) == "30" and _rate(120.0) == "120"
+
+
+def test_a_camera_that_refuses_every_rate_still_gets_nv12():
+    """The Elgato Virtual Camera lists 1080p at 59.9999 fps in YUYV and NV12 but fails to open with any
+    framerate asked (even 10000000/166667); with size and format alone NV12 opens. Without a rate-less
+    try it fell back to its default YUYV: 74 MB for the camera instead of 30 on the user's PC."""
+    from sprigcast.sources.camera import choose_modes, mode_cost, plain_mode
+
+    modes = [("pixel_format", "yuyv422", 1920, 1080, 59.9999, 59.9999),
+             ("pixel_format", "nv12", 1920, 1080, 59.9999, 59.9999)]
+    options = choose_modes(modes, 1280, 720, 30)
+    assert [o.get("framerate") for o in options] == ["10000000/166667", "10000000/166667", None, None]
+    assert options[2] == {"video_size": "1920x1080", "pixel_format": "nv12"}  # before the default YUYV
+    assert plain_mode(options[2]) == "1920 x 1080 at its own rate (NV12)"
+    assert mode_cost(options[2], 30) < mode_cost(options[3], 30)

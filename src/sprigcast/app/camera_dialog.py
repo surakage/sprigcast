@@ -151,7 +151,7 @@ def describe_mode(modes: list, w: int, h: int, fps: int) -> str:
     parts = []
     if (mw, mh) != (w, h):
         parts.append(f"shrinks it to {w} x {h}")
-    rate = _rate_value(first["framerate"])
+    rate = _rate_value(first.get("framerate", str(fps)))
     if rate > fps * 1.1:
         parts.append(f"skips frames down to {fps} fps")
     sends = plain_mode(first)
