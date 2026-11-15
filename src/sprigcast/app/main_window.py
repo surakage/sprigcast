@@ -3231,7 +3231,9 @@ class MainWindow(QMainWindow):
         self._open_filters(item.source)
 
     def _open_filters(self, source_id: str, media: str | None = None) -> None:
-        FiltersDialog(self.collection.source(source_id), self._changed, self, media).exec()
+        sounds = sorted(((c.id, c.name) for c in self.collection.sources if self._has_sound(c)),
+                        key=lambda pair: pair[1].lower())
+        FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds).exec()
         if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())

@@ -114,7 +114,7 @@ def test_new_audio_filters_keep_the_block_shape():
     from sprigcast.core.scene import Filter
 
     labels = {k.label for k in filter_kinds("audio")}
-    assert {"3-Band Equalizer", "Expander", "Upward Compressor", "Noise Suppression", "Invert Polarity",
+    assert {"Equalizer", "Expander", "Upward Compressor", "Noise Suppression", "Invert Polarity",
             "Gain", "Noise Gate", "Compressor", "Limiter"} <= labels
     rng = np.random.default_rng(1)
     x = (rng.standard_normal((BLOCK, 2)) * 0.1).astype(np.float32)
@@ -155,3 +155,52 @@ def test_dragging_a_sound_rows_bar_sets_its_volume(app):
     QTest.mouseDClick(meter, Qt.MouseButton.LeftButton, pos=QPoint(20, meter.height() // 2))
     assert changes[-1] == ("mic", {"volume_db": 0.0})
     card.close()
+
+
+def test_ducking_filter_follows_another_sound_through_the_mixer():
+    import numpy as np
+
+    from sprigcast.audio.mixer import Mixer
+    from sprigcast.core.filters import AudioChain
+    from sprigcast.core.scene import Filter
+
+    class Fake:
+        def __init__(self, sid, value):
+            self.id, self.value, self.kind, self.gain, self.settings = sid, value, "audio_output", 1.0, {}
+            self.audio_chain = None
+
+        def read_block(self, n):
+            return np.full((n, 2), self.value, dtype=np.float32)
+
+    music, mic = Fake("music", 0.5), Fake("mic", 0.0)
+    music.audio_chain = AudioChain([Filter(id="d", kind="ducking", name="Ducking",
+                                           settings={"sound_id": "mic", "amount_db": -20.0, "attack_ms": 10})])
+    mixer = Mixer(report=lambda levels: None)
+    mixer.set_sources([music, mic])
+    mixer.followed = frozenset({"mic"})
+    for _ in range(5):
+        out = mixer.tick()
+    assert out[-1, 0] == pytest.approx(0.5)  # mic quiet: music as it was
+    mic.value = 0.2  # talking
+    for _ in range(20):
+        out = mixer.tick()
+    assert out[-1, 0] == pytest.approx(0.5 * 10 ** (-20 / 20) + 0.2, abs=0.01)
+    mic.value = 0.0
+    for _ in range(200):
+        out = mixer.tick()
+    assert out[-1, 0] == pytest.approx(0.5, abs=0.01)  # back up after the hold and fade
+
+
+def test_low_cut_and_de_esser_keep_the_block_shape():
+    import numpy as np
+
+    from sprigcast.core.filters import AudioChain
+    from sprigcast.core.scene import Filter
+
+    t = np.arange(4096) / 48000
+    rumble = np.repeat(np.sin(2 * np.pi * 30 * t)[:, None], 2, axis=1).astype(np.float32)
+    chain = AudioChain([Filter(id="l", kind="low_cut", name="Low Cut", settings={"hz": 150})])
+    out = np.concatenate([chain.process(rumble[i:i + 1024]) for i in range(0, 4096, 1024)])
+    assert out.shape == rumble.shape and np.abs(out[2048:]).max() < 0.2  # 30 Hz rumble mostly gone
+    chain = AudioChain([Filter(id="s", kind="de_esser", name="De-esser")])
+    assert chain.process(rumble[:1024]).shape == (1024, 2)

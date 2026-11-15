@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.core import looks
-from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
+from sprigcast.core.filters import VST3_FOLDER, Field, filter_kind, filter_kinds, settings_for
 from sprigcast.core.scene import Filter, SourceConfig
 
 AUDIO_KINDS = {"audio_input", "audio_output", "app_audio"}
@@ -72,9 +72,11 @@ class FilterForm(QWidget):
 
     changed = Signal()
 
-    def __init__(self, fields: list[Field], values: dict, parent: QWidget | None = None):
+    def __init__(self, fields: list[Field], values: dict, parent: QWidget | None = None,
+                 sounds: list[tuple[str, str]] | None = None):
         super().__init__(parent)
         self.fields = fields
+        self.sounds = sounds or []  # (id, name): what a "sound" field (Ducking's "When this plays") offers
         self.getters: dict[str, Callable[[], object]] = {}
         self.setters: dict[str, Callable[[object], None]] = {}
         self.rows: dict[str, QWidget] = {}
@@ -102,9 +104,10 @@ class FilterForm(QWidget):
             box.toggled.connect(self.changed)
             self.getters[f.key], self.setters[f.key] = box.isChecked, lambda v: box.setChecked(bool(v))
             return box
-        if kind == "choice":
+        if kind in ("choice", "sound"):
             combo = QComboBox()
-            for data, label in f.choices:
+            choices = f.choices if kind == "choice" else [("", "Pick a sound"), *self.sounds]
+            for data, label in choices:
                 combo.addItem(label, data)
             combo.setCurrentIndex(max(0, combo.findData(value)))
             combo.currentIndexChanged.connect(self.changed)
@@ -177,6 +180,8 @@ class FilterForm(QWidget):
         def pick() -> None:
             current = str(box.property("path") or "")
             start = str(Path(current).parent) if current else str(looks_folder() if f.key == "file" else Path.home())
+            if not current and "vst3" in f.file_types and Path(VST3_FOLDER).is_dir():
+                start = VST3_FOLDER
             path, _ = QFileDialog.getOpenFileName(self, f.label, start, f.file_types or "All files (*)")
             if path:
                 show(path)
@@ -250,9 +255,10 @@ class FiltersDialog(QDialog):
     preview updates live. Closing calls on_change(save=True)."""
 
     def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None,
-                 media: str | None = None):
+                 media: str | None = None, sounds: list[tuple[str, str]] | None = None):
         super().__init__(parent)
         self.source = source
+        self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
         self.on_change = on_change
         self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         self.setWindowTitle(f"Filters for “{source.name}”")
@@ -332,9 +338,15 @@ class FiltersDialog(QDialog):
         self.save_look_button.setToolTip("Save these colour settings as a .cube LUT you can use anywhere")
         self.save_look_button.clicked.connect(self._save_look)
         self.save_look_button.hide()
+        self.vst_button = QPushButton("Open plug-in")
+        self.vst_button.setStyleSheet(RAISED_PILL)
+        self.vst_button.setToolTip("Open the plug-in's own window. Its settings are saved with this filter")
+        self.vst_button.clicked.connect(self._open_vst)
+        self.vst_button.hide()
         top = QHBoxLayout()
         top.addWidget(self.title, 1)
         top.addWidget(self.save_look_button)
+        top.addWidget(self.vst_button)
         top.addWidget(self.reset_button)
         right.addLayout(top)
         right.addWidget(self.form_area, 1)
@@ -356,26 +368,37 @@ class FiltersDialog(QDialog):
 
     # List ---------------------------------------------------------------------
 
+    def _shown(self) -> list[Filter]:
+        """This window's filters: sound filters in Sound filters, effects in Effects (a page has both)."""
+        own = media_of(self.source)
+
+        def media(flt: Filter) -> str:
+            info = filter_kind(flt.kind)
+            return info.media if info is not None else own  # from a plugin that isn't loaded
+
+        return [f for f in self.source.filters if media(f) == self.media]
+
     def _refresh(self, select: int | None = None) -> None:
         self.list.blockSignals(True)
         self.list.clear()
-        for flt in self.source.filters:
+        shown = self._shown()
+        for flt in shown:
             item = QListWidgetItem(flt.name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if flt.enabled else Qt.CheckState.Unchecked)
             item.setToolTip("Untick to switch the filter off without removing it")
             self.list.addItem(item)
         self.list.blockSignals(False)
-        self.empty.setVisible(not self.source.filters)
-        self.list.setVisible(bool(self.source.filters))
-        if self.source.filters:
-            self.list.setCurrentRow(max(0, min(select or 0, len(self.source.filters) - 1)))
+        self.empty.setVisible(not shown)
+        self.list.setVisible(bool(shown))
+        if shown:
+            self.list.setCurrentRow(max(0, min(select or 0, len(shown) - 1)))
         self._show_selected(self.list.currentRow())
 
     def _fill_add_menu(self) -> None:
         self.add_menu.clear()
         used = {f.kind for f in self.source.filters}
-        for info in sorted(filter_kinds(self.media), key=lambda k: (not k.builtin, k.label)):
+        for info in sorted(filter_kinds(self.media), key=lambda k: k.label.lower()):  # A to Z, plugins too
             action = self.add_menu.addAction(info.label)
             if self.media == "video" and info.kind in used:
                 action.setEnabled(False)  # one of each effect per source
@@ -390,36 +413,38 @@ class FiltersDialog(QDialog):
             name, n = f"{info.label} {n}", n + 1
         flt = Filter(id=uuid.uuid4().hex[:8], kind=kind, name=name, settings=dict(info.defaults))
         self.source.filters.append(flt)
-        self._refresh(len(self.source.filters) - 1)
+        self._refresh(len(self._shown()) - 1)
         self.on_change(save=False)
         return flt
 
     def _current(self) -> Filter | None:
-        row = self.list.currentRow()
-        return self.source.filters[row] if 0 <= row < len(self.source.filters) else None
+        row, shown = self.list.currentRow(), self._shown()
+        return shown[row] if 0 <= row < len(shown) else None
 
     def _remove(self) -> None:
-        row = self.list.currentRow()
-        if self._current() is None:
+        row, flt = self.list.currentRow(), self._current()
+        if flt is None:
             return
-        del self.source.filters[row]
+        self.source.filters.remove(flt)
         self._refresh(row)
         self.on_change(save=False)
 
     def _move(self, delta: int) -> None:
-        row = self.list.currentRow()
+        """Swap with the next filter shown here (the other kind, hidden, keeps its place)."""
+        row, shown = self.list.currentRow(), self._shown()
         new = row + delta
-        if self._current() is None or not 0 <= new < len(self.source.filters):
+        if self._current() is None or not 0 <= new < len(shown):
             return
         filters = self.source.filters
-        filters[row], filters[new] = filters[new], filters[row]
+        a, b = filters.index(shown[row]), filters.index(shown[new])
+        filters[a], filters[b] = filters[b], filters[a]
         self._refresh(new)
         self.on_change(save=False)
 
     def _toggled(self, item: QListWidgetItem) -> None:
-        row = self.list.row(item)
-        if 0 <= row < len(self.source.filters):
-            self.source.filters[row].enabled = item.checkState() == Qt.CheckState.Checked
+        row, shown = self.list.row(item), self._shown()
+        if 0 <= row < len(shown):
+            shown[row].enabled = item.checkState() == Qt.CheckState.Checked
             self.on_change(save=False)
 
     # Settings -----------------------------------------------------------------
@@ -427,10 +452,11 @@ class FiltersDialog(QDialog):
     def _show_selected(self, row: int) -> None:
         flt = self._current()
         self.reset_button.setEnabled(flt is not None)
+        self.vst_button.setVisible(flt is not None and flt.kind == "vst")
         if flt is None:
             self.save_look_button.hide()
             self.title.setText("")
-            if self.source.filters:
+            if self._shown():
                 empty = QLabel("")
             else:
                 from sprigcast.app.empty import EmptyState
@@ -446,7 +472,7 @@ class FiltersDialog(QDialog):
             self.form_area.setWidget(QLabel(f"The {flt.kind!r} filter comes from a plugin that isn't loaded."))
             self.form = None
             return
-        self.form = FilterForm(info.fields, settings_for(flt.kind, flt.settings))
+        self.form = FilterForm(info.fields, settings_for(flt.kind, flt.settings), sounds=self.sounds)
         self.form.changed.connect(self._edited)
         self.form_area.setWidget(self.form)
 
@@ -455,6 +481,32 @@ class FiltersDialog(QDialog):
         if flt is not None and self.form is not None:
             flt.settings = self.form.values()
             self.on_change(save=False)
+
+    def _open_vst(self) -> None:
+        """Show the VST's own window (it stays until you close it), then keep what was changed there."""
+        from sprigcast.core.filters import load_vst, vst_state
+
+        flt = self._current()
+        if flt is None or flt.kind != "vst":
+            return
+        settings = settings_for(flt.kind, flt.settings)
+        if not settings["plugin_file"]:
+            self.title.setText("VST Plug-in  ·  choose the plug-in first")
+            return
+        try:
+            plugin = load_vst(settings["plugin_file"], settings["state"])
+            plugin.show_editor()
+            state = vst_state(plugin)
+        except ModuleNotFoundError:
+            self.title.setText("VST Plug-in  ·  plug-in support isn't installed")
+            return
+        except Exception as exc:
+            self.title.setText(f"VST Plug-in  ·  it didn't open: {exc}")
+            return
+        flt.settings = {**settings, "state": state}
+        if self.form is not None:
+            self.form.setters["state"](state)
+        self.on_change(save=False)
 
     def _save_look(self, path: str | None = None) -> Path | None:
         """Bake the selected Color Correction into a .cube file (in Documents\\SprigCast\\Looks by default)."""

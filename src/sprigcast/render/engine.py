@@ -487,6 +487,9 @@ class Engine:
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
         self.mixer.bloom_out = self._collection.sounds_off_here()  # sound per bloom, as blooms switch
+        self.mixer.followed = frozenset(  # sounds a Ducking filter listens to
+            str(f.settings.get("sound_id")) for s in self._collection.sources for f in s.filters
+            if f.kind == "ducking" and f.enabled and f.settings.get("sound_id"))
         self._sync_audio_options()
 
     def _sync_audio_options(self) -> None:

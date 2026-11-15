@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from sprigcast.core.filters import SOUND_LEVELS
 from sprigcast.sources.audio import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -174,7 +175,9 @@ class Mixer:
         self.clean_out: frozenset[str] = frozenset()
         # Sound per bloom: these sources are quiet in the blooms on air now (the engine sets it).
         self.bloom_out: frozenset[str] = frozenset()
-        self._bloom_gates: dict[str, float] = {}  # source id -> gain now, while fading or quiet
+        self._bloom_gates: dict[str, float] = {}
+        # Sounds some Ducking filter follows: their levels go to SOUND_LEVELS (the engine sets it).
+        self.followed: frozenset[str] = frozenset()  # source id -> gain now, while fading or quiet
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
@@ -264,6 +267,7 @@ class Mixer:
         with self._lock:
             sources, taps, monitor_taps = self._sources + self._extras, self._taps, self._monitor_taps
         processed, meters = [], {}
+        listened = self.followed
         voice_db = FLOOR_DB
         for source in sources:
             block = source.read_block(BLOCK)
@@ -282,6 +286,8 @@ class Mixer:
             if isinstance(gate, np.ndarray) or gate != 1.0:
                 block = block * gate
             gain = source.gain
+            if source.id in listened:  # a Ducking filter follows this sound
+                SOUND_LEVELS[source.id] = float(np.max(np.abs(block))) * gain if gain and len(block) else 0.0
             voice = is_voice(source)
             if voice and gain:
                 voice_db = max(voice_db, levels(block, gain)[1])
