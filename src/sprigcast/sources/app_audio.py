@@ -216,6 +216,12 @@ def running_apps() -> list[str]:
 
 def fullscreen_app() -> tuple[int, str] | None:
     """(pid, exe) of the full-screen window in front, if it isn't the desktop or a known non-game."""
+    found = fullscreen_window()
+    return (found[1], found[2]) if found else None
+
+
+def fullscreen_window() -> tuple[int, int, str] | None:
+    """(window handle, pid, exe) of the full-screen game in front, or None (the desktop, a known non-game)."""
     if sys.platform != "win32":
         return None
     import ctypes
@@ -247,7 +253,7 @@ def fullscreen_app() -> tuple[int, str] | None:
     name = next((n for p, _pp, n in running_processes() if p == pid.value), "")
     if not name or name.lower() in NOT_GAMES:
         return None
-    return pid.value, name
+    return int(hwnd), pid.value, name
 
 
 @register("app_audio")

@@ -76,14 +76,14 @@ def plain_problem(status: str, kind: str) -> tuple[str, str] | None:
     tag = short_status(status)
     if not tag or tag in ("asleep", "starting"):
         return None
-    thing = {"camera": "camera", "window_capture": "window", "display_capture": "screen", "browser": "page",
+    thing = {"camera": "camera", "window_capture": "window", "game_capture": "game", "display_capture": "screen", "browser": "page",
              "audio_input": "mic", "audio_output": "sound device", "app_audio": "app sound", "image": "picture"}.get(kind, "source")
     if tag == "busy":
         return (f"Another app is using this {thing}. Close it there (Camera app, Teams, Discord, OBS…), "
                 "then try again.", "retry")
     if tag == "unplugged":
         return f"The {thing} was unplugged. Plug it back in and it comes back by itself.", "pick"
-    if tag == "closed" or (tag == "not found" and kind == "window_capture"):
+    if tag == "closed" or (tag == "not found" and kind in ("window_capture", "game_capture")):
         return "That window isn't open. Open the app, or pick another window.", "pick"
     if tag == "not found":
         if kind == "image":

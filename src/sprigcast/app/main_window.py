@@ -179,7 +179,7 @@ log = logging.getLogger(__name__)
 
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
-BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output",
+BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image", "text", "audio_input", "audio_output", "game_capture",
                   "app_audio", "scene", "browser", "chat", "media"}
 
 
@@ -744,37 +744,73 @@ class MainWindow(QMainWindow):
             if not found:
                 sub.addAction("Window capture works on Windows").setEnabled(False)
 
-        lazy("Camera", cameras)
-        lazy("Screen", screens)
-        lazy("Window", windows)
-        menu.addSeparator()
-        for label, slot in (
-            ("Picture…", self._add_image),
-            ("Video or sound file…", self._add_media),
-            ("Text", self._add_text),
-            ("Web page…", self._add_browser),
+        def games(sub: QMenu) -> None:
+            sub.addAction("Any full-screen game").triggered.connect(lambda: self._add_game())
+            found = list_windows()
+            if found:
+                sub.addSection("A game's window")
+            for window in found[:30]:
+                sub.addAction(window_name(window.title, window.process)).triggered.connect(
+                    lambda _=False, w=window: self._add_game(w))
+
+        def devices(kind: str):
+            def fill(sub: QMenu) -> None:
+                sub.addAction("Default (follows Windows)").triggered.connect(
+                    lambda _=False: self._add_audio(kind, "default"))
+                for device in list_audio_devices(loopback=kind == "audio_output"):
+                    sub.addAction(literal(device.name)).triggered.connect(
+                        lambda _=False, d=device.name: self._add_audio(kind, d))
+            return fill
+
+        def mirrors(sub: QMenu) -> None:
+            here = {i.source for i in scene.items} if scene is not None else set()
+            placed = {i.source for s in self.collection.scenes for i in s.items}
+            seen = [c for c in self.collection.sources if c.id in placed and c.id not in here
+                    and c.kind != PART_KIND and c.kind not in self.AUDIO_KINDS]
+            for config in sorted(seen, key=lambda c: c.name.lower()):
+                sub.addAction(literal(config.name)).triggered.connect(
+                    lambda _=False, sid=config.id: self._add_mirror(sid))
+            if not seen:
+                sub.addAction("Nothing to mirror yet").setEnabled(False)
+
+        # A to Z, the way OBS lists them (sprigs stay on top: they're SprigCast's own).
+        entries = [
+            ("App sound", lambda sub: self._fill_app_sound_menu(sub)),
             ("Chat", self._add_chat),
             ("Colour…", self._add_color),
-        ):
-            menu.addAction(label).triggered.connect(lambda _=False, f=slot: f())
+            ("Desktop sound", devices("audio_output")),
+            ("Game capture", games),
+            ("Microphone", devices("audio_input")),
+            ("Mirror", mirrors),
+            ("Picture…", self._add_image),
+            ("Screen", screens),
+            ("Text", self._add_text),
+            ("Video capture", cameras),
+            ("Video or sound file…", self._add_media),
+            ("Web page…", self._add_browser),
+            ("Window", windows),
+        ]
+        tips = {
+            "App sound": "One kind of sound on its own row: games, music, voice chat…",
+            "Desktop sound": "Everything a speaker or headset plays",
+            "Game capture": "A game: the full-screen one in front, or a game's window. Its sound comes with it",
+            "Microphone": "A mic: plays in every bloom on both shapes",
+            "Mirror": "Show a leaf from another bloom here too. It's the same leaf: change one, both change",
+            "Video capture": "A webcam, capture card or virtual camera",
+        }
+        for label, action in sorted(entries, key=lambda e: e[0].lower()):
+            if action in (games, screens, windows, cameras, mirrors) or label in ("App sound", "Desktop sound",
+                                                                                   "Microphone"):
+                sub = menu.addMenu(label)
+                sub.setToolTipsVisible(True)
+                sub.menuAction().setToolTip(tips.get(label, ""))
+                sub.aboutToShow.connect(lambda s=sub, f=action: (s.clear(), f(s)) if not s.actions() else None)
+            else:
+                act = menu.addAction(label)
+                act.setToolTip(tips.get(label, ""))
+                act.triggered.connect(lambda _=False, f=action: f())
+        menu.setToolTipsVisible(True)
         menu.addSeparator()
-
-        def sounds(sub: QMenu) -> None:
-            for kind, title in (("audio_input", "Microphone"), ("audio_output", "Desktop sound")):
-                sub.addSection(title)
-                found = list_audio_devices(loopback=kind == "audio_output")
-                sub.addAction("Default (follows Windows)").triggered.connect(
-                    lambda _=False, k=kind: self._add_audio(k, "default"))
-                for device in found:
-                    sub.addAction(literal(device.name)).triggered.connect(
-                        lambda _=False, k=kind, d=device.name: self._add_audio(k, d))
-            sub.addSection("File")
-            sub.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
-
-            sub.addSection("App sound")
-            self._fill_app_sound_menu(sub)
-
-        lazy("Sound (plays in every bloom)", sounds)
         plugins = menu.addMenu("Plugins")
         self.more_menu = plugins
         self._fill_more_menu()
@@ -875,7 +911,7 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
                 menu.addAction(f"Open {PART}").triggered.connect(self._open_part_item)
                 self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
-            if item is not None and self.collection.source(item.source).kind == "window_capture":
+            if item is not None and self.collection.source(item.source).kind in ("window_capture", "game_capture"):
                 self._fill_capture_sound_menu(menu.addMenu("Sound"), item.source)
             if item is not None and self.collection.source(item.source).kind == "browser" and self.browser_host:
                 menu.addAction("Refresh page").triggered.connect(
@@ -2741,6 +2777,7 @@ class MainWindow(QMainWindow):
                     "image": "Image",
                     "display_capture": "Monitor",
                     "window_capture": "Window",
+                    "game_capture": "Game",
                     "camera": "Camera",
                     "text": "Text",
                     "browser": "Page",
@@ -3832,6 +3869,34 @@ class MainWindow(QMainWindow):
         self._add_item(config)
         self._fit_item(size=(monitor.width, monitor.height))
 
+    def _add_mirror(self, source_id: str) -> None:
+        """The same leaf again in this bloom (like OBS's Source Clone, without a second copy running)."""
+        scene = self._scene()
+        if scene is None:
+            return
+        scene.items.append(SceneItem(source=source_id))
+        self._changed()
+        self._refresh_sources(keep_row=0)
+
+    def _add_game(self, window=None) -> None:
+        """Game capture: the full-screen game in front, or one game's window, with the game's own sound."""
+        from sprigcast.core.capture_sound import APP, set_capture_sound
+
+        if self._scene() is None:
+            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            return
+        if window is None:
+            settings = {"mode": "any", "cursor": False}
+            name = "Game"
+        else:
+            settings = {"mode": "window", "title": window.title, "process": window.process, "cursor": False}
+            name = window_name(window.title, window.process)
+        config = SourceConfig(id=self.collection.new_id("game"), kind="game_capture", name=name, settings=settings)
+        self._add_item(config)
+        set_capture_sound(self.collection, config, APP)  # like OBS's Capture audio: the game's own sound
+        self._changed()
+        self._refresh_audio()
+
     def _add_window(self, window=None) -> None:
         if self._scene() is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
@@ -4136,6 +4201,23 @@ class MainWindow(QMainWindow):
             config.settings = settings
             if config.name in (old, short_name(old, "Camera")):  # a name you chose stays
                 config.name = short_name(settings["name"], "Camera")
+        elif config.kind == "game_capture":
+            windows = list_windows()
+            labels = ["Any full-screen game"] + [window_name(w.title, w.process) for w in windows]
+            current = 0 if config.settings.get("mode", "any") != "window" else next(
+                (i + 1 for i, w in enumerate(windows) if w.process == config.settings.get("process")), 0)
+            label, ok = QInputDialog.getItem(self, "Game capture", "Show:", labels, current, False)
+            if not ok:
+                return
+            if labels.index(label) == 0:
+                config.settings = {**config.settings, "mode": "any", "title": "", "process": ""}
+            else:
+                window = windows[labels.index(label) - 1]
+                config.settings = {**config.settings, "mode": "window", "title": window.title,
+                                   "process": window.process}
+            from sprigcast.core.capture_sound import follow_capture
+
+            follow_capture(self.collection, config)
         elif config.kind == "window_capture":
             window = self._pick_window()
             if window is None:

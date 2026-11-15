@@ -124,6 +124,8 @@ class SettingsDialog(QDialog):
             return self._with_button(edit, "Pick…", lambda: self._pick_color(edit))
         if key in ("file", "path"):
             return self._with_button(edit, "Browse…", lambda: self._pick_file(edit))
+        if key == "folder":
+            return self._with_button(edit, "Browse…", lambda: self._pick_folder(edit))
         return edit
 
     @staticmethod
@@ -145,6 +147,13 @@ class SettingsDialog(QDialog):
 
     def _pick_file(self, edit: QLineEdit) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose file", edit.text())
+        if path:
+            edit.setText(path)
+
+    def _pick_folder(self, edit: QLineEdit) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path = QFileDialog.getExistingDirectory(self, "Choose folder", edit.text())
         if path:
             edit.setText(path)
 
