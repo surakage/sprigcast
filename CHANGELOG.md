@@ -103,6 +103,12 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Once nothing is recorded, streamed or kept for clips, SprigCast lets go of cached plugin art and hands the pages it
   no longer touches back to Windows (after a 2-hour soak it sat at ~415 MB at rest, against ~200 MB fresh). One late
   frame in a second no longer flips the status word to Busy.
+- Shorter Python cleanups: a small tidy every 5 minutes freezes what survives, so the full collection that took ~70 ms
+  every 10 minutes in the 2-hour soak (and made a late frame, often on a bloom change) walks only what is new. When the
+  show ends, everything is looked at once so nothing from it is kept. Start-up's one-time pages go back to Windows
+  20 s after SprigCast opens.
+- Turning the virtual camera on sets it up the first time (one Windows prompt, no trip to Repair), checks Windows'
+  camera privacy first and, when it blocks desktop apps, says so and offers to open the right Settings page.
 - A sprig nothing has shown for a few seconds lets go of its full-canvas texture (they stayed until SprigCast closed),
   and removing a plugin stops its sources straight away instead of at the next restart. Stopping a recording or
   stream logs the app's memory, so long sessions can be compared.

@@ -5306,13 +5306,7 @@ class MainWindow(QMainWindow):
         from sprigcast.output import virtualcam
 
         turn_on = self.camera is None
-        self._camera_error = ""
-        if turn_on:
-            ok, why = virtualcam.supported()
-            if not ok:
-                self._camera_error = why
-            elif not virtualcam.installed():
-                self._camera_error = "The camera isn't set up. Open the gear and press Repair."
+        self._camera_error = self._guide_camera() if turn_on else ""
         QSettings().setValue(CAMERA_ON, turn_on and not self._camera_error)
         self._sync_camera()
         if turn_on and self.camera is None:  # it didn't start: leave the switch off so the button matches
@@ -5320,6 +5314,58 @@ class MainWindow(QMainWindow):
             self._camera_error = self._camera_error or "The camera didn't start."
             self.live_side.set_camera(False, self._camera_error)
             self._say(self._camera_error)
+            if virtualcam.state.privacy_failed:  # Windows said no when it started: show the switch to flip
+                self._offer_camera_privacy(virtualcam.privacy_block() or virtualcam.PRIVACY_HINT)
+
+    CAMERA_SETUP_WAIT_S = 30.0
+
+    def _guide_camera(self) -> str:
+        """Turning the virtual camera on: set it up once if needed (one Windows prompt), check that Windows'
+        camera privacy lets desktop apps in, and say plainly what to do when something is in the way.
+        Returns what's wrong ('' when it can start)."""
+        import time
+
+        from sprigcast.output import virtualcam
+
+        ok, why = virtualcam.supported()
+        if not ok:
+            return why
+        if not virtualcam.installed() or virtualcam.needs_update():
+            fresh = not virtualcam.installed()
+            answer = QMessageBox.question(
+                self, "SprigCast Camera",
+                ("SprigCast Camera needs setting up once so other apps can see it."
+                 if fresh else "SprigCast Camera needs a quick update.")
+                + "\nWindows will ask for permission.",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            if answer != QMessageBox.StandardButton.Ok:
+                return "The camera isn't set up yet." if fresh else ""
+            if not virtualcam.set_up():
+                return "Setup didn't start. Try again and allow Windows' prompt."
+            if fresh:  # the prompt runs on its own: wait for the camera to appear
+                end = time.monotonic() + self.CAMERA_SETUP_WAIT_S
+                while not virtualcam.installed() and time.monotonic() < end:
+                    QApplication.processEvents()
+                    time.sleep(0.1)
+                if not virtualcam.installed():
+                    return "Setup didn't finish. Try again and allow Windows' prompt."
+        blocked = virtualcam.privacy_block()
+        if blocked:
+            self._offer_camera_privacy(blocked)
+            return f"{blocked} Turn on camera access for desktop apps, then try again."
+        return ""
+
+    def _offer_camera_privacy(self, why: str) -> None:
+        from sprigcast.output import virtualcam
+
+        box = QMessageBox(self)
+        box.setWindowTitle("SprigCast Camera")
+        box.setText(f"{why}\nIn Windows Settings, turn on Camera access and Let desktop apps access your camera.")
+        open_button = box.addButton("Open camera settings", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is open_button:
+            virtualcam.open_privacy_settings()
 
     def _camera_settings(self) -> None:
         """The gear beside Virtual camera: a small pop-up to pick what it shows."""
@@ -5370,12 +5416,10 @@ class MainWindow(QMainWindow):
         touched during the show (encoders, the clips buffer, frames in flight) and cached plugin art."""
         if self.recording is not None or self.streaming is not None or self.replay is not None:
             return
-        import gc
-
         from sprigcast.core import painted, pacing
 
         painted.forget_art()
-        gc.collect()
+        pacing.settle()
         trimmed = pacing.trim_working_set()
         log.info("at rest: let go of what the show held%s; memory: %s",
                  " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line())
