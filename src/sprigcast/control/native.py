@@ -344,12 +344,14 @@ class NativeApi:
     def app_broadcast(self, data):
         self.custom_event(_get(data, "data", dict))
 
-    @action("hotkey.run", "Do what a hotkey does (hotkey.list shows them).", hotkey="hotkey action id")
+    @action("hotkey.run", "Do what a hotkey does (hotkey.list shows them). note says why when it couldn't.",
+            hotkey="hotkey action id")
     def hotkey_run(self, data):
         wanted = _get(data, "hotkey", str)
         if wanted not in {a for a, _ in self.host.hotkeys()}:
             raise _missing(f"No hotkey action {wanted!r}.")
-        self.host.trigger_hotkey(wanted)
+        note = self.host.trigger_hotkey(wanted)
+        return {"hotkey": wanted, "note": note if isinstance(note, str) else None}
 
     @action("hotkey.list", "Hotkey actions and what they do.")
     def hotkey_list(self, data):

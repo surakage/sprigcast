@@ -172,7 +172,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `hotkey.list` | Hotkey actions and what they do. | none |
-| `hotkey.run` | Do what a hotkey does (hotkey.list shows them). | `hotkey`: hotkey action id |
+| `hotkey.run` | Do what a hotkey does (hotkey.list shows them). Answers `{"hotkey", "note"}`: note says why when it couldn't, e.g. "Not in this bloom: Facecam", else null. | `hotkey`: hotkey action id |
 
 ### item
 

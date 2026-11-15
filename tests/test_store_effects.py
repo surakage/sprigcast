@@ -520,3 +520,24 @@ def test_death_count_key_counts_off_air_but_says_so(added):
     said = []
     assert plugin_hooks.run_hotkey(api, "plugin:deaths:add", said.append)
     assert col.source("dc").settings["count"] == 1 and said == ["Deaths: 1. Not in this bloom: Deaths"]
+
+
+def test_hotkey_run_tells_apps_why_it_did_nothing():
+    """Over the API (Streamer.bot), a hotkey that couldn't do anything answers with its note."""
+    from sprigcast.app.control_server import WindowHost
+
+    class Window:
+        _last_hotkey_note = None
+
+        def _on_hotkey(self, action):
+            self._last_hotkey_note = "Not in this bloom: Facecam" if action == "plugin:hide:pixelate:fc" else None
+
+    host = Host(_collection())
+    host.hotkeys = lambda: [("plugin:hide:pixelate:fc", "Pixelate Facecam"), ("toggle_stream", "Go live")]
+    window_host = WindowHost.__new__(WindowHost)
+    window_host.w = Window()
+    host.trigger_hotkey = window_host.trigger_hotkey
+    api = NativeApi(host)
+    assert api.run("hotkey.run", {"hotkey": "plugin:hide:pixelate:fc"}) == {
+        "hotkey": "plugin:hide:pixelate:fc", "note": "Not in this bloom: Facecam"}
+    assert api.run("hotkey.run", {"hotkey": "toggle_stream"}) == {"hotkey": "toggle_stream", "note": None}
