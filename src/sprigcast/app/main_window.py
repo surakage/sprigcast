@@ -3836,12 +3836,18 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _camera_dialog(self, current: dict | None = None) -> dict | None:
+    def _camera_max_fps(self) -> int:
+        rates = [int(round(c.fps)) for c in self.collection.canvases if c.enabled]
+        return max(rates) if rates else 60
+
+    def _camera_dialog(self, current: dict | None = None, source_id: str | None = None) -> dict | None:
         cameras = list_cameras()
         if not cameras:
             QMessageBox.information(self, "SprigCast", "No cameras found. Is one plugged in and not in use by another app?")
             return None
-        dialog = CameraDialog(cameras, current, self)
+        source = self.engine._sources.get(source_id) if source_id else None
+        modes = getattr(source, "modes_seen", None) or None
+        dialog = CameraDialog(cameras, current, self, max_fps=self._camera_max_fps(), modes=modes)
         return dialog.settings() if dialog.exec() else None
 
     def _add_camera(self, device=None) -> None:
@@ -3851,7 +3857,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
         if device is not None:
-            dialog = CameraDialog([device], {"name": device.name, "path": device.path}, self)
+            dialog = CameraDialog([device], {"name": device.name, "path": device.path}, self,
+                                  max_fps=self._camera_max_fps())
             settings = dialog.settings()  # the mode it would suggest, without asking
             dialog.deleteLater()
             name = short_name(settings["name"], "Camera")
@@ -4109,7 +4116,7 @@ class MainWindow(QMainWindow):
             config.settings = {**config.settings, "monitor": monitor.index}
             config.name = f"Monitor {monitor.index}"
         elif config.kind == "camera":
-            settings = self._camera_dialog(config.settings)
+            settings = self._camera_dialog(config.settings, config.id)
             if settings is None:
                 return
             old = str(config.settings.get("name", ""))
@@ -4785,7 +4792,8 @@ class MainWindow(QMainWindow):
             return False
 
         def camera_settings(device) -> dict:
-            probe = CameraDialog([device], {"name": device.name, "path": device.path}, self)
+            probe = CameraDialog([device], {"name": device.name, "path": device.path}, self,
+                                 max_fps=self._camera_max_fps())
             settings = probe.settings()
             probe.deleteLater()
             return settings

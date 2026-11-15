@@ -126,3 +126,16 @@ def test_image_is_decoded_only_when_asked_and_again_after_waking(tmp_path):
     assert src.video_frame() is None
     src.wake()
     assert src.video_frame().shape == (20, 40, 4)
+
+
+def test_a_camera_set_to_pause_off_screen_sleeps_like_the_rest():
+    engine, col = _engine()
+    fake = FakeCompositor()
+    engine._sources["cam"].settings = {"pause_off_screen": True}
+    col.active_scenes["h"] = "b"
+    engine._tick(fake, 1.0)
+    engine._tick(fake, 1.0 + SLEEP_AFTER + 0.1)
+    assert engine._sources["cam"].asleep
+    engine.sleep_policy = "off"  # "never pause" still wins
+    engine._tick(fake, 20.0)
+    assert not engine._sources["cam"].asleep
