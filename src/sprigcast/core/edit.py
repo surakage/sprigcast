@@ -15,7 +15,7 @@ from sprigcast.core.scene import SceneItem
 Point = tuple[float, float]
 Size = tuple[int, int]
 
-# Corner indices follow SceneItem.quad(): 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
+# Corner indices follow SceneItem.box(): 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
 # Side handles (the middle of each edge) follow: 4 left, 5 right, 6 top, 7 bottom.
 OPPOSITE = {0: 3, 1: 2, 2: 1, 3: 0, 4: 5, 5: 4, 6: 7, 7: 6}
 SIDES = {4: (0, 2), 5: (1, 3), 6: (0, 1), 7: (2, 3)}  # the two corners each side runs between
@@ -31,20 +31,19 @@ def _rotate(dx: float, dy: float, degrees: float) -> Point:
 
 def _corner(item: SceneItem, size: Size, index: int) -> Point:
     """A corner (0-3) or the middle of a side (4-7), in canvas pixels."""
-    quad = item.quad(size)
+    box = item.box(size)
     if index in SIDES:
         a, b = SIDES[index]
-        return (quad[a][0] + quad[b][0]) / 2, (quad[a][1] + quad[b][1]) / 2
-    x, y, _u, _v = quad[index]
-    return x, y
+        return (box[a][0] + box[b][0]) / 2, (box[a][1] + box[b][1]) / 2
+    return box[index]
 
 
 def contains(item: SceneItem, size: Size, point: Point) -> bool:
-    quad = item.quad(size)
-    if not quad:
+    box = item.box(size)
+    if not box:
         return False
-    cx = sum(p[0] for p in quad) / 4
-    cy = sum(p[1] for p in quad) / 4
+    cx = sum(p[0] for p in box) / 4
+    cy = sum(p[1] for p in box) / 4
     lx, ly = _rotate(point[0] - cx, point[1] - cy, -item.rotation)
     w, h = item.drawn_size(size)
     return abs(lx) <= w / 2 and abs(ly) <= h / 2
@@ -62,7 +61,7 @@ def hit_test(items: Sequence[SceneItem], sizes: dict[str, Size], point: Point) -
 
 def handle_at(item: SceneItem, size: Size, point: Point, radius: float) -> int | None:
     """Which handle is within `radius` canvas pixels of the point: a corner (0-3), else a side (4-7)."""
-    if not item.quad(size):
+    if not item.box(size):
         return None
     best, best_d = None, radius
     for index in range(8):
@@ -132,6 +131,20 @@ def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int
     anchor_index = OPPOSITE[corner]
     anchor = _corner(start, size, anchor_index)
     lx, ly = _rotate(point[0] - anchor[0], point[1] - anchor[1], -start.rotation)
+    if start.bounded:  # the box is what resizes; the picture refits inside it
+        bw, bh = start.bounds_size
+        w, h = max(2.0, abs(lx)), max(2.0, abs(ly))
+        if corner in (4, 5):
+            h = w * bh / bw if keep_aspect else bh
+        elif corner in (6, 7):
+            w = h * bw / bh if keep_aspect else bw
+        elif keep_aspect:
+            k = max(w / bw, h / bh)
+            w, h = bw * k, bh * k
+        item.x, item.y, item.crop, item.rotation = start.x, start.y, start.crop, start.rotation
+        item.bounds_size = (w, h)
+        _pin(item, size, anchor_index, anchor)
+        return
     cw, ch = start.cropped_size(size)
     if not cw or not ch:
         return
@@ -158,8 +171,9 @@ def crop_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int,
     lx, ly = _rotate(point[0] - anchor[0], point[1] - anchor[1], -start.rotation)
     sw, sh = size
     left, top, right, bottom = start.crop
-    want_w = abs(lx) / start.scale  # visible width in source pixels
-    want_h = abs(ly) / start.sy
+    k_x, k_y = start.picture_scale(size)
+    want_w = abs(lx) / k_x  # visible width in source pixels
+    want_h = abs(ly) / k_y
     if corner in (0, 2, 4):  # left edge moves
         left = int(round(min(max(0, sw - right - want_w), sw - right - MIN_CROPPED)))
     elif corner in (1, 3, 5):  # right edge moves
