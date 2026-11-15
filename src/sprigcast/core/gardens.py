@@ -26,7 +26,6 @@ Nothing here knows about Qt.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 from pathlib import Path
@@ -34,12 +33,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from sprigcast.core.looks import FROM_FILE
-from sprigcast.core.scene import (
-    EncoderSettings,
-    Output,
-    RecordingSettings,
-    SceneCollection,
-)
+from sprigcast.core.scene import PART_KIND, EncoderSettings, Output, RecordingSettings, SceneCollection
 
 INDEX = "gardens.json"
 FIRST_GARDEN_FILE = "scenes.json"
@@ -109,6 +103,70 @@ def _write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+MAX_IMPORT_BYTES = 64 * 1024 * 1024
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def file_name(name: str) -> str:
+    """A name that's safe as a Windows file name: no path parts, no reserved names or characters."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(name)).strip().strip(".")
+    if not name or name.split(".")[0].casefold() in _RESERVED:
+        name = f"SprigCast {name}".strip()
+    return name[:80]
+
+
+def exports_folder(documents: Path) -> Path:
+    """Where exports go unless you pick another place: Documents/SprigCast/Exports."""
+    return Path(documents) / "SprigCast" / "Exports"
+
+
+def fit_canvases(garden: SceneCollection, like: SceneCollection) -> SceneCollection:
+    """Put a garden on this PC's canvases: each of its canvases goes to the one of the same shape (wide or
+    tall) and is resized to it (positions and sizes scale along); a canvas it lacks gets an empty bloom."""
+    from sprigcast.core.scene import Scene
+
+    mine = {c.id: c for c in like.canvases}
+    wide = next((c.id for c in like.canvases if c.width >= c.height), like.canvases[0].id)
+    tall = next((c.id for c in like.canvases if c.height > c.width), None)
+    rename: dict[str, str] = {}
+    for canvas in garden.canvases:
+        target = canvas.id if canvas.id in mine else (tall if canvas.height > canvas.width and tall else wide)
+        if target in rename.values():
+            raise ShelfError("That garden has two canvases of the same shape.")
+        rename[canvas.id] = target
+    sizes = {rename[c.id]: (c.width, c.height) for c in garden.canvases}
+    placements = {c.id for c in garden.sources if c.kind == PART_KIND}
+    for scene in garden.scenes:
+        scene.canvas = rename[scene.canvas]
+        old, new = sizes[scene.canvas], (mine[scene.canvas].width, mine[scene.canvas].height)
+        if old != new:
+            k = min(new[0] / old[0], new[1] / old[1])
+            for item in scene.items:
+                item.x, item.y = item.x * k, item.y * k
+                if item.source not in placements:  # a sprig shrinks with its canvas by itself
+                    item.scale = item.scale * k
+                    item.scale_y = None if item.scale_y is None else item.scale_y * k
+                item.bounds_size = (item.bounds_size[0] * k, item.bounds_size[1] * k)
+    for folder in garden.folders:
+        folder.canvas = rename.get(folder.canvas, wide)
+    garden.active_scenes = {rename[c]: s for c, s in garden.active_scenes.items() if c in rename}
+    for output in garden.outputs:
+        output.canvas = rename.get(output.canvas, wide)
+    garden.recording.canvases = [rename[c] for c in garden.recording.canvases if c in rename] or [wide]
+    garden.canvases = [c.model_copy(deep=True) for c in like.canvases]
+    first = next((s for s in garden.scenes if s.kind == "show"), None)
+    for canvas in garden.canvases:
+        if canvas.id not in garden.active_scenes:
+            bloom = Scene(id=garden.new_id("bloom"), name=first.name if first else "Bloom", canvas=canvas.id,
+                          linked_to=first.id if first and first.canvas != canvas.id else None)
+            garden.scenes.append(bloom)
+            garden.active_scenes[canvas.id] = bloom.id
+    try:
+        return SceneCollection.model_validate(garden.model_dump())
+    except ValueError as exc:
+        raise ShelfError("That garden can't be used here.") from exc
+
+
 def clean_name(name: str) -> str:
     name = " ".join(str(name).split())
     if not name:
@@ -159,6 +217,22 @@ class Shelf:
     def _repair(self) -> None:
         """First run with gardens, or a hand-edited index: make sure there's one of each in use."""
         changed = False
+        for kind in ("garden", "path"):  # files the index doesn't list (it was lost or hand-edited) come back
+            entries = self.index.gardens if kind == "garden" else self.index.paths
+            known = {e.file for e in entries}
+            for file in sorted((self.folder / f"{kind}s").glob("*.json")):
+                rel = f"{kind}s/{file.name}"
+                if rel not in known and not file.name.endswith(".tmp"):
+                    name = file.stem.removeprefix(f"{kind}-").replace("-", " ").strip().capitalize() or kind
+                    taken = {e.name.casefold() for e in entries}
+                    base, n = name[:NAME_MAX], 2
+                    while name.casefold() in taken:
+                        name, n = f"{base} {n}", n + 1
+                    entries.append(Entry(id=file.stem, name=name, file=rel))
+                    changed = True
+        if self.index.gardens and not any(g.file == FIRST_GARDEN_FILE for g in self.index.gardens) \
+                and (self.folder / FIRST_GARDEN_FILE).exists() and not self.index_path.exists():
+            self.index.gardens.insert(0, Entry(id="garden-1", name=DEFAULT_GARDEN, file=FIRST_GARDEN_FILE))
         gardens = [g for g in self.index.gardens if (self.folder / g.file).exists() or g.file == FIRST_GARDEN_FILE]
         if gardens != self.index.gardens:
             self.index.gardens, changed = gardens, True
@@ -308,11 +382,7 @@ class Shelf:
         """Switch garden: returns the garden to show, with the current path and canvases carried in.
         The caller saves the old collection first and the new one after (it may tidy it more)."""
         entry = self.find("garden", wanted)
-        incoming = self.load_garden(entry)
-        if {c.id for c in incoming.canvases} != {c.id for c in collection.canvases}:
-            raise ShelfError(f"{entry.name} has other canvases than this one.")
-        by_id = {c.id: c for c in collection.canvases}
-        incoming.canvases = [by_id[c.id].model_copy(deep=True) for c in incoming.canvases]
+        incoming = fit_canvases(self.load_garden(entry), collection)
         PathSettings.of(collection).apply_to(incoming)
         SceneCollection.model_validate(incoming.model_dump())  # still valid with the carried-in settings
         self.index.garden = entry.id
@@ -350,6 +420,13 @@ class Shelf:
     def export(self, kind: str, wanted: str, target: Path, collection: SceneCollection) -> None:
         """Write a garden or path to a file of your choosing (the one on screen as it is now)."""
         entry = self.find(kind, wanted)
+        target = Path(target)
+        try:
+            inside = target.resolve().is_relative_to(self.folder.resolve())
+        except OSError:
+            inside = False
+        if inside:
+            raise ShelfError("Pick a folder outside SprigCast's own settings folder.")
         if kind == "garden":
             text = (collection if entry.id == self.index.garden else self.load_garden(entry)).model_dump_json(indent=2)
         else:
@@ -362,20 +439,29 @@ class Shelf:
         """Add a garden or path from an exported file; named after the file (with a number if taken)."""
         source = Path(source)
         try:
-            text = source.read_text(encoding="utf-8")
+            if source.stat().st_size > MAX_IMPORT_BYTES:
+                raise ShelfError(f"{source.name} is too big to be a SprigCast {kind}.")
+            text = source.read_text(encoding="utf-8-sig")
             if kind == "garden":
                 data: BaseModel = SceneCollection.model_validate_json(text)
             else:
                 data = PathSettings.model_validate_json(text)
         except (OSError, ValueError) as exc:
             raise ShelfError(f"{source.name} isn't a SprigCast {kind}.") from exc
-        base = clean_name(source.stem)
+        return self._add(kind, source.stem, data)
+
+    def add_garden(self, name: str, garden: SceneCollection) -> Entry:
+        """Add a garden made elsewhere (converted from OBS, Streamlabs or Meld); the name gets a number if taken."""
+        return self._add("garden", name, garden)
+
+    def _add(self, kind: str, name: str, data: BaseModel) -> Entry:
+        base = clean_name(name)
         name, n = base, 2
         entries = self.index.gardens if kind == "garden" else self.index.paths
         while any(e.name.casefold() == name.casefold() for e in entries):
-            name, n = f"{base} {n}", n + 1
+            name, n = f"{base[:NAME_MAX - 4]} {n}", n + 1
         entry = self._new_entry(kind, name)
-        _write(self.folder / entry.file, json.dumps(json.loads(data.model_dump_json()), indent=2))
+        _write(self.folder / entry.file, data.model_dump_json(indent=2))
         entries.append(entry)
         self.save()
         return entry
