@@ -825,11 +825,20 @@ class SceneCollection(BaseModel):
             made.append(part)
         return made
 
-    def own_sprig(self, scene: Scene, source_id: str, size: tuple[int, int], name: str) -> Scene:
-        """Put a source in a sprig of its own, filling the canvas, on top of this bloom and the blooms
-        linked to it (each shape gets a layout fitted to it). For overlays like Snap. Returns the sprig."""
+    def own_sprig(self, scene: Scene, source_id: str, size: tuple[int, int], name: str,
+                  corner: str | None = None) -> Scene:
+        """Put a source in a sprig of its own, on top of this bloom and the blooms linked to it (each
+        shape gets a layout fitted to it). It fills the canvas (overlays like Snap), or with corner
+        ("top_right" ...) it sits small in that corner (a clock). Returns the sprig."""
         def fitted(canvas_id: str) -> SceneItem:
             canvas = self.canvas(canvas_id)
+            if corner:
+                scale = min(canvas.width, canvas.height) * 0.36 / size[0]  # about a third of the short side
+                margin = min(canvas.width, canvas.height) * 0.035
+                w, h = size[0] * scale, size[1] * scale
+                x = margin if "left" in corner else canvas.width - w - margin
+                y = margin if "top" in corner else canvas.height - h - margin
+                return SceneItem(source=source_id, scale=scale, x=x, y=y)
             scale = min(canvas.width / size[0], canvas.height / size[1])
             return SceneItem(source=source_id, scale=scale, x=(canvas.width - size[0] * scale) / 2,
                              y=(canvas.height - size[1] * scale) / 2)

@@ -4185,7 +4185,8 @@ class MainWindow(QMainWindow):
                               if s.id == getattr(self, "last_bloom_id", None) and s.kind == "show"), None)
                 scene = bloom or scene
             self.collection.sources.append(config)
-            self.collection.own_sprig(scene, config.id, tuple(size), config.name)
+            self.collection.own_sprig(scene, config.id, tuple(size), config.name,
+                                      getattr(cls, "own_sprig_corner", None))
             self._changed()
             self._refresh_all()
             return
