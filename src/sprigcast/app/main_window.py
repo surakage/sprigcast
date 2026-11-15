@@ -4185,7 +4185,8 @@ class MainWindow(QMainWindow):
                               if s.id == getattr(self, "last_bloom_id", None) and s.kind == "show"), None)
                 scene = bloom or scene
             self.collection.sources.append(config)
-            self.collection.own_sprig(scene, config.id, tuple(size), config.name)
+            self.collection.own_sprig(scene, config.id, tuple(size), config.name,
+                                      getattr(cls, "own_sprig_corner", None))
             self._changed()
             self._refresh_all()
             return
@@ -5964,9 +5965,15 @@ class MainWindow(QMainWindow):
         palette.open()
         return palette
 
+    def _hotkey_note(self, text: str) -> None:
+        """A hotkey that couldn't do anything says why: in the status bar, and back to an app that ran it."""
+        self._last_hotkey_note = text
+        self._say(text)
+
     def _on_hotkey(self, action: str) -> None:
         from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE
 
+        self._last_hotkey_note = None
         if action.startswith(("garden:", "path:")):
             self.gardens.hotkey(action)
         elif action == TOGGLE_CLIPS:
@@ -5994,7 +6001,7 @@ class MainWindow(QMainWindow):
         elif action.startswith("plugin:"):
             from sprigcast import plugin_hooks
 
-            plugin_hooks.run_hotkey(self.api, action, self._say)
+            plugin_hooks.run_hotkey(self.api, action, self._hotkey_note)
         elif action.startswith(GAME_PREFIX):
             self._game_grab(action[len(GAME_PREFIX):])
         elif action.startswith(MEDIA_PREFIX):

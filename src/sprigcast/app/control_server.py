@@ -195,8 +195,10 @@ class WindowHost:
 
         return actions(self.w.collection)
 
-    def trigger_hotkey(self, action: str) -> None:
+    def trigger_hotkey(self, action: str) -> str | None:
+        """Do what the hotkey does. Returns its note when it couldn't ("Not in this bloom: Facecam")."""
         self.w._on_hotkey(action)
+        return getattr(self.w, "_last_hotkey_note", None)
 
 
 class ControlServer(QObject):
