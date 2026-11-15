@@ -130,7 +130,9 @@ class BuildStage(QWidget):
         self.left.setSpacing(10)
         top = QHBoxLayout()
         top.setSpacing(8)
-        top.addWidget(heading("Inside", 15))
+        title = heading("Leaves", 15)
+        title.setToolTip("The sources in this bloom: camera, screen, text, sprigs...")
+        top.addWidget(title)
         self.inside_note = QLabel("")
         self.inside_note.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
         top.addWidget(self.inside_note, 1)
@@ -141,10 +143,10 @@ class BuildStage(QWidget):
         self.right = QVBoxLayout(inspector)
         self.right.setContentsMargins(0, 0, 0, 0)
         self.right.setSpacing(10)
+        self.right_panel.addWidget(inspector)  # the picked leaf's settings on top, the list of leaves below
         self.right_panel.addWidget(inside)
-        self.right_panel.addWidget(inspector)
-        self.right_panel.setStretchFactor(0, 2)
-        self.right_panel.setStretchFactor(1, 3)
+        self.right_panel.setStretchFactor(0, 3)
+        self.right_panel.setStretchFactor(1, 2)
         # A sound picked in the library swaps the right column for its controls (sound has no place on a canvas).
         self.right_stack = QStackedWidget()
         self.right_stack.setFixedWidth(RIGHT_WIDTH)
@@ -152,11 +154,11 @@ class BuildStage(QWidget):
         self.sound_slot = QVBoxLayout(self.sound_page)
         self.sound_slot.setContentsMargins(0, 0, 0, 0)
         self.sound_slot.setSpacing(12)
-        saved = QSettings().value("build/inside_split")
+        saved = QSettings().value("build/leaves_split")
         if saved is not None:
             self.right_panel.restoreState(saved)  # where you last left the gap
         self.right_panel.splitterMoved.connect(
-            lambda *_: QSettings().setValue("build/inside_split", self.right_panel.saveState()))
+            lambda *_: QSettings().setValue("build/leaves_split", self.right_panel.saveState()))
         self.right_stack.addWidget(self.right_panel)
         self.right_stack.addWidget(self.sound_page)
         body.addWidget(self.right_stack)
@@ -170,7 +172,10 @@ ROLE_SPRIG = Qt.ItemDataRole.UserRole + 22  # True for a sprig placement
 ROLE_CHILDREN = Qt.ItemDataRole.UserRole + 23  # [(depth, name, is_sprig)]: what's inside a sprig
 ROLE_KIND = Qt.ItemDataRole.UserRole + 24  # the source's kind, for its little icon
 ROLE_SWATCH = Qt.ItemDataRole.UserRole + 25  # a colour source's colour
+ROLE_LOCKED = Qt.ItemDataRole.UserRole + 26  # True when it can't be moved or picked on the canvas
 ROW_H, CHILD_H, EYE_W = 34, 24, 30
+ACTION_W = 26  # each of the row's icons at the end: lock, settings, remove
+ACTIONS = ("lock", "settings", "remove")
 ICON = 22
 
 KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "camera": "camera", "color": "colour",
@@ -259,6 +264,12 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
     p.restore()
 
 
+def action_rects(top: QRectF) -> list[QRectF]:
+    """Where a row's icons go: evenly spaced at the right end, lock first."""
+    right = top.right() - 6
+    return [QRectF(right - ACTION_W * (len(ACTIONS) - i), top.y(), ACTION_W, top.height()) for i in range(len(ACTIONS))]
+
+
 class InsideDelegate(QStyledItemDelegate):
     """Draws an Inside row: a visibility dot, the name (a sprig icon for sprigs), a quiet tag, then the sprig's
     own contents underneath on branch lines, like the mockup."""
@@ -297,6 +308,18 @@ class InsideDelegate(QStyledItemDelegate):
                             selected)
             p.setFont(font)
             x += ICON + 10
+        locked = bool(index.data(ROLE_LOCKED))
+        lock_w = ACTION_W * len(ACTIONS) + 4
+        tools = hover or selected  # settings and remove only show when you point at (or pick) the row
+        for action, slot in zip(ACTIONS, action_rects(top)):
+            box = QRectF(slot.center().x() - 7, slot.center().y() - 7, 14, 14)
+            if action == "lock" and (locked or tools):
+                icons.paint_icon(p, box, "lock" if locked else "unlock", theme.ACCENT if locked else theme.MUTED)
+            elif action == "settings" and tools:
+                icons.paint_icon(p, box, "gear", theme.MUTED)
+            elif action == "remove" and tools:
+                icons.paint_icon(p, box, "trash", theme.MUTED)
+        p.setFont(font)
         tag = index.data(ROLE_TAG) or ""
         small = QFont(option.font)
         small.setPixelSize(11)
@@ -306,13 +329,13 @@ class InsideDelegate(QStyledItemDelegate):
         tag_w = small_metrics.horizontalAdvance(tag) + 12 if tag else 0
         colour = theme.SELECT_TEXT if selected else theme.TEXT if shown else theme.MUTED
         p.setPen(QColor(colour))
-        width = int(top.right() - x - tag_w - 8)
+        width = int(top.right() - lock_w - x - tag_w - 8)
         p.drawText(QRectF(x, top.y(), width, top.height()), Qt.AlignmentFlag.AlignVCenter,
                    metrics.elidedText(name, Qt.TextElideMode.ElideRight, width))
         if tag:
             p.setFont(small)
             p.setPen(QColor(theme.MUTED))
-            p.drawText(QRectF(top.right() - tag_w - 4, top.y(), tag_w, top.height()),
+            p.drawText(QRectF(top.right() - lock_w - tag_w - 4, top.y(), tag_w, top.height()),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, tag)
         children = index.data(ROLE_CHILDREN) or []
         y = top.bottom()
@@ -334,6 +357,12 @@ class InsideDelegate(QStyledItemDelegate):
         """A click on the dot shows or hides the thing (like the old checkbox)."""
         if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
             pos = event.position()
+            if pos.y() - option.rect.y() < ROW_H:
+                top = QRectF(option.rect).adjusted(0, 1, 0, -1)
+                for action, slot in zip(ACTIONS, action_rects(QRectF(top.x(), top.y(), top.width(), ROW_H - 2))):
+                    if slot.contains(pos):
+                        self.parent().action_clicked.emit(index.row(), action)
+                        return True
             if pos.x() - option.rect.x() < EYE_W and pos.y() - option.rect.y() < ROW_H:
                 state = index.data(Qt.ItemDataRole.CheckStateRole)
                 on = state in (Qt.CheckState.Checked, Qt.CheckState.Checked.value)
@@ -348,6 +377,7 @@ class InsideList(QListWidget):
 
     moved = Signal(int, int)  # from row, to row (rows are top-most first)
     sprig_dropped = Signal(str)  # a sprig dragged in from the library: its part id
+    action_clicked = Signal(int, str)  # an icon at the end of a row: row (top-most first), "lock"/"settings"/"remove"
 
     def __init__(self):
         super().__init__()
