@@ -50,13 +50,13 @@ def _side(w: int, h: int):
     mark = w * 0.30
     QSvgRenderer(str(MARK)).render(p, QRectF((w - mark) / 2, 30 * s, mark, mark))
     font = QFont("Segoe UI Semibold")
-    font.setPixelSize(round(20 * s))
+    font.setPixelSize(round(19 * s))
     p.setFont(font)
     p.setPen(QColor(TEXT))
     top = 30 * s + mark + 8 * s
     p.drawText(QRectF(0, top, w, 28 * s), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "SprigCast")
     small = QFont("Segoe UI")
-    small.setPixelSize(round(11 * s))
+    small.setPixelSize(round(10 * s))
     p.setFont(small)
     p.setPen(QColor(MUTED))
     p.drawText(QRectF(0, top + 26 * s, w, 18 * s), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "Open-source streaming")
