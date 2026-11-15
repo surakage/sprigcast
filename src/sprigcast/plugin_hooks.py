@@ -5,6 +5,9 @@
     # Hotkeys: list (id, label) pairs for Settings → Hotkeys; run(api, id) when one is pressed.
     register_hotkeys(lambda collection: [("roll:cam", "Barrel roll: Cam")], lambda api, hid: ...)
 
+    # After each saved screenshot: shots is [{"shape", "path", "image"}, ...].
+    register_on_screenshot(lambda api, shots: ...)
+
     # Right-click on something in a bloom: add(menu_label, callback) for each entry you want there.
     register_item_menu(lambda api, source, add: add("Barrel roll", lambda: ...))
 
@@ -22,6 +25,7 @@ log = logging.getLogger(__name__)
 
 PREFIX = "plugin:"
 _HOTKEYS: list[tuple[Callable[[Any], list[tuple[str, str]]], Callable[[Any, str], None]]] = []
+_ON_SCREENSHOT: list[Callable[[Any, list[dict]], None]] = []
 _ITEM_MENUS: list[Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]] = []
 
 
@@ -31,6 +35,22 @@ def register_hotkeys(list_fn: Callable[[Any], list[tuple[str, str]]], run_fn: Ca
 
 def register_item_menu(fn: Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]) -> None:
     _ITEM_MENUS.append(fn)
+
+
+def register_on_screenshot(fn: Callable[[Any, list[dict]], None]) -> None:
+    """fn(api, shots) after each saved screenshot: one dict per shape with "shape", "path" and "image"
+    (a QImage of what was on air). Called on the UI thread; keep it quick."""
+    _ON_SCREENSHOT.append(fn)
+
+
+def screenshot_taken(api, shots: list[dict]) -> None:
+    for fn in _ON_SCREENSHOT:
+        if not _alive(fn):
+            continue
+        try:
+            fn(api, shots)
+        except Exception:
+            log.exception("a plugin's screenshot hook failed")
 
 
 def _alive(fn) -> bool:

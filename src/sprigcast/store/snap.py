@@ -1,19 +1,14 @@
-"""Snap: a polaroid camera pops up, flashes, and prints a photo of your camera (or the stream).
+"""Snap: screenshots as a polaroid. A camera pops up, flashes and prints the screenshot.
 
-Put a Snap in a bloom (+ → Plugins → Snap), above everything else. When it's triggered, the
-camera pops in, the button goes down, the flash goes off and a polaroid slides out of the slot.
-The photo develops, grows to the middle, holds for a few seconds and slides away. Each one is
-saved as "snap YYYY-MM-DD HH-MM-SS.png" (your recordings folder → Snaps, or a folder you pick).
+Add Snap (+ → Plugins → Snap): it gets a sprig of its own, filling the canvas, on top of your
+bloom. Then whenever you take a screenshot (the Screenshot button, its hotkey, or an app through
+the API), the camera pops in, the button goes down, the flash goes off and the screenshot slides
+out of the slot as a polaroid. It develops, grows to the middle, holds for a few seconds and slides
+away. The screenshot is saved as usual (recordings folder → Screenshots, named by date and time).
 
-A trigger can bring a line of text, written at the bottom of the polaroid, so a redeem's message
-or a raider's name ends up on the photo:
-    {"do": "snap.take"}                                         (every Snap: the first one)
-    {"do": "snap.take", "text": "Raid from SlothFriend!", "of": "Facecam"}
-    {"do": "snap.take", "snap": "Raid snap", "text": "%rawInput%"}   (Streamer.bot redeem)
-
-Settings: Photo of (a source's name; empty is what's on air), Caption (used when a trigger
-brings no text), Frame (vintage or white), Seconds (how long it stays up), Flash, Save, Folder.
-Snaps triggered while one is up wait their turn (up to 10).
+Settings: Frame (white, wide like a screenshot; or vintage, square), Seconds (how long the polaroid stays up), Flash, and Save a
+polaroid copy (also saves the framed picture next to the screenshot). It's only an animation:
+nothing about your viewers is read or kept.
 
 A SprigCast store plugin: add it from Settings → Plugins.
 """
@@ -30,23 +25,17 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.control.native import ApiError, register_action, send_event
 from sprigcast.core.source import Source, register
-from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
+from sprigcast.plugin_hooks import register_item_menu, register_on_screenshot
 
 log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "snap", "name": "Snap", "version": 1, "adds": "Source",
-          "about": "A polaroid camera flashes and prints a photo of your camera, with a viewer's message on it. "
-                   "Each snap is saved too."}
+          "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down
-MOST_WAITING = 10
-CAPTION_MAX = 120
-INK = (43, 38, 32)
-HANDWRITING = ["Segoe Print", "Ink Free", "Bradley Hand", "Marker Felt", "Comic Sans MS", "Comic Neue"]
-VIDEO = ("camera", "display_capture", "window_capture", "game_capture", "media", "browser", "image", "scene")
+MOST_WAITING = 3  # screenshots taken while one is up wait their turn; more than this are let go
 
 # The art: vectors, drawn at whatever size they're shown. Where things are, in each SVG's own units.
 ASSETS = Path(__file__).resolve().parent / "assets" / "snap"
@@ -54,9 +43,9 @@ CAM_SIZE = 256  # camera.svg and button.svg (the shutter button, drawn on its ow
 CAM_SLOT_Y, CAM_SLOT_X = 200, (52, 208)
 CAM_FLASH = (213, 77)
 FRAMES = {
-    # file, size, photo window (x, y, w, h), caption area
-    "vintage": ("frame_vintage.svg", (387, 470), (22, 30, 348, 340), (26, 392, 340, 68)),
-    "white": ("frame_white.svg", (1064, 776), (67, 33, 933, 583), (80, 628, 907, 128)),
+    # file, size, photo window (x, y, w, h)
+    "vintage": ("frame_vintage.svg", (387, 470), (22, 30, 348, 340)),
+    "white": ("frame_white.svg", (1064, 776), (67, 33, 933, 583)),
 }
 
 # The show, in seconds from the trigger.
@@ -67,7 +56,6 @@ PRINT = (0.8, 2.0)
 CAMERA_OUT = (2.1, 2.5)
 GROW = (2.1, 2.7)
 DEVELOP = (1.0, 3.5)
-CAPTION = (2.6, 3.0)
 LEAVE = 0.5
 
 
@@ -95,28 +83,28 @@ def _back(x: float) -> float:
     return 1 + (c + 1) * x * x * x + c * x * x
 
 
-_ART = threading.local()  # SVG renderers are Qt objects: one set per thread (render, saving)
+_SVG: dict[str, bytes] = {}  # the SVG files' text, read once
 
 
 def draw_art(p, name: str, rect) -> None:
     """Draw one of the SVGs into rect (in the painter's units), sharp at any size."""
+    from PySide6.QtCore import QByteArray
     from PySide6.QtSvg import QSvgRenderer
 
-    cache = getattr(_ART, "renderers", None)
-    if cache is None:
-        cache = _ART.renderers = {}
-    renderer = cache.get(name)
-    if renderer is None:
-        renderer = cache[name] = QSvgRenderer(str(_assets_dir() / name))
+    data = _SVG.get(name)
+    if data is None:
+        data = _SVG[name] = (_assets_dir() / name).read_bytes()
+    renderer = QSvgRenderer(QByteArray(data))  # made and dropped here: Qt objects stay on one thread
     renderer.render(p, rect)
+    del renderer
 
 
 def frame_art(frame: str):
-    """(SVG file, (w, h), window QRect, caption QRect) for "vintage" or "white"."""
+    """(SVG file, (w, h), window QRect) for "vintage" or "white"."""
     from PySide6.QtCore import QRect
 
-    name, size, window, caption = FRAMES.get(frame, FRAMES["vintage"])
-    return name, size, QRect(*window), QRect(*caption)
+    name, size, window = FRAMES.get(frame, FRAMES["vintage"])
+    return name, size, QRect(*window)
 
 
 def to_qimage(picture: np.ndarray):
@@ -136,58 +124,24 @@ def to_array(image) -> np.ndarray:
     return rows.reshape(h, w, 4).copy()
 
 
-def paint_caption(p, area, text: str) -> None:
-    """Text written in the caption area, as big as fits on at most two lines."""
-    from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF
-
-    text = " ".join(text.split())[:CAPTION_MAX]
-    if not text:
-        return
-    area = QRectF(area).adjusted(area.width() * 0.04, area.height() * 0.08, -area.width() * 0.04,
-                                 -area.height() * 0.08)
-    font = QFont()
-    font.setFamilies(HANDWRITING)
-    flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
-    size = area.height() * 0.62
-    while True:
-        font.setPixelSize(max(6, int(size)))
-        metrics = QFontMetricsF(font)
-        bound = metrics.boundingRect(area, int(flags), text)
-        if (bound.height() <= area.height() and bound.width() <= area.width()) or size <= 8:
-            break
-        size *= 0.92
-    if bound.height() > area.height():  # still too long at the smallest size: cut it
-        while len(text) > 1 and metrics.boundingRect(area, int(flags), text + "…").height() > area.height():
-            text = text[:-1]
-        text = text.rstrip() + "…"
-    p.save()
-    p.setFont(font)
-    p.setPen(QColor(*INK))
-    p.drawText(area, int(flags), text)
-    p.restore()
-
-
-def compose(picture: np.ndarray | None, frame: str, text: str = "", width: int | None = None):
-    """The polaroid: the photo cover-cropped into the frame's window, the frame on top, then the caption.
+def compose(picture: np.ndarray | None, frame: str, width: int | None = None):
+    """The polaroid: the picture cover-cropped into the frame's window, the frame on top.
 
     width scales the whole card (None: at least 1000 px across the photo). Returns (QImage, window
-    QRectF, caption QRectF), the rects in the returned image's pixels.
+    QRectF), the window in the returned image's pixels.
     """
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QColor, QImage, QPainter
 
-    art, (art_w, art_h), window, caption = frame_art(frame)
+    art, (art_w, art_h), window = frame_art(frame)
     scale = (width / art_w) if width else max(1.0, 1000 / window.width())
     out_w, out_h = max(1, round(art_w * scale)), max(1, round(art_h * scale))
     card = QImage(out_w, out_h, QImage.Format.Format_ARGB32_Premultiplied)
     card.fill(Qt.GlobalColor.transparent)
     win = QRectF(window.x() * scale, window.y() * scale, window.width() * scale, window.height() * scale)
-    cap = QRectF(caption.x() * scale, caption.y() * scale, caption.width() * scale, caption.height() * scale)
     p = QPainter(card)
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     p.fillRect(win.adjusted(-2, -2, 2, 2), QColor(24, 22, 20))
     if picture is not None and picture.size:
         photo = to_qimage(picture)
@@ -196,10 +150,8 @@ def compose(picture: np.ndarray | None, frame: str, text: str = "", width: int |
         source = QRectF((photo.width() - sw) / 2, (photo.height() - sh) / 2, sw, sh)
         p.drawImage(win, photo, source)
     draw_art(p, art, QRectF(0, 0, out_w, out_h))
-    if text:
-        paint_caption(p, cap, text)
     p.end()
-    return card, win, cap
+    return card, win
 
 
 _SAVING = threading.Lock()
@@ -219,9 +171,9 @@ def snap_name(folder: Path, when: datetime | None = None) -> Path:
         return path
 
 
-def save(picture: np.ndarray | None, frame: str, text: str, path: Path) -> bool:
+def save(picture: np.ndarray | None, frame: str, path: Path) -> bool:
     try:
-        card, _win, _cap = compose(picture, frame, text)
+        card, _win = compose(picture, frame)
         path.parent.mkdir(parents=True, exist_ok=True)
         with _SAVING:
             part = path.with_name(path.name + ".part")  # written whole, then named: never a half-saved snap
@@ -236,11 +188,9 @@ def save(picture: np.ndarray | None, frame: str, text: str, path: Path) -> bool:
 
 
 class _Job:
-    def __init__(self, text: str, photo_of: str | None, path: Path | None, grab):
-        self.text, self.photo_of, self.path, self.grab = text, photo_of, path, grab
-        self.picture: np.ndarray | None = None
-        self.got = False
-        self.card = None  # (QImage, window, caption) once the picture is in
+    def __init__(self, picture: np.ndarray | None, path: Path | None):
+        self.picture, self.path = picture, path
+        self.card = None  # (QImage, window), made on the render thread
         self.started = 0.0
         self.saved = False
 
@@ -248,9 +198,8 @@ class _Job:
 @register("snap")
 class SnapSource(Source):
     label = "Snap"
-    defaults = {"photo_of": "", "caption": "", "frame": "vintage", "seconds": 8.0, "flash": True, "save": True,
-                "folder": ""}
-    sleeps = False  # a trigger can come while it's hidden; it costs nothing until then
+    defaults = {"frame": "white", "seconds": 6.0, "flash": True, "save_polaroid": False}
+    sleeps = False  # a screenshot can come while it's hidden; it costs nothing until then
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -271,25 +220,15 @@ class SnapSource(Source):
 
     # Triggers (UI thread) ------------------------------------------------------------------------
 
-    def take(self, text: str = "", photo_of: str | None = None, path: Path | None = None, grab=None) -> int:
-        """Queue a snap, saved to path (None: not saved). Returns how many are waiting before it (-1: full)."""
+    def show(self, picture: np.ndarray | None, path: Path | None = None) -> int:
+        """Print this picture as a polaroid (and save the polaroid to path, if given).
+        Returns how many are ahead of it, or -1 if too many are waiting already."""
         with self._lock:
             ahead = len(self._queue) + (self._job is not None)
             if ahead >= MOST_WAITING:
                 return -1
-            self._queue.append(_Job(text, photo_of, path, grab))
+            self._queue.append(_Job(picture, path))
             return ahead
-
-    def set_text(self, text: str) -> bool:
-        """Change the words on the photo that's up now (saved again with them). False if none is up."""
-        with self._lock:
-            job = self._job
-            if job is None:
-                return False
-            job.text = text
-        if job.card is not None:
-            self._save(job)
-        return True
 
     def clear(self) -> None:
         with self._lock:
@@ -312,26 +251,17 @@ class SnapSource(Source):
     def _start(self, job: _Job) -> None:
         job.started = time.monotonic()
 
-        def got(picture, job=job):
-            job.picture = picture
-            job.got = True
-
-        if job.grab is not None:
-            job.grab(job.photo_of, got)
-        else:
-            job.got = True
-
     def _picture_in(self, job: _Job) -> None:
-        frame = str(self.settings.get("frame", "vintage"))
-        _art, (art_w, art_h), _w, _c = frame_art(frame)
+        frame = str(self.settings.get("frame", "white"))
+        _art, (art_w, art_h), _w = frame_art(frame)
         width = min(W * 0.86, art_w * (H * 0.80) / art_h)
-        job.card = compose(job.picture, frame, "", int(width))
+        job.card = compose(job.picture, frame, int(width))
         self._save(job)
 
     def _save(self, job: _Job) -> None:
         if job.path is None:
             return
-        args = (job.picture, str(self.settings.get("frame", "vintage")), job.text, job.path)
+        args = (job.picture, str(self.settings.get("frame", "white")), job.path)
 
         def run():
             if save(*args):
@@ -351,7 +281,7 @@ class SnapSource(Source):
                 self._clear = False
                 return np.zeros((H, W, 4), dtype=np.uint8)
             return None
-        if job.got and job.card is None:
+        if job.card is None:
             self._picture_in(job)
         t = time.monotonic() - job.started
         if t >= self._length():
@@ -373,7 +303,6 @@ class SnapSource(Source):
         p = QPainter(image)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
         k = CAM_W / CAM_SIZE
         cam_x = (W - CAM_W) / 2
@@ -390,9 +319,9 @@ class SnapSource(Source):
         slot_y = cam_y + CAM_SLOT_Y * k
         if t >= PRINT[0]:
             if card is not None:
-                img, win, cap = card
-            else:  # the picture is a tick late: a dark card for now
-                img, win, cap = compose(None, str(self.settings.get("frame", "vintage")), "", 400)
+                img, win = card
+            else:
+                img, win = compose(None, str(self.settings.get("frame", "white")), 400)
             small_w = (CAM_SLOT_X[1] - CAM_SLOT_X[0]) * k * 0.92
             small_h = small_w * img.height() / img.width()
             out = _smooth(_phase(t, PRINT))
@@ -423,9 +352,6 @@ class SnapSource(Source):
             develop = 1 - _smooth(_phase(t, DEVELOP))
             if develop > 0:
                 p.fillRect(win, QColor(38, 30, 26, int(240 * develop)))
-            if job.text and t >= CAPTION[0]:
-                p.setOpacity((1 - leave) * _smooth(_phase(t, CAPTION)))
-                paint_caption(p, cap, job.text)
             p.restore()
 
         # The camera, in front of the photo coming out of it.
@@ -457,135 +383,40 @@ class SnapSource(Source):
         return image
 
 
-# Triggers ----------------------------------------------------------------------------------------
+# Screenshots --------------------------------------------------------------------------------------
 
 
-def snaps(api) -> list:
-    return [s for s in api.col.sources if s.kind == "snap"]
+def _picture(image) -> np.ndarray | None:
+    """A screenshot (QImage or RGBA array) as an RGBA array."""
+    if image is None or isinstance(image, np.ndarray):
+        return image
+    return to_array(image)
 
 
-def _folder(api, source) -> Path:
-    chosen = str(source.settings.get("folder", "") or "").strip()
-    if chosen:
-        return Path(chosen)
-    try:
-        return Path(api.host.stats()["recordDirectory"]) / "Snaps"
-    except Exception:
-        return Path.home() / "Videos" / "Snaps"
-
-
-def take(api, snap=None, text: str | None = None, of=None) -> dict:
-    """Take a snap with this Snap source (default: the first one). of is a source config or None."""
-    if snap is None:
-        found = snaps(api)
-        if not found:
-            raise ApiError("not_allowed", "Add a Snap to a bloom first (+ → Plugins → Snap).")
-        snap = found[0]
-    instance = api.host.source_instance(snap.id)
-    if instance is None or not hasattr(instance, "take"):
-        raise ApiError("not_allowed", f"{snap.name} isn't running yet.")
-    if text is None:
-        text = str(snap.settings.get("caption", "") or "")
-    if of is None:
-        wanted = str(snap.settings.get("photo_of", "") or "").strip()
-        if wanted:
-            of = next((s for s in api.col.sources if s.id == wanted), None) or next(
-                (s for s in api.col.sources if s.name == wanted), None)
-            if of is None:
-                raise ApiError("not_found", f"{snap.name} takes photos of {wanted!r}, which isn't there any more.")
-    path = snap_name(_folder(api, snap)) if snap.settings.get("save", True) else None
-    ahead = instance.take(text, of.id if of is not None else None, path, api.host.grab_picture)
-    if ahead < 0:
-        raise ApiError("busy", f"{MOST_WAITING} snaps are already waiting.")
-    out = {"snap": snap.name, "of": of.name if of is not None else "on air", "text": text or None,
-           "waiting": ahead, "file": str(path) if path else None}
-    send_event(api, "snap.taken", out)
-    return out
-
-
-def set_text(api, snap, text: str) -> dict:
-    """New words on the photo that's up now; with none up, they become the Snap's usual caption."""
-    instance = api.host.source_instance(snap.id)
-    if instance is not None and hasattr(instance, "set_text") and instance.set_text(text):
-        return {"snap": snap.name, "text": text, "on": "photo"}
-    snap.settings = {**snap.settings, "caption": text}
-    api.host.commit("sources")
-    return {"snap": snap.name, "text": text, "on": "caption"}
-
-
-def _snap_by(api, data):
-    if data.get("snap") is None:
-        return None
-    wanted = data["snap"]
-    if not isinstance(wanted, str):
-        raise ApiError("bad_request", "snap must be a name or id.")
-    found = snaps(api)
-    snap = next((s for s in found if s.id == wanted), None) or next((s for s in found if s.name == wanted), None)
-    if snap is None:
-        raise ApiError("not_found", f"No Snap called {wanted!r}.")
-    return snap
-
-
-def _take_action(api, data):
-    text = data.get("text")
-    if text is not None and not isinstance(text, str):
-        raise ApiError("bad_request", "text must be a string.")
-    of = api._source(data, "of") if data.get("of") not in (None, "") else None
-    return take(api, _snap_by(api, data), text, of)
-
-
-def _text_action(api, data):
-    text = data.get("text")
-    if not isinstance(text, str):
-        raise ApiError("bad_request", "text must be a string.")
-    snap = _snap_by(api, data)
-    if snap is None:
-        found = snaps(api)
-        if not found:
-            raise ApiError("not_allowed", "Add a Snap to a bloom first (+ → Plugins → Snap).")
-        snap = found[0]
-    return set_text(api, snap, text)
-
-
-def _clear_action(api, data):
-    targets = [_snap_by(api, data)] if data.get("snap") is not None else snaps(api)
-    for snap in targets:
+def on_screenshot(api, shots: list[dict]) -> None:
+    """Every Snap prints the first shape's screenshot (its "image"); a copy goes next to it if asked."""
+    shot = next((s for s in shots if s.get("image") is not None), None)
+    if shot is None:
+        return
+    picture = None
+    for snap in (s for s in api.col.sources if s.kind == "snap"):
         instance = api.host.source_instance(snap.id)
-        if instance is not None and hasattr(instance, "clear"):
-            instance.clear()
-    return {"cleared": [s.name for s in targets]}
+        if instance is None or not hasattr(instance, "show"):
+            continue
+        if picture is None:
+            picture = _picture(shot["image"])
+        path = None
+        if snap.settings.get("save_polaroid") and shot.get("path"):
+            path = snap_name(Path(shot["path"]).parent)
+        instance.show(picture, path)
 
 
-register_action("snap.take", "Snap a polaroid: the camera flashes and prints a photo, with text on it if given.",
-                {"snap": "?which Snap (name or id; default the first)", "text": "?written on the photo",
-                 "of": "?source to photograph (default: the Snap's setting, or what's on air)"}, _take_action)
-register_action("snap.text", "Change the words on the photo that's up now (or, with none up, the usual caption).",
-                {"snap": "?which Snap (default the first)", "text": "the words"}, _text_action)
-register_action("snap.clear", "Put the Snap away now and drop any waiting snaps.",
-                {"snap": "?which Snap (default all)"}, _clear_action)
-
-
-def _hotkeys(collection):
-    return [(f"snap:{s.id}", f"Take a snap: {s.name}") for s in collection.sources if s.kind == "snap"]
-
-
-def _run_hotkey(api, hid):
-    snap_id = hid.split(":", 1)[1]
-    snap = next((s for s in snaps(api) if s.id == snap_id), None)
-    if snap is not None:
-        take(api, snap)
-
-
-register_hotkeys(_hotkeys, _run_hotkey)
+register_on_screenshot(on_screenshot)
 
 
 def _menu(api, source, add):
-    if source is None:
-        return
-    if source.kind == "snap":
-        add("Take a snap", lambda: take(api, source))
-    elif source.kind in VIDEO and source.kind != "scene" and snaps(api):
-        add("Take a snap of this", lambda: take(api, None, None, source))
+    if source is not None and source.kind == "snap":
+        add("Take a screenshot", lambda: api.run("screenshot.take", {}))
 
 
 register_item_menu(_menu)

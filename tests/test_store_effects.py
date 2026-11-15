@@ -145,90 +145,83 @@ def test_removing_a_plugin_takes_its_filters_actions_and_hotkeys(added, tmp_path
         api.run("roll.spin", {"sprig": "Frame"})
 
 
-def test_snap_prints_a_polaroid_and_saves_it(added, tmp_path):
-    added("snap")
-    col = _collection()
-    col.sources.append(SourceConfig(id="snap-1", kind="snap", name="Raid snap", settings={"photo_of": "Cam"}))
-    host = Host(col, tmp_path / "Recordings")
-    snap = create_source("snap", "snap-1", {"photo_of": "Cam", "seconds": 1.0})
-    host.instances["snap-1"] = snap
-    api = NativeApi(host)
-    events = []
-    api.plugin_event = lambda name, data: events.append((name, data))
-    assert snap.size == (800, 1000)
-    first = snap.video_frame()
-    assert first.shape == (1000, 800, 4) and not first[..., 3].any()  # see-through until triggered
-    assert snap.video_frame() is None
+def _shot(tmp_path, colour=(220, 30, 30)):
+    from PySide6.QtGui import QColor, QImage
 
-    out = api.run("snap.take", {"text": "Raid from SlothFriend!"})
-    assert out["snap"] == "Raid snap" and out["of"] == "Cam" and out["waiting"] == 0
-    assert out["file"].startswith(str(tmp_path / "Recordings" / "Snaps" / "snap "))
-    assert events[-1] == ("snap.taken", out)  # apps like Streamer.bot hear about it
-    assert api.run("snap.take", {"of": "Alert"})["waiting"] == 1  # waits its turn
-    frame = snap.video_frame()
-    assert host.grabs == ["cam"] and frame.shape == (1000, 800, 4)
+    image = QImage(160, 90, QImage.Format.Format_RGBA8888_Premultiplied)
+    image.fill(QColor(*colour))
+    folder = tmp_path / "Screenshots"
+    folder.mkdir(exist_ok=True)
+    path = folder / "screenshot horizontal 2026-11-14 20-12-43.png"
+    image.save(str(path))
+    return [{"shape": "horizontal", "path": str(path), "image": image},
+            {"shape": "vertical", "path": str(folder / "v.png"), "image": None}]
 
-    # Partway through, the camera and then the polaroid are drawn; at the end it's see-through again.
-    job = snap._job
-    assert api.run("snap.text", {"text": "Thanks for the raid!"}) == {"snap": "Raid snap", "text": "Thanks for the raid!",
-                                                                   "on": "photo"}
-    assert job.text == "Thanks for the raid!"
-    camera = snap.paint(job, 0.5)
-    to_array = __import__("sys").modules["sprigcast_plugin_snap"].to_array
-    assert to_array(camera)[..., 3].any()
-    held = to_array(snap.paint(job, 3.2))
-    assert held[500, 400, 3] == 255 and held[500, 400, 0] > 180  # the red photo in the middle
-    job.started -= 100
-    assert not snap.video_frame()[..., 3].any()
-    assert snap.video_frame() is not None and host.grabs == ["cam", "alert"]  # the next one starts
-    snap.clear()
 
+def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
+    import sys
     import time
 
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and len(list((tmp_path / "Recordings" / "Snaps").glob("snap *.png"))) < 2:
-        time.sleep(0.05)
-    saved = sorted((tmp_path / "Recordings" / "Snaps").glob("snap *.png"))
-    assert len(saved) == 2 and all(p.stat().st_size > 1000 for p in saved)  # same second: "(2)" on the second
-
-
-def test_snap_needs_a_snap_and_keeps_the_queue_short(added, tmp_path):
     added("snap")
-    host = Host(_collection(), tmp_path)
+    to_array = sys.modules["sprigcast_plugin_snap"].to_array
+    col = _collection()
+    col.sources.append(SourceConfig(id="snap-1", kind="snap", name="Snap", settings={"save_polaroid": True}))
+    host = Host(col, tmp_path)
+    snap = host.instances["snap-1"] = create_source("snap", "snap-1", {"seconds": 1.0})
     api = NativeApi(host)
-    with pytest.raises(ApiError) as info:
-        api.run("snap.take", {})
-    assert info.value.code == "not_allowed"
-    host.collection.sources.append(SourceConfig(id="snap-1", kind="snap", name="Snap"))
-    snap = host.instances["snap-1"] = create_source("snap", "snap-1", {"save": False})
-    for _ in range(10):
-        api.run("snap.take", {})
-    with pytest.raises(ApiError) as info:
-        api.run("snap.take", {})
-    assert info.value.code == "busy"
-    api.run("snap.clear", {})
+    assert snap.size == (800, 1000)
+    first = snap.video_frame()
+    assert first.shape == (1000, 800, 4) and not first[..., 3].any()  # see-through until a screenshot
+    assert snap.video_frame() is None
+
+    plugin_hooks.screenshot_taken(api, _shot(tmp_path))
+    frame = snap.video_frame()
+    assert frame.shape == (1000, 800, 4) and snap.busy
+    job = snap._job
+    assert to_array(snap.paint(job, 0.5))[..., 3].any()  # the camera
+    held = to_array(snap.paint(job, 3.2))
+    assert held[500, 400, 3] == 255 and held[500, 400, 0] > 180  # the red screenshot in the middle
+    job.started -= 100
+    assert not snap.video_frame()[..., 3].any() and not snap.busy  # gone again
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not list((tmp_path / "Screenshots").glob("snap *.png")):
+        time.sleep(0.05)
+    assert list((tmp_path / "Screenshots").glob("snap *.png"))  # the polaroid copy, next to the screenshot
+
+    # A burst of screenshots: a few wait their turn, the rest are let go.
+    for _ in range(6):
+        plugin_hooks.screenshot_taken(api, _shot(tmp_path))
+    assert len(snap._queue) == 3
+    snap.clear()
     assert not snap.busy
-    # Nothing up: the words become its usual caption.
-    assert api.run("snap.text", {"text": "Hi chat"})["on"] == "caption"
-    assert host.collection.source("snap-1").settings["caption"] == "Hi chat"
+
+
+def test_snap_reads_nothing_but_the_screenshot(added):
+    added("snap")
+    import sys
+
+    module = sys.modules["sprigcast_plugin_snap"]
+    assert not any(name.startswith("snap.") for name in NativeApi(FakeHost(_collection())).all_actions())
+    assert set(module.SnapSource.defaults) == {"frame", "seconds", "flash", "save_polaroid"}
 
 
 def test_apps_can_list_plugins_and_hear_their_events(added):
-    from sprigcast.control.native import NativeSession, event_group
+    from sprigcast.control.native import NativeSession, event_group, send_event
 
     added("hide_it")
-    added("snap")
+    added("barrel_roll")
     api = NativeApi(FakeHost(_collection()))
     listed = {p["plugin"]: p for p in api.run("plugins.list", {})["plugins"]}
-    assert listed["snap"]["name"] == "Snap" and "snap.take" in listed["snap"]["actions"]
+    assert listed["barrel_roll"]["name"] == "Barrel Roll" and listed["barrel_roll"]["actions"] == ["roll.spin"]
     assert "hide.pixelate" in listed["hide_it"]["actions"]
-    from sprigcast.control.native import send_event
-
-    send_event(api, "snap.taken", {"file": "x.png"})
-    assert event_group("snap.taken") == "plugin"
+    sent = []
+    api.plugin_event = lambda name, data: sent.append((name, data))
+    send_event(api, "confetti.thrown", {"amount": 3})
+    assert sent == [("confetti.thrown", {"amount": 3})] and event_group("confetti.thrown") == "plugin"
     session = NativeSession(api)
     session.welcomed, session.events = True, {"plugin"}
-    assert '"event": "snap.taken"' in session.event("snap.taken", {"file": "x.png"})
+    assert '"event": "confetti.thrown"' in session.event("confetti.thrown", {"amount": 3})
 
 
 def test_snap_gets_a_sprig_of_its_own_on_top_of_both_shapes():
@@ -249,13 +242,13 @@ def test_snap_gets_a_sprig_of_its_own_on_top_of_both_shapes():
         assert col.part_of(top) is part  # on top in both shapes
 
 
-def test_snap_captions_fit_on_the_card(added):
+def test_snap_frames_hold_a_big_picture(added):
     added("snap")
     snap = __import__("sys").modules["sprigcast_plugin_snap"]
     picture = np.full((720, 1280, 4), 255, dtype=np.uint8)
     for frame in ("vintage", "white"):
-        card, window, caption = snap.compose(picture, frame, "a much longer message than fits " * 6)
-        assert card.width() >= 1000 and window.width() >= 999 and caption.bottom() <= card.height()
+        card, window = snap.compose(picture, frame)
+        assert window.width() >= 999 and card.width() > window.width() and card.height() > window.height()
     assert snap.snap_name(__import__("pathlib").Path("x")).name.startswith("snap ")
 
 

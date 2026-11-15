@@ -84,11 +84,14 @@ def png_base64(image: QImage) -> str:
 
 
 def take(engine, canvas_ids: list[str], folder: Path | None, width: int | None = None,
-         as_data: bool = False) -> list[dict]:
-    """Grab, then save each shape to folder (None: don't save) and/or return it as base64 PNG."""
+         as_data: bool = False, images: dict | None = None) -> list[dict]:
+    """Grab, then save each shape to folder (None: don't save) and/or return it as base64 PNG.
+    images, if given, gets each shape's full-size QImage (for plugins like Snap)."""
     started = time.monotonic()
     out = []
     for canvas_id, image in grab(engine, canvas_ids).items():
+        if images is not None:
+            images[canvas_id] = image
         image = shrink(image, width)
         shot: dict = {"shape": canvas_id, "width": image.width(), "height": image.height()}
         if folder is not None:

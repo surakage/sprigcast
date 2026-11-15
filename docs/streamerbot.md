@@ -1,6 +1,6 @@
 # SprigCast and Streamer.bot
 
-SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot): a redeem, raid, alert or Stream Deck button in Streamer.bot can switch blooms, mute sounds, change text, spin a sprig or snap a polaroid in SprigCast.
+SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot): a redeem, raid, alert or Stream Deck button in Streamer.bot can switch blooms, mute sounds, change text, spin a sprig or take a screenshot in SprigCast.
 
 > The SprigCast API is a **preview**: names may still change before it settles. Everything here is in [the control API](control-api.md).
 
@@ -23,8 +23,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 
 | When | Fetch URL |
 | --- | --- |
-| Raid: snap a polaroid with the raider's name | `http://127.0.0.1:4455/api/snap.take?text=Raid%20from%20%user%!&password=…` |
-| Redeem with a message: snap it onto the photo | `http://127.0.0.1:4455/api/snap.take?text=%rawInputUrlEncoded%&password=…` |
+| Raid: take a screenshot (with Snap added, it prints as a polaroid on stream) | `http://127.0.0.1:4455/api/screenshot.take?password=…` |
 | Redeem: pixelate the camera for 15 s | `http://127.0.0.1:4455/api/hide.pixelate?source=Facecam&seconds=15&password=…` |
 | Redeem: black out the game for 10 s | `http://127.0.0.1:4455/api/hide.blackout?source=Game%20capture&seconds=10&password=…` |
 | Redeem: barrel roll the camera frame | `http://127.0.0.1:4455/api/roll.spin?sprig=Cam%20frame&seconds=15&password=…` |
@@ -33,6 +32,8 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Mute the mic | `http://127.0.0.1:4455/api/sound.mute?sound=Mic&password=…` |
 
 Store plugins (Hide it, Barrel Roll, Snap) must be added first in Settings → Plugins.
+
+To put words a viewer typed on screen, give a Text source a name and set it: `source.set` with `{"text": "…"}` (POST it as JSON, below).
 
 ### Sending JSON instead
 
@@ -48,7 +49,7 @@ The answer is JSON: `{"ok": true, "result": {…}}`, or `{"ok": false, "error": 
 
 ## Hearing back from SprigCast
 
-To react in Streamer.bot when something happens in SprigCast (a bloom shown, a snap taken, a clip saved), connect a WebSocket to `ws://127.0.0.1:4455/sprigcast` and ask for events (see [Events](control-api.md#events)). Events from plugins, like `snap.taken` with the saved photo's `file`, are in the `plugin` group.
+To react in Streamer.bot when something happens in SprigCast (a bloom shown, a clip saved, a plugin's event), connect a WebSocket to `ws://127.0.0.1:4455/sprigcast` and ask for events (see [Events](control-api.md#events)). Events that plugins send are in the `plugin` group.
 
 ## For Streamer.bot developers
 

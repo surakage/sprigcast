@@ -4516,9 +4516,14 @@ class MainWindow(QMainWindow):
 
         ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
         folder = self._recordings_folder() / "Screenshots" if save else None
-        shots = screenshot.take(self.engine, ids, folder, width, as_data)
+        images: dict = {}
+        shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
         if save:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+            if shots:  # plugins such as Snap show it off
+                from sprigcast import plugin_hooks
+
+                plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
         return shots
 
     def _open_recordings_folder(self) -> None:

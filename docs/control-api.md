@@ -93,7 +93,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
-| `plugin` | events from added plugins, e.g. `snap.taken` (snap, of, text, waiting, file) |
+| `plugin` | events sent by added plugins (`<plugin>.<what>`, see below) |
 | `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
 
 ## Examples
@@ -270,11 +270,8 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `hide.toggle` | Hide it | Hide it until toggled back, or show it. | `source`, `how` (optional): pixelate or blackout |
 | `hide.show` | Hide it | Show it again now. | `source` |
 | `roll.spin` | Barrel Roll | Spin a sprig (everywhere it's shown) or one thing, then it lands where it was. | `sprig` or `source`, `seconds`, `turns`, `direction` (all optional) |
-| `snap.take` | Snap | The polaroid camera flashes and prints a photo, with text on it. | `snap`, `text`, `of` (all optional) |
-| `snap.text` | Snap | Change the words on the photo that's up (with none up: the usual caption). | `text`, `snap` (optional) |
-| `snap.clear` | Snap | Put the Snap away and drop waiting snaps. | `snap` (optional) |
 
-Snap answers with `file`, where the photo is saved a moment later, and sends the `snap.taken` event with the same fields. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing.
+**Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing.
 
 Using Streamer.bot? See [Streamer.bot](streamerbot.md).
 
