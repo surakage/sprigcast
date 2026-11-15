@@ -213,10 +213,12 @@ class LiveSide(QWidget):
                  on_destination: Callable[[str | None], None],
                  on_toggle: Callable[[str, bool], None] | None = None,
                  on_place: Callable[[str, str], None] | None = None,
-                 on_settings: Callable[[], None] | None = None,
+                 on_settings: Callable[[], None] | None = None,  # unused: Settings is the header's gear
                  on_sound: Callable[[str, dict], None] | None = None,
                  on_sound_filters: Callable[[str], None] | None = None,
-                 on_mic_first: Callable[[bool], None] | None = None):
+                 on_mic_first: Callable[[bool], None] | None = None,
+                 on_camera: Callable[[], None] | None = None,
+                 on_camera_settings: Callable[[], None] | None = None):
         """on_destination(id): open Settings on a place (None: the first, "new:<service>": add one).
         on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"."""
         super().__init__()
@@ -258,15 +260,28 @@ class LiveSide(QWidget):
         self._clip_on, self._clip_seconds = False, 30
         row.addWidget(self.record)
         row.addWidget(self.clip)
-        self.settings = pill("", CARD_PILL_STYLE)
-        self.settings.setIcon(icons.icon("gear"))
-        self.settings.setFixedWidth(44)
-        self.settings.setToolTip("Settings (Ctrl+,)")
-        self.settings.setVisible(on_settings is not None)
-        if on_settings is not None:
-            self.settings.clicked.connect(on_settings)
-        row.addWidget(self.settings)
+        # Virtual camera sits beside Record and Clips; its gear picks what it shows (the same setting as
+        # Settings → Output → Virtual camera). Settings itself is the gear in the header.
+        self.camera = pill("Virtual cam", CARD_PILL_STYLE)
+        self.camera.setToolTip("Virtual camera: show SprigCast as a camera in Zoom, Discord, TikTok LIVE Studio…")
+        if on_camera is not None:
+            self.camera.clicked.connect(on_camera)
+        row.addWidget(self.camera)
+        self.camera_settings = pill("", CARD_PILL_STYLE)
+        self.camera_settings.setIcon(icons.icon("gear"))
+        self.camera_settings.setFixedWidth(40)
+        self.camera_settings.setToolTip("What the virtual camera shows")
+        if on_camera_settings is not None:
+            self.camera_settings.clicked.connect(on_camera_settings)
+        row.addWidget(self.camera_settings)
+        for button in (self.camera, self.camera_settings):
+            button.setVisible(on_camera is not None)
         buttons.addLayout(row)
+        self.camera_note = QLabel("")
+        self.camera_note.setWordWrap(True)
+        self.camera_note.setStyleSheet(f"color: {theme.WARN}; background: transparent;")
+        self.camera_note.setVisible(False)
+        buttons.addWidget(self.camera_note)
         self.rec_note = QLabel("")
         self.rec_note.setStyleSheet(f"color: {theme.LIVE_TEXT}; background: transparent;")
         self.rec_note.setVisible(False)
@@ -339,6 +354,13 @@ class LiveSide(QWidget):
             switch.setEnabled(not live)  # a place joins or leaves only between streams
         self.live.setText("End stream" if live else "Go live")
         self.live.setStyleSheet(theme.BIG_END_STYLE if live else theme.BIG_GO_STYLE)
+
+    def set_camera(self, on: bool, error: str = "") -> None:
+        """Camera on (highlighted, not pink: pink is only for Live and Recording), or off with a short reason."""
+        self.camera.setText("Cam on" if on else "Virtual cam")
+        self.camera.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
+        self.camera_note.setText(error)
+        self.camera_note.setVisible(bool(error) and not on)
 
     def set_recording(self, text: str) -> None:
         """'' when not recording, else the REC clock line."""
