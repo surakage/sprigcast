@@ -68,8 +68,10 @@ def path_for(folder: Path, canvas_id: str, when: datetime | None = None) -> Path
 
 
 def save(image: QImage, folder: Path, canvas_id: str) -> Path:
-    folder.mkdir(parents=True, exist_ok=True)
-    path = path_for(folder, canvas_id)
+    """Into folder's folder for today (Screenshots/2026-11-15/...)."""
+    from sprigcast.output.storage import day_folder
+
+    path = path_for(day_folder(folder), canvas_id)
     if not image.convertToFormat(QImage.Format.Format_RGBA8888).save(str(path), "PNG"):
         raise OSError(f"Couldn't save {path}")
     return path

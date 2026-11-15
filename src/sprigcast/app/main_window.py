@@ -989,6 +989,7 @@ class MainWindow(QMainWindow):
         folder = self._recordings_folder() / "Screenshots"
         path = screenshot.save(image, folder, scene.name)
         self._say(f"Screenshot saved to {path}")
+        self._tidy_saves()
 
     def _rename_bloom(self, scene_id: str) -> None:
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
@@ -4832,11 +4833,20 @@ class MainWindow(QMainWindow):
         shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
         if save:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+            self._tidy_saves()
             if shots:  # plugins such as Snap show it off
                 from sprigcast import plugin_hooks
 
                 plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
         return shots
+
+    def _tidy_saves(self) -> None:
+        """Settings → Recording → Space: keep only the newest screenshots and clips, if asked."""
+        from sprigcast.output import storage
+
+        rec, root = self.collection.recording, self._recordings_folder()
+        storage.keep_newest(root / "Screenshots", rec.keep_screenshots, storage.SCREENSHOT_TYPES)
+        storage.keep_newest(root / "Clips", rec.keep_clips, storage.CLIP_TYPES)
 
     def _open_recordings_folder(self) -> None:
         folder = self._recordings_folder()
@@ -4862,6 +4872,16 @@ class MainWindow(QMainWindow):
         if not canvases:
             QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
             return
+        from sprigcast.output import storage
+
+        # Room on the drive for every file this recording writes (each canvas, twice with source record).
+        kbps = (settings.bitrate_kbps + settings.encoder.audio_kbps) * len(canvases) * (2 if settings.source_record else 1)
+        self._space_watch = storage.SpaceWatch(self._recordings_folder(), kbps)
+        space = self._space_watch.check()
+        if space and (self._space_watch.left or 0) < 1:
+            answer = QMessageBox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._say("Starting the recording…")
         self._set_encoder_tracks()
         try:
@@ -4881,6 +4901,9 @@ class MainWindow(QMainWindow):
                  settings.encoder.preset)
         self.live_side.set_recording("● REC 0:00:00")
         self._refresh_recording_status()
+        if space:
+            log.warning("recording: %s", space)
+            self.statusBar().showMessage(space, 20000)
 
     # Replay buffer ---------------------------------------------------------------------
 
@@ -4941,8 +4964,8 @@ class MainWindow(QMainWindow):
                 return
             self._set_encoder_tracks()
             try:
-                self.replay = SharedReplay.start(
-                    self.encoders, canvases, self._recordings_folder(), settings.replay_seconds,
+                self.replay = SharedReplay.start(  # clips go in Clips/<day> (output/replay.py replay_path)
+                    self.encoders, canvases, self._recordings_folder() / "Clips", settings.replay_seconds,
                     settings.bitrate_kbps, settings.container, encoder=settings.encoder,
                     short_side=settings.short_side,
                 )
@@ -4968,6 +4991,7 @@ class MainWindow(QMainWindow):
             return []
         names = ", ".join(p.name for p in paths)
         self.statusBar().showMessage(f"Saved clip: {names}", 8000)
+        self._tidy_saves()
         self.live_side.clip_saved(len(paths))
         self.control.replay_saved(paths)
         return paths
@@ -5013,6 +5037,19 @@ class MainWindow(QMainWindow):
         text = f"● REC {clock}  ·  {codec}"
         if dropped:
             text += f"  ·  {dropped} frames dropped (encoder too slow)"
+        watch = getattr(self, "_space_watch", None)
+        if watch is not None:
+            if seconds % 15 == 0 and seconds != getattr(self, "_space_checked", -1):  # a disk check every 15 s
+                self._space_checked = seconds
+                space = watch.check()
+                if space:
+                    log.warning("recording: %s", space)
+                    self.statusBar().showMessage(space, 20000)
+            from sprigcast.output.storage import rec_note
+
+            note = rec_note(watch.left)
+            if note:
+                text += f"  ·  {note}"
         self.live_panel.set_recording(text)
         self.live_side.set_recording(text)
 

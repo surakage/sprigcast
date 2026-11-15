@@ -324,6 +324,8 @@ class RecordingSettings(BaseModel):
     replay_seconds: int = 30  # clip length (15, 30, 45 or 60 in Settings); saved clips land in the recordings folder
     clip_shapes: Literal["horizontal", "vertical", "both"] = "both"  # which canvases a clip saves
     clips_on_start: bool = False  # keep clips ready from the moment SprigCast opens
+    keep_screenshots: int = 0  # keep only the newest this many screenshots (0: keep all)
+    keep_clips: int = 0  # keep only the newest this many clip files (0: keep all)
     voice_track: bool = True  # old setting, read once: now track 3 in audio_tracks (kept in step with it)
     audio_tracks: list[int] = Field(default_factory=lambda: [1, 3])  # which of sound tracks 1-5 recordings keep
     # Source record: a second file per canvas without these sources (picture and sound), e.g. no alerts.

@@ -502,7 +502,7 @@ def test_window_screenshot_through_the_api(app, tmp_path, monkeypatch):
         api = NativeApi(WindowHost(w))
         shots = api.run("screenshot.take", {"width": 64})["shots"]
         assert {s["shape"] for s in shots} == {c.id for c in col.canvases if c.enabled}
-        assert all(Path(s["path"]).parent == tmp_path / "videos" / "Screenshots" for s in shots)
+        assert all(Path(s["path"]).parent.parent == tmp_path / "videos" / "Screenshots" for s in shots)  # per day
         assert all(Path(s["path"]).exists() and s["width"] == 64 for s in shots)
         # Plugins (Snap) hear about it, with the full-size picture; a screenshot only sent back as data isn't one.
         assert len(heard) == 1 and all(s["image"] is not None and s["image"].width() > 64 for s in heard[0])

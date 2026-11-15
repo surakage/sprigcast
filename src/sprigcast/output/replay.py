@@ -99,11 +99,11 @@ def spool_capacity(bitrate_kbps: int, seconds: float) -> int:
 
 
 def replay_path(folder: Path, canvas_id: str, when: datetime, container: str) -> Path:
-    """`SprigCast Replay 2026-11-12 19-30-05 horizontal.mkv` (prefix from Settings → Advanced), with a
-    counter if that name is taken."""
-    from sprigcast.output import naming
+    """`2026-11-12/SprigCast Replay 2026-11-12 19-30-05 horizontal.mkv` (a folder per day; prefix from
+    Settings → Advanced), with a counter if that name is taken."""
+    from sprigcast.output import naming, storage
 
-    return naming.unique(folder, naming.replay_name(canvas_id, when), container)
+    return naming.unique(storage.day_folder(folder, when), naming.replay_name(canvas_id, when), container)
 
 
 class ReplayBuffer(Recorder):
