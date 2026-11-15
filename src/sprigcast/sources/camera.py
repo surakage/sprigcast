@@ -116,6 +116,36 @@ def _all_cameras() -> list[CameraDevice]:
         return []
 
 
+_VIRTUAL = ("virtual", "vcam", "camera hub")
+_NOT_A_CAMERA = ("capture", "hd60", "4k60", "4k x", "game", "screen")
+
+
+def _plain(name: str) -> str:
+    return name.replace("Ɩ", "l").replace("ı", "i").lower()  # Elgato spells its virtual camera "EƖgato"
+
+
+def is_virtual(name: str) -> bool:
+    """A camera another app makes (Camera Hub, OBS, Broadcast...): it costs that app's GPU work on top."""
+    plain = _plain(name)
+    return any(word in plain for word in _VIRTUAL) and name != OWN_CAMERA
+
+
+def real_camera(cameras: list[CameraDevice], virtual_name: str) -> CameraDevice | None:
+    """The physical camera most likely behind a virtual one: a cam of the same brand first, never a
+    capture card. None when there's no physical camera."""
+    brand = _plain(virtual_name).split()[0] if virtual_name.strip() else ""
+    best, best_score = None, 0
+    for cam in cameras:
+        plain = _plain(cam.name)
+        if is_virtual(cam.name) or cam.name == OWN_CAMERA or any(w in plain for w in _NOT_A_CAMERA):
+            continue
+        score = 2 if "cam" in plain else 1
+        score += 2 if brand and plain.split()[:1] == [brand] else 0
+        if score > best_score:
+            best, best_score = cam, score
+    return best
+
+
 def find_camera(name: str, path: str) -> CameraDevice | None:
     cameras = list_cameras()
     for match in (lambda c: path and c.path == path, lambda c: c.name == name):
