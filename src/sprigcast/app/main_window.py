@@ -5949,10 +5949,9 @@ class MainWindow(QMainWindow):
             monitors = list_monitors()
             m = next((m for m in monitors if m.primary), monitors[0] if monitors else None)
             monitor = (m.index, m.width, m.height) if m is not None else None
-        app_sounds, desktop = gs.plan_sound(picks.sound, gear.speakers)
         choice = StarterChoice(
             camera=self._camera_settings(picks.camera) if picks.camera is not None else None,
-            monitor=monitor, mic=picks.mic, desktop=desktop, app_sounds=app_sounds, blooms=blooms,
+            monitor=monitor, mic=picks.mic, desktop=None, app_sounds=gs.plan_sound(), blooms=blooms,
             vertical=answers.shape != "horizontal", replace_example=is_fresh(self.collection), names=names,
             capture=self._camera_settings(picks.capture) if picks.capture is not None else None,
             capture_audio=gs.capture_audio(picks.capture.name, gear.mics) if picks.capture is not None else None)
