@@ -303,3 +303,24 @@ def test_window_chip_and_switch_hotkeys(window, tmp_path):
     w._on_hotkey(f"garden:{event.id}")
     assert g.shelf.garden().name == "Event"
     assert w.collection.hotkeys[f"garden:{event.id}"] == "Ctrl+F9"  # came along to the other garden
+
+
+def test_window_imports_a_garden_pack(window, tmp_path, monkeypatch):
+    from sprigcast.core import pack
+
+    w = window
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"png")
+    col = w.collection.model_copy(deep=True)
+    col.sources[0].kind, col.sources[0].settings = "image", {"path": str(logo)}
+    target = tmp_path / f"Party{pack.PACK_SUFFIX}"
+    pack.export_pack(col, target)
+    monkeypatch.setattr(w.gardens, "_media", lambda: tmp_path / "Media")
+    assert w.gardens.import_garden(target, show_notes=False) is None
+    assert w.gardens.shelf.garden().name == "Party"
+    assert w.collection.sources[0].settings["path"] == str((tmp_path / "Media" / "Party" / "1" / "logo.png").resolve())
+    from PySide6.QtWidgets import QMenu
+
+    garden_menu = QMenu()
+    w.gardens.fill(garden_menu, "garden")
+    assert "Export with files…" in [a.text() for a in garden_menu.actions()]

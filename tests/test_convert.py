@@ -51,7 +51,7 @@ def obs_file():
         {"id": "wasapi_input_capture", "name": "[AIC] Mic", "uuid": "m1", "volume": 0.1, "muted": True,
          "settings": {"device_id": "{0.0.1}.{abc}"},
          "filters": [{"id": "compressor_filter", "name": "Comp", "settings": {"ratio": 4, "threshold": -20}},
-                     {"id": "obs_composite_blur", "name": "Fancy blur", "settings": {}}]},
+                     {"id": "shader_filter", "name": "Fancy shader", "settings": {}}]},
         {"id": "game_capture", "name": "Game", "uuid": "g1", "settings": {"capture_mode": "window", "window": "Elden Ring:Cls:eldenring.exe"}},
         {"id": "vlc_source", "name": "Playlist", "uuid": "v1", "settings": {}},
         _scene("--- Main Scenes ---", "div1", []),
@@ -80,7 +80,7 @@ def test_detects_each_app():
     assert detect(obs_file()) == "obs"
     assert detect(_like().model_dump(mode="json")) == "sprigcast"
     assert detect({"nodeType": "RootNode", "sources": {"nodeType": "SourcesNode", "items": []}}) == "streamlabs"
-    assert detect({"items": {"a1": {"type": "scene", "name": "S"}}}) == "meld"
+    assert detect(meld_file()) == "meld"
     assert detect({"hello": 1}) == "" and detect([1, 2]) == ""
     with pytest.raises(ConvertError):
         convert({"hello": 1}, _like())
@@ -100,7 +100,7 @@ def test_obs_blooms_sprigs_folders_and_vertical_twins():
     rule = col.transition_rules[0]
     assert col.scene(rule.to_scene).name == "Just Chatting" and rule.transition.stinger.cut_ms == 650
     assert col.transition.kind == "fade" and col.transition.duration_ms == 400
-    assert any("Playlist" in n for n in notes) and any("Fancy blur" in n for n in notes)
+    assert any("Playlist" in n for n in notes) and any("Fancy shader" in n for n in notes)
     assert any("[AIC] Mic: uses your" in n for n in notes)  # OBS's only mic, its device not here: your Mic
     assert not any(c.name == "[AIC] Mic" for c in col.sources)
     mic = next(c for c in col.sources if c.id in col.global_device_ids() and c.kind == "audio_input")
@@ -161,21 +161,82 @@ def test_streamlabs_collection():
     live = next(s for s in col.parts() if s.name == "Live")
     assert [(i.x, i.y, i.scale) for i in live.items][0] == (10, 20, 2)
     assert any("widget" in n for n in notes)
+    data["baseResolutions"] = {"horizontal": {"baseWidth": 1920, "baseHeight": 1080},
+                               "vertical": {"baseWidth": 720, "baseHeight": 1280}}
+    for relative, expected in ((None, (7.5, 9.0, 1.5)), (True, (5, 6, 1))):
+        # Newer Streamlabs (relativeCoordinates) keeps a 720x1280 canvas's items as if it were 1080x1920.
+        data["relativeCoordinates"] = relative
+        col, _ = convert(data, _like(), size_of=lambda kind, s: (100, 100))
+        item = next(s for s in col.scenes if s.kind == "part" and s.canvas == "vertical").items[0]
+        assert (item.x, item.y, item.scale) == expected
+
+
+SPARK = {"pluginName": "MeldStudio", "sceneObjectSourceName": "MeldStudio/Spark Element"}
+
+
+def _layer(name, x, y, w, h, **more):
+    return {"id": f"L-{name}-{x}", "name": name, "x": x, "y": y, "width": w, "height": h, "visible": True,
+            "opacity": 1.0, "rotation": 0.0, "scaleX": 1.0, "scaleY": 1.0, "childItems": [], "meta": SPARK, **more}
+
+
+def meld_file():
+    """A Meld Studio Session.json, cut down from a real one: pages, a text placeholder in a group, tracks."""
+    alert = "https://elements.meldstudio.co/x/stream-alert.html"
+    text = _layer("Replace", 653, 522, 203, 36, text="Game capture\n", pixelSize=32, fontFamily="Arial",
+                  foregroundColor="#ff00ff00", meta={"sceneObjectSourceName": "MeldStudio/Text"})
+    group = _layer("Replace with: Game", 653, 522, 203, 36, expanded=False, childItems=[text],
+                   meta={"sceneObjectSourceName": "MeldStudio/Group"})
+    return {"session": {
+        "currentScene": "G1",
+        "scenes": [
+            {"id": "S1", "name": "Starting Soon", "width": 1920, "height": 1080, "childItems": [
+                _layer("Stream Alert", 723, 12, 531, 225, url=alert,
+                       audioTrack={"enabled": True, "gain": 0.5, "muted": False}),
+                _layer("Background", 0, 0, 1920, 1080, url="https://elements.meldstudio.co/x/bg.html")]},
+            {"id": "G1", "name": "Gaming", "width": 1920, "height": 1080, "childItems": [
+                _layer("Stream Alert", 723, 12, 531, 225, url=alert), group,
+                _layer("Logo", 10, 10, 100, 100, meta={"sceneObjectSourceName": "MeldStudio/Hologram"})]}],
+        "verticalScenes": [
+            {"id": "V1", "name": "Gaming", "linkedSceneId": "G1", "width": 1080, "height": 1920, "childItems": [
+                _layer("Stream Alert", 242, 43, 595, 197, url=alert)]}],
+        "verticalCanvasEnabled": True,
+        "audioTracks": [
+            {"id": "MIC", "name": "Mic", "type": 1, "isInputDevice": True, "uniqueId": "default", "gain": 1.0,
+             "deviceName": "Default Input Device ( Microphone (Voicemod) )",
+             "associatedAudioNodes": [{"name": "Voice Clarity", "nodeType": 10, "bypass": False}]},
+            {"id": "MUS", "name": "Music", "type": 0, "gain": 1.0, "associatedAudioNodes": [
+                {"name": "Compressor", "nodeType": 4, "ratio": 12.0, "threshold": -24.0, "attack": 0.003,
+                 "release": 0.25, "sidechainTrackId": "MIC", "bypass": False}]}],
+        "sceneTransition": {"duration": 1000.0, "effects": [{"enabled": False, "type": "Move"}]}}}
 
 
 def test_meld_session():
-    data = {"session": {"items": {
-        "s1": {"type": "scene", "name": "Main", "index": 0, "current": True},
-        "l1": {"type": "layer", "parent": "s1", "index": 0, "name": "Overlay", "x": 10, "y": 10, "width": 300,
-               "height": 200, "url": "https://example.com"},
-        "l2": {"type": "layer", "parent": "s1", "index": 1, "name": "Bg", "x": 0, "y": 0, "width": 1920,
-               "height": 1080, "source": "C:/bg.png"},
-        "l3": {"type": "layer", "parent": "s1", "index": 2, "name": "Webcam", "x": 0, "y": 0}}}}
-    col, notes = convert(data, _like())
-    main = next(s for s in col.parts() if s.name == "Main")
-    assert [col.source(i.source).name for i in main.items] == ["Bg", "Overlay"]  # Meld's top layer is first
-    assert main.items[1].bounds_size == (300, 200)
-    assert any("Webcam" in n for n in notes)
+    col, notes = convert(meld_file(), _like())
+    shows = {(s.name, s.canvas) for s in col.scenes if s.kind == "show"}
+    assert shows == {("Starting Soon", "horizontal"), ("Gaming", "horizontal"), ("Gaming", "vertical")}
+    gaming = next(s for s in col.parts() if s.name == "Gaming" and s.canvas == "horizontal")
+    names = [(col.source(i.source).name if col.source(i.source) else col.scene(i.source).name) for i in gaming.items]
+    assert names == ["Replace with: Game", "Stream Alert"]  # Meld's top layer is first; OBS's last
+    alert = gaming.items[1]
+    assert (alert.x, alert.y, alert.align) == (723, 12, "top_left")
+    page = col.source(alert.source)
+    assert page.kind == "browser" and (page.settings["width"], page.settings["height"]) == (531, 225)
+    assert page.settings["audio_to_mixer"] is True and page.settings["volume_db"] == -6.0
+    soon = next(s for s in col.parts() if s.name == "Starting Soon")
+    assert soon.items[1].source == alert.source  # the same page at the same size is one source
+    vertical = next(s for s in col.scenes if s.kind == "part" and s.name == "Gaming" and s.canvas == "vertical")
+    assert vertical.shape_of == gaming.id
+    assert col.source(vertical.items[0].source).name == "Stream Alert (Vertical)"
+    group = next(s for s in col.parts() if s.name == "Replace with: Game")
+    text = col.source(group.items[0].source)
+    assert text.kind == "text" and text.settings["text"] == "Game capture" and text.settings["color"] == "#00ff00ff"
+    mic = next(s for s in col.sources if s.name == "Mic")
+    assert [f.kind for f in mic.filters] == ["noise_suppression"]
+    music = next(s for s in col.sources if s.name == "Music")
+    duck = music.filters[0]
+    assert duck.kind == "ducking" and duck.settings["sound_id"] == mic.id and duck.settings["threshold_db"] == -24
+    assert col.transition.kind == "fade" and col.transition.duration_ms == 1000
+    assert any("Hologram" in n for n in notes) and any("placeholder" in n for n in notes)
 
 
 def test_helpers(tmp_path):
@@ -246,3 +307,81 @@ def test_obs_hotkeys_and_text():
     sprig = next(s for s in col.parts() if s.name == "BRB")
     item = next(i for i in sprig.items if i.source == title.id)
     assert item.x < 960 and item.y < 540  # the text's real size was used to centre it
+
+
+def test_composite_blur_pixelate_comes_over():
+    data = obs_file()
+    cam = next(s for s in data["sources"] if s["name"] == "Cam")
+    cam["filters"] = [{"id": "obs_composite_blur", "name": "THSV Pixelate", "enabled": False,
+                       "settings": {"blur_algorithm": 4, "radius": 40}},
+                      {"id": "obs_composite_blur", "name": "Soft", "settings": {"blur_algorithm": 0, "radius": 90}}]
+    garden, notes = convert(data, _like())
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    assert [(f.kind, f.settings, f.enabled) for f in cam.filters] == [
+        ("blur", {"mode": "pixelate", "size": 40.0}, False), ("blur", {"mode": "blur", "size": 64.0}, True)]
+    assert not any("THSV" in n for n in notes)
+
+
+def _slot(name, kind, x=0.0, y=0.0, s=1.0, display="horizontal", **content):
+    return {"id": f"id-{name}-{display}", "sceneNodeType": "item", "name": name, "x": x, "y": y,
+            "scaleX": s / 1920, "scaleY": s / 1080, "crop": {"top": 0, "bottom": 0, "left": 0, "right": 0},
+            "rotation": 0, "visible": True, "display": display, "locked": False,
+            "content": {"nodeType": kind, **content}}
+
+
+def overlay_zip(path):
+    """A Streamlabs .overlay: config.json (scenes of slots, shares of a 1920x1080 canvas) and its media."""
+    import zipfile
+
+    labels = {"schemaVersion": 1, "nodeType": "TextNode", "settings": {"text": "MagicalTech", "color": -1,
+                                                                      "font": {"face": "Baloo Bhai", "size": 48}}}
+    config = {"schemaVersion": 1, "nodeType": "RootNode",
+              "scenes": {"nodeType": "ScenesNode", "items": [
+                  {"name": "Live Scene", "sceneId": "scene_live", "slots": {"items": [
+                      _slot("Game Capture", "GameCaptureNode", placeholderFile="2.png", width=1920, height=1080),
+                      _slot("Video Capture Device", "WebcamNode", 0.025, 0.32, 0.35, width=0.3368, height=0.3368),
+                      _slot("Frame", "VideoNode", -0.1, 0.2, 0.5, filename="9.webm", settings={"looping": True}),
+                      {"id": "f1", "sceneNodeType": "folder", "name": "Webcam", "childrenIds": ["x"]},
+                      _slot("Most Recent Subscriber", "StreamlabelNode", 0.07, 0.71, labelType="sub",
+                            textSource=labels),
+                      _slot("Alertbox", "WidgetNode", 0.33, 0, settings={"url": "", "width": 800, "height": 600},
+                            type=0),
+                      _slot("Socials", "SceneSourceNode", 0.1, 0.5, 0.5, sceneId="scene_social", width=1920,
+                            height=1080),
+                      _slot("Live Dual", "VideoNode", display="vertical", filename="3.webm", settings={}),
+                      _slot("Icon", "IconLibraryNode", folder="7")]}},
+                  {"name": "Social Media", "sceneId": "scene_social", "slots": {"items": [
+                      _slot("Text 1", "TextNode", 0.27, 0.45, settings={"text": "USERNAME", "color": -1})]}}]},
+              "transition": {"nodeType": "TransitionNode", "type": "obs_stinger_transition", "duration": 300,
+                             "settings": {"path": "51.webm", "transition_point": 1200}}}
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("config.json", json.dumps(config))
+        for name in ("9.webm", "3.webm", "51.webm", "../evil.webm"):
+            zf.writestr(name, b"video")
+    return path
+
+
+def test_streamlabs_overlay(tmp_path):
+    from sprigcast.core.convert import is_overlay_file, unpack_overlay
+
+    file = overlay_zip(tmp_path / "streamlabs.overlay")
+    assert is_overlay_file(file)
+    data = unpack_overlay(file, tmp_path / "Media" / "streamlabs")
+    assert detect(data) == "streamlabs" and not (tmp_path / "Media" / "evil.webm").exists()
+    col, notes = convert(data, _like())
+    live = next(s for s in col.parts() if s.name == "Live Scene")
+    by_name = {(col.source(i.source) or col.scene(i.source)).name: i for i in live.items}
+    assert list(by_name)[0] == "Game Capture"  # Streamlabs lists the bottom item first, as OBS does
+    frame = by_name["Frame"]
+    assert (round(frame.x), round(frame.y), frame.scale) == (-192, 216, 0.5)
+    assert col.source(frame.source).settings["path"] == str((tmp_path / "Media" / "streamlabs" / "9.webm").resolve())
+    cam = by_name["Camera"]
+    assert cam.bounds == "fill" and round(cam.bounds_size[0]) == 647 and round(cam.bounds_size[1]) == 364
+    socials = by_name["Social Media"]
+    assert (round(socials.x), round(socials.y), socials.scale) == (192, 540, 0.5)
+    assert col.source(by_name["Most Recent Subscriber"].source).settings["text"] == "MagicalTech"
+    assert {s.name for s in col.scenes if s.kind == "show"} == {"Live Scene"}
+    assert any(s.canvas == "vertical" and s.name == "Live Scene" for s in col.scenes if s.kind == "show")
+    assert col.transition.kind == "stinger" and col.transition.stinger.path.endswith("51.webm")
+    assert any("Alertbox" in n and "dashboard" in n for n in notes)
+    assert any("Icon" in n and "pictures" in n for n in notes)
