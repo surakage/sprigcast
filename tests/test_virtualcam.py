@@ -30,6 +30,14 @@ def test_write_uses_the_seqlock_and_layout():
     assert not block.write(100, 100, bytes(15000))  # bigger than the block
 
 
+def test_write_takes_a_numpy_frame_without_copying_to_bytes():
+    import numpy as np
+
+    block = _block()
+    assert block.write(4, 2, np.arange(12, dtype=np.uint8))
+    assert ctypes.string_at(block.address + HEADER, 12) == bytes(range(12))
+
+
 class _Engine:
     def __init__(self):
         self.taps = []

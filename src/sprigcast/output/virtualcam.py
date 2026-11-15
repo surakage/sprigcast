@@ -237,15 +237,16 @@ class SharedBlock:
     def heartbeat(self) -> int:
         return self._u64(32).value
 
-    def write(self, width: int, height: int, nv12: bytes) -> bool:
-        """Copy one NV12 frame in (seqlock: the count is odd while writing)."""
+    def write(self, width: int, height: int, nv12) -> bool:
+        """Copy one NV12 frame (bytes or a numpy array) in (seqlock: the count is odd while writing)."""
         n = width * height * 3 // 2
         if len(nv12) < n or HEADER + n > self.size:
             return False
         seq = self._u64(24)
         seq.value += 1
         self._u32(16).value, self._u32(20).value = width, height
-        ctypes.memmove(self.address + HEADER, nv12, n)
+        # A numpy array is copied straight from its own memory, with no bytes copy in between.
+        ctypes.memmove(self.address + HEADER, getattr(getattr(nv12, "ctypes", None), "data", nv12), n)
         seq.value += 1
         return True
 
@@ -514,7 +515,7 @@ class VirtualCamera:
         y[y0:y0 + fh, x0:x0 + fw] = src[: fw * fh].reshape(fh, fw)
         uv = buf[width * height:].reshape(height // 2, width)
         uv[y0 // 2:(y0 + fh) // 2, x0:x0 + fw] = src[fw * fh: fw * fh * 3 // 2].reshape(fh // 2, fw)
-        return buf.tobytes()
+        return buf  # reused every frame: write() copies it straight into the camera
 
 
 VIEW = "camera"

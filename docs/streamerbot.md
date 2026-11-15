@@ -40,7 +40,7 @@ Every method leaves SprigCast's answer in `%sprigcastResult%` and `%sprigcastOk%
 
 ## TikTok gifts and likes
 
-TikFinity already triggers Streamer.bot actions for TikTok gifts, likes and follows, and that stays the easiest way. SprigCast also passes them on: as `tiktok.gift`, `tiktok.like`, `tiktok.follow`, `tiktok.share`, `tiktok.subscribe` and `tiktok.chat` events on the SprigCast API to apps that ask for the `tiktok` group by name, and (gifts, follows, shares and subscribes only) as `sprigcast` vendor events on the OBS door while SprigCast is reading TikTok chat.
+Let TikFinity (or Streamer.bot's own TikTok support) trigger Streamer.bot for gifts, likes and follows, and have that Streamer.bot action call SprigCast, for example `DeathAdd` or `ShowItem`. SprigCast itself doesn't pass TikTok events on.
 
 ## Run a SprigCast action from Streamer.bot with a web link
 
