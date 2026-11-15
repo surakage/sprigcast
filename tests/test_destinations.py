@@ -482,12 +482,17 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         labels = [a.text() for a in full.actions() if a.text()]
         assert labels[0].startswith("Full screen on Screen 1") and "In a window" in labels
         texts = [a.text() for a in menu.actions() if a.text()]  # Live: this canvas only, no editing items
-        assert texts == ["Save screenshot", "Pop out", "Safe zones", "Canvas settings…  1080×1920, 60 fps"]
+        assert texts == ["Pop out", "Safe zones", "Canvas settings…  1080×1920, 60 fps"]
         zones = next(a for a in menu.actions() if a.text() == "Safe zones").menu()
         next(a for a in zones.actions() if a.text() == "TikTok").trigger()
         assert w.previews["vertical"].live_safe_zones == "TikTok" and w.previews["vertical"].safe_zones == "All platforms"
         wide = [a.text() for a in w._preview_menu("horizontal", -1).actions() if a.text()]
         assert "Safe zones" not in wide  # only tall canvases get the apps' overlays
+        shots = []
+        w._screenshot = lambda *a, **k: shots.append(a)  # the header's round button takes it instead
+        w.screenshot_button.click()
+        assert shots == [()]
+        assert w.screenshot_button.size() == w.palette_button.size() == w.settings_button.size()
         projector = w.open_projector("vertical", None)
         assert w.projectors == [projector] and "vertical" in w._watched_previews()
         w.showMinimized()
