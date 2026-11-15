@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 387 470" width="387" height="470">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#F3E8D2"/><stop offset="1" stop-color="#E4D3B2"/>
+    </linearGradient>
+    <radialGradient id="age" cx="0.5" cy="0.5" r="0.75">
+      <stop offset="0.6" stop-color="#B89A6A" stop-opacity="0"/>
+      <stop offset="1" stop-color="#B89A6A" stop-opacity="0.28"/>
+    </radialGradient>
+  </defs>
+  <path fill-rule="evenodd" fill="url(#paper)"
+        d="M6 0 H381 Q387 0 387 6 V464 Q387 470 381 470 H6 Q0 470 0 464 V6 Q0 0 6 0 Z M22 30 V370 H370 V30 Z"/>
+  <path fill-rule="evenodd" fill="url(#age)"
+        d="M6 0 H381 Q387 0 387 6 V464 Q387 470 381 470 H6 Q0 470 0 464 V6 Q0 0 6 0 Z M22 30 V370 H370 V30 Z"/>
+  <rect x="20.5" y="28.5" width="351" height="343" fill="none" stroke="#C7B08A" stroke-width="3"/>
+  <line x1="22" y1="384" x2="365" y2="384" stroke="#D6C29F" stroke-width="1.2"/>
+</svg>

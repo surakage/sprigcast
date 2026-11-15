@@ -494,12 +494,20 @@ def test_window_screenshot_through_the_api(app, tmp_path, monkeypatch):
     col = load_collection(tmp_path / "scenes.json")
     col.recording.folder = str(tmp_path / "videos")
     w = MainWindow(col, tmp_path / "scenes.json")
+    from sprigcast import plugin_hooks
+
+    heard = []
+    monkeypatch.setattr(plugin_hooks, "_ON_SCREENSHOT", [lambda api, shots: heard.append(shots)])
     try:
         api = NativeApi(WindowHost(w))
         shots = api.run("screenshot.take", {"width": 64})["shots"]
         assert {s["shape"] for s in shots} == {c.id for c in col.canvases if c.enabled}
         assert all(Path(s["path"]).parent == tmp_path / "videos" / "Screenshots" for s in shots)
         assert all(Path(s["path"]).exists() and s["width"] == 64 for s in shots)
+        # Plugins (Snap) hear about it, with the full-size picture; a screenshot only sent back as data isn't one.
+        assert len(heard) == 1 and all(s["image"] is not None and s["image"].width() > 64 for s in heard[0])
+        api.run("screenshot.take", {"save": False, "data": True})
+        assert len(heard) == 1
     finally:
         w.close()
 

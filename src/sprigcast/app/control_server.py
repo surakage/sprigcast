@@ -172,6 +172,14 @@ class WindowHost:
     def screenshot(self, shapes: list[str], width: int | None, save: bool, as_data: bool) -> list[dict[str, Any]]:
         return self.w._screenshot(shapes, width, save, as_data)
 
+    def source_instance(self, source_id: str):
+        """The running source (from the engine), for plugins; None until it's loaded."""
+        return self.w.engine._sources.get(source_id)
+
+    def grab_picture(self, source_id: str | None, callback) -> None:
+        """The next picture of a source, or of what's on air (None), handed to callback on the render thread."""
+        self.w.engine.grab_source(source_id, callback)
+
     def media_info(self, source_id: str) -> dict[str, Any] | None:
         source = self.w.media_source(source_id)
         return source.info() if source is not None else None
@@ -218,6 +226,7 @@ class ControlServer(QObject):
         self.native = native if native is not None else NativeApi(api.host)
         api.custom_event = lambda data: self.broadcast("CustomEvent", Sub.GENERAL, data)
         self.native.custom_event = lambda data: self.native_broadcast("custom", {"data": data})
+        self.native.plugin_event = self.native_broadcast
         self.server: QWebSocketServer | None = None
         self.tcp: QTcpServer | None = None
         self.web_door = False  # plain web links (/api/<action>); Settings → Connections

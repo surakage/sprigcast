@@ -112,6 +112,15 @@ def remove(plugins_dir: Path, plugin_id: str, report: PluginReport | None = None
     from sprigcast.core.source import unregister_module
 
     unregister_module(f"sprigcast_plugin_{plugin_id}")  # leaves the + → Plugins menu now
+    import sys
+
+    sys.modules.pop(f"sprigcast_plugin_{plugin_id}", None)  # its hotkeys and menu entries go quiet too
+    from sprigcast.core.filters import unregister_filters
+
+    unregister_filters(f"sprigcast_plugin_{plugin_id}")
+    from sprigcast.control.native import unregister_actions
+
+    unregister_actions(f"sprigcast_plugin_{plugin_id}")
     if report is not None:
         if target.name in report.loaded:
             report.loaded.remove(target.name)

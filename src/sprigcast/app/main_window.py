@@ -969,6 +969,8 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind == "media":
                 menu.addSeparator()
                 self._fill_media_menu(menu, item.source)
+            if item is not None:
+                self._fill_plugin_menu(menu, item.source)
             menu.addSeparator()
             size = menu.addMenu("Size and place")
             for key in ("fit", "fill", "stretch", "center", "reset", "uncrop"):
@@ -3931,9 +3933,20 @@ class MainWindow(QMainWindow):
             return
         settings = dialog.values()
         scene = self._scene()
-        self._add_item(
-            SourceConfig(id=self.collection.new_id(kind), kind=kind, name=_name_from(settings, name), settings=settings)
-        )
+        config = SourceConfig(id=self.collection.new_id(kind), kind=kind, name=_name_from(settings, name),
+                              settings=settings)
+        size = getattr(cls, "own_sprig", None)  # overlays like Snap: a sprig of their own, filling the canvas
+        if size:
+            if scene.kind != "show":  # editing a sprig: it goes on top of the bloom you came from
+                bloom = next((s for s in self.collection.scenes
+                              if s.id == getattr(self, "last_bloom_id", None) and s.kind == "show"), None)
+                scene = bloom or scene
+            self.collection.sources.append(config)
+            self.collection.own_sprig(scene, config.id, tuple(size), config.name)
+            self._changed()
+            self._refresh_all()
+            return
+        self._add_item(config)
         # Start each new one a little lower so several don't pile up in the corner.
         canvas = self.collection.canvas(scene.canvas)
         stacked = sum(1 for i in scene.items[:-1] if self.collection.source(i.source).kind == kind)
@@ -4015,6 +4028,22 @@ class MainWindow(QMainWindow):
         if getattr(self, "control", None) is not None:
             self.control.soon()
         return source.info()
+
+    @property
+    def api(self):
+        """The SprigCast API, for plugins (the same one apps use)."""
+        return self.control.native
+
+    def _fill_plugin_menu(self, menu: QMenu, source_id: str) -> None:
+        """Right-click entries plugins add (Barrel roll, Hide it, Snap...)."""
+        from sprigcast import plugin_hooks
+
+        entries: list[tuple[str, object]] = []
+        plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id), lambda label, fn: entries.append((label, fn)))
+        if entries:
+            menu.addSeparator()
+        for label, fn in entries:
+            menu.addAction(label).triggered.connect(lambda _=False, f=fn: f())
 
     def _fill_media_menu(self, menu: QMenu, source_id: str) -> None:
         source = self.media_source(source_id)
@@ -4487,9 +4516,14 @@ class MainWindow(QMainWindow):
 
         ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
         folder = self._recordings_folder() / "Screenshots" if save else None
-        shots = screenshot.take(self.engine, ids, folder, width, as_data)
+        images: dict = {}
+        shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
         if save:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+            if shots:  # plugins such as Snap show it off
+                from sprigcast import plugin_hooks
+
+                plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
         return shots
 
     def _open_recordings_folder(self) -> None:
@@ -5236,6 +5270,10 @@ class MainWindow(QMainWindow):
             self._save_replay()
         elif action == SCREENSHOT:
             self._screenshot()
+        elif action.startswith("plugin:"):
+            from sprigcast import plugin_hooks
+
+            plugin_hooks.run_hotkey(self.api, action)
         elif action.startswith(MEDIA_PREFIX):
             source_id, _, what = action[len(MEDIA_PREFIX):].rpartition(":")
             self.media_control(source_id, what)

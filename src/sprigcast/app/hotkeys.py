@@ -76,6 +76,9 @@ def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str
             for what, label in (("toggle", "play / pause"), ("restart", "start over"), ("stop", "stop")):
                 media.append((f"{MEDIA_PREFIX}{source.id}:{what}", f"{source.name}: {label}"))
     groups.append(("Videos", media))
+    from sprigcast import plugin_hooks
+
+    groups.append(("Plugins", plugin_hooks.hotkey_actions(collection)))
     groups.append(("SprigCast", [(TOGGLE_MODE, "Switch Build / Live")]))
     return [(title, items) for title, items in groups if items]
 

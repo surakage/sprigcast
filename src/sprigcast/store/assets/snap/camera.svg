@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#ECECE8"/>
+    </linearGradient>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34343A"/><stop offset="1" stop-color="#1F1F24"/>
+    </linearGradient>
+    <radialGradient id="glass" cx="0.4" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#3A3C46"/><stop offset="1" stop-color="#121216"/>
+    </radialGradient>
+  </defs>
+  <!-- body -->
+  <rect x="20" y="56" width="216" height="108" rx="12" fill="url(#body)"/>
+  <rect x="20" y="56" width="216" height="20" rx="10" fill="#FFFFFF"/>
+  <!-- flash window -->
+  <rect x="196" y="63" width="34" height="28" rx="6" fill="#1E1E23"/>
+  <rect x="200" y="67" width="26" height="20" rx="4" fill="#2C2D34"/>
+  <circle cx="213" cy="77" r="6" fill="#43454F"/>
+  <!-- strip and button -->
+  <rect x="38" y="95" width="36" height="9" rx="3" fill="#1E1E23"/>
+  <circle cx="56" cy="122" r="8.5" fill="#F26B1D"/>
+  <circle cx="53.5" cy="119.5" r="2.6" fill="#FFB27E"/>
+  <!-- rainbow stripe -->
+  <rect x="112" y="128" width="12" height="40" fill="#F26B1D"/>
+  <rect x="124" y="128" width="12" height="40" fill="#F7C531"/>
+  <rect x="136" y="128" width="12" height="40" fill="#5DAA3F"/>
+  <!-- lens -->
+  <circle cx="130" cy="104" r="41" fill="#18181C"/>
+  <circle cx="130" cy="104" r="32" fill="#2A2B32"/>
+  <circle cx="130" cy="104" r="23" fill="url(#glass)"/>
+  <circle cx="121" cy="95" r="5.5" fill="#FFFFFF" opacity="0.28"/>
+  <circle cx="140" cy="114" r="2.8" fill="#FFFFFF" opacity="0.18"/>
+  <!-- ledge and base -->
+  <path d="M14 162 H242 L250 178 H6 Z" fill="#E4E4E0"/>
+  <path d="M6 178 H250 V198 Q250 208 240 208 H16 Q6 208 6 198 Z" fill="url(#base)"/>
+  <rect x="52" y="195" width="156" height="8" rx="3" fill="#0E0E11"/>
+</svg>

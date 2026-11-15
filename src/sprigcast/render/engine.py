@@ -88,6 +88,7 @@ class Engine:
         self._monitoring = False
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
+        self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
         self._wipe_maps: dict[str, np.ndarray] = {}  # wipe image path -> its small grey picture
         self._release_later: list[tuple[str, str]] = []  # ("canvas" | "texture", key) to free on the next tick
@@ -136,6 +137,36 @@ class Engine:
         """
         with self._taps_lock:
             self._taps.setdefault(canvas_id, []).append((callback, nv12_size))
+
+    def grab_source(self, source_id: str | None, callback: Callable[[np.ndarray | None], None]) -> None:
+        """Hand the next picture of one source (with its filters), or of what's on air when source_id is
+        None, to callback as an H x W x 4 RGBA array (None if there's nothing to picture). The callback
+        runs on the render thread and must not block."""
+        with self._taps_lock:
+            self._grabs.append((source_id, callback))
+
+    def _serve_grabs(self, compositor, sizes) -> None:
+        with self._taps_lock:
+            grabs, self._grabs = self._grabs, []
+        canvases = [c for c in self._collection.canvases if c.enabled] or self._collection.canvases
+        for source_id, callback in grabs:
+            picture = None
+            try:
+                if source_id is None:
+                    canvas = canvases[0] if canvases else None
+                    if canvas is not None and canvas.id in compositor.targets:
+                        data = compositor.read(canvas.id)
+                        picture = np.frombuffer(data, dtype=np.uint8).reshape(canvas.height, canvas.width, 4).copy()
+                else:
+                    canvas_id = next((c.id for c in canvases if (source_id, c.id) in compositor.parts),
+                                     canvases[0].id if canvases else "")
+                    picture = compositor.render_source(source_id, sizes, canvas_id)
+            except Exception:
+                log.exception("grabbing %s failed", source_id or "the stream")
+            try:
+                callback(picture)
+            except Exception:
+                log.exception("grab callback for %s failed", source_id or "the stream")
 
     def remove_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
         with self._taps_lock:
@@ -819,3 +850,5 @@ class Engine:
                 except Exception:
                     log.exception("frame tap for %s failed", canvas.id)
         self._render_views(compositor, sizes, now, taps)
+        if self._grabs:
+            self._serve_grabs(compositor, sizes)
