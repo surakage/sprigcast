@@ -71,7 +71,6 @@ from sprigcast.app.hotkeys import (
     MEDIA_PREFIX,
     SCREENSHOT,
     STATE_PREFIX,
-    STUDIO_GO,
     TOGGLE_RECORD,
     TOGGLE_STREAM,
     Hotkeys,
@@ -273,11 +272,7 @@ class MainWindow(QMainWindow):
         # Previews ------------------------------------------------------------
         self.previews: dict[str, Preview] = {}
         self.projectors: list = []  # full-screen canvases (app/projector.py)
-        # Studio mode (Live): a Next preview above each canvas shows the scene lined up to go on air.
-        self.next_previews: dict[str, Preview] = {}
         self.canvas_columns: dict[str, QSplitter] = {}
-        self.studio = False
-        self.staged: dict[str, str] = {}  # canvas id -> scene id lined up next
         splitter = QSplitter(Qt.Orientation.Horizontal)
         for canvas in collection.canvases:
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
@@ -288,14 +283,7 @@ class MainWindow(QMainWindow):
             preview.swap_requested.connect(self._swap_shape)
             preview.sprig_dropped.connect(self._sprig_dropped)
             self.previews[canvas.id] = preview
-            upcoming = Preview(f"next:{canvas.id}", f"Next · {canvas.id.capitalize()}", (canvas.width, canvas.height))
-            upcoming.editable = False
-            upcoming.live_look = True
-            upcoming.empty_text = "Click a bloom to line it up here"
-            upcoming.hide()
-            self.next_previews[canvas.id] = upcoming
             column = QSplitter(Qt.Orientation.Vertical)
-            column.addWidget(upcoming)
             column.addWidget(preview)
             self.canvas_columns[canvas.id] = column
             splitter.addWidget(column)
@@ -385,6 +373,7 @@ class MainWindow(QMainWindow):
         self.safe_zone_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         zone_menu = QMenu(self)
         zone_group = QActionGroup(self)
+        self.zone_actions: dict[str, QAction] = {}
         saved_zone = QSettings().value("preview/safe_zones", safe_zones.ALL)
         if saved_zone not in safe_zones.CHOICES:
             saved_zone = safe_zones.ALL
@@ -393,6 +382,7 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
             action.setChecked(choice == saved_zone)
             zone_group.addAction(action)
+            self.zone_actions[choice] = action
             action.triggered.connect(lambda _=False, c=choice: self._set_safe_zones(c))
         self.safe_zone_button.setMenu(zone_menu)
         tabs_row.addWidget(self.safe_zone_button)
@@ -401,6 +391,7 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(self.canvas_tabs_row)
         page_layout.addWidget(splitter, 1)
         self._set_safe_zones(saved_zone)
+        self._set_live_safe_zones(QSettings().value("live/safe_zones", "Off"))
         self.center = QStackedWidget()
         self.center.addWidget(canvas_page)
         self.center.addWidget(part_panel)
@@ -487,7 +478,6 @@ class MainWindow(QMainWindow):
         self._restore_layout()
         self._sync_canvas_choice()
         self._show_part_editor()
-        self.live_panel.studio.setChecked(QSettings().value("live/studio", False, type=bool))
         from sprigcast.app.control_server import start_for
 
         self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
@@ -871,14 +861,39 @@ class MainWindow(QMainWindow):
             if menu.actions():
                 menu.addSeparator()
             if self.mode == "live":
-                menu.setToolTipsVisible(True)
-                shot = menu.addAction(icons.icon("camera", theme.MUTED), "Save screenshot")
-                shot.setToolTip("A PNG of what's on air here, in your Screenshots folder")
-                shot.triggered.connect(lambda: self._screenshot([canvas_id]))
+                self._live_canvas_menu(menu, canvas_id)
+                return menu
             self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
             if self.mode != "live":
                 menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
         return menu
+
+    def _live_canvas_menu(self, menu: QMenu, canvas_id: str) -> None:
+        """Right-click a canvas on Live: things about this canvas only (nothing here edits a bloom)."""
+        canvas = self.collection.canvas(canvas_id)
+        menu.setToolTipsVisible(True)
+        shot = menu.addAction(icons.icon("camera", theme.MUTED), "Save screenshot")
+        shot.setToolTip("A PNG of what's on air here, in your Screenshots folder")
+        shot.triggered.connect(lambda: self._screenshot([canvas_id]))
+        self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
+        preview = self.previews.get(canvas_id)
+        if preview is not None and preview.zoom > 1.0:
+            menu.addAction("Fit to view  (Ctrl+0)").triggered.connect(preview.fit_view)
+        if canvas is not None and canvas.height > canvas.width:  # the vertical apps' buttons and captions
+            menu.addSeparator()
+            zones = menu.addMenu(icons.icon("panel", theme.MUTED), "Safe zones")
+            zones.setToolTip("Where TikTok, Shorts and Reels draw over your stream (only you see these)")
+            current = QSettings().value("live/safe_zones", "Off")
+            for choice in safe_zones.CHOICES:
+                act = zones.addAction(choice)
+                act.setCheckable(True)
+                act.setChecked(choice == current)
+                act.triggered.connect(lambda _=False, c=choice: self._set_live_safe_zones(c))
+        menu.addSeparator()
+        size = f"{canvas.width}×{canvas.height}, {canvas.fps} fps" if canvas is not None else ""
+        settings = menu.addAction(icons.icon("gear", theme.MUTED), f"Canvas settings…  {size}".rstrip())
+        settings.setToolTip("Size and frame rate (Settings → Video)")
+        settings.triggered.connect(lambda: self._open_settings("Video"))
 
     # Projectors ------------------------------------------------------------------------
 
@@ -901,14 +916,14 @@ class MainWindow(QMainWindow):
                 lambda: [p.close() for p in list(self.projectors) if p.target == target])
 
     def _live_bloom_menu(self, menu: QMenu, scene_id: str) -> None:
-        """Live's bloom tile menu, after Put on air: how it comes in, a screenshot, pop out, its name and key."""
+        """Live's bloom tile menu (clicking the tile puts it on air): how it comes in, a screenshot, pop out,
+        its name and key."""
         from sprigcast.app.transitions_panel import KINDS
         from sprigcast.core.scene import ANY
 
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
         if scene is None:
             return
-        menu.addSeparator()
         into = menu.addMenu(icons.icon("leaf", theme.MUTED), "Comes in with")
         into.setToolTipsVisible(True)
         rule = next((r for r in self.collection.transition_rules
@@ -1765,8 +1780,7 @@ class MainWindow(QMainWindow):
 
     def _build_live_stage(self) -> None:
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
-        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
-                                    self._edit_in_build)
+        self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, on_edit=self._edit_in_build)
         self.live_panel.on_project = self._live_bloom_menu
         self._build_transition_menu()
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
@@ -1776,7 +1790,6 @@ class MainWindow(QMainWindow):
                                   self._toggle_camera, self._camera_settings)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_stage = LiveStage(self.live_side)
-        self.live_stage.card.go_slot.addWidget(self.live_panel.go)
         self.live_tiles = QScrollArea()
         self.live_tiles.setWidgetResizable(True)
         self.live_tiles.setFrameShape(QFrame.Shape.NoFrame)
@@ -1944,29 +1957,10 @@ class MainWindow(QMainWindow):
             ready = sum(1 for p in places if p.on and p.note == "Ready")
             self._set_header_clock(f"Offline  ·  {ready} ready to go live" if ready else "Offline", False)
 
-    # Studio mode -----------------------------------------------------------------------
-
-    def _set_studio(self, on: bool) -> None:
-        """Studio mode: Live's scene buttons line scenes up in the Next previews; Go sends them on air."""
-        self.studio = on
-        QSettings().setValue("live/studio", on)
-        self.live_panel.go.setVisible(on)
-        if not on:
-            self._stage({})
-        self._show_next()
-        self._apply_canvas_view()
-
-    def _show_next(self) -> None:
-        names = [self.collection.scene(sid).name for cid, sid in self.staged.items()
-                 if cid == self.collection.canvases[0].id or len(self.staged) == 1]
-        self.live_stage.card.set_next(names or [self.collection.scene(s).name for s in self.staged.values()][:1],
-                                      self.studio)
-
     def _build_view(self) -> dict[str, str]:
         """Build mode: canvas id -> the bloom being edited there when it isn't the one on air.
 
-        Editing a bloom doesn't put it on air: the engine draws it for the preview only (like
-        Studio mode's Next), so you can build "Be right back" while "Just Chatting" stays live."""
+        Editing a bloom doesn't put it on air: the engine draws it for the preview only, so you can build "Be right back" while "Just Chatting" stays live."""
         scene = self._scene()
         if getattr(self, "mode", "build") != "build" or scene is None or scene.kind != "show":
             return {}
@@ -1982,50 +1976,13 @@ class MainWindow(QMainWindow):
         return self.collection.scene(scene_id) if scene_id else self.collection.active_scene(canvas_id)
 
     def _sync_engine_staged(self) -> None:
-        view = self._build_view()
-        staged = view if view else dict(self.staged if getattr(self, "mode", "build") == "live" else {})
+        staged = self._build_view()
         if staged != self.engine.staged:
             self.engine.staged = staged  # a fresh dict: the render thread reads it without a lock
             for canvas_id in staged:
                 self.previews[canvas_id]._image = None  # don't show the on-air picture as if it were this bloom
 
-    def _stage(self, staged: dict[str, str]) -> None:
-        self.staged = staged
-        self._sync_engine_staged()
-        self.live_panel.staged = set(staged.values())
-        self.live_panel.go.setEnabled(bool(staged))
-        for canvas_id, upcoming in self.next_previews.items():
-            scene_id = staged.get(canvas_id)
-            upcoming.subtitle = self.collection.scene(scene_id).name if scene_id else ""
-            if scene_id is None:
-                upcoming._image = None
-            upcoming.update()
-        self.live_panel.show_scenes(self.collection)
-        self._show_next()
-
-    def _studio_go(self) -> None:
-        """Send everything lined up on air at once (each canvas fades with the transition)."""
-        if not self.staged:
-            self.statusBar().showMessage("Nothing lined up: click a scene in Live first.", 4000)
-            return
-        for canvas_id, scene_id in self.staged.items():
-            self.collection.active_scenes[canvas_id] = scene_id
-        self._stage({})
-        self._changed()
-        self._refresh_scenes()
-        self._refresh_previews()
-
     def _switch_to_scene(self, scene_id: str) -> None:
-        if self.studio and self.mode == "live":
-            # Line it up (and the scenes linked to it on the other canvases) instead of switching now.
-            staged = dict(self.staged)
-            for scene in self.collection.linked_with(scene_id):
-                if scene.id == self.collection.active_scenes.get(scene.canvas):
-                    staged.pop(scene.canvas, None)
-                else:
-                    staged[scene.canvas] = scene.id
-            self._stage(staged)
-            return
         self.selected_scene_id = scene_id
         self._make_active()
         self._refresh_sources()
@@ -2172,7 +2129,6 @@ class MainWindow(QMainWindow):
             column = self.canvas_columns[canvas.id]
             # Build shows just the shape on the tab you're on; the other one isn't drawn (or rendered) at all.
             column.setVisible(canvas.enabled and (not build or canvas.id == self.build_canvas))
-            self.next_previews[canvas.id].setVisible(not build and self.studio)
             preview = self.previews[canvas.id]
             twin = build and canvas.id != self.build_canvas
             preview.twin = twin
@@ -2241,7 +2197,17 @@ class MainWindow(QMainWindow):
             preview.safe_zones = choice
             preview.update()
         self.safe_zone_button.setText(f"Safe zones: {choice}")
+        if choice in self.zone_actions:
+            self.zone_actions[choice].setChecked(True)
         QSettings().setValue("preview/safe_zones", choice)
+
+    def _set_live_safe_zones(self, choice: str) -> None:
+        """Live's own safe zones choice (Build's is the button over its canvas); off by default."""
+        choice = choice if choice in safe_zones.CHOICES else "Off"
+        for preview in self.previews.values():
+            preview.live_safe_zones = choice
+            preview.update()
+        QSettings().setValue("live/safe_zones", choice)
 
     def _on_canvas_tab(self, index: int) -> None:
         canvas_id = self.collection.canvases[index].id
@@ -2378,11 +2344,6 @@ class MainWindow(QMainWindow):
         build = view_menu.addAction("Build")
         build.setShortcut(QKeySequence("Ctrl+2"))
         build.triggered.connect(lambda: self._set_mode("build"))
-        studio = view_menu.addAction("Studio mode (line up, then Go)")
-        studio.setCheckable(True)
-        studio.setChecked(self.studio)
-        studio.toggled.connect(lambda on: self.live_panel.studio.setChecked(on))
-        self.live_panel.studio.toggled.connect(lambda on: studio.setChecked(on) if studio.isChecked() != on else None)
         view_menu.addSeparator()
         shown = view_menu.addMenu("Show canvases")
         shown_group = QActionGroup(self)
@@ -2529,7 +2490,6 @@ class MainWindow(QMainWindow):
         if self.isMinimized() or not self.isVisible():
             return frozenset(projected)  # a projector keeps showing while the main window is down
         keys = projected | {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
-        keys |= {f"next:{cid}" for cid, p in self.next_previews.items() if p.isVisible()}
         if self.mode == "build":
             keys |= {f"next:{cid}" for cid in self.engine.staged if self.previews[cid].isVisible()}
         if self.part_preview.isVisible() or self.in_place is not None:
@@ -2540,8 +2500,7 @@ class MainWindow(QMainWindow):
         """How many physical pixels each preview's canvas area covers, so the engine copies no more."""
         sizes = {}
         edited = [(f"next:{c}", self.previews[c]) for c in self.engine.staged] if self.mode == "build" else []
-        for key, preview in [*self.previews.items(), *((f"next:{c}", p) for c, p in self.next_previews.items()),
-                             *edited]:
+        for key, preview in [*self.previews.items(), *edited]:
             if preview.isVisible():
                 r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
                 aw, ah = preview.aspect  # zoomed in, never ask for more pixels than the canvas has
@@ -2575,8 +2534,6 @@ class MainWindow(QMainWindow):
                     self.previews[canvas_id].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
             elif canvas_id.startswith("next:") and canvas_id[5:] in view:
                 self.previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
-            elif canvas_id.startswith("next:") and canvas_id[5:] in self.staged:
-                self.next_previews[canvas_id[5:]].set_frame(frame.data, frame.width, frame.height, frame.canvas_size)
         part_frame = self.engine.part_frames.take()
         if part_frame is not None and part_frame.canvas_id == self.part_preview.canvas_id:
             self.part_preview.set_frame(part_frame.data, part_frame.width, part_frame.height)
@@ -5240,8 +5197,6 @@ class MainWindow(QMainWindow):
             Command("End stream" if live else "Go live", "Action", self._on_live_clicked, hotkeys.get(TOGGLE_STREAM, "")),
             Command("Stop recording" if recording else "Start recording", "Action", self._on_record_clicked,
                     hotkeys.get(TOGGLE_RECORD, "")),
-            Command("Studio mode", "Action", lambda: self.live_panel.studio.toggle(), checked=self.studio),
-            Command("Studio mode: Go", "Action", self._studio_go, hotkeys.get(STUDIO_GO, "")),
             Command("Clips ready", "Action", lambda: self._toggle_replay(self.replay is None),
                     checked=self.replay is not None),
             Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
@@ -5408,12 +5363,10 @@ class MainWindow(QMainWindow):
         return palette
 
     def _on_hotkey(self, action: str) -> None:
-        from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE, TOGGLE_STUDIO
+        from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE
 
         if action == TOGGLE_CLIPS:
             self._toggle_replay(self.replay is None)
-        elif action == TOGGLE_STUDIO:
-            self.live_panel.studio.toggle()
         elif action == TOGGLE_MODE:
             self._set_mode("live" if self.mode == "build" else "build")
         elif action == MUTE_ALL:
@@ -5430,8 +5383,6 @@ class MainWindow(QMainWindow):
                 want = {"mute": True, "unmute": False}.get(what, not muted)
                 if want != muted:
                     self._on_audio_changed(source_id, {"muted": want})
-        elif action == STUDIO_GO:
-            self._studio_go()
         elif action == SAVE_REPLAY:
             self._save_replay()
         elif action == SCREENSHOT:

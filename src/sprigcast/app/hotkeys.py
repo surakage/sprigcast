@@ -19,11 +19,9 @@ log = logging.getLogger(__name__)
 
 TOGGLE_STREAM = "toggle_stream"
 TOGGLE_RECORD = "toggle_record"
-STUDIO_GO = "studio_go"  # Studio mode: send the lined-up scenes on air
 SAVE_REPLAY = "save_replay"  # save the replay buffer's last seconds as clips
 SCREENSHOT = "screenshot"  # a PNG of each shape on air, in the recordings folder
 TOGGLE_CLIPS = "toggle_clips"  # keep clips ready (replay buffer) on / off
-TOGGLE_STUDIO = "toggle_studio"  # Studio mode (line up first) on / off
 TOGGLE_MODE = "toggle_mode"  # switch between Build and Live
 MUTE_ALL = "mute_all"  # mute every sound, or unmute them all when everything is muted
 SCENE_PREFIX = "scene:"
@@ -48,9 +46,7 @@ AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str]]]]:
     """Everything a hotkey can do, grouped as the Hotkeys page shows it: (title, [(action id, label)])."""
     groups: list[tuple[str, list[tuple[str, str]]]] = [
-        ("Going live", [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording"),
-                        (TOGGLE_STUDIO, "Line up first (Studio mode) on / off"),
-                        (STUDIO_GO, "Bloom it (send Next on air)")]),
+        ("Going live", [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording")]),
         ("Clips and screenshots", [(SAVE_REPLAY, "Save a clip"), (TOGGLE_CLIPS, "Keep clips ready on / off"),
                                    (SCREENSHOT, "Take a screenshot")]),
     ]

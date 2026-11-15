@@ -23,6 +23,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Bloom buttons show their hotkey and a small picture (#183).
 - A "You're live!" card with the sloth when a stream starts (#163, #187-#195).
 - Right-click menus on the stage, bloom buttons and destination cards (#99), and Full screen on another monitor (#131).
+- No Studio mode: clicking a bloom puts it on air. Bloom right-click: Comes in with, Save screenshot, Pop out, Rename, Set a key. Canvas right-click: Save screenshot, Pop out, Safe zones (tall canvases), Canvas settings. OBS clients see Studio mode as off.
 
 ### Build screen
 
@@ -43,7 +44,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Stream page with padded cards for each place you go live (#126, #127).
 - Menu bar: File, Edit, View, Panels, Tools, Help (#137). Docks are replaced by Panels (#140, #156).
 - Audio page in tabs: Devices, Tracks, Sounds and Bitrate, with one switch for global devices (#203, #209, #212).
-- Hotkeys page: grouped cards, search, and keys for sounds, clips, Studio mode and Build/Live (#204).
+- Hotkeys page: grouped cards, search, and keys for sounds, clips and Build/Live (#204).
 - Advanced page: process priority, recording file names, MP4 copies, colour, and a stream delay (#202, #206).
   While the delay runs, the Go live card says "Going out in N s" instead of Connecting (#215).
   Stopping a delayed stream sends its last seconds instead of dropping them (#216).

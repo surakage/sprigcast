@@ -82,14 +82,13 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 
 | Group | Events |
 | --- | --- |
-| `bloom` | `bloom.shown` (bloom, bloomId, shape), `bloom.linedUp`, `blooms.changed` |
+| `bloom` | `bloom.shown` (bloom, bloomId, shape), `blooms.changed` |
 | `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible) |
 | `sprig` | `sprig.state` (sprig, sprigId, state) |
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
 | `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed` |
 | `source` | `source.changed` (source, sourceId, settings) |
 | `output` | `stream.changed`, `record.changed`, `clips.changed` (on), `clip.saved` (files) |
-| `studio` | `studio.changed` (on) |
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
@@ -132,8 +131,6 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `bloom.current` | The bloom on air in each shape. | none |
-| `bloom.go` | Studio mode: send what's lined up in Next on air (Bloom it). | none |
-| `bloom.lineUp` | Studio mode: line a bloom up in Next (turns Studio mode on). | `bloom`: name or id |
 | `bloom.show` | Put a bloom on air. | `bloom`: name or id, `shape` (optional): both (default), horizontal or vertical |
 | `blooms.list` | Every bloom, its shapes and which shapes it's on air in. | none |
 
@@ -245,12 +242,6 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `stream.status` | Live or not, for how long, and dropped frames. | none |
 | `stream.stop` | End the stream. | none |
 | `stream.toggle` | Go live, or end the stream. | none |
-
-### studio
-
-| Action | What it does | Fields |
-| --- | --- | --- |
-| `studio.set` | Studio mode on or off (blooms line up in Next before going on air). | `on`: true or false |
 
 ### transition
 

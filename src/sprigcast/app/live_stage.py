@@ -2,7 +2,7 @@
 
     ┌ stage ─────────────────────────────────────┐ ┌ End stream ┐
     │ horizontal program   vertical program      │ │ Record  Clip│
-    │ NEXT · Gaming                  [Bloom it]  │ │ Destinations 
+    │                                            │ │ Destinations 
     └────────────────────────────────────────────┘ │ Sound       │
     [Just Chatting] [Gaming] [BRB] [Ending] …      │ CPU · RAM   │
 
@@ -525,7 +525,7 @@ class LiveSide(QWidget):
 
 
 class StageCard(QFrame):
-    """The rounded card that holds the program previews, with a NEXT bar under them in Studio mode."""
+    """The rounded card that holds the program previews."""
 
     def __init__(self):
         super().__init__()
@@ -538,25 +538,6 @@ class StageCard(QFrame):
         self.holder = QVBoxLayout()  # the main window puts its canvas splitter in here
         self.holder.setContentsMargins(0, 0, 0, 0)
         self.root.addLayout(self.holder, 1)
-        self.next_bar = QWidget()
-        bar = QHBoxLayout(self.next_bar)
-        bar.setContentsMargins(4, 0, 0, 0)
-        bar.setSpacing(12)
-        self.next_label = QLabel("")
-        self.next_label.setStyleSheet(f"color: {theme.SELECT_TEXT}; font-weight: 700; background: transparent;")
-        bar.addWidget(self.next_label, 1)
-        self.go_slot = QHBoxLayout()  # the Live panel's Go button moves here
-        bar.addLayout(self.go_slot)
-        self.next_bar.setVisible(False)
-        self.root.addWidget(self.next_bar)
-
-    def set_next(self, names: list[str], studio: bool) -> None:
-        self.next_bar.setVisible(studio)
-        self.next_label.setText(("NEXT  ·  " + "  +  ".join(names)).upper() if names else
-                                "Click a bloom to line it up here")
-        self.next_label.setStyleSheet(
-            f"color: {theme.SELECT_TEXT if names else theme.MUTED}; font-weight: {700 if names else 400};"
-            " background: transparent;")
 
 
 class LiveStage(QWidget):

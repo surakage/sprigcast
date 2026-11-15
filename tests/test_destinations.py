@@ -174,34 +174,26 @@ def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
         QSettings().clear()
 
 
-def test_studio_mode_lines_up_then_goes(app, tmp_path, monkeypatch):
+def test_live_has_no_studio_mode_and_a_bloom_click_switches_at_once(app, tmp_path, monkeypatch):
     import keyring
 
     monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
     QCoreApplication.setOrganizationName("SprigCastTests")
     QCoreApplication.setApplicationName("StudioTest")
     QSettings().clear()
+    QSettings().setValue("live/studio", True)  # left over from an older SprigCast: ignored
     from sprigcast.app.main_window import MainWindow
 
     col = _collection()
-    col.scenes.append(Scene(id="v2", name="BRB (vertical)", canvas="vertical", linked_to="h2"))
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         w.show()
         w._set_mode("live")
-        w.live_panel.studio.setChecked(True)
-        assert w.live_panel.go.isVisible() and w.next_previews["horizontal"].isVisible()
-        w.live_panel.buttons["h2"].click()  # lines up BRB and its linked vertical scene
-        assert col.active_scenes == {"horizontal": "h1", "vertical": "v1"}  # nothing on air changed yet
-        assert w.staged == {"horizontal": "h2", "vertical": "v2"} and w.engine.staged == w.staged
-        assert w.live_panel.buttons["h2"].property("staged")
-        w._on_hotkey("studio_go")
-        assert col.active_scenes == {"horizontal": "h2", "vertical": "v2"} and w.staged == {}
-        w.live_panel.studio.setChecked(False)
-        assert not w.next_previews["horizontal"].isVisible()
-        w.live_panel.buttons["h1"].click()  # studio off: switches straight away again
-        assert col.active_scenes["horizontal"] == "h1"
-        assert QSettings().value("live/studio", type=bool) is False
+        assert not hasattr(w.live_panel, "studio") and not hasattr(w.live_panel, "go")
+        assert "Studio" not in " ".join(a.text() for m in w.menuBar().actions() if m.menu()
+                                        for a in m.menu().actions())
+        w.live_panel.buttons["h2"].click()
+        assert col.active_scenes["horizontal"] == "h2" and w.engine.staged == {}
     finally:
         w.close()
         QSettings().clear()
@@ -489,7 +481,13 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
         labels = [a.text() for a in full.actions() if a.text()]
         assert labels[0].startswith("Full screen on Screen 1") and "In a window" in labels
-        assert [a.text() for a in menu.actions()] == ["Save screenshot", "Pop out"]  # Live: no editing items
+        texts = [a.text() for a in menu.actions() if a.text()]  # Live: this canvas only, no editing items
+        assert texts == ["Save screenshot", "Pop out", "Safe zones", "Canvas settings…  1080×1920, 60 fps"]
+        zones = next(a for a in menu.actions() if a.text() == "Safe zones").menu()
+        next(a for a in zones.actions() if a.text() == "TikTok").trigger()
+        assert w.previews["vertical"].live_safe_zones == "TikTok" and w.previews["vertical"].safe_zones == "All platforms"
+        wide = [a.text() for a in w._preview_menu("horizontal", -1).actions() if a.text()]
+        assert "Safe zones" not in wide  # only tall canvases get the apps' overlays
         projector = w.open_projector("vertical", None)
         assert w.projectors == [projector] and "vertical" in w._watched_previews()
         w.showMinimized()
@@ -531,8 +529,7 @@ def test_projector_shows_a_bloom_or_a_source_from_its_right_click_menu(app, tmp_
         w._set_mode("live")
         menu = w.live_panel.scene_menu("h2")  # a bloom tile that isn't on air
         texts = [a.text() for a in menu.actions() if a.text()]
-        assert texts == ["Put on air", "Comes in with", "Save screenshot", "Pop out", "Rename…", "Set a key…"]
-        assert not w.live_panel.scene_menu("h1").actions()[0].isEnabled()  # already on air
+        assert texts == ["Comes in with", "Save screenshot", "Pop out", "Rename…", "Set a key…"]  # a click puts it on air
         into = next(a for a in menu.actions() if a.text() == "Comes in with").menu()
         next(a for a in into.actions() if a.text() == "Leaf").trigger()
         rule = w.collection.transition_rules[-1]

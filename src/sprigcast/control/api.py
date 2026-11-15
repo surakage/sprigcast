@@ -11,7 +11,7 @@ Words: OBS "scenes" are SprigCast blooms (shows) and sprigs (parts); OBS "inputs
   (and in a sprig's other shape), so both shapes stay alike. Moving it does not.
 - Sprigs can't go on air by themselves, but their insides can be shown and hidden like a scene's.
 
-SprigCast's own extras (Bloom it in Studio mode, clips, per-canvas program, sprig states) are
+SprigCast's own extras (clips, per-canvas program, sprig states) are
 vendor requests: CallVendorRequest with vendorName "sprigcast" (see VENDOR_REQUESTS).
 
 Nothing here knows about Qt: ControlApi talks to the app through a Host (see app/control_server.py).
@@ -58,11 +58,6 @@ class Host(Protocol):
         """The collection was changed here: save it, send it to the renderer, refresh the screens.
         what: "program", "items", "sound", "states" or "transition" (which screens need a refresh)."""
 
-    def studio(self) -> bool: ...
-    def set_studio(self, on: bool) -> None: ...
-    def staged(self) -> dict[str, str]: ...  # canvas id -> scene id lined up in Studio mode's Next
-    def line_up(self, scene_id: str) -> None: ...  # Studio mode: put this bloom (and its twins) in Next
-    def bloom_it(self) -> None: ...  # Studio mode: send what's in Next on air
 
     def stream_status(self) -> dict[str, Any] | None: ...  # None when offline
     def record_status(self) -> dict[str, Any] | None: ...
@@ -373,12 +368,11 @@ class ControlApi:
         scenes = [{"sceneIndex": i, "sceneName": name, "sceneUuid": scene.id}
                   for i, (name, scene) in enumerate(reversed(listed))]  # OBS: index 0 is the bottom of the list
         program = self.col.active_scene(self.col.canvases[0].id)
-        preview = self._preview_scene()
         return {
             "currentProgramSceneName": self._scene_name(program),
             "currentProgramSceneUuid": program.id if program else None,
-            "currentPreviewSceneName": self._scene_name(preview),
-            "currentPreviewSceneUuid": preview.id if preview else None,
+            "currentPreviewSceneName": None,  # no Studio mode, so no preview scene (as in OBS with it off)
+            "currentPreviewSceneUuid": None,
             "scenes": scenes,
         }
 
@@ -400,39 +394,25 @@ class ControlApi:
         self.col.set_active(scene.id)
         self.host.commit("program")
 
-    def _preview_scene(self) -> Scene | None:
-        if not self.host.studio():
-            return None
-        staged = self.host.staged()
-        scene_id = staged.get(self.col.canvases[0].id) or next(iter(staged.values()), None)
-        return self.col.scene(scene_id) if scene_id else None
+    # SprigCast has no Studio mode (Live can't edit, so there's nothing to line up). OBS clients
+    # still get proper answers: it's always off, and the preview-scene requests say so.
+    NO_STUDIO = "SprigCast has no Studio mode: switching a bloom puts it on air."
 
     def req_GetCurrentPreviewScene(self, data):
-        if not self.host.studio():
-            raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, "Studio mode is off.")
-        scene = self._preview_scene()
-        name = self._scene_name(scene)
-        uuid = scene.id if scene else None
-        return {"sceneName": name, "sceneUuid": uuid, "currentPreviewSceneName": name, "currentPreviewSceneUuid": uuid}
+        raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, self.NO_STUDIO)
 
     def req_SetCurrentPreviewScene(self, data):
-        if not self.host.studio():
-            raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, "Studio mode is off.")
-        scene = self._scene(data)
-        if scene.kind != "show":
-            raise RequestError(Status.INVALID_RESOURCE_TYPE, f"{scene.name!r} is a sprig: sprigs only show inside blooms.")
-        self.host.line_up(scene.id)
+        raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, self.NO_STUDIO)
 
     def req_GetStudioModeEnabled(self, data):
-        return {"studioModeEnabled": self.host.studio()}
+        return {"studioModeEnabled": False}
 
     def req_SetStudioModeEnabled(self, data):
-        self.host.set_studio(bool(_require(data, "studioModeEnabled", bool)))
+        if _require(data, "studioModeEnabled", bool):
+            raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, self.NO_STUDIO)
 
     def req_TriggerStudioModeTransition(self, data):
-        if not self.host.studio():
-            raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, "Studio mode is off.")
-        self.host.bloom_it()
+        raise RequestError(Status.STUDIO_MODE_NOT_ACTIVE, self.NO_STUDIO)
 
     # Transitions ---------------------------------------------------------------------
 
@@ -785,21 +765,6 @@ class ControlApi:
         self.host.commit("program")
         return {"canvas": scene.canvas, "sceneUuid": scene.id}
 
-    def vendor_LineUp(self, data):
-        """Studio mode: put a bloom in Next (turns Studio mode on if it was off)."""
-        scene = self._scene(data)
-        if scene.kind != "show":
-            raise RequestError(Status.INVALID_RESOURCE_TYPE, f"{scene.name!r} is a sprig.")
-        if not self.host.studio():
-            self.host.set_studio(True)
-        self.host.line_up(scene.id)
-
-    def vendor_BloomIt(self, data):
-        """Studio mode: send what's in Next on air (like the Bloom it button)."""
-        if not self.host.staged():
-            raise RequestError(Status.INVALID_RESOURCE_STATE, "Nothing is lined up in Next.")
-        self.host.bloom_it()
-
     def vendor_SaveClip(self, data):
         """Save a clip of the last seconds; starts clips first if they're off (that clip starts now)."""
         if not self.host.clips_ready():
@@ -855,8 +820,6 @@ class ControlApi:
                   for s in self._inputs() if self._has_sound(s)}
         return {
             "program": dict(col.active_scenes),
-            "preview": getattr(self._preview_scene(), "id", None),
-            "studio": self.host.studio(),
             "scenes": [(n, s.id) for n, s in names],
             "items": items,
             "sounds": sounds,
@@ -901,11 +864,6 @@ class ControlApi:
                 events.append(("CurrentProgramSceneChanged", Sub.SCENES, data))
             events.append(("VendorEvent", Sub.VENDORS, {"vendorName": VENDOR, "eventType": "CanvasProgramChanged",
                                                         "eventData": {"canvas": canvas_id, **data}}))
-        if now["studio"] != last["studio"]:
-            events.append(("StudioModeStateChanged", Sub.UI, {"studioModeEnabled": now["studio"]}))
-        if now["preview"] and now["preview"] != last["preview"]:
-            events.append(("CurrentPreviewSceneChanged", Sub.SCENES,
-                           {"sceneName": names.get(now["preview"], now["preview"]), "sceneUuid": now["preview"]}))
 
         for key, visible in now["items"].items():
             if key in last["items"] and last["items"][key] != visible:

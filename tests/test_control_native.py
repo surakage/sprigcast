@@ -36,7 +36,8 @@ def test_actions_describe_themselves():
     api, _ = _api()
     listed = {a["do"]: a for a in _ok(api, "app.actions")["actions"]}
     assert {"bloom.show", "item.toggle", "sound.mute", "filter.set", "source.set", "stream.toggle",
-            "clip.save", "sprig.state", "bloom.go"} <= set(listed)
+            "clip.save", "sprig.state"} <= set(listed)
+    assert "bloom.lineUp" not in listed and "studio.set" not in listed  # no Studio mode
     assert listed["bloom.show"]["fields"]["shape"].startswith("?")
     assert _ok(api, "app.info")["shapes"] == ["horizontal", "vertical"]
     assert _fails(api, "nope.nothing") == "unknown_action"
@@ -55,10 +56,7 @@ def test_blooms_in_both_shapes_or_one():
     assert _fails(api, "bloom.show", bloom="Frame") == "not_allowed"  # a sprig
     assert _fails(api, "bloom.show", bloom="BRB", shape="sideways") == "bad_request"
     assert _fails(api, "bloom.show") == "bad_request"
-    _ok(api, "bloom.lineUp", bloom="Chatting")
-    assert host.studio() and host.staged() == {"horizontal": "chat-h", "vertical": "chat-v"}
-    _ok(api, "bloom.go")
-    assert host.collection.active_scenes["horizontal"] == "chat-h"
+    assert _fails(api, "bloom.lineUp", bloom="Chatting") == "unknown_action"  # Studio mode is gone
 
 
 def test_items_and_sprigs():

@@ -33,7 +33,7 @@ def test_actions_list_every_scene_and_the_toggles():
         scenes=[Scene(id="a", name="Live", canvas="horizontal"), Scene(id="b", name="Live V", canvas="vertical")],
     )
     ids = [a for a, _ in actions(col)]
-    assert ids == ["toggle_stream", "toggle_record", "toggle_studio", "studio_go", "save_replay", "toggle_clips",
+    assert ids == ["toggle_stream", "toggle_record", "save_replay", "toggle_clips",
                    "screenshot", "scene:a", "scene:b", "mute_all", "toggle_mode"]
 
 
@@ -84,11 +84,11 @@ def test_global_hook_gets_pynput_combos(monkeypatch):
     assert started["running"] is False
 
 
-def test_new_hotkeys_mute_switch_mode_and_studio(tmp_path, monkeypatch):
+def test_new_hotkeys_mute_and_switch_mode(tmp_path, monkeypatch):
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings
 
-    from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_MODE, TOGGLE_STUDIO
+    from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_MODE
     from sprigcast.app.main_window import MainWindow
     from sprigcast.core.scene import SourceConfig
 
@@ -117,9 +117,8 @@ def test_new_hotkeys_mute_switch_mode_and_studio(tmp_path, monkeypatch):
         start = w.mode
         w._on_hotkey(TOGGLE_MODE)
         assert w.mode != start
-        studio = w.studio
-        w._on_hotkey(TOGGLE_STUDIO)
-        assert w.studio != studio
+        w._on_hotkey("toggle_studio")  # a key saved before Studio mode was removed does nothing
+        w._on_hotkey("studio_go")
     finally:
         w.close()
         QSettings().clear()

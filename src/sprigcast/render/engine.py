@@ -94,9 +94,9 @@ class Engine:
         self._release_later: list[tuple[str, str]] = []  # ("canvas" | "texture", key) to free on the next tick
         self._pruned_at = 0.0  # when idle output targets were last let go (compositor.prune)
         self._state_fades: dict[str, tuple] = {}
-        # Studio mode: canvas id -> the scene lined up to go on air next. Rendered to "next:<canvas>".
-        # The UI replaces the whole dict, so the render thread always sees a consistent one.
-        self.staged: dict[str, str] = {}  # sprig id -> (start time, hidden before, hidden after)
+        # Build: canvas id -> the bloom being edited there when it isn't on air. Rendered to "next:<canvas>"
+        # for the preview only. The UI replaces the whole dict, so the render thread sees a consistent one.
+        self.staged: dict[str, str] = {}
         # Which previews the UI is showing ("horizontal", "next:horizontal", "part"); None = all of them.
         # A canvas nobody watches and nothing records is not drawn or copied back at all; a watched one
         # is copied back at most PREVIEW_FPS times a second. The UI replaces the whole set.
@@ -687,7 +687,7 @@ class Engine:
         """Render every part layout in use once (inner ones first), then point each placement at its texture."""
         collection = self._collection
         # Only layouts that something drawn this tick shows, however deep: what is on air, the scene a
-        # transition fades out of, what Studio mode has lined up, and the Part editor. The other blooms'
+        # transition fades out of, the bloom being edited in Build, and the Part editor. The other blooms'
         # sprigs cost nothing until they are switched to.
         used: set[str] = set()
         stack = self._drawn_scenes(collection)
@@ -729,7 +729,7 @@ class Engine:
         compositor.parts = self._part_sources(textures)
 
     def _render_staged(self, compositor, canvas, sizes, now: float) -> None:
-        """Studio mode: draw the scene lined up next on this canvas, for the Next preview (not for outputs)."""
+        """Build: draw the bloom being edited on this canvas, for its preview only (not for outputs)."""
         scene_id = self.staged.get(canvas.id)
         if scene_id is None or scene_id == self._collection.active_scenes.get(canvas.id):
             return
