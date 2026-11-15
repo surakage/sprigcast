@@ -143,3 +143,29 @@ def test_live_canvases_have_no_caption_above_them(app, tmp_path, monkeypatch):
         assert all(p.show_title == p.twin for p in w.previews.values())
     finally:
         w.close()
+
+
+def test_go_live_card_shows_one_clock_and_the_details_under_it(app, tmp_path, monkeypatch):
+    """Streaming and recording at once: one unlabelled clock (the longer one), both sets of details below."""
+    import keyring
+
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    w = MainWindow(load_collection(tmp_path / "scenes.json"), tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._set_mode("live")
+        side = w.live_side
+        w._side_status("rec", 2299, "NVENC HEVC  ·  1473 frames dropped: encoder busy", True)
+        assert side.clock.text() == "0:38:19" and "REC" not in side.clock.text()
+        w._side_status("live", 2400)
+        assert side.clock.text() == "0:40:00"
+        assert side.rec_note.text() == "NVENC HEVC  ·  1473 frames dropped: encoder busy"
+        assert side.rec_note.wordWrap()
+        w._side_status("live", None)
+        w._side_status("rec", None)
+        assert not side.clock.isVisible() and not side.rec_note.isVisible()
+    finally:
+        w.close()

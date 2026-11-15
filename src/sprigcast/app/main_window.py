@@ -4946,7 +4946,7 @@ class MainWindow(QMainWindow):
                  ", ".join(c.id for c in canvases), settings.bitrate_kbps, settings.container,
                  f"{settings.short_side}p" if settings.short_side else "canvas", settings.encoder.rate_control,
                  settings.encoder.preset)
-        self.live_side.set_recording("● REC 0:00:00")
+        self.live_side.set_recording(True)
         self._refresh_recording_status()
         if space:
             log.warning("recording: %s", space)
@@ -5049,7 +5049,8 @@ class MainWindow(QMainWindow):
             return
         self._say("Finishing files…")
         session.stop()
-        self.live_side.set_recording("")
+        self.live_side.set_recording(False)
+        self._side_status("rec", None)
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
         from sprigcast.core.pacing import memory_line
@@ -5082,8 +5083,8 @@ class MainWindow(QMainWindow):
         codec = codec_short(session.recorders[0][1].codec) if session.recorders else codec_short(pick_codec())
         dropped = session.dropped
         text = f"● REC {clock}  ·  {codec}"
-        if dropped:
-            text += f"  ·  {dropped} frames dropped (encoder too slow)"
+        notes = [f"{dropped} frames dropped: encoder busy"] if dropped else []
+        warn = bool(notes)
         watch = getattr(self, "_space_watch", None)
         if watch is not None:
             if seconds % 15 == 0 and seconds != getattr(self, "_space_checked", -1):  # a disk check every 15 s
@@ -5096,9 +5097,25 @@ class MainWindow(QMainWindow):
 
             note = rec_note(watch.left)
             if note:
-                text += f"  ·  {note}"
-        self.live_panel.set_recording(text)
-        self.live_side.set_recording(text)
+                notes.append(note)
+                warn = True
+        self.live_panel.set_recording("  ·  ".join([text, *notes]))
+        self._side_status("rec", seconds, "  ·  ".join([codec, *notes]), warn)
+
+    def _side_status(self, kind: str, seconds: int | None, details: str = "", warn: bool = False) -> None:
+        """The Go live card's one clock (whichever of the stream and the recording has run longest) and
+        the details of both under it, so streaming and recording at once never shows only one."""
+        parts = self.__dict__.setdefault("_side_parts", {})
+        if seconds is None:
+            parts.pop(kind, None)
+        else:
+            parts[kind] = (seconds, details, warn)
+        if not parts:
+            self.live_side.set_status(None)
+            return
+        shown = [parts[k] for k in ("live", "rec") if k in parts]
+        self.live_side.set_status(max(p[0] for p in shown), "  ·  ".join(p[1] for p in shown if p[1]),
+                                  any(p[2] for p in shown))
 
     # Streaming -----------------------------------------------------------------
 
@@ -5263,6 +5280,7 @@ class MainWindow(QMainWindow):
 
         transitions_panel.set_quiet(False)
         self.live_side.set_live(False)
+        self._side_status("live", None)
         for preview in self.previews.values():
             preview.ring = None
             preview.update()
@@ -5339,6 +5357,7 @@ class MainWindow(QMainWindow):
             # How many places are getting the stream, and the upload they add up to.
             line += f"  ·  {len(sending)} of {len(states)} sending  ·  {sum(sending) / 1000:.1f} Mbps up"
         self._set_header_clock(line + ("" if worst == "good" else "  ·  check Destinations"), True)
+        self._side_status("live", seconds, "" if worst == "good" else "Check Destinations", worst != "good")
 
     # Hotkeys -----------------------------------------------------------------
 
