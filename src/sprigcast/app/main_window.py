@@ -489,7 +489,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import start_for
 
         self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
-        self.chat_panel.hub.happened.connect(self.control.native_broadcast)  # TikTok gifts, likes... to apps
+        self.chat_panel.hub.happened.connect(self.control.app_event)  # TikTok gifts, likes... to apps
         from sprigcast.app.updates import Updater
 
         # New versions from GitHub Releases (app/updates.py); never shown or installed while live or recording.
