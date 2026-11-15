@@ -276,3 +276,27 @@ def test_send_chat_needs_the_scope_and_finds_the_channel(monkeypatch):
                                                                          "drop_reason": {"message": "Slow mode"}}]})
     with pytest.raises(twitch_auth.TwitchAuthError, match="Slow mode"):
         twitch_auth.send_chat("surakage", "hi")
+
+
+def test_a_dropped_chat_says_it_is_reconnecting(app, monkeypatch):
+    from sprigcast.app import chat_panel
+    from sprigcast.output import twitch_auth
+
+    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: setattr(self, "channel", ch))
+    monkeypatch.setattr(twitch.TwitchChat, "stop", lambda self: None)
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "surakage")
+    panel = chat_panel.ChatPanel()
+    panel.activate()
+    panel.view.resize(300, 400)
+    panel.hub._state("twitch", "connecting")
+    assert panel.view.notice.isHidden()  # first connect: nothing has dropped
+    panel.hub._state("twitch", "live")
+    panel.hub._state("twitch", "offline: network blip")
+    assert not panel.view.notice.isHidden() and "Twitch chat reconnecting" in panel.view.notice.text()
+    assert "reconnecting" in panel.where.toolTip()
+    panel.hub._state("twitch", "connecting")
+    assert not panel.view.notice.isHidden()
+    panel.hub._state("twitch", "live")
+    assert panel.view.notice.isHidden()
+    panel.hub._state("twitch", "waiting: stream ended")  # ended, not dropped
+    assert panel.view.notice.isHidden()

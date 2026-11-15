@@ -64,6 +64,13 @@ class ChatHub(QObject):
             reader.start(name)
         self.changed.emit()
 
+    def check_now(self) -> None:
+        """You went live: readers still waiting for a stream to start look again now."""
+        for reader in self.readers.values():
+            check = getattr(reader, "check_now", None)
+            if check is not None:
+                check()
+
     def stop(self) -> None:
         self.reasons.clear()
         self.refresh()

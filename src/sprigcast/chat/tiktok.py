@@ -27,7 +27,10 @@ log = logging.getLogger(__name__)
 TIKFINITY_URL = "ws://localhost:21213/"
 TIKFINITY_SETTING = "tiktok/use_tikfinity"  # on by default
 KEY_SETTING = "tiktok/sign_key"  # optional Euler Stream key, for steadier direct reading
-NOT_LIVE_RETRY = 60
+# "Is it live yet?" checks (each is a few requests to TikTok): every minute at first, then less often
+# the longer you stay offline. Starting your own stream in SprigCast checks again straight away.
+NOT_LIVE_STEPS = ((10, 60), (30, 120), (None, 300))  # (up to this many checks in a row, seconds apart)
+QUIET_LOGGERS = ("httpx", "httpcore", "websockets")  # TikTokLive's web library logs every request
 BACKOFF = (5, 10, 20, 40, 60)
 _HANDLE = re.compile(r"^[A-Za-z0-9_.]{2,24}$")
 
@@ -40,6 +43,14 @@ def handle_from_text(text: str) -> str | None:
         return m.group(1).lower()
     text = text.lstrip("@")
     return text.lower() if _HANDLE.match(text) else None
+
+
+def not_live_wait(checks: int) -> int:
+    """Seconds until the next "is it live yet?" check, after this many in a row."""
+    for limit, seconds in NOT_LIVE_STEPS:
+        if limit is None or checks <= limit:
+            return seconds
+    return NOT_LIVE_STEPS[-1][1]
 
 
 # TikFinity's messages ---------------------------------------------------------------------------
@@ -119,6 +130,8 @@ class TikTokChat(QObject):
         self._client = None
         self._run = 0  # each direct run's number, so an old run ending can't disturb a new one
         self._tikfinity_was_up = False
+        self._checks = 0  # "not live yet" checks in a row
+        self._waiting_live = False  # the retry timer is only waiting for the stream to start
         self._bridge = _Bridge(self)
         self._bridge.message.connect(self.message)
         self._bridge.status.connect(self.status)
@@ -131,19 +144,27 @@ class TikTokChat(QObject):
         if self._wanted and handle == self.channel:
             return
         self.stop()
-        self.channel, self._wanted, self._tries = handle, True, 0
+        self.channel, self._wanted, self._tries, self._checks = handle, True, 0, 0
+        self.status.emit("connecting")
         self._open()
 
     def stop(self) -> None:
         self._wanted = False
+        self._waiting_live = False
         self._retry.stop()
         self._close_tikfinity()
         self._stop_direct()
 
+    def check_now(self) -> None:
+        """You just went live: if this is only waiting for the stream to start, look right away."""
+        if self._wanted and self._waiting_live:
+            self._checks = 0
+            self._retry.start(0)
+
     def _open(self) -> None:
         if not self._wanted:
             return
-        self.status.emit("connecting")
+        self._waiting_live = False  # (no "connecting" here: a quiet recheck keeps its "waiting" state)
         if QSettings().value(TIKFINITY_SETTING, True, type=bool):
             self._open_tikfinity()
         else:
@@ -205,6 +226,8 @@ class TikTokChat(QObject):
             self._failed("start TikFinity, or install the TikTok add-on")
             return
         self.via = "direct"
+        for name in QUIET_LOGGERS:
+            logging.getLogger(name).setLevel(max(logging.WARNING, logging.getLogger(name).level))
         key = str(QSettings().value(KEY_SETTING, "") or "")
         self._run += 1
         self._thread = threading.Thread(target=self._run_direct, args=(self._run, self.channel, key),
@@ -295,9 +318,14 @@ class TikTokChat(QObject):
         if not self._wanted or run != self._run:
             return
         if offline:
+            if why == "stream ended":
+                self._checks = 0  # it was live a moment ago: the next one may start soon
+            self._checks += 1
+            self._waiting_live = True
             self.status.emit(f"waiting: {why}")
-            self._retry.start(NOT_LIVE_RETRY * 1000)
+            self._retry.start(not_live_wait(self._checks) * 1000)
         else:
+            self._checks = 0
             self._failed(why)
 
     def _failed(self, why: str) -> None:
