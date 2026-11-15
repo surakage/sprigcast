@@ -85,8 +85,11 @@ def run_hotkey(api, action: str) -> bool:
             if any(h == hid for h, _ in list_fn(api.col)):
                 run_fn(api, hid)
                 return True
-        except Exception:
-            log.exception("plugin hotkey %s failed", hid)
+        except Exception as exc:
+            if getattr(exc, "code", None):  # an ApiError: the plugin said no ("isn't placed yet"), not a crash
+                log.info("plugin hotkey %s: %s", hid, exc)
+            else:
+                log.exception("plugin hotkey %s failed", hid)
             return True
     return False
 

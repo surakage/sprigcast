@@ -423,3 +423,21 @@ def test_gpu_grabs_one_source_with_its_filters(added, compositor):
     compositor.effects = {"cam": video_effects([Filter(id="b", name="x", kind="blackout", settings={"amount": 100})])}
     assert not compositor.render_source("cam", {"cam": (12, 8)}, "horizontal")[..., :3].any()
     assert compositor.render_source("nothing", {}, "horizontal") is None
+
+
+def test_barrel_roll_keys_only_for_placed_sprigs_and_no_crash_when_unplaced(added, caplog):
+    """A sprig in no bloom got a Barrel roll key that logged a traceback each press (seen in a 60-minute soak)."""
+    import logging
+
+    from sprigcast.app import hotkeys
+
+    added("barrel_roll")
+    col = _collection()
+    assert "plugin:roll:p-frame" in dict(hotkeys.actions(col))
+    api = NativeApi(FakeHost(col))
+    placed = {s.id for s in col.sources if s.kind == "scene" and s.id == "frame-h" or s.settings.get("scene") == "p-frame"}
+    col.sources[:] = [s for s in col.sources if s.id not in placed]
+    assert "plugin:roll:p-frame" not in dict(hotkeys.actions(col))  # nothing to spin: no key offered
+    with caplog.at_level(logging.INFO):
+        assert plugin_hooks.run_hotkey(api, "plugin:roll:p-frame") in (True, False)
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
