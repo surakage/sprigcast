@@ -97,3 +97,57 @@ def test_look_and_shape_filters(app, tmp_path):
     assert abs(r - g) < 0.01 and abs(g - b) < 0.01
     d.list.setCurrentRow(0)
     assert not d.save_look_button.isVisibleTo(d)
+
+
+def test_sound_filters_stay_apart_from_effects_and_are_a_to_z(app):
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.scene import Filter
+
+    page = SourceConfig(id="web", kind="browser", name="Alerts", filters=[
+        Filter(id="a", kind="chroma_key", name="Chroma Key"),
+        Filter(id="b", kind="gain", name="Gain"),
+        Filter(id="c", kind="color_correction", name="Color Correction"),
+        Filter(id="d", kind="compressor", name="Compressor")])
+    sound = FiltersDialog(page, lambda save=True: None, media="audio",
+                          sounds=[("web", "Alerts"), ("mic", "Mic"), ("music", "Music")])
+    assert [sound.list.item(i).text() for i in range(sound.list.count())] == ["Gain", "Compressor"]
+    sound._fill_add_menu()
+    labels = [a.text() for a in sound.add_menu.actions()]
+    assert labels == sorted(labels, key=str.lower) and "Chroma Key" not in labels
+    assert {"Ducking", "De-esser", "Equalizer", "Low Cut"} <= set(labels)
+    sound.list.setCurrentRow(1)
+    sound._move(-1)  # swaps with the sound filter above, the effects keep their places
+    assert [f.id for f in page.filters] == ["a", "d", "c", "b"]
+    sound._remove()
+    assert [f.id for f in page.filters] == ["a", "c", "b"]
+    effects = FiltersDialog(page, lambda save=True: None)
+    assert [effects.list.item(i).text() for i in range(effects.list.count())] == ["Chroma Key", "Color Correction"]
+    ducking = sound.add("ducking")
+    from PySide6.QtWidgets import QComboBox
+
+    combo = sound.form.rows["sound_id"]
+    assert isinstance(combo, QComboBox)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Pick a sound", "Mic", "Music"]  # never itself
+    combo.setCurrentIndex(1)
+    assert ducking.settings["sound_id"] == "mic"
+
+
+def test_vst_filter_passes_sound_through_until_a_plug_in_loads(app, tmp_path):
+    import numpy as np
+
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.filters import AudioChain
+
+    source = SourceConfig(id="mic", kind="audio_input", name="Mic")
+    d = FiltersDialog(source, lambda save=True: None)
+    flt = d.add("vst")
+    assert d.vst_button.isVisibleTo(d) and not d.form.rows["state"].isVisibleTo(d.form)
+    d._open_vst()  # nothing picked yet: says so, no crash
+    assert "choose the plug-in" in d.title.text()
+    block = np.full((1024, 2), 0.25, dtype=np.float32)
+    chain = AudioChain(source.filters)
+    assert np.array_equal(chain.process(block), block)
+    flt.settings = {**flt.settings, "plugin_file": str(tmp_path / "Missing.vst3")}
+    assert chain.update(source.filters)
+    assert np.array_equal(chain.process(block), block)  # won't load: the sound still plays
+    assert chain.processors[0].problem

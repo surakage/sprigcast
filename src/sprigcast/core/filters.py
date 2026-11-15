@@ -47,6 +47,8 @@ class Field:
 
     @property
     def kind(self) -> str:
+        if self.key.endswith("sound_id"):
+            return "sound"  # one of SprigCast's sounds, picked from a list
         if self.choices:
             return "choice"
         if isinstance(self.default, bool):
@@ -481,6 +483,48 @@ class InvertPolarity(AudioFilter):
         return -block
 
 
+# Each sound's loudness (peak, after its filters and volume), refreshed by the mixer every block,
+# so a filter can follow another sound (Ducking). Keyed by source id.
+SOUND_LEVELS: dict[str, float] = {}
+
+
+@_audio("ducking", "Ducking", [
+    Field("sound_id", "When this plays", ""),
+    Field("amount_db", "Lower by", -15.0, -60.0, 0.0, 0.5, " dB"),
+    Field("threshold_db", "Starts at", -35.0, -60.0, 0.0, 0.5, " dB"),
+    Field("attack_ms", "Fade down", 60, 1, 2000, 1, " ms"),
+    Field("hold_ms", "Hold", 300, 0, 5000, 1, " ms"),
+    Field("release_ms", "Fade up", 500, 1, 5000, 1, " ms"),
+])
+class Ducking(AudioFilter):
+    """Lowers this sound while another one is playing (music under your mic, game under alerts)."""
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        self.gain = 1.0
+        self.held = 0.0
+
+    def process(self, block):
+        s = self.settings
+        n = len(block)
+        if not n:
+            return block
+        block_s = n / SAMPLE_RATE
+        level = SOUND_LEVELS.get(str(s["sound_id"]), 0.0)
+        if s["sound_id"] and level > db_to_gain(float(s["threshold_db"])):
+            self.held = float(s["hold_ms"]) / 1000
+        else:
+            self.held = max(0.0, self.held - block_s)
+        target = db_to_gain(float(s["amount_db"])) if self.held > 0 else 1.0
+        start = self.gain
+        if abs(target - start) < 1e-4:
+            self.gain = target
+            return block if target == 1.0 else block * np.float32(target)
+        tau = float(s["attack_ms"] if target < start else s["release_ms"]) / 1000
+        self.gain = start + (target - start) * (1 - math.exp(-block_s / max(tau, 1e-3)))
+        return block * np.linspace(start, self.gain, n, dtype=np.float32)[:, None]
+
+
 class FFmpegAudioFilter(AudioFilter):
     """Runs one of FFmpeg's audio filters (fast C code) through PyAV, one block at a time.
 
@@ -541,7 +585,7 @@ def _lin(db: float) -> float:
     return float(db_to_gain(float(db)))
 
 
-@_audio("eq3", "3-Band Equalizer", [
+@_audio("eq3", "Equalizer", [
     Field("low_db", "Low", 0.0, -20.0, 20.0, 0.1, " dB"),
     Field("mid_db", "Mid", 0.0, -20.0, 20.0, 0.1, " dB"),
     Field("high_db", "High", 0.0, -20.0, 20.0, 0.1, " dB"),
@@ -594,6 +638,102 @@ class NoiseSuppression(FFmpegAudioFilter):
 
     def graph_spec(self):
         return [("afftdn", f"nr={float(self.settings['amount_db']):.1f}:nf=-50:tn=1")]
+
+
+@_audio("low_cut", "Low Cut", [
+    Field("hz", "Cut below", 100, 20, 400, 5, " Hz"),
+])
+class LowCut(FFmpegAudioFilter):
+    """Takes out rumble below a pitch: desk bumps, fans, a boomy mic. Voices keep their body."""
+
+    def graph_spec(self):
+        return [("highpass", f"f={int(self.settings['hz'])}:p=2")]
+
+
+@_audio("de_esser", "De-esser", [
+    Field("amount", "Amount", 0.5, 0.0, 1.0, 0.05),
+    Field("hz", "Around", 6000, 3000, 12000, 100, " Hz"),
+])
+class DeEsser(FFmpegAudioFilter):
+    """Softens sharp "s" and "sh" sounds that hiss on a bright mic."""
+
+    def graph_spec(self):
+        s = self.settings
+        return [("deesser", f"i={float(s['amount']):.2f}:m=0.5:f={int(s['hz']) / SAMPLE_RATE * 2:.4f}:s=o")]
+
+
+VST3_FOLDER = r"C:\Program Files\Common Files\VST3"  # where Windows installers put VST3 plug-ins
+
+
+@_audio("vst", "VST Plug-in", [
+    Field("plugin_file", "Plug-in", "", file_types="VST3 plug-in (*.vst3)"),
+    Field("state", "State", "", show_when=("plugin_file", ())),  # the plug-in's own settings, saved by it
+])
+class VstPlugin(AudioFilter):
+    """A VST3 effect (ReaPlugs, NVIDIA, FabFilter...). Its library loads only when a sound uses one."""
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        self.plugin = None
+        self.problem = ""
+        self._loaded: tuple[str, str] | None = None
+        self._pending = np.zeros((0, 2), dtype=np.float32)
+
+    def _load(self) -> None:
+        path, state = str(self.settings["plugin_file"]), str(self.settings["state"])
+        if self._loaded == (path, state):
+            return
+        if self._loaded is not None and self._loaded[0] == path and self.plugin is not None:
+            restore_vst_state(self.plugin, state)  # edited in its window: same plug-in, new settings
+        else:
+            self.plugin, self.problem = None, ""
+            if path:
+                try:
+                    self.plugin = load_vst(path, state)
+                except Exception as exc:  # a missing file or a plug-in that won't load: pass the sound through
+                    self.problem = str(exc)
+                    import logging
+
+                    logging.getLogger(__name__).warning("VST plug-in %s failed to load: %s", path, exc)
+        self._loaded = (path, state)
+
+    def process(self, block):
+        self._load()
+        if self.plugin is None or not len(block):
+            return block
+        n = len(block)
+        out = self.plugin.process(np.ascontiguousarray(block.T), SAMPLE_RATE, buffer_size=n, reset=False)
+        out = np.asarray(out, dtype=np.float32)
+        if out.ndim == 1:
+            out = out[None, :]
+        out = (np.repeat(out, 2, axis=0) if out.shape[0] == 1 else out[:2]).T
+        joined = np.concatenate([self._pending, out])
+        if len(joined) < n:  # the plug-in holds some audio back at first: lead with silence
+            joined = np.concatenate([np.zeros((n - len(joined), 2), np.float32), joined])
+        self._pending = joined[n:]
+        return joined[:n]
+
+
+def load_vst(path: str, state: str = ""):
+    """Load a VST3 plug-in with pedalboard, and its saved settings (base64 of its raw state)."""
+    from pedalboard import load_plugin
+
+    plugin = load_plugin(path)
+    restore_vst_state(plugin, state)
+    return plugin
+
+
+def restore_vst_state(plugin, state: str) -> None:
+    if state:
+        import base64
+
+        plugin.raw_state = base64.b64decode(state)
+
+
+def vst_state(plugin) -> str:
+    import base64
+
+    return base64.b64encode(plugin.raw_state).decode("ascii")
 
 
 class AudioChain:
