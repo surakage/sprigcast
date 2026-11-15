@@ -289,13 +289,18 @@ class ControlApi:
     def _transform(self, item: SceneItem) -> dict[str, Any]:
         sw, sh = self.host.source_sizes().get(item.source, (0, 0))
         w, h = item.drawn_size((sw, sh))
+        x, y = item.pin((sw, sh)) if sw and sh else (item.x, item.y)
+        sx, sy = item.picture_scale((sw, sh)) if sw and sh else (item.scale, item.sy)
         left, top, right, bottom = item.crop
         return {
-            "positionX": item.x, "positionY": item.y, "rotation": item.rotation,
-            "scaleX": item.scale, "scaleY": item.sy, "width": w, "height": h,
-            "sourceWidth": sw, "sourceHeight": sh, "alignment": 5,
-            "boundsType": "OBS_BOUNDS_NONE", "boundsAlignment": 0, "boundsWidth": 0.0, "boundsHeight": 0.0,
-            "cropLeft": left, "cropTop": top, "cropRight": right, "cropBottom": bottom, "cropToBounds": False,
+            "positionX": x, "positionY": y, "rotation": item.rotation,
+            "scaleX": sx, "scaleY": sy, "width": w, "height": h,
+            "sourceWidth": sw, "sourceHeight": sh, "alignment": _obs_align(item.align),
+            "boundsType": BOUNDS_TO_OBS[item.bounds if item.bounded else "off"],
+            "boundsAlignment": _obs_align(item.bounds_align),
+            "boundsWidth": float(item.bounds_size[0]), "boundsHeight": float(item.bounds_size[1]),
+            "cropLeft": left, "cropTop": top, "cropRight": right, "cropBottom": bottom,
+            "cropToBounds": item.bounded and item.bounds == "fill",
         }
 
     # General -------------------------------------------------------------------------
@@ -607,9 +612,33 @@ class ControlApi:
     def req_SetSceneItemTransform(self, data):
         _, item = self._item(self._scene(data), data)
         transform = _require(data, "sceneItemTransform", dict)
-        for key, attr in (("positionX", "x"), ("positionY", "y"), ("rotation", "rotation")):
+        size = self.host.source_sizes().get(item.source, (0, 0))
+        known = bool(size[0] and size[1])
+        if "alignment" in transform:
+            align = _from_obs_align(int(_number(transform, "alignment")))
+            if known:
+                item.set_align(size, align)
+            else:
+                item.align = align
+        if "boundsAlignment" in transform:
+            item.bounds_align = _from_obs_align(int(_number(transform, "boundsAlignment")))
+        if "boundsType" in transform:
+            item.bounds = BOUNDS_FROM_OBS.get(str(transform["boundsType"]), "off")
+        for key, n in (("boundsWidth", 0), ("boundsHeight", 1)):
             if key in transform:
-                setattr(item, attr, float(_number(transform, key)))
+                box = list(item.bounds_size)
+                box[n] = max(0.0, float(_number(transform, key)))
+                item.bounds_size = tuple(box)  # type: ignore[assignment]
+        if "rotation" in transform:
+            item.rotation = float(_number(transform, "rotation"))
+        if "positionX" in transform or "positionY" in transform:
+            x, y = item.pin(size) if known else (item.x, item.y)
+            x = float(_number(transform, "positionX")) if "positionX" in transform else x
+            y = float(_number(transform, "positionY")) if "positionY" in transform else y
+            if known:
+                item.set_pin(size, x, y)
+            else:
+                item.x, item.y = x, y
         if "scaleX" in transform:
             ratio = None if item.scale_y is None else item.scale_y / item.scale if item.scale else None
             item.scale = _number(transform, "scaleX")
@@ -913,3 +942,21 @@ class ControlApi:
             inputs.append({"inputName": source.name, "inputUuid": source.id,
                            "inputLevelsMul": [[rms, peak, peak], [rms, peak, peak]]})
         return {"inputs": inputs}
+
+
+# OBS's alignment bits: left 1, right 2, top 4, bottom 8 (0 is the centre).
+_ALIGN_BITS = {"top_left": 5, "top": 4, "top_right": 6, "left": 1, "center": 0, "right": 2,
+               "bottom_left": 9, "bottom": 8, "bottom_right": 10}
+BOUNDS_TO_OBS = {"off": "OBS_BOUNDS_NONE", "fit": "OBS_BOUNDS_SCALE_INNER", "fill": "OBS_BOUNDS_SCALE_OUTER",
+                 "stretch": "OBS_BOUNDS_STRETCH"}
+BOUNDS_FROM_OBS = {v: k for k, v in BOUNDS_TO_OBS.items()} | {"OBS_BOUNDS_MAX_ONLY": "fit",
+                                                               "OBS_BOUNDS_SCALE_TO_WIDTH": "fit",
+                                                               "OBS_BOUNDS_SCALE_TO_HEIGHT": "fit"}
+
+
+def _obs_align(align: str) -> int:
+    return _ALIGN_BITS.get(align, 0)
+
+
+def _from_obs_align(bits: int) -> str:
+    return next((name for name, b in _ALIGN_BITS.items() if b == bits), "center")

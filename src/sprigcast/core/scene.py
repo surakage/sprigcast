@@ -55,15 +55,29 @@ class SourceConfig(BaseModel):
     filters: list[Filter] = Field(default_factory=list)  # applied top to bottom
 
 
+ALIGNS = ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right")
+BOUNDS = ("off", "fit", "fill", "stretch")  # off: drawn at its scale; else squeezed into a box of bounds_size
+
+
+def align_share(align: str) -> tuple[float, float]:
+    """How far across and down a box the pin point sits: top_left (0, 0), center (0.5, 0.5)..."""
+    i = ALIGNS.index(align) if align in ALIGNS else 4
+    return (i % 3) / 2, (i // 3) / 2
+
+
 class SceneItem(BaseModel):
     source: str
-    x: float = 0.0  # top-left corner, canvas pixels
+    x: float = 0.0  # top-left corner of its box (unrotated), canvas pixels
     y: float = 0.0
     scale: float = 1.0
     # Height scale when the item is stretched (aspect unlocked); None keeps the shape (= scale).
     scale_y: float | None = None
-    rotation: float = 0.0  # degrees, clockwise, around the item's centre
+    rotation: float = 0.0  # degrees, clockwise, around the pin point
+    align: str = "center"  # the pin point: rotation turns around it and Place's X and Y are where it is
     crop: tuple[int, int, int, int] = (0, 0, 0, 0)  # left, top, right, bottom in source pixels
+    bounds: str = "off"  # see BOUNDS
+    bounds_size: tuple[float, float] = (0.0, 0.0)  # the box, canvas pixels (bounds on)
+    bounds_align: str = "center"  # where the picture sits in its box when it doesn't fill it
     visible: bool = True
     locked: bool = False
 
@@ -72,8 +86,14 @@ class SceneItem(BaseModel):
         """The height scale: scale_y when stretched, else the same as the width scale."""
         return self.scale if self.scale_y is None else self.scale_y
 
+    @property
+    def bounded(self) -> bool:
+        return self.bounds in BOUNDS[1:] and self.bounds_size[0] > 0 and self.bounds_size[1] > 0
+
     def drawn_size(self, source_size: tuple[int, int]) -> tuple[float, float]:
-        """Width and height on the canvas, in canvas pixels (crop and both scales applied)."""
+        """Width and height of its box on the canvas, in canvas pixels (crop and both scales, or the bounds)."""
+        if self.bounded:
+            return self.bounds_size
         w, h = self.cropped_size(source_size)
         return w * self.scale, h * self.sy
 
@@ -82,23 +102,91 @@ class SceneItem(BaseModel):
         left, top, right, bottom = self.crop
         return max(0, w - left - right), max(0, h - top - bottom)
 
+    def picture_scale(self, source_size: tuple[int, int]) -> tuple[float, float]:
+        """The scales the picture is actually drawn at (the bounds decide them when on)."""
+        if not self.bounded:
+            return self.scale, self.sy
+        cw, ch = self.cropped_size(source_size)
+        if not cw or not ch:
+            return self.scale, self.sy
+        bw, bh = self.bounds_size
+        if self.bounds == "stretch":
+            return bw / cw, bh / ch
+        k = (min if self.bounds == "fit" else max)(bw / cw, bh / ch)
+        return k, k
+
+    def picture_rect(self, source_size: tuple[int, int]) -> tuple[float, float, float, float]:
+        """The whole (cropped) picture inside its box: left, top, width, height; may spill out with "fill"."""
+        cw, ch = self.cropped_size(source_size)
+        sx, sy = self.picture_scale(source_size)
+        pw, ph = cw * sx, ch * sy
+        if not self.bounded:
+            return 0.0, 0.0, pw, ph
+        bw, bh = self.bounds_size
+        bx, by = align_share(self.bounds_align)
+        return (bw - pw) * bx, (bh - ph) * by, pw, ph
+
+    def pin(self, source_size: tuple[int, int]) -> tuple[float, float]:
+        """Where the pin point is on the canvas (rotation never moves it)."""
+        w, h = self.drawn_size(source_size)
+        ax, ay = align_share(self.align)
+        return self.x + w * ax, self.y + h * ay
+
+    def set_pin(self, source_size: tuple[int, int], x: float, y: float) -> None:
+        w, h = self.drawn_size(source_size)
+        ax, ay = align_share(self.align)
+        self.x, self.y = x - w * ax, y - h * ay
+
+    def set_align(self, source_size: tuple[int, int], align: str) -> None:
+        """A new pin point, keeping the picture exactly where it is on the canvas."""
+        before = self.quad(source_size)
+        self.align = align
+        after = self.quad(source_size)
+        if before and after:
+            self.x += before[0][0] - after[0][0]
+            self.y += before[0][1] - after[0][1]
+
+    def box(self, source_size: tuple[int, int]) -> list[tuple[float, float]]:
+        """Its box's corners on the canvas (top-left, top-right, bottom-left, bottom-right), rotation applied.
+
+        The same as quad()'s corners unless bounds leave room around the picture. Empty while the size is unknown."""
+        if not self.quad(source_size):
+            return []
+        bw, bh = self.drawn_size(source_size)
+        ax, ay = align_share(self.align)
+        cx, cy = self.x + bw * ax, self.y + bh * ay
+        rad = math.radians(self.rotation)
+        cos_r, sin_r = math.cos(rad), math.sin(rad)
+        ox, oy = -bw * ax, -bh * ay
+        return [(cx + dx * cos_r - dy * sin_r, cy + dx * sin_r + dy * cos_r)
+                for dx, dy in ((ox, oy), (ox + bw, oy), (ox, oy + bh), (ox + bw, oy + bh))]
+
     def quad(self, source_size: tuple[int, int]) -> list[tuple[float, float, float, float]]:
         """Corners as (x, y, u, v) in draw order top-left, top-right, bottom-left, bottom-right.
 
         x and y are canvas pixels; u and v are texture coordinates (0..1, v=0 is the image's top row).
+        With bounds, the picture sits in its box (bounds_align) and "fill" cuts off what spills out.
         """
         sw, sh = source_size
         cw, ch = self.cropped_size(source_size)
         if sw == 0 or sh == 0 or cw == 0 or ch == 0:
             return []
         left, top, right, bottom = self.crop
-        u0, v0 = left / sw, top / sh
-        u1, v1 = (sw - right) / sw, (sh - bottom) / sh
-        w, h = cw * self.scale, ch * self.sy
-        cx, cy = self.x + w / 2, self.y + h / 2
+        bw, bh = self.drawn_size(source_size)
+        sx, sy = self.picture_scale(source_size)
+        px, py, pw, ph = self.picture_rect(source_size)
+        x0, y0, x1, y1 = max(0.0, px), max(0.0, py), min(bw, px + pw), min(bh, py + ph)  # the part inside the box
+        if x1 <= x0 or y1 <= y0:
+            return []
+        u0, v0 = (left + (x0 - px) / sx) / sw, (top + (y0 - py) / sy) / sh
+        u1, v1 = (left + (x1 - px) / sx) / sw, (top + (y1 - py) / sy) / sh
+        ax, ay = align_share(self.align)
+        cx, cy = self.x + bw * ax, self.y + bh * ay  # the pin point: everything turns around it
         rad = math.radians(self.rotation)
         cos_r, sin_r = math.cos(rad), math.sin(rad)
-        corners = [(-w / 2, -h / 2, u0, v0), (w / 2, -h / 2, u1, v0), (-w / 2, h / 2, u0, v1), (w / 2, h / 2, u1, v1)]
+        ox, oy = -bw * ax, -bh * ay
+        corners = [(ox + x0, oy + y0, u0, v0), (ox + x1, oy + y0, u1, v0), (ox + x0, oy + y1, u0, v1),
+                   (ox + x1, oy + y1, u1, v1)]
         return [(cx + dx * cos_r - dy * sin_r, cy + dx * sin_r + dy * cos_r, u, v) for dx, dy, u, v in corners]
 
 
@@ -165,9 +253,9 @@ def _bounds(items: list[SceneItem], sizes: dict[str, tuple[int, int]]) -> tuple[
         size = sizes.get(item.source)
         if not item.visible or not size:
             continue
-        w, h = item.cropped_size(size)
+        w, h = item.drawn_size(size)
         if w and h:
-            boxes.append((item.x, item.y, item.x + w * item.scale, item.y + h * item.sy))
+            boxes.append((item.x, item.y, item.x + w, item.y + h))
     if not boxes:
         return None
     return min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)
@@ -668,7 +756,9 @@ class SceneCollection(BaseModel):
                 source = copy
             x, y = move(item.x, item.y)
             items.append(item.model_copy(update={"source": source.id, "x": x, "y": y, "scale": item.scale * ratio,
-                                                 "scale_y": None if item.scale_y is None else item.scale_y * ratio}))
+                                                 "scale_y": None if item.scale_y is None else item.scale_y * ratio,
+                                                 "bounds_size": (item.bounds_size[0] * ratio,
+                                                                 item.bounds_size[1] * ratio)}))
         shape = Scene(id=new_id, name=part.name, canvas=canvas_id, kind="part", shape_of=part.id, items=items)
         self.scenes.append(shape)
         self._refit_placements(part, canvas_id, (src.width, src.height), (dst.width, dst.height))
@@ -781,6 +871,8 @@ class SceneCollection(BaseModel):
                 continue
             for item in scene.items:
                 if item.source not in placements:
+                    continue
+                if item.bounded:  # its box stays; the new layout fits into it
                     continue
                 w, h = item.cropped_size(old)
                 cx, cy = item.x + w * item.scale / 2, item.y + h * item.sy / 2

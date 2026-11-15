@@ -136,10 +136,11 @@ class Preview(QWidget):
             self._inner_image = None
         else:
             left, top, _r, _b = placement.crop
-            self.inner = (placement.x, placement.y, placement.scale, left, top)
+            px, py, pw, ph = placement.picture_rect(part_size)
+            k = placement.picture_scale(part_size)[0]
+            self.inner = (placement.x + px, placement.y + py, k, left, top)
             self.inner_size = part_size
-            w, h = placement.cropped_size(part_size)
-            self.inner_rect = (placement.x, placement.y, w * placement.scale, h * placement.sy)
+            self.inner_rect = (placement.x + px, placement.y + py, pw, ph)
         self._drag = None
         self.update()
 
@@ -444,10 +445,10 @@ class Preview(QWidget):
             return
         item = self.scene.items[self.ghost_index]
         size = self.sizes.get(item.source)
-        quad = item.quad(size) if size and size[0] and size[1] else None
-        if not quad:
+        box = item.box(size) if size and size[0] and size[1] else None
+        if not box:
             return
-        tl, tr, bl, br = (self.to_widget(x, y) for x, y, _u, _v in quad)
+        tl, tr, bl, br = (self.to_widget(x, y) for x, y in box)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         pen = QPen(ACCENT, 1.5)
         pen.setStyle(Qt.PenStyle.DashLine)
@@ -461,10 +462,10 @@ class Preview(QWidget):
         if selected is None:
             return
         item, size = selected
-        quad = item.quad(size)
-        if not quad:
+        box = item.box(size)
+        if not box:
             return
-        tl, tr, bl, br = (self.to_widget(x, y) for x, y, _u, _v in quad)
+        tl, tr, bl, br = (self.to_widget(x, y) for x, y in box)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(ACCENT, 1.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -479,6 +480,13 @@ class Preview(QWidget):
         for a_, b_ in ((tl, bl), (tr, br), (tl, tr), (bl, br)):
             mid = (a_ + b_) / 2
             p.drawEllipse(mid, half * 0.9, half * 0.9)
+        # The pin point: where it turns around, and what Place's X and Y measure.
+        pin = self.to_widget(*item.pin(size))
+        p.setPen(QPen(ACCENT, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(pin, half * 1.2, half * 1.2)
+        p.setBrush(ACCENT)
+        p.drawEllipse(pin, 1.6, 1.6)
 
     # Mouse and keyboard --------------------------------------------------------------------
 
