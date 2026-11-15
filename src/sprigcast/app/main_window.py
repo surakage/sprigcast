@@ -417,7 +417,7 @@ class MainWindow(QMainWindow):
         self.build_stage.card_slot.addWidget(self.center)
         from sprigcast.app.sound_strips import SoundStrips
 
-        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound)
+        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu)
         self.build_stage.below_card.addWidget(self.sound_strips)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
@@ -528,14 +528,27 @@ class MainWindow(QMainWindow):
         bar.layout().insertWidget(bar.layout().count() - 1, self.link_button)
         self.panels.shelve(bar)  # the list itself is Build's left rail; its old buttons stay off screen
 
+    def _fill_add_sound_menu(self, menu: QMenu) -> None:
+        """+ beside Sound (under the canvas): A to Z."""
+        self._fill_app_sound_menu(menu.addMenu("App sound"))
+        menu.addAction("Desktop sound…").triggered.connect(lambda: self._add_audio("audio_output"))
+        menu.addAction("Microphone…").triggered.connect(lambda: self._add_audio("audio_input"))
+        menu.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
+
+    def _sound_strip_menu(self, source_id: str | None, at) -> None:
+        """Right-click a sound strip (or the + beside Sound)."""
+        menu = QMenu(self)
+        if source_id is None:
+            self._fill_add_sound_menu(menu)
+        else:
+            self._fill_sound_menu(menu, source_id)
+        menu.exec(at)
+
     def _library_plus(self, key: str) -> None:
-        """The round + beside Blooms, Sprigs or Sound."""
+        """The round + beside Blooms or Sprigs."""
         menu = QMenu(self)
         if key == SOUND_ROOT:
-            menu.addAction("Microphone…").triggered.connect(lambda: self._add_audio("audio_input"))
-            menu.addAction("Desktop sound…").triggered.connect(lambda: self._add_audio("audio_output"))
-            menu.addAction("Sound file…").triggered.connect(lambda: self._add_media(sound=True))
-            self._fill_app_sound_menu(menu.addMenu("App sound"))
+            self._fill_add_sound_menu(menu)
         elif key == PART_ROOT:
             menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
             menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
@@ -1078,6 +1091,7 @@ class MainWindow(QMainWindow):
         config.settings = settings
         self._changed()
         self._refresh_scenes()
+        self._refresh_audio()
         if self.selected_sound_id == source_id:
             self._open_build_sound(source_id)
 
@@ -1100,13 +1114,6 @@ class MainWindow(QMainWindow):
         return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
     def _select_sound(self, source_id: str) -> None:
-        for i in range(self.scene_tree.topLevelItemCount()):
-            top = self.scene_tree.topLevelItem(i)
-            for j in range(top.childCount()):
-                child = top.child(j)
-                if child.data(0, ROLE_ROW) == "sound" and child.data(0, ROLE_ID) == source_id:
-                    self.scene_tree.setCurrentItem(child)
-                    return
         self._open_build_sound(source_id)
 
     def _rename_sound(self, source_id: str) -> None:
@@ -2739,28 +2746,6 @@ class MainWindow(QMainWindow):
                     child.setSelected(True)
         sprigs.setExpanded(True)
 
-        sound = heading_item("Sound", "", SOUND_ROOT)
-        sound.setFlags(Qt.ItemFlag.ItemIsEnabled)  # nothing is dragged in here
-        sound.setToolTip(0, f"Mics, desktop sound, app sound and pages with sound. Right-click one to rename it, "
-                            f"mute it or pick the {SHOWS} it plays in.")
-        self.scene_tree.addTopLevelItem(sound)
-        sounds = sorted((c for c in self.collection.sources if self._has_sound(c)), key=lambda c: c.name.lower())
-        for config in sounds:
-            muted = bool(config.settings.get("muted", False))
-            plays_in = self._plays_in_text(config)
-            child = QTreeWidgetItem([config.name])
-            child.setData(0, ROLE_ID, config.id)
-            child.setData(0, ROLE_ROW, "sound")
-            child.setData(0, LIB_NAME, config.name)
-            child.setData(0, LIB_TAG, "muted" if muted else self._plays_in_tag(config))
-            child.setData(0, ROLE_SOURCE_KIND, config.kind)
-            child.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            child.setToolTip(0, f"{config.name}: {plays_in.lower()}. Click for volume and filters, "
-                                f"right-click for more.")
-            sound.addChild(child)
-            if config.id == self.selected_sound_id:
-                child.setSelected(True)
-        sound.setExpanded(True)
         for holder, folder in folder_items:
             holder.setExpanded(searching or not folder.collapsed)
         self.library.apply_filter()
@@ -3006,7 +2991,8 @@ class MainWindow(QMainWindow):
         self.live_side.show_sound([self._sound_item(s) for s in sounds])
         if hasattr(self, "sound_strips"):
             ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
-            self.sound_strips.show_sound([self._sound_item(s) for s in ordered], {s.id: s.kind for s in ordered})
+            self.sound_strips.show_sound([self._sound_item(s) for s in ordered], {s.id: s.kind for s in ordered},
+                                         {s.id: self._plays_in_tag(s) for s in ordered})
         self.live_side.sound.set_mic_first(self.collection.audio.ducking)
 
     def _set_mic_first(self, on: bool) -> None:
@@ -3479,6 +3465,7 @@ class MainWindow(QMainWindow):
         if config is None:
             return
         self.selected_sound_id = source_id
+        self.sound_strips.set_selected(source_id)
         blooms = self.collection.sound_blooms(config)
         self.build_tune.show_plays_in(self._names([self.collection.scene(b) for b in blooms]) if blooms
                                       else f"Every {SHOW}")
@@ -3494,6 +3481,7 @@ class MainWindow(QMainWindow):
 
     def _close_build_sound(self, refresh: bool = True) -> None:
         self.selected_sound_id = None
+        self.sound_strips.set_selected(None)
         self.build_stage.right_stack.setCurrentIndex(0)
         if refresh:
             self._refresh_scenes()

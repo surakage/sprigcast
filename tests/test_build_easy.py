@@ -123,13 +123,11 @@ def test_build_tabs_sound_sections_add_undo(tmp_path, monkeypatch):
         assert w.canvas_columns["horizontal"].isVisible() and not w.canvas_columns["vertical"].isVisible()
         w.canvas_tabs.setCurrentIndex(1)
         assert w.canvas_columns["vertical"].isVisible() and not w.canvas_columns["horizontal"].isVisible()
-        # Sound is listed once, under its own heading, on both tabs.
-        sound = w.scene_tree.topLevelItem(2)
-        assert sound.data(0, ROLE_FOLDER) == SOUND_ROOT
-        assert [sound.child(i).data(0, ROLE_ID) for i in range(sound.childCount())] == ["mic"]
+        # Sound is listed once, as strips under the canvas, on both tabs (the left rail is blooms and sprigs).
+        assert list(w.sound_strips.strips) == ["mic"]
+        assert w.scene_tree.topLevelItemCount() == 2
         w.canvas_tabs.setCurrentIndex(0)
-        sound = w.scene_tree.topLevelItem(2)
-        assert sound.childCount() == 1 and sound.child(0).data(0, ROLE_ROW) == "sound"
+        assert list(w.sound_strips.strips) == ["mic"]
         # Adding the same mic again doesn't double it; it opens its controls instead.
         w._add_audio("audio_input", "default")
         assert [c.kind for c in col.sources].count("audio_input") == 1

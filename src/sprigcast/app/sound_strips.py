@@ -10,7 +10,9 @@
     ╰────────╯ ╰────────╯ ╰────────╯
 
 Sound plays in every bloom, so it sits with the canvas rather than in the list of a bloom's leaves.
-The name or ⋯ opens the sound's full controls on the right. Fold the row away with the heading.
+The name or the gear opens the sound's full controls on the right; right-click a strip to rename it, pick
+the blooms it plays in, open its filters or remove it. + beside the heading adds a sound. Fold the row away
+with the heading.
 """
 
 from __future__ import annotations
@@ -116,13 +118,17 @@ class Fader(QWidget):
 class Strip(QFrame):
     """One sound: its name, fader, volume and mute, on a rounded card."""
 
-    def __init__(self, sound, kind: str, on_change: Callable[[str, dict], None], on_open: Callable[[str], None]):
+    def __init__(self, sound, kind: str, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
+                 on_menu: Callable[[str | None, object], None] | None = None):
         super().__init__()
         self.sound_id = sound.id
         self.on_change, self.on_open = on_change, on_open
+        self.on_menu = on_menu or (lambda _sid, _at: None)
         self.setObjectName("soundStrip")
         self.setFixedSize(STRIP_W, STRIP_H)
-        self.setStyleSheet(f"#soundStrip {{ background: {theme.CARD}; border-radius: 18px; }}")
+        self.set_selected(False)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(lambda pos: self.on_menu(self.sound_id, self.mapToGlobal(pos)))
         col = QVBoxLayout(self)
         col.setContentsMargins(8, 10, 8, 10)
         col.setSpacing(4)
@@ -134,6 +140,11 @@ class Strip(QFrame):
                                 f"QPushButton:hover {{ color: {theme.TEXT_BRIGHT}; }}")
         self.name.clicked.connect(lambda: self.on_open(self.sound_id))
         col.addWidget(self.name)
+        self.tag = QLabel()
+        self.tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tag.setStyleSheet(f"color: {theme.MUTED}; font-size: 10px; background: transparent;")
+        self.tag.setFixedHeight(QFontMetrics(self.tag.font()).height())  # kept when empty, so strips line up
+        col.addWidget(self.tag)
         middle = QHBoxLayout()
         middle.setContentsMargins(0, 0, 0, 0)
         middle.addStretch(1)
@@ -173,11 +184,23 @@ class Strip(QFrame):
         col.addLayout(buttons)
         self.show_sound(sound)
 
+    def set_selected(self, on: bool) -> None:
+        edge = theme.ACCENT if on else theme.CARD
+        self.setStyleSheet(f"#soundStrip {{ background: {theme.SELECT_BG if on else theme.CARD};"
+                           f" border: 1px solid {edge}; border-radius: 18px; }}")
+
+    def set_tag(self, text: str) -> None:
+        """Where it plays, when that isn't every bloom ("Gaming", "2 blooms")."""
+        metrics = QFontMetrics(self.tag.font())
+        self.tag.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, STRIP_W - 20))
+        self.tag.setToolTip(f"Plays in {text}" if text else "Plays in every bloom")
+
     def _volume(self, db: float) -> None:
         self.db.setText(f"{db:+.0f} dB" if db else "0 dB")
         self.on_change(self.sound_id, {"volume_db": db})
 
     def show_sound(self, sound) -> None:
+        self.full_name = sound.name
         metrics = QFontMetrics(_bold(self.name.font()))
         self.name.setText(metrics.elidedText(sound.name, Qt.TextElideMode.ElideRight, STRIP_W - 36))
         self.name.setToolTip(f"{sound.name}: open its controls")
@@ -206,9 +229,12 @@ def _kind_icon(kind: str) -> str:
 class SoundStrips(QWidget):
     """The row of strips, with a heading that folds it away (remembered)."""
 
-    def __init__(self, on_change: Callable[[str, dict], None], on_open: Callable[[str], None]):
+    def __init__(self, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
+                 on_menu: Callable[[str | None, object], None] | None = None):
         super().__init__()
         self.on_change, self.on_open = on_change, on_open
+        self.on_menu = on_menu or (lambda _sid, _at: None)  # (sound id, or None for + Add; where)
+        self.selected: str | None = None
         self.strips: dict[str, Strip] = {}
         self._shape: tuple = ()
         col = QVBoxLayout(self)
@@ -219,7 +245,20 @@ class SoundStrips(QWidget):
         self.toggle.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT_BRIGHT};"
                                   " font-weight: 700; font-size: 14px; text-align: left; padding: 0 4px; }")
         self.toggle.clicked.connect(lambda: self.set_open(not self.is_open))
-        col.addWidget(self.toggle)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(self.toggle)
+        head.addStretch(1)
+        self.add = QPushButton()
+        self.add.setIcon(icons.icon("plus", theme.TEXT, 14))
+        self.add.setFixedSize(26, 26)
+        self.add.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add.setToolTip("Add a mic, desktop sound, app sound or sound file")
+        self.add.setStyleSheet(f"QPushButton {{ background: {theme.RAISED}; border: none; border-radius: 13px; }}"
+                               f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+        self.add.clicked.connect(lambda: self.on_menu(None, self.add.mapToGlobal(self.add.rect().bottomLeft())))
+        head.addWidget(self.add)
+        col.addLayout(head)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -233,7 +272,7 @@ class SoundStrips(QWidget):
         self.row.addStretch(1)
         self.scroll.setWidget(holder)
         col.addWidget(self.scroll)
-        self.empty = QLabel("No sounds yet: + beside Sound on the left adds a mic, desktop or app sound.")
+        self.empty = QLabel("No sounds yet: + adds a mic, desktop sound or app sound.")
         self.empty.setStyleSheet(f"color: {theme.MUTED}; padding: 4px;")
         col.addWidget(self.empty)
         self.is_open = QSettings().value(FOLD_KEY, True, type=bool)
@@ -246,8 +285,8 @@ class SoundStrips(QWidget):
         self.scroll.setVisible(on and bool(self.strips))
         self.empty.setVisible(on and not self.strips)
 
-    def show_sound(self, sounds: list, kinds: dict[str, str]) -> None:
-        """Sound items (app/sound_card.Sound) and each one's source kind, for its icon."""
+    def show_sound(self, sounds: list, kinds: dict[str, str], tags: dict[str, str] | None = None) -> None:
+        """Sound items (app/sound_card.Sound), each one's source kind (for its icon) and where it plays."""
         shape = tuple(s.id for s in sounds)
         if shape != self._shape:
             self._shape = shape
@@ -255,12 +294,20 @@ class SoundStrips(QWidget):
                 strip.deleteLater()
             self.strips = {}
             for sound in sounds:
-                strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open)
+                strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open, self.on_menu)
                 self.row.insertWidget(self.row.count() - 1, strip)
                 self.strips[sound.id] = strip
             self.set_open(self.is_open)
         for sound in sounds:
             self.strips[sound.id].show_sound(sound)
+            self.strips[sound.id].set_tag((tags or {}).get(sound.id, ""))
+        self.set_selected(self.selected)
+
+    def set_selected(self, source_id: str | None) -> None:
+        """Ring the strip whose controls are open on the right."""
+        self.selected = source_id
+        for sid, strip in self.strips.items():
+            strip.set_selected(sid == source_id)
 
     def set_levels(self, levels: dict[str, tuple[float, float]]) -> None:
         if not self.is_open:
