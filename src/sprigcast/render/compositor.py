@@ -70,6 +70,15 @@ uniform float border;
 uniform vec3 border_color;
 uniform sampler2D mask;
 uniform bool mask_luma;     // the shape picture has no transparency: white keeps, black cuts
+uniform float blur;         // source pixels; 0 = off
+uniform float pixelate;     // source pixels per block; 0 = off
+uniform int sil;            // drawing a halo behind the source: 0 no, 1 soft (shadow, glow), 2 hard (stroke)
+uniform vec4 sil_map;       // halo quad local -> the source's own local: xy scale, zw offset
+uniform vec4 uv_rect;       // the source's uv at its top-left (xy) and bottom-right (zw) corners
+uniform vec2 sil_radius;    // in the source's local units
+uniform vec4 sil_color;     // rgb, alpha
+uniform float sil_boost;
+uniform float sil_px;       // the halo's size in canvas pixels
 in vec2 uv;
 in vec2 local;
 out vec4 color;
@@ -129,7 +138,7 @@ float sd_star(vec2 p, float r, float rf) {
 }
 
 // Distance in canvas pixels from the shape's edge.
-float shape_distance() {
+float shape_distance(vec2 local) {
     vec2 size = max(quad_size, vec2(1.0));
     float side = min(size.x, size.y);
     if (shape == 1) {
@@ -188,28 +197,126 @@ vec4 src(vec2 st) {
     return vec4(clamp(vec3(r, g, b), 0.0, 1.0), a);
 }
 
+const float TAU = 6.28318531;
+
+// The source's colour averaged over a disc (centre + two rings of 12), in src()'s own convention.
+vec4 blurred(vec2 st, vec2 r) {
+    vec4 acc = vec4(0.0);
+    float total = 0.0;
+    for (int ring = 0; ring <= 2; ring++) {
+        int n = ring == 0 ? 1 : 12;
+        float w = ring == 0 ? 1.0 : (ring == 1 ? 0.8 : 0.45);
+        for (int i = 0; i < n; i++) {
+            float a = (float(i) + 0.5 * float(ring)) * TAU / 12.0;
+            vec4 c = src(clamp(st + vec2(cos(a), sin(a)) * r * (float(ring) / 2.0), vec2(0.0), vec2(1.0)));
+            acc += (premul ? c : vec4(c.rgb * c.a, c.a)) * w;
+            total += w;
+        }
+    }
+    acc /= total;
+    return premul ? acc : vec4(acc.rgb / max(acc.a, 0.0001), acc.a);
+}
+
+// How much a key leaves of a colour (1 = keep).
+float key_keep(vec3 rgb) {
+    if (key_mode == 1) {
+        return pow(clamp((distance(cbcr(rgb), cbcr(key_color)) - similarity) / smoothness, 0.0, 1.0), 1.5);
+    } else if (key_mode == 2) {
+        float l = dot(rgb, LUMA);
+        float s = max(luma_key.z, 0.0001);
+        return smoothstep(luma_key.x - s, luma_key.x, l) * (1.0 - smoothstep(luma_key.y, luma_key.y + s, l));
+    } else if (key_mode == 3) {
+        return clamp((distance(rgb, key_color) - similarity) / smoothness, 0.0, 1.0);
+    }
+    return 1.0;
+}
+
+// The source's coverage at its own local point: its transparency, key and shape.
+float body(vec2 l) {
+    if (l.x < 0.0 || l.y < 0.0 || l.x > 1.0 || l.y > 1.0) {
+        return 0.0;
+    }
+    vec4 c = src(mix(uv_rect.xy, uv_rect.zw, l));
+    float a = c.a;
+    if (key_mode > 0) {
+        a *= key_keep(premul && c.a > 0.0 ? c.rgb / c.a : c.rgb);
+    }
+    if (shape == 7) {
+        vec4 m = texture(mask, l);
+        a *= mask_luma ? dot(m.rgb, LUMA) : m.a;
+    } else if (shape > 0) {
+        a *= 1.0 - smoothstep(-feather - 0.75, 0.75, shape_distance(l));
+    }
+    return a;
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+vec4 halo() {
+    vec2 l = local * sil_map.xy + sil_map.zw;
+    float a;
+    if (shape >= 1 && shape <= 6) {
+        // A drawn shape: exact and smooth from its distance, at any size, for the cost of one sample.
+        float d = shape_distance(l);
+        float r = max(sil_px, 0.75);
+        a = sil == 1 ? clamp((1.0 - smoothstep(-r, r, d)) * sil_boost, 0.0, 1.0)
+                     : 1.0 - smoothstep(r - 0.75, r + 0.75, d);
+    } else if (sil == 1) {
+        // Transparent pictures: average the outline around, turned a little per pixel so no rings show.
+        float turn = hash(gl_FragCoord.xy) * TAU;
+        a = body(l);
+        float total = 1.0;
+        for (int ring = 1; ring <= 3; ring++) {
+            float w = 1.0 - 0.25 * float(ring);
+            for (int i = 0; i < 12; i++) {
+                float t = turn + (float(i) + 0.33 * float(ring)) * TAU / 12.0;
+                a += body(l + vec2(cos(t), sin(t)) * sil_radius * (float(ring) / 3.0)) * w;
+                total += w;
+            }
+        }
+        a = min(1.0, a / total * sil_boost);
+    } else {
+        a = body(l);
+        for (int ring = 1; ring <= 2; ring++) {
+            for (int i = 0; i < 16; i++) {
+                float t = (float(i) + 0.5 * float(ring)) * TAU / 16.0;
+                a = max(a, body(l + vec2(cos(t), sin(t)) * sil_radius * (float(ring) / 2.0)));
+            }
+        }
+    }
+    return vec4(sil_color.rgb, a * sil_color.a * fx_opacity * opacity);
+}
+
 void main() {
+    if (sil > 0) {
+        color = halo();
+        return;
+    }
     vec2 st = wrap ? fract(uv + scroll) : uv;
-    vec4 c = src(st);
+    vec2 tpx = 1.0 / (planar > 0 ? plane_size : vec2(textureSize(tex, 0)));
+    if (pixelate > 0.0) {
+        vec2 cell = tpx * pixelate;
+        st = clamp((floor(st / cell) + 0.5) * cell, tpx * 0.5, 1.0 - tpx * 0.5);   // never wraps round the edge
+    }
+    vec4 c = blur > 0.0 ? blurred(st, tpx * blur) : src(st);
     if (premul && c.a > 0.0) {
         c.rgb /= c.a;
     }
     if (sharpen > 0.0) {
-        vec2 px = 1.0 / (planar > 0 ? plane_size : vec2(textureSize(tex, 0)));
+        vec2 px = tpx;
         vec3 around = src(st + vec2(px.x, 0.0)).rgb + src(st - vec2(px.x, 0.0)).rgb
                     + src(st + vec2(0.0, px.y)).rgb + src(st - vec2(0.0, px.y)).rgb;
         c.rgb = clamp(c.rgb + (4.0 * c.rgb - around) * sharpen, 0.0, 1.0);
     }
     if (key_mode == 1) {
-        float dist = distance(cbcr(c.rgb), cbcr(key_color));
-        float base = dist - similarity;
-        c.a *= pow(clamp(base / smoothness, 0.0, 1.0), 1.5);
+        float base = distance(cbcr(c.rgb), cbcr(key_color)) - similarity;
+        c.a *= key_keep(c.rgb);
         float keep = pow(clamp(base / spill, 0.0, 1.0), 1.5);
         c.rgb = mix(vec3(dot(c.rgb, LUMA)), c.rgb, keep);
-    } else if (key_mode == 2) {
-        float l = dot(c.rgb, LUMA);
-        float s = max(luma_key.z, 0.0001);
-        c.a *= smoothstep(luma_key.x - s, luma_key.x, l) * (1.0 - smoothstep(luma_key.y, luma_key.y + s, l));
+    } else if (key_mode > 1) {
+        c.a *= key_keep(c.rgb);
     }
     c.rgb = pow(max(c.rgb, 0.0), vec3(gamma));
     c.rgb = (c.rgb - 0.5) * contrast + 0.5 + brightness;
@@ -226,7 +333,7 @@ void main() {
         vec4 m = texture(mask, local);
         c.a *= mask_luma ? dot(m.rgb, LUMA) : m.a;
     } else if (shape > 0) {
-        float d = shape_distance();
+        float d = shape_distance(local);
         const float aa = 0.75;
         if (border > 0.0) {
             float ring = smoothstep(-border - aa, -border + aa, d);   // 1 within `border` pixels of the edge
@@ -824,14 +931,44 @@ class Compositor:
             planar_on = planar is not None
             fx = self.effects.get(item.source, NO_EFFECTS)
             self._apply_effects(fx, planar[2] if planar is not None else tex.size)
-            if fx.shape:
+            if fx.shape or fx.halos:
                 (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = quad[:3]
                 self.program["quad_size"].value = (math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x0, y2 - y0))
             if fades:
                 self.program["opacity"].value = fades.get(item.source, 1.0)
             self.program["premul"].value = part is not None
             tex.use(location=0)
+            if fx.halos:
+                self._draw_halos(fx, quad)
+                self.vbo.write(np.array(quad, dtype="f4").tobytes())
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
+
+    def _draw_halos(self, fx: VideoEffects, quad) -> None:
+        """Shadow, glow and stroke: one quad each behind the source, grown by their size, in its shape."""
+        p = self.program
+        (x0, y0, u0, v0), (x1, y1, _, _), (x2, y2, _, _), (_, _, u3, v3) = quad[:4]
+        w, h = max(1e-3, math.hypot(x1 - x0, y1 - y0)), max(1e-3, math.hypot(x2 - x0, y2 - y0))
+        ex, ey = ((x1 - x0) / w, (y1 - y0) / w), ((x2 - x0) / h, (y2 - y0) / h)
+        p["uv_rect"].value = (u0, v0, u3, v3)
+        for halo in fx.halos:
+            pad = halo.radius + 2.0
+            ox, oy = halo.offset
+            corners = []
+            for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                bx = x0 + (ex[0] * w if sx > 0 else 0) + (ey[0] * h if sy > 0 else 0)
+                by = y0 + (ex[1] * w if sx > 0 else 0) + (ey[1] * h if sy > 0 else 0)
+                corners.append((bx + sx * pad * ex[0] + sy * pad * ey[0] + ox,
+                                by + sx * pad * ex[1] + sy * pad * ey[1] + oy, 0.0, 0.0))
+            self.vbo.write(np.array(corners, dtype="f4").tobytes())
+            off_x, off_y = ox * ex[0] + oy * ex[1], ox * ey[0] + oy * ey[1]
+            p["sil_map"].value = ((w + 2 * pad) / w, (h + 2 * pad) / h, (-pad - off_x) / w, (-pad - off_y) / h)
+            p["sil_radius"].value = (halo.radius / w, halo.radius / h)
+            p["sil_color"].value = (*halo.color, halo.alpha)
+            p["sil_boost"].value = halo.boost
+            p["sil_px"].value = halo.radius
+            p["sil"].value = halo.mode
+            self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
+        p["sil"].value = 0
 
     def _apply_effects(self, fx: VideoEffects, size: tuple[int, int]) -> None:
         moving = fx.scroll != (0.0, 0.0)
@@ -843,6 +980,8 @@ class Compositor:
         p["wrap"].value = moving
         p["scroll"].value = (fx.scroll[0] * self.time / w % 1.0, fx.scroll[1] * self.time / h % 1.0)
         p["sharpen"].value = fx.sharpen
+        p["blur"].value = fx.blur
+        p["pixelate"].value = fx.pixelate
         p["key_mode"].value = fx.key_mode
         p["key_color"].value = fx.key_color
         p["similarity"].value = fx.similarity
