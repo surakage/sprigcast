@@ -162,12 +162,24 @@ def _draw(p: QPainter, name: str) -> None:
             path.lineTo(P(x, y))
         path.closeSubpath()
         p.drawPath(path)
+    elif name in ("speaker", "speaker-off"):
+        body = QPainterPath(P(4, 9.5))
+        for x, y in ((8, 9.5), (13, 5), (13, 19), (8, 14.5), (4, 14.5)):
+            body.lineTo(P(x, y))
+        body.closeSubpath()
+        p.drawPath(body)
+        if name == "speaker":
+            p.drawArc(QRectF(11.5, 8, 6, 8), -60 * 16, 120 * 16)
+            p.drawArc(QRectF(11.5, 5, 9, 14), -60 * 16, 120 * 16)
+        else:
+            p.drawLine(P(16, 9.5), P(21, 14.5))
+            p.drawLine(P(21, 9.5), P(16, 14.5))
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
 
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
-         "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash")
+         "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:
