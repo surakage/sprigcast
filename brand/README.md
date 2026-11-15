@@ -14,4 +14,4 @@ Vector files, safe to scale to any size (print, embroidery, web).
 | `sprigcast-sloth-onecolor.svg` | Mascot in one colour, dark green. |
 | `sprigcast-banner.png` | 1280 x 640 banner for the README and GitHub's social preview (Settings → General → Social preview). |
 
-The app's own icons (`.ico` for the installer and shortcuts) are made from `src/sprigcast/data/logo.svg` by `packaging/make_icon.py`.
+The app's own icons (`.ico` for the installer and shortcuts) are made from `src/sprigcast/data/logo.svg` by `packaging/make_icon.py`. The installer's brand art (the tall Welcome/Finish picture and the small header icon) is drawn from these files by `packaging/make_wizard_images.py` at build time.
