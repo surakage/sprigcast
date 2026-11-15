@@ -4,15 +4,18 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["native/camera/**", ".github/workflows/camera.yml"]
+    paths: ["native/camera/**", ".github/workflows/camera.yml", "src/sprigcast/output/virtualcam.py"]
   pull_request:
-    paths: ["native/camera/**", ".github/workflows/camera.yml"]
+    paths: ["native/camera/**", ".github/workflows/camera.yml", "src/sprigcast/output/virtualcam.py"]
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Build
         shell: pwsh
         run: |
@@ -49,10 +52,21 @@ jobs:
           if ($list -notmatch "SprigCast Camera") { throw "SprigCast Camera isn't listed" }
           $opts = ffmpeg -hide_banner -f dshow -list_options true -i "video=SprigCast Camera" 2>&1 | Out-String
           Write-Output $opts
-          ffmpeg -hide_banner -y -f dshow -video_size 1280x720 -i "video=SprigCast Camera" -frames:v 10 camera-test.png 2>&1 | Out-String | Write-Output
-          if (-not (Test-Path camera-test.png)) { throw "no frame came out of the camera" }
-          ffmpeg -hide_banner -y -f dshow -video_size 1080x1920 -pixel_format yuyv422 -i "video=SprigCast Camera" -frames:v 5 camera-test-yuy2.png 2>&1 | Out-String | Write-Output
-          if (-not (Test-Path camera-test-yuy2.png)) { throw "no YUY2 frame" }
+          # SprigCast's side feeds frames through the shared block while ffmpeg records 3 s from the camera.
+          $env:PYTHONPATH = "src"
+          $feeder = Start-Process python -ArgumentList "native/camera/tools/feed_test.py", "8" -NoNewWindow -PassThru
+          ffmpeg -hide_banner -y -f dshow -video_size 1280x720 -i "video=SprigCast Camera" -t 3 -update 1 camera-test.png 2>&1 | Out-String | Write-Output
+          ffmpeg -hide_banner -y -f dshow -video_size 1080x1920 -pixel_format yuyv422 -i "video=SprigCast Camera" -t 2 -update 1 camera-test-yuy2.png 2>&1 | Out-String | Write-Output
+          ffmpeg -hide_banner -y -f dshow -video_size 720x1280 -pixel_format yuv420p -i "video=SprigCast Camera" -t 2 -vf "crop=2:2:360:640" -f rawvideo -pix_fmt gray camera-test-i420.raw 2>&1 | Out-String | Write-Output
+          $feeder.WaitForExit()
+          if ($feeder.ExitCode -ne 0) { throw "SprigCast's side never saw the camera ask for frames" }
+          foreach ($f in "camera-test.png", "camera-test-yuy2.png", "camera-test-i420.raw") {
+            if (-not (Test-Path $f)) { throw "no frame came out of the camera ($f)" }
+          }
+          $luma = [System.IO.File]::ReadAllBytes("camera-test-i420.raw")
+          $last = $luma[-1]
+          Write-Output "last centre luma: $last (fed 180, placeholder 38)"
+          if ([math]::Abs($last - 180) -gt 6) { throw "the camera didn't show SprigCast's frames" }
           Get-Content "$env:ProgramData\SprigCast Camera\camera.log" -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
