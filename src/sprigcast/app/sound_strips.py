@@ -142,7 +142,11 @@ class Strip(QFrame):
         col.addWidget(self.name)
         self.tag = QLabel()
         self.tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.tag.setStyleSheet(f"color: {theme.MUTED}; font-size: 10px; background: transparent;")
+        self.tag.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        small = self.tag.font()
+        small.setPixelSize(10)  # on the font, not in the style sheet, so measuring it gives the size it's shown at
+        self.tag.setFont(small)
+        self.tag_text = ""
         self.tag.setFixedHeight(QFontMetrics(self.tag.font()).height())  # kept when empty, so strips line up
         col.addWidget(self.tag)
         middle = QHBoxLayout()
@@ -191,6 +195,7 @@ class Strip(QFrame):
 
     def set_tag(self, text: str) -> None:
         """Where it plays, when that isn't every bloom ("Gaming", "2 blooms")."""
+        self.tag_text = text
         metrics = QFontMetrics(self.tag.font())
         self.tag.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, STRIP_W - 20))
         self.tag.setToolTip(f"Plays in {text}" if text else "Plays in every bloom")

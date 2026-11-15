@@ -88,6 +88,10 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Less memory: a smaller GPU-usage reader (#91), tiny textures for solid colors (#93), no full-size previews at start (#94),
   a lighter font engine (#100), and no hidden browser for empty browser sources (#193, #197).
 - `sprigcast-memcheck` shows where memory and CPU go, and runs an hour-long soak test (#90, #92, #97, #98, #102, #111).
+- Death count and Snap draw their art once and reuse it, skip frames while they stand still, and hand frames to the GPU
+  without a copy (about 4x less work while they move, none while held). In the 60-minute soak they made the canvas miss
+  frames and starved the recording's encoder, so recordings and clips dropped to about 50 fps. Slide show decodes the
+  next picture in the background. Store plugins you added update themselves when SprigCast does.
 
 ### Sources and effects
 
@@ -100,6 +104,10 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Virtual camera Shows list: match the app, a whole canvas, one bloom or one source; fixed the camera not starting in TikTok LIVE Studio (#224).
 - When an older camera fails to start, SprigCast points you to Update (#227).
 - Media files no longer loop with Loop off, and .webm files end cleanly (#220, #222).
+- Slide show fills the canvas when added; + → Plugins entries work on the first click; Death count and Snap no longer
+  show "problem" in Leaves after they run.
+- Virtual camera opened at two sizes at once (TikTok LIVE Studio, or two apps) keeps feeding the first size instead of
+  flipping every few seconds.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

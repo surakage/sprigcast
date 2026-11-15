@@ -4,14 +4,18 @@ Settings: folder, seconds (each picture's time), shuffle, loop (start over after
 on it), width and height (the box every picture is fitted into, so slides of any size don't make
 the leaf jump around; the rest of the box is see-through).
 
-Only the picture on screen is decoded, and only when it changes; a hidden slide show sleeps.
+Only the picture on screen and the next one are decoded: the next one in the background, while
+the current one shows, so a big photo never holds up the canvas. A hidden slide show sleeps.
+Added from + → Plugins it fills the canvas.
 
 A SprigCast store plugin: add it from Settings → Plugins.
 """
 
 from __future__ import annotations
 
+import logging
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -21,8 +25,10 @@ import numpy as np
 from sprigcast.core.source import Source, register
 from sprigcast.sources.image import load_rgba
 
-PLUGIN = {"id": "slide_show", "name": "Slide show", "version": 1, "adds": "Source",
+PLUGIN = {"id": "slide_show", "name": "Slide show", "version": 2, "adds": "Source",
           "about": "Plays every picture in a folder, one after another: seconds per picture, shuffle and loop."}
+
+log = logging.getLogger(__name__)
 
 PICTURES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
@@ -55,11 +61,35 @@ def fit(picture: np.ndarray, box: tuple[int, int]) -> np.ndarray:
     return out
 
 
+def prepare(path: Path, box: tuple[int, int]) -> np.ndarray | None:
+    """Decode and fit one picture (on a worker thread). Pillow lets go of Python's lock while it
+    decodes and scales, so the canvas and the encoders keep running. Falls back to Qt."""
+    try:
+        from PIL import Image, ImageOps
+
+        bw, bh = max(1, box[0]), max(1, box[1])
+        with Image.open(path) as img:
+            img.draft("RGB", (bw, bh))  # a JPEG decodes straight at a smaller size when it can
+            img = ImageOps.exif_transpose(img).convert("RGBA")
+            scale = min(bw / img.width, bh / img.height)
+            size = max(1, round(img.width * scale)), max(1, round(img.height * scale))
+            if size != img.size:
+                img = img.resize(size, Image.Resampling.LANCZOS)
+            out = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+            out.paste(img, ((bw - size[0]) // 2, (bh - size[1]) // 2))
+            return np.asarray(out, dtype=np.uint8)
+    except Exception:
+        log.debug("slide show: Pillow couldn't read %s", path, exc_info=True)
+    picture = load_rgba(path)
+    return None if picture is None else fit(picture, box)
+
+
 @register("slideshow")
 class SlideShowSource(Source):
     label = "Slide show"
     defaults = {"folder": "", "seconds": 5.0, "shuffle": False, "loop": True, "width": 1920, "height": 1080}
     sleeps = True
+    fills_canvas = True  # added from + → Plugins it starts at 0, 0 the size of the canvas
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
@@ -68,6 +98,9 @@ class SlideShowSource(Source):
         self._next_at = 0.0
         self._pending = True
         self.status = "starting"
+        self._lock = threading.Lock()
+        self._ready: dict[tuple, np.ndarray | None] = {}  # (path, box) -> fitted picture, made ahead
+        self._making: set[tuple] = set()
         self._load_folder()
 
     def _box(self) -> tuple[int, int]:
@@ -84,6 +117,7 @@ class SlideShowSource(Source):
         self._index = -1
         self._next_at = 0.0
         self._pending = True
+        self._first_shown = False
         self.status = "ok" if self._order else ("no folder" if not self.settings.get("folder") else "no pictures")
 
     def update(self, settings: dict[str, Any]) -> None:
@@ -112,8 +146,48 @@ class SlideShowSource(Source):
             self._next_at = now + max(0.5, float(self.settings.get("seconds", 5.0) or 5.0))
         elif not self._pending:
             return None
-        self._pending = False
-        picture = load_rgba(self._order[self._index])
+        want = (self._order[self._index], self._box())
+        picture = self._take(want)
         if picture is None:
-            return None
-        return fit(picture, self._box())
+            return None  # still being made: keep showing the last one a moment longer
+        self._pending = False
+        if len(self._order) > 1:  # make the next one while this one shows
+            self._make((self._order[(self._index + 1) % len(self._order)], want[1]))
+        return picture
+
+    def _take(self, want: tuple) -> np.ndarray | None:
+        with self._lock:
+            if want in self._ready:
+                picture = self._ready.pop(want)
+                self._ready.clear()
+                if picture is None:
+                    self.status = f"can't read {want[0].name}"
+                    return np.zeros((2, 2, 4), dtype=np.uint8)  # see-through for its turn, then the next
+                self.status = "ok"
+                return picture
+            if self._first_shown:
+                self._make_locked(want)
+                return None
+        self._first_shown = True  # the very first picture: no picture to keep showing, so make it now
+        picture = prepare(*want)
+        if picture is None:
+            self.status = f"can't read {want[0].name}"
+            return np.zeros((2, 2, 4), dtype=np.uint8)
+        return picture
+
+    def _make(self, want: tuple) -> None:
+        with self._lock:
+            self._make_locked(want)
+
+    def _make_locked(self, want: tuple) -> None:
+        if want in self._making or want in self._ready:
+            return
+        self._making.add(want)
+
+        def run():
+            picture = prepare(*want)
+            with self._lock:
+                self._making.discard(want)
+                self._ready[want] = picture
+
+        threading.Thread(target=run, name="slide-show-next", daemon=True).start()

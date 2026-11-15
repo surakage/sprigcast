@@ -135,13 +135,13 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     next(a for a in plays_in.actions() if a.text() == "Gaming").trigger()
     assert w.collection.source("game").settings["blooms"] == ["gaming"]
     rows, _ = _sound_rows(w)
-    assert rows["game"].tag.text() == "Gaming"  # shown lightly on the row
+    assert rows["game"].tag_text == "Gaming"  # shown lightly on the row
     menu = QMenu(w)
     w._fill_sound_menu(menu, "game")
     plays_in = next(a.menu() for a in menu.actions() if a.text() == "Plays in")
     next(a for a in plays_in.actions() if a.text() == "Just Chatting").trigger()
     assert w.collection.source("game").settings["blooms"] == ["gaming", "chat"]
-    assert _sound_rows(w)[0]["game"].tag.text() == "2 blooms"
+    assert _sound_rows(w)[0]["game"].tag_text == "2 blooms"  # (shortened to fit if the font is big)
     w._set_sound_blooms("game", [])  # Every bloom
     assert "blooms" not in w.collection.source("game").settings
     next(a for a in menu.actions() if a.text() == "Mute").trigger()

@@ -169,7 +169,8 @@ def test_targets_an_ended_recording_used_are_let_go(compositor):
     # until SprigCast closed; the canvas itself stays.
     import time
 
-    compositor.prune(now=time.monotonic() + 10)  # this compositor is shared: drop what earlier tests left
+    compositor.ctx.__enter__()  # earlier tests may have made their own GL context current
+    compositor.prune(now=time.monotonic() + 100)  # this compositor is shared: drop what earlier tests left
     canvas = Canvas(id="pr", width=64, height=36)
     clean = canvas.model_copy(update={"id": "clean:pr"})
     compositor.render(canvas, None, {})
@@ -180,7 +181,8 @@ def test_targets_an_ended_recording_used_are_let_go(compositor):
     compositor.prune(idle_s=60)  # just used: kept (a long idle_s, so a slow machine can't age them meanwhile)
     assert ("pr", (32, 18)) in compositor.nv12_targets and ("pr", (16, 8)) in compositor.scaled_targets
     assert "clean:pr" in compositor.targets
-    assert compositor.prune(now=time.monotonic() + 10) >= 4
+    # Far past both the idle time and the transition keep time, whatever the clock's resolution.
+    assert compositor.prune(now=time.monotonic() + 100) >= 4
     assert ("pr", (32, 18)) not in compositor.nv12_targets and ("clean:pr", (32, 18)) not in compositor.nv12_targets
     assert ("pr", (16, 8)) not in compositor.scaled_targets and "clean:pr" not in compositor.targets
     assert "pr" in compositor.targets

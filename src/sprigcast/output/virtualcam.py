@@ -33,10 +33,13 @@ HEADER = 64
 MAX_W = 1920
 BLOCK_SIZE = HEADER + MAX_W * MAX_W * 3 // 2
 STALE_MS = 2000  # no heartbeat for this long: nobody is watching
-# An app that opens the camera twice at two sizes (TikTok LIVE Studio: 1080x1920 and 1920x1080) has two
-# copies of the camera writing their size into the one block in turn. The size being fed stays while it is
-# still asked for within this long; flipping to whichever was written last re-made the copy every second.
-STILL_WANTED_MS = 2000
+# An app that opens the camera twice at two sizes (TikTok LIVE Studio: 1080x1920 and 1920x1080), or two apps
+# at two sizes, have two copies of the camera writing their size into the one block in turn. The size being
+# fed stays while it was asked for within this long. Two copies writing 30 times a second can fall into step
+# so that one of them is the last writer for seconds on end: with 2 s the camera still flipped shape every
+# ten seconds or so in the 60-minute soak (670 log lines an hour). The copy at the other size keeps its
+# last picture until the first one closes.
+STILL_WANTED_MS = 15_000
 DLL_NAME = "sprigcast_camera.dll"
 DLL32_NAME = "sprigcast_camera32.dll"  # for 32-bit apps
 

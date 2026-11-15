@@ -441,3 +441,34 @@ def test_barrel_roll_keys_only_for_placed_sprigs_and_no_crash_when_unplaced(adde
     with caplog.at_level(logging.INFO):
         assert plugin_hooks.run_hotkey(api, "plugin:roll:p-frame") in (True, False)
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+def test_a_still_show_is_not_painted_again_and_reads_as_working(added, tmp_path):
+    """Soak 2026-11-15: painting every frame on the render thread missed ticks; idle ones said "problem"."""
+    from sprigcast.app.names import short_status
+
+    _col, _host, dc, api = _dc_setup(added, tmp_path, 1)
+    assert dc.channel_order == "BGRA"
+    dc.video_frame()
+    api.run("deaths.add", {})
+    assert dc.video_frame() is not None
+    job = dc._job
+    job.started = __import__("time").monotonic() - (dc._still_from(job) + 0.1)  # up and standing still
+    assert dc.video_frame() is not None  # the still frame, once
+    assert dc.video_frame() is None and dc.video_frame() is None  # then nothing to paint or upload
+    job.started -= 100
+    assert not dc.video_frame()[..., 3].any()
+    assert short_status(dc.status) == ""  # Leaves shows no problem
+
+    import sys
+
+    added("snap")
+    snap = create_source("snap", "snap-1", {"seconds": 2.0})
+    snap.video_frame()
+    sys.modules["sprigcast_plugin_snap"].on_screenshot(NativeApi(Host(_collection(), tmp_path)), [])  # nothing shot
+    snap.show(None)
+    assert snap.video_frame() is not None
+    still = sys.modules["sprigcast_plugin_snap"].STILL_FROM
+    snap._job.started = __import__("time").monotonic() - (still + 0.1)
+    assert snap.video_frame() is not None and snap.video_frame() is None
+    assert short_status(snap.status) == ""
