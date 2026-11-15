@@ -110,14 +110,9 @@ def window(tmp_path, monkeypatch):
 
 
 def _sound_rows(w):
-    from sprigcast.app.library import ROLE_ID, ROLE_ROW
-
-    for i in range(w.scene_tree.topLevelItemCount()):
-        top = w.scene_tree.topLevelItem(i)
-        rows = [top.child(j) for j in range(top.childCount()) if top.child(j).data(0, ROLE_ROW) == "sound"]
-        if rows:
-            return {r.data(0, ROLE_ID): r for r in rows}, [r.text(0) for r in rows]
-    return {}, []
+    """The sound strips under the Build canvas: {id: strip}, names in order."""
+    strips = w.sound_strips.strips
+    return dict(strips), [s.full_name for s in strips.values()]
 
 
 def _texts(menu):
@@ -126,8 +121,6 @@ def _texts(menu):
 
 def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     from PySide6.QtWidgets import QMenu
-
-    from sprigcast.app.library import ROLE_TAG as LIB_TAG
 
     w = window
     _, names = _sound_rows(w)
@@ -142,18 +135,18 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     next(a for a in plays_in.actions() if a.text() == "Gaming").trigger()
     assert w.collection.source("game").settings["blooms"] == ["gaming"]
     rows, _ = _sound_rows(w)
-    assert rows["game"].data(0, LIB_TAG) == "Gaming"  # shown lightly on the row
+    assert rows["game"].tag.text() == "Gaming"  # shown lightly on the row
     menu = QMenu(w)
     w._fill_sound_menu(menu, "game")
     plays_in = next(a.menu() for a in menu.actions() if a.text() == "Plays in")
     next(a for a in plays_in.actions() if a.text() == "Just Chatting").trigger()
     assert w.collection.source("game").settings["blooms"] == ["gaming", "chat"]
-    assert _sound_rows(w)[0]["game"].data(0, LIB_TAG) == "2 blooms"
+    assert _sound_rows(w)[0]["game"].tag.text() == "2 blooms"
     w._set_sound_blooms("game", [])  # Every bloom
     assert "blooms" not in w.collection.source("game").settings
     next(a for a in menu.actions() if a.text() == "Mute").trigger()
     assert w.collection.source("game").settings["muted"] is True
-    assert _sound_rows(w)[0]["game"].data(0, LIB_TAG) == "muted"
+    assert _sound_rows(w)[0]["game"].db.text() == "muted"
 
 
 def test_rename_keeps_a_to_z_and_remove_drops_a_sound(window, monkeypatch):
