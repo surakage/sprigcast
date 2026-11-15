@@ -497,6 +497,8 @@ class MainWindow(QMainWindow):
         self.wavelink.apply.connect(self._from_wavelink)
         QTimer.singleShot(2000, self._sync_wavelink)
         self.chat_panel.hub.happened.connect(self.control.app_event)  # TikTok gifts, likes... to apps
+        # An app that asks for "tiktok" events by name keeps TikTok chat read while the Chat panel is hidden.
+        self.control.on_tiktok_wanted = lambda wanted: self.chat_panel.hub.want("api", wanted)
         from sprigcast.app.updates import Updater
 
         # New versions from GitHub Releases (app/updates.py); never shown or installed while live or recording.

@@ -22,6 +22,8 @@ from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServe
 
 from sprigcast.control import web
 from sprigcast.control.api import VENDOR, ControlApi
+
+OBS_QUIET = ("tiktok.chat", "tiktok.like")  # too many for the OBS door's vendor events (the SprigCast API has them)
 from sprigcast.control.native import NativeApi, NativeSession
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
 
@@ -229,6 +231,8 @@ class ControlServer(QObject):
         self._notify_queued = False
         self._running: tuple | None = None  # (port, password, lan, obs door) it listens with
         self.on_clients_changed = lambda count: None
+        self.on_tiktok_wanted = lambda wanted: None  # an app asked for "tiktok" events by name (or stopped)
+        self._tiktok_wanted = False
 
     def _obs(self) -> list[tuple[QWebSocket, Session]]:
         return [(k, s) for k, s in self.sessions.items() if isinstance(s, Session)]
@@ -368,11 +372,20 @@ class ControlServer(QObject):
         except RuntimeError:  # Qt already freed it (the app is closing): nothing left to tidy
             return
         self.on_clients_changed(len(self.sessions))
+        self._check_tiktok()
+
+    def _check_tiktok(self) -> None:
+        wanted = any(s.wants("tiktok") for _, s in self._natives())
+        if wanted != self._tiktok_wanted:
+            self._tiktok_wanted = wanted
+            self.on_tiktok_wanted(wanted)
 
     def _received(self, socket: QWebSocket, text: str) -> None:
         session = self.sessions.get(socket)
         if session is not None:
             self._pump(socket, session.receive(text))
+            if isinstance(session, NativeSession):
+                self._check_tiktok()
             self.soon()  # a request may have changed something: tell everyone (and the asker) once it settles
 
     def _pump(self, socket: QWebSocket, steps: Iterator[Step]) -> None:
@@ -427,7 +440,7 @@ class ControlServer(QObject):
         """An event from another part of SprigCast (e.g. "tiktok.gift" from the Chat panel): to SprigCast
         API apps by its group, and to OBS-door apps as a "sprigcast" VendorEvent (eventType = name)."""
         self.native_broadcast(name, data)
-        if self._obs():
+        if self._obs() and name not in OBS_QUIET:
             self.broadcast("VendorEvent", Sub.VENDORS, {"vendorName": VENDOR, "eventType": name, "eventData": data})
 
     def wants_meters(self) -> bool:

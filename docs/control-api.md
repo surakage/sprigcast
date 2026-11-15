@@ -97,7 +97,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `path` | `path.changed` (path), `paths.changed` (paths) |
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
 | `plugin` | events sent by added plugins (`<plugin>.<what>`, see below) |
-| `tiktok` | `tiktok.gift` (user, handle, userId, gift, giftId, count, diamonds), `tiktok.like` (user, handle, userId, count, total), `tiktok.follow`, `tiktok.share`, `tiktok.subscribe` (user, handle, userId), `tiktok.chat` (user, handle, userId, text). Only while TikTok chat is on in the Chat panel. A gift streak arrives once, when it ends |
+| `tiktok` | `tiktok.gift` (user, handle, userId, gift, giftId, count, diamonds), `tiktok.like` (user, handle, userId, count, total), `tiktok.follow`, `tiktok.share`, `tiktok.subscribe` (user, handle, userId), `tiktok.chat` (user, handle, userId, text). Only when asked for by name (not part of `"all"`), and only with a TikTok account set in the Chat panel; asking keeps TikTok chat read while the Chat panel is hidden. A gift streak arrives once, when it ends |
 | `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
 
 ## Examples
