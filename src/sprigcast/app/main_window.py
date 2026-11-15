@@ -1461,7 +1461,8 @@ class MainWindow(QMainWindow):
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
                                   lambda: self._open_settings(), self._on_sound_changed,
-                                  lambda sid: self._open_filters(sid, "audio"), self._set_mic_first)
+                                  lambda sid: self._open_filters(sid, "audio"), self._set_mic_first,
+                                  self._toggle_camera, self._camera_settings)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_stage = LiveStage(self.live_side)
         self.live_stage.card.go_slot.addWidget(self.live_panel.go)
@@ -1809,6 +1810,15 @@ class MainWindow(QMainWindow):
         self.palette_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.palette_button.clicked.connect(lambda: self._open_palette())
         bar.addWidget(self.palette_button)
+        self.settings_button = QToolButton()
+        self.settings_button.setIcon(icons.icon("gear", theme.MUTED, 18))
+        self.settings_button.setIconSize(QSize(18, 18))
+        self.settings_button.setFixedSize(38, 38)
+        self.settings_button.setToolTip("Settings (Ctrl+,)")
+        self.settings_button.setStyleSheet(self.palette_button.styleSheet())
+        self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.settings_button.clicked.connect(lambda: self._open_settings())
+        bar.addWidget(self.settings_button)
         self.mode_clock = QLabel("")
         bar.addWidget(self.mode_clock)
         self._set_header_clock("Offline", False)
@@ -4637,10 +4647,47 @@ class MainWindow(QMainWindow):
                 self._say("SprigCast Camera is on")
             else:
                 self._say(camera.error)
+                self._camera_error = camera.error
         elif not want and self.camera is not None:
             self._camera_timer.stop()
             self.camera.stop()
             self.camera = None
+        if self.camera is not None:
+            self._camera_error = ""
+        self.live_side.set_camera(self.camera is not None, getattr(self, "_camera_error", ""))
+
+    def _toggle_camera(self) -> None:
+        """Live's Virtual camera button: the same switch as Settings → Output → Virtual camera."""
+        from PySide6.QtCore import QSettings
+
+        from sprigcast.app.output_page import CAMERA_ON
+        from sprigcast.output import virtualcam
+
+        turn_on = self.camera is None
+        self._camera_error = ""
+        if turn_on:
+            ok, why = virtualcam.supported()
+            if not ok:
+                self._camera_error = why
+            elif not virtualcam.installed():
+                self._camera_error = "The camera isn't set up. Open the gear and press Repair."
+        QSettings().setValue(CAMERA_ON, turn_on and not self._camera_error)
+        self._sync_camera()
+        if turn_on and self.camera is None:  # it didn't start: leave the switch off so the button matches
+            QSettings().setValue(CAMERA_ON, False)
+            self._camera_error = self._camera_error or "The camera didn't start."
+            self.live_side.set_camera(False, self._camera_error)
+            self._say(self._camera_error)
+
+    def _camera_settings(self) -> None:
+        """The gear beside Virtual camera: a small pop-up to pick what it shows."""
+        from sprigcast.app.camera_popup import camera_popup
+        from sprigcast.output import virtualcam
+
+        ok = virtualcam.supported()[0]
+        repair = virtualcam.set_up if ok and (not virtualcam.installed() or virtualcam.needs_update()) else None
+        status = getattr(self, "_camera_error", "") if self.camera is None else ""
+        camera_popup(self.collection, self, repair, status).exec()
 
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""
