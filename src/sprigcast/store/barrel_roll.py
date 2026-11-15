@@ -30,12 +30,16 @@ register_filter("barrel_roll", "Barrel roll", "video", [
 
 def _placements(api, sprig):
     """The sources that place this sprig in blooms (every shape)."""
-    ids = {s.id for s in api.col.shapes(sprig)} | {sprig.id}
+    return _placed_in(api.col, sprig)
+
+
+def _placed_in(col, sprig):
+    ids = {s.id for s in col.shapes(sprig)} | {sprig.id}
     out = []
-    for source in api.col.sources:
+    for source in col.sources:
         if source.kind != "scene":
             continue
-        part = api.col.part_of(source)
+        part = col.part_of(source)
         if source.settings.get("scene") in ids or (part is not None and part.id in ids):
             out.append(source)
     return out
@@ -87,14 +91,16 @@ register_action("roll.spin", "Barrel roll a sprig (every place it's shown) or on
 
 
 def _hotkeys(collection):
-    return [(f"roll:{part.id}", f"Barrel roll {part.name}") for part in collection.parts()]
+    """A Barrel roll key for each sprig that's placed in a bloom (an unused sprig has nothing to spin)."""
+    return [(f"roll:{part.id}", f"Barrel roll {part.name}") for part in collection.parts() if _placed_in(collection, part)]
 
 
 def _run_hotkey(api, hid):
     part_id = hid.split(":", 1)[1]
     sprig = next((p for p in api.col.parts() if p.id == part_id), None)
-    if sprig is not None:
-        spin(api, _placements(api, sprig))
+    placed = _placements(api, sprig) if sprig is not None else []
+    if placed:  # taken out of its blooms since the key was set: nothing to spin, and nothing wrong
+        spin(api, placed)
 
 
 register_hotkeys(_hotkeys, _run_hotkey)
