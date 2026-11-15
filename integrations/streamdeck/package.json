@@ -1,0 +1,24 @@
+{
+  "name": "sprigcast-streamdeck",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SprigCast for Stream Deck: blooms, sounds, going live and plugins on your keys.",
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c",
+    "test": "node --test test/*.test.mjs",
+    "validate": "streamdeck validate com.sprigcast.sprigcast.sdPlugin",
+    "pack": "streamdeck pack com.sprigcast.sprigcast.sdPlugin --output dist --force"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@elgato/streamdeck": "^3.0.4",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "@elgato/cli": "^1.10.4",
+    "@rollup/plugin-commonjs": "^29.0.3",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "rollup": "^4.68.3"
+  }
+}
