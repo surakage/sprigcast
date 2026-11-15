@@ -331,3 +331,22 @@ def test_app_info_lists_only_the_shapes_that_are_on():
     api, _ = _api()
     api.col.canvas("vertical").enabled = False
     assert _ok(api, "app.info")["shapes"] == ["horizontal"]
+
+
+def test_camera_on_off_and_event():
+    from sprigcast.control.native import NativeApi
+
+    host = FakeHost(_collection())
+    host.cam = False
+    host.camera_on = lambda: host.cam
+
+    def set_camera(on):
+        host.cam = on
+
+    host.set_camera = set_camera
+    api = NativeApi(host)
+    api.changes()
+    assert api.run("camera.set", {}) == {"on": True}
+    assert ("camera.changed", {"on": True}) in api.changes()
+    assert api.run("camera.status", {}) == {"on": True}
+    assert api.run("camera.set", {"on": False}) == {"on": False}

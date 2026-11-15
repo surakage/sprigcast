@@ -90,7 +90,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
 | `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed` |
 | `source` | `source.changed` (source, sourceId, settings) |
-| `output` | `stream.changed`, `record.changed`, `clips.changed` (on), `clip.saved` (files) |
+| `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `clip.saved` (files) |
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `garden` | `garden.changed` (garden), `gardens.changed` (gardens) |
@@ -138,6 +138,13 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `bloom.current` | The bloom on air in each shape. | none |
 | `bloom.show` | Put a bloom on air. | `bloom`: name or id, `shape` (optional): both (default), horizontal or vertical |
 | `blooms.list` | Every bloom, its shapes and which shapes it's on air in. | none |
+
+### camera
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `camera.set` | Turn SprigCast Camera (the virtual camera) on or off (no on: toggle). It must be set up once in Settings first. | `on`: optional, true or false |
+| `camera.status` | Whether SprigCast Camera is on. | none |
 
 ### clip
 
@@ -312,7 +319,7 @@ Requests made by web pages on other sites are refused, so a page you visit can't
 
 ## The OBS-compatible door
 
-Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air). Beyond these, new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
+Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Beyond these, new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
 
 ## Adding actions from a plugin
 

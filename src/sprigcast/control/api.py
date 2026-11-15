@@ -798,6 +798,31 @@ class ControlApi:
     req_ResumeRecord = req_PauseRecord
     req_ToggleRecordPause = req_PauseRecord
 
+    def _camera_on(self) -> bool:
+        return bool(getattr(self.host, "camera_on", lambda: False)())
+
+    def _set_camera(self, on: bool) -> None:
+        if on == self._camera_on():
+            raise RequestError(Status.OUTPUT_RUNNING if on else Status.OUTPUT_NOT_RUNNING,
+                               "SprigCast Camera is already " + ("on." if on else "off."))
+        problem = self.host.set_camera(on)
+        if problem:
+            raise RequestError(Status.INVALID_RESOURCE_STATE, problem)
+
+    def req_GetVirtualCamStatus(self, data):
+        return {"outputActive": self._camera_on()}
+
+    def req_StartVirtualCam(self, data):
+        self._set_camera(True)
+
+    def req_StopVirtualCam(self, data):
+        self._set_camera(False)
+
+    def req_ToggleVirtualCam(self, data):
+        on = not self._camera_on()
+        self._set_camera(on)
+        return {"outputActive": on}
+
     def req_GetReplayBufferStatus(self, data):
         return {"outputActive": self.host.clips_ready()}
 
@@ -1135,6 +1160,7 @@ class ControlApi:
             "stream": self.host.stream_status() is not None,
             "record": self.host.record_status() is not None,
             "clips": self.host.clips_ready(),
+            "camera": self._camera_on(),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts() if p.states},
             "filters": {(src.id, f.name): f.enabled for src in col.sources for f in src.filters},
@@ -1193,8 +1219,8 @@ class ControlApi:
                                                                   "inputVolumeDb": db, "inputVolumeMul": _db_to_mul(db)}))
 
         for key, event in (("stream", "StreamStateChanged"), ("record", "RecordStateChanged"),
-                           ("clips", "ReplayBufferStateChanged")):
-            if now[key] != last[key]:
+                           ("clips", "ReplayBufferStateChanged"), ("camera", "VirtualcamStateChanged")):
+            if now.get(key) != last.get(key):
                 state = "OBS_WEBSOCKET_OUTPUT_STARTED" if now[key] else "OBS_WEBSOCKET_OUTPUT_STOPPED"
                 events.append((event, Sub.OUTPUTS, {"outputActive": now[key], "outputState": state}))
 

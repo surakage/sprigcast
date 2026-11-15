@@ -192,6 +192,22 @@ class WindowHost:
         """kind garden or path; op switch, new, duplicate, rename or remove. A problem, or None."""
         return self.w.gardens.do(kind, op, name, new_name)
 
+    def camera_on(self) -> bool:
+        return self.w.camera is not None
+
+    def set_camera(self, on: bool) -> str | None:
+        """SprigCast Camera on or off, like Live's button. A reason it couldn't, or None."""
+        if on and self.w.camera is None:
+            from sprigcast.output import virtualcam
+
+            if not (virtualcam.supported()[0] and virtualcam.installed()):  # never a setup prompt from an app
+                return "Set up SprigCast Camera first: Settings → Output → Virtual camera."
+        if (self.w.camera is not None) != on:
+            self.w._toggle_camera()
+        if (self.w.camera is not None) != on:
+            return getattr(self.w, "_camera_error", "") or "SprigCast Camera couldn't start."
+        return None
+
     def hotkeys(self) -> list[tuple[str, str]]:
         from sprigcast.app.hotkeys import actions
 

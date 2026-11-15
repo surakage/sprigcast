@@ -797,6 +797,21 @@ class NativeApi:
             if problem:
                 raise ApiError("not_allowed", problem)
 
+    @action("camera.status", "Whether SprigCast Camera (the virtual camera) is on.")
+    def camera_status(self, data):
+        return {"on": bool(getattr(self.host, "camera_on", lambda: False)())}
+
+    @action("camera.set", "Turn SprigCast Camera on or off (no on: toggle).", on="?true or false")
+    def camera_set(self, data):
+        current = bool(getattr(self.host, "camera_on", lambda: False)())
+        on = _get(data, "on", bool, optional=True)
+        on = (not current) if on is None else on
+        if on != current:
+            problem = self.host.set_camera(on)
+            if problem:
+                raise ApiError("not_allowed", problem)
+        return {"on": on}
+
     @action("clip.save", "Save the last seconds as a clip (gets clips ready first if they're off).")
     def clip_save(self, data):
         if not self.host.clips_ready():
@@ -952,6 +967,7 @@ class NativeApi:
             "stream": self.host.stream_status() is not None,
             "record": self.host.record_status() is not None,
             "clips": self.host.clips_ready(),
+            "camera": bool(getattr(self.host, "camera_on", lambda: False)()),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
             "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
@@ -1010,8 +1026,9 @@ class NativeApi:
             if sid in last["settings"] and last["settings"][sid] != settings and sources[sid].kind != PART_KIND:
                 out.append(("source.changed", {"source": sources[sid].name, "sourceId": sid,
                                                "settings": dict(sources[sid].settings)}))
-        for key, name in (("stream", "stream.changed"), ("record", "record.changed"), ("clips", "clips.changed")):
-            if now[key] != last[key]:
+        for key, name in (("stream", "stream.changed"), ("record", "record.changed"), ("clips", "clips.changed"),
+                          ("camera", "camera.changed")):
+            if now.get(key) != last.get(key):
                 out.append((name, {"on": now[key]}))
         if now["transition"] != last["transition"]:
             out.append(("transition.changed", {"kind": now["transition"][0], "ms": now["transition"][1]}))
@@ -1033,7 +1050,7 @@ def event_group(name: str) -> str:
     if head in _PLUGIN_EVENTS:
         return "plugin"
     return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
-            "places": "output", "items": "item", "gardens": "garden", "paths": "path"}.get(head, head)
+            "places": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path"}.get(head, head)
 
 
 @dataclass
