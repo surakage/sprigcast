@@ -69,8 +69,12 @@ def test_starter_kit_makes_blooms_once_per_sound(tmp_path):
     assert len([s for s in shows if s.canvas == "vertical"]) == 5
     assert all(s.linked_to for s in shows if s.canvas == "vertical")
     assert "starting" not in {s.id for s in col.scenes} and "bg-moss" not in {c.id for c in col.sources}
-    assert [p.name for p in col.parts()] == ["Webcam"]
-    chatting = {s.canvas: s for s in shows if s.name.startswith("Just Chatting")}
+    assert [p.name for p in col.parts()] == ["Webcam", "Starting soon", "Just Chatting", "Gaming", "Be right back",
+                                             "Ending"]  # blooms hold sprigs only: one each, named after it
+    assert all(len(s.items) == 1 and col.bloom_sprig(s) is not None for s in shows)
+    assert all(col.bloom_sprig(s) is col.bloom_sprig(col.scene(s.linked_to)) for s in shows if s.linked_to)
+    chatting = {s.canvas: col.shape_for(col.bloom_sprig(s), s.canvas) for s in shows
+                if s.name.startswith("Just Chatting")}
     cam = next(c for c in col.sources if c.kind == "camera")
     full = next(i for i in chatting["horizontal"].items if i.source == cam.id)
     assert full.drawn_size((1280, 720)) == (1920, 1080)  # the camera fills the canvas: no empty strips
@@ -143,7 +147,7 @@ def test_build_tabs_sound_sections_add_undo(tmp_path, monkeypatch):
         monkeypatch.setattr(mw, "list_cameras", lambda: [])
         w._fill_add_source_menu()
         titles = [a.text() for a in w.add_source_menu.actions()]
-        assert "Video capture" in titles and "Screen" in titles and "Picture…" in titles
+        assert titles[-1] == "New sprig…" and "Video capture" not in titles  # a bloom takes sprigs only
         # Undo and redo the whole collection.
         w._copy_bloom("h1")
         assert len(col.scenes_for("horizontal")) == 2

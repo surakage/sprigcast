@@ -691,6 +691,45 @@ class SceneCollection(BaseModel):
         scene.items.insert(at, SceneItem(source=placement.id))
         return part, placement
 
+    def bloom_sprig(self, show: Scene) -> Scene | None:
+        """The sprig a bloom shows (blooms hold sprigs only): the one named after it, else its top one."""
+        sources = {c.id: c for c in self.sources}
+        parts = [p for p in (self.part_of(sources[i.source]) for i in reversed(show.items) if i.source in sources)
+                 if p is not None]
+        return next((p for p in parts if p.name == show.name), parts[0] if parts else None)
+
+    def wrap_blooms(self) -> list[Scene]:
+        """Blooms hold sprigs only. A bloom with anything else in it gets one sprig named after it, holding
+        everything it had, placed full canvas, so nothing changes on air. A bloom's vertical twin (linked_to)
+        becomes that sprig's vertical shape. New sprigs go in the Nested Scenes folder. Returns them."""
+        made: list[Scene] = []
+        by_bloom: dict[str, Scene] = {}
+        kinds = {c.id: c.kind for c in self.sources}
+        loose = [s for s in self.scenes if s.kind == "show" and any(kinds.get(i.source) != PART_KIND for i in s.items)]
+        loose.sort(key=lambda s: s.linked_to is not None)  # main shapes first, their twins after
+        for show in loose:
+            twin = by_bloom.get(show.linked_to or "")
+            if twin is not None and not any(sh.canvas == show.canvas for sh in self.shapes(twin)):
+                shape = Scene(id=self.new_id(f"{twin.id}-{show.canvas}"), name=twin.name, canvas=show.canvas,
+                              kind="part", shape_of=twin.id, items=show.items)
+                self.scenes.append(shape)
+                placement = SourceConfig(id=self.new_id("part-src"), kind=PART_KIND, name=twin.name,
+                                         settings={"scene": twin.id})
+                self.sources.append(placement)
+                show.items = [SceneItem(source=placement.id)]
+                continue
+            taken = {p.name for p in self.parts()}
+            name, n = show.name, 2
+            while name in taken:
+                name, n = f"{show.name} {n}", n + 1
+            part, _placement = self.make_part(show, list(range(len(show.items))), name)
+            folder = next((f for f in self.part_folders() if f.name == "Nested Scenes"), None) \
+                or self.add_folder(show.canvas, "Nested Scenes", holds="part")
+            part.folder = folder.id
+            by_bloom[show.id] = part
+            made.append(part)
+        return made
+
     def remove_shape(self, shape: Scene) -> None:
         """Drop a part's extra layout; shows on that canvas go back to its main layout, refitted."""
         if shape.shape_of is None:

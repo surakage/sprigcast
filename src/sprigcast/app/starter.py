@@ -146,6 +146,7 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
     else:
         desktop = "default" if choice.desktop is True else (choice.desktop or None)
         _add_sound(collection, "audio_output", desktop, "Desktop audio")
+    collection.wrap_blooms()  # each bloom shows one sprig named after it, where its parts are edited
     return made
 
 
@@ -206,7 +207,13 @@ def _drop_example(collection: SceneCollection) -> None:
     gone = {s.id for s in collection.scenes if s.id in DEFAULT_IDS}
     if not gone:
         return
+    names = {s.name for s in collection.scenes if s.id in gone}
     collection.scenes = [s for s in collection.scenes if s.id not in gone]
+    # the example blooms' own sprigs (named after them, made when blooms began holding sprigs only) go too
+    own = {p.id for p in collection.parts() if p.name in names and not collection.part_uses(p.id)}
+    collection.scenes = [s for s in collection.scenes if s.id not in own and s.shape_of not in own]
+    collection.sources = [c for c in collection.sources if str(c.settings.get("scene")) not in own
+                          or c.kind != PART_KIND]
     collection.active_scenes = {c: s for c, s in collection.active_scenes.items() if s not in gone}
     used = {i.source for s in collection.scenes for i in s.items}
     collection.sources = [c for c in collection.sources

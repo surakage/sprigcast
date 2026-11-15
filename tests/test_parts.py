@@ -255,9 +255,10 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
         assert part.id not in tiles
         assert all(s in tiles or col.scene(s).linked_to in tiles for s in shows)  # linked ones share a tile
         w._set_mode("build")
+        bloom_sprigs = {p.id for p in col.parts() if p is not part}  # each example bloom's own sprig
         w._remove_part(part)
-        assert not any(s.kind == "part" for s in col.scenes)
-        assert not any(col.part_of(src) for src in col.sources)
+        assert {s.id for s in col.scenes if s.kind == "part" and s.shape_of is None} == bloom_sprigs
+        assert not any(col.part_of(src) is part for src in col.sources)
         assert all(it.source in {src.id for src in col.sources} for s in col.scenes for it in s.items)
     finally:
         w.close()
@@ -401,7 +402,7 @@ def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):
         w._add_part()
         part = w._scene()
         assert part.kind == "part" and [s.id for s in col.part_uses(part.id)] == [show.id]
-        assert w.center.currentIndex() == 1 and w.part_empty.isVisibleTo(w)
+        assert w.center.currentIndex() == 1 and w.part_preview.hint is not None
         # select two sources in a show and turn them into a part: same picture, one placement
         w.selected_scene_id = show.id
         w._show_part_editor()
@@ -501,3 +502,32 @@ def test_window_screenshot_through_the_api(app, tmp_path, monkeypatch):
         assert all(Path(s["path"]).exists() and s["width"] == 64 for s in shots)
     finally:
         w.close()
+
+
+def test_wrap_blooms_keeps_the_look_and_shares_one_sprig_across_shapes():
+    from sprigcast.core.scene import PART_KIND, Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=1920, height=1080), Canvas(id="v", width=1080, height=1920)],
+        sources=[SourceConfig(id="bg", kind="color", name="Bg", settings={}),
+                 SourceConfig(id="cam", kind="color", name="Cam", settings={}),
+                 SourceConfig(id="pp", kind=PART_KIND, name="Webcam", settings={"scene": "web"})],
+        scenes=[Scene(id="web", name="Webcam", canvas="h", kind="part", items=[SceneItem(source="cam")]),
+                Scene(id="ss", name="Starting soon", canvas="h",
+                      items=[SceneItem(source="bg"), SceneItem(source="pp", x=10, scale=0.5)]),
+                Scene(id="ss-v", name="Starting soon (vertical)", canvas="v", linked_to="ss",
+                      items=[SceneItem(source="bg", y=5)]),
+                Scene(id="only", name="Only sprigs", canvas="h", items=[SceneItem(source="pp")])],
+        active_scenes={"h": "ss", "v": "ss-v"})
+    made = col.wrap_blooms()
+    assert [p.name for p in made] == ["Starting soon"]
+    sprig = made[0]
+    assert sprig.folder == next(f.id for f in col.part_folders() if f.name == "Nested Scenes")
+    assert [(i.source, i.x, i.scale) for i in sprig.items] == [("bg", 0, 1.0), ("pp", 10, 0.5)]  # untouched
+    show = col.scene("ss")
+    assert len(show.items) == 1 and (show.items[0].x, show.items[0].scale) == (0, 1.0)  # full canvas
+    vertical = col.shape_for(sprig, "v")
+    assert vertical.shape_of == sprig.id and [(i.source, i.y) for i in vertical.items] == [("bg", 5)]
+    assert col.bloom_sprig(col.scene("ss-v")) is sprig
+    assert [i.source for i in col.scene("only").items] == ["pp"]  # already sprigs only
+    assert col.wrap_blooms() == []  # once is enough

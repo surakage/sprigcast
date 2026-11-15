@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.app import safe_zones, theme
@@ -80,6 +80,7 @@ class Preview(QWidget):
         self.inner_rect: tuple[float, float, float, float] | None = None  # visible part area, canvas pixels
         self._inner_image: QImage | None = None
         self.empty_text = "Waiting for the renderer…"  # shown until the first frame arrives
+        self.hint: tuple[str, str] | None = None  # an empty bloom or sprig: a title and a line, in a card
         self.safe_zones = "Off"  # see safe_zones.CHOICES; only portrait canvases draw them
         self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
@@ -280,6 +281,7 @@ class Preview(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), 23, 23)
         self._paint_empty_pages(p)
+        self._paint_hint(p, rect)
         self._paint_inner(p)
         self._paint_safe_zones(p)
         self._paint_selection(p)
@@ -294,6 +296,37 @@ class Preview(QWidget):
 
             cls._mark = brand_mark()
         return cls._mark
+
+    def _paint_hint(self, p: QPainter, rect: QRectF) -> None:
+        """A friendly card in the middle of an empty bloom or sprig, instead of a bare checkerboard."""
+        if self.hint is None or self.twin or self.inner is not None or rect.width() < 220:
+            return
+        from sprigcast.app import icons
+
+        title, line = self.hint
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        big = QFont(self.font())
+        big.setPixelSize(16)
+        big.setWeight(QFont.Weight.DemiBold)
+        small = QFont(self.font())
+        small.setPixelSize(12)
+        width = min(rect.width() - 40, max(QFontMetrics(big).horizontalAdvance(title),
+                                           QFontMetrics(small).horizontalAdvance(line)) + 56)
+        card = QRectF(0, 0, width, 112)
+        card.moveCenter(rect.center())
+        p.setPen(QPen(QColor(theme.EDGE_STRONG), 1))
+        p.setBrush(QColor(theme.PANEL))
+        p.drawRoundedRect(card, 20, 20)
+        icons.paint_icon(p, QRectF(card.center().x() - 11, card.y() + 16, 22, 22), "sprig", theme.ACCENT)
+        p.setFont(big)
+        p.setPen(QColor(theme.TEXT_BRIGHT))
+        p.drawText(QRectF(card.x() + 12, card.y() + 44, card.width() - 24, 24), Qt.AlignmentFlag.AlignCenter, title)
+        p.setFont(small)
+        p.setPen(QColor(theme.MUTED))
+        p.drawText(QRectF(card.x() + 12, card.y() + 70, card.width() - 24, 22), Qt.AlignmentFlag.AlignCenter,
+                   QFontMetrics(small).elidedText(line, Qt.TextElideMode.ElideRight, int(card.width() - 24)))
+        p.restore()
 
     def _paint_empty_pages(self, p: QPainter) -> None:
         """A browser source with no page yet: a solid card with the SprigCast S and its size, so it can be

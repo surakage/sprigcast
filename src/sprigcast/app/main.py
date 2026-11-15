@@ -24,13 +24,21 @@ def load_collection(path: Path) -> SceneCollection:
     """Load the user's scene collection, or start from the bundled example on first run."""
     if path.exists():
         try:
-            return SceneCollection.load(path)
+            collection = SceneCollection.load(path)
         except Exception as exc:
             backup = path.with_suffix(".broken.json")
             path.replace(backup)
             logging.warning("could not read %s (%s); moved it to %s and started fresh", path, exc, backup)
+        else:
+            if collection.wrap_blooms():  # blooms hold sprigs only: older blooms' sources move into one each
+                backup = path.with_suffix(".before-sprigs.json")
+                if not backup.exists():
+                    backup.write_bytes(path.read_bytes())
+                collection.save(path)
+            return collection
     text = resources.files("sprigcast.data").joinpath("default_scenes.json").read_text(encoding="utf-8")
     collection = SceneCollection.from_json(text)
+    collection.wrap_blooms()
     collection.save(path)
     return collection
 
