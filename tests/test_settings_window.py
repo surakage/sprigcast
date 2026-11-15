@@ -100,8 +100,9 @@ def test_plugins_have_their_own_tab(app):
     report = PluginReport(loaded=["countdown_example.py"], failed={"broken.py": "SyntaxError: oops"})
     w = _window(_collection(), tab="Plugins", plugin_report=report, open_plugins_folder=lambda: None)
     assert w.current_tab() == "Plugins"
-    rows = [w.plugin_list.item(i).text() for i in range(w.plugin_list.count())]
-    assert any("countdown_example.py" in r for r in rows) and any("broken.py" in r for r in rows)
+    mine = w.plugin_store.mine.text()  # your own plugins, with the ones that failed to load
+    assert "countdown_example.py" in mine and "broken.py" in mine and "SyntaxError" in mine
+    assert "slide_show" in w.plugin_store.rows  # and the store
     assert not hasattr(w, "plugin_status")  # nothing about plugins left on General
 
 
