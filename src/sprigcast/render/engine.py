@@ -554,7 +554,10 @@ class Engine:
     def _may_sleep(self, source) -> bool:
         if not source.sleeps or self.sleep_policy == "off":
             return False
-        return self.sleep_policy == "all" or source.kind != "camera"
+        if self.sleep_policy == "all" or source.kind != "camera":
+            return True
+        # A camera pauses when its own "Pause when not on screen" is on (new cameras have it on).
+        return bool((getattr(source, "settings", None) or {}).get("pause_off_screen", False))
 
     def _shown_sources(self) -> set[str]:
         """Sources placed in anything drawn right now: on air, fading out, staged, the sprig being edited,

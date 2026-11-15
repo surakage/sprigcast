@@ -27,14 +27,8 @@ log = logging.getLogger(__name__)
 
 RETRY_SECONDS = 2.0
 
-# Offered in the picker. Most webcams only reach 1080p30 or 720p60 in MJPG, which we request.
-MODES = [
-    (1920, 1080, 30),
-    (1920, 1080, 60),
-    (1280, 720, 60),
-    (1280, 720, 30),
-    (640, 480, 30),
-]
+# Sizes offered in the picker. The camera is asked for the smallest mode that covers the size picked.
+SIZES = [(1920, 1080), (1280, 720), (640, 480)]
 
 
 @dataclass(frozen=True)
@@ -213,6 +207,27 @@ def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
             if option not in out:
                 out.append(option)
     return out
+
+
+_BYTES_PER_PIXEL = {"nv12": 1.5, "yuyv422": 2.0, "mjpeg": 0.3}  # mjpeg: compressed, roughly
+
+
+def mode_cost(option: dict[str, str], fps: int) -> float:
+    """Roughly how many bytes a second a dshow option takes in (copied, converted, shrunk)."""
+    w, h = (int(v) for v in option["video_size"].split("x"))
+    fmt = option.get("pixel_format") or option.get("vcodec", "")
+    num, _, den = option["framerate"].partition("/")
+    rate = float(num) / float(den) if den else float(num)
+    return w * h * _BYTES_PER_PIXEL.get(fmt, 3.0) * rate
+
+
+def plain_mode(option: dict[str, str]) -> str:
+    """e.g. "1920 x 1080 at 60 fps (NV12)"."""
+    w, h = option["video_size"].split("x")
+    num, _, den = option["framerate"].partition("/")
+    rate = round(float(num) / float(den) if den else float(num))
+    fmt = (option.get("pixel_format") or option.get("vcodec", "")).upper().replace("YUYV422", "YUY2")
+    return f"{w} x {h} at {rate} fps ({fmt})" if fmt else f"{w} x {h} at {rate} fps"
 
 
 def shrunk_size(src: tuple[int, int], want: tuple[int, int]) -> tuple[int, int] | None:
@@ -416,12 +431,12 @@ _feeds_lock = threading.Lock()
 
 def _feed_key(settings: dict[str, Any]) -> tuple:
     """Sources with the same device, size and rate share a feed; mirroring is done per source."""
-    return tuple(sorted((k, repr(v)) for k, v in settings.items() if k != "mirror"))
+    return tuple(sorted((k, repr(v)) for k, v in settings.items() if k not in ("mirror", "pause_off_screen")))
 
 
 @register("camera")
 class CameraSource(Source):
-    """Settings: name, path, width, height, fps, mirror (bool)."""
+    """Settings: name, path, width, height, fps, mirror (bool), pause_off_screen (bool)."""
 
     channel_order = "BGR"  # OpenCV delivers 3-channel BGR; the compositor swizzles on the GPU
     sleeps = True  # only used when "Sources that aren't on screen" is set to pause cameras too
