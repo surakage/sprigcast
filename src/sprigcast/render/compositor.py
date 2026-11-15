@@ -848,6 +848,7 @@ class Compositor:
         if previous is None or progress >= 1.0:
             self._draw_scene(target.fbo, size, scene, source_sizes)
             return
+        self._used.pop(("transition", canvas.id), None)  # in use again
         self._draw_scene(target.aux(), size, previous, source_sizes)
         self._draw_scene(target.incoming(), size, scene, source_sizes)
         transition = transition or Transition()
@@ -887,11 +888,14 @@ class Compositor:
         self.ctx.disable(moderngl.BLEND)
         self.transition_vao.render(moderngl.TRIANGLES, vertices=3)
 
+    TRANSITION_KEEP_S = 30.0
+
     def end_transition(self, canvas_id: str) -> None:
-        """A canvas's transition finished: free its two extra textures."""
-        target = self.targets.get(canvas_id)
-        if target is not None:
-            target.release_transition()
+        """A canvas's transition finished. Its two extra textures stay for the next switch (prune() frees
+        them after TRANSITION_KEEP_S without one): making two canvas-sized textures on every switch
+        cost a frame each time when switching quickly."""
+        if canvas_id in self.targets:
+            self._used[("transition", canvas_id)] = time.monotonic()
 
     def _blend(self) -> None:
         self.ctx.enable(moderngl.BLEND)
@@ -1186,9 +1190,14 @@ class Compositor:
         their two read-back buffers each) of a recording, stream or preview that ended, and source
         record's clean copy of a canvas. They used to stay until SprigCast closed. Returns how many."""
         now = time.monotonic() if now is None else now
-        stale = [key for key, when in self._used.items() if now - when > idle_s]
+        stale = [(kind, key) for (kind, key), when in self._used.items()
+                 if now - when > (max(idle_s, self.TRANSITION_KEEP_S) if kind == "transition" else idle_s)]
         for kind, key in stale:
             del self._used[(kind, key)]
+            if kind == "transition":
+                if key in self.targets:
+                    self.targets[key].release_transition()
+                continue
             pool = {"nv12": self.nv12_targets, "scaled": self.scaled_targets, "canvas": self.targets}[kind]
             target = pool.pop(key, None)
             if target is not None:

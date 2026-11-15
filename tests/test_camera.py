@@ -132,12 +132,13 @@ def test_missing_camera_waits(fake_cv2, monkeypatch):
         src.stop()
 
 
-class FakeAvFrame:
-    def to_ndarray(self, format, **kwargs):
-        assert format == "bgr24"
-        frame = np.zeros((36, 64, 3), dtype=np.uint8)
-        frame[:, 0] = (255, 0, 0)
-        return frame
+def FakeAvFrame():  # noqa: N802 (stands in for the class it used to be)
+    """What a webcam's MJPEG decodes to: full-range 4:2:2, here with a blue left column."""
+    import av
+
+    bgr = np.zeros((36, 64, 3), dtype=np.uint8)
+    bgr[:, 0] = (255, 0, 0)
+    return av.VideoFrame.from_ndarray(bgr, format="bgr24").reformat(format="yuvj422p")
 
 
 class FakeAvContainer:
@@ -195,7 +196,11 @@ def test_ffmpeg_is_used_first_and_opencv_is_not_touched(fake_av):
     try:
         assert wait_for(lambda: src._frames.peek() is not None)
         frame = src.video_frame()
-        assert tuple(frame[0, -1]) == (255, 0, 0) and frame.flags["C_CONTIGUOUS"]  # mirrored
+        # The camera's own planes go to the GPU (Y rows, then U | V rows), here flipped: blue is on the right
+        assert src.channel_order.startswith("I420/") and src.channel_order.endswith("/pc")
+        assert frame.shape == (36 + 18, 64) and src.size == (64, 36) and frame.flags["C_CONTIGUOUS"]
+        assert frame[0, -1] > 20 and frame[0, 0] == 0  # Y: blue at the right edge; black is 0 in full range
+        assert frame[36, 31] > 160 > 140 > frame[36, 0]  # U (left half): high for blue, on the flipped side
         assert src.status == "capturing 64x36 @ 30"
         name, options = fake_av.opened[0]
         assert name == "video=@device_pnp_\\\\?\\usb#b"  # opened by its device path, not its index
@@ -326,19 +331,13 @@ def test_facecam_that_only_does_1080p120():
     assert shrunk_size((1280, 720), (1280, 720)) is None
 
 
-def test_bigger_camera_frames_are_shrunk_to_the_chosen_size(fake_av, monkeypatch):
-    calls = []
-    original = FakeAvFrame.to_ndarray
-
-    def record(self, format, **kwargs):
-        calls.append(kwargs)
-        return original(self, format)
-    monkeypatch.setattr(FakeAvFrame, "to_ndarray", record)
+def test_bigger_camera_frames_are_shrunk_to_the_chosen_size(fake_av):
     src = create_source("camera", "c", {"name": "Cam A", "path": "usb#a", "width": 32, "height": 18, "fps": 30})
     src.start()
     try:
-        assert wait_for(lambda: calls)
-        assert calls[0] == {"width": 32, "height": 18, "interpolation": "BILINEAR"}
+        assert wait_for(lambda: src._frames.peek() is not None)
+        frame = src.video_frame()
+        assert frame.shape == (18 + 9, 32) and src.size == (32, 18)
         assert src.status.endswith("shrunk to 32x18")
     finally:
         src.stop()
@@ -432,3 +431,22 @@ def test_a_camera_that_refuses_every_rate_still_gets_nv12():
     assert options[2] == {"video_size": "1920x1080", "pixel_format": "nv12"}  # before the default YUYV
     assert plain_mode(options[2]) == "1920 x 1080 at its own rate (NV12)"
     assert mode_cost(options[2], 30) < mode_cost(options[3], 30)
+
+
+def test_camera_pictures_go_up_as_yuv_planes_and_mirror_cleanly(monkeypatch):
+    import av
+
+    from sprigcast.sources import camera
+
+    bgr = np.zeros((36, 64, 3), dtype=np.uint8)
+    bgr[:, :8] = (0, 0, 255)  # red at the left
+    nv12 = av.VideoFrame.from_ndarray(bgr, format="bgr24").reformat(format="nv12")  # the Elgato's NV12
+    array, order, size = camera.camera_picture(nv12, None)
+    assert order == "I420/601/tv" and size == (64, 36) and array.shape == (54, 64)
+    flipped = camera.mirror_picture(array, order, size)
+    assert (flipped[:36] == array[:36, ::-1]).all()
+    assert (flipped[36:, :32] == array[36:, :32][:, ::-1]).all() and (flipped[36:, 32:] == array[36:, 32:][:, ::-1]).all()
+    assert flipped[36, 63] > 200 > flipped[36, 32]  # V (right half): red now at the far right
+    monkeypatch.setattr(camera, "PLANAR", False)  # the escape hatch: BGR as before
+    array, order, size = camera.camera_picture(nv12, (32, 18))
+    assert order == "BGR" and array.shape == (18, 32, 3) and size == (32, 18)

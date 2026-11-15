@@ -262,8 +262,10 @@ class Engine:
         last_problem = None
         readbacks_at = 0
 
+        late_logged = 0.0
         try:
             while True:
+                woke = time.perf_counter()
                 if not self._drain_commands(compositor):
                     break
                 started = time.perf_counter()
@@ -287,6 +289,11 @@ class Engine:
                     missed = int((now - next_tick) / interval)
                     if missed:
                         dropped += missed
+                        if now - late_logged >= 0.25:  # say where the time went (at most 4 a second)
+                            late_logged = now
+                            log.info("late frame (%d missed): woke %.1f ms late, commands %.1f ms, frame %.1f ms%s",
+                                     missed, 1000 * max(0.0, woke - (next_tick - interval)),
+                                     1000 * (started - woke), 1000 * (render_times[-1]), self._where())
                         next_tick += missed * interval
                 else:
                     # Python 3.11+ sleeps with a high-resolution timer on Windows: no need to spin.
@@ -832,7 +839,23 @@ class Engine:
                     out[(source.id, canvas.id)] = texture
         return out
 
+    def _mark(self, name: str) -> None:
+        self._marks.append((name, time.perf_counter()))
+
+    def _where(self) -> str:
+        """The last frame's slowest steps, for the late-frame log line."""
+        marks = getattr(self, "_marks", None)
+        if not marks:
+            return ""
+        steps = sorted(((b[1] - a[1], b[0]) for a, b in zip(marks, marks[1:])), reverse=True)[:3]
+        text = ", ".join(f"{name} {1000 * spent:.1f}" for spent, name in steps if spent >= 0.0005)
+        slow = getattr(self, "_slowest_source", None)
+        if slow and slow[1] >= 0.002:
+            text += f"; slowest source {slow[0]} {1000 * slow[1]:.1f}"
+        return f" ({text})" if text else ""
+
     def _tick(self, compositor, now: float) -> None:
+        self._marks = [("start", time.perf_counter())]
         compositor.time = now
         if self._release_later:
             self._release_unused(compositor)
@@ -842,17 +865,26 @@ class Engine:
             if prune is not None:
                 prune()
         self._rest_sources(compositor, now)
+        self._mark("waking and pausing")
+        slowest = ("", 0.0)
         for source_id, source in self._sources.items():
             if source.asleep:
                 continue
+            began = time.perf_counter()
             frame = source.video_frame()
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)
+            spent = time.perf_counter() - began
+            if spent > slowest[1]:
+                slowest = (source_id, spent)
+        self._slowest_source = slowest
+        self._mark("sources")
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
         if self._collection.parts():
             self._render_parts(compositor, sizes, now)
         elif compositor.parts:
             compositor.parts = {}
+        self._mark("sprigs")
         with self._taps_lock:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
         for canvas in self._collection.canvases:
@@ -883,6 +915,9 @@ class Engine:
                     callback(frame)
                 except Exception:
                     log.exception("frame tap for %s failed", canvas.id)
+        self._mark("canvases")
         self._render_views(compositor, sizes, now, taps)
+        self._mark("virtual camera")
         if self._grabs:
             self._serve_grabs(compositor, sizes)
+            self._mark("snapshots")

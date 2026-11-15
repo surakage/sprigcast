@@ -33,6 +33,10 @@ HEADER = 64
 MAX_W = 1920
 BLOCK_SIZE = HEADER + MAX_W * MAX_W * 3 // 2
 STALE_MS = 2000  # no heartbeat for this long: nobody is watching
+# An app that opens the camera twice at two sizes (TikTok LIVE Studio: 1080x1920 and 1920x1080) has two
+# copies of the camera writing their size into the one block in turn. The size being fed stays while it is
+# still asked for within this long; flipping to whichever was written last re-made the copy every second.
+STILL_WANTED_MS = 2000
 DLL_NAME = "sprigcast_camera.dll"
 DLL32_NAME = "sprigcast_camera32.dll"  # for 32-bit apps
 
@@ -303,6 +307,7 @@ class VirtualCamera:
         self._retired: SharedBlock | None = None  # unmapped a poll later, so a frame mid-copy can't fault
         self.error = ""
         self.frames = 0
+        self._asked: dict[tuple[int, int], int] = {}  # camera size -> when an app last asked for it (ms)
 
     # On and off ------------------------------------------------------------------------
 
@@ -400,6 +405,9 @@ class VirtualCamera:
             if not block.valid or not (width and height):
                 self._retired, self.block = block, None  # the camera closed it; open again when watched
             return
+        self._asked[(width, height)] = self._clock()
+        if self.tap is not None and (width, height) != self.tap[2] and self._still_asked(self.tap[2]):
+            width, height = self.tap[2]  # another copy of the camera at another size: keep feeding this one
         want = self._want(width, height)
         if want != self.tap or self._view != self._shown:  # a bloom or source view keeps the same tap id
             self._untap()
@@ -410,6 +418,9 @@ class VirtualCamera:
                 self.engine.add_frame_tap(tap_id, self._on_frame, picture)
                 self.tap, self._shown = want, self._view
                 log.info("virtual camera: an app is watching at %dx%d, showing %s", width, height, self.choice())
+
+    def _still_asked(self, size: tuple[int, int]) -> bool:
+        return self._clock() - self._asked.get(size, -STILL_WANTED_MS) < STILL_WANTED_MS
 
     def _canvas_for(self, width: int, height: int):
         """The canvas with the same shape as what the app asked for, else any canvas that's on."""
@@ -460,6 +471,7 @@ class VirtualCamera:
         if block is None or tap is None or getattr(frame, "fmt", "") != "nv12":
             return
         width, height = tap[2]
+        self._asked[block.wanted()] = self._clock()  # every frame: catches both copies of a camera opened twice
         data = frame.data
         if (frame.width, frame.height) != (width, height):
             data = self._boxed(frame, width, height)

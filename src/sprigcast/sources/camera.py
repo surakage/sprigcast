@@ -11,6 +11,7 @@ if the camera is unplugged it keeps the last picture and tries to reopen it ever
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 import threading
@@ -247,6 +248,52 @@ def shrunk_size(src: tuple[int, int], want: tuple[int, int]) -> tuple[int, int] 
     return max(2, round(src[0] * scale / 2) * 2), max(2, round(src[1] * scale / 2) * 2)
 
 
+PLANAR = not os.environ.get("SPRIGCAST_CAMERA_RGB")  # escape hatch: BGR from the CPU, as before
+
+
+def camera_picture(frame, target: tuple[int, int] | None) -> tuple[np.ndarray, str, tuple[int, int]]:
+    """A decoded camera frame for the GPU: (array, channel_order, picture size).
+
+    The camera's own YUV planes go up as they are (4:2:0, like video files: see media.pack_i420) and the
+    GPU turns them into colour, so the CPU no longer converts each frame to BGR. That is half the bytes to
+    copy and upload (1080p: 3 MB a frame instead of 6) and most of the camera's CPU time.
+    """
+    w, h = target or (frame.width, frame.height)
+    if PLANAR and w % 2 == 0 and h % 2 == 0:
+        from sprigcast.sources.media import pack_i420
+
+        name = frame.format.name
+        full = name.startswith("yuvj") or int(getattr(frame, "color_range", 0) or 0) == 2
+        if name != "yuv420p" or (frame.width, frame.height) != (w, h):
+            # MJPEG decodes to full-range YUV: keep that range rather than squeeze it (it's labelled below).
+            frame = frame.reformat(width=w, height=h, format="yuv420p", interpolation="BILINEAR",
+                                   **({"src_color_range": 2, "dst_color_range": 2} if full else {}))
+        packed = pack_i420(frame, (w, h))
+        if packed is not None:
+            array, order = packed
+            if full and order.endswith("/tv"):
+                order = order[:-3] + "/pc"
+            return array, order, (w, h)
+    picture = frame.to_ndarray(format="bgr24", **({"width": w, "height": h, "interpolation": "BILINEAR"}
+                                                   if target else {}))
+    return picture, "BGR", (picture.shape[1], picture.shape[0])
+
+
+def mirror_picture(frame: np.ndarray, order: str, size: tuple[int, int]) -> np.ndarray:
+    """Flip a camera picture left to right, whether BGR or packed 4:2:0 planes (Y, then U | V rows)."""
+    if not order.startswith("I420"):
+        return np.ascontiguousarray(frame[:, ::-1])
+    w, h = size
+    cw, ch = w // 2, h // 2
+    out = np.empty_like(frame)
+    out[:h] = frame[:h, ::-1]
+    out[h:h + ch, :cw] = frame[h:h + ch, :cw][:, ::-1]
+    out[h:h + ch, cw:] = frame[h:h + ch, cw:][:, ::-1]
+    if frame.shape[0] > h + ch:
+        out[h + ch:] = frame[h + ch:, ::-1]
+    return out
+
+
 class _Feed:
     """One open camera, shared by every camera source set to the same device and mode.
 
@@ -268,8 +315,9 @@ class _Feed:
         self._restart = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name=f"camera-{self.id}", daemon=True)
+    def start(self, after: "_Feed | None" = None) -> None:
+        """after: the same camera still closing after a sleep(); this feed opens it once that's done."""
+        self._thread = threading.Thread(target=self._run, args=(after,), name=f"camera-{self.id}", daemon=True)
         self._thread.start()
 
     def stop(self, wait: bool = True) -> None:
@@ -292,7 +340,9 @@ class _Feed:
     def _mode(self) -> tuple[int, int, int]:
         return int(self.settings.get("width", 1280)), int(self.settings.get("height", 720)), int(self.settings.get("fps", 30))
 
-    def _run(self) -> None:
+    def _run(self, after: "_Feed | None" = None) -> None:
+        if after is not None:
+            after.join()  # here, not on the render thread: waiting there froze the picture
         while not self._stop.is_set():
             self._restart.clear()
             device = find_camera(str(self.settings.get("name", "")), str(self.settings.get("path", "")))
@@ -303,10 +353,10 @@ class _Feed:
                 self.status = "camera not found, retrying" if device is None else self.status
             self._restart.wait(RETRY_SECONDS)
 
-    def _deliver(self, frame: np.ndarray) -> None:
+    def _deliver(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None) -> None:
         frame = np.ascontiguousarray(frame)
         for source in list(self.subscribers):
-            source._receive(frame)
+            source._receive(frame, order, size)
 
     # FFmpeg (PyAV) DirectShow: the default ---------------------------------------------
 
@@ -374,9 +424,7 @@ class _Feed:
             # A camera bigger than the size you chose (it offers nothing smaller) is shrunk as each frame
             # is converted: less to copy, keep in memory and send to the GPU.
             target = shrunk_size((stream.codec_context.width, stream.codec_context.height), self._mode()[:2])
-            convert = {"format": "bgr24"}
             if target is not None:
-                convert.update(width=target[0], height=target[1], interpolation="BILINEAR")
                 self.status += f", shrunk to {target[0]}x{target[1]}"
             for packet in container.demux(stream):
                 if self._stop.is_set() or self._restart.is_set():
@@ -387,7 +435,7 @@ class _Feed:
                         continue
                     last = now
                 for frame in packet.decode():
-                    self._deliver(frame.to_ndarray(**convert))
+                    self._deliver(*camera_picture(frame, target))
             else:
                 self.status = "camera disconnected, retrying"
         except Exception as exc:  # unplugged mid-stream
@@ -447,7 +495,7 @@ def _feed_key(settings: dict[str, Any]) -> tuple:
 class CameraSource(Source):
     """Settings: name, path, width, height, fps, mirror (bool), pause_off_screen (bool)."""
 
-    channel_order = "BGR"  # OpenCV delivers 3-channel BGR; the compositor swizzles on the GPU
+    channel_order = "BGR"  # of the picture video_frame() last returned: BGR (OpenCV) or packed YUV planes
     sleeps = True  # only used when "Sources that aren't on screen" is set to pause cameras too
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -502,9 +550,7 @@ class CameraSource(Source):
             feed.subscribers.append(self)
             self._feed, self._attached = feed, True
         if new:
-            if old is not None:
-                old.join()  # still closing the device after a sleep(): let it finish before reopening
-            feed.start()
+            feed.start(after=old)  # old: still closing the device after a sleep(), let it finish first
 
     def _leave(self, wait: bool) -> None:
         if not self._attached or self._feed is None:
@@ -558,11 +604,16 @@ class CameraSource(Source):
         return self._size
 
     def video_frame(self) -> np.ndarray | None:
-        return self._frames.take()
+        item = self._frames.take()
+        if item is None:
+            return None
+        frame, self.channel_order = item
+        return frame
 
-    def _receive(self, frame: np.ndarray) -> None:
+    def _receive(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None) -> None:
         """A frame from the feed's capture thread. The array is shared with other sources: read only."""
+        size = size or (frame.shape[1], frame.shape[0])
         if self.settings.get("mirror"):
-            frame = np.ascontiguousarray(frame[:, ::-1])
-        self._size = (frame.shape[1], frame.shape[0])
-        self._frames.put(frame)
+            frame = mirror_picture(frame, order, size)
+        self._size = size
+        self._frames.put((frame, order))
