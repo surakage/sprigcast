@@ -343,6 +343,14 @@ class LiveSide(QWidget):
         self.all_settings.clicked.connect(lambda: on_destination(None))
         self.all_settings.setVisible(False)
         where.addWidget(self.all_settings, 0, Qt.AlignmentFlag.AlignLeft)
+        self.on_health: Callable[[], None] = lambda: None
+        self.health_link = QPushButton("Last stream's health")
+        self.health_link.setStyleSheet(theme.LINK_STYLE)
+        self.health_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.health_link.setToolTip("Dropped frames, reconnects, peak memory and hitches from your last stream")
+        self.health_link.clicked.connect(lambda: self.on_health())
+        self.health_link.setVisible(False)
+        where.addWidget(self.health_link, 0, Qt.AlignmentFlag.AlignLeft)
         root.addWidget(where_card)
         self.where_card = where_card
         self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
@@ -369,8 +377,14 @@ class LiveSide(QWidget):
 
     # The buttons ------------------------------------------------------------------------
 
+    def set_health_link(self, shown: bool) -> None:
+        """After a stream: a small link to how it went (hidden while live and before the first stream)."""
+        self._has_health = shown
+        self.health_link.setVisible(shown and not self.is_live)
+
     def set_live(self, live: bool) -> None:
         self.is_live = live
+        self.health_link.setVisible(getattr(self, "_has_health", False) and not live)
         self.add_place.setEnabled(not live)
         if live and self.editing:
             self.set_editing(False)
@@ -564,7 +578,38 @@ class StageCard(QFrame):
         self.holder = QVBoxLayout()  # the main window puts its canvas splitter in here
         self.holder.setContentsMargins(0, 0, 0, 0)
         self.root.addLayout(self.holder, 1)
+        # While live: a small banner over the top of the stage when a destination reconnects or
+        # auto-pilot has lowered its bitrate (it floats, so the canvases never jump).
+        self.notice = QLabel("", self)
+        self.notice.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.notice.hide()
 
+
+
+    def set_notice(self, text: str, level: str = "warning") -> None:
+        """Show (or with "" hide) the banner: amber for a lowered bitrate, red while reconnecting."""
+        if not text:
+            self.notice.hide()
+            return
+        colour = theme.BAD if level == "bad" else theme.WARN
+        self.notice.setText(("⟳  " if level == "bad" else "↓  ") + text)
+        self.notice.setStyleSheet(f"QLabel {{ background: {theme.CHROME}; color: {colour}; border: 1px solid {colour};"
+                                  " border-radius: 16px; padding: 0 18px; font-weight: 600; }")
+        self.notice.setFixedHeight(32)  # radius 16: Qt squares the corners when it's over half the height
+        self.notice.adjustSize()
+        self._place_notice()
+        self.notice.show()
+        self.notice.raise_()
+
+    def _place_notice(self) -> None:
+        width = min(self.notice.sizeHint().width(), self.width() - 80)
+        self.notice.resize(width, 32)
+        self.notice.move((self.width() - width) // 2, 56)  # just inside the top of the canvases
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.notice.isVisible():
+            self._place_notice()
 
 class LiveStage(QWidget):
     """The whole Live screen. The main window fills `card.holder` and `tiles_slot` when Live starts."""
