@@ -427,12 +427,7 @@ class Shelf:
         """Write a garden or path to a file of your choosing (the one on screen as it is now)."""
         entry = self.find(kind, wanted)
         target = Path(target)
-        try:
-            inside = target.resolve().is_relative_to(self.folder.resolve())
-        except OSError:
-            inside = False
-        if inside:
-            raise ShelfError("Pick a folder outside SprigCast's own settings folder.")
+        self._outside(target)
         if kind == "garden":
             text = (collection if entry.id == self.index.garden else self.load_garden(entry)).model_dump_json(indent=2)
         else:
@@ -440,6 +435,38 @@ class Shelf:
                 self.sync_path(collection)
             text = self.load_path(entry).model_dump_json(indent=2)
         _write(Path(target), text)
+
+    def _outside(self, target: Path) -> None:
+        try:
+            inside = Path(target).resolve().is_relative_to(self.folder.resolve())
+        except OSError:
+            inside = False
+        if inside:
+            raise ShelfError("Pick a folder outside SprigCast's own settings folder.")
+
+    def export_pack(self, wanted: str, target: Path, collection: SceneCollection, progress=None) -> list[str]:
+        """Write a garden and the files it uses to one .sprigpack file. Returns files that weren't found."""
+        from sprigcast.core import pack
+
+        entry = self.find("garden", wanted)
+        self._outside(target)
+        garden = collection if entry.id == self.index.garden else self.load_garden(entry)
+        try:
+            return pack.export_pack(garden, Path(target), progress)
+        except pack.PackError as exc:
+            raise ShelfError(str(exc)) from exc
+
+    def import_pack(self, source: Path, media: Path, progress=None) -> Entry:
+        """Add a garden from a .sprigpack: its files are unpacked to media/<name> (a new folder)."""
+        from sprigcast.core import pack
+
+        source = Path(source)
+        folder = pack.free_folder(media, clean_name(source.stem))
+        try:
+            garden = pack.read_pack(source, folder, progress)
+        except pack.PackError as exc:
+            raise ShelfError(str(exc)) from exc
+        return self._add("garden", source.stem, garden)
 
     def import_file(self, kind: str, source: Path) -> Entry:
         """Add a garden or path from an exported file; named after the file (with a number if taken)."""

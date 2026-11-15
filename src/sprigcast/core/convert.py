@@ -296,6 +296,9 @@ def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
 _KEY_COLORS = {"green": "#00ff00", "blue": "#0000ff", "magenta": "#ff00ff"}
 
 
+_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll"}
+
+
 def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
     out: list[Filter] = []
     for n, f in enumerate(obs.get("filters") or [], 1):
@@ -338,11 +341,19 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
                                           "opacity": int(opacity * 100 if kind.endswith("_v2") else opacity)}
         elif kind in ("sharpness_filter", "sharpness_filter_v2"):
             mapped = "sharpen", {"sharpness": _num(s.get("sharpness"), 0.08)}
+        elif kind == "obs_composite_blur":  # the Composite Blur plugin (THSV's pixelate uses it)
+            pixelate = int(_num(s.get("blur_algorithm"))) == 4
+            mapped = "blur", {"mode": "pixelate" if pixelate else "blur",
+                              "size": max(0.5, min(64.0, _num(s.get("radius"), 10.0)))}
+        elif kind in ("streamfx-filter-blur", "filter-blur"):
+            mapped = "blur", {"mode": "blur", "size": max(0.5, min(64.0, _num(s.get("Filter.Blur.Size"), 5.0)))}
         elif kind == "scroll_filter":
             mapped = "scroll", {"speed_x": _num(s.get("speed_x")), "speed_y": _num(s.get("speed_y"))}
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
             continue
+        if mapped[0] in _PICTURE_FILTERS and str(obs.get("id") or "") in AUDIO_IDS:
+            continue  # a picture filter on a sound does nothing in OBS either
         out.append(Filter(id=f"f-{n}", kind=mapped[0], name=str(f.get("name") or mapped[0]),
                           enabled=bool(f.get("enabled", True)), settings=mapped[1]))
     return out

@@ -51,7 +51,7 @@ def obs_file():
         {"id": "wasapi_input_capture", "name": "[AIC] Mic", "uuid": "m1", "volume": 0.1, "muted": True,
          "settings": {"device_id": "{0.0.1}.{abc}"},
          "filters": [{"id": "compressor_filter", "name": "Comp", "settings": {"ratio": 4, "threshold": -20}},
-                     {"id": "obs_composite_blur", "name": "Fancy blur", "settings": {}}]},
+                     {"id": "shader_filter", "name": "Fancy shader", "settings": {}}]},
         {"id": "game_capture", "name": "Game", "uuid": "g1", "settings": {"capture_mode": "window", "window": "Elden Ring:Cls:eldenring.exe"}},
         {"id": "vlc_source", "name": "Playlist", "uuid": "v1", "settings": {}},
         _scene("--- Main Scenes ---", "div1", []),
@@ -100,7 +100,7 @@ def test_obs_blooms_sprigs_folders_and_vertical_twins():
     rule = col.transition_rules[0]
     assert col.scene(rule.to_scene).name == "Just Chatting" and rule.transition.stinger.cut_ms == 650
     assert col.transition.kind == "fade" and col.transition.duration_ms == 400
-    assert any("Playlist" in n for n in notes) and any("Fancy blur" in n for n in notes)
+    assert any("Playlist" in n for n in notes) and any("Fancy shader" in n for n in notes)
     assert any("[AIC] Mic: uses your" in n for n in notes)  # OBS's only mic, its device not here: your Mic
     assert not any(c.name == "[AIC] Mic" for c in col.sources)
     mic = next(c for c in col.sources if c.id in col.global_device_ids() and c.kind == "audio_input")
@@ -246,3 +246,16 @@ def test_obs_hotkeys_and_text():
     sprig = next(s for s in col.parts() if s.name == "BRB")
     item = next(i for i in sprig.items if i.source == title.id)
     assert item.x < 960 and item.y < 540  # the text's real size was used to centre it
+
+
+def test_composite_blur_pixelate_comes_over():
+    data = obs_file()
+    cam = next(s for s in data["sources"] if s["name"] == "Cam")
+    cam["filters"] = [{"id": "obs_composite_blur", "name": "THSV Pixelate", "enabled": False,
+                       "settings": {"blur_algorithm": 4, "radius": 40}},
+                      {"id": "obs_composite_blur", "name": "Soft", "settings": {"blur_algorithm": 0, "radius": 90}}]
+    garden, notes = convert(data, _like())
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    assert [(f.kind, f.settings, f.enabled) for f in cam.filters] == [
+        ("blur", {"mode": "pixelate", "size": 40.0}, False), ("blur", {"mode": "blur", "size": 64.0}, True)]
+    assert not any("THSV" in n for n in notes)

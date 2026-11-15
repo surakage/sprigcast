@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QStandardPaths, Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QToolButton,
     QVBoxLayout,
@@ -37,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.terms import COLLECTION, COLLECTIONS, PROFILE, PROFILES, cap
-from sprigcast.core import convert
+from sprigcast.core import convert, pack
 from sprigcast.core.gardens import (
     Shelf,
     ShelfError,
@@ -213,6 +215,8 @@ class GardenControl:
                     sub.addAction(label.replace("&", "&&")).triggered.connect(
                         lambda _=False, f=file: self._report(self.import_garden(f)))
         menu.addAction("Export…").triggered.connect(lambda: self._export(kind))
+        if kind == "garden":
+            menu.addAction("Export with files…").triggered.connect(lambda: self._export_pack())
         menu.addSeparator()
         if kind == "garden":
             menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
@@ -342,7 +346,8 @@ class GardenControl:
         return folder
 
     def _import(self, kind: str) -> None:
-        types = "SprigCast, OBS, Streamlabs or Meld (*.json)" if kind == "garden" else "SprigCast (*.json)"
+        types = f"SprigCast, OBS, Streamlabs or Meld (*.json *{pack.PACK_SUFFIX})" if kind == "garden" \
+            else "SprigCast (*.json)"
         path, _ = QFileDialog.getOpenFileName(self.w, f"Import {WORDS[kind][0]}", str(self._exports()), types)
         if not path:
             return
@@ -364,12 +369,14 @@ class GardenControl:
             return []
 
     def import_garden(self, path: Path, show_notes: bool = True) -> str | None:
-        """A SprigCast export, or a scene collection from OBS, Streamlabs or Meld: added, then switched to."""
+        """A SprigCast export or pack, or a scene collection from OBS, Streamlabs or Meld: added, then switched to."""
         try:
-            data = convert.read_json(path)
-            app = convert.detect(data)
-            if app == "sprigcast":
-                entry, notes = self.shelf.import_file("garden", path), []
+            path, notes = Path(path), []
+            if pack.is_pack(path):
+                with self._progress(f"Unpacking {path.stem}…") as progress:
+                    entry = self.shelf.import_pack(path, self._media(), progress)
+            elif (app := convert.detect(data := convert.read_json(path))) == "sprigcast":
+                entry = self.shelf.import_file("garden", path)
             elif app:
                 garden, notes = convert.convert(data, self.w.collection, audio_devices=self._audio_names())
                 entry = self.shelf.add_garden(convert.guess_name(path, data), garden)
@@ -405,6 +412,33 @@ class GardenControl:
             return self._report(str(exc))
         except OSError as exc:
             return self._report(f"Couldn't save it: {exc.strerror or exc}")
+        self.w.statusBar().showMessage(f"Exported {current.name} to {target}", 8000)
+
+    def _media(self) -> Path:
+        return pack.media_folder(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)))
+
+    def _progress(self, label: str) -> _Progress:
+        return _Progress(self.w, label)
+
+    def _export_pack(self) -> None:
+        current = self.shelf.garden()
+        start = self._exports() / f"{file_name(current.name)}{pack.PACK_SUFFIX}"
+        path, _ = QFileDialog.getSaveFileName(self.w, f"Export {current.name} with files", str(start),
+                                              f"SprigCast with files (*{pack.PACK_SUFFIX})")
+        if not path:
+            return
+        target = Path(path)
+        target = target.with_name(file_name(target.stem) + pack.PACK_SUFFIX)
+        self.w.collection.save(self.w.scenes_path)
+        try:
+            with self._progress(f"Packing {current.name}…") as progress:
+                left_out = self.shelf.export_pack(current.id, target, self.w.collection, progress)
+        except ShelfError as exc:
+            return self._report(str(exc))
+        except OSError as exc:
+            return self._report(f"Couldn't save it: {exc.strerror or exc}")
+        if left_out:
+            ImportNotes(self.w, current.name, [f"Not found, left out: {f}" for f in left_out]).exec()
         self.w.statusBar().showMessage(f"Exported {current.name} to {target}", 8000)
 
     # Missing files ------------------------------------------------------------------------------
@@ -489,6 +523,32 @@ class MissingFiles(QDialog):
             self.w._changed()
             self.w._refresh_sources()
         self.fill()
+
+
+class _Progress:
+    """A progress bar for packing and unpacking; shown only when it takes more than a moment."""
+
+    def __init__(self, window: QWidget, label: str):
+        self.window, self.label, self.bar = window, label, None
+
+    def __enter__(self):
+        if QApplication.instance() is not None:
+            self.bar = QProgressDialog(self.label, "", 0, 1000, self.window)
+            self.bar.setWindowTitle("SprigCast")
+            self.bar.setCancelButton(None)
+            self.bar.setMinimumDuration(400)
+            self.bar.setWindowModality(Qt.WindowModality.WindowModal)
+        return self
+
+    def __call__(self, done: int, total: int) -> None:
+        if self.bar is not None:
+            self.bar.setValue(int(1000 * done / total) if total else 1000)
+            QApplication.processEvents()
+
+    def __exit__(self, *exc) -> None:
+        if self.bar is not None:
+            self.bar.close()
+            self.bar.deleteLater()
 
 
 class ImportNotes(QDialog):
