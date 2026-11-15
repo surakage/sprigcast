@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
@@ -58,11 +58,24 @@ class ArtPicture(QWidget):
         if picture.isNull():
             return
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         size = picture.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
         x, y = (self.width() - size.width()) / 2, (self.height() - size.height()) / 2
-        p.drawPixmap(QRectF(x, y, size.width(), size.height()), picture, QRectF(picture.rect()))
+        p.drawPixmap(QPointF(x, y), self._shrunk(picture, size))
         p.end()
+
+    def _shrunk(self, picture: QPixmap, size) -> QPixmap:
+        """The picture shrunk once, by area averaging, to the pixels it covers on this screen.
+
+        Drawing a 1024 px picture straight into ~100 px skips pixels and leaves light specks in the fur."""
+        ratio = self.devicePixelRatioF()
+        key = (self.name, size.width(), size.height(), ratio)
+        if getattr(self, "_cache_key", None) != key:
+            self._cache = picture.scaled(round(size.width() * ratio), round(size.height() * ratio),
+                                         Qt.AspectRatioMode.IgnoreAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
+            self._cache.setDevicePixelRatio(ratio)
+            self._cache_key = key
+        return self._cache
 
 
 class NappingSloth(ArtPicture):

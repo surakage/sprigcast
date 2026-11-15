@@ -12,6 +12,7 @@ with a camera, and adds the mic and desktop sound once (sound plays in every blo
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
@@ -169,6 +170,13 @@ def _sloth_item(collection: SceneCollection, pictures: dict[str, SourceConfig], 
     else:
         scale = min(1.0, canvas.width * 0.6 / w, canvas.height * 0.3 / h)  # fits between the title and the bottom
         x, y = (canvas.width - w * scale) / 2, canvas.height * 0.62
+    if scale < 1.0:  # 1/2, 1/3...: each screen pixel then blends whole picture pixels, so the fur stays clean
+        whole = 1.0 / math.ceil(1.0 / scale)
+        if canvas.width >= canvas.height:
+            x, y = x + w * (scale - whole), y + h * (scale - whole)  # keep the bottom-right corner
+        else:
+            x = (canvas.width - w * whole) / 2
+        scale = whole
     return SceneItem(source=config.id, scale=scale, x=x, y=y)
 
 
