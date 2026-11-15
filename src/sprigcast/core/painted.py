@@ -6,8 +6,8 @@ costs: a death count drawing its SVGs from scratch every frame missed render tic
 recording's encoder into dropping frames. So:
 
 - art(): an SVG is drawn to a picture once per size and reused; drawing a picture is cheap.
-- Frame: hands the painted QImage to the GPU as it is (BGRA, see-through edges kept), without a
-  conversion to RGBA or a NumPy copy.
+- Frame: hands the painted QImage to the GPU exactly as QPainter left it (premultiplied BGRA, "pBGRA"),
+  without a conversion or a NumPy copy; the compositor draws it like a sprig's texture.
 - Stills: once a show stops moving (a held polaroid, a gravestone standing still) a source returns
   None, so nothing is painted or uploaded until it moves again.
 """
@@ -63,7 +63,9 @@ def draw(p, path: Path, rect, sharp_at: float = 1.0) -> None:
 class Frame:
     """Turns painted QImages into frames for the GPU, keeping each one alive until the next."""
 
-    channel_order = "BGRA"  # QImage's ARGB32 is B, G, R, A in memory on Windows and Linux PCs
+    # QImage's ARGB32 is B, G, R, A in memory on Windows and Linux PCs; "p": colours already multiplied
+    # by alpha, the way QPainter paints. Converting to straight alpha cost a full copy of every frame.
+    channel_order = "pBGRA"
 
     def __init__(self):
         self._held = None
@@ -71,7 +73,8 @@ class Frame:
     def __call__(self, image) -> np.ndarray:
         from PySide6.QtGui import QImage
 
-        image = image.convertToFormat(QImage.Format.Format_ARGB32)  # straight alpha, like every source
+        if image.format() != QImage.Format.Format_ARGB32_Premultiplied:
+            image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
         w, h = image.width(), image.height()
         rows = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(h, image.bytesPerLine())[:, : w * 4]
         self._held = image  # the array is a view of it: it has to outlive the upload

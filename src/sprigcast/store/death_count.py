@@ -38,7 +38,7 @@ from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 2, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 3, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down."}
 
 KIND = "death_count"
@@ -287,9 +287,14 @@ class DeathCountSource(Source):
             p.translate(cx + shake, stone_top + stone_h)
             p.rotate(shake * 0.4)
             p.translate(-STONE_W / 2, -stone_h)
-            p.scale(k, k)
-            draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
-            self._engrave(p, job, t, QFont, QColor, QRectF, Qt)
+            flipping = job.flip_at >= 0 and job.flip_at <= t < job.flip_at + FLIP
+            if flipping:  # the number is moving: engrave it live
+                p.scale(k, k)
+                draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
+                self._engrave(p, job, t, QFont, QColor, QRectF, Qt)
+            else:  # the stone as it stands, engraved once: text is the slowest thing QPainter draws
+                stone = self._stone(job, t, k)
+                p.drawImage(QRectF(0, 0, STONE_W, stone_h), stone)
             p.restore()
 
         # Dirt thrown up as it breaks out and as it goes back in.
@@ -305,6 +310,31 @@ class DeathCountSource(Source):
             draw_art(p, "mound.svg", QRectF(0, 0, *MOUND), mound_k * 1.2)
             p.restore()
         p.end()
+        return image
+
+    def _stone(self, job: _Job, t: float, k: float):
+        """The stone with its label and number engraved, drawn once per (label, number) and reused."""
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QColor, QFont, QImage, QPainter
+
+        shown = self._showing(job, t)
+        label = str(self.settings.get("label", "Deaths") or "")
+        key = (label, shown)
+        cached = getattr(self, "_stone_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        image = QImage(round(STONE[0] * k), round(STONE[1] * k), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        p = QPainter(image)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        p.scale(k, k)
+        draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
+        still = _Job(shown, shown)  # no flip: just this number, engraved
+        self._engrave(p, still, 0.0, QFont, QColor, QRectF, Qt)
+        p.end()
+        self._stone_cache = (key, image)
         return image
 
     def _engrave(self, p, job: _Job, t: float, QFont, QColor, QRectF, Qt) -> None:

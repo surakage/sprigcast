@@ -33,6 +33,7 @@ class Projector(QWidget):
         self.pending = None  # newest view frame, handed over by the render thread (see take_pending)
         self.on_closed = on_closed
         self._image: QImage | None = None
+        self._data = None  # the bytes _image shows in place
         self.setWindowTitle(f"{title} · SprigCast projector")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
@@ -64,18 +65,32 @@ class Projector(QWidget):
             self.set_frame(frame.data, frame.width, frame.height)
 
     def set_frame(self, data: bytes, width: int, height: int) -> None:
-        self._image = QImage(data, width, height, width * 4, QImage.Format.Format_RGBA8888).copy()
+        if isinstance(data, bytes):  # bytes never change: the image uses them in place while we hold them
+            self._data = data
+            self._image = QImage(data, width, height, width * 4, QImage.Format.Format_RGBX8888)
+        else:
+            self._data = None
+            self._image = QImage(data, width, height, width * 4, QImage.Format.Format_RGBX8888).copy()
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
+        # Painting holds Python's lock, and a full-screen projector paints ~30 times a second: keep it to
+        # one straight copy when the frame already has the screen's size (the stream drops alpha too).
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor("#000000"))
-        if self._image is not None:
+        image = self._image
+        if image is None:
+            p.fillRect(self.rect(), QColor("#000000"))
+            p.end()
+            return
+        w, h = image.width(), image.height()
+        scale = min(self.width() / w, self.height() / h)
+        dw, dh = w * scale, h * scale
+        rect = QRectF((self.width() - dw) / 2, (self.height() - dh) / 2, dw, dh)
+        if dw < self.width() - 0.5 or dh < self.height() - 0.5:  # bars at the sides or top and bottom
+            p.fillRect(self.rect(), QColor("#000000"))
+        if abs(dw - w) > 0.5 or abs(dh - h) > 0.5:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            w, h = self._image.width(), self._image.height()
-            scale = min(self.width() / w, self.height() / h)
-            dw, dh = w * scale, h * scale
-            p.drawImage(QRectF((self.width() - dw) / 2, (self.height() - dh) / 2, dw, dh), self._image)
+        p.drawImage(rect, image)
         p.end()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
