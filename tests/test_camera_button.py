@@ -115,8 +115,42 @@ def test_main_window_button_turns_the_camera_off_again_when_start_fails(app, tmp
         w._toggle_camera()
         assert w.camera is None and not camera_wanted()
         assert w.live_side.camera_note.text() == Refused.error
+        from PySide6.QtWidgets import QMessageBox
+
+        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
         monkeypatch.setattr(virtualcam, "installed", lambda: False)
         w._toggle_camera()
         assert "isn't set up" in w.live_side.camera_note.text()
+    finally:
+        w.close()
+
+
+def test_turning_the_camera_on_sets_it_up_once_and_checks_windows_privacy(app, tmp_path, monkeypatch):
+    """Guided setup: one Windows prompt the first time, then a plain answer when privacy blocks it."""
+    import keyring
+    from PySide6.QtWidgets import QMessageBox
+
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.output import virtualcam
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    monkeypatch.setattr(virtualcam, "supported", lambda: (True, ""))
+    done = {"set_up": 0}
+    monkeypatch.setattr(virtualcam, "installed", lambda: done["set_up"] > 0)
+    monkeypatch.setattr(virtualcam, "needs_update", lambda: False)
+    monkeypatch.setattr(virtualcam, "set_up", lambda: done.__setitem__("set_up", done["set_up"] + 1) or True)
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(virtualcam, "privacy_block", lambda: "Desktop apps may not use the camera.")
+    w = MainWindow(load_collection(tmp_path / "scenes.json"), tmp_path / "scenes.json")
+    offered = []
+    w._offer_camera_privacy = offered.append
+    try:
+        error = w._guide_camera()
+        assert done["set_up"] == 1 and "once" in asked[0]  # set up with one prompt
+        assert offered == ["Desktop apps may not use the camera."] and "Turn on camera access" in error
+        monkeypatch.setattr(virtualcam, "privacy_block", lambda: "")
+        assert w._guide_camera() == "" and done["set_up"] == 1 and len(asked) == 1  # not asked again
     finally:
         w.close()
