@@ -293,7 +293,7 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 
 **Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing.
 
-Using Streamer.bot? See [Streamer.bot](streamerbot.md). Building an integration? See [Building on SprigCast](integrating.md).
+Using Streamer.bot? See [Streamer.bot](streamerbot.md). Building an integration? See [Building on SprigCast](integrating.md). Stream Deck: see [the SprigCast plugin](../integrations/streamdeck/README.md).
 
 ## Web links
 

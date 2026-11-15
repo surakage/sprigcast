@@ -1,0 +1,4 @@
+node_modules/
+dist/
+com.sprigcast.sprigcast.sdPlugin/bin/
+com.sprigcast.sprigcast.sdPlugin/logs/

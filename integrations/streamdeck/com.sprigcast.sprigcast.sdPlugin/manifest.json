@@ -1,0 +1,228 @@
+{
+  "Name": "SprigCast",
+  "Version": "0.1.0.0",
+  "Author": "SprigCast",
+  "Actions": [
+    {
+      "Name": "Show bloom",
+      "UUID": "com.sprigcast.sprigcast.bloom",
+      "Icon": "imgs/actions/bloom/icon",
+      "Tooltip": "Put a bloom on air. Lights up while it's on air.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/bloom/key0",
+          "Name": "Off air",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/bloom/key1",
+          "Name": "On air",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Mute sound",
+      "UUID": "com.sprigcast.sprigcast.mute",
+      "Icon": "imgs/actions/mute/icon",
+      "Tooltip": "Mute or unmute a sound. Shows when it's muted.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/mute/key0",
+          "Name": "On",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/mute/key1",
+          "Name": "Muted",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Show or hide",
+      "UUID": "com.sprigcast.sprigcast.item",
+      "Icon": "imgs/actions/item/icon",
+      "Tooltip": "Show or hide something in a bloom.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/item/key0",
+          "Name": "Shown",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/item/key1",
+          "Name": "Hidden",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Go live",
+      "UUID": "com.sprigcast.sprigcast.live",
+      "Icon": "imgs/actions/live/icon",
+      "Tooltip": "Start or stop the stream. Pink while live.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/live/key0",
+          "Name": "Offline",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/live/key1",
+          "Name": "Live",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Record",
+      "UUID": "com.sprigcast.sprigcast.record",
+      "Icon": "imgs/actions/record/icon",
+      "Tooltip": "Start or stop recording. Pink while recording.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/record/key0",
+          "Name": "Stopped",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/record/key1",
+          "Name": "Recording",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Save clip",
+      "UUID": "com.sprigcast.sprigcast.clip",
+      "Icon": "imgs/actions/clip/icon",
+      "Tooltip": "Save the last moments as a clip (Clips must be on).",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/clip/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Screenshot",
+      "UUID": "com.sprigcast.sprigcast.screenshot",
+      "Icon": "imgs/actions/screenshot/icon",
+      "Tooltip": "Take a screenshot (with Snap added, it prints on stream).",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/screenshot/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Sprig state",
+      "UUID": "com.sprigcast.sprigcast.sprig-state",
+      "Icon": "imgs/actions/sprig-state/icon",
+      "Tooltip": "Switch a sprig to one of its Live states.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/sprig-state/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Death count",
+      "UUID": "com.sprigcast.sprigcast.deaths",
+      "Icon": "imgs/actions/deaths/icon",
+      "Tooltip": "Add, remove, reset or show the Death count plugin's count.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/deaths/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Run action",
+      "UUID": "com.sprigcast.sprigcast.run",
+      "Icon": "imgs/actions/run/icon",
+      "Tooltip": "Run any SprigCast action, with its fields as JSON.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/run/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    }
+  ],
+  "Category": "SprigCast",
+  "CategoryIcon": "imgs/plugin/category-icon",
+  "CodePath": "bin/plugin.js",
+  "Description": "Run SprigCast from your Stream Deck: switch blooms, mute sounds, go live, record, save clips and use SprigCast plugins. Keys light up to match SprigCast.",
+  "Icon": "imgs/plugin/marketplace",
+  "SDKVersion": 3,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "24",
+    "Debug": "disabled"
+  },
+  "URL": "https://github.com/surakage/sprigcast",
+  "UUID": "com.sprigcast.sprigcast"
+}

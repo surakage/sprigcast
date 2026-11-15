@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>SprigCast</title>
+		<link rel="stylesheet" href="settings.css" />
+	</head>
+	<body>
+		<form id="fields" autocomplete="off"></form>
+		<details id="connection">
+			<summary>Connection</summary>
+			<label class="row"><span>Port</span><input id="port" type="number" min="1" max="65535" placeholder="4455" /></label>
+			<label class="row"><span>Password</span><input id="password" type="password" /></label>
+			<p class="note">From SprigCast: Settings → Connections. Every SprigCast key shares these.</p>
+		</details>
+		<script src="settings.js"></script>
+	</body>
+</html>
