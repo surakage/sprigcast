@@ -67,6 +67,9 @@ Name: "{autodesktop}\SprigCast"; Filename: "{app}\python\pythonw.exe"; Parameter
 
 [Run]
 Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; Description: "Start SprigCast now"; Flags: nowait postinstall skipifsilent
+; An update from inside SprigCast (app/updates.py) runs Setup silently with /restartapp=1: start it again
+; once everything, the camera step included, is done.
+Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; WorkingDir: "{app}"; Flags: nowait postinstall skipifnotsilent; Check: RestartAfterUpdate
 
 [UninstallRun]
 ; Remove the "Start with Windows" entry, if it was switched on, so nothing points at a removed program.
@@ -89,6 +92,11 @@ var
 function WantsDesktopShortcut: Boolean;
 begin
   Result := DesktopBox.Checked;
+end;
+
+function RestartAfterUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:restartapp|0}') = '1';
 end;
 
 function WantsCamera: Boolean;

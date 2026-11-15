@@ -481,6 +481,11 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import start_for
 
         self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
+        from sprigcast.app.updates import Updater
+
+        # New versions from GitHub Releases (app/updates.py); never shown or installed while live or recording.
+        self.updater = Updater(self, busy=lambda: self.streaming is not None or self.recording is not None)
+        self.updater.start()
         if self.collection.recording.clips_on_start:  # once the renderer has its first frames
             QTimer.singleShot(1500, lambda: self.replay is None and self._toggle_replay(True))
 
@@ -2417,6 +2422,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
         help_menu.addAction("Open logs folder (for bug reports)").triggered.connect(lambda: self._open_logs())
         help_menu.addSeparator()
+        help_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
 
     def _fill_projectors_menu(self, menu: QMenu) -> None:
@@ -2685,6 +2691,7 @@ class MainWindow(QMainWindow):
         self.engine.stop()
         if self.browser_host is not None:
             self.browser_host.shutdown()
+        self.updater.install_on_quit()  # a downloaded update runs once SprigCast has closed
         super().closeEvent(event)
 
     # Selection helpers -----------------------------------------------------
@@ -5072,6 +5079,7 @@ class MainWindow(QMainWindow):
             streaming=self.streaming is not None,
             recording=self.recording is not None,
             control=self.control,
+            check_updates=lambda: self.updater.check(manual=True),
             tab=tab,
             parent=self,
         )

@@ -212,6 +212,7 @@ class SettingsWindow(QDialog):
         streaming: bool = False,
         recording: bool = False,
         control=None,
+        check_updates=None,
         tab: str = "General",
         parent: QWidget | None = None,
     ):
@@ -224,6 +225,7 @@ class SettingsWindow(QDialog):
         self.default_recordings_folder = default_recordings_folder
         self.streaming, self.recording = streaming, recording
         self.plugins_dir = plugins_dir
+        self.check_updates = check_updates
 
         self.tabs = QListWidget()  # the side menu (a list, so keys and screen readers work)
         self.tabs.setObjectName("settingsNav")
@@ -381,7 +383,27 @@ class SettingsWindow(QDialog):
         start_box.addWidget(self.start_minimized)
         start_box.addWidget(_hint("When Windows starts it, SprigCast always opens minimised to the taskbar."))
 
-        return _page(look, startup, snapping, safety, performance)
+        from sprigcast import __version__
+        from sprigcast.app.updates import auto_check_enabled
+
+        updates = QGroupBox("Updates")
+        up_box = QVBoxLayout(updates)
+        self.auto_updates = QCheckBox("Check for updates automatically")
+        self.auto_updates.setChecked(auto_check_enabled())
+        up_box.addWidget(self.auto_updates)
+        up_row = QHBoxLayout()
+        up_row.setSpacing(12)
+        self.check_updates_button = QPushButton("Check now")
+        self.check_updates_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check_updates_button.setAutoDefault(False)
+        self.check_updates_button.setEnabled(self.check_updates is not None)
+        self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
+        up_row.addWidget(self.check_updates_button)
+        up_row.addWidget(_hint(f"You have {__version__}. Updates never install while you're live or recording."), 1)
+        up_box.addLayout(up_row)
+
+        return _page(look, startup, updates, snapping, safety, performance)
 
     def _advanced_page(self) -> QWidget:
         """The settings most people never touch: priority, file names, MP4 copies, colour."""
@@ -632,6 +654,9 @@ class SettingsWindow(QDialog):
         settings.setValue("editing/snap_center", self.snap_center.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
+        from sprigcast.app.updates import AUTO_CHECK
+
+        settings.setValue(AUTO_CHECK, self.auto_updates.isChecked())
         if autostart.supported() and self.start_with_windows.isChecked() != autostart.enabled():
             try:
                 autostart.set_enabled(self.start_with_windows.isChecked())
