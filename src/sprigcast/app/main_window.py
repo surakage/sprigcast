@@ -815,6 +815,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         plugins = menu.addMenu("Plugins")
         self.more_menu = plugins
+        plugins.aboutToShow.connect(self._fill_more_menu)  # store plugins can arrive while SprigCast runs
         self._fill_more_menu()
 
     def _source_context_menu(self, pos) -> None:
@@ -2147,6 +2148,7 @@ class MainWindow(QMainWindow):
         open_settings.setShortcut(QKeySequence("Ctrl+,"))
         open_settings.triggered.connect(lambda: self._open_settings())
         settings_menu.addAction("Starter kit…").triggered.connect(lambda: self.open_starter())
+        settings_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
         settings_menu.addSeparator()
         for tab, label in (
             ("Stream", "Stream outputs…"),
@@ -3774,6 +3776,7 @@ class MainWindow(QMainWindow):
             empty = self.more_menu.addAction("No plugin sources installed")
             empty.setEnabled(False)
         self.more_menu.addSeparator()
+        self.more_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
         folder = self.more_menu.addAction("Open plugins folder…")
         folder.setEnabled(self.plugins_dir is not None)
         folder.triggered.connect(self._open_plugins_folder)
@@ -4721,6 +4724,7 @@ class MainWindow(QMainWindow):
             audio_devices=devices,
             plugin_report=self.plugin_report,
             open_plugins_folder=self._open_plugins_folder if self.plugins_dir is not None else None,
+            plugins_dir=self.plugins_dir,
             streaming=self.streaming is not None,
             recording=self.recording is not None,
             control=self.control,
@@ -4732,6 +4736,7 @@ class MainWindow(QMainWindow):
         elif output_id:
             window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
+        window.plugins_changed.connect(self._fill_more_menu)
         window.exec()
 
     def _sync_camera(self) -> None:
