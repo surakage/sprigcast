@@ -796,7 +796,7 @@ class MainWindow(QMainWindow):
             "App sound": "One kind of sound on its own row: games, music, voice chat…",
             "Desktop sound": "Everything a speaker or headset plays",
             "Game capture": "A game: the full-screen one in front, or a game's window. Its sound comes with it",
-            "Microphone": "A mic: plays in every bloom on both shapes",
+            "Microphone": "A mic: plays in every bloom unless you pick some",
             "Mirror": "Show a leaf from another bloom here too. It's the same leaf: change one, both change",
             "Video capture": "A webcam, capture card or virtual camera",
         }
@@ -962,10 +962,9 @@ class MainWindow(QMainWindow):
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
             return
         if under is not None and under.data(0, ROLE_ROW) == "sound":
-            config = self.collection.source(under.data(0, ROLE_ID))
-            if config is not None and config.kind == "media":
-                self._fill_media_menu(menu, config.id)
-                menu.addSeparator()
+            self._fill_sound_menu(menu, under.data(0, ROLE_ID))
+            menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+            return
         if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
@@ -1001,6 +1000,118 @@ class MainWindow(QMainWindow):
         new.addAction(cap(PART)).triggered.connect(lambda: self._add_part())
         new.addAction(f"{cap(PART)} folder").triggered.connect(lambda: self._add_folder(holds="part"))
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+
+    # Sounds in Build's library --------------------------------------------------------
+
+    def _fill_sound_menu(self, menu: QMenu, source_id: str) -> None:
+        """A sound's right-click menu: its own short list, not the bloom one."""
+        config = next((c for c in self.collection.sources if c.id == source_id), None)
+        if config is None:
+            return
+        menu.setToolTipsVisible(True)
+        menu.addAction("Rename…").triggered.connect(lambda _=False: self._rename_sound(source_id))
+        muted = bool(config.settings.get("muted", False))
+        menu.addAction("Unmute" if muted else "Mute").triggered.connect(
+            lambda _=False: self._build_tune_changed(source_id, {"muted": not muted}))
+        self._fill_plays_in_menu(menu.addMenu("Plays in"), source_id)
+        menu.addSeparator()
+        menu.addAction("Volume and sound…").triggered.connect(lambda _=False: self._select_sound(source_id))
+        menu.addAction("Filters…").triggered.connect(lambda _=False: self._open_filters(source_id, "audio"))
+        menu.addAction("Tracks and sync…").triggered.connect(lambda _=False: self._open_settings("Audio/Sounds"))
+        if config.kind == "media":
+            self._fill_media_menu(menu.addMenu("Playback"), source_id)
+        menu.addSeparator()
+        remove = menu.addAction("Remove")
+        placed = [s for s in self.collection.scenes if any(i.source == source_id for i in s.items)]
+        if placed:
+            remove.setEnabled(False)
+            remove.setToolTip(f"It's in {self._names(placed)}: remove it there")
+        else:
+            remove.triggered.connect(lambda _=False: self._remove_sound(source_id))
+
+    def _fill_plays_in_menu(self, menu: QMenu, source_id: str) -> None:
+        """Tick the blooms a sound plays in. None ticked (or Every bloom) means it plays everywhere."""
+        config = self.collection.source(source_id)
+        picked = set(self.collection.sound_blooms(config))
+        every = menu.addAction(f"Every {SHOW}")
+        every.setCheckable(True)
+        every.setChecked(not picked)
+        every.triggered.connect(lambda _=False: self._set_sound_blooms(source_id, []))
+        menu.addSeparator()
+        several = len(self.collection.canvases) > 1
+        first = self.collection.canvases[0].id
+        for bloom in self.collection.bloom_choices():
+            label = bloom.name if not several or bloom.canvas == first else f"{bloom.name}  ({bloom.canvas})"
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bloom.id in picked)
+            action.triggered.connect(lambda on, b=bloom.id: self._set_sound_blooms(
+                source_id, [x for x in picked if x != b] + ([b] if on else [])))
+
+    def _set_sound_blooms(self, source_id: str, blooms: list[str]) -> None:
+        config = self.collection.source(source_id)
+        order = [b.id for b in self.collection.bloom_choices()]
+        settings = {k: v for k, v in config.settings.items() if k != "blooms"}
+        if blooms and set(blooms) != set(order):  # every bloom ticked is the same as Every bloom
+            settings["blooms"] = sorted(blooms, key=order.index)
+        config.settings = settings
+        self._changed()
+        self._refresh_scenes()
+        if self.selected_sound_id == source_id:
+            self._open_build_sound(source_id)
+
+    def _plays_in_text(self, config) -> str:
+        blooms = self.collection.sound_blooms(config)
+        if not blooms:
+            return f"Plays in every {SHOW}"
+        return "Plays in " + self._names([self.collection.scene(b) for b in blooms])
+
+    def _plays_in_tag(self, config) -> str:
+        """The quiet words on a sound's row: nothing for every bloom, else the bloom or how many."""
+        blooms = self.collection.sound_blooms(config)
+        if not blooms:
+            return ""
+        return self.collection.scene(blooms[0]).name if len(blooms) == 1 else f"{len(blooms)} {SHOWS}"
+
+    @staticmethod
+    def _names(scenes) -> str:
+        names = [s.name for s in scenes]
+        return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+    def _select_sound(self, source_id: str) -> None:
+        for i in range(self.scene_tree.topLevelItemCount()):
+            top = self.scene_tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                child = top.child(j)
+                if child.data(0, ROLE_ROW) == "sound" and child.data(0, ROLE_ID) == source_id:
+                    self.scene_tree.setCurrentItem(child)
+                    return
+        self._open_build_sound(source_id)
+
+    def _rename_sound(self, source_id: str) -> None:
+        config = self.collection.source(source_id)
+        name, ok = QInputDialog.getText(self, "Rename sound", "Name:", text=config.name)
+        if ok and name.strip() and name.strip() != config.name:
+            config.name = name.strip()
+            self._changed()
+            self._refresh_scenes()
+            self._refresh_audio()
+            if self.selected_sound_id == source_id:
+                self._open_build_sound(source_id)
+
+    def _remove_sound(self, source_id: str) -> None:
+        """Remove a sound that isn't placed in any bloom (a mic, desktop or app sound, a sound file)."""
+        if self.selected_sound_id == source_id:
+            self._close_build_sound(refresh=False)
+        audio = self.collection.audio
+        if audio.global_sources is not None and source_id in audio.global_sources:
+            audio.global_sources = [i for i in audio.global_sources if i != source_id]
+        elif audio.global_sources is None and source_id in self.collection.global_device_ids():
+            audio.global_sources = [i for i in self.collection.global_device_ids() if i != source_id]
+        self.collection.remove_source_if_unused(source_id)
+        self._changed()
+        self._refresh_scenes()
+        self._refresh_audio()
 
     # Folders -------------------------------------------------------------------------
 
@@ -1189,11 +1300,8 @@ class MainWindow(QMainWindow):
         from sprigcast.app.sound_card import TunePage
 
         self.build_tune = TunePage(self._build_tune_changed, lambda sid: self._open_filters(sid, "audio"),
-                                   self._close_build_sound, self._pick_app_sound_apps)
-        note = QLabel("Plays in every bloom, on both shapes. Changes here change Live's Sound card too.")
-        note.setWordWrap(True)
-        note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 12px;")
-        self.build_stage.sound_slot.addWidget(note)
+                                   self._close_build_sound, self._pick_app_sound_apps,
+                                   on_blooms=lambda _sid: self._plays_in_popup())
         self.build_stage.sound_slot.addWidget(self.build_tune)
         self.build_stage.sound_slot.addStretch(1)
         right = self.build_stage.right
@@ -2585,21 +2693,22 @@ class MainWindow(QMainWindow):
 
         sound = heading_item("Sound", "", SOUND_ROOT)
         sound.setFlags(Qt.ItemFlag.ItemIsEnabled)  # nothing is dragged in here
-        sound.setToolTip(0, "Mics, desktop sound and web pages with sound. They play in every bloom on both "
-                            "shapes, so adding the vertical shape never doubles them.")
+        sound.setToolTip(0, f"Mics, desktop sound, app sound and pages with sound. Right-click one to rename it, "
+                            f"mute it or pick the {SHOWS} it plays in.")
         self.scene_tree.addTopLevelItem(sound)
-        for config in self.collection.sources:
-            if not self._has_sound(config):
-                continue
+        sounds = sorted((c for c in self.collection.sources if self._has_sound(c)), key=lambda c: c.name.lower())
+        for config in sounds:
             muted = bool(config.settings.get("muted", False))
+            plays_in = self._plays_in_text(config)
             child = QTreeWidgetItem([config.name])
             child.setData(0, ROLE_ID, config.id)
             child.setData(0, ROLE_ROW, "sound")
             child.setData(0, LIB_NAME, config.name)
-            child.setData(0, LIB_TAG, "muted" if muted else "")
+            child.setData(0, LIB_TAG, "muted" if muted else self._plays_in_tag(config))
             child.setData(0, ROLE_SOURCE_KIND, config.kind)
             child.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-            child.setToolTip(0, f"{config.name}: click for volume, mute, who hears it and filters")
+            child.setToolTip(0, f"{config.name}: {plays_in.lower()}. Click for volume and filters, "
+                                f"right-click for more.")
             sound.addChild(child)
             if config.id == self.selected_sound_id:
                 child.setSelected(True)
@@ -3315,8 +3424,18 @@ class MainWindow(QMainWindow):
         if config is None:
             return
         self.selected_sound_id = source_id
+        blooms = self.collection.sound_blooms(config)
+        self.build_tune.show_plays_in(self._names([self.collection.scene(b) for b in blooms]) if blooms
+                                      else f"Every {SHOW}")
         self.build_tune.show_sound(self._sound_item(config))
         self.build_stage.right_stack.setCurrentIndex(1)
+
+    def _plays_in_popup(self) -> None:
+        if self.selected_sound_id is None:
+            return
+        menu = QMenu(self)
+        self._fill_plays_in_menu(menu, self.selected_sound_id)
+        menu.exec(QCursor.pos())
 
     def _close_build_sound(self, refresh: bool = True) -> None:
         self.selected_sound_id = None

@@ -555,7 +555,8 @@ class TunePage(QWidget):
     """Everything about one sound, inside the card. Changes apply at once."""
 
     def __init__(self, on_change: Callable[[str, dict], None], on_filters: Callable[[str], None],
-                 on_back: Callable[[], None], on_apps: Callable[[str], None] | None = None):
+                 on_back: Callable[[], None], on_apps: Callable[[str], None] | None = None,
+                 on_blooms: Callable[[str], None] | None = None):
         super().__init__()
         self.on_change = on_change
         self.sound_id = ""
@@ -580,6 +581,22 @@ class TunePage(QWidget):
         col.addLayout(top)
         self.meter = ThinMeter()
         col.addWidget(self.meter)
+
+        # Sound per bloom (Build only): which blooms it plays in, and a way to pick them.
+        self.blooms_card, box = self._section(col)
+        blooms_top = QHBoxLayout()
+        blooms_top.addWidget(_section_title("Plays in"), 1)
+        pick = QPushButton("Change")
+        pick.setStyleSheet(theme.LINK_STYLE)
+        pick.setCursor(Qt.CursorShape.PointingHandCursor)
+        pick.setToolTip("Pick the blooms this sound plays in")
+        pick.clicked.connect(lambda: on_blooms and on_blooms(self.sound_id))
+        blooms_top.addWidget(pick)
+        box.addLayout(blooms_top)
+        self.blooms = _muted_label("")
+        self.blooms.setWordWrap(True)
+        box.addWidget(self.blooms)
+        self.blooms_card.setVisible(on_blooms is not None)
 
         # An app sound (Games, Music, Voice chat...): which apps it catches, and a way to change them.
         self.apps_card, box = self._section(col)
@@ -700,6 +717,10 @@ class TunePage(QWidget):
         self.duck = Switch()
         self.duck.toggled.connect(lambda on: self._send({"duck_voice": on}))
         box.addLayout(self._switch_row("Lowers others when it talks", self.duck))
+
+    def show_plays_in(self, text: str) -> None:
+        """Build's "Plays in" card: "Every bloom" or the bloom names."""
+        self.blooms.setText(text)
 
     @staticmethod
     def _section(col: QVBoxLayout, title: str = "") -> tuple[QFrame, QVBoxLayout]:
