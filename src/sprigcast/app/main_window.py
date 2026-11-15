@@ -149,6 +149,8 @@ from sprigcast.output.recorder import codec_label, codec_short, pick_codec, reso
 from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
+from sprigcast.core.device_makers import label as camera_label
+from sprigcast.sources.audio import device_label as sound_label
 from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import list_cameras
 from sprigcast.sources.media import file_filter as media_file_filter, is_sound_file
@@ -489,6 +491,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import start_for
 
         self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
+        self.chat_panel.hub.happened.connect(self.control.app_event)  # TikTok gifts, likes... to apps
         from sprigcast.app.updates import Updater
 
         # New versions from GitHub Releases (app/updates.py); never shown or installed while live or recording.
@@ -763,7 +766,7 @@ class MainWindow(QMainWindow):
         def cameras(sub: QMenu) -> None:
             found = list_cameras()
             for cam in found:
-                sub.addAction(literal(cam.name)).triggered.connect(lambda _=False, c=cam: self._add_camera(c))
+                sub.addAction(literal(camera_label(cam.name))).triggered.connect(lambda _=False, c=cam: self._add_camera(c))
             if not found:
                 sub.addAction("No camera found (plugged in? in use?)").setEnabled(False)
             sub.addSeparator()
@@ -798,7 +801,7 @@ class MainWindow(QMainWindow):
                 sub.addAction("Default (follows Windows)").triggered.connect(
                     lambda _=False: self._add_audio(kind, "default"))
                 for device in list_audio_devices(loopback=kind == "audio_output"):
-                    sub.addAction(literal(device.name)).triggered.connect(
+                    sub.addAction(literal(sound_label(device.name))).triggered.connect(
                         lambda _=False, d=device.name: self._add_audio(kind, d))
             return fill
 
@@ -1106,6 +1109,8 @@ class MainWindow(QMainWindow):
                 self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
             if item is not None and self.collection.source(item.source).kind in ("window_capture", "game_capture"):
                 self._fill_capture_sound_menu(menu.addMenu("Sound"), item.source)
+            if item is not None and self.collection.source(item.source).kind == "camera":
+                self._fill_swap_camera_menu(menu.addMenu("Swap camera"), item.source)
             if item is not None and self.collection.source(item.source).kind == "browser" and self.browser_host:
                 menu.addAction("Refresh page").triggered.connect(
                     lambda _=False, sid=item.source: self.browser_host.reload(sid))
@@ -3291,13 +3296,14 @@ class MainWindow(QMainWindow):
         if not devices:
             QMessageBox.information(self, "SprigCast", "Audio capture is only available on Windows.")
             return None
-        labels = ["Default (follows Windows)"] + [d.name for d in devices]
-        start = labels.index(current) if current in labels else 0
+        names = ["default"] + [d.name for d in devices]
+        labels = ["Default (follows Windows)"] + [sound_label(d.name) for d in devices]
+        start = names.index(current) if current in names else 0
         title = "Desktop audio" if kind == "audio_output" else "Microphone"
         label, ok = QInputDialog.getItem(self, title, "Device:", labels, start, False)
         if not ok:
             return None
-        return "default" if label == labels[0] else label
+        return names[labels.index(label)]
 
     def _add_audio(self, kind: str, device: str | None = None) -> None:
         """Add a mic or desktop sound. Sound belongs to no bloom or shape: it plays everywhere, once."""
@@ -3581,7 +3587,10 @@ class MainWindow(QMainWindow):
     def _vcam_tip_due(self, config: SourceConfig) -> bool:
         from sprigcast.sources.camera import is_virtual
 
-        return (config.kind == "camera" and is_virtual(str(config.settings.get("name", "")))
+        from sprigcast.core.device_makers import is_effects
+
+        name = str(config.settings.get("name", ""))
+        return (config.kind == "camera" and is_virtual(name) and not is_effects(name)  # effects are the point
                 and not QSettings().value(f"tips/vcam_hidden/{config.id}", False, type=bool))
 
     def _hide_vcam_tip(self) -> None:
@@ -3589,6 +3598,18 @@ class MainWindow(QMainWindow):
         if item is not None:
             QSettings().setValue(f"tips/vcam_hidden/{item.source}", True)
         self.prop_vcam.hide()
+
+    def _fill_swap_camera_menu(self, menu: QMenu, source_id: str) -> None:
+        """Every other camera (NVIDIA Broadcast, Streamfog, Camera Hub...): one click swaps the device and
+        keeps the placement, filters and size."""
+        config = self.collection.source(source_id)
+        here = str(config.settings.get("path", "")), str(config.settings.get("name", ""))
+        others = [c for c in list_cameras() if not ((c.path and c.path == here[0]) or c.name == here[1])]
+        for cam in others:
+            menu.addAction(literal(camera_label(cam.name))).triggered.connect(
+                lambda _=False, c=cam, sid=source_id: self._swap_camera(sid, c))
+        if not others:
+            menu.addAction("No other camera").setEnabled(False)
 
     def _use_real_camera(self) -> None:
         """Swap the virtual camera for the physical one behind it (same size and frame rate where it can)."""
@@ -3602,6 +3623,11 @@ class MainWindow(QMainWindow):
         if device is None:
             self._edit_source_settings()  # nothing obvious: let them pick
             return
+        self._swap_camera(config.id, device)
+
+    def _swap_camera(self, source_id: str, device) -> None:
+        """Point a camera source at another device, keeping its size and frame rate where that device can."""
+        config = self.collection.source(source_id)
         wanted = {k: config.settings[k] for k in ("width", "height", "fps", "mirror", "pause_off_screen")
                   if k in config.settings}
         dialog = CameraDialog([device], {"name": device.name, "path": device.path, **wanted}, self,
