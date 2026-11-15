@@ -82,7 +82,8 @@ def test_welcome_and_live_art():
     for name in ("napping", "welcome", "live"):
         assert not art(name).isNull(), name
     welcome = ArtPicture("welcome", 240)
-    assert welcome.width() == 240 and 90 < welcome.height() < 130  # keeps the picture's shape
+    shape = art("welcome").height() / art("welcome").width()
+    assert welcome.width() == 240 and abs(welcome.height() - 240 * shape) <= 1  # keeps the picture's shape
     stage = QWidget()
     stage.resize(900, 600)
     stage.show()

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MASCOT = ROOT / "brand" / "sprigcast-sloth.svg"
+MASCOT = ROOT / "brand" / "art" / "sloth-installer.png"  # the sloth hugging a vine
 ICON = ROOT / "src" / "sprigcast" / "data" / "logo.svg"
 MARK = ROOT / "brand" / "sprigcast-s-white-pink.svg"
 
@@ -61,8 +61,20 @@ def _side(w: int, h: int):
     p.setPen(QColor(MUTED))
     p.drawText(QRectF(0, top + 26 * s, w, 18 * s), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "Open-source streaming")
 
-    sloth = w * 0.84
-    QSvgRenderer(str(MASCOT)).render(p, QRectF((w - sloth) / 2, h - sloth - 22 * s, sloth, sloth))
+    # The mascot hugging its vine, standing on the bottom edge so the vine runs off the page.
+    picture = QImage(str(MASCOT)).convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    fade = QPainter(picture)  # the vine fades in at the top instead of starting in mid-air
+    fade.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+    ramp = QLinearGradient(0, 0, 0, picture.height() * 0.2)
+    ramp.setColorAt(0.0, QColor(0, 0, 0, 0))
+    ramp.setColorAt(1.0, QColor(0, 0, 0, 255))
+    fade.fillRect(0, 0, picture.width(), round(picture.height() * 0.2), ramp)
+    fade.end()
+    room = h - (top + 50 * s)  # below the name and line
+    sh = min(room, w * 0.9 * picture.height() / max(1, picture.width()))
+    sw = sh * picture.width() / max(1, picture.height())
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.drawImage(QRectF((w - sw) / 2, h - sh, sw, sh), picture)
     p.end()
     return image
 
