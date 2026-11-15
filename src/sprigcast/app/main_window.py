@@ -1777,6 +1777,8 @@ class MainWindow(QMainWindow):
                                   lambda sid: self._open_filters(sid, "audio"), self._set_mic_first,
                                   self._toggle_camera, self._camera_settings)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
+        self.live_side.on_health = lambda: self._open_health()
+        self.live_side.set_health_link(bool(self._health_records()))
         self.live_stage = LiveStage(self.live_side)
         self.live_tiles = QScrollArea()
         self.live_tiles.setWidgetResizable(True)
@@ -2396,6 +2398,7 @@ class MainWindow(QMainWindow):
         ):
             settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
         settings_menu.addSeparator()
+        settings_menu.addAction("Stream health…").triggered.connect(lambda: self._open_health())
         doctor_action = settings_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
@@ -5033,6 +5036,9 @@ class MainWindow(QMainWindow):
         from sprigcast.app.logbook import StreamReport
 
         self._stream_report = StreamReport(self.streaming, self.collection)
+        from sprigcast.app.health import SessionHealth
+
+        self._health = SessionHealth(self.streaming)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
 
@@ -5137,6 +5143,11 @@ class MainWindow(QMainWindow):
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:
             report.finish(lines)
+        health, self._health = getattr(self, "_health", None), None
+        self.live_stage.card.set_notice("", "")
+        if health is not None and seconds >= 10:  # not for a start that never got going
+            health.finish(QSettings())
+        self.live_side.set_health_link(bool(self._health_records()))
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()
@@ -5160,6 +5171,15 @@ class MainWindow(QMainWindow):
                 report.tick(self._last_stats)
             except Exception:
                 log.exception("stream report")
+        health = getattr(self, "_health", None)
+        if health is not None:
+            from sprigcast.app.health import notice
+
+            try:
+                health.tick()
+            except Exception:
+                log.exception("stream health")
+            self.live_stage.card.set_notice(*reversed(notice(session.streamers)))
         self.live_panel.set_clock(clock, True)
         import re
 
@@ -5363,6 +5383,9 @@ class MainWindow(QMainWindow):
 
     def _show_render_health(self, event) -> None:
         """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""
+        health = getattr(self, "_health", None)
+        if health is not None:
+            health.render(event)
         target = max((c.fps for c in self.collection.canvases), default=60)
         late = max(0, event.dropped_ticks - getattr(self, "_late_before", 0))  # the engine counts them up
         self._late_before = event.dropped_ticks
@@ -5402,6 +5425,7 @@ class MainWindow(QMainWindow):
                     checked=self.replay is not None),
             Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
             Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
+            Command("Stream health", "Action", lambda: self._open_health()),
         ]
         for part in self.collection.parts():
             if part.states:
@@ -5533,6 +5557,19 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Optimized for this PC." + (" Restart SprigCast for the new frame rate." if fps else ""), 15000)
         return True
+
+    def _health_records(self) -> list:
+        from sprigcast.app import health
+
+        return health.load(QSettings())
+
+    def _open_health(self):
+        """How the last few streams went: drops, reconnects, peak memory and hitches."""
+        from sprigcast.app.health_page import health_popup
+
+        pop = health_popup(self._health_records(), self, self._open_logs)
+        pop.open()
+        return pop
 
     def _open_logs(self) -> None:
         from PySide6.QtCore import QUrl
