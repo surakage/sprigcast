@@ -29,7 +29,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 [Tasks]
 Name: "desktopicon"; Description: "Desktop shortcut"
-Name: "camera"; Description: "SprigCast Camera: use SprigCast as a webcam"; Check: IsWindows11
+Name: "camera"; Description: "SprigCast Camera: use SprigCast as a webcam"
 
 [Messages]
 WizardSelectTasks=Extras
@@ -52,20 +52,12 @@ Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; Descr
 Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v SprigCast /f"; Flags: runhidden; RunOnceId: "RemoveAutostart"
 
 [Code]
-// The SprigCast Camera lives in Program Files and is registered machine-wide (the Windows Frame Server
-// loads it), which needs administrator rights. The rest of SprigCast installs per user without them, so
+// The SprigCast Camera lives in Program Files and is registered machine-wide (a DirectShow camera every
+// app can list, 64-bit and 32-bit, plus a Windows 11 media source), which needs administrator rights. The rest of SprigCast installs per user without them, so
 // only this one step asks Windows for permission, and only when the camera is new or changed. The app's
 // own Settings > Output > Virtual camera button stays as a repair path (output/virtualcam.py does the same).
 const
   CameraClsid = '{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}';
-
-function IsWindows11: Boolean;
-var
-  Version: TWindowsVersion;
-begin
-  GetWindowsVersionEx(Version);
-  Result := (Version.Major > 10) or ((Version.Major = 10) and (Version.Build >= 22000));
-end;
 
 function CameraDir: String;
 begin
@@ -75,6 +67,11 @@ end;
 function BundledCamera: String;
 begin
   Result := ExpandConstant('{app}\python\Lib\site-packages\sprigcast\camera\sprigcast_camera.dll');
+end;
+
+function BundledCamera32: String;
+begin
+  Result := ExpandConstant('{app}\python\Lib\site-packages\sprigcast\camera\sprigcast_camera32.dll');
 end;
 
 function RegisteredCamera: String;
@@ -91,7 +88,10 @@ var
 begin
   Registered := RegisteredCamera();
   Result := (Registered <> '') and FileExists(BundledCamera()) and
-            (GetSHA256OfFile(Registered) = GetSHA256OfFile(BundledCamera()));
+            (GetSHA256OfFile(Registered) = GetSHA256OfFile(BundledCamera())) and
+            (not FileExists(BundledCamera32()) or
+             (FileExists(CameraDir() + '\sprigcast_camera32.dll') and
+              (GetSHA256OfFile(CameraDir() + '\sprigcast_camera32.dll') = GetSHA256OfFile(BundledCamera32()))));
 end;
 
 function RunElevated(const Command: String): Boolean;
@@ -102,17 +102,24 @@ begin
   Result := ShellExec('runas', ExpandConstant('{cmd}'), '/c ' + Command, '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
+// cmd steps that put one DLL in place and register it. A loaded DLL can't be overwritten: unregister
+// first, rename the old file aside, then copy and register. regsvr32 runs the 32-bit one itself.
+function InstallDll(const Src, Dll: String): String;
+begin
+  Result := 'regsvr32 /u /s "' + Dll + '" 2>nul & move /y "' + Dll + '" "' + Dll + '.old" 2>nul & ' +
+            'copy /y "' + Src + '" "' + Dll + '" && regsvr32 /s "' + Dll + '"';
+end;
+
 procedure SetUpCamera;
 var
-  Dll: String;
+  Command: String;
 begin
   if not FileExists(BundledCamera()) or CameraIsCurrent() then
     exit;
-  Dll := CameraDir() + '\sprigcast_camera.dll';
-  // A loaded DLL can't be overwritten: unregister first, rename the old file aside, then copy and register.
-  if not RunElevated('mkdir "' + CameraDir() + '" 2>nul & regsvr32 /u /s "' + Dll + '" 2>nul & ' +
-                     'move /y "' + Dll + '" "' + Dll + '.old" 2>nul & copy /y "' + BundledCamera() + '" "' + Dll +
-                     '" && regsvr32 /s "' + Dll + '"') then
+  Command := 'mkdir "' + CameraDir() + '" 2>nul & ' + InstallDll(BundledCamera(), CameraDir() + '\sprigcast_camera.dll');
+  if FileExists(BundledCamera32()) then
+    Command := Command + ' & ' + InstallDll(BundledCamera32(), CameraDir() + '\sprigcast_camera32.dll');
+  if not RunElevated(Command) then
     Log('SprigCast Camera: not set up (permission declined or it failed); Settings > Output > Virtual camera can retry');
 end;
 
@@ -133,5 +140,5 @@ begin
     exit;
   Registered := RegisteredCamera();
   if Registered <> '' then
-    RunElevated('regsvr32 /u /s "' + Registered + '"');
+    RunElevated('regsvr32 /u /s "' + Registered + '" & regsvr32 /u /s "' + CameraDir() + '\sprigcast_camera32.dll" 2>nul');
 end;

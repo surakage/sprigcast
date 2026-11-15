@@ -18,6 +18,8 @@ jobs:
         run: |
           cmake -S native/camera -B build/camera -A x64
           cmake --build build/camera --config Release
+          cmake -S native/camera -B build/camera32 -A Win32
+          cmake --build build/camera32 --config Release
       - name: Check the exports
         shell: pwsh
         run: |
@@ -31,8 +33,32 @@ jobs:
           $deps = & $dumpbin.FullName /dependents $dll | Out-String
           if ($deps -match "VCRUNTIME|MSVCP") { throw "the DLL must not need the VC++ runtime: $deps" }
           Write-Output $deps
+      - name: Register it and capture frames like an app would (DirectShow)
+        shell: pwsh
+        run: |
+          $dll = (Resolve-Path "build/camera/Release/sprigcast_camera.dll").Path
+          $dll32 = (Resolve-Path "build/camera32/Release/sprigcast_camera32.dll").Path
+          $p = Start-Process regsvr32 -ArgumentList "/s", "`"$dll`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "regsvr32 (64-bit) failed: $($p.ExitCode)" }
+          $p = Start-Process regsvr32 -ArgumentList "/s", "`"$dll32`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "regsvr32 (32-bit) failed: $($p.ExitCode)" }
+          choco install ffmpeg -y --no-progress | Out-Null
+          $env:Path = "C:\ProgramData\chocolatey\bin;" + $env:Path
+          $list = ffmpeg -hide_banner -f dshow -list_devices true -i dummy 2>&1 | Out-String
+          Write-Output $list
+          if ($list -notmatch "SprigCast Camera") { throw "SprigCast Camera isn't listed" }
+          $opts = ffmpeg -hide_banner -f dshow -list_options true -i "video=SprigCast Camera" 2>&1 | Out-String
+          Write-Output $opts
+          ffmpeg -hide_banner -y -f dshow -video_size 1280x720 -i "video=SprigCast Camera" -frames:v 10 camera-test.png 2>&1 | Out-String | Write-Output
+          if (-not (Test-Path camera-test.png)) { throw "no frame came out of the camera" }
+          ffmpeg -hide_banner -y -f dshow -video_size 1080x1920 -pixel_format yuyv422 -i "video=SprigCast Camera" -frames:v 5 camera-test-yuy2.png 2>&1 | Out-String | Write-Output
+          if (-not (Test-Path camera-test-yuy2.png)) { throw "no YUY2 frame" }
+          Get-Content "$env:ProgramData\SprigCast Camera\camera.log" -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
           name: sprigcast-camera
-          path: build/camera/Release/sprigcast_camera.dll
+          path: |
+            build/camera/Release/sprigcast_camera.dll
+            build/camera32/Release/sprigcast_camera32.dll
+            camera-test*.png
           retention-days: 14

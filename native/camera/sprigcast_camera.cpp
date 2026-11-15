@@ -44,14 +44,14 @@ static const CLSID CLSID_SprigCastCamera = {0x6f3c5a0e, 0x2b9d, 0x4c6b, {0x9f, 0
 static const wchar_t* CLSID_TEXT = L"{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}";
 static const wchar_t* SHARED_NAME = L"Global\\SprigCastCamera";
 static const UINT32 MAGIC = 0x43565053;  // 'SPVC'
-static const UINT32 VERSION = 2;
+static const UINT32 VERSION = 3;
 static const UINT32 MAX_W = 1920;
 static const UINT32 HEADER = 64;
 static const UINT32 FPS = 30;
 static const SIZE SIZES[] = {{1920, 1080}, {1280, 720}, {1080, 1920}, {720, 1280}};
 
 static HMODULE g_module = nullptr;
-static volatile LONG g_objects = 0;
+volatile LONG g_objects = 0;  // also counted by sprigcast_dshow.cpp
 static volatile LONG g_locks = 0;
 
 template <class T> static void SafeRelease(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -66,7 +66,7 @@ static void LogPath(wchar_t* out, DWORD n) {
     _snwprintf_s(out, n, _TRUNCATE, L"%s\\SprigCast Camera\\camera.log", base);
 }
 
-static void Log(const char* fmt, ...) {
+void Log(const char* fmt, ...) {
     char text[600];
     va_list args;
     va_start(args, fmt);
@@ -97,6 +97,12 @@ static void Log(const char* fmt, ...) {
     if (len > 0) WriteFile(f, line, (DWORD)len, &wrote, nullptr);
     CloseHandle(f);
 }
+
+// sprigcast_dshow.cpp: the same camera as a DirectShow capture source (what most apps actually use).
+extern const CLSID CLSID_SprigCastDShow;
+extern const wchar_t* DSHOW_CLSID_TEXT;
+HRESULT DShowClassObject(REFIID riid, void** ppv);
+HRESULT DShowRegister(bool on);
 
 static void Guid(REFGUID g, char* out, size_t n) {
     _snprintf_s(out, n, _TRUNCATE, "{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", g.Data1, g.Data2, g.Data3,
@@ -840,33 +846,21 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, LPVOID* ppv) {
     char id[48];
     Guid(clsid, id, sizeof(id));
     Log("class object for %s", id);
+    if (clsid == CLSID_SprigCastDShow) return DShowClassObject(riid, ppv);
     if (clsid != CLSID_SprigCastCamera) return CLASS_E_CLASSNOTAVAILABLE;
     return g_factory.QueryInterface(riid, ppv);
 }
 
 STDAPI DllCanUnloadNow() { return (g_objects == 0 && g_locks == 0) ? S_OK : S_FALSE; }
 
-static HRESULT Register(bool on) {
+// The COM class for a CLSID (HKLM, so services and every user can create it).
+static HRESULT RegisterClass(const wchar_t* clsid, bool on) {
     wchar_t key[128];
-    wsprintfW(key, L"Software\\Classes\\CLSID\\%s", CLSID_TEXT);
+    wsprintfW(key, L"Software\\Classes\\CLSID\\%s", clsid);
     if (!on) {
         LSTATUS s = RegDeleteTreeW(HKEY_LOCAL_MACHINE, key);
         return (s == ERROR_SUCCESS || s == ERROR_FILE_NOT_FOUND) ? S_OK : HRESULT_FROM_WIN32(s);
     }
-    // A log folder the Frame Server (Local Service) and users may write to; regsvr32 runs elevated.
-    wchar_t log[MAX_PATH];
-    LogPath(log, MAX_PATH);
-    *wcsrchr(log, L'\\') = 0;
-    PSECURITY_DESCRIPTOR sd = nullptr;
-    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            L"D:(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;BU)", SDDL_REVISION_1, &sd,
-            nullptr)) {
-        SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
-        if (!CreateDirectoryW(log, &sa) && GetLastError() == ERROR_ALREADY_EXISTS)
-            SetFileSecurityW(log, DACL_SECURITY_INFORMATION, sd);
-        LocalFree(sd);
-    }
-    Log("registered");
     wchar_t path[MAX_PATH];
     if (!GetModuleFileNameW(g_module, path, MAX_PATH)) return HRESULT_FROM_WIN32(GetLastError());
     wchar_t inproc[160];
@@ -880,6 +874,37 @@ static HRESULT Register(bool on) {
         s = RegSetKeyValueW(HKEY_LOCAL_MACHINE, inproc, L"ThreadingModel", REG_SZ, model,
                             (DWORD)((wcslen(model) + 1) * 2));
     return HRESULT_FROM_WIN32(s);
+}
+
+static void MakeLogFolder() {  // writable by the Frame Server (Local Service) and users; regsvr32 is elevated
+    wchar_t log[MAX_PATH];
+    LogPath(log, MAX_PATH);
+    *wcsrchr(log, L'\\') = 0;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)(A;OICI;0x1301bf;;;BU)", SDDL_REVISION_1, &sd,
+            nullptr)) {
+        SECURITY_ATTRIBUTES sa = {sizeof(sa), sd, FALSE};
+        if (!CreateDirectoryW(log, &sa) && GetLastError() == ERROR_ALREADY_EXISTS)
+            SetFileSecurityW(log, DACL_SECURITY_INFORMATION, sd);
+        LocalFree(sd);
+    }
+}
+
+static HRESULT Register(bool on) {
+    if (on) MakeLogFolder();
+    // DirectShow (what most apps use, and what works everywhere) and the Windows 11 media source.
+    HRESULT hr = RegisterClass(CLSID_TEXT, on);
+    if (on) {
+        if (SUCCEEDED(hr)) hr = RegisterClass(DSHOW_CLSID_TEXT, true);
+        if (SUCCEEDED(hr)) hr = DShowRegister(true);
+    } else {
+        DShowRegister(false);
+        HRESULT ds = RegisterClass(DSHOW_CLSID_TEXT, false);
+        if (SUCCEEDED(hr)) hr = ds;
+    }
+    Log("%s (%d-bit): 0x%08lX", on ? "registered" : "unregistered", (int)sizeof(void*) * 8, hr);
+    return hr;
 }
 
 STDAPI DllRegisterServer() { return Register(true); }
