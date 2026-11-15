@@ -12,7 +12,7 @@ import os
 from collections.abc import Callable
 
 from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -98,23 +98,30 @@ def set_quiet(quiet: bool) -> None:
     QUIET[0] = quiet
 
 class TransitionPicture(QWidget):
-    """A small moving picture of the transition: an "A" card turning into a "B" card, looping."""
+    """A small moving picture of the transition: bloom "A" turning into bloom "B", looping.
 
-    LOOP_MS = 1800
+    It mixes the two pictures the same way the compositor's transition shader does (same edges, same
+    softness, same leaf and flower), so what it shows is what goes on air.
+    """
+
+    HOLD_A = 450  # ms on A before the change, and on B after it
+    HOLD_B = 650
 
     def __init__(self, transition: Callable[[], Transition], parent: QWidget | None = None, wide: bool = False):
         super().__init__(parent)
         self.transition = transition
-        self.wide = wide  # a miniature 1280x720 screen (the pop-up) rather than a thin strip
+        self.wide = wide  # a little stream screen (the pop-up) rather than a thin strip
         self.setFixedHeight(56 if not wide else 180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
-        self._timer.setInterval(33)
+        self._timer.setInterval(16)
         self._timer.timeout.connect(self._step)
         self._loops_left = 0
         self.rest = 0.0  # where the picture waits between plays (0 = the A card)
         self.progress = 0.0
+        self._scenes: tuple | None = None  # (key, a, b, x, y): A and B as float arrays, and pixel grids
+        self._wipe: tuple[str, object] | None = None  # (path, its grey picture at this size)
 
     def fill(self) -> None:
         """Take whatever room is left (Live's card)."""
@@ -160,115 +167,215 @@ class TransitionPicture(QWidget):
         self.play(1)
         super().enterEvent(event)
 
+    def run_ms(self) -> int:
+        """How long the change itself plays: its own length, kept long enough to see and short enough
+        to loop (a stinger shows its swap over a fixed second)."""
+        t = self.transition()
+        if t.kind == "cut":
+            return 0
+        if t.kind == "stinger":
+            return 1100
+        return max(450, min(2500, t.duration_ms))
+
+    def loop_ms(self) -> int:
+        return self.HOLD_A + self.run_ms() + self.HOLD_B
+
+    def progress_at(self, at: float) -> float:
+        """Where the change is, `at` ms into a loop: on A, then the change, then on B."""
+        run = self.run_ms()
+        if run <= 0:
+            return 1.0 if at >= self.HOLD_A else 0.0
+        return min(1.0, max(0.0, (at - self.HOLD_A) / run))
+
     def _step(self) -> None:
-        elapsed = self._clock.elapsed()
-        cycle, at = divmod(elapsed, self.LOOP_MS)
+        cycle, at = divmod(self._clock.elapsed(), self.loop_ms())
         if cycle >= self._loops_left:
             self._timer.stop()
             self._loops_left, self.progress = 0, self.rest
         else:
-            # Hold on A a moment, run the change, then hold on B.
-            self.progress = min(1.0, max(0.0, (at - 300) / (self.LOOP_MS - 700)))
+            self.progress = self.progress_at(at)
         self.update()
+
+    # -- drawing ------------------------------------------------------------------------------------
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         box = QRectF(0, 0, self.width(), self.height())
+        radius = 18 if self.wide else 14
         frame = QPainterPath()
-        frame.addRoundedRect(box, 18 if self.wide else 14, 18 if self.wide else 14)
+        frame.addRoundedRect(box, radius, radius)
         p.setClipPath(frame)
-        t = self.transition()
-        progress = self.progress
-        self._card(p, box, "A", theme.STAGE_EMPTY, theme.SELECT_TEXT)
-        if t.kind == "cut":
-            if progress >= 0.5:
-                self._card(p, box, "B", theme.ACCENT, theme.ACCENT_TEXT)
-            return
-        eased = progress * progress * (3 - 2 * progress)
-        dx, dy = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}[t.direction]
-        if t.kind == "fade":
-            p.setOpacity(progress)
-            self._card(p, box, "B", theme.ACCENT, theme.ACCENT_TEXT)
-        elif t.kind in ("slide", "swipe"):
-            if t.kind == "slide":
-                self._card(p, box.translated(dx * eased * box.width(), dy * eased * box.height()), "A",
-                           theme.STAGE_EMPTY, theme.SELECT_TEXT, clear=True)
-            new = box.translated(-dx * (1 - eased) * box.width(), -dy * (1 - eased) * box.height())
-            self._card(p, new, "B", theme.ACCENT, theme.ACCENT_TEXT)
-        elif t.kind == "wipe":
-            reach = QRectF(box)
-            if dx:
-                reach.setWidth(box.width() * progress)
-                if dx < 0:
-                    reach.moveRight(box.right())
-            else:
-                reach.setHeight(box.height() * progress)
-                if dy < 0:
-                    reach.moveBottom(box.bottom())
-            p.setClipRect(reach, Qt.ClipOperation.IntersectClip)
-            self._card(p, box, "B", theme.ACCENT, theme.ACCENT_TEXT)
-        elif t.kind == "leaf":
-            size = 2.4 * max(box.width(), box.height()) * progress
-            leaf = QRectF(0, 0, size, size)
-            leaf.moveCenter(box.center())
-            p.setClipPath(theme.leaf_path(leaf, tilt=30 * progress), Qt.ClipOperation.IntersectClip)
-            self._card(p, box, "B", theme.ACCENT, theme.ACCENT_TEXT)
-        elif t.kind == "bloom":
-            p.setClipPath(self._flower(box.center(), 1.6 * max(box.width(), box.height()) * progress, progress),
-                          Qt.ClipOperation.IntersectClip)
-            self._card(p, box, "B", theme.ACCENT, theme.ACCENT_TEXT)
-        elif t.kind == "stinger":
-            if progress >= 0.5:
-                self._card(p, box, "B", theme.ACCENT, theme.ACCENT_TEXT)
-            if 0.0 < progress < 1.0:  # a big leaf sweeps across, hiding the swap
-                size = box.height() * 2.2
-                x = box.left() - size + (box.width() + size) * progress
-                theme.paint_leaf(p, QRectF(x, box.center().y() - size / 2, size, size), True,
-                                 theme.ACCENT_DARK, vein=theme.ACCENT, tilt=-20)
-        if self.wide:
-            p.setClipping(False)
-            p.setOpacity(1.0)
-            tag = QRectF(box.right() - 84, box.top() + 8, 76, 22)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, 120))
-            p.drawRoundedRect(tag, 11, 11)
-            p.setPen(QColor(theme.TEXT))
-            p.setFont(self.font())
-            p.drawText(tag, Qt.AlignmentFlag.AlignCenter, "1280×720")
+        p.drawImage(box, self.frame(self.progress))
 
-    def _card(self, p: QPainter, rect: QRectF, label: str, fill: str, ink: str, clear: bool = False) -> None:
-        p.save()
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(fill))
-        p.drawRect(rect)
-        font = QFont(self.font())
-        font.setPointSizeF(font.pointSizeF() * 1.4)
-        font.setBold(True)
-        p.setFont(font)
-        if self.wide:  # a little stream scene: a camera box and a name bar, so it reads as a screen
-            font.setPointSizeF(font.pointSizeF() * 2.2)
-            unit = rect.height() / 9
-            p.setBrush(QColor(ink))
-            p.setOpacity(0.18)
-            p.drawRoundedRect(QRectF(rect.right() - 4.6 * unit, rect.bottom() - 3.8 * unit, 4 * unit, 3 * unit), 6, 6)
-            p.drawRoundedRect(QRectF(rect.left() + 0.6 * unit, rect.bottom() - 1.6 * unit, 5 * unit, 0.9 * unit), 5, 5)
-            p.setOpacity(1.0)
-        p.setFont(font)
-        p.setPen(QColor(ink))
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
-        p.restore()
+    def frame(self, progress: float) -> QImage:
+        """The picture `progress` (0 .. 1) of the way from A to B, at the widget's size in device pixels."""
+        import numpy as np
+
+        dpr = max(1.0, self.devicePixelRatioF())
+        w, h = max(2, round(self.width() * dpr)), max(2, round(self.height() * dpr))
+        a, b, x, y = self._pictures(w, h, dpr)
+        t = self.transition()
+        progress = min(1.0, max(0.0, progress))
+        ease = progress * progress * (3 - 2 * progress)
+        dx, dy = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}[t.direction]
+        if t.kind in ("cut", "stinger"):
+            out = b if progress >= 0.5 else a
+        elif t.kind == "fade":
+            out = a * (1 - progress) + b * progress
+        elif t.kind in ("slide", "swipe"):
+            # B comes in from the far side; on slide A leaves ahead of it, on swipe A stays put under it.
+            shift_x, shift_y = round(dx * ease * w), round(dy * ease * h)
+            out = a.copy() if t.kind == "swipe" else self._shifted(a, shift_x, shift_y)
+            if t.kind == "swipe" and 0.0 < ease < 1.0:  # a soft shadow ahead of B's edge, so it reads as on top
+                reach = max(4, round(0.04 * max(w, h)))
+                pos, size = (x * w, w) if dx else (y * h, h)
+                ahead = pos - ease * size if dx + dy > 0 else (1 - ease) * size - pos
+                out = out * (1 - 0.35 * np.clip(1 - ahead / reach, 0, 1) * (ahead > 0))[..., None]
+            out = self._shifted(b, shift_x - dx * w, shift_y - dy * h, out)
+        else:
+            if t.kind == "wipe":
+                grey = self._wipe_map(t.wipe_image, w, h)
+                level = grey if grey is not None else (x * dx + y * dy + max(0, -(dx + dy)))
+            else:
+                from sprigcast.render.compositor import BLOOM_SPIN, LEAF_SPIN, LEAF_TURN, shape_reach
+
+                qx, qy = (x - 0.5) * (w / h), y - 0.5
+                if t.kind == "leaf":
+                    angle = LEAF_TURN + LEAF_SPIN * progress
+                    c, s = math.cos(angle), math.sin(angle)
+                    u, v = c * qx + s * qy, -s * qx + c * qy
+                    level = np.abs(v) + np.hypot(u, v)
+                else:
+                    level = np.hypot(qx, qy) / (0.72 + 0.28 * np.cos(5 * np.arctan2(qy, qx) + BLOOM_SPIN * progress))
+                level = level / shape_reach(t.kind, (w, h), progress)
+            soft = max(t.softness, 0.001)
+            edge = progress * (1 + soft)
+            # The shader's smoothstep: 1 where the change has reached, 0 where it hasn't yet.
+            k = np.clip((level - (edge - soft)) / soft, 0.0, 1.0)
+            amount = (1.0 - k * k * (3 - 2 * k))[..., None]
+            out = a * (1 - amount) + b * amount
+        image = self._image(out)
+        image.setDevicePixelRatio(dpr)
+        if t.kind == "stinger" and 0.0 < progress < 1.0:
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self._sweep(painter, QRectF(0, 0, w / dpr, h / dpr), progress)
+            painter.end()
+        return image
 
     @staticmethod
-    def _flower(centre: QPointF, size: float, spin: float) -> QPainterPath:
-        path = QPainterPath()
-        for i in range(73):
-            a = i / 72 * 2 * math.pi
-            r = size / 2 * (0.72 + 0.28 * math.cos(5 * a + spin * 1.2))
-            point = QPointF(centre.x() + r * math.cos(a), centre.y() + r * math.sin(a))
-            path.moveTo(point) if i == 0 else path.lineTo(point)
-        path.closeSubpath()
-        return path
+    def _shifted(picture, sx: int, sy: int, under=None):
+        """`picture` moved by (sx, sy) pixels, over `under` (or over nothing where it has left)."""
+        import numpy as np
+
+        h, w = picture.shape[:2]
+        out = np.zeros_like(picture) if under is None else under.copy()
+        if abs(sx) >= w or abs(sy) >= h:
+            return out
+        src_x, dst_x = (slice(0, w - sx), slice(sx, w)) if sx >= 0 else (slice(-sx, w), slice(0, w + sx))
+        src_y, dst_y = (slice(0, h - sy), slice(sy, h)) if sy >= 0 else (slice(-sy, h), slice(0, h + sy))
+        out[dst_y, dst_x] = picture[src_y, src_x]
+        return out
+
+    @staticmethod
+    def _image(pixels) -> QImage:
+        import numpy as np
+
+        data = np.ascontiguousarray(np.clip(pixels, 0, 255).astype(np.uint8))
+        h, w = data.shape[:2]
+        return QImage(data.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+
+    def _pictures(self, w: int, h: int, dpr: float):
+        """Blooms A and B at this size, as float RGBA arrays, with each pixel's (x, y) from 0 to 1."""
+        import numpy as np
+
+        key = (w, h, dpr, self.wide)
+        if self._scenes is None or self._scenes[0] != key:
+            pictures = []
+            for label, fill, ink, flip in (("A", theme.STAGE_EMPTY, theme.SELECT_TEXT, False),
+                                           ("B", theme.ACCENT, theme.ACCENT_TEXT, True)):
+                image = QImage(w, h, QImage.Format.Format_RGBA8888)
+                image.setDevicePixelRatio(dpr)
+                image.fill(QColor(fill))
+                painter = QPainter(image)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._scene(painter, QRectF(0, 0, w / dpr, h / dpr), label, ink, flip)
+                painter.end()
+                bits = np.frombuffer(image.constBits(), np.uint8, image.sizeInBytes())
+                pictures.append(bits.reshape(h, image.bytesPerLine())[:, : w * 4].reshape(h, w, 4).astype(np.float32))
+            x = ((np.arange(w, dtype=np.float32) + 0.5) / w)[None, :]
+            y = ((np.arange(h, dtype=np.float32) + 0.5) / h)[:, None]
+            self._scenes = (key, pictures[0], pictures[1], x, y)
+        return self._scenes[1:]
+
+    def _scene(self, p: QPainter, rect: QRectF, label: str, ink: str, flip: bool) -> None:
+        """One bloom: its letter, and on the pop-up's screen a camera box and a name bar (on the other
+        sides for B, so the change reads even where the colours meet)."""
+        font = QFont(self.font())
+        font.setBold(True)
+        if self.wide:
+            unit = rect.height() / 9
+            cam = QRectF(0, 0, 4 * unit, 3 * unit)
+            bar = QRectF(0, 0, 5 * unit, 0.9 * unit)
+            if flip:
+                cam.moveTopLeft(QPointF(rect.left() + 0.6 * unit, rect.top() + 0.6 * unit))
+                bar.moveBottomRight(QPointF(rect.right() - 0.6 * unit, rect.bottom() - 0.7 * unit))
+            else:
+                cam.moveBottomRight(QPointF(rect.right() - 0.6 * unit, rect.bottom() - 0.8 * unit))
+                bar.moveBottomLeft(QPointF(rect.left() + 0.6 * unit, rect.bottom() - 0.7 * unit))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(ink))
+            p.setOpacity(0.18)
+            p.drawRoundedRect(cam, unit * 0.5, unit * 0.5)
+            p.drawRoundedRect(bar, bar.height() / 2, bar.height() / 2)
+            p.setOpacity(1.0)
+            font.setPixelSize(max(12, round(rect.height() * 0.24)))
+        else:
+            font.setPixelSize(max(10, round(min(rect.height() * 0.42, 22))))
+        p.setFont(font)
+        p.setPen(QColor(ink))
+        # A's letter sits left of centre and B's right of it, so a fade never stacks one on the other.
+        spot = QRectF(rect)
+        spot.setWidth(rect.width() * 0.5)
+        spot.moveCenter(QPointF(rect.left() + rect.width() * (0.62 if flip else 0.38), rect.center().y()))
+        p.drawText(spot, Qt.AlignmentFlag.AlignCenter, label)
+
+    def _wipe_map(self, path: str, w: int, h: int):
+        """The wipe image as grey levels 0 .. 1 at this size (None when there is none or it can't be read)."""
+        import numpy as np
+
+        if not path:
+            return None
+        key = f"{path}|{w}x{h}"
+        if self._wipe is None or self._wipe[0] != key:
+            image = QImage(path)
+            grey = None
+            if not image.isNull():
+                image = image.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+                image = image.convertToFormat(QImage.Format.Format_Grayscale8)
+                bits = np.frombuffer(image.constBits(), np.uint8, image.sizeInBytes())
+                grey = bits.reshape(h, image.bytesPerLine())[:, :w].astype(np.float32) / 255.0
+            self._wipe = (key, grey)
+        return self._wipe[1]
+
+    @staticmethod
+    def _sweep(p: QPainter, box: QRectF, progress: float) -> None:
+        """The stinger stand-in: a band of leaves sweeps across, covering the whole screen at the swap."""
+        width = box.width() * 1.8
+        left = box.left() - width + (box.width() + width) * progress
+        band = QRectF(left, box.top() - 2, width, box.height() + 4)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(theme.ACCENT_DARK))
+        p.drawRoundedRect(band, box.height() / 2, box.height() / 2)
+        size = box.height() * 0.9
+        for i, (u, v, tilt) in enumerate(((0.25, 0.3, -30), (0.5, 0.62, 15), (0.75, 0.32, -10))):
+            leaf = QRectF(0, 0, size * (0.8 if i != 1 else 1.0), size * (0.8 if i != 1 else 1.0))
+            leaf.moveCenter(QPointF(band.left() + band.width() * u, box.top() + box.height() * v))
+            theme.paint_leaf(p, leaf, True, theme.ACCENT, vein=theme.ACCENT_DARK, tilt=tilt,
+                             width=max(1.2, size / 40))
 
 
 def summary(transition: Transition) -> str:
