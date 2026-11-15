@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from pathlib import Path
@@ -25,18 +26,22 @@ import numpy as np
 from sprigcast.core.source import Source, register
 from sprigcast.sources.image import load_rgba
 
-PLUGIN = {"id": "slide_show", "name": "Slide show", "version": 2, "adds": "Source",
+PLUGIN = {"id": "slide_show", "name": "Slide show", "version": 3, "adds": "Source",
           "about": "Plays every picture in a folder, one after another: seconds per picture, shuffle and loop."}
 
 log = logging.getLogger(__name__)
 
 PICTURES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+# SprigCast's own screenshots and Snap polaroids. Played back on the canvas they picture the canvas, which
+# held the picture before, so every slide stacked older copies of the stream (soak 2026-11-15): left out.
+OWN_SHOTS = re.compile(r"^(screenshot \S+|snap) \d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}( \(\d+\))?\.png$", re.IGNORECASE)
 
 
 def pictures_in(folder: str) -> list[Path]:
     """The pictures in a folder, by name (case doesn't matter); none if it can't be read."""
     try:
-        files = [p for p in Path(folder).iterdir() if p.is_file() and p.suffix.lower() in PICTURES]
+        files = [p for p in Path(folder).iterdir()
+                 if p.is_file() and p.suffix.lower() in PICTURES and not OWN_SHOTS.match(p.name)]
     except OSError:
         return []
     return sorted(files, key=lambda p: p.name.lower())

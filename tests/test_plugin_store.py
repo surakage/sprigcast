@@ -138,3 +138,13 @@ def test_added_store_plugins_get_the_new_version_at_start(tmp_path):
     assert plugin_store.installed_version(folder, "snap") == snap.version
     assert not plugin_store.installed_path(folder, "death_count").exists()  # never added: left alone
     assert plugin_store.refresh_installed(folder) == []
+
+
+def test_slide_show_leaves_out_sprigcasts_own_screenshots(tmp_path):
+    """Soak 2026-11-15: playing the Screenshots folder put pictures of the canvas on the canvas: stacked copies."""
+    from sprigcast.store.slide_show import pictures_in
+
+    for name in ("screenshot horizontal 2026-11-15 09-17-02.png", "screenshot vertical 2026-11-15 09-17-02 (2).png",
+                 "snap 2026-11-15 09-18-00.png", "holiday.png", "screenshot of my game.png"):
+        (tmp_path / name).write_bytes(b"x")
+    assert [p.name for p in pictures_in(str(tmp_path))] == ["holiday.png", "screenshot of my game.png"]
