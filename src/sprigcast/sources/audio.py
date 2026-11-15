@@ -54,9 +54,12 @@ _ELGATO_NAME = re.compile(r"^\s*(?:wave ?link\s+)?(?P<channel>.+?)\s*\((?:elgato
 
 
 def device_label(name: str) -> str:
-    """How a device reads in pickers: Elgato Wave Link channels as "Game · Elgato Wave Link"."""
+    """How a device reads in pickers: Elgato Wave Link channels as "Game · Elgato Wave Link", and
+    other apps' devices with their app ("… · Voicemod") when the name doesn't say."""
     if not is_mixer_app_device(name):
-        return name
+        from sprigcast.core.device_makers import label
+
+        return label(name)
     match = _ELGATO_NAME.match(name)
     channel = match.group("channel") if match else re.sub(r"(?i)^wave ?link\s+", "", name)
     return f"{channel} · Elgato Wave Link"

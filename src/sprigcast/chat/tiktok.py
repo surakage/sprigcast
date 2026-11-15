@@ -101,18 +101,45 @@ def message_from_tikfinity(frame: dict) -> ChatMessage | None:
     return ChatMessage(platform="tiktok", user="", text=text, id=str(data.get("msgId", "")), notice=True)
 
 
+def event_from_tikfinity(frame: dict) -> tuple[str, dict] | None:
+    """A TikFinity frame as a SprigCast API event (group "tiktok"): ("tiktok.gift", {...}) or None.
+    Gift streaks arrive once, when they end, with their final count."""
+    event, data = frame.get("event"), frame.get("data") or {}
+    if not isinstance(data, dict) or not isinstance(event, str):
+        return None
+    who = {"user": str(data.get("nickname") or data.get("uniqueId") or ""),
+           "handle": str(data.get("uniqueId") or ""), "userId": str(data.get("userId") or "")}
+    if event == "chat":
+        return "tiktok.chat", {**who, "text": str(data.get("comment", ""))}
+    if event == "gift":
+        if data.get("giftType") == 1 and not data.get("repeatEnd"):
+            return None
+        count = int(data.get("repeatCount") or 1)
+        each = int(data.get("diamondCount") or 0)
+        return "tiktok.gift", {**who, "gift": str(data.get("giftName") or ""), "giftId": data.get("giftId"),
+                               "count": count, "diamonds": each * count}
+    if event == "like":
+        return "tiktok.like", {**who, "count": int(data.get("likeCount") or 1),
+                               "total": int(data.get("totalLikeCount") or 0)}
+    if event in ("follow", "share", "subscribe"):
+        return f"tiktok.{event}", who
+    return None
+
+
 # The reader -------------------------------------------------------------------------------------
 
 class _Bridge(QObject):
     """Carries messages from the helper thread to the UI thread."""
 
     message = Signal(object)
+    happened = Signal(str, object)
     status = Signal(str)
     ended = Signal(int, str, bool)  # run number, why, and whether it's just not live (check again later)
 
 
 class TikTokChat(QObject):
     message = Signal(object)
+    happened = Signal(str, object)  # ("tiktok.gift", {...}): gifts, likes, follows... for the SprigCast API
     deleted = Signal(str)
     cleared = Signal(str)
     status = Signal(str)
@@ -134,6 +161,7 @@ class TikTokChat(QObject):
         self._waiting_live = False  # the retry timer is only waiting for the stream to start
         self._bridge = _Bridge(self)
         self._bridge.message.connect(self.message)
+        self._bridge.happened.connect(self.happened)
         self._bridge.status.connect(self.status)
         self._bridge.ended.connect(self._direct_ended)
         self._retry = QTimer(self)
@@ -216,6 +244,9 @@ class TikTokChat(QObject):
             message = message_from_tikfinity(frame)
             if message is not None:
                 self.message.emit(message)
+            event = event_from_tikfinity(frame)
+            if event is not None:
+                self.happened.emit(*event)
 
     # 2. Straight from TikTok -----------------------------------------------------------------
 
@@ -241,7 +272,7 @@ class TikTokChat(QObject):
         from TikTokLive import TikTokLiveClient
         from TikTokLive.client.errors import UserNotFoundError, UserOfflineError
         from TikTokLive.client.web.web_settings import WebDefaults
-        from TikTokLive.events import CommentEvent, ConnectEvent, FollowEvent, GiftEvent, ShareEvent
+        from TikTokLive.events import CommentEvent, ConnectEvent, FollowEvent, GiftEvent, LikeEvent, ShareEvent
 
         if key:
             WebDefaults.tiktok_sign_api_key = key
@@ -254,6 +285,10 @@ class TikTokChat(QObject):
         def name_of(user) -> str:
             return str(getattr(user, "nickname", "") or getattr(user, "unique_id", "") or "someone")
 
+        def who(user) -> dict:
+            return {"user": str(getattr(user, "nickname", "") or getattr(user, "unique_id", "") or ""),
+                    "handle": str(getattr(user, "unique_id", "") or ""), "userId": str(getattr(user, "id", "") or "")}
+
         async def on_connect(_event) -> None:
             bridge.status.emit("live")
 
@@ -263,6 +298,7 @@ class TikTokChat(QObject):
             bridge.message.emit(ChatMessage(
                 platform="tiktok", user=name_of(user), text=str(getattr(event, "content", "") or ""),
                 id=str(getattr(common, "msg_id", "") or ""), user_id=str(getattr(user, "id", "") or "")))
+            bridge.happened.emit("tiktok.chat", {**who(user), "text": str(getattr(event, "content", "") or "")})
 
         async def on_gift(event) -> None:
             if getattr(event, "streaking", False):
@@ -271,17 +307,28 @@ class TikTokChat(QObject):
             count = int(getattr(event, "repeat_count", 1) or 1)
             text = f"{name_of(getattr(event, 'user', None))} sent {gift}" + (f" x{count}" if count > 1 else "")
             bridge.message.emit(ChatMessage(platform="tiktok", user="", text=text, notice=True))
+            each = int(getattr(getattr(event, "gift", None), "diamond_count", 0) or 0)
+            bridge.happened.emit("tiktok.gift", {**who(getattr(event, "user", None)), "gift": gift,
+                                                 "giftId": getattr(getattr(event, "gift", None), "id", None),
+                                                 "count": count, "diamonds": each * count})
 
         async def on_follow(event) -> None:
             bridge.message.emit(ChatMessage(platform="tiktok", user="", notice=True,
                                             text=f"{name_of(getattr(event, 'user', None))} followed"))
+            bridge.happened.emit("tiktok.follow", who(getattr(event, "user", None)))
 
         async def on_share(event) -> None:
             bridge.message.emit(ChatMessage(platform="tiktok", user="", notice=True,
                                             text=f"{name_of(getattr(event, 'user', None))} shared the LIVE"))
+            bridge.happened.emit("tiktok.share", who(getattr(event, "user", None)))
+
+        async def on_like(event) -> None:
+            bridge.happened.emit("tiktok.like", {**who(getattr(event, "user", None)),
+                                                 "count": int(getattr(event, "count", 1) or 1),
+                                                 "total": int(getattr(event, "total", 0) or 0)})
 
         for kind, handler in ((ConnectEvent, on_connect), (CommentEvent, on_comment), (GiftEvent, on_gift),
-                              (FollowEvent, on_follow), (ShareEvent, on_share)):
+                              (FollowEvent, on_follow), (ShareEvent, on_share), (LikeEvent, on_like)):
             client.add_listener(kind, handler)
         why, offline = "stream ended", True
         try:

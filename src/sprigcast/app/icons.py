@@ -198,13 +198,70 @@ def _draw(p: QPainter, name: str) -> None:
         p.drawEllipse(P(12, 12), 8, 8)
         p.setBrush(p.pen().color())
         p.drawEllipse(P(12, 12), 3.5, 3.5)
+    elif name == "chat":  # a speech bubble with a tail
+        bubble = QPainterPath(P(7, 5))
+        bubble.lineTo(P(17, 5))
+        bubble.cubicTo(P(19.5, 5), P(20.5, 6), P(20.5, 8.5))
+        bubble.lineTo(P(20.5, 13))
+        bubble.cubicTo(P(20.5, 15.5), P(19.5, 16.5), P(17, 16.5))
+        bubble.lineTo(P(10, 16.5))
+        bubble.lineTo(P(6, 20))
+        bubble.lineTo(P(6.5, 16.4))
+        bubble.cubicTo(P(4.5, 16), P(3.5, 15), P(3.5, 13))
+        bubble.lineTo(P(3.5, 8.5))
+        bubble.cubicTo(P(3.5, 6), P(4.5, 5), P(7, 5))
+        p.drawPath(bubble)
+    elif name == "note":  # two notes on a beam
+        p.drawEllipse(P(7, 17.5), 2.6, 2.1)
+        p.drawEllipse(P(17, 15.5), 2.6, 2.1)
+        p.drawLine(P(9.6, 17.3), P(9.6, 6.5))
+        p.drawLine(P(19.6, 15.3), P(19.6, 4.5))
+        p.drawLine(P(9.6, 6.5), P(19.6, 4.5))
+    elif name == "trophy":  # a cup with handles on a stand
+        cup = QPainterPath(P(7, 4.5))
+        cup.lineTo(P(17, 4.5))
+        cup.lineTo(P(17, 9))
+        cup.cubicTo(P(17, 12.5), P(14.5, 14.5), P(12, 14.5))
+        cup.cubicTo(P(9.5, 14.5), P(7, 12.5), P(7, 9))
+        cup.closeSubpath()
+        p.drawPath(cup)
+        p.drawArc(QRectF(3.5, 6, 4.5, 5), 90 * 16, 180 * 16)
+        p.drawArc(QRectF(16, 6, 4.5, 5), -90 * 16, 180 * 16)
+        p.drawLine(P(12, 14.5), P(12, 18))
+        p.drawLine(P(8, 19.5), P(16, 19.5))
+    elif name == "ball":  # a ball with seams
+        p.drawEllipse(P(12, 12), 8, 8)
+        p.drawLine(P(4, 12), P(20, 12))
+        p.drawArc(QRectF(6.5, 4, 11, 16), 60 * 16, 60 * 16)
+        p.drawArc(QRectF(6.5, 4, 11, 16), -120 * 16, 60 * 16)
+        p.drawArc(QRectF(1, 4, 11, 16), -60 * 16, 120 * 16)
+        p.drawArc(QRectF(12, 4, 11, 16), 120 * 16, 120 * 16)
+    elif name == "broadcast":  # a dot sending waves both ways
+        p.setBrush(p.pen().color())
+        p.drawEllipse(P(12, 12), 2, 2)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for r in (5, 8.5):
+            p.drawArc(QRectF(12 - r, 12 - r, 2 * r, 2 * r), -45 * 16, 90 * 16)
+            p.drawArc(QRectF(12 - r, 12 - r, 2 * r, 2 * r), 135 * 16, 90 * 16)
+    elif name == "record":  # a ring with a filled centre
+        p.drawEllipse(P(12, 12), 8, 8)
+        p.setBrush(p.pen().color())
+        p.drawEllipse(P(12, 12), 4, 4)
+    elif name == "landscape":
+        p.drawRoundedRect(QRectF(3, 6.5, 18, 11), 2, 2)
+    elif name == "portrait":
+        p.drawRoundedRect(QRectF(7.5, 3, 9, 18), 2, 2)
+    elif name == "dual":  # a wide and a tall canvas side by side
+        p.drawRoundedRect(QRectF(2.5, 8, 12, 8), 1.6, 1.6)
+        p.drawRoundedRect(QRectF(16, 4.5, 6, 15), 1.6, 1.6)
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
 
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
-         "gamepad", "keyboard", "shutter")
+         "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
+         "portrait", "dual")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:

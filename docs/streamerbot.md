@@ -9,7 +9,40 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 1. In SprigCast, open **Settings → Connections**, turn on the API, set a password and turn on **Allow web links**.
 2. Note the port shown there (4455 unless OBS already uses it; then pick another, e.g. 4456).
 
-## Run a SprigCast action from Streamer.bot
+## Two ways in
+
+- **As OBS (no code).** In Streamer.bot, Stream Apps → OBS Studio → Add: host `127.0.0.1`, the port and password from SprigCast's Settings → Connections. Streamer.bot's own OBS sub-actions then work on SprigCast: switch scene (bloom), show or hide a source, set a text (Set GDI Text), turn a filter on or off, play or restart a media source, mute, start and stop the stream, recording and replay buffer, save a replay, take a source screenshot of the bloom on air. This is the quickest start.
+- **The SprigCast pack (everything, including plugins).** One Execute C# Code action, below, calls any SprigCast action by name, with ready-made methods for the common ones.
+
+## The SprigCast pack for Streamer.bot
+
+1. In Streamer.bot add an action named **SprigCast**, add the sub-action Core → C# → **Execute C# Code**, paste all of [SprigCast.cs](streamerbot/SprigCast.cs), press **Compile** (it should say "Compiled successfully") and **Save and Compile**.
+2. Variables → Global Variables → add two persisted globals: `sprigcastPort` (the port, e.g. `4456` next to OBS) and `sprigcastPassword`.
+3. In any other action, set the arguments a method needs (Core → Arguments → Set Argument), then add Core → C# → **Execute C# Method**: action **SprigCast**, method one of:
+
+| Method | Arguments |
+| --- | --- |
+| `ShowBloom` | `bloom`, optional `shape` |
+| `ShowItem`, `HideItem`, `ToggleItem` | `bloom`, `item` |
+| `SprigState` | `sprig`, `state` |
+| `MuteSound`, `UnmuteSound`, `ToggleSound` | `sound` |
+| `SetText` | `source`, `text` (e.g. `%rawInput%` from a command) |
+| `FilterOn`, `FilterOff`, `ToggleFilter` | `source`, `filter` |
+| `PlayMedia` (from the start), `StopMedia` | `media` |
+| `Screenshot`, `SaveClip`, `ToggleStream`, `ToggleRecord` | none |
+| `SwitchGarden` / `SwitchPath` | `garden` / `path` |
+| `DeathAdd`, `DeathRemove`, `DeathReset`, `DeathShow` | none (Death count plugin) |
+| `Pixelate`, `Blackout` | `source`, optional `seconds` (Hide it plugin) |
+| `BarrelRoll` | `sprig`, optional `seconds` (Barrel Roll plugin) |
+| `Execute` | `sprigcastAction` (any action, e.g. `item.place`) and `sprigcastJson` (its fields as JSON) |
+
+Every method leaves SprigCast's answer in `%sprigcastResult%` and `%sprigcastOk%`, so the next sub-action can post it in chat (Death count answers `{"ok": true, "result": {"count": 7}}`).
+
+## TikTok gifts and likes
+
+TikFinity already triggers Streamer.bot actions for TikTok gifts, likes and follows, and that stays the easiest way. SprigCast also passes them on while TikTok chat is on in its Chat panel: as `tiktok.gift`, `tiktok.like`, `tiktok.follow`, `tiktok.share`, `tiktok.subscribe` and `tiktok.chat` events on the SprigCast API (group `tiktok`), and as `sprigcast` vendor events on the OBS door.
+
+## Run a SprigCast action from Streamer.bot with a web link
 
 Add a **Fetch URL** sub-action (Core → Network) to any Streamer.bot action, with an address like:
 
@@ -63,6 +96,8 @@ To react in Streamer.bot when something happens in SprigCast (a bloom shown, a c
 
 ## For Streamer.bot developers
 
+The full guide for building native SprigCast support is [Building on SprigCast](integrating.md). In short:
+
 Everything SprigCast can be asked to do is discoverable, so an integration doesn't need to hard-code a list:
 
 - `hello` → `auth` (same password scheme as obs-websocket 5) → `welcome`. See [Connecting](control-api.md#connecting).
@@ -72,4 +107,4 @@ Everything SprigCast can be asked to do is discoverable, so an integration doesn
 - `{"steps": [...]}` runs several actions in order, with waits between them.
 - Errors have a stable `code` (`bad_request`, `not_found`, `not_allowed`, `busy`, `unknown_action`, `failed`).
 
-The OBS-compatible door (`ws://127.0.0.1:4455`, obs-websocket 5) also works with Streamer.bot's existing OBS sub-actions, but new features only come to the SprigCast API.
+The OBS-compatible door (`ws://127.0.0.1:4455`, obs-websocket 5) also works with Streamer.bot's existing OBS sub-actions (scenes, sources, text, filters, media, outputs), but new features only come to the SprigCast API.

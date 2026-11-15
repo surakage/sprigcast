@@ -130,6 +130,15 @@ def is_virtual(name: str) -> bool:
     return any(word in plain for word in _VIRTUAL) and name != OWN_CAMERA
 
 
+_CAPTURE = ("capture", "hd60", "4k60", "4k x", "4k s", "live gamer", "avermedia", "magewell")
+
+
+def is_capture_card(name: str) -> bool:
+    """A capture card (Elgato HD60 X, AVerMedia Live Gamer...): a console or second PC, not a face."""
+    plain = _plain(name)
+    return any(word in plain for word in _CAPTURE) and not is_virtual(name)
+
+
 def real_camera(cameras: list[CameraDevice], virtual_name: str) -> CameraDevice | None:
     """The physical camera most likely behind a virtual one: a cam of the same brand first, never a
     capture card. None when there's no physical camera."""

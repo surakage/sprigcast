@@ -76,6 +76,14 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - The stream summary shows the bitrate actually sent (#118, #136).
 - Logbook: daily logs, a report for each stream, and crash reports in Documents\SprigCast\Logs (#129, #134, #138).
 
+### Get started
+
+- A two-step Get started card on a new install (and any time from Tools → Get started): what you make, go live or record,
+  which shape, where you go live (Twitch, YouTube, Kick, TikTok, X), then your camera, capture card, mic and PC sound.
+  It names a garden after the show and a path after where it goes, adds a place per pick, and makes the blooms that fit.
+  A capture card fills the Gaming bloom and brings its own sound; Elgato Wave Link channels are picked up by name.
+- X is a streaming service choice.
+
 ### Optimize wizard
 
 - First-run wizard that checks your PC and upload and suggests settings (#110, #112, #113, #141).

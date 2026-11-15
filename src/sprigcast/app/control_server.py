@@ -21,7 +21,7 @@ from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServer
 
 from sprigcast.control import web
-from sprigcast.control.api import ControlApi
+from sprigcast.control.api import VENDOR, ControlApi
 from sprigcast.control.native import NativeApi, NativeSession
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
 
@@ -420,6 +420,13 @@ class ControlServer(QObject):
             message = session.event(name, data)
             if message is not None:
                 socket.sendTextMessage(message)
+
+    def app_event(self, name: str, data: dict[str, Any]) -> None:
+        """An event from another part of SprigCast (e.g. "tiktok.gift" from the Chat panel): to SprigCast
+        API apps by its group, and to OBS-door apps as a "sprigcast" VendorEvent (eventType = name)."""
+        self.native_broadcast(name, data)
+        if self._obs():
+            self.broadcast("VendorEvent", Sub.VENDORS, {"vendorName": VENDOR, "eventType": name, "eventData": data})
 
     def wants_meters(self) -> bool:
         return any(s.wants(Sub.INPUT_VOLUME_METERS) for _, s in self._obs()) or \

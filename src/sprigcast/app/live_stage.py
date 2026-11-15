@@ -152,7 +152,7 @@ class Destination:
 
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
-                   ("custom", "Custom RTMP"))
+                   ("x", "X"), ("custom", "Custom RTMP"))
 CHIP_STYLE = (
     f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 10px;"
     f" padding: 2px 10px; min-height: 16px; font-size: 11px; }}"
@@ -307,10 +307,19 @@ class LiveSide(QWidget):
         self.camera_note.setVisible(False)
         self.camera_note.setOpenExternalLinks(True)  # "Open settings" for Windows camera privacy
         buttons.addWidget(self.camera_note)
+        # While live or recording: one clock on its own line (no label), the details under it.
+        self.clock = QLabel("")
+        self.clock.setStyleSheet(f"color: {theme.LIVE_TEXT}; font-size: 15px; font-weight: 700;"
+                                 " background: transparent;")
+        self.clock.setVisible(False)
+        status = QVBoxLayout()
+        status.setSpacing(2)  # the details sit close under their clock
+        status.addWidget(self.clock)
         self.rec_note = QLabel("")
-        self.rec_note.setStyleSheet(f"color: {theme.LIVE_TEXT}; background: transparent;")
+        self.rec_note.setWordWrap(True)  # a long note wraps instead of running off the card
         self.rec_note.setVisible(False)
-        buttons.addWidget(self.rec_note)
+        status.addWidget(self.rec_note)
+        buttons.addLayout(status)
         where.addLayout(buttons)
         where.addSpacing(4)
         top = QHBoxLayout()
@@ -406,13 +415,23 @@ class LiveSide(QWidget):
         self.camera_note.setText(error)
         self.camera_note.setVisible(bool(error) and not on)
 
-    def set_recording(self, text: str) -> None:
-        """'' when not recording, else the REC clock line. The button always says Record: pink means on."""
-        self.record.setStyleSheet(CARD_ON_AIR_STYLE if text else CARD_PILL_STYLE)
-        self.record.setToolTip("Recording. Click to stop." if text else
+    def set_recording(self, on: bool) -> None:
+        """The button always says Record: pink means on."""
+        self.record.setStyleSheet(CARD_ON_AIR_STYLE if on else CARD_PILL_STYLE)
+        self.record.setToolTip("Recording. Click to stop." if on else
                                "Record the canvases ticked in Controls, to your recordings folder")
-        self.rec_note.setText(text)
-        self.rec_note.setVisible(bool(text))
+
+    def set_status(self, seconds: int | None, details: str = "", warn: bool = False) -> None:
+        """The clock (None hides it: not live or recording) and a details line under it."""
+        if seconds is None:
+            self.clock.setVisible(False)
+            self.rec_note.setVisible(False)
+            return
+        self.clock.setText(f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}")
+        self.clock.setVisible(True)
+        self.rec_note.setStyleSheet(f"color: {theme.WARN if warn else theme.MUTED}; background: transparent;")
+        self.rec_note.setText(details)
+        self.rec_note.setVisible(bool(details))
 
     def set_clip(self, on: bool, seconds: int) -> None:
         """The button always says Clips: highlighted when ready (a click saves the last `seconds`)."""
