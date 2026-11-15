@@ -639,9 +639,9 @@ def test_clip_saves_the_shapes_chosen_in_settings(app, tmp_path, monkeypatch):
         assert w.live_side.clip.text() == "Clips" and w.live_side.clip.styleSheet() == CARD_PILL_STYLE
         w.live_side.clip_saved(2)
         assert w.live_side.clip.text() == "Clips"
-        w.live_side.set_recording("● REC 0:00:01")
+        w.live_side.set_recording(True)
         assert w.live_side.record.text() == "Record"
-        w.live_side.set_recording("")
+        w.live_side.set_recording(False)
         assert w.live_side.record.text() == "Record"
     finally:
         w.close()
