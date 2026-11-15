@@ -123,3 +123,23 @@ def test_live_shows_the_banner_and_a_link_to_the_last_stream(app, tmp_path, monk
         pop.close()
     finally:
         w.close()
+
+
+def test_live_canvases_have_no_caption_above_them(app, tmp_path, monkeypatch):
+    import keyring
+
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    w = MainWindow(load_collection(tmp_path / "scenes.json"), tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._set_mode("live")
+        w._refresh_previews()
+        assert not any(p.show_title for p in w.previews.values())  # just the picture
+        w._set_mode("build")
+        w._refresh_previews()
+        assert all(p.show_title == p.twin for p in w.previews.values())
+    finally:
+        w.close()
