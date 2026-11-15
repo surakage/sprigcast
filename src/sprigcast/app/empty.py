@@ -209,10 +209,15 @@ class LiveCheer(QWidget):
 class _PulsingLive(ArtPicture):
     """The waving sloth with SprigCast's own live dot by its paw, glowing in and out."""
 
+    DOT = (1.02, 0.46)  # dot centre, as a share of the art's size: just right of the open claws
+    DOT_ROOM = 0.09  # extra width to the right of the art so the dot and its glow fit
+
     def __init__(self, width: int):
         from PySide6.QtCore import QTimer
 
         super().__init__("live", width)
+        self.art_width = width
+        self.setFixedSize(width + round(width * self.DOT_ROOM), self.height())  # the dot sits just past the art
         self.phase = 0.0
         self._tick = QTimer(self, interval=50)
         self._tick.timeout.connect(self._step)
@@ -233,12 +238,16 @@ class _PulsingLive(ArtPicture):
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QColor
 
-        super().paintEvent(event)
         p = QPainter(self)
+        picture = art(self.name)
+        side = self.art_width
+        if not picture.isNull():
+            size = picture.size().scaled(QSize(side, self.height()), Qt.AspectRatioMode.KeepAspectRatio)
+            p.drawPixmap(QPointF(0, (self.height() - size.height()) / 2), self._shrunk(picture, size))
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        centre = QPointF(self.width() * 0.925, self.height() * 0.425)  # just above the waving claws, not covering them
-        r = max(3.0, self.width() * 0.034)
+        centre = QPointF(side * self.DOT[0], self.height() * self.DOT[1])
+        r = max(3.0, side * 0.034)
         glow = QColor(theme.LIVE)
         glow.setAlphaF(0.1 + 0.12 * (0.5 + 0.5 * math.sin(self.phase * 2 * math.pi)))
         p.setBrush(glow)
