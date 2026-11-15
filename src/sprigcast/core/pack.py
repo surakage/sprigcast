@@ -178,7 +178,14 @@ def _size(file: Path) -> int:
 
 
 def is_pack(path: Path) -> bool:
-    return Path(path).suffix.casefold() == PACK_SUFFIX or zipfile.is_zipfile(path)
+    """A zip holding garden.json (whatever its name ends in), or anything named .sprigpack."""
+    if Path(path).suffix.casefold() == PACK_SUFFIX:
+        return True
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return "garden.json" in zf.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
 
 
 def _member_path(name: str) -> PurePosixPath | None:
@@ -206,42 +213,60 @@ def read_pack(source: Path, media: Path, progress: Progress | None = None) -> Sc
             raise PackError(f"{source.name} isn't a SprigCast garden pack.") from exc
         members = [(info, _member_path(info.filename)) for info in zf.infolist() if not info.is_dir()]
         members = [(info, rel) for info, rel in members if rel is not None]
-        total = sum(info.file_size for info, _ in members)
-        if total > MAX_UNPACKED_BYTES or len(members) > MAX_FILES:
-            raise PackError(f"{source.name} is too big to unpack.")
-        if shutil.disk_usage(_existing(media)).free < total + 256 * 1024 ** 2:
-            raise PackError("There isn't enough free disk space to unpack it.")
-        media.mkdir(parents=True, exist_ok=True)
-        root = media.resolve()
-        written = 0
-        try:
-            for info, rel in members:
-                out = (root / Path(*rel.parts)).resolve()
-                if not out.is_relative_to(root):
-                    continue
-                out.parent.mkdir(parents=True, exist_ok=True)
-                left = info.file_size
-                with zf.open(info) as src, open(out, "wb") as dst:
-                    while chunk := src.read(1024 * 1024):
-                        left -= len(chunk)
-                        if left < 0:  # the zip lied about the size
-                            raise PackError(f"{source.name} is damaged.")
-                        dst.write(chunk)
-                written += info.file_size
-                if progress:
-                    progress(written, total)
-        except (OSError, zipfile.BadZipFile, EOFError) as exc:
-            shutil.rmtree(media, ignore_errors=True)
-            raise PackError(f"Couldn't unpack {source.name}: {getattr(exc, 'strerror', None) or exc}") from exc
-        except PackError:
-            shutil.rmtree(media, ignore_errors=True)
-            raise
+        root = unzip(zf, members, media, source.name, progress)
     for holder, key, _kind in _slots(garden):
         value = _get(holder, key)
         if value.startswith(PACK_PREFIX):
             rel = _member_path("files/" + value[len(PACK_PREFIX):])
             _set(holder, key, str(root / Path(*rel.parts)) if rel else "")
     return garden
+
+
+def unzip(zf: zipfile.ZipFile, members: list[tuple[zipfile.ZipInfo, PurePosixPath]], media: Path, label: str,
+          progress: Progress | None = None) -> Path:
+    """Write the chosen members under `media` (made here), each at its safe relative path. Checks the size
+    and free space first, never writes outside `media`, and removes it again if anything goes wrong."""
+    total = sum(info.file_size for info, _ in members)
+    if total > MAX_UNPACKED_BYTES or len(members) > MAX_FILES:
+        raise PackError(f"{label} is too big to unpack.")
+    if shutil.disk_usage(_existing(media)).free < total + 256 * 1024 ** 2:
+        raise PackError("There isn't enough free disk space to unpack it.")
+    media.mkdir(parents=True, exist_ok=True)
+    root = media.resolve()
+    written = 0
+    try:
+        for info, rel in members:
+            out = (root / Path(*rel.parts)).resolve()
+            if not out.is_relative_to(root) or out == root:
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            left = info.file_size
+            with zf.open(info) as src, open(out, "wb") as dst:
+                while chunk := src.read(1024 * 1024):
+                    left -= len(chunk)
+                    if left < 0:  # the zip lied about the size
+                        raise PackError(f"{label} is damaged.")
+                    dst.write(chunk)
+            written += info.file_size
+            if progress:
+                progress(written, total)
+    except (OSError, zipfile.BadZipFile, EOFError) as exc:
+        shutil.rmtree(media, ignore_errors=True)
+        raise PackError(f"Couldn't unpack {label}: {getattr(exc, 'strerror', None) or exc}") from exc
+    except PackError:
+        shutil.rmtree(media, ignore_errors=True)
+        raise
+    return root
+
+
+def safe_member(name: str) -> PurePosixPath | None:
+    """A zip member name as a safe relative path, or None (absolute, .., drive letters, empty parts)."""
+    if name.startswith(("/", "\\")):
+        return None
+    parts = PurePosixPath(name.replace("\\", "/")).parts
+    if not parts or any(part in ("", ".", "..") or ":" in part for part in parts):
+        return None
+    return PurePosixPath(*parts)
 
 
 def _existing(path: Path) -> Path:

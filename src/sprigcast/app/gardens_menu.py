@@ -210,6 +210,11 @@ class GardenControl:
             for app, files in self._other_apps().items():
                 sub = menu.addMenu(f"Import from {convert.APP_NAMES[app]}")
                 names = convert.streamlabs_names(files[0].parent) if app == "streamlabs" else {}
+                if names:  # files the manifest doesn't list are collections Streamlabs deleted
+                    files = sorted((f for f in files if f.stem in names), key=lambda f: names[f.stem].casefold())
+                if not files:
+                    menu.removeAction(sub.menuAction())
+                    continue
                 for file in files:
                     label = names.get(file.stem, file.stem.replace("_", " "))
                     sub.addAction(label.replace("&", "&&")).triggered.connect(
@@ -346,7 +351,7 @@ class GardenControl:
         return folder
 
     def _import(self, kind: str) -> None:
-        types = f"SprigCast, OBS, Streamlabs or Meld (*.json *{pack.PACK_SUFFIX})" if kind == "garden" \
+        types = f"SprigCast, OBS, Streamlabs or Meld (*.json *{pack.PACK_SUFFIX} *{convert.OVERLAY_SUFFIX})" if kind == "garden" \
             else "SprigCast (*.json)"
         path, _ = QFileDialog.getOpenFileName(self.w, f"Import {WORDS[kind][0]}", str(self._exports()), types)
         if not path:
@@ -372,7 +377,9 @@ class GardenControl:
         """A SprigCast export or pack, or a scene collection from OBS, Streamlabs or Meld: added, then switched to."""
         try:
             path, notes = Path(path), []
-            if pack.is_pack(path):
+            if convert.is_overlay_file(path):
+                entry, notes = self._import_overlay(path)
+            elif pack.is_pack(path):
                 with self._progress(f"Unpacking {path.stem}…") as progress:
                     entry = self.shelf.import_pack(path, self._media(), progress)
             elif (app := convert.detect(data := convert.read_json(path))) == "sprigcast":
@@ -419,6 +426,19 @@ class GardenControl:
 
     def _progress(self, label: str) -> _Progress:
         return _Progress(self.w, label)
+
+    def _import_overlay(self, path: Path):
+        """A Streamlabs .overlay: its media unpack to Documents/SprigCast/Media/<name>, then it's converted."""
+        import shutil
+
+        folder = pack.free_folder(self._media(), path.stem)
+        data = convert.unpack_overlay(path, folder)
+        try:
+            garden, notes = convert.convert(data, self.w.collection, audio_devices=self._audio_names())
+            return self.shelf.add_garden(path.stem, garden), notes
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
 
     def _export_pack(self) -> None:
         current = self.shelf.garden()

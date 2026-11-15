@@ -161,6 +161,14 @@ def test_streamlabs_collection():
     live = next(s for s in col.parts() if s.name == "Live")
     assert [(i.x, i.y, i.scale) for i in live.items][0] == (10, 20, 2)
     assert any("widget" in n for n in notes)
+    data["baseResolutions"] = {"horizontal": {"baseWidth": 1920, "baseHeight": 1080},
+                               "vertical": {"baseWidth": 720, "baseHeight": 1280}}
+    for relative, expected in ((None, (7.5, 9.0, 1.5)), (True, (5, 6, 1))):
+        # Newer Streamlabs (relativeCoordinates) keeps a 720x1280 canvas's items as if it were 1080x1920.
+        data["relativeCoordinates"] = relative
+        col, _ = convert(data, _like(), size_of=lambda kind, s: (100, 100))
+        item = next(s for s in col.scenes if s.kind == "part" and s.canvas == "vertical").items[0]
+        assert (item.x, item.y, item.scale) == expected
 
 
 SPARK = {"pluginName": "MeldStudio", "sceneObjectSourceName": "MeldStudio/Spark Element"}
@@ -312,3 +320,68 @@ def test_composite_blur_pixelate_comes_over():
     assert [(f.kind, f.settings, f.enabled) for f in cam.filters] == [
         ("blur", {"mode": "pixelate", "size": 40.0}, False), ("blur", {"mode": "blur", "size": 64.0}, True)]
     assert not any("THSV" in n for n in notes)
+
+
+def _slot(name, kind, x=0.0, y=0.0, s=1.0, display="horizontal", **content):
+    return {"id": f"id-{name}-{display}", "sceneNodeType": "item", "name": name, "x": x, "y": y,
+            "scaleX": s / 1920, "scaleY": s / 1080, "crop": {"top": 0, "bottom": 0, "left": 0, "right": 0},
+            "rotation": 0, "visible": True, "display": display, "locked": False,
+            "content": {"nodeType": kind, **content}}
+
+
+def overlay_zip(path):
+    """A Streamlabs .overlay: config.json (scenes of slots, shares of a 1920x1080 canvas) and its media."""
+    import zipfile
+
+    labels = {"schemaVersion": 1, "nodeType": "TextNode", "settings": {"text": "MagicalTech", "color": -1,
+                                                                      "font": {"face": "Baloo Bhai", "size": 48}}}
+    config = {"schemaVersion": 1, "nodeType": "RootNode",
+              "scenes": {"nodeType": "ScenesNode", "items": [
+                  {"name": "Live Scene", "sceneId": "scene_live", "slots": {"items": [
+                      _slot("Game Capture", "GameCaptureNode", placeholderFile="2.png", width=1920, height=1080),
+                      _slot("Video Capture Device", "WebcamNode", 0.025, 0.32, 0.35, width=0.3368, height=0.3368),
+                      _slot("Frame", "VideoNode", -0.1, 0.2, 0.5, filename="9.webm", settings={"looping": True}),
+                      {"id": "f1", "sceneNodeType": "folder", "name": "Webcam", "childrenIds": ["x"]},
+                      _slot("Most Recent Subscriber", "StreamlabelNode", 0.07, 0.71, labelType="sub",
+                            textSource=labels),
+                      _slot("Alertbox", "WidgetNode", 0.33, 0, settings={"url": "", "width": 800, "height": 600},
+                            type=0),
+                      _slot("Socials", "SceneSourceNode", 0.1, 0.5, 0.5, sceneId="scene_social", width=1920,
+                            height=1080),
+                      _slot("Live Dual", "VideoNode", display="vertical", filename="3.webm", settings={}),
+                      _slot("Icon", "IconLibraryNode", folder="7")]}},
+                  {"name": "Social Media", "sceneId": "scene_social", "slots": {"items": [
+                      _slot("Text 1", "TextNode", 0.27, 0.45, settings={"text": "USERNAME", "color": -1})]}}]},
+              "transition": {"nodeType": "TransitionNode", "type": "obs_stinger_transition", "duration": 300,
+                             "settings": {"path": "51.webm", "transition_point": 1200}}}
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("config.json", json.dumps(config))
+        for name in ("9.webm", "3.webm", "51.webm", "../evil.webm"):
+            zf.writestr(name, b"video")
+    return path
+
+
+def test_streamlabs_overlay(tmp_path):
+    from sprigcast.core.convert import is_overlay_file, unpack_overlay
+
+    file = overlay_zip(tmp_path / "streamlabs.overlay")
+    assert is_overlay_file(file)
+    data = unpack_overlay(file, tmp_path / "Media" / "streamlabs")
+    assert detect(data) == "streamlabs" and not (tmp_path / "Media" / "evil.webm").exists()
+    col, notes = convert(data, _like())
+    live = next(s for s in col.parts() if s.name == "Live Scene")
+    by_name = {(col.source(i.source) or col.scene(i.source)).name: i for i in live.items}
+    assert list(by_name)[0] == "Game Capture"  # Streamlabs lists the bottom item first, as OBS does
+    frame = by_name["Frame"]
+    assert (round(frame.x), round(frame.y), frame.scale) == (-192, 216, 0.5)
+    assert col.source(frame.source).settings["path"] == str((tmp_path / "Media" / "streamlabs" / "9.webm").resolve())
+    cam = by_name["Camera"]
+    assert cam.bounds == "fill" and round(cam.bounds_size[0]) == 647 and round(cam.bounds_size[1]) == 364
+    socials = by_name["Social Media"]
+    assert (round(socials.x), round(socials.y), socials.scale) == (192, 540, 0.5)
+    assert col.source(by_name["Most Recent Subscriber"].source).settings["text"] == "MagicalTech"
+    assert {s.name for s in col.scenes if s.kind == "show"} == {"Live Scene"}
+    assert any(s.canvas == "vertical" and s.name == "Live Scene" for s in col.scenes if s.kind == "show")
+    assert col.transition.kind == "stinger" and col.transition.stinger.path.endswith("51.webm")
+    assert any("Alertbox" in n and "dashboard" in n for n in notes)
+    assert any("Icon" in n and "pictures" in n for n in notes)

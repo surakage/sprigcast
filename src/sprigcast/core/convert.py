@@ -861,10 +861,21 @@ def streamlabs_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
 
     Streamlabs keeps sources with OBS's own kinds and settings, and scene items as top-left x and y
     with a scale; a dual-output item for the vertical canvas is marked display "vertical"."""
+    if is_overlay(data):
+        return overlay_to_obs(data)
     notes: list[str] = []
     res = data.get("baseResolutions") or {}
     base = data.get("baseResolution") or res.get("horizontal") or {}
     vbase = res.get("vertical") or {"baseWidth": 1080, "baseHeight": 1920}
+    if data.get("relativeCoordinates") is True:
+        # Newer Streamlabs keeps positions as if each canvas were 1080 pixels on its short side (a 720x1280
+        # vertical canvas holds a 1080x1920 picture at scale 1), checked against its own themes.
+        def at_1080(b: dict[str, Any], wide: bool) -> dict[str, Any]:
+            w, h = _num(b.get("baseWidth"), 1920 if wide else 1080), _num(b.get("baseHeight"), 1080 if wide else 1920)
+            k = 1080 / min(w, h) if min(w, h) > 0 else 1.0
+            return {"baseWidth": round(w * k), "baseHeight": round(h * k)}
+
+        base, vbase = at_1080(base, True), at_1080(vbase, False)
     sources = []
     for s in (data.get("sources") or {}).get("items", []):
         if not isinstance(s, dict):
@@ -905,11 +916,219 @@ def streamlabs_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
            "canvases": [{"info": {"name": "Vertical", "uuid": vertical_uuid}}] if any(
                s.get("canvas_uuid") for s in scenes) else [],
            "transitions": [], "current_transition": "Fade", "transition_duration": 300}
+    twins = {s["uuid"][:-2] for s in scenes if s.get("canvas_uuid")}
     for s in scenes:
         if s.get("canvas_uuid"):
             for it in s["settings"]["items"]:
                 it["scale_ref"] = {"x": vbase.get("baseWidth", 1080), "y": vbase.get("baseHeight", 1920)}
+                if it.get("source_uuid") in twins:  # a scene shown on the vertical canvas: its vertical items
+                    it["source_uuid"] = f"{it['source_uuid']}-v"
     return obs, notes
+
+
+# Streamlabs overlay (.overlay) --------------------------------------------------------------------------
+
+OVERLAY_SUFFIX = ".overlay"
+ASSETS_KEY = "_assets"  # set by the importer: the folder an .overlay's files were unpacked into
+_SL_BASE = (1920.0, 1080.0)  # Streamlabs writes positions and scales as shares of the main canvas
+_SL_WIDGETS = {0: "Alert Box", 1: "Tip Goal", 2: "Follower Goal", 3: "Subscriber Goal", 4: "Bit Goal",
+               5: "Tip Jar", 6: "Chat Box", 7: "Event List", 8: "The Jar", 9: "Viewer Count", 10: "Stream Boss",
+               11: "Credits", 12: "Spin Wheel", 13: "Sponsor Banner", 14: "Media Share", 15: "Subscriber Goal",
+               17: "Poll", 18: "Emote Wall", 19: "Chat Highlight", 20: "Super Chat Goal"}
+
+
+def is_overlay(data: Any) -> bool:
+    """A Streamlabs overlay's config.json: scenes made of slots (not a scene collection's sceneItems)."""
+    scenes = (data.get("scenes") or {}).get("items") if isinstance(data, dict) else None
+    return isinstance(scenes, list) and any(isinstance(s, dict) and "slots" in s for s in scenes)
+
+
+def overlay_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """A Streamlabs overlay (File → Export Overlay File, a zip with config.json and its media) in OBS's shape.
+
+    Streamlabs stores each slot's x and scale as a share of the main canvas's width (y of its height), for
+    both canvases; files are named inside the zip (unpacked to data[ASSETS_KEY]); a scene inside another
+    scales by the canvas it was made on; widgets are pages Streamlabs makes per account, so their address
+    isn't in the file."""
+    notes: list[str] = []
+    assets = Path(str(data.get(ASSETS_KEY) or "."))
+    bw, bh = _SL_BASE
+    sources: list[dict[str, Any]] = []
+    scenes: list[dict[str, Any]] = []
+    noted: set[str] = set()
+    names: dict[str, str] = {}  # Streamlabs scene id -> our scene name
+    for sc in data["scenes"]["items"]:
+        if isinstance(sc, dict):
+            names[str(sc.get("sceneId"))] = str(sc.get("name") or "Scene")
+
+    def note_once(text: str) -> None:
+        if text not in noted:
+            noted.add(text)
+            notes.append(text)
+
+    grouped: dict[str, list[str]] = {}  # what to say -> the items it's about, said once for all of them
+
+    def note_for(label: str, text: str) -> None:
+        names_ = grouped.setdefault(text, [])
+        if label not in names_:
+            names_.append(label)
+
+    def asset(name: Any) -> str:
+        rel = Path(str(name or "")).name  # a bare name: never outside the folder
+        return str(assets / rel) if rel else ""
+
+    shared: dict[tuple, str] = {}
+
+    def add(key: tuple, obs: dict[str, Any]) -> str:
+        if key not in shared:
+            shared[key] = obs["uuid"]
+            sources.append(obs)
+        return shared[key]
+
+    for sc in data["scenes"]["items"]:
+        if not isinstance(sc, dict):
+            continue
+        name = names[str(sc.get("sceneId"))]
+        by_display: dict[str, list[dict[str, Any]]] = {"horizontal": [], "vertical": []}
+        for slot in (sc.get("slots") or {}).get("items", []):
+            if not isinstance(slot, dict) or slot.get("sceneNodeType", "item") != "item":
+                continue  # Streamlabs folders only sort the list
+            content = slot.get("content") if isinstance(slot.get("content"), dict) else {}
+            kind = str(content.get("nodeType") or "")
+            label = str(slot.get("name") or kind)
+            display = "vertical" if slot.get("display") == "vertical" else "horizontal"
+            uuid = f"sl-{slot.get('id')}"
+            sx, sy = _num(slot.get("scaleX"), 1 / bw) * bw, _num(slot.get("scaleY"), 1 / bh) * bh
+            item: dict[str, Any] = {"pos": {"x": _num(slot.get("x")) * bw, "y": _num(slot.get("y")) * bh},
+                                    "rot": _num(slot.get("rotation")), "visible": bool(slot.get("visible", True)),
+                                    "locked": bool(slot.get("locked", False)), "align": 5,
+                                    **{f"crop_{k}": (slot.get("crop") or {}).get(k, 0)
+                                       for k in ("left", "top", "right", "bottom")}}
+            if display == "vertical":
+                item["scale_ref"] = {"x": 1080, "y": 1920}
+            ref: str | None = None
+            if kind == "ImageNode":
+                ref = add(("image", content.get("filename")), {"id": "image_source", "name": label, "uuid": uuid,
+                                                               "settings": {"file": asset(content.get("filename"))}})
+            elif kind == "VideoNode":
+                settings = {**(content.get("settings") or {}), "local_file": asset(content.get("filename")),
+                            "is_local_file": True}
+                ref = add(("video", content.get("filename"), json.dumps(content.get("settings"), sort_keys=True)),
+                          {"id": "ffmpeg_source", "name": label, "uuid": uuid, "settings": settings})
+            elif kind == "TextNode" or kind == "StreamlabelNode":
+                text = content.get("textSource") if kind == "StreamlabelNode" else content
+                settings = dict((text or {}).get("settings") or {})
+                if kind == "StreamlabelNode":
+                    note_for(label, "Streamlabs labels; they show their sample text until you set them up.")
+                ref = add(("text", uuid), {"id": "text_gdiplus", "name": label, "uuid": uuid, "settings": settings})
+            elif kind == "WebcamNode":
+                ref = add(("camera",), {"id": "dshow_input", "name": "Camera", "uuid": "sl-camera",
+                                        "settings": {"video_device_id": ""}})
+                item.update(bounds_type=3, bounds_align=0,  # fill the box Streamlabs gives it, cropping the rest
+                            bounds={"x": _num(content.get("width")) * bw, "y": _num(content.get("height")) * bh})
+                sx = sy = 1.0
+                note_once("Camera: pick your camera in its settings.")
+            elif kind == "GameCaptureNode":
+                ref = add(("game",), {"id": "game_capture", "name": "Game Capture", "uuid": "sl-game",
+                                      "settings": {"capture_mode": "any_fullscreen"}})
+                sx = sy = 1.0  # Streamlabs shows a game at its own size on both canvases
+            elif kind == "WidgetNode":
+                wtype = int(_num(content.get("type"), -1))
+                settings = dict(content.get("settings") or {})
+                ref = add(("widget", wtype, label), {"id": "browser_source", "name": label, "uuid": uuid,
+                                                     "settings": settings})
+                kind_name = _SL_WIDGETS.get(wtype, "")
+                note_for(label if not kind_name or kind_name.replace(" ", "").casefold() in label.replace(" ", "").casefold()
+                         else f"{label} ({kind_name})",
+                         "Streamlabs widgets; paste each one's address from your Streamlabs dashboard.")
+            elif kind == "SceneSourceNode":
+                target = names.get(str(content.get("sceneId")))
+                if target is None:
+                    continue
+                if display == "horizontal":  # made on another main canvas size: Streamlabs rescales it
+                    sx *= _num(content.get("width"), bw) / bw
+                    sy *= _num(content.get("height"), bh) / bh
+                ref = f"sl-scene-{content.get('sceneId')}-{display}"
+            elif kind == "IconLibraryNode":
+                folder = Path(str(content.get("folder") or "")).name
+                pictures = sorted(p for p in (assets / folder).glob("*") if p.is_file()) if folder else []
+                if not pictures:
+                    note_for(label, "Streamlabs icons whose pictures aren't in the file, left out.")
+                    continue
+                ref = add(("icon", folder), {"id": "image_source", "name": label, "uuid": uuid,
+                                             "settings": {"file": str(pictures[0])}})
+            else:
+                note_once(f"{label}: Streamlabs' {kind or 'this kind of'} item doesn't come over yet.")
+                continue
+            item.update(source_uuid=ref, scale={"x": sx, "y": sy})
+            by_display[display].append(item)
+        scenes.append({"id": "scene", "name": name, "uuid": f"sl-scene-{sc.get('sceneId')}-horizontal",
+                       "settings": {"items": by_display["horizontal"]}})
+        scenes.append({"id": "scene", "name": f"{name} (Vertical)", "uuid": f"sl-scene-{sc.get('sceneId')}-vertical",
+                       "canvas_uuid": "streamlabs-vertical", "settings": {"items": by_display["vertical"]}})
+    if not any(s["settings"]["items"] for s in scenes if s.get("canvas_uuid")):
+        scenes = [s for s in scenes if not s.get("canvas_uuid")]
+    else:  # a scene shown only inside others still needs its vertical twin; empty ones that nothing uses go
+        used = {it["source_uuid"] for s in scenes for it in s["settings"]["items"]}
+        scenes = [s for s in scenes if not s.get("canvas_uuid") or s["settings"]["items"] or s["uuid"] in used]
+    for text, labels in grouped.items():
+        shown = ", ".join(labels[:4]) + (f" and {len(labels) - 4} more" if len(labels) > 4 else "")
+        notes.append(f"{shown}: {text}")
+    transition = data.get("transition") if isinstance(data.get("transition"), dict) else {}
+    transitions = []
+    if transition.get("type"):
+        settings = dict(transition.get("settings") or {})
+        if settings.get("path"):
+            settings["path"] = asset(settings["path"])
+        transitions.append({"id": transition["type"], "name": "Streamlabs", "settings": settings})
+    order = [{"name": s["name"]} for s in scenes if not s.get("canvas_uuid")]
+    obs = {"name": "Streamlabs overlay", "sources": sources + scenes, "groups": [], "scene_order": order,
+           "current_scene": order[0]["name"] if order else None,
+           "current_program_scene": order[0]["name"] if order else None,
+           "resolution": {"x": bw, "y": bh},
+           "canvases": [{"info": {"name": "Vertical", "uuid": "streamlabs-vertical"}}] if any(
+               s.get("canvas_uuid") for s in scenes) else [],
+           "transitions": transitions, "current_transition": "Streamlabs" if transitions else "Fade",
+           "transition_duration": int(_num(transition.get("duration"), 300))}
+    return obs, notes
+
+
+def is_overlay_file(path: Path) -> bool:
+    """A zip with config.json and no garden.json: a Streamlabs overlay (whatever its name ends in)."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            names = set(zf.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return "config.json" in names and "garden.json" not in names
+
+
+def unpack_overlay(source: Path, media: Path) -> dict[str, Any]:
+    """Unpack a Streamlabs .overlay into `media` (a new folder) and return its config with ASSETS_KEY set."""
+    import zipfile
+
+    from sprigcast.core import pack
+
+    source = Path(source)
+    try:
+        with zipfile.ZipFile(source) as zf:
+            try:
+                data = json.loads(zf.read("config.json").decode("utf-8-sig"))
+            except (KeyError, ValueError) as exc:
+                raise ConvertError(f"{source.name} isn't a Streamlabs overlay.") from exc
+            if not isinstance(data, dict) or not is_overlay(data):
+                raise ConvertError(f"{source.name} isn't a Streamlabs overlay.")
+            members = [(i, pack.safe_member(i.filename)) for i in zf.infolist()
+                       if not i.is_dir() and i.filename != "config.json"]
+            root = pack.unzip(zf, [(i, r) for i, r in members if r is not None], media, source.name)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ConvertError(f"{source.name} can't be read.") from exc
+    except pack.PackError as exc:
+        raise ConvertError(str(exc)) from exc
+    data[ASSETS_KEY] = str(root)
+    return data
 
 
 # Meld -------------------------------------------------------------------------------------------------
