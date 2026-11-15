@@ -22,7 +22,6 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -112,7 +111,7 @@ def _compact(button: QPushButton, text: str) -> QPushButton:
 class BloomTile(QPushButton):
     """A bloom as a pill button: a dot in its folder colour, then its name.
 
-    A pink ring and dot mean on air, a dashed green ring means lined up next (Studio mode). The
+    A pink ring and dot mean on air. The
     last on-air picture is kept (Build's bloom pills show it) but not drawn here: pills keep many
     blooms on screen at once."""
 
@@ -200,12 +199,8 @@ class BloomTile(QPushButton):
         text_rect = QRectF(32, 0, self.width() - 46 - key_w, self.height())
         name = QFontMetrics(self.font()).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(text_rect.width()))
         p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
-        ring = theme.LIVE if on_air else theme.ACCENT if self.property("staged") else None
-        if ring:
-            pen = QPen(QColor(ring), 2)
-            if not on_air:
-                pen.setStyle(Qt.PenStyle.DashLine)
-            p.setPen(pen)
+        if on_air:
+            p.setPen(QPen(QColor(theme.LIVE), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(outer.adjusted(1, 1, -1, -1), radius - 1, radius - 1)
         p.end()
@@ -253,14 +248,12 @@ class ThumbPop(QLabel):
 
 class LivePanel(QWidget):
     def __init__(self, on_scene: Callable[[str], None], on_state: Callable[[str, str | None], None] | None = None,
-                 on_studio: Callable[[bool], None] | None = None, on_go: Callable[[], None] | None = None,
                  on_edit: Callable[[str], None] | None = None):
         super().__init__()
         self.on_scene = on_scene
         self.on_edit = on_edit  # open a scene in Build mode (right-click menu)
         self.on_project: Callable | None = None  # (menu, scene id): adds the Live options for a bloom
         self.on_state = on_state or (lambda part_id, name: None)
-        self.staged: set[str] = set()
         self.buttons: dict[str, QPushButton] = {}
         self.state_buttons: dict[tuple[str, str | None], QPushButton] = {}  # (sprig id, state name or None)
         self.thumbs: dict[str, QImage] = {}  # scene id -> its last on-air picture, small
@@ -297,20 +290,7 @@ class LivePanel(QWidget):
         self.transition_chip.setCursor(Qt.CursorShape.PointingHandCursor)
         top.addWidget(self.transition_chip)
         top.addSpacing(12)
-        self.studio = QCheckBox("Line up first")
-        self.studio.setToolTip("Studio mode: click a bloom to line it up as Next, then press Bloom it to send it on air")
-        self.studio.toggled.connect(lambda on: (on_studio or (lambda _on: None))(on))
-        top.addWidget(self.studio)
         root.addLayout(top)
-        self.go = QPushButton("Bloom it")
-        self.go.setToolTip("Send the lined-up blooms on air (with the transition)")
-        self.go.setMinimumHeight(38)
-        self.go.setMinimumWidth(140)
-        self.go.setStyleSheet(theme.BIG_GO_STYLE.replace("24px", "19px").replace("font-size: 16px", "font-size: 13px"))
-        self.go.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.go.clicked.connect(lambda: (on_go or (lambda: None))())
-        self.go.setVisible(False)
-        root.addWidget(self.go, 0, Qt.AlignmentFlag.AlignRight)  # the window moves it under the stage
         self.rows = QVBoxLayout()
         self.rows.setSpacing(10)
         root.addLayout(self.rows)
@@ -348,10 +328,6 @@ class LivePanel(QWidget):
                     continue  # not in a Live folder
                 button.blockSignals(True)
                 button.setChecked(scene.id == active)
-                staged = scene.id in self.staged and scene.id != active
-                if button.property("staged") != staged:
-                    button.setProperty("staged", staged)
-                    button.update()
                 button.blockSignals(False)
 
     def _rebuild(self, collection: SceneCollection) -> None:
@@ -454,16 +430,6 @@ class LivePanel(QWidget):
         """A bloom tile's right-click menu: things you do with a bloom while live (editing is in Build)."""
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        collection = getattr(self, "_collection", None)
-        on_air = collection is not None and scene_id in collection.active_scenes.values()
-        if self.studio.isChecked():
-            go = menu.addAction(icons.icon("bloom", theme.ACCENT), "Line up next")
-            go.setToolTip("Get it ready; Go puts it on air")
-        else:
-            go = menu.addAction(icons.icon("bloom", theme.ACCENT), "On air now" if on_air else "Put on air")
-            go.setToolTip("Switch to this bloom (same as clicking it)")
-            go.setEnabled(not on_air)
-        go.triggered.connect(lambda: self.on_scene(scene_id))
         if self.on_project is not None:
             self.on_project(menu, scene_id)
         return menu

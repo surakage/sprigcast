@@ -40,8 +40,6 @@ class FakeHost:
     def __init__(self, collection):
         self.collection = collection
         self.commits = []
-        self._studio = False
-        self._staged = {}
         self.live = None
         self.rec = None
         self.clips = False
@@ -51,23 +49,6 @@ class FakeHost:
 
     def commit(self, what):
         self.commits.append(what)
-
-    def studio(self):
-        return self._studio
-
-    def set_studio(self, on):
-        self._studio = on
-
-    def staged(self):
-        return dict(self._staged)
-
-    def line_up(self, scene_id):
-        for scene in self.collection.linked_with(scene_id):
-            self._staged[scene.canvas] = scene.id
-
-    def bloom_it(self):
-        self.collection.active_scenes.update(self._staged)
-        self._staged = {}
 
     def stream_status(self):
         return self.live
@@ -311,12 +292,16 @@ def test_outputs_studio_and_vendor_requests():
     assert out["responseData"] == {"saved": [], "started": True} and host.clips
     _ok(api, "SaveReplayBuffer")
     assert _ok(api, "GetLastReplayBufferReplay") == {"savedReplayPath": "clip.mkv"}
-    # Studio mode: line up, then Bloom it.
+    # No Studio mode: OBS clients are told it's off, and nothing is lined up.
+    assert _ok(api, "GetStudioModeEnabled") == {"studioModeEnabled": False}
+    assert _fails(api, "SetStudioModeEnabled", {"studioModeEnabled": True}) == Status.STUDIO_MODE_NOT_ACTIVE
+    _ok(api, "SetStudioModeEnabled", {"studioModeEnabled": False})
     assert _fails(api, "SetCurrentPreviewScene", {"sceneName": "BRB"}) == Status.STUDIO_MODE_NOT_ACTIVE
-    _ok(api, "CallVendorRequest", {"vendorName": "sprigcast", "requestType": "LineUp", "requestData": {"sceneName": "BRB"}})
-    assert host.studio() and _ok(api, "GetCurrentPreviewScene")["sceneName"] == "BRB"
-    _ok(api, "CallVendorRequest", {"vendorName": "sprigcast", "requestType": "BloomIt"})
-    assert host.collection.active_scenes == {"horizontal": "brb-h", "vertical": "brb-v"}
+    assert _fails(api, "GetCurrentPreviewScene") == Status.STUDIO_MODE_NOT_ACTIVE
+    assert _fails(api, "TriggerStudioModeTransition") == Status.STUDIO_MODE_NOT_ACTIVE
+    assert _fails(api, "CallVendorRequest", {"vendorName": "sprigcast", "requestType": "LineUp"}) \
+        == Status.UNKNOWN_REQUEST_TYPE
+    assert _ok(api, "GetSceneList")["currentPreviewSceneName"] is None
     # Sprig states.
     _ok(api, "CallVendorRequest", {"vendorName": "sprigcast", "requestType": "SetSprigState",
                                    "requestData": {"sceneName": "Frame", "state": "Quiet"}})

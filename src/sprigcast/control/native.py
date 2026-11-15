@@ -36,7 +36,7 @@ from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, Sce
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 PREVIEW = API_VERSION == 0
-EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "media", "custom",
+EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
                 "plugin")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
 SOUND_KINDS = ("audio_input", "audio_output", "app_audio", "media")
@@ -377,23 +377,6 @@ class NativeApi:
             scene = self.col.active_scene(cid)
             out[cid] = None if scene is None else {"id": scene.id, "name": scene.name}
         return {"onAir": out}
-
-    @action("studio.set", "Studio mode on or off (blooms line up in Next before going on air).", on="true or false")
-    def studio_set(self, data):
-        self.host.set_studio(_get(data, "on", bool))
-
-    @action("bloom.lineUp", "Studio mode: line a bloom up in Next (turns Studio mode on).", bloom="name or id")
-    def bloom_line_up(self, data):
-        bloom = self._bloom(data)
-        if not self.host.studio():
-            self.host.set_studio(True)
-        self.host.line_up(bloom.id)
-
-    @action("bloom.go", "Studio mode: send what's lined up in Next on air (Bloom it).")
-    def bloom_go(self, data):
-        if not self.host.staged():
-            raise ApiError("not_allowed", "Nothing is lined up in Next.")
-        self.host.bloom_it()
 
     # Items and sprigs -------------------------------------------------------------------------
 
@@ -895,8 +878,6 @@ class NativeApi:
                 items[(scene.id, i, item.source)] = item.visible
         return {
             "onAir": dict(col.active_scenes),
-            "staged": self.host.staged() if self.host.studio() else {},
-            "studio": self.host.studio(),
             "blooms": [(b.id, b.name) for b in self._blooms()],
             "items": items,
             "sounds": {s.id: (bool(s.settings.get("muted", False)), float(s.settings.get("volume_db", 0.0)))
@@ -932,11 +913,6 @@ class NativeApi:
         for shape, scene_id in now["onAir"].items():
             if last["onAir"].get(shape) != scene_id:
                 out.append(("bloom.shown", {**bloom_ref(scene_id), "shape": shape}))
-        if now["studio"] != last["studio"]:
-            out.append(("studio.changed", {"on": now["studio"]}))
-        for shape, scene_id in now["staged"].items():
-            if last["staged"].get(shape) != scene_id:
-                out.append(("bloom.linedUp", {**bloom_ref(scene_id), "shape": shape}))
         for key, visible in now["items"].items():
             if key in last["items"] and last["items"][key] != visible:
                 scene = scenes.get(key[0])

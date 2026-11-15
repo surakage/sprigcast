@@ -40,7 +40,7 @@ LAN = "control/lan"  # let phones and other PCs connect, not just apps on this P
 DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use another if OBS runs too)
 NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
 WEB_TIMEOUT_MS = 5000  # a connection that hasn't said what it is by then is dropped
-WATCH_MS = 500  # how often stream/record/Studio states are compared while an app is connected
+WATCH_MS = 500  # how often stream and record states are compared while an app is connected
 
 
 def saved_settings() -> dict[str, Any]:
@@ -88,28 +88,6 @@ class WindowHost:
             w._refresh_stream_boxes()
         elif what in ("sources", "filters"):
             w._refresh_sources()
-
-    def studio(self) -> bool:
-        return bool(self.w.studio)
-
-    def set_studio(self, on: bool) -> None:
-        self.w.live_panel.studio.setChecked(on)
-
-    def staged(self) -> dict[str, str]:
-        return dict(self.w.staged)
-
-    def line_up(self, scene_id: str) -> None:
-        w = self.w
-        staged = dict(w.staged)
-        for scene in w.collection.linked_with(scene_id):
-            if scene.id == w.collection.active_scenes.get(scene.canvas):
-                staged.pop(scene.canvas, None)
-            else:
-                staged[scene.canvas] = scene.id
-        w._stage(staged)
-
-    def bloom_it(self) -> None:
-        self.w._studio_go()
 
     def stream_status(self) -> dict[str, Any] | None:
         session = self.w.streaming

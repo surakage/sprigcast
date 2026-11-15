@@ -57,12 +57,10 @@ def test_live_scene_and_destination_menus(app):
 
     shown, edited = [], []
     panel = LivePanel(shown.append, on_edit=edited.append)
-    menu = panel.scene_menu("h2")
-    assert _texts(menu) == ["Put on air"]  # editing is Build's job, not this menu's
-    menu.actions()[0].trigger()
-    assert shown == ["h2"] and edited == []
-    panel.studio.setChecked(True)
-    assert _texts(panel.scene_menu("h2"))[0] == "Line up next"
+    added = []
+    panel.on_project = lambda menu, sid: added.append(sid)
+    assert _texts(panel.scene_menu("h2")) == [] and added == ["h2"]  # the window adds the Live options
+    assert shown == [] and edited == []  # a click puts a bloom on air; editing is Build's job
 
 
 def test_main_window_menus(app, tmp_path, monkeypatch):

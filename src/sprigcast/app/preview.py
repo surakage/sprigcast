@@ -82,6 +82,7 @@ class Preview(QWidget):
         self.empty_text = "Waiting for the renderer…"  # shown until the first frame arrives
         self.hint: tuple[str, str] | None = None  # an empty bloom or sprig: a title and a line, in a card
         self.safe_zones = "Off"  # see safe_zones.CHOICES; only portrait canvases draw them
+        self.live_safe_zones = "Off"  # Live keeps its own choice (off unless picked on the canvas's right-click)
         self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
         self._image_data: bytes | None = None  # what _image draws from, kept alive while it does
@@ -367,8 +368,8 @@ class Preview(QWidget):
     def _paint_safe_zones(self, p: QPainter) -> None:
         """Where the vertical apps put their buttons and captions: tinted boxes, and the clear middle outlined."""
         w, h = self.aspect
-        found = safe_zones.zones(self.safe_zones, w, h)
-        if not found or self._image is None or self.inner is not None or not self.editable:
+        found = safe_zones.zones(self.live_safe_zones if self.live_look else self.safe_zones, w, h)
+        if not found or self._image is None or self.inner is not None or not (self.editable or self.live_look):
             return
         p.save()
         font = p.font()
