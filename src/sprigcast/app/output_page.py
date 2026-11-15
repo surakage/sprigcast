@@ -382,7 +382,7 @@ class CameraTab(QWidget):
         self.shows.setCurrentIndex(max(0, current))
         form.addRow("Shows", self.shows)
         inner.addLayout(form)
-        inner.addWidget(_hint("Zoom, Teams, Discord, TikTok LIVE Studio and the Camera app list it as "
+        inner.addWidget(_hint("TikTok LIVE Studio, Zoom, Discord, OBS and browsers list it as "
                               "\u201cSprigCast Camera\u201d. If the app wants another shape than what it shows, "
                               "you get black bars instead of a stretched picture."))
         self.status = QLabel()

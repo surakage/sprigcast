@@ -84,7 +84,7 @@ def test_off_canvas_is_skipped_and_closed_block_is_reopened_later():
 def test_not_supported_off_windows(monkeypatch):
     monkeypatch.setattr(virtualcam.sys, "platform", "linux")
     ok, why = virtualcam.supported()
-    assert not ok and "Windows 11" in why
+    assert not ok and "Windows" in why
     assert virtualcam.open_block() is None and not virtualcam.installed()
 
 
@@ -113,7 +113,8 @@ def test_privacy_block_names_the_switch_that_is_off():
 def test_refused_start_points_to_privacy(monkeypatch, tmp_path):
     dll = types.SimpleNamespace(SC_Start=lambda name: -1072873851,  # 0xC00D3E85
                                 SC_Stage=lambda: 3, SC_SelfTest=lambda: 0)
-    monkeypatch.setattr(virtualcam, "registered_path", lambda: tmp_path / "x.dll")
+    monkeypatch.setattr(virtualcam, "registered_path", lambda clsid=virtualcam.CLSID: tmp_path / "x.dll")
+    monkeypatch.setattr(virtualcam, "has_directshow", lambda: False)  # an older camera: media source only
     monkeypatch.setattr(virtualcam.ctypes, "WinDLL", lambda path: dll, raising=False)
     monkeypatch.setattr(virtualcam, "privacy_block", lambda: "")
     monkeypatch.setattr(virtualcam, "needs_update", lambda: False)
@@ -122,3 +123,25 @@ def test_refused_start_points_to_privacy(monkeypatch, tmp_path):
     assert virtualcam.state.privacy_failed
     monkeypatch.setattr(virtualcam, "needs_update", lambda: True)
     assert not cam.start() and not cam.privacy and "Update the camera" in cam.error
+
+
+
+def test_directshow_camera_needs_no_windows_11_start(monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(virtualcam, "registered_path", lambda clsid=virtualcam.CLSID: tmp_path / "x.dll")
+    monkeypatch.setattr(virtualcam, "has_directshow", lambda: True)
+    monkeypatch.setattr(virtualcam.ctypes, "WinDLL", lambda path: started.append(path), raising=False)
+    cam = VirtualCamera(object(), lambda: [])
+    assert cam.start() and cam.error == "" and started == []
+    cam.stop()
+
+
+def test_set_up_installs_and_registers_both_sizes(monkeypatch, tmp_path):
+    (tmp_path / "sprigcast_camera.dll").write_bytes(b"64")
+    (tmp_path / "sprigcast_camera32.dll").write_bytes(b"32")
+    monkeypatch.setattr(virtualcam, "bundled_dll", lambda name=virtualcam.DLL_NAME: tmp_path / name)
+    commands = []
+    monkeypatch.setattr(virtualcam, "_elevated", lambda c: commands.append(c) or True)
+    assert virtualcam.set_up()
+    command = commands[0]
+    assert command.count("regsvr32 /s") == 2 and "sprigcast_camera32.dll" in command

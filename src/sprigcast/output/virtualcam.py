@@ -1,14 +1,16 @@
-"""SprigCast Camera: shows a canvas as a webcam in Zoom, Teams, Discord, the Camera app...
+"""SprigCast Camera: shows a canvas as a webcam in TikTok LIVE Studio, Zoom, Discord, browsers...
 
-Windows 11 only. The camera itself is native/camera/sprigcast_camera.dll, a media source that Windows'
-Frame Server runs. Setting it up copies the DLL to Program Files and registers it, once, with an
-administrator prompt. After that SprigCast adds the camera while it runs (SC_Start) and removes it when
-it closes.
+The camera is native/camera/sprigcast_camera.dll (plus sprigcast_camera32.dll for 32-bit apps). Setting it
+up copies them to Program Files and registers them, once, with an administrator prompt. That adds
+"SprigCast Camera" to DirectShow's video capture sources, the way OBS's virtual camera works, so every app
+that lists webcams sees it while it is set up. The DLL also holds a Windows 11 media source
+(MFCreateVirtualCamera), used only with an older camera that has no DirectShow part; Windows refuses that
+kind on some PCs.
 
-Frames travel through a shared-memory block the camera creates while an app is watching
-(layout in sprigcast_camera.cpp). The camera writes the size it wants and a heartbeat; SprigCast then
-taps the canvas whose shape matches (landscape: horizontal, portrait: vertical) as NV12 at that size,
-scaled on the GPU, and copies frames in. When nothing watches, SprigCast does no camera work at all.
+Frames travel through a shared-memory block the camera creates while an app is watching (layout in
+sprigcast_camera.cpp; Local\\SprigCastCamera for DirectShow). The camera writes the size it wants and a
+heartbeat; SprigCast then taps what Settings says to show at that size as NV12, scaled on the GPU, and
+copies frames in. When nothing watches, SprigCast does no camera work at all.
 """
 
 from __future__ import annotations
@@ -22,23 +24,26 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 NAME = "SprigCast Camera"
-CLSID = "{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}"
-SHARED_NAME = "Global\\SprigCastCamera"
+CLSID = "{6F3C5A0E-2B9D-4C6B-9F4E-5A1D7C2E8B31}"  # the Windows 11 media source
+DSHOW_CLSID = "{622E03C7-86C4-4F91-82C0-6EB79B42DCBF}"  # the DirectShow camera (what apps list, like OBS's)
+SHARED_NAME = "Global\\SprigCastCamera"  # made by the media source (Windows' camera service)
+LOCAL_SHARED_NAME = "Local\\SprigCastCamera"  # made by the DirectShow camera inside the app using it
 MAGIC = 0x43565053
 HEADER = 64
 MAX_W = 1920
 BLOCK_SIZE = HEADER + MAX_W * MAX_W * 3 // 2
 STALE_MS = 2000  # no heartbeat for this long: nobody is watching
 DLL_NAME = "sprigcast_camera.dll"
+DLL32_NAME = "sprigcast_camera32.dll"  # for 32-bit apps
 
 
 # Where things are -------------------------------------------------------------------------
 
-def bundled_dll() -> Path | None:
-    """The DLL shipped with SprigCast (installer), or a local build (native/camera → build/camera)."""
+def bundled_dll(name: str = DLL_NAME) -> Path | None:
+    """The DLL shipped with SprigCast (installer), or a local build (native/camera → build/camera[32])."""
     here = Path(__file__).resolve().parent.parent
-    for path in (here / "camera" / DLL_NAME,
-                 here.parent.parent / "build" / "camera" / "Release" / DLL_NAME):
+    build = "camera32" if name == DLL32_NAME else "camera"
+    for path in (here / "camera" / name, here.parent.parent / "build" / build / "Release" / name):
         if path.exists():
             return path
     return None
@@ -60,27 +65,30 @@ def windows_build() -> int:
 def supported() -> tuple[bool, str]:
     """(can this PC have the camera, why not)."""
     if sys.platform != "win32":
-        return False, "The SprigCast camera needs Windows 11."
-    if windows_build() < 22000:
-        return False, "The SprigCast camera needs Windows 11 (this PC has Windows 10)."
+        return False, "The SprigCast camera needs Windows."
     if bundled_dll() is None and registered_path() is None:  # a dev checkout can use the installed camera
         return False, "This copy of SprigCast came without the camera. Reinstall from the latest installer."
     return True, ""
 
 
-def registered_path() -> Path | None:
+def registered_path(clsid: str = CLSID) -> Path | None:
     """The DLL Windows will load for the camera, if it has been set up."""
     if sys.platform != "win32":
         return None
     import winreg
 
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"Software\Classes\CLSID\{CLSID}\InprocServer32") as key:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, rf"Software\Classes\CLSID\{clsid}\InprocServer32") as key:
             value, _ = winreg.QueryValueEx(key, "")
     except OSError:
         return None
     path = Path(value)
     return path if path.exists() else None
+
+
+def has_directshow() -> bool:
+    """Set up with a camera new enough to be a DirectShow camera (apps list it while it's registered)."""
+    return registered_path(DSHOW_CLSID) is not None
 
 
 class _State:
@@ -145,8 +153,11 @@ def needs_update() -> bool:
     src, dst = bundled_dll(), registered_path()
     if not src or not dst:
         return False
+    src32, dst32 = bundled_dll(DLL32_NAME), dst.with_name(DLL32_NAME)
     try:
-        return src.read_bytes() != dst.read_bytes()
+        if src.read_bytes() != dst.read_bytes():
+            return True
+        return bool(src32) and (not dst32.exists() or src32.read_bytes() != dst32.read_bytes())
     except OSError:
         return False
 
@@ -164,15 +175,22 @@ def set_up() -> bool:
     if src is None:
         return False
     target = install_dir()
-    dll = target / DLL_NAME
-    # A loaded DLL can't be overwritten: unregister first, rename the old file aside, then copy.
-    return _elevated(f'mkdir "{target}" 2>nul & regsvr32 /u /s "{dll}" 2>nul & '
-                     f'move /y "{dll}" "{dll}.old" 2>nul & copy /y "{src}" "{dll}" && regsvr32 /s "{dll}"')
+    steps = [f'mkdir "{target}" 2>nul', _install_step(src, target / DLL_NAME)]
+    src32 = bundled_dll(DLL32_NAME)
+    if src32:
+        steps.append(_install_step(src32, target / DLL32_NAME))  # regsvr32 hands a 32-bit DLL to its 32-bit self
+    return _elevated(" & ".join(steps))
+
+
+def _install_step(src: Path, dll: Path) -> str:
+    # A loaded DLL can't be overwritten: unregister first, rename the old file aside, then copy and register.
+    return (f'regsvr32 /u /s "{dll}" 2>nul & move /y "{dll}" "{dll}.old" 2>nul & '
+            f'copy /y "{src}" "{dll}" && regsvr32 /s "{dll}"')
 
 
 def remove() -> bool:
-    dll = install_dir() / DLL_NAME
-    return _elevated(f'regsvr32 /u /s "{dll}"')
+    dll, dll32 = install_dir() / DLL_NAME, install_dir() / DLL32_NAME
+    return _elevated(f'regsvr32 /u /s "{dll}" & regsvr32 /u /s "{dll32}" 2>nul')
 
 
 # The shared block -----------------------------------------------------------------------------
@@ -229,7 +247,11 @@ def open_block() -> SharedBlock | None:
     k32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
     k32.CloseHandle.argtypes = [ctypes.c_void_p]
     access = 0x0002 | 0x0004  # FILE_MAP_WRITE | FILE_MAP_READ
-    handle = k32.OpenFileMappingW(access, False, SHARED_NAME)
+    handle = None
+    for name in (LOCAL_SHARED_NAME, SHARED_NAME):  # the DirectShow camera first, then the media source
+        handle = k32.OpenFileMappingW(access, False, name)
+        if handle:
+            break
     if not handle:
         return None
     view = k32.MapViewOfFile(handle, access, 0, 0, 0)
@@ -290,6 +312,13 @@ class VirtualCamera:
         if path is None:
             self.error = "Set up the camera first."
             return False
+        if has_directshow():
+            # A DirectShow camera is always listed once set up (like OBS's); SprigCast only feeds it frames.
+            # Adding the Windows 11 media source too would list "SprigCast Camera" twice.
+            self.error, self.privacy = "", False
+            state.privacy_failed = False
+            log.info("virtual camera on (DirectShow)")
+            return True
         try:
             self._dll = ctypes.WinDLL(str(path))  # type: ignore[attr-defined]
             self._dll.SC_Start.argtypes = [ctypes.c_wchar_p]
