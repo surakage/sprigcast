@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
-from sprigcast.plugin_hooks import filter_on, find_filter, register_hotkeys, register_item_menu
+from sprigcast.plugin_hooks import filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 1, "adds": "Effect",
+PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 2, "adds": "Effect",
           "about": "Spin a sprig round and round for a few seconds, then it lands back exactly where it was."}
 
 TURNS_PER_SECOND = 1.0  # when a trigger gives seconds but no turns
@@ -99,8 +99,12 @@ def _run_hotkey(api, hid):
     part_id = hid.split(":", 1)[1]
     sprig = next((p for p in api.col.parts() if p.id == part_id), None)
     placed = _placements(api, sprig) if sprig is not None else []
-    if placed:  # taken out of its blooms since the key was set: nothing to spin, and nothing wrong
-        spin(api, placed)
+    if sprig is None:
+        return "That sprig is gone."
+    if not any(on_air(api.col, p.id) for p in placed):  # nothing on air would move: say so
+        return not_here(sprig.name)
+    spin(api, placed)
+    return None
 
 
 register_hotkeys(_hotkeys, _run_hotkey)

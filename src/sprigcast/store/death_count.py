@@ -34,11 +34,11 @@ import numpy as np
 from sprigcast.control.native import ApiError, register_action, send_event
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
-from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
+from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 3, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 4, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down."}
 
 KIND = "death_count"
@@ -516,11 +516,17 @@ def _hotkeys(collection):
 
 def _run_hotkey(api, hid):
     entry = HOTKEYS.get(hid)
-    if entry is not None:
-        try:
-            change(api, _counters(api), entry[1])
-        except ApiError as exc:
-            log.info("death count hotkey: %s", exc)
+    if entry is None:
+        return None
+    try:
+        counters = _counters(api)
+        count = change(api, counters, entry[1])["count"]
+    except ApiError as exc:
+        log.info("death count hotkey: %s", exc)
+        return exc.message
+    if not any(on_air(api.col, s.id) for s in counters):  # still counted, but nobody can see it: say so
+        return f"Deaths: {count}. " + not_here(counters[0].name)
+    return None
 
 
 register_hotkeys(_hotkeys, _run_hotkey)
