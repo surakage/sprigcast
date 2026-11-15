@@ -9,6 +9,9 @@ thread waits; asleep (its bloom off screen) the file is closed and every frame l
 
 Controls (play, pause, restart, stop, seek) are safe to call from any thread: the control API, hotkeys
 and the right-click menu call them directly.
+
+Hidden with its eye (still in a bloom on screen), a video pauses; shown again it starts over or carries on
+(restart_on_show). The renderer tells it with set_hidden() (Engine._show_hidden).
 """
 
 from __future__ import annotations
@@ -35,6 +38,26 @@ AHEAD_AUDIO_S = 1.0  # sound decoded ahead of what's playing
 SYNC_S = 0.08  # sound further off the clock than this is skipped or waited for
 MAX_SIZE = (1920, 1920)  # bigger videos are shrunk while decoding: no canvas needs more
 STATES = ("playing", "paused", "stopped", "ended")
+SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+HW_DEVICES = ("d3d11va", "cuda", "dxva2", "videotoolbox", "vaapi")  # tried in this order, where FFmpeg has them
+
+
+def clamp_speed(value: Any) -> float:
+    try:
+        return min(4.0, max(0.1, float(value)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _hw_accel():
+    """Hardware decoding for this PC (Windows: Direct3D 11), or None when FFmpeg has none."""
+    try:
+        from av.codec.hwaccel import HWAccel, hwdevices_available
+    except ImportError:  # PyAV before 14
+        return None
+    have = set(hwdevices_available())
+    kind = next((k for k in HW_DEVICES if k in have), None)
+    return HWAccel(kind, allow_software_fallback=True) if kind else None
 
 
 COLOR_MATRICES = {1: "709", 5: "601", 6: "601", 9: "2020", 10: "2020"}  # FFmpeg AVColorSpace -> ours
@@ -47,7 +70,7 @@ def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
     About 40% of the RGBA picture it replaces (1080p: 5 MB with alpha instead of 8), and the CPU skips
     the colour conversion. None when it doesn't fit (another pixel format, an odd size, a shrink needed).
     """
-    kind = {"yuv420p": "I420", "yuvj420p": "I420", "yuva420p": "I420A"}.get(frame.format.name)
+    kind = {"yuv420p": "I420", "yuvj420p": "I420", "yuva420p": "I420A", "nv12": "I420"}.get(frame.format.name)
     w, h = frame.width, frame.height
     if kind is None or (w, h) != tuple(size) or w % 2 or h % 2:
         return None
@@ -59,8 +82,13 @@ def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
         return np.frombuffer(p, dtype=np.uint8).reshape(-1, p.line_size)[:rows, :width]
 
     out[:h] = plane(0, w, h)
-    out[h:h + ch, :cw] = plane(1, cw, ch)
-    out[h:h + ch, cw:] = plane(2, cw, ch)
+    if frame.format.name == "nv12":  # hardware decoding: U and V share one plane, UVUV...
+        uv = plane(1, w, ch)
+        out[h:h + ch, :cw] = uv[:, 0::2]
+        out[h:h + ch, cw:] = uv[:, 1::2]
+    else:
+        out[h:h + ch, :cw] = plane(1, cw, ch)
+        out[h:h + ch, cw:] = plane(2, cw, ch)
     if kind == "I420A":
         out[h + ch:] = plane(3, w, h)
     # Untagged video is read as BT.601 TV range, as FFmpeg's own conversion did before.
@@ -88,12 +116,14 @@ def file_filter() -> str:
 
 @register("media")
 class MediaSource(Source):
-    """Settings: path, loop, restart_on_show (start over each time its bloom comes on screen),
+    """Settings: path, loop, restart_on_show (start over each time it comes on screen or is shown again),
     clear_on_end (show nothing once it ends instead of the last picture), play_on_start (sound files: start
-    playing when SprigCast opens; otherwise they wait for play), volume_db, muted, monitor."""
+    playing when SprigCast opens; otherwise they wait for play), speed (0.25 to 2; sound changes pitch with it),
+    hw_decode (decode on the graphics card), volume_db, muted, monitor."""
 
     label = "Video or sound file"
-    defaults = {"path": "", "loop": False, "restart_on_show": True, "clear_on_end": False, "play_on_start": False}
+    defaults = {"path": "", "loop": False, "restart_on_show": True, "clear_on_end": False, "play_on_start": False,
+                "speed": 1.0, "hw_decode": False}
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
@@ -110,6 +140,9 @@ class MediaSource(Source):
         self._start_at = 0.0
         self._finished_at: float | None = None  # timeline end once the file (not looping) is fully decoded
         self._shown: float | None = None
+        self._hidden = False  # its eye is off (set_hidden)
+        self._paused_by_hide = False
+        self._speed = clamp_speed(settings.get("speed", 1.0))  # the speed the decoder and clock run at now
         self._blank: np.ndarray | None = None
         self._size = (0, 0)
         self.duration: float | None = None
@@ -176,6 +209,7 @@ class MediaSource(Source):
         if self._thread is not None:
             self._thread.join(timeout=2)
             self._thread = None
+        self._hidden = self._paused_by_hide = False  # the renderer says again if its eye is off
         if self.settings.get("restart_on_show", True):
             self._jump(0.0, "playing")
         else:
@@ -185,6 +219,7 @@ class MediaSource(Source):
 
     def update(self, settings: dict[str, Any]) -> None:
         new_file = settings.get("path") != self.settings.get("path")
+        reopen = bool(settings.get("hw_decode")) != bool(self.settings.get("hw_decode"))
         super().update(settings)
         if new_file:
             self.has_video = not is_sound_file(settings.get("path", ""))
@@ -192,11 +227,41 @@ class MediaSource(Source):
             self._size = (0, 0)
             self.status = "starting" if settings.get("path") else "no file"
             self._jump(0.0, "playing" if self.has_video or settings.get("play_on_start") else "stopped")
+        elif reopen or clamp_speed(settings.get("speed", 1.0)) != self._speed:
+            with self._lock:  # decode again from here: new speed (its sound is resampled for it) or decoder
+                if self._state in ("playing", "paused"):
+                    paused_by_hide = self._paused_by_hide
+                    self._jump_locked(self._position(), self._state)
+                    self._paused_by_hide = paused_by_hide
+                else:
+                    self._speed = clamp_speed(settings.get("speed", 1.0))
+
+    def set_hidden(self, hidden: bool) -> None:
+        """Its eye went off (pause) or on again (start over, or carry on). Any thread."""
+        if not self.has_video:
+            return
+        with self._lock:
+            if hidden == self._hidden:
+                return
+            self._hidden = hidden
+            if hidden:
+                if self._state == "playing":
+                    self._base = self._position()
+                    self._pause_clock()
+                    self._state = "paused"
+                    self._paused_by_hide = True
+            elif self.settings.get("restart_on_show", True):
+                self._jump_locked(0.0, "playing")
+            elif self._paused_by_hide:
+                self._paused_by_hide = False
+                self._state = "playing"
+                self._wake.notify_all()
 
     # Controls (any thread) -----------------------------------------------------------------------
 
     def play(self) -> None:
         with self._lock:
+            self._paused_by_hide = False
             if self._state in ("ended", "stopped"):
                 self._jump_locked(0.0, "playing")
             elif self._state == "paused":
@@ -205,6 +270,7 @@ class MediaSource(Source):
 
     def pause(self) -> None:
         with self._lock:
+            self._paused_by_hide = False
             if self._state == "playing":
                 self._base = self._position()
                 self._pause_clock()
@@ -227,7 +293,9 @@ class MediaSource(Source):
         with self._lock:
             state = "paused" if self._state == "paused" else "playing"
             limit = self.duration if self.duration else seconds
+            paused_by_hide = self._paused_by_hide
             self._jump_locked(min(max(0.0, seconds), max(0.0, limit - 0.05)), state)
+            self._paused_by_hide = paused_by_hide
 
     @property
     def state(self) -> str:
@@ -244,14 +312,15 @@ class MediaSource(Source):
     def info(self) -> dict[str, Any]:
         return {"state": self.state, "position": round(self.position, 3),
                 "duration": round(self.duration, 3) if self.duration else None,
-                "loop": bool(self.settings.get("loop")), "video": self.has_video, "status": self.status}
+                "loop": bool(self.settings.get("loop")), "video": self.has_video, "status": self.status,
+                "speed": self._speed, "hidden": self._hidden}
 
     # Clock (call with the lock held) ---------------------------------------------------------------
 
     def _position(self) -> float:
         if self._anchor is None:
             return self._base
-        return self._base + time.monotonic() - self._anchor
+        return self._base + (time.monotonic() - self._anchor) * self._speed
 
     def _pause_clock(self) -> None:
         self._anchor = None
@@ -271,6 +340,8 @@ class MediaSource(Source):
         self._base = seconds
         self._anchor = None
         self._state = state
+        self._paused_by_hide = False
+        self._speed = clamp_speed(self.settings.get("speed", 1.0))
         self._finished_at = None
         self._frames.clear()
         self._audio.clear()
@@ -325,11 +396,12 @@ class MediaSource(Source):
                 return out
             self._run_clock()
             now = self._position()
+            step = self._speed / SAMPLE_RATE  # timeline seconds per sample (sound is resampled for the speed)
             filled = 0
             while self._audio and filled < count:
                 start, chunk = self._audio[0]
-                cursor = now + filled / SAMPLE_RATE
-                if start + len(chunk) / SAMPLE_RATE < cursor - SYNC_S:  # fell behind the clock: skip it
+                cursor = now + filled * step
+                if start + len(chunk) * step < cursor - SYNC_S:  # fell behind the clock: skip it
                     self._drop_audio()
                     continue
                 if start > cursor + SYNC_S:  # ahead of the clock: silence until it's due
@@ -340,7 +412,7 @@ class MediaSource(Source):
                 if take == len(chunk):
                     self._drop_audio()
                 else:
-                    self._audio[0] = (start + take / SAMPLE_RATE, chunk[take:])
+                    self._audio[0] = (start + take * step, chunk[take:])
                     self._audio_s -= take / SAMPLE_RATE
             if not self.has_video:
                 self._check_end()
@@ -357,13 +429,13 @@ class MediaSource(Source):
         while not self._stop.is_set():
             path = str(self.settings.get("path", ""))
             with self._lock:
-                generation, start_at = self._generation, self._start_at
+                generation, start_at, speed = self._generation, self._start_at, self._speed
             if not path:
                 self.status = "no file"
                 self._wait_for_change(generation)
                 continue
             try:
-                self._decode(path, generation, start_at)
+                self._decode(path, generation, start_at, speed)
             except Exception as exc:
                 log.warning("media %s could not be played: %s", path, exc)
                 started = self.status == "ok"
@@ -383,7 +455,19 @@ class MediaSource(Source):
     def _current(self, generation: int) -> bool:
         return not self._stop.is_set() and self._generation == generation
 
-    def _decode(self, path: str, generation: int, start_at: float) -> None:
+    def _open(self, path: str):
+        import av
+
+        if self.settings.get("hw_decode") and not is_sound_file(path):
+            try:
+                hw = _hw_accel()
+                if hw is not None:
+                    return av.open(path, hwaccel=hw)
+            except Exception as exc:  # no such device on this PC, an old driver...: decode on the CPU
+                log.info("media %s: hardware decoding unavailable (%s)", path, exc)
+        return av.open(path)
+
+    def _decode(self, path: str, generation: int, start_at: float, speed: float = 1.0) -> None:
         import av
 
         if not Path(path).exists():
@@ -399,7 +483,7 @@ class MediaSource(Source):
                 self.status = "ok"
                 self._wait_for_change(generation)
                 return
-            with av.open(path) as container:
+            with self._open(path) as container:
                 video = container.streams.video[0] if container.streams.video else None
                 audio = container.streams.audio[0] if container.streams.audio else None
                 if video is None and audio is None:
@@ -419,7 +503,9 @@ class MediaSource(Source):
                         video.thread_type = "AUTO"
                     size = fit_size((video.codec_context.width, video.codec_context.height), MAX_SIZE)
                     self._size = size
-                resampler = av.AudioResampler(format="flt", layout="stereo", rate=SAMPLE_RATE) if audio else None
+                # Faster or slower: the sound is resampled to fit, so it plays in step (higher or lower).
+                rate = max(8000, round(SAMPLE_RATE / speed))
+                resampler = av.AudioResampler(format="flt", layout="stereo", rate=rate) if audio else None
                 skip_to = start_at if offset == 0.0 else 0.0
                 if skip_to > 0.5:
                     target = video or audio
@@ -439,7 +525,7 @@ class MediaSource(Source):
                                     continue
                                 samples = out.to_ndarray().reshape(-1, 2).astype(np.float32, copy=False)
                                 at = t - origin
-                                if at + len(samples) / SAMPLE_RATE < skip_to:
+                                if at + len(samples) * speed / SAMPLE_RATE < skip_to:
                                     continue
                                 if not self._push_audio(offset + at, samples, generation):
                                     return

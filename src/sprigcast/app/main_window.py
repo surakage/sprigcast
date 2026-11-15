@@ -4623,6 +4623,10 @@ class MainWindow(QMainWindow):
                 host = self.browser_host
                 dialog = WebPageDialog(config.name, config.settings, self,
                                        on_reload=(lambda: host.reload(config.id)) if host else None)
+            elif config.kind == "media":
+                from sprigcast.app.media_dialog import MediaDialog
+
+                dialog = MediaDialog(config.name, config.settings, self)
             else:
                 dialog = SettingsDialog(config.name, defaults, config.settings, self)
             if not dialog.exec():

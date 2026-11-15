@@ -80,8 +80,11 @@ def _side(w: int, h: int):
     room = h - (top + 50 * s)  # below the name and line
     sh = min(room, w * 0.9 * picture.height() / max(1, picture.width()))
     sw = sh * picture.width() / max(1, picture.height())
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-    p.drawImage(QRectF((w - sw) / 2, h - sh, sw, sh), picture)
+    # Shrink with Qt's area-averaging scaler first: drawing a 1024 px picture straight into ~180 px
+    # skips pixels and leaves light specks in the fur.
+    small = picture.scaled(round(sw), round(sh), Qt.AspectRatioMode.IgnoreAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+    p.drawImage(QPointF((w - small.width()) / 2, h - small.height()), small)
     # Melt the right edge into the page colour: no seam where the picture meets the text.
     edge = QLinearGradient(w * 0.82, 0, w, 0)
     clear = QColor(PAGE)

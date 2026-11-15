@@ -124,3 +124,26 @@ def test_process_list_is_shared_and_cheap(monkeypatch):
         procs = app_audio._toolhelp_processes()
         assert time.perf_counter() - started < 1.0
         assert any(pid == os.getpid() and parent == os.getppid() for pid, parent, _name in procs)
+
+
+def test_the_once_a_second_scan_leaves_nothing_behind():
+    """Soak 2026-11-15: a ctypes structure made inside the scan (and given to ctypes.POINTER) is kept by
+    ctypes forever: ~33 objects a second, so Python's clean-up pauses grew to 289 ms overnight."""
+    import ctypes
+    import gc
+
+    from sprigcast.app import resources
+    from sprigcast.sources import app_audio
+
+    for _ in range(3):
+        ctypes.POINTER(app_audio._process_entry())
+        app_audio._monitor_info()
+        resources._counters_type()
+    gc.collect()
+    before = len(gc.get_objects())
+    for _ in range(200):
+        ctypes.POINTER(app_audio._process_entry())
+        app_audio._monitor_info()
+        resources._counters_type()
+    gc.collect()
+    assert len(gc.get_objects()) - before < 20

@@ -18,6 +18,7 @@ Everything here is plain data except `_ProcessCapture`, the WASAPI part, which o
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import sys
@@ -152,8 +153,11 @@ def _list_processes() -> list[tuple[int, int, str]]:
     return out
 
 
-def _toolhelp_processes() -> list[tuple[int, int, str]]:
-    """Every process with its parent and exe name from one Windows snapshot (about a millisecond)."""
+@functools.cache
+def _process_entry():
+    """PROCESSENTRY32W, made once. A ctypes structure made inside a function that's then used with
+    ctypes.POINTER() is never freed (ctypes keeps every pointer type): made on each once-a-second scan,
+    that left ~33 objects a second, so Python's clean-up pauses grew from 36 ms to 289 ms overnight."""
     import ctypes
     from ctypes import wintypes
 
@@ -164,6 +168,15 @@ def _toolhelp_processes() -> list[tuple[int, int, str]]:
                     ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD),
                     ("szExeFile", wintypes.WCHAR * 260)]
 
+    return PROCESSENTRY32W
+
+
+def _toolhelp_processes() -> list[tuple[int, int, str]]:
+    """Every process with its parent and exe name from one Windows snapshot (about a millisecond)."""
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESSENTRY32W = _process_entry()
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
@@ -220,6 +233,18 @@ def fullscreen_app() -> tuple[int, str] | None:
     return (found[1], found[2]) if found else None
 
 
+@functools.cache
+def _monitor_info():
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):  # made once: it's asked for every second
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD)]
+
+    return MONITORINFO
+
+
 def fullscreen_window() -> tuple[int, int, str] | None:
     """(window handle, pid, exe) of the full-screen game in front, or None (the desktop, a known non-game)."""
     if sys.platform != "win32":
@@ -234,10 +259,7 @@ def fullscreen_window() -> tuple[int, int, str] | None:
     rect = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
 
-    class MONITORINFO(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
-                    ("dwFlags", wintypes.DWORD)]
-
+    MONITORINFO = _monitor_info()
     info = MONITORINFO()
     info.cbSize = ctypes.sizeof(MONITORINFO)
     monitor = user32.MonitorFromWindow(hwnd, 2)
@@ -444,8 +466,9 @@ def _release(ptr) -> None:
 _LATE: list = []  # handlers Windows never called back in time (rare); freeing them could crash
 
 
-def _activate(pid: int):
-    """IAudioClient for one process tree's sound (blocks up to 5 s for Windows to hand it over)."""
+@functools.cache
+def _activation_types():
+    """The structures _activate passes to Windows, made once (see _process_entry for why)."""
     import ctypes
     from ctypes import wintypes
 
@@ -459,12 +482,6 @@ def _activate(pid: int):
         _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort), ("r2", ctypes.c_ushort),
                     ("r3", ctypes.c_ushort), ("blob", Blob)]
 
-    params = LoopbackParams(1, pid, 0)  # PROCESS_LOOPBACK, include the process tree
-    prop = PropVariant(vt=65, blob=Blob(ctypes.sizeof(params), ctypes.cast(ctypes.pointer(params), ctypes.c_void_p)))
-    done = threading.Event()
-    result: dict[str, Any] = {}
-
-    HRESULT = ctypes.HRESULT
     QI = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
     REF = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)
     COMPLETED = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
@@ -475,6 +492,21 @@ def _activate(pid: int):
     class Handler(ctypes.Structure):
         _fields_ = [("vtable", ctypes.POINTER(VTable))]
 
+    return LoopbackParams, Blob, PropVariant, QI, REF, COMPLETED, VTable, Handler
+
+
+def _activate(pid: int):
+    """IAudioClient for one process tree's sound (blocks up to 5 s for Windows to hand it over)."""
+    import ctypes
+    from ctypes import wintypes
+
+    LoopbackParams, Blob, PropVariant, QI, REF, COMPLETED, VTable, Handler = _activation_types()
+    params = LoopbackParams(1, pid, 0)  # PROCESS_LOOPBACK, include the process tree
+    prop = PropVariant(vt=65, blob=Blob(ctypes.sizeof(params), ctypes.cast(ctypes.pointer(params), ctypes.c_void_p)))
+    done = threading.Event()
+    result: dict[str, Any] = {}
+
+    HRESULT = ctypes.HRESULT
     known = {bytes(_guid(i).data) for i in (IID_IUNKNOWN, IID_IAGILE, IID_HANDLER)}
 
     def qi(this, riid, out):
