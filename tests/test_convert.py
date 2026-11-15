@@ -80,7 +80,7 @@ def test_detects_each_app():
     assert detect(obs_file()) == "obs"
     assert detect(_like().model_dump(mode="json")) == "sprigcast"
     assert detect({"nodeType": "RootNode", "sources": {"nodeType": "SourcesNode", "items": []}}) == "streamlabs"
-    assert detect({"items": {"a1": {"type": "scene", "name": "S"}}}) == "meld"
+    assert detect(meld_file()) == "meld"
     assert detect({"hello": 1}) == "" and detect([1, 2]) == ""
     with pytest.raises(ConvertError):
         convert({"hello": 1}, _like())
@@ -163,19 +163,72 @@ def test_streamlabs_collection():
     assert any("widget" in n for n in notes)
 
 
+SPARK = {"pluginName": "MeldStudio", "sceneObjectSourceName": "MeldStudio/Spark Element"}
+
+
+def _layer(name, x, y, w, h, **more):
+    return {"id": f"L-{name}-{x}", "name": name, "x": x, "y": y, "width": w, "height": h, "visible": True,
+            "opacity": 1.0, "rotation": 0.0, "scaleX": 1.0, "scaleY": 1.0, "childItems": [], "meta": SPARK, **more}
+
+
+def meld_file():
+    """A Meld Studio Session.json, cut down from a real one: pages, a text placeholder in a group, tracks."""
+    alert = "https://elements.meldstudio.co/x/stream-alert.html"
+    text = _layer("Replace", 653, 522, 203, 36, text="Game capture\n", pixelSize=32, fontFamily="Arial",
+                  foregroundColor="#ff00ff00", meta={"sceneObjectSourceName": "MeldStudio/Text"})
+    group = _layer("Replace with: Game", 653, 522, 203, 36, expanded=False, childItems=[text],
+                   meta={"sceneObjectSourceName": "MeldStudio/Group"})
+    return {"session": {
+        "currentScene": "G1",
+        "scenes": [
+            {"id": "S1", "name": "Starting Soon", "width": 1920, "height": 1080, "childItems": [
+                _layer("Stream Alert", 723, 12, 531, 225, url=alert,
+                       audioTrack={"enabled": True, "gain": 0.5, "muted": False}),
+                _layer("Background", 0, 0, 1920, 1080, url="https://elements.meldstudio.co/x/bg.html")]},
+            {"id": "G1", "name": "Gaming", "width": 1920, "height": 1080, "childItems": [
+                _layer("Stream Alert", 723, 12, 531, 225, url=alert), group,
+                _layer("Logo", 10, 10, 100, 100, meta={"sceneObjectSourceName": "MeldStudio/Hologram"})]}],
+        "verticalScenes": [
+            {"id": "V1", "name": "Gaming", "linkedSceneId": "G1", "width": 1080, "height": 1920, "childItems": [
+                _layer("Stream Alert", 242, 43, 595, 197, url=alert)]}],
+        "verticalCanvasEnabled": True,
+        "audioTracks": [
+            {"id": "MIC", "name": "Mic", "type": 1, "isInputDevice": True, "uniqueId": "default", "gain": 1.0,
+             "deviceName": "Default Input Device ( Microphone (Voicemod) )",
+             "associatedAudioNodes": [{"name": "Voice Clarity", "nodeType": 10, "bypass": False}]},
+            {"id": "MUS", "name": "Music", "type": 0, "gain": 1.0, "associatedAudioNodes": [
+                {"name": "Compressor", "nodeType": 4, "ratio": 12.0, "threshold": -24.0, "attack": 0.003,
+                 "release": 0.25, "sidechainTrackId": "MIC", "bypass": False}]}],
+        "sceneTransition": {"duration": 1000.0, "effects": [{"enabled": False, "type": "Move"}]}}}
+
+
 def test_meld_session():
-    data = {"session": {"items": {
-        "s1": {"type": "scene", "name": "Main", "index": 0, "current": True},
-        "l1": {"type": "layer", "parent": "s1", "index": 0, "name": "Overlay", "x": 10, "y": 10, "width": 300,
-               "height": 200, "url": "https://example.com"},
-        "l2": {"type": "layer", "parent": "s1", "index": 1, "name": "Bg", "x": 0, "y": 0, "width": 1920,
-               "height": 1080, "source": "C:/bg.png"},
-        "l3": {"type": "layer", "parent": "s1", "index": 2, "name": "Webcam", "x": 0, "y": 0}}}}
-    col, notes = convert(data, _like())
-    main = next(s for s in col.parts() if s.name == "Main")
-    assert [col.source(i.source).name for i in main.items] == ["Bg", "Overlay"]  # Meld's top layer is first
-    assert main.items[1].bounds_size == (300, 200)
-    assert any("Webcam" in n for n in notes)
+    col, notes = convert(meld_file(), _like())
+    shows = {(s.name, s.canvas) for s in col.scenes if s.kind == "show"}
+    assert shows == {("Starting Soon", "horizontal"), ("Gaming", "horizontal"), ("Gaming", "vertical")}
+    gaming = next(s for s in col.parts() if s.name == "Gaming" and s.canvas == "horizontal")
+    names = [(col.source(i.source).name if col.source(i.source) else col.scene(i.source).name) for i in gaming.items]
+    assert names == ["Replace with: Game", "Stream Alert"]  # Meld's top layer is first; OBS's last
+    alert = gaming.items[1]
+    assert (alert.x, alert.y, alert.align) == (723, 12, "top_left")
+    page = col.source(alert.source)
+    assert page.kind == "browser" and (page.settings["width"], page.settings["height"]) == (531, 225)
+    assert page.settings["audio_to_mixer"] is True and page.settings["volume_db"] == -6.0
+    soon = next(s for s in col.parts() if s.name == "Starting Soon")
+    assert soon.items[1].source == alert.source  # the same page at the same size is one source
+    vertical = next(s for s in col.scenes if s.kind == "part" and s.name == "Gaming" and s.canvas == "vertical")
+    assert vertical.shape_of == gaming.id
+    assert col.source(vertical.items[0].source).name == "Stream Alert (Vertical)"
+    group = next(s for s in col.parts() if s.name == "Replace with: Game")
+    text = col.source(group.items[0].source)
+    assert text.kind == "text" and text.settings["text"] == "Game capture" and text.settings["color"] == "#00ff00ff"
+    mic = next(s for s in col.sources if s.name == "Mic")
+    assert [f.kind for f in mic.filters] == ["noise_suppression"]
+    music = next(s for s in col.sources if s.name == "Music")
+    duck = music.filters[0]
+    assert duck.kind == "ducking" and duck.settings["sound_id"] == mic.id and duck.settings["threshold_db"] == -24
+    assert col.transition.kind == "fade" and col.transition.duration_ms == 1000
+    assert any("Hologram" in n for n in notes) and any("placeholder" in n for n in notes)
 
 
 def test_helpers(tmp_path):

@@ -79,9 +79,10 @@ def detect(data: Any) -> str:
     if data.get("nodeType") == "RootNode" or (isinstance(data.get("sources"), dict)
                                               and data["sources"].get("nodeType") == "SourcesNode"):
         return "streamlabs"
-    items = data.get("items") if isinstance(data.get("items"), dict) else \
-        (data.get("session") or {}).get("items") if isinstance(data.get("session"), dict) else None
-    if isinstance(items, dict) and any(isinstance(v, dict) and v.get("type") == "scene" for v in items.values()):
+    session = data.get("session") if isinstance(data.get("session"), dict) else data
+    if isinstance(session.get("scenes"), list) and ("audioTracks" in session or "verticalScenes" in session
+                                                     or any(isinstance(sc, dict) and "childItems" in sc
+                                                            for sc in session["scenes"])):
         return "meld"
     return ""
 
@@ -296,6 +297,7 @@ def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
 _KEY_COLORS = {"green": "#00ff00", "blue": "#0000ff", "magenta": "#ff00ff"}
 
 
+_BY_NAME = "name:"  # a filter naming another sound, until the sound has its SprigCast id
 _PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll"}
 
 
@@ -305,7 +307,12 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
         kind = str(f.get("id") or f.get("versioned_id") or "")
         s = f.get("settings") or {}
         mapped: tuple[str, dict[str, Any]] | None = None
-        if kind == "compressor_filter":
+        side = str(s.get("sidechain_source") or "none")
+        if kind == "compressor_filter" and side.casefold() != "none":  # lowered while another sound plays
+            mapped = "ducking", {"sound_id": f"{_BY_NAME}{side}", "threshold_db": _num(s.get("threshold"), -35.0),
+                                 "attack_ms": max(1, int(_num(s.get("attack_time"), 60))),
+                                 "release_ms": max(1, int(_num(s.get("release_time"), 500)))}
+        elif kind == "compressor_filter":
             mapped = "compressor", {"ratio": _num(s.get("ratio"), 10.0), "threshold_db": _num(s.get("threshold"), -18.0),
                                     "attack_ms": int(_num(s.get("attack_time"), 6)),
                                     "release_ms": int(_num(s.get("release_time"), 60)),
@@ -470,6 +477,12 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         col.sources.append(config)
         sources[id(obs)] = config
     _merge_sounds(col, sources, keep, notes)
+    named_sound = {str(obs.get("name")): sources[id(obs)].id for obs in raw if id(obs) in sources}
+    for config in col.sources:
+        for flt in config.filters:
+            ref = str(flt.settings.get("sound_id", ""))
+            if flt.kind == "ducking" and ref.startswith(_BY_NAME):
+                flt.settings["sound_id"] = named_sound.get(ref[len(_BY_NAME):], "")
 
     # Scenes and groups: ids first, so items can point at any of them.
     made: dict[int, Scene] = {}
@@ -902,43 +915,210 @@ def streamlabs_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
 # Meld -------------------------------------------------------------------------------------------------
 
 
-def meld_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    """A Meld Studio session (File → Export Session) in OBS's shape. Meld doesn't publish its file
-    format; this reads the fields its own API uses: scenes, and layers with x, y, width and height."""
-    notes: list[str] = []
-    items = data.get("items") if isinstance(data.get("items"), dict) else (data.get("session") or {}).get("items", {})
-    scenes = sorted(((k, v) for k, v in items.items() if isinstance(v, dict) and v.get("type") == "scene"),
-                    key=lambda kv: _num(kv[1].get("index")))
-    layers = [(k, v) for k, v in items.items() if isinstance(v, dict) and v.get("type") == "layer"]
-    sources, obs_scenes = [], []
-    for key, layer in layers:
-        name = str(layer.get("name") or "Layer")
-        if layer.get("url"):
-            sources.append({"id": "browser_source", "name": name, "uuid": key,
-                            "settings": {"url": layer["url"], "width": layer.get("width", 1920),
-                                         "height": layer.get("height", 1080)}})
-        elif layer.get("source"):
-            path = str(layer["source"])
-            is_video = Path(path).suffix.lower() in (".mp4", ".mov", ".webm", ".mkv", ".mp3", ".wav", ".ogg")
-            sources.append({"id": "ffmpeg_source" if is_video else "image_source", "name": name, "uuid": key,
-                            "settings": {"local_file": path, "looping": True} if is_video else {"file": path}})
+_MELD_VERTICAL = "meld-vertical"
+_MELD_VIDEO = (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi", ".mp3", ".wav", ".ogg", ".m4a", ".flac")
+
+
+def _meld_color(value: Any, default: int = 0xFFFFFFFF) -> int:
+    """Meld writes colours as Qt does, "#aarrggbb" (or "#rrggbb"); OBS wants 0xAABBGGRR."""
+    text = str(value or "").lstrip("#")
+    try:
+        if len(text) == 6:
+            a, r, g, b = 255, int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16)
+        elif len(text) == 8:
+            a, r, g, b = (int(text[i:i + 2], 16) for i in (0, 2, 4, 6))
         else:
-            notes.append(f"{name}: Meld layers other than pictures, videos and pages don't come over yet.")
-    for key, scene in scenes:
-        mine = sorted((lv for lk, lv in layers if lv.get("parent") == key), key=lambda lv: _num(lv.get("index")))
-        keys = {id(lv): lk for lk, lv in layers}
-        obs_items = []
-        for layer in reversed(mine):  # Meld lists the top layer first; OBS the bottom one
-            obs_items.append({"source_uuid": keys[id(layer)], "pos": {"x": layer.get("x", 0), "y": layer.get("y", 0)},
-                              "rot": layer.get("rotation", 0), "visible": layer.get("visible", True), "align": 5,
-                              "bounds_type": 1, "bounds": {"x": layer.get("width", 0), "y": layer.get("height", 0)}})
-        obs_scenes.append({"id": "scene", "name": scene.get("name") or "Scene", "uuid": key,
-                           "settings": {"items": obs_items}})
-    current = next((v.get("name") for _k, v in scenes if v.get("current")), None)
-    return {"name": "Meld", "sources": sources + obs_scenes, "groups": [],
-            "scene_order": [{"name": s["name"]} for s in obs_scenes], "current_scene": current,
-            "current_program_scene": current, "transitions": [], "current_transition": "Fade",
-            "transition_duration": 300}, notes
+            return default
+    except ValueError:
+        return default
+    return a << 24 | b << 16 | g << 8 | r
+
+
+def _meld_kind(item: dict[str, Any]) -> str:
+    """"Spark Element", "Text", "Group", … from meta.sceneObjectSourceName ("MeldStudio/Text")."""
+    name = str((item.get("meta") or {}).get("sceneObjectSourceName") or "")
+    return name.rpartition("/")[2] or name
+
+
+def _meld_audio(track: dict[str, Any], names: dict[str, str], notes: list[str]) -> dict[str, Any] | None:
+    """One of Meld's sound tracks (Mic, Game, Music…) as an OBS audio source, with its effects."""
+    name = str(track.get("name") or "Sound")
+    filters: list[dict[str, Any]] = []
+    for node in track.get("associatedAudioNodes") or []:
+        if not isinstance(node, dict):
+            continue
+        label = str(node.get("name") or "")
+        on = not node.get("bypass", False)
+        if label == "Compressor" or node.get("nodeType") == 4:
+            side = names.get(str(node.get("sidechainTrackId") or ""), "")
+            filters.append({"id": "compressor_filter", "name": label or "Compressor", "enabled": on, "settings": {
+                "ratio": _num(node.get("ratio"), 10.0), "threshold": _num(node.get("threshold"), -18.0),
+                "attack_time": round(_num(node.get("attack"), 0.006) * 1000),
+                "release_time": round(_num(node.get("release"), 0.06) * 1000),
+                "output_gain": _num(node.get("outputGain")), "sidechain_source": side or "none"}})
+        elif label == "Voice Clarity" or node.get("nodeType") == 10:
+            filters.append({"id": "noise_suppress_filter", "name": label or "Noise Suppression", "enabled": on,
+                            "settings": {"suppress_level": -30}})
+        elif label in ("Noise Gate", "Gate"):
+            filters.append({"id": "noise_gate_filter", "name": label, "enabled": on, "settings": {}})
+        elif label == "Limiter":
+            filters.append({"id": "limiter_filter", "name": label, "enabled": on,
+                            "settings": {"threshold": _num(node.get("threshold"), -6.0)}})
+        else:
+            notes.append(f"{name}: Meld's {label or 'sound'} effect has no match yet.")
+    common = {"name": name, "uuid": str(track.get("id") or name), "volume": _num(track.get("gain"), 1.0),
+              "muted": bool(track.get("muted", False)), "filters": filters}
+    unique = str(track.get("uniqueId") or "")
+    device = re.sub(r"^Default (Input|Output) Device \(\s*(.*?)\s*\)$", r"\2", str(track.get("deviceName") or ""))
+    if track.get("isInputDevice") or track.get("type") == 1:
+        return {"id": "wasapi_input_capture", **common,
+                "settings": {"device_id": "default" if unique in ("", "default") else device or unique}}
+    if device or unique:
+        return {"id": "wasapi_output_capture", **common,
+                "settings": {"device_id": "default" if unique == "default" else device or unique}}
+    notes.append(f"{name}: Meld's own sound track; pick the apps it should hear in its settings.")
+    return {"id": "wasapi_process_output_capture", **common, "settings": {"window": ""}}
+
+
+def meld_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """A Meld Studio session (its Session.json, or File → Export) rewritten in OBS's shape (see from_obs).
+
+    Meld keeps scenes (and verticalScenes, each linked to a main one) holding layers ("childItems") with
+    their top-left x and y and size on the canvas. Spark Elements are web pages, Text is text, a Group holds
+    more layers, and the session's sound tracks (Mic, Game, Music…) play in every scene."""
+    notes: list[str] = []
+    session = data.get("session") if isinstance(data.get("session"), dict) else data
+    sources: list[dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
+    shared: dict[tuple, str] = {}  # (kind, what, width, height) -> uuid: one page per size, used in many scenes
+    taken: set[str] = set()
+    noted: set[str] = set()
+
+    def unique_name(name: str) -> str:
+        base, n = name, 2
+        while name.casefold() in taken:
+            name, n = f"{base} {n}", n + 1
+        taken.add(name.casefold())
+        return name
+
+    def note_once(text: str) -> None:
+        if text not in noted:
+            noted.add(text)
+            notes.append(text)
+
+    def source_for(item: dict[str, Any], vertical: bool) -> str | None:
+        kind = _meld_kind(item)
+        name = str(item.get("name") or kind or "Layer")
+        w, h = round(_num(item.get("width"))), round(_num(item.get("height")))
+        track = item.get("audioTrack") if isinstance(item.get("audioTrack"), dict) else {}
+        file = str(item.get("filePath") or item.get("source") or item.get("file") or "")
+        if item.get("url"):
+            key: tuple = ("page", str(item["url"]), w, h)
+            obs = {"id": "browser_source", "settings": {
+                "url": str(item["url"]), "width": w or 1920, "height": h or 1080, "shutdown": False,
+                "reroute_audio": bool(track.get("enabled", False))},
+                "volume": _num(track.get("gain"), 1.0), "muted": bool(track.get("muted", False))}
+        elif kind == "Text" or "text" in item:
+            key = ("text", item.get("id"))
+            settings = {"text": str(item.get("text", "")).rstrip("\n"), "color": _meld_color(item.get("foregroundColor")),
+                        "font": {"face": str(item.get("fontFamily") or "Arial"),
+                                 "size": int(_num(item.get("pixelSize"), 32))}}
+            if item.get("isTextFromFile") and file:
+                settings.update(read_from_file=True, file=file)
+            obs = {"id": "text_gdiplus", "settings": settings}
+        elif file:
+            key = ("file", file)
+            video = Path(file).suffix.lower() in _MELD_VIDEO
+            obs = {"id": "ffmpeg_source" if video else "image_source",
+                   "settings": {"local_file": file, "looping": True} if video else {"file": file},
+                   "volume": _num(track.get("gain"), 1.0), "muted": bool(track.get("muted", False))}
+        else:
+            note_once(f"{name}: Meld's {kind or 'this kind of'} layers don't come over yet.")
+            return None
+        if key in shared:
+            return shared[key]
+        uuid = f"meld-{item.get('id') or len(sources)}"
+        shared[key] = uuid
+        sources.append({**obs, "name": unique_name(f"{name} (Vertical)" if vertical else name), "uuid": uuid})
+        return uuid
+
+    def items_of(children: list[Any], vertical: bool, origin: tuple[float, float],
+                 ref: tuple[float, float]) -> list[dict[str, Any]]:
+        out = []
+        for child in reversed([c for c in children if isinstance(c, dict)]):  # Meld lists the top layer first
+            x, y = _num(child.get("x")) - origin[0], _num(child.get("y")) - origin[1]
+            w, h = _num(child.get("width")), _num(child.get("height"))
+            if _meld_kind(child) == "Group" or (child.get("childItems") and "url" not in child):
+                uuid = f"meld-{child.get('id') or len(groups)}"
+                label = str(child.get("name") or "Group")
+                if label.casefold().startswith("replace with"):
+                    note_once(f"{label}: a Meld placeholder; it came over as its text, so swap in your own.")
+                group = {"id": "group", "name": unique_name(f"{label} (Vertical)" if vertical else label), "uuid": uuid,
+                         "settings": {"cx": w, "cy": h, "items": items_of(child.get("childItems") or [],
+                                                                          vertical, (x + origin[0], y + origin[1]), ref)}}
+                if vertical:
+                    group["canvas_uuid"] = _MELD_VERTICAL
+                groups.append(group)
+            else:
+                uuid = source_for(child, vertical)
+            if uuid is None:
+                continue
+            rot = _num(child.get("rotation"))
+            item: dict[str, Any] = {"source_uuid": uuid, "visible": bool(child.get("visible", True)),
+                                    "locked": bool(child.get("isLocked", False)), "rot": rot,
+                                    "scale": {"x": _num(child.get("scaleX"), 1.0), "y": _num(child.get("scaleY"), 1.0)},
+                                    "scale_ref": {"x": ref[0], "y": ref[1]}}
+            if rot:  # Meld turns a layer around its middle
+                item.update(align=0, pos={"x": x + w / 2, "y": y + h / 2})
+            else:
+                item.update(align=5, pos={"x": x, "y": y})
+            if _meld_kind(child) == "Text":  # a text box: the text sits in it as Meld drew it
+                item.update(bounds_type=0)
+            if _num(child.get("opacity"), 1.0) < 0.999:
+                note_once(f"{child.get('name')}: see-through layers come over solid; set its opacity again.")
+            out.append(item)
+        return out
+
+    names = {str(t.get("id")): str(t.get("name") or "") for t in session.get("audioTracks") or [] if isinstance(t, dict)}
+    for track in session.get("audioTracks") or []:
+        if isinstance(track, dict) and (obs := _meld_audio(track, names, notes)):
+            obs["name"] = unique_name(obs["name"])
+            sources.append(obs)
+
+    scenes: list[dict[str, Any]] = []
+    main_names: dict[str, str] = {}
+    for sc in session.get("scenes") or []:
+        if not isinstance(sc, dict):
+            continue
+        name = unique_name(str(sc.get("name") or "Scene"))
+        main_names[str(sc.get("id"))] = name
+        ref = (_num(sc.get("width"), 1920.0), _num(sc.get("height"), 1080.0))
+        scenes.append({"id": "scene", "name": name, "uuid": f"meld-{sc.get('id')}",
+                       "settings": {"items": items_of(sc.get("childItems") or [], False, (0.0, 0.0), ref)}})
+    order = [{"name": s["name"]} for s in scenes]
+    vertical = [sc for sc in session.get("verticalScenes") or [] if isinstance(sc, dict)]
+    if vertical and session.get("verticalCanvasEnabled", True) is not False:
+        for sc in vertical:
+            twin = main_names.get(str(sc.get("linkedSceneId") or ""))
+            name = unique_name(f"{twin or sc.get('name') or 'Scene'} (Vertical)")
+            ref = (_num(sc.get("width"), 1080.0), _num(sc.get("height"), 1920.0))
+            scenes.append({"id": "scene", "name": name, "uuid": f"meld-{sc.get('id')}", "canvas_uuid": _MELD_VERTICAL,
+                           "settings": {"items": items_of(sc.get("childItems") or [], True, (0.0, 0.0), ref)}})
+
+    first = next((sc for sc in session.get("scenes") or [] if isinstance(sc, dict)), {})
+    current = main_names.get(str(session.get("currentScene") or "")) or (order[0]["name"] if order else None)
+    move = session.get("sceneTransition") if isinstance(session.get("sceneTransition"), dict) else {}
+    effects = [e for e in move.get("effects") or [] if isinstance(e, dict) and e.get("enabled", True)]
+    if effects:
+        note_once("Meld's moving scene transition comes over as a fade.")
+    obs = {"name": "Meld", "sources": sources + scenes, "groups": groups, "scene_order": order,
+           "current_scene": current, "current_program_scene": current,
+           "resolution": {"x": _num(first.get("width"), 1920.0), "y": _num(first.get("height"), 1080.0)},
+           "canvases": [{"info": {"name": "Vertical", "uuid": _MELD_VERTICAL}}] if any(
+               s.get("canvas_uuid") for s in scenes) else [],
+           "transitions": [], "current_transition": "Fade",
+           "transition_duration": int(_num(move.get("duration"), 300))}
+    return obs, notes
 
 
 def scene_collection_files(appdata: Path) -> dict[str, list[Path]]:
@@ -972,4 +1152,6 @@ def guess_name(path: Path, data: Any) -> str:
         names = streamlabs_names(path.parent)
         if path.stem in names:
             return names[path.stem]
+    if detect(data) == "meld" and path.stem.casefold() == "session":
+        return "Meld"
     return path.stem.replace("_", " ")
