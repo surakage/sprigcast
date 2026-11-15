@@ -20,6 +20,9 @@ def config_dir() -> Path:
     return Path(base)
 
 
+SET_ASIDE: list[Path] = []  # garden files load_collection couldn't read and moved aside (this run)
+
+
 def load_collection(path: Path) -> SceneCollection:
     """Load the user's scene collection, or start from the bundled example on first run."""
     if path.exists():
@@ -28,6 +31,7 @@ def load_collection(path: Path) -> SceneCollection:
         except Exception as exc:
             backup = path.with_suffix(".broken.json")
             path.replace(backup)
+            SET_ASIDE.append(backup)
             logging.warning("could not read %s (%s); moved it to %s and started fresh", path, exc, backup)
         else:
             if collection.wrap_blooms():  # blooms hold sprigs only: older blooms' sources move into one each
@@ -210,8 +214,8 @@ def run() -> None:
     changed = lean_stream(collection) or changed
     if changed:
         collection.save(scenes_path)
-    fresh = not had_garden or scenes_path.with_suffix(".broken.json").exists() and \
-        scenes_path.with_suffix(".broken.json").stat().st_mtime >= scenes_path.stat().st_mtime - 5
+    broken = scenes_path.with_suffix(".broken.json") in SET_ASIDE  # unreadable: it started fresh just now
+    fresh = not had_garden or broken
     if fresh and shelf.path_file().exists():
         try:  # a new or rebuilt garden: your path's settings go into it, not the other way round
             shelf.load_path(shelf.path()).apply_to(collection)
@@ -223,6 +227,12 @@ def run() -> None:
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    if broken:  # its file couldn't be read: say so once, and where the old one is kept
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(1500, lambda: QMessageBox.warning(
+            window, "SprigCast", f"{shelf.garden().name} couldn't be read, so it started fresh.\n"
+                                 f"The old file is kept as:\n{scenes_path.with_suffix('.broken.json')}"))
     window.plugin_report = plugins
     from sprigcast.app import autostart
 
