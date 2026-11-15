@@ -4887,6 +4887,7 @@ class MainWindow(QMainWindow):
         elif not on and self.replay is not None:
             self.replay.stop()
             self.replay = None
+            self._rest_soon()
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
 
     def _save_replay(self) -> list:
@@ -4918,6 +4919,7 @@ class MainWindow(QMainWindow):
 
         log.info("recording stopped after %.0f s: %s; %d frames dropped%s; memory: %s", session.elapsed,
                  names or "no files", session.dropped, f"; errors: {errors}" if errors else "", memory_line())
+        self._rest_soon()
         if errors:
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
@@ -5131,6 +5133,7 @@ class MainWindow(QMainWindow):
         from sprigcast.core.pacing import memory_line
 
         log.info("stream stopped; memory: %s", memory_line())
+        self._rest_soon()
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:
             report.finish(lines)
@@ -5291,6 +5294,29 @@ class MainWindow(QMainWindow):
 
         apply_settings(self.control, self)
 
+    REST_AFTER_MS = 10_000
+
+    def _rest_soon(self) -> None:
+        """A recording, the stream or clips just stopped: once nothing is left running, give memory back."""
+        QTimer.singleShot(self.REST_AFTER_MS, self._rest_if_idle)
+
+    def _rest_if_idle(self) -> None:
+        """Nothing is being recorded, streamed or kept for clips: let go of what the show left behind.
+
+        After a 2-hour soak the app sat at ~415 MB at rest against ~200 MB fresh, flat for an hour: pages
+        touched during the show (encoders, the clips buffer, frames in flight) and cached plugin art."""
+        if self.recording is not None or self.streaming is not None or self.replay is not None:
+            return
+        import gc
+
+        from sprigcast.core import painted, pacing
+
+        painted.forget_art()
+        gc.collect()
+        trimmed = pacing.trim_working_set()
+        log.info("at rest: let go of what the show held%s; memory: %s",
+                 " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line())
+
     def _show_render_health(self, event) -> None:
         """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""
         target = max((c.fps for c in self.collection.canvases), default=60)
@@ -5299,7 +5325,7 @@ class MainWindow(QMainWindow):
         budget = 1000 / target
         if event.fps < target * 0.85 or late > target * 0.05:
             word, colour = "Struggling", theme.BAD
-        elif event.fps < target * 0.95 or late or event.render_ms > budget * 0.6:
+        elif event.fps < target * 0.95 or late > 1 or event.render_ms > budget * 0.6:  # one hitch isn't "busy"
             word, colour = "Busy", theme.WARN
         else:
             word, colour = "Smooth", theme.ACCENT

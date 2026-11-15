@@ -119,6 +119,28 @@ def memory_line() -> str:
     return "; ".join(parts)
 
 
+def trim_working_set() -> bool:
+    """Windows: hand the pages the app isn't using right now back to the system (what Task Manager counts).
+
+    After a long show the app keeps hundreds of MB of pages it touched once (encoder start-up, the clips
+    buffer, frames in flight) that it won't touch again at rest. Pages still in use come straight back
+    from memory on their next touch, without reading the disk. True if Windows took it."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.SetProcessWorkingSetSizeEx.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
+                                                         ctypes.c_uint32]
+        unlimited = ctypes.c_size_t(-1).value  # (SIZE_T)-1 for both: empty the working set once
+        return bool(kernel32.SetProcessWorkingSetSizeEx(kernel32.GetCurrentProcess(), unlimited, unlimited, 0))
+    except Exception as exc:
+        log.info("could not trim memory: %s", exc)
+        return False
+
+
 def private_mb() -> float:
     """The app's private memory in MB (Task Manager's "Memory" is close to it), for log lines; 0 if unknown."""
     try:

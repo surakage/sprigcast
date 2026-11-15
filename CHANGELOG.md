@@ -100,6 +100,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - The clips buffer no longer keeps sound forever while no picture keyframe comes (a stalled video encoder): it holds
   the clip length plus 10 s. When a recording or the stream stops, the log now says what Task Manager shows, what is
   committed, how many Python objects there are (and which kinds) and how many threads, so long shows can be compared.
+- Once nothing is recorded, streamed or kept for clips, SprigCast lets go of cached plugin art and hands the pages it
+  no longer touches back to Windows (after a 2-hour soak it sat at ~415 MB at rest, against ~200 MB fresh). One late
+  frame in a second no longer flips the status word to Busy.
 - A sprig nothing has shown for a few seconds lets go of its full-canvas texture (they stayed until SprigCast closed),
   and removing a plugin stops its sources straight away instead of at the next restart. Stopping a recording or
   stream logs the app's memory, so long sessions can be compared.
