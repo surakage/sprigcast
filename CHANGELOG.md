@@ -95,6 +95,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - A sprig nothing has shown for a few seconds lets go of its full-canvas texture (they stayed until SprigCast closed),
   and removing a plugin stops its sources straight away instead of at the next restart. Stopping a recording or
   stream logs the app's memory, so long sessions can be compared.
+- The first frame is drawn before the frame clock starts, so start-up no longer has a one-second hitch.
 
 ### Sources and effects
 

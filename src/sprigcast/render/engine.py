@@ -259,6 +259,7 @@ class Engine:
         if pacing.raise_thread_priority():  # wake on time even while the window or a game keeps the CPU busy
             log.info("render thread priority raised")
         self._sync_sources(compositor)
+        self._warm_up(compositor)
         fps = max(c.fps for c in self._collection.canvases)
         interval = 1.0 / fps
         next_tick = time.perf_counter()
@@ -849,6 +850,17 @@ class Engine:
                 if texture is not None:
                     out[(source.id, canvas.id)] = texture
         return out
+
+    def _warm_up(self, compositor) -> None:
+        """Draw one frame before the clock starts. The graphics driver finishes its shaders and makes the
+        sprig and canvas textures on the first draw: in the soak that first frame took a second, counted
+        as a late frame and a hitch at start."""
+        began = time.perf_counter()
+        try:
+            self._tick(compositor, began)
+        except Exception:
+            log.exception("first frame failed")  # the loop reports what keeps failing
+        log.info("first frame drawn in %.0f ms", 1000 * (time.perf_counter() - began))
 
     def _mark(self, name: str) -> None:
         self._marks.append((name, time.perf_counter()))
