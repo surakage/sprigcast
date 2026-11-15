@@ -453,3 +453,36 @@ def test_live_card_keeps_deeper_settings_in_a_pop_up():
     assert panel.clip_note.isVisibleTo(panel) and not panel.length.isVisibleTo(panel)
     assert dialog.panel.clip.isVisibleTo(dialog.panel) or not dialog.isVisible()
     panel.close()
+
+
+def test_picture_runs_cleanly_from_a_to_b_for_every_kind():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    import numpy as np
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import transitions_panel
+    from sprigcast.app.transitions_panel import KINDS, TransitionPicture
+
+    def pixels(image):
+        image = image.convertToFormat(image.Format.Format_RGBA8888)
+        bits = np.frombuffer(image.constBits(), np.uint8, image.sizeInBytes())
+        return bits.reshape(image.height(), image.bytesPerLine())[:, : image.width() * 4].reshape(
+            image.height(), image.width(), 4).astype(int)
+
+    for kind, _label, _tip in KINDS:
+        t = Transition(kind=kind, duration_ms=300)
+        picture = TransitionPicture(lambda t=t: t, wide=True)
+        picture.resize(320, 180)
+        a, b = pixels(picture.frame(0.0)), pixels(picture.frame(1.0))
+        assert (a != b).any(), kind
+        middle = pixels(picture.frame(0.5))
+        assert middle.shape == a.shape
+        assert picture.progress_at(0) == 0.0 and picture.progress_at(picture.loop_ms() - 1) == 1.0
+        if kind == "fade":  # a true crossfade: every pixel halfway between A and B
+            assert np.abs(middle[..., :3] - (a[..., :3] + b[..., :3]) / 2).max() <= 2
+    # The preview is a picture of the change, not a screen size: no "1280×720" badge.
+    assert "1280×720" not in open(transitions_panel.__file__, encoding="utf-8").read()
