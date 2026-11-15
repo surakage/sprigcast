@@ -49,8 +49,9 @@ Get-ChildItem $py -Recurse -Directory -Include "__pycache__", "tests", "test" -E
     Where-Object { $_.FullName -notmatch "sprigcast" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force (Join-Path $py "include") -ErrorAction SilentlyContinue
 
-# 4. Icon, then the installer.
+# 4. Icon and the wizard's brand art, then the installer.
 & $python (Join-Path $PSScriptRoot "make_icon.py") (Join-Path $build "sprigcast.ico")
+& $python (Join-Path $PSScriptRoot "make_wizard_images.py") (Join-Path $build "wizard")
 $version = (& $python -c "import importlib.metadata as m; print(m.version('sprigcast'))").Trim()
 iscc "/DAppVersion=$version" "/DBuildDir=$build" "/O$out" (Join-Path $PSScriptRoot "sprigcast.iss")
 Get-ChildItem $out
