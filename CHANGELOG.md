@@ -96,6 +96,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   and removing a plugin stops its sources straight away instead of at the next restart. Stopping a recording or
   stream logs the app's memory, so long sessions can be compared.
 - The first frame is drawn before the frame clock starts, so start-up no longer has a one-second hitch.
+- App sound's once-a-second app check no longer leaves objects behind. Over a night they piled up into millions, so
+  Python's clean-up pauses grew from 36 ms to 289 ms (16 missed frames each) and memory crept up.
 
 ### Sources and effects
 
