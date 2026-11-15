@@ -341,3 +341,83 @@ def test_a_looping_webm_loops_without_errors(tmp_path, caplog):
         assert len(frames) > 30  # three passes of 15 frames, at their own pace
     finally:
         source.stop()
+
+
+def test_hiding_its_eye_pauses_and_showing_starts_over(tmp_path):
+    source = MediaSource("m", {"path": _video(tmp_path / "clip.mp4", seconds=0.6)})
+    source.start()
+    try:
+        _play(source, 0.9)
+        assert source.state == "ended"
+        source.set_hidden(True)
+        source.set_hidden(False)  # Start over when shown: plays again, even after it ended
+        assert source.state == "playing" and source.position < 0.1
+        assert _play(source, 0.3) > 5
+        source.set_hidden(True)
+        assert source.state == "paused"
+        source.update({**source.settings, "restart_on_show": False})
+        at = source.position
+        source.set_hidden(False)  # carries on where it was
+        assert source.state == "playing" and source.position == pytest.approx(at, abs=0.05)
+    finally:
+        source.stop()
+
+
+def test_speed_runs_the_clock_and_sound_faster(tmp_path):
+    source = MediaSource("m", {"path": _video(tmp_path / "clip.mp4", seconds=2.0), "speed": 2.0})
+    source.start()
+    try:
+        heard = _play(source, 1.3)
+        assert source.state == "ended"  # 2 s of video in about 1 s
+        assert 70 <= heard <= 115  # its sound squeezed into the same second
+        source.update({**source.settings, "speed": 0.5})
+        source.restart()
+        _play(source, 0.6)
+        assert source.position == pytest.approx(0.3, abs=0.12)
+    finally:
+        source.stop()
+
+
+def test_hardware_decoding_falls_back_to_the_cpu(tmp_path):
+    source = MediaSource("m", {"path": _video(tmp_path / "clip.mp4"), "hw_decode": True})
+    source.start()
+    try:
+        frames = []
+        _play(source, 0.5, frames)
+        assert frames and source.status == "ok"
+    finally:
+        source.stop()
+
+
+def test_the_engine_tells_a_video_when_its_eye_goes_off_and_on(tmp_path):
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render.engine import Engine
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=64, height=36)],
+        sources=[SourceConfig(id="m", kind="media", name="Clip", settings={"path": _video(tmp_path / "c.mp4")}),
+                 SourceConfig(id="p", kind="scene", name="BRB", settings={"scene": "brb"})],
+        scenes=[Scene(id="show", name="Show", canvas="h", items=[SceneItem(source="p")]),
+                Scene(id="brb", name="BRB", canvas="h", kind="part", items=[SceneItem(source="m")])],
+        active_scenes={"h": "show"},
+    )
+    engine = Engine(col)
+    told = []
+    try:
+        engine._sync_sources(type("C", (), {"forget": lambda *_: None, "targets": {}, "parts": {},
+                                            "downscale": {}, "effects": {}})())
+        engine._sources["m"].set_hidden = told.append
+        engine._show_hidden()
+        assert told == [False]  # inside a sprig on air: showing
+        col = engine._collection  # the engine's own copy, as Build's edits reach it
+        col.scenes[1].items[0].visible = False
+        engine._show_hidden()
+        engine._show_hidden()
+        col.scenes[1].items[0].visible = True
+        engine._show_hidden()
+        col.scenes[0].items[0].visible = False  # the sprig itself hidden hides what's in it
+        engine._show_hidden()
+        assert told == [False, True, False, True]
+    finally:
+        for source in engine._sources.values():
+            source.stop()

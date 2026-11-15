@@ -112,6 +112,7 @@ class Engine:
         # to open), "all", or "off". Set by the UI from Settings → General.
         self.sleep_policy = "not_cameras"
         self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
+        self._told_hidden: dict[str, bool] = {}  # source id -> what set_hidden() last said (see _show_hidden)
         # Source record: canvas id -> sources left out of its clean copy ("clean:<canvas id>"), which
         # frame taps on that id get. Replaced whole by the UI (see set_clean).
         self.clean_hidden: dict[str, frozenset[str]] = {}
@@ -665,6 +666,53 @@ class Engine:
                     stack.append(inner)
         return shown
 
+    def _visible_sources(self) -> set[str]:
+        """Sources actually showing in what's drawn: like _shown_sources, but items with their eye off (or
+        hidden by a sprig's Live state or by one placement of it) don't count, nor anything inside them."""
+        collection = self._collection
+        configs = {s.id: s for s in collection.sources}
+        visible: set[str] = set()
+
+        def walk(scene, hidden: set[str], path: tuple[str, ...]) -> None:
+            if scene.kind == "part":
+                hidden = hidden | collection.state_hidden(scene)
+            for item in scene.items:
+                if not item.visible or item.source in hidden:
+                    continue
+                visible.add(item.source)
+                config = configs.get(item.source)
+                part = collection.part_of(config) if config is not None else None
+                if part is not None and part.id not in path and len(path) < 16:
+                    walk(collection.shape_for(part, scene.canvas), collection.hidden_here(config),
+                         (*path, part.id))
+
+        drawn = self._drawn_scenes(collection)
+        if self.editing_part:
+            drawn += [p for p in collection.part_scenes() if p.id == self.editing_part]
+        for scene in drawn:
+            walk(scene, set(), (scene.id,))
+        return visible
+
+    def _show_hidden(self) -> None:
+        """Tell each awake source when its eye goes off or on (a video pauses, then starts over or carries on)."""
+        visible = self._visible_sources()
+        told = self._told_hidden
+        for source_id, source in self._sources.items():
+            if source.asleep:
+                told.pop(source_id, None)  # said again once it wakes
+                continue
+            hidden = source_id not in visible
+            if told.get(source_id) != hidden:
+                told[source_id] = hidden
+                tell = getattr(source, "set_hidden", None)
+                try:
+                    if tell is not None:
+                        tell(hidden)
+                except Exception as exc:  # a plugin's source: never stop the render loop for it
+                    log.warning("source %s set_hidden failed: %s", source_id, exc)
+        for source_id in [s for s in told if s not in self._sources]:
+            del told[source_id]
+
     def _rest_sources(self, compositor, now: float) -> None:
         """Put sources nothing has shown for a while to sleep, and wake the ones that are shown again.
 
@@ -888,6 +936,7 @@ class Engine:
             if prune is not None:
                 prune()
         self._rest_sources(compositor, now)
+        self._show_hidden()
         self._mark("waking and pausing")
         slowest = ("", 0.0)
         for source_id, source in self._sources.items():
