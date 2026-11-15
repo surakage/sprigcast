@@ -33,7 +33,13 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from sprigcast.core.looks import FROM_FILE
-from sprigcast.core.scene import PART_KIND, EncoderSettings, Output, RecordingSettings, SceneCollection
+from sprigcast.core.scene import (
+    PART_KIND,
+    EncoderSettings,
+    Output,
+    RecordingSettings,
+    SceneCollection,
+)
 
 INDEX = "gardens.json"
 FIRST_GARDEN_FILE = "scenes.json"
@@ -513,3 +519,39 @@ def replace_file(collection: SceneCollection, old: str, new: str) -> int:
                 setattr(obj, attr, new)
                 count += 1
     return count
+
+
+def find_in_folder(missing: list[str], folder: Path, max_files: int = 50_000) -> dict[str, str]:
+    """Look through a folder (and the folders inside it) for files with the same names as missing ones.
+
+    Returns {missing path: found path}. A name found in more than one place takes the one whose folder
+    names match the old path best. Stops after max_files files, so a whole drive can't hang SprigCast."""
+    import os
+
+    wanted: dict[str, list[str]] = {}
+    for old in missing:
+        name = Path(old.replace("\\", "/")).name.casefold()
+        if name:
+            wanted.setdefault(name, []).append(old)
+    found: dict[str, list[Path]] = {}
+    seen = 0
+    for root, _dirs, files in os.walk(folder):
+        for file in files:
+            seen += 1
+            key = file.casefold()
+            if key in wanted:
+                found.setdefault(key, []).append(Path(root) / file)
+        if seen >= max_files:
+            break
+
+    def score(old: str, new: Path) -> int:
+        old_parts = [p.casefold() for p in Path(old.replace("\\", "/")).parts[:-1]]
+        return sum(1 for p in new.parts[:-1] if p.casefold() in old_parts)
+
+    out: dict[str, str] = {}
+    for key, olds in wanted.items():
+        for old in olds:
+            if key in found:
+                out[old] = str(max(found[key], key=lambda new, o=old: score(o, new)))
+    return out
+

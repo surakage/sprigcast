@@ -43,6 +43,14 @@ _NAMED = {
 AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 
 
+def _no_shelf() -> list[tuple[str, str]]:
+    return []
+
+
+# "garden:<id>" / "path:<id>" actions, set by the window's GardenControl (app/gardens_menu.py).
+shelf_actions = _no_shelf
+
+
 def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str]]]]:
     """Everything a hotkey can do, grouped as the Hotkeys page shows it: (title, [(action id, label)])."""
     groups: list[tuple[str, list[tuple[str, str]]]] = [
@@ -80,6 +88,7 @@ def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str
     from sprigcast import plugin_hooks
 
     groups.append(("Plugins", plugin_hooks.hotkey_actions(collection)))
+    groups.append(("Gardens and paths", shelf_actions()))
     groups.append(("SprigCast", [(TOGGLE_MODE, "Switch Build / Live")]))
     return [(title, items) for title, items in groups if items]
 
