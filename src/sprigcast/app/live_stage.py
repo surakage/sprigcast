@@ -88,6 +88,7 @@ CARD_PILL_STYLE = _snug(theme.PILL_STYLE) + (
 )
 CARD_ON_AIR_STYLE = _snug(theme.PILL_ON_AIR_STYLE)
 CARD_SELECTED_STYLE = _snug(theme.PILL_SELECTED_STYLE)
+CARD_PILL_HEIGHT = 34  # at least twice the 16 px radius, or Qt draws square corners
 # Virtual Cam and its gear share one mini card, so the gear reads as the camera's settings.
 _LEFT_HALF = "QPushButton { border-top-right-radius: 0; border-bottom-right-radius: 0; }"
 CAM_STYLE = CARD_PILL_STYLE + "QPushButton { background: transparent; }" + _LEFT_HALF
@@ -293,6 +294,10 @@ class LiveSide(QWidget):
             self.camera_settings.clicked.connect(on_camera_settings)
         card_row.addWidget(self.camera_settings)
         self.camera_card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)  # snug, like a pill
+        # Qt squares the corners when the radius (16) is over half the height, and these pills are only
+        # ~29 px tall with the usual font: fix them at 34 so they're always round.
+        for w in (self.record, self.clip, self.camera, self.camera_settings, self.camera_card):
+            w.setFixedHeight(CARD_PILL_HEIGHT)
         row.addWidget(self.camera_card)
         self.camera_card.setVisible(on_camera is not None)
         buttons.addLayout(row)

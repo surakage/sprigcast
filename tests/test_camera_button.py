@@ -75,6 +75,8 @@ def test_button_shows_on_and_a_short_reason_when_it_cant_start(app):
     side = LiveSide(lambda: None, lambda: None, lambda: None, lambda _id: None,
                     on_camera=lambda: clicks.append("cam"), on_camera_settings=lambda: clicks.append("gear"))
     side.show()
+    for button in (side.record, side.clip, side.camera, side.camera_settings):  # round, never squared off
+        assert button.height() >= 2 * 16
     side.camera.click()
     side.camera_settings.click()
     assert clicks == ["cam", "gear"]
