@@ -26,7 +26,7 @@ from sprigcast.core.events import (
 from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, SceneCollection
-from sprigcast.core.source import Source, create_source
+from sprigcast.core.source import Source, create_source, source_class
 from sprigcast.render.stinger import StingerPlayer
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ class Engine:
         self.editing_part: str | None = None  # set by the UI: which part to read back for the Part editor
         self._collection = collection.model_copy(deep=True)
         self._sources: dict[str, Source] = {}
+        self._stopped_unknown: set[str] = set()  # sources whose plugin was removed while they ran
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
         self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
         self.monitor = Monitor()  # plays monitored sources on the speakers, opened only when one is
@@ -538,12 +539,17 @@ class Engine:
         """Create, update and remove source instances so they match the collection."""
         wanted = {s.id: s for s in self._collection.sources_in_use()}
         for source_id in list(self._sources):
-            if source_id not in wanted or self._sources[source_id].kind != wanted[source_id].kind:
+            gone = source_id not in wanted or self._sources[source_id].kind != wanted[source_id].kind
+            if gone or source_class(self._sources[source_id].kind) is None:  # its plugin was removed
+                if not gone:
+                    self._stopped_unknown.add(source_id)
                 self._sources.pop(source_id).stop()
                 self._last_shown.pop(source_id, None)
                 compositor.forget(source_id)
         for source_id, config in wanted.items():
             existing = self._sources.get(source_id)
+            if existing is None and source_class(config.kind) is None and source_id in self._stopped_unknown:
+                continue  # its plugin was removed: said so once already
             if existing is None:
                 try:
                     source = create_source(config.kind, config.id, config.settings)

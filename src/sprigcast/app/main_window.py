@@ -4826,8 +4826,10 @@ class MainWindow(QMainWindow):
         self.live_side.set_recording("")
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
-        log.info("recording stopped after %.0f s: %s; %d frames dropped%s", session.elapsed, names or "no files",
-                 session.dropped, f"; errors: {errors}" if errors else "")
+        from sprigcast.core.pacing import private_mb
+
+        log.info("recording stopped after %.0f s: %s; %d frames dropped%s; memory %.0f MB", session.elapsed,
+                 names or "no files", session.dropped, f"; errors: {errors}" if errors else "", private_mb())
         if errors:
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
@@ -5038,6 +5040,9 @@ class MainWindow(QMainWindow):
             self._cheer_goodbye(seconds)
         for line in lines[1:]:
             log.info("stream summary: %s", line)
+        from sprigcast.core.pacing import private_mb
+
+        log.info("stream stopped; memory %.0f MB", private_mb())
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:
             report.finish(lines)
@@ -5111,6 +5116,8 @@ class MainWindow(QMainWindow):
             window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
         window.plugins_changed.connect(self._fill_more_menu)
+        # A removed plugin's sources stop now (and an added one's start), not at the next restart.
+        window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
         window.exec()
 
     def _sync_camera(self) -> None:

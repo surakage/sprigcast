@@ -86,3 +86,14 @@ def raise_thread_priority() -> bool:
     except Exception as exc:
         log.info("could not raise the render thread's priority: %s", exc)
         return False
+
+
+def private_mb() -> float:
+    """The app's private memory in MB (Task Manager's "Memory" is close to it), for log lines; 0 if unknown."""
+    try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        return getattr(info, "private", info.rss) / 1e6  # private: Windows only (cheap, unlike a USS walk)
+    except Exception:
+        return 0.0
