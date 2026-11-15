@@ -4,6 +4,7 @@
 
     # Hotkeys: list (id, label) pairs for Settings → Hotkeys; run(api, id) when one is pressed.
     register_hotkeys(lambda collection: [("roll:cam", "Barrel roll: Cam")], lambda api, hid: ...)
+    # run may return a short note for the status bar, e.g. not_here("Cam") when it isn't on air.
 
     # After each saved screenshot: shots is [{"shape", "path", "image"}, ...].
     register_on_screenshot(lambda api, shots: ...)
@@ -73,25 +74,70 @@ def hotkey_actions(collection) -> list[tuple[str, str]]:
     return out
 
 
-def run_hotkey(api, action: str) -> bool:
-    """Run a plugin hotkey ("plugin:<id>"). True if a plugin knew it."""
+def run_hotkey(api, action: str, say: Callable[[str], None] | None = None) -> bool:
+    """Run a plugin hotkey ("plugin:<id>"). True if a plugin knew it.
+
+    A hotkey that can't do anything right now explains itself instead of failing silently: its
+    run(api, id) returns a short note ("Not in this bloom: Cam frame"), or raises an ApiError,
+    and say(note) shows it (the status bar).
+    """
     if not action.startswith(PREFIX):
         return False
     hid = action[len(PREFIX):]
     for list_fn, run_fn in _HOTKEYS:
         if not _alive(run_fn):
             continue
+        note = None
         try:
-            if any(h == hid for h, _ in list_fn(api.col)):
-                run_fn(api, hid)
-                return True
+            if not any(h == hid for h, _ in list_fn(api.col)):
+                continue
+            note = run_fn(api, hid)
         except Exception as exc:
             if getattr(exc, "code", None):  # an ApiError: the plugin said no ("isn't placed yet"), not a crash
                 log.info("plugin hotkey %s: %s", hid, exc)
+                note = getattr(exc, "message", str(exc))
             else:
                 log.exception("plugin hotkey %s failed", hid)
-            return True
+                note = "That hotkey's plugin hit a problem (it's in the log)."
+        if isinstance(note, str) and note and say is not None:
+            say(note)
+        return True
+    if say is not None:
+        say("That hotkey's plugin isn't added any more.")
     return False
+
+
+def on_air(col, source_id: str) -> bool:
+    """Is this source showing in a bloom that's on air now (any shape), directly or inside a sprig?"""
+    def shows(scene, seen) -> bool:
+        if scene.id in seen:
+            return False
+        seen = seen | {scene.id}
+        for item in scene.items:
+            if not item.visible:
+                continue
+            if item.source == source_id:
+                return True
+            try:
+                part = col.part_of(col.source(item.source))
+            except StopIteration:
+                continue
+            if part is not None and shows(col.shape_for(part, scene.canvas), seen):
+                return True
+        return False
+
+    for scene_id in col.active_scenes.values():
+        try:
+            if shows(col.scene(scene_id), frozenset()):
+                return True
+        except StopIteration:
+            continue
+    return False
+
+
+def not_here(name: str) -> str:
+    """The note a hotkey shows when what it works on isn't in the bloom on air."""
+    return f"Not in this bloom: {name}"
 
 
 def fill_item_menu(api, source, add: Callable[[str, Callable[[], None]], None]) -> None:

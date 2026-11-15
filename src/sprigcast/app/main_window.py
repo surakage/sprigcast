@@ -5591,7 +5591,7 @@ class MainWindow(QMainWindow):
         elif action.startswith("plugin:"):
             from sprigcast import plugin_hooks
 
-            plugin_hooks.run_hotkey(self.api, action)
+            plugin_hooks.run_hotkey(self.api, action, self._say)
         elif action.startswith(GAME_PREFIX):
             self._game_grab(action[len(GAME_PREFIX):])
         elif action.startswith(MEDIA_PREFIX):

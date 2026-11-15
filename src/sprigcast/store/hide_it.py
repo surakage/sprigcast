@@ -17,9 +17,9 @@ from __future__ import annotations
 
 from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
-from sprigcast.plugin_hooks import filter_off, filter_on, find_filter, register_hotkeys, register_item_menu
+from sprigcast.plugin_hooks import filter_off, filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "hide_it", "name": "Hide it", "version": 1, "adds": "Effect",
+PLUGIN = {"id": "hide_it", "name": "Hide it", "version": 2, "adds": "Effect",
           "about": "Pixelate a camera, game or screen, or black it out, for a set time. Great for redeems."}
 
 KINDS = {"pixelate": "Pixelate", "blackout": "Blackout"}
@@ -113,11 +113,16 @@ def _hotkeys(collection):
 
 def _run_hotkey(api, hid):
     _, what, source_id = hid.split(":", 2)
-    source = api.col.source(source_id)
+    source = next((s for s in api.col.sources if s.id == source_id), None)
+    if source is None:
+        return "That source is gone."
     if what == "show":
         show(api, source)
-    else:
-        hide(api, source, what)
+        return None
+    if not on_air(api.col, source.id):  # hiding what isn't on air does nothing you'd see: say so
+        return not_here(source.name)
+    hide(api, source, what)
+    return None
 
 
 register_hotkeys(_hotkeys, _run_hotkey)

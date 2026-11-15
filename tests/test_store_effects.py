@@ -484,3 +484,39 @@ def test_the_engraved_stone_is_drawn_once_per_number(added, tmp_path):
     assert dc._stone_cache is first  # same number: the same picture
     dc.paint(job, job.flip_at + 1.0)
     assert dc._stone_cache is not first and dc._stone_cache[0][1] == 2  # the new number, engraved once
+
+
+def test_plugin_hotkeys_explain_themselves(added):
+    """A hotkey for something not in the bloom on air says so, instead of doing nothing silently."""
+    added("hide_it")
+    added("barrel_roll")
+    col = _collection()
+    col.sources.append(SourceConfig(id="fc", kind="camera", name="Facecam"))
+    col.scene("brb-h").items.append(__import__("sprigcast.core.scene", fromlist=["SceneItem"]).SceneItem(source="fc"))
+    api = NativeApi(FakeHost(col))
+    said = []
+    assert plugin_hooks.on_air(col, "frame-h") and plugin_hooks.on_air(col, "cam")  # cam is inside the Frame sprig too
+    assert not plugin_hooks.on_air(col, "fc")  # only in BRB, which isn't on air
+    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:fc", said.append)
+    assert said == ["Not in this bloom: Facecam"] and not plugin_hooks.find_filter(col.source("fc"), "pixelate")
+    col.active_scenes["horizontal"] = "brb-h"
+    said.clear()
+    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:fc", said.append) and said == []
+    assert plugin_hooks.find_filter(col.source("fc"), "pixelate").enabled
+    # The Frame sprig is placed (so its key is listed), but not in BRB: say so rather than spin unseen.
+    col.active_scenes["vertical"] = "brb-v"
+    assert plugin_hooks.run_hotkey(api, "plugin:roll:p-frame", said.append)
+    assert said == ["Not in this bloom: Frame"] and not plugin_hooks.find_filter(col.source("frame-h"), "barrel_roll")
+    said.clear()
+    assert not plugin_hooks.run_hotkey(api, "plugin:gone:thing", said.append)
+    assert said == ["That hotkey's plugin isn't added any more."]
+
+
+def test_death_count_key_counts_off_air_but_says_so(added):
+    added("death_count")
+    col = _collection()
+    col.sources.append(SourceConfig(id="dc", kind="death_count", name="Deaths"))
+    api = NativeApi(Host(col))
+    said = []
+    assert plugin_hooks.run_hotkey(api, "plugin:deaths:add", said.append)
+    assert col.source("dc").settings["count"] == 1 and said == ["Deaths: 1. Not in this bloom: Deaths"]
