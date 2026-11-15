@@ -24,7 +24,6 @@ class ChatHub(QObject):
     deleted = Signal(str, str)  # platform, message id
     cleared = Signal(str, str)  # platform, user id ("" = everyone)
     changed = Signal()  # which chats are read, or one's state, changed
-    happened = Signal(str, object)  # an API event from a reader, e.g. ("tiktok.gift", {...})
 
     def __init__(self, names: Callable[[], dict[str, str]], parent: QObject | None = None):
         super().__init__(parent)
@@ -57,8 +56,6 @@ class ChatHub(QObject):
             if reader is None:
                 reader = self.readers[platform] = make_reader(platform, self)
                 reader.message.connect(self._message)
-                if hasattr(reader, "happened"):
-                    reader.happened.connect(self.happened)
                 reader.deleted.connect(lambda mid, p=platform: self._deleted(p, mid))
                 reader.cleared.connect(lambda uid, p=platform: self._cleared(p, uid))
                 reader.status.connect(lambda state, p=platform: self._state(p, state))
