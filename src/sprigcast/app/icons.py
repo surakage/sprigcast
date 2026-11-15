@@ -194,13 +194,17 @@ def _draw(p: QPainter, name: str) -> None:
         for x in (8.5, 11.5, 14.5):
             p.drawPoint(P(x, 12.75))
         p.drawLine(P(9, 15.5), P(15, 15.5))
+    elif name == "shutter":  # a ring with a dot: take a screenshot
+        p.drawEllipse(P(12, 12), 8, 8)
+        p.setBrush(p.pen().color())
+        p.drawEllipse(P(12, 12), 3.5, 3.5)
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
 
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
-         "gamepad", "keyboard")
+         "gamepad", "keyboard", "shutter")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:
