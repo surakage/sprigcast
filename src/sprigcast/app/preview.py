@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.app import safe_zones, theme
@@ -63,7 +63,7 @@ class Preview(QWidget):
         self.statuses: dict[str, str] = {}  # source id -> status, from the engine (empty pages get a placeholder)
         self.selected_index: int | None = None
         self.transparent = True  # show see-through canvas areas as a checkerboard
-        self.live_look = False  # Live's stage: rounded corners, no checkerboard frame
+        self.live_look = False  # Live's stage: no checkerboard frame, room for the on-air ring
         self.align = "center"  # Live's stage: "right"/"left" so two canvases sit together, evenly spaced
         self.ring: str | None = None
         self.zoom = 1.0  # 1 = the whole canvas fits; Ctrl+wheel zooms at the mouse, Ctrl+0 fits again
@@ -235,13 +235,7 @@ class Preview(QWidget):
         p.save()
         band = 22 if self.show_title else 0  # zoomed in, the canvas stays under the title (when there is one)
         p.setClipRect(QRectF(0, band, self.width(), self.height() - band))
-        rounded = self.zoom <= 1.0  # zoomed in to edit, the canvas runs past the view: keep it square then
-        if rounded:
-            p.save()
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            clip = QPainterPath()
-            clip.addRoundedRect(rect, 20, 20)
-            p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
+        # Square corners: the canvas is drawn exactly as it goes out to the stream and the recording.
         if self._image is None:
             p.fillRect(rect, QColor("#000000"))
             p.setPen(QColor(theme.MUTED))
@@ -251,8 +245,6 @@ class Preview(QWidget):
                 self._paint_checker(p, rect)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(rect, self._image)
-        if rounded:
-            p.restore()
         p.restore()
         p.setPen(QColor(theme.MUTED))
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
@@ -279,10 +271,9 @@ class Preview(QWidget):
             p.drawText(8, 17, label)
         if self.live_look:
             if self.ring:
-                p.setRenderHint(QPainter.RenderHint.Antialiasing)
                 p.setPen(QPen(QColor(self.ring), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawRoundedRect(rect.adjusted(-3, -3, 3, 3), 23, 23)
+                p.drawRect(rect.adjusted(-3, -3, 3, 3))  # square, like the canvas it frames
         self._paint_empty_pages(p)
         self._paint_hint(p, rect)
         self._paint_inner(p)
