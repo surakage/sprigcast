@@ -326,12 +326,41 @@ class Engine:
                         return False
                     if isinstance(newer, ReplaceCollection):
                         command = newer
+                went_on_air = self._went_on_air(self._collection, command.collection)
                 self._start_transitions(self._collection, command.collection)
                 self._start_state_fades(self._collection, command.collection)
                 self._collection = command.collection
                 for canvas in self._collection.canvases:
                     self.frames.setdefault(canvas.id, Mailbox())
                 self._sync_sources(compositor)
+                self._reload_on_air(went_on_air)
+
+    @staticmethod
+    def _on_air_sources(collection: SceneCollection) -> set[str]:
+        """Sources in the blooms on air now, and in the sprigs inside them."""
+        stack = [s for s in (collection.active_scene(c.id) for c in collection.canvases if c.enabled) if s]
+        seen, found = {s.id for s in stack}, set()
+        while stack:
+            scene = stack.pop()
+            found.update(item.source for item in scene.items)
+            for inner in collection.inner_shapes(scene):
+                if inner.id not in seen:
+                    seen.add(inner.id)
+                    stack.append(inner)
+        return found
+
+    def _went_on_air(self, old: SceneCollection, new: SceneCollection) -> set[str]:
+        """Sources that a bloom switch just put on air (not ones that were on air already)."""
+        if old.active_scenes == new.active_scenes:
+            return set()
+        return self._on_air_sources(new) - self._on_air_sources(old)
+
+    def _reload_on_air(self, source_ids: set[str]) -> None:
+        """Web pages with "Reload when on air" load again as their bloom goes on air."""
+        for source_id in source_ids:
+            source = self._sources.get(source_id)
+            if source is not None and source.settings.get("reload_on_air") and hasattr(source, "reload"):
+                source.reload()
 
     def _start_transitions(self, old: SceneCollection, new: SceneCollection) -> None:
         """When a canvas's active scene changes, run the transition from the scene it showed until now."""
