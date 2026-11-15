@@ -1850,7 +1850,7 @@ class MainWindow(QMainWindow):
                 self.splitter.show()
             for preview in self.previews.values():
                 preview.live_look = True
-                preview.show_title = True
+                preview.show_title = False  # Live: just the picture, no name or size above it
             QTimer.singleShot(0, self._fit_tiles)
             QTimer.singleShot(0, self._share_stage)
         else:
@@ -2808,7 +2808,7 @@ class MainWindow(QMainWindow):
             if preview.twin:
                 preview.subtitle = ""  # small: just the shape and its size (the tooltip says click to edit)
             # Build's big canvas: the bloom's name and "on air" are right above the card already.
-            preview.show_title = self.mode != "build" or preview.twin
+            preview.show_title = self.mode == "build" and preview.twin  # Live shows just the picture
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
             preview.hint = self._empty_hint(scene) if self.mode == "build" else None
             preview.set_scene(scene, index)

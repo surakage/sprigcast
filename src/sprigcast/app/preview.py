@@ -233,7 +233,8 @@ class Preview(QWidget):
         p.fillRect(self.rect(), QColor(theme.PANEL))
         rect = self.canvas_rect()
         p.save()
-        p.setClipRect(QRectF(0, 22, self.width(), self.height() - 22))  # zoomed in, the canvas stays under the title
+        band = 22 if self.show_title else 0  # zoomed in, the canvas stays under the title (when there is one)
+        p.setClipRect(QRectF(0, band, self.width(), self.height() - band))
         rounded = self.zoom <= 1.0  # zoomed in to edit, the canvas runs past the view: keep it square then
         if rounded:
             p.save()
