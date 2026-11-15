@@ -491,6 +491,11 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import start_for
 
         self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
+        from sprigcast.audio.wavelink import WaveLinkSync
+
+        self.wavelink = WaveLinkSync(self)  # connects only while a sound captures a Wave Link channel
+        self.wavelink.apply.connect(self._from_wavelink)
+        QTimer.singleShot(2000, self._sync_wavelink)
         self.chat_panel.hub.happened.connect(self.control.app_event)  # TikTok gifts, likes... to apps
         from sprigcast.app.updates import Updater
 
@@ -2648,9 +2653,23 @@ class MainWindow(QMainWindow):
         self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
         self._chat_sources_changed()
+        self._sync_wavelink()
         control = getattr(self, "control", None)
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
+
+    def _sync_wavelink(self) -> None:
+        wavelink = getattr(self, "wavelink", None)
+        if wavelink is not None:
+            wavelink.update(self.collection.sources)
+
+    def _from_wavelink(self, source, change: dict) -> None:
+        """Wave Link changed a channel's mute or volume: the sound capturing it follows."""
+        if not any(s is source for s in self.collection.sources):
+            return  # another garden since
+        source.settings = {**source.settings, **change}
+        self._changed()
+        self._refresh_audio()
 
     # Undo and redo ------------------------------------------------------------------------
 
@@ -2723,6 +2742,7 @@ class MainWindow(QMainWindow):
             self.camera.stop()
             self.camera = None
         self.engine.set_sound_out(None)
+        self.wavelink.close()
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
