@@ -18,8 +18,8 @@ from PySide6.QtWidgets import QMenu, QWidget
 
 def screen_label(index: int, screen: QScreen) -> str:
     size = screen.geometry()
-    primary = "  (main)" if screen is QGuiApplication.primaryScreen() else ""
-    return f"Monitor {index + 1}: {size.width()}×{size.height()}{primary}"
+    main = " · main" if screen is QGuiApplication.primaryScreen() else ""
+    return f"Full screen on Screen {index + 1}{main}  ({size.width()}×{size.height()})"
 
 
 class Projector(QWidget):
@@ -89,7 +89,7 @@ class Projector(QWidget):
 
     def _menu(self, pos) -> None:
         menu = QMenu(self)
-        menu.addAction("Close projector  (Esc)").triggered.connect(self.close)
+        menu.addAction("Close  (Esc)").triggered.connect(self.close)
         menu.exec(self.mapToGlobal(pos))
 
     def closeEvent(self, event) -> None:  # noqa: N802
