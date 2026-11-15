@@ -21,7 +21,7 @@ NAMES = {"top_left": "Top left", "top": "Top", "top_right": "Top right", "left":
 
 
 class PinGrid(QWidget):
-    STEP, DOT, PAD = 15, 4.5, 6
+    STEP, DOT, PAD = 12, 3.6, 4
 
     def __init__(self, on_pick: Callable[[str], None], parent: QWidget | None = None):
         super().__init__(parent)
@@ -54,7 +54,7 @@ class PinGrid(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(theme.CARD))
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
         on = ALIGNS.index(self.current)
         for i in range(9):
             c = self._centre(i)

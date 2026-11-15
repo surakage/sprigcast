@@ -1494,46 +1494,20 @@ class MainWindow(QMainWindow):
         panel.setStyleSheet(theme.SOFT_FIELD_STYLE)
         col = QVBoxLayout(panel)
         col.setContentsMargins(6, 0, 16, 8)  # breathing room from the window edge
-        col.setSpacing(14)
+        col.setSpacing(10)
 
         self.prop_sections: list[QWidget] = []  # hidden while nothing is selected
         self.prop_section_toggles: dict[str, tuple[QPushButton, QWidget]] = {}
 
+        from sprigcast.app.inspector_fields import Card, NumberField, link_button
+
         def section(title: str) -> QVBoxLayout:
-            """A foldable section: click its title to open or close it (remembered). Only Place starts open."""
-            holder = QWidget()
-            outer = QVBoxLayout(holder)
-            outer.setContentsMargins(0, 0, 0, 0)
-            outer.setSpacing(10)
-            key = f"inspector/open/{title}"
-            is_open = QSettings().value(key, title == "Place", type=bool)
-            header = QPushButton()
-            header.setCursor(Qt.CursorShape.PointingHandCursor)
-            header.setStyleSheet(
-                f"QPushButton {{ background: transparent; border: none; color: {theme.MUTED}; font-weight: 600;"
-                f" text-align: left; padding: 2px 0; }} QPushButton:hover {{ color: {theme.TEXT}; }}")
-            body = QWidget()
-            box = QVBoxLayout(body)
-            box.setContentsMargins(0, 0, 0, 0)
-            box.setSpacing(10)
-
-            def show(open_: bool) -> None:
-                header.setText(("▾  " if open_ else "▸  ") + title)
-                body.setVisible(open_)
-
-            def toggle() -> None:
-                open_ = not body.isVisible()
-                QSettings().setValue(key, open_)
-                show(open_)
-
-            header.clicked.connect(toggle)
-            show(is_open)
-            outer.addWidget(header)
-            outer.addWidget(body)
-            col.addWidget(holder)
-            self.prop_sections.append(holder)
-            self.prop_section_toggles[title] = (header, body)
-            return box
+            """A foldable rounded card (remembered open or closed). Only Place starts open."""
+            card = Card(title, open_by_default=title == "Place")
+            col.addWidget(card)
+            self.prop_sections.append(card)
+            self.prop_section_toggles[title] = (card.header, card.body)
+            return card.box
 
         top = QVBoxLayout()
         top.setSpacing(2)
@@ -1594,69 +1568,43 @@ class MainWindow(QMainWindow):
         col.addLayout(top)
 
         place = section("Place")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(12)
-        self.spin: dict[str, QDoubleSpinBox] = {}
-        fields = (  # key, label, low, high, step, decimals, row, column
-            ("x", "X", -20000, 20000, 1, 0, 0, 0),
-            ("y", "Y", -20000, 20000, 1, 0, 0, 1),
-            ("w", "Width", 0, 40000, 1, 0, 1, 0),
-            ("h", "Height", 0, 40000, 1, 0, 1, 1),
-            ("rotation", "Rotation", -360, 360, 1, 1, 2, 0),
-        )
-        for key, label, lo, hi, step, decimals, row, column in fields:
-            box = QDoubleSpinBox()
-            box.setRange(lo, hi)
-            box.setSingleStep(step)
-            box.setDecimals(decimals)
-            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            if key in ("w", "h"):
-                box.setSpecialValueText("–")  # shown until the source's size is known
-            box.setMinimumHeight(36)
-            box.valueChanged.connect(lambda value, k=key: self._on_transform_edited(k, value))
-            self.spin[key] = box
-            cell = QVBoxLayout()
-            cell.setSpacing(5)
-            name = QLabel(label)
-            name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            name.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
-            cell.addWidget(name)
-            cell.addWidget(box)
-            grid.addLayout(cell, row, column)
-        self.keep_shape = QPushButton("Keep shape")
-        self.keep_shape.setIcon(icons.icon("lock", size=14))
-        self.keep_shape.setCheckable(True)
-        self.keep_shape.setChecked(QSettings().value("edit/keep_aspect", True, type=bool))
-        self.keep_shape.setToolTip("On: resizing keeps the width and height in proportion. "
-                                   "Off: drag a side or type a size to stretch. Shift while dragging flips it.")
-        self.keep_shape.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton:checked {{ background: {theme.SELECT_BG};"
-                                      f" color: {theme.SELECT_TEXT}; }}")
-        self.keep_shape.setMinimumHeight(36)
-        self.keep_shape.toggled.connect(self._set_keep_shape)
         from sprigcast.app.pin_grid import PinGrid
-        from sprigcast.app.starter import BOX_HEIGHT, combo_style
+        from sprigcast.app.starter import combo_style
 
-        def small_label(text: str) -> QLabel:
-            label = QLabel(text)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
-            return label
+        self.spin: dict[str, QDoubleSpinBox] = {}
 
+        def field(key: str, label: str, low: float, high: float, decimals: int = 0, suffix: str = "") -> NumberField:
+            made = NumberField(label, low, high, decimals, suffix,
+                               lambda value, k=key: self._on_transform_edited(k, value))
+            self.spin[key] = made.box
+            return made
+
+        def pair(*widgets) -> QHBoxLayout:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            for widget in widgets:
+                row.addWidget(widget, 0 if isinstance(widget, QPushButton) else 1)
+            return row
+
+        place.addLayout(pair(field("x", "X", -20000, 20000), field("y", "Y", -20000, 20000)))
+        self.keep_shape = link_button(QSettings().value("edit/keep_aspect", True, type=bool), self._set_keep_shape)
+        width, height = field("w", "W", 0, 40000), field("h", "H", 0, 40000)
+        for key in ("w", "h"):
+            self.spin[key].setSpecialValueText("–")  # shown until the source's size is known
+        place.addLayout(pair(width, self.keep_shape, height))
         self.pin_grid = PinGrid(lambda align: self._on_pin_picked("align", align))
-        self.pin_grid.setToolTip("Pin point")
-        pin_cell = QVBoxLayout()
-        pin_cell.setSpacing(5)
-        pin_cell.addWidget(small_label("Pin"))
-        pin_cell.addWidget(self.pin_grid, 0, Qt.AlignmentFlag.AlignHCenter)
-        grid.addLayout(pin_cell, 2, 1, 2, 1, Qt.AlignmentFlag.AlignTop)
-        grid.addWidget(self.keep_shape, 3, 0)
-        place.addLayout(grid)
+        self.pin_grid.setToolTip("Pin point: it turns around here")
+        turn = QHBoxLayout()
+        turn.setSpacing(12)
+        turn.addWidget(field("rotation", "Turn", -360, 360, 1, "°"), 1, Qt.AlignmentFlag.AlignVCenter)
+        turn.addWidget(self.pin_grid)
+        place.addLayout(turn)
 
         bounds = section("Bounds")
         self.bounds_mode = QComboBox()
-        self.bounds_mode.setStyleSheet(combo_style())
-        self.bounds_mode.setFixedHeight(BOX_HEIGHT)
+        self.bounds_mode.setStyleSheet(combo_style() + f"QComboBox {{ background: {theme.CARD};"
+                                       f" border-color: {theme.EDGE}; border-radius: 16px; padding-left: 14px; }}")
+        self.bounds_mode.setFixedHeight(36)
         self.bounds_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         for key, text in (("off", "Off"), ("fit", "Fit inside"), ("fill", "Fill and crop"), ("stretch", "Stretch")):
             self.bounds_mode.addItem(text, key)
@@ -1670,25 +1618,15 @@ class MainWindow(QMainWindow):
         bounds.addLayout(brow)
 
         crop = section("Crop")
-        cgrid = QGridLayout()
-        cgrid.setHorizontalSpacing(12)
-        cgrid.setVerticalSpacing(12)
         self.crop_spin: dict[int, QDoubleSpinBox] = {}
-        for i, (label, row, column) in enumerate((("Left", 0, 0), ("Top", 0, 1), ("Right", 1, 0), ("Bottom", 1, 1))):
-            box = QDoubleSpinBox()
-            box.setRange(0, 20000)
-            box.setDecimals(0)
-            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            box.setMinimumHeight(36)
-            box.setToolTip("Or hold Alt and drag a side on the canvas")
-            box.valueChanged.connect(lambda value, side=i: self._on_crop_edited(side, int(value)))
-            self.crop_spin[i] = box
-            cell = QVBoxLayout()
-            cell.setSpacing(5)
-            cell.addWidget(small_label(label))
-            cell.addWidget(box)
-            cgrid.addLayout(cell, row, column)
-        crop.addLayout(cgrid)
+        crop_fields = []
+        for i, label in enumerate(("Left", "Top", "Right", "Bottom")):
+            made = NumberField(label, 0, 20000, 0, "", lambda value, side=i: self._on_crop_edited(side, int(value)))
+            made.setToolTip("Or hold Alt and drag a side on the canvas")
+            self.crop_spin[i] = made.box
+            crop_fields.append(made)
+        crop.addLayout(pair(crop_fields[0], crop_fields[2]))
+        crop.addLayout(pair(crop_fields[1], crop_fields[3]))
         self.prop_locked = QCheckBox("Locked (clicks pass through it)")
         self.prop_locked.toggled.connect(self._on_locked_toggled)
         self.prop_locked.hide()  # kept for Ctrl+L; the lock lives on each Leaves row
@@ -1696,7 +1634,10 @@ class MainWindow(QMainWindow):
         look = section("Look")
         chips = QHBoxLayout()
         chips.setSpacing(8)
-        chip_style = theme.SMALL_PILL_STYLE
+        chip_style = theme.SMALL_PILL_STYLE + (
+            f"QPushButton {{ background: {theme.CARD}; border: 1px solid {theme.EDGE}; border-radius: 16px;"
+            f" padding: 8px 14px; }} QPushButton:hover {{ background: {theme.RAISED};"
+            f" border-color: {theme.EDGE_STRONG}; }}")
         self.prop_extra = QPushButton("")
         self.prop_extra.clicked.connect(self._edit_source_settings)
         self.prop_filters = QPushButton("Filters")
@@ -4681,8 +4622,6 @@ class MainWindow(QMainWindow):
 
     def _set_keep_shape(self, on: bool) -> None:
         QSettings().setValue("edit/keep_aspect", on)
-        self.keep_shape.setText("Keep shape" if on else "Free shape")
-        self.keep_shape.setIcon(icons.icon("lock" if on else "unlock", size=14))
         for preview in [*self.previews.values(), self.part_preview]:
             preview.keep_aspect = on
 
