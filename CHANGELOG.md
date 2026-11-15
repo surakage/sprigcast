@@ -143,6 +143,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 ### Gardens and paths
 
 - Gardens: whole sets of blooms, sprigs and sources for different shows (OBS's scene collections). Paths: where and how you go out, with places, encoder and recording settings (OBS's profiles), e.g. Twitch only, Multistream, Recording only. Each has its own menu: New, Duplicate, Rename, Remove, Import, Export, and Gardens has Missing files. Your setup becomes the "Main" garden and the "Main" path. The window title shows which are in use. Works through the control API and the OBS door, so Streamer.bot can switch them.
+- Import scene collections from OBS, Streamlabs and Meld into gardens: Gardens → Import… takes their files, and Import from OBS / Import from Streamlabs lists the ones on this PC. Scenes nothing else uses become blooms, nested scenes and groups become sprigs, divider scenes become folders, a vertical canvas (OBS 31 / Aitum Vertical, Streamlabs dual output) comes along with "Name (Vertical)" linked to "Name", and positions, crops, bounds, volumes, filters and stingers carry over. A short list says what to check afterwards. Tested on a real 200-source OBS collection; Streamlabs and Meld are built from their published formats.
+- Exports go to Documents\SprigCast\Exports with safe file names, never into SprigCast's own settings folder, and carry no stream keys (those stay in Windows Credential Manager). Imports read files with a BOM, refuse files that aren't gardens, and fit gardens from other canvas sizes. A lost gardens list is rebuilt from the files.
 
 ### Control API
 

@@ -9,10 +9,11 @@ from sprigcast.core.gardens import (
     Shelf,
     ShelfError,
     blank_garden,
+    file_name,
     missing_files,
     replace_file,
 )
-from sprigcast.core.scene import Output, SceneCollection
+from sprigcast.core.scene import Canvas, Output, SceneCollection, SceneItem
 
 
 def _starter() -> SceneCollection:
@@ -122,17 +123,55 @@ def test_export_and_import(setup, tmp_path_factory):
         shelf.import_file("garden", out / "junk.json")
 
 
-def test_garden_with_other_canvases_is_refused(setup):
+def test_garden_from_other_canvases_is_fitted(setup):
     folder, shelf, col = setup
     odd = blank_garden(col)
-    odd.canvases = odd.canvases[:1]
-    odd.scenes = [s for s in odd.scenes if s.canvas == odd.canvases[0].id]
-    odd.active_scenes = {odd.canvases[0].id: odd.scenes[0].id}
+    odd.canvases = [Canvas(id="main", width=2560, height=1440)]
+    for scene in odd.scenes:
+        scene.canvas, scene.linked_to = "main", None
+        scene.items = [SceneItem(source=odd.sources[0].id, x=100, y=200, scale=2.0)]
+    odd.scenes = odd.scenes[:1]
+    odd.active_scenes = {"main": odd.scenes[0].id}
     odd.outputs = []
-    odd.save(folder / "odd.json")
+    (folder / "odd.json").write_text(odd.model_dump_json(), encoding="utf-8")
     entry = shelf.import_file("garden", folder / "odd.json")
+    _, shown = shelf.use_garden(entry.id, col)
+    assert [c.id for c in shown.canvases] == ["horizontal", "vertical"]
+    wide = shown.scene(shown.active_scenes["horizontal"])
+    sprig = shown.scene(shown.source(wide.items[0].source).settings["scene"])
+    assert sprig.items[0].x == 75 and sprig.items[0].scale == 1.5  # 2560 wide -> 1920 wide
+    assert wide.items[0].scale == 1.0
+    assert shown.active_scenes["vertical"]  # an empty bloom for the canvas it didn't have
+
+
+def test_lost_index_finds_the_files_again(setup):
+    folder, shelf, col = setup
+    shelf.new_garden("Gaming", col)
+    shelf.new_path("Twitch only", col)
+    (folder / "gardens.json").unlink()
+    again = Shelf(folder)
+    assert {g.name for g in again.gardens()} == {"Main", "Gaming"}
+    assert {p.name for p in again.paths()} >= {"Twitch only"}
+
+
+def test_export_names_and_folder_are_safe(setup, tmp_path_factory):
+    folder, shelf, col = setup
+    assert file_name('My: "show"/<1>') == "My show1"
+    assert file_name("con") == "SprigCast con"
     with pytest.raises(ShelfError):
-        shelf.use_garden(entry.id, col)
+        shelf.export("garden", "Main", folder / "gardens" / "x.json", col)
+    col.outputs = [Output(id="out-1", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/out-1")]
+    out = tmp_path_factory.mktemp("exports") / "Twitch.json"
+    shelf.export("path", "Main", out, col)
+    text = out.read_text(encoding="utf-8")
+    assert "sprigcast/out-1" in text and "live_" not in text  # the key's name only: keys stay in Windows
+
+
+def test_import_reads_a_file_with_a_bom(setup, tmp_path_factory):
+    folder, shelf, col = setup
+    out = tmp_path_factory.mktemp("bom") / "Saved.json"
+    out.write_bytes(b"\xef\xbb\xbf" + col.model_dump_json().encode())
+    assert shelf.import_file("garden", out).name == "Saved"
 
 
 def test_path_on_a_missing_canvas_falls_back():
@@ -219,3 +258,19 @@ def test_window_switches_gardens_and_paths(window, tmp_path):
     assert w.collection.recording.bitrate_kbps == 7777
     obs.handle("RemoveProfile", {"profileName": "Recording only"})
     assert native.run("paths.list", {}) == {"path": "Main", "paths": ["Main"]}
+
+
+def test_window_imports_an_obs_scene_collection(window, tmp_path):
+    import json
+
+    from test_convert import obs_file
+
+    w = window
+    file = tmp_path / "Streaming.json"
+    file.write_text(json.dumps(obs_file()), encoding="utf-8")
+    assert w.gardens.import_garden(file, show_notes=False) is None
+    assert w.gardens.shelf.garden().name == "Streaming"
+    assert {s.name for s in w.collection.scenes if s.kind == "show"} == {"Just Chatting", "BRB"}
+    assert w.gardens.last_notes
+    (tmp_path / "junk.json").write_text("[]", encoding="utf-8")
+    assert "isn't a scene collection" in w.gardens.import_garden(tmp_path / "junk.json")

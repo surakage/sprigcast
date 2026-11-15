@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QStandardPaths, Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -34,7 +36,15 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.terms import COLLECTION, COLLECTIONS, PROFILE, PROFILES, cap
-from sprigcast.core.gardens import Shelf, ShelfError, missing_files, replace_file
+from sprigcast.core import convert
+from sprigcast.core.gardens import (
+    Shelf,
+    ShelfError,
+    exports_folder,
+    file_name,
+    missing_files,
+    replace_file,
+)
 
 if TYPE_CHECKING:
     from sprigcast.app.main_window import MainWindow
@@ -50,6 +60,7 @@ class GardenControl:
     def __init__(self, window: MainWindow, shelf: Shelf):
         self.w = window
         self.shelf = shelf
+        self.last_notes: list[str] = []  # what the last import couldn't bring over
 
     # What the API sees --------------------------------------------------------------------------
 
@@ -175,6 +186,14 @@ class GardenControl:
         remove.setEnabled(len(entries) > 1)
         remove.triggered.connect(lambda: self._ask_remove(kind))
         menu.addAction("Import…").triggered.connect(lambda: self._import(kind))
+        if kind == "garden":
+            for app, files in self._other_apps().items():
+                sub = menu.addMenu(f"Import from {convert.APP_NAMES[app]}")
+                names = convert.streamlabs_names(files[0].parent) if app == "streamlabs" else {}
+                for file in files:
+                    label = names.get(file.stem, file.stem.replace("_", " "))
+                    sub.addAction(label.replace("&", "&&")).triggered.connect(
+                        lambda _=False, f=file: self._report(self.import_garden(f)))
         menu.addAction("Export…").triggered.connect(lambda: self._export(kind))
         menu.addSeparator()
         if kind == "garden":
@@ -187,6 +206,11 @@ class GardenControl:
             action.setChecked(entry.id == current)
             action.setEnabled(not locked or entry.id == current)
             action.triggered.connect(lambda _=False, e=entry.id: self._pick(kind, e))
+
+    def _other_apps(self) -> dict[str, list[Path]]:
+        """OBS and Streamlabs scene collections on this PC (Windows keeps them under %APPDATA%)."""
+        appdata = os.environ.get("APPDATA")
+        return convert.scene_collection_files(Path(appdata)) if appdata else {}
 
     def _report(self, problem: str | None) -> None:
         if problem:
@@ -235,11 +259,21 @@ class GardenControl:
         if answer == QMessageBox.StandardButton.Yes:
             self._report(self.do(kind, "remove", entry.id))
 
+    def _exports(self) -> Path:
+        folder = exports_folder(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)))
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return Path.home()
+        return folder
+
     def _import(self, kind: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(self.w, f"Import {WORDS[kind][0]}", str(Path.home()),
-                                              "SprigCast (*.json)")
+        types = "SprigCast, OBS, Streamlabs or Meld (*.json)" if kind == "garden" else "SprigCast (*.json)"
+        path, _ = QFileDialog.getOpenFileName(self.w, f"Import {WORDS[kind][0]}", str(self._exports()), types)
         if not path:
             return
+        if kind == "garden":
+            return self._report(self.import_garden(Path(path)))
         try:
             entry = self.shelf.import_file(kind, Path(path))
         except ShelfError as exc:
@@ -247,19 +281,57 @@ class GardenControl:
         self._changed()
         self.w.statusBar().showMessage(f"Added {entry.name} to {WORDS[kind][1]}.", 6000)
 
+    def _audio_names(self) -> list[str]:
+        try:
+            from sprigcast.sources.audio import list_audio_devices
+
+            return [d.name for loop in (False, True) for d in list_audio_devices(loopback=loop, rescan=False)]
+        except Exception:
+            return []
+
+    def import_garden(self, path: Path, show_notes: bool = True) -> str | None:
+        """A SprigCast export, or a scene collection from OBS, Streamlabs or Meld: added, then switched to."""
+        try:
+            data = convert.read_json(path)
+            app = convert.detect(data)
+            if app == "sprigcast":
+                entry, notes = self.shelf.import_file("garden", path), []
+            elif app:
+                garden, notes = convert.convert(data, self.w.collection, audio_devices=self._audio_names())
+                entry = self.shelf.add_garden(convert.guess_name(path, data), garden)
+            else:
+                return f"{path.name} isn't a scene collection from SprigCast, OBS, Streamlabs or Meld."
+        except (convert.ConvertError, ShelfError) as exc:
+            return str(exc)
+        except Exception:
+            log.exception("importing %s", path)
+            return f"{path.name} couldn't be turned into a {COLLECTION}."
+        self._changed()
+        problem = self.switch("garden", entry.id)
+        if problem:
+            return problem
+        self.last_notes = notes
+        if notes and show_notes:
+            ImportNotes(self.w, entry.name, notes).exec()
+        return None
+
     def _export(self, kind: str) -> None:
         current = self.shelf.garden() if kind == "garden" else self.shelf.path()
-        path, _ = QFileDialog.getSaveFileName(self.w, f"Export {current.name}",
-                                              str(Path.home() / f"{current.name}.json"), "SprigCast (*.json)")
+        start = self._exports() / f"{file_name(current.name)}.json"
+        path, _ = QFileDialog.getSaveFileName(self.w, f"Export {current.name}", str(start), "SprigCast (*.json)")
         if not path:
             return
+        target = Path(path)
+        target = target.with_name(file_name(target.stem) + ".json")
         if kind == "garden":
             self.w.collection.save(self.w.scenes_path)
         try:
-            self.shelf.export(kind, current.id, Path(path), self.w.collection)
+            self.shelf.export(kind, current.id, target, self.w.collection)
+        except ShelfError as exc:
+            return self._report(str(exc))
         except OSError as exc:
-            return self._report(f"Couldn't save it: {exc}")
-        self.w.statusBar().showMessage(f"Exported {current.name}.", 6000)
+            return self._report(f"Couldn't save it: {exc.strerror or exc}")
+        self.w.statusBar().showMessage(f"Exported {current.name} to {target}", 8000)
 
     # Missing files ------------------------------------------------------------------------------
 
@@ -322,3 +394,25 @@ class MissingFiles(QDialog):
             self.w._changed()
             self.w._refresh_sources()
         self.fill()
+
+
+class ImportNotes(QDialog):
+    """What an import couldn't bring over, one line each."""
+
+    def __init__(self, window: MainWindow, name: str, notes: list[str]):
+        super().__init__(window)
+        self.setWindowTitle(f"{name}: to check")
+        self.setMinimumWidth(560)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(20, 20, 20, 20)
+        box.setSpacing(12)
+        text = QLabel("\n".join(f"•  {n}" for n in notes[:40]) + (f"\n…and {len(notes) - 40} more" if len(notes) > 40 else ""))
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(text.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse)
+        box.addWidget(text)
+        done = QPushButton("Done")
+        done.clicked.connect(self.accept)
+        end = QHBoxLayout()
+        end.addStretch(1)
+        end.addWidget(done)
+        box.addLayout(end)
