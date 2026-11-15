@@ -1,4 +1,4 @@
-; SprigCast installer (Inno Setup 6). Built by build_windows.ps1, which passes AppVersion and BuildDir.
+; SprigCast installer (Inno Setup 6.7 or newer, for its dark wizard). Built by build_windows.ps1, which passes AppVersion and BuildDir.
 ; Installs for the current user only, so it needs no administrator rights.
 
 #ifndef AppVersion
@@ -19,7 +19,11 @@ SetupIconFile={#BuildDir}\sprigcast.ico
 UninstallDisplayIcon={app}\sprigcast.ico
 Compression=lzma2/max
 SolidCompression=yes
-WizardStyle=modern
+; Dark all the way through, in the app's Night Canopy colours, with no white page or divider lines.
+WizardStyle=modern dark hidebevels
+WizardBackColor=#0e1311
+WizardImageBackColor=#0e1311
+WizardSmallImageBackColor=#0e1311
 ; SprigCast holds this mutex while it runs (app/main.py): Setup and Uninstall ask you to close it first,
 ; so files aren't left behind and a running copy doesn't outlive its uninstall.
 AppMutex=SprigCastAppMutex
@@ -78,11 +82,11 @@ Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\C
 [Code]
 // ---- Look: the Night Canopy header, the Extras page and the Finish page link ----
 const
-  HeaderColor = $0011130E;  // #0e1311, matches make_wizard_images.py HEADER
+  HeaderColor = $0011130E;  // #0e1311, matches WizardBackColor and make_wizard_images.py PAGE
   HeaderText = $00F3F7F2;   // #f2f7f3
   HeaderMuted = $00929A8B;  // #8b9a92
-  NoteColor = $00666666;
-  LinkColor = $00436B1D;    // #1d6b43, brand dark green (reads on white)
+  NoteColor = $00929A8B;    // #8b9a92, muted text on the dark page
+  LinkColor = $008FD84F;    // #4fd88f, the app's accent green
   ChangelogUrl = 'https://github.com/surakage/sprigcast/blob/main/CHANGELOG.md';
 
 var

@@ -14,9 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: Inno Setup on PATH
+      - name: Inno Setup 6.7 (dark wizard) on PATH
         shell: pwsh
-        run: echo "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+        run: |
+          # The runner's own Inno Setup may be older than 6.7, which the dark wizard needs: install a pinned copy.
+          $dir = Join-Path $env:RUNNER_TEMP "InnoSetup"
+          $exe = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+          Invoke-WebRequest "https://files.jrsoftware.org/is/6/innosetup-6.7.4.exe" -OutFile $exe
+          Start-Process $exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir" -Wait
+          if (-not (Test-Path (Join-Path $dir "ISCC.exe"))) { throw "Inno Setup didn't install to $dir" }
+          echo $dir | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Build
         shell: pwsh
         run: ./packaging/build_windows.ps1
@@ -42,12 +49,36 @@ jobs:
           if ($failed) { Get-MpThreatDetection | Format-List | Out-Host; exit 1 }
           "Defender found nothing" | Tee-Object -Append packaging\out\SHA256.txt
           exit 0
+      - name: Screenshots of the wizard pages
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # Open Setup (not silent) and snap Welcome, Install location and Extras, then close it before installing.
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $shots = New-Item -ItemType Directory -Force packaging\out\screens
+          $setup = Get-ChildItem packaging\out\*.exe | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList "/LANG=en" -PassThru
+          $shell = New-Object -ComObject WScript.Shell
+          function Snap($name) {
+            Start-Sleep -Seconds 3
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save((Join-Path $shots "$name.png"))
+          }
+          Start-Sleep -Seconds 5
+          $null = $shell.AppActivate("SprigCast Setup")
+          Snap "1-welcome"
+          $shell.SendKeys("{ENTER}"); Snap "2-location"
+          $shell.SendKeys("{ENTER}"); Snap "3-extras"
+          Get-Process | Where-Object { $_.ProcessName -like "SprigCast-Setup*" -or $_.ProcessName -like "*.tmp" } | Stop-Process -Force -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
           name: SprigCast-Setup
           path: |
             packaging/out/*.exe
             packaging/out/SHA256.txt
+            packaging/out/screens/*.png
           retention-days: 14
       # A v* tag also publishes a GitHub Release with the installer, SHA256.txt and that version's CHANGELOG
       # section. SprigCast's "Check for updates" reads the newest one; it checks the installer against
