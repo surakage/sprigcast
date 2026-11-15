@@ -88,12 +88,29 @@ class _CaptureSource(Source):
     def size(self) -> tuple[int, int]:
         return self._size
 
+    _next_due = 0.0
+
+    def _due(self) -> bool:
+        """With fps_limit set, keep at most that many frames a second (a 144 fps game costs a 60 fps copy)."""
+        limit = float(self.settings.get("fps_limit", 0) or 0)
+        if limit <= 0:
+            return True
+        now = time.monotonic()
+        step = 1.0 / limit
+        if now < self._next_due - step * 0.25:  # a little slack, so 60 on a 60 Hz game doesn't drop to 30
+            return False
+        # steady on the grid while frames keep up; a pause (or the first frame) starts the grid over from now
+        self._next_due = self._next_due + step if self._next_due > now - step else now + step
+        return True
+
     def video_frame(self) -> np.ndarray | None:
         return self._frames.take()
 
     # Capture thread -------------------------------------------------------------
 
     def _on_frame(self, frame) -> None:
+        if not self._due():
+            return  # over the frame-rate limit: skip the copy altogether
         # frame.frame_buffer is a view into memory the capture library reuses, and its rows may be
         # padded, so copy it (into one of three reused buffers) before handing it to the render thread.
         self._size = (int(frame.width), int(frame.height))
@@ -187,11 +204,15 @@ class WindowCaptureSource(_CaptureSource):
 
 @register("game_capture")
 class GameCaptureSource(WindowCaptureSource):
-    """A game: the full-screen game in front (mode "any", the default), or one game's window (mode "window",
-    with title and process like a window capture). The cursor is off by default, as games draw their own.
+    """A game. mode "any" (the default): the full-screen game in front; "window": one game's window (title and
+    process, like a window capture); "hotkey": the window that was in front when you pressed its hotkey (saved
+    as its title and process). The cursor is off by default, as games draw their own.
 
     In "any" mode it switches when another full-screen game comes to the front, and keeps the last game
     while you alt-tab to the desktop or a chat, so the stream doesn't flash your other windows.
+
+    see_through (off by default) keeps the game's transparency; off, the picture is solid, as games mean it.
+    fps_limit caps how many frames a second are copied (0 = every frame the game draws).
     """
 
     label = "Game capture"
@@ -202,8 +223,17 @@ class GameCaptureSource(WindowCaptureSource):
         self._game: tuple[int, int, str] | None = None  # (window handle, pid, exe) of the game being shown
         self._checked = 0.0
 
+    @property
+    def channel_order(self) -> str:  # type: ignore[override]
+        return "BGRA" if self.settings.get("see_through", False) else "BGRX"
+
+    def _mode(self) -> str:
+        return str(self.settings.get("mode", "any"))
+
     def _target(self) -> dict[str, Any] | None:
-        if self.settings.get("mode", "any") == "window":
+        if self._mode() in ("window", "hotkey"):
+            if self._mode() == "hotkey" and not (self.settings.get("title") or self.settings.get("process")):
+                return None  # the hotkey hasn't been pressed yet
             return super()._target()
         from sprigcast.sources.app_audio import fullscreen_window
 
@@ -217,7 +247,7 @@ class GameCaptureSource(WindowCaptureSource):
         return {"window_hwnd": self._game[0]}
 
     def _should_retarget(self) -> bool:
-        if self.settings.get("mode", "any") == "window":
+        if self._mode() != "any":
             return False
         now = time.monotonic()
         if now - self._checked < self.CHECK_SECONDS:

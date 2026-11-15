@@ -67,6 +67,7 @@ from sprigcast.app.fit import FitButton
 from sprigcast.app.hotkeys import (
     SAVE_REPLAY,
     SCENE_PREFIX,
+    GAME_PREFIX,
     MEDIA_PREFIX,
     SCREENSHOT,
     STATE_PREFIX,
@@ -4176,6 +4177,21 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_audio()
 
+    def _game_grab(self, source_id: str) -> None:
+        """A game capture's hotkey: take the window in front (and its sound, if it brings its own)."""
+        from sprigcast.core.capture_sound import follow_capture
+        from sprigcast.sources.win32_enum import foreground_window
+
+        config = next((c for c in self.collection.sources if c.id == source_id and c.kind == "game_capture"), None)
+        window = foreground_window()
+        if config is None or window is None:
+            return
+        config.settings = {**config.settings, "title": window.title, "process": window.process}
+        follow_capture(self.collection, config)
+        self._changed()
+        self._refresh_audio()
+        self.statusBar().showMessage(f"{config.name} now shows {window_name(window.title, window.process)}.", 5000)
+
     def _add_window(self, window=None) -> None:
         if self._scene() is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
@@ -4481,22 +4497,19 @@ class MainWindow(QMainWindow):
             if config.name in (old, short_name(old, "Camera")):  # a name you chose stays
                 config.name = short_name(settings["name"], "Camera")
         elif config.kind == "game_capture":
-            windows = list_windows()
-            labels = ["Any full-screen game"] + [window_name(w.title, w.process) for w in windows]
-            current = 0 if config.settings.get("mode", "any") != "window" else next(
-                (i + 1 for i, w in enumerate(windows) if w.process == config.settings.get("process")), 0)
-            label, ok = QInputDialog.getItem(self, "Game capture", "Show:", labels, current, False)
-            if not ok:
-                return
-            if labels.index(label) == 0:
-                config.settings = {**config.settings, "mode": "any", "title": "", "process": ""}
-            else:
-                window = windows[labels.index(label) - 1]
-                config.settings = {**config.settings, "mode": "window", "title": window.title,
-                                   "process": window.process}
-            from sprigcast.core.capture_sound import follow_capture
+            from sprigcast.app.game_dialog import GameCaptureDialog
+            from sprigcast.core.capture_sound import APP, capture_sound, follow_capture, set_capture_sound
 
+            dialog = GameCaptureDialog(config.settings, list_windows(), capture_sound(self.collection, config.id)
+                                       is not None, self)
+            if not dialog.exec():
+                return
+            changes, sound = dialog.values()
+            config.settings = {**config.settings, **changes}
+            if sound != (capture_sound(self.collection, config.id) is not None):
+                set_capture_sound(self.collection, config, APP if sound else None)
             follow_capture(self.collection, config)
+            self._refresh_audio()
         elif config.kind == "window_capture":
             window = self._pick_window()
             if window is None:
@@ -5330,6 +5343,8 @@ class MainWindow(QMainWindow):
             from sprigcast import plugin_hooks
 
             plugin_hooks.run_hotkey(self.api, action)
+        elif action.startswith(GAME_PREFIX):
+            self._game_grab(action[len(GAME_PREFIX):])
         elif action.startswith(MEDIA_PREFIX):
             source_id, _, what = action[len(MEDIA_PREFIX):].rpartition(":")
             self.media_control(source_id, what)

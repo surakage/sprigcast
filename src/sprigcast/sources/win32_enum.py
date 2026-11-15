@@ -139,3 +139,11 @@ def find_window(title: str, process: str = "") -> WindowInfo | None:
         if found is not None:
             return found
     return None
+
+
+def foreground_window() -> WindowInfo | None:
+    """The window in front (the one with the keyboard), if it's one list_windows() would show."""
+    if sys.platform != "win32":
+        return None
+    hwnd = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    return next((w for w in list_windows() if w.hwnd == hwnd), None) if hwnd else None
