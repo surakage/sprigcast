@@ -279,3 +279,56 @@ def test_gpu_shape_from_picture(compositor, tmp_path):
     Image.fromarray(opaque).save(tmp_path / "white.png")
     out = render_full(compositor, img, [flt("shape", shape="image", mask_file=str(tmp_path / "white.png"))])
     assert out[16, 4, 3] == 0 and out[16, 28, 3] == 255
+
+
+def test_new_video_filter_settings():
+    fx = video_effects([flt("blur", size=6.0)])
+    assert fx.active and fx.blur == 6.0 and fx.pixelate == 0.0
+    assert video_effects([flt("blur", mode="pixelate", size=10.0)]).pixelate == 10.0
+    assert not video_effects([flt("blur", size=0.0)]).active
+    assert video_effects([flt("color_key", key_color="#ff00ff")]).key_mode == 3
+    halos = video_effects([flt("stroke"), flt("shadow"), flt("glow")]).halos
+    assert [h.mode for h in halos] == [1, 1, 2] and halos[0].offset == (8.0, 8.0)  # shadow, glow, then stroke
+    assert not video_effects([flt("shadow", opacity=0)]).active
+
+
+def render_small_item(comp, filters, colour=(200, 100, 50, 255)):
+    """A 16x16 square in the middle of a 48x48 canvas."""
+    canvas = Canvas(id="f", width=48, height=48)
+    comp.upload("src", np.full((16, 16, 4), colour, dtype=np.uint8))
+    fx = video_effects(filters)
+    comp.effects = {"src": fx} if fx.active else {}
+    scene = Scene(id="s", name="s", canvas="f", items=[SceneItem(source="src", x=16, y=16)])
+    comp.render(canvas, scene, {"src": (16, 16)})
+    out = np.frombuffer(comp.read("f"), dtype=np.uint8).reshape(48, 48, 4).copy()
+    comp.effects = {}
+    return out
+
+
+def test_gpu_stroke_shadow_and_glow_draw_outside_the_source(compositor):
+    plain = render_small_item(compositor, [])
+    assert plain[24, 13, 3] == 0  # nothing left of the square
+    out = render_small_item(compositor, [flt("stroke", width=4.0, color="#00ff00")])
+    assert tuple(out[24, 13]) == (0, 255, 0, 255)  # a green ring just outside
+    assert tuple(out[24, 24][:3]) == (200, 100, 50)  # the source still on top
+    assert out[24, 6, 3] == 0  # and nothing far away
+    out = render_small_item(compositor, [flt("shadow", offset_x=6.0, offset_y=6.0, blur=0.0, opacity=100)])
+    assert out[35, 35, 3] > 200 and out[35, 35, 0] < 10  # a dark copy, down and to the right
+    assert out[13, 13, 3] == 0
+    out = render_small_item(compositor, [flt("glow", size=8.0, color="#ff0000")])
+    r, g, b, a = (int(v) for v in out[24, 12])
+    assert a > 40 and abs(r - a) <= 2 and g < 5 and b < 5  # red light round the edge, fading out
+    assert out[24, 12, 3] > out[24, 9, 3]
+
+
+def test_gpu_blur_pixelate_and_color_key(compositor):
+    img = np.zeros((16, 32, 4), np.uint8)
+    img[:, :16] = (255, 0, 0, 255)
+    img[:, 16:] = (0, 0, 255, 255)
+    out = render_full(compositor, img, [flt("blur", size=4.0)])
+    assert 40 < out[8, 16, 0] < 215 and 40 < out[8, 16, 2] < 215  # the edge is soft
+    assert out[8, 8, 0] > 240  # far from it: as it was
+    out = render_full(compositor, img, [flt("blur", mode="pixelate", size=8.0)])
+    assert tuple(out[3, 2]) == tuple(out[6, 6])  # one flat block
+    assert render_one(compositor, (255, 0, 255, 255), [flt("color_key", key_color="#ff00ff")])[3] == 0
+    assert render_one(compositor, (0, 200, 0, 255), [flt("color_key", key_color="#ff00ff")])[3] == 255

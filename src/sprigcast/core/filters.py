@@ -1,8 +1,10 @@
 """Filters: effects added to a source, like OBS filters.
 
 Video filters run on the GPU, inside the compositor's shader, so they cost almost nothing.
-They always apply in a fixed order whatever their place in the list: scroll, sharpen,
-chroma/luma key, color correction, color look (LUT), then shape. A source has at most one filter of each video kind.
+They always apply in a fixed order whatever their place in the list: scroll, blur or pixelate, sharpen,
+chroma/color/luma key, color correction, color look (LUT), then shape. Shadow, glow and stroke are drawn
+behind the source in one extra pass each, following its shape and transparency. A source has at most one
+filter of each video kind.
 
 Audio filters run on the mixer thread, one 1024-sample block at a time, in list order.
 Plugins can add audio filters:
@@ -132,6 +134,32 @@ _video("luma_key", "Luma Key", [
     Field("luma_max", "Luma Max", 1.0, 0.0, 1.0, 0.01),
     Field("smoothness", "Smoothness", 0.0, 0.0, 1.0, 0.01),
 ])
+_video("color_key", "Color Key", [
+    Field("key_color", "Key Color", "#000000"),
+    Field("similarity", "Similarity", 80, 1, 1000, 1),
+    Field("smoothness", "Smoothness", 50, 1, 1000, 1),
+])
+_video("blur", "Blur", [
+    Field("mode", "Type", "blur", choices=(("blur", "Blur"), ("pixelate", "Pixelate"))),
+    Field("size", "Size", 8.0, 0.0, 64.0, 0.5, " px"),
+])
+_video("shadow", "Shadow", [
+    Field("color", "Color", "#000000"),
+    Field("opacity", "Opacity", 60, 0, 100, 1, "%"),
+    Field("offset_x", "Offset X", 8.0, -100.0, 100.0, 1.0, " px"),
+    Field("offset_y", "Offset Y", 8.0, -100.0, 100.0, 1.0, " px"),
+    Field("blur", "Softness", 12.0, 0.0, 60.0, 0.5, " px"),
+])
+_video("glow", "Glow", [
+    Field("color", "Color", "#4fd88f"),
+    Field("strength", "Strength", 80, 0, 100, 1, "%"),
+    Field("size", "Size", 16.0, 1.0, 60.0, 0.5, " px"),
+])
+_video("stroke", "Stroke", [
+    Field("color", "Color", "#ffffff"),
+    Field("opacity", "Opacity", 100, 0, 100, 1, "%"),
+    Field("width", "Width", 4.0, 0.5, 40.0, 0.5, " px"),
+])
 _video("sharpen", "Sharpen", [Field("sharpness", "Sharpness", 0.08, 0.0, 1.0, 0.01)])
 _video("scroll", "Scroll", [
     Field("speed_x", "Horizontal Speed", 0.0, -500.0, 500.0, 1.0, " px/s"),
@@ -165,6 +193,18 @@ def parse_color(text: str) -> tuple[float, float, float]:
     return r / 255, g / 255, b / 255
 
 
+@dataclass(frozen=True)
+class Halo:
+    """Something drawn behind a source in its own shape: a shadow, a glow or a stroke."""
+
+    mode: int  # 1 soft (shadow, glow), 2 hard edge (stroke)
+    color: tuple[float, float, float]
+    alpha: float
+    radius: float  # canvas pixels: softness, glow size or stroke width
+    offset: tuple[float, float] = (0.0, 0.0)  # canvas pixels
+    boost: float = 1.0  # a glow is brighter than an even blur of the edge
+
+
 @dataclass
 class VideoEffects:
     """Shader uniforms for one source. The defaults leave the image untouched."""
@@ -193,12 +233,16 @@ class VideoEffects:
     border: float = 0.0
     border_color: tuple[float, float, float] = (0.24, 0.81, 0.5)
     mask: str = ""  # shape "image": the picture's path
+    blur: float = 0.0  # source pixels: a soft blur radius
+    pixelate: float = 0.0  # source pixels: block size
+    halos: tuple[Halo, ...] = ()  # shadow, glow and stroke, drawn behind in this order
     active: bool = field(default=False, compare=False)
 
 
 def video_effects(filters) -> VideoEffects:
     """Fold a source's enabled video filters into shader uniforms."""
     fx = VideoEffects()
+    halos: dict[str, Halo] = {}
     for flt in filters:
         if not flt.enabled:
             continue
@@ -218,6 +262,24 @@ def video_effects(filters) -> VideoEffects:
             fx.similarity = float(s["similarity"]) / 1000
             fx.smoothness = max(0.001, float(s["smoothness"]) / 1000)
             fx.spill = max(0.001, float(s["spill"]) / 1000)
+        elif flt.kind == "color_key" and fx.key_mode == 0:
+            fx.key_mode = 3
+            fx.key_color = parse_color(s["key_color"])
+            fx.similarity = float(s["similarity"]) / 1000
+            fx.smoothness = max(0.001, float(s["smoothness"]) / 1000)
+        elif flt.kind == "blur":
+            size = max(0.0, float(s["size"]))
+            if size <= 0:
+                continue
+            if s["mode"] == "pixelate":
+                fx.pixelate = max(1.0, size)
+            else:
+                fx.blur = size
+        elif flt.kind in ("shadow", "glow", "stroke"):
+            halo = _halo(flt.kind, s)
+            if halo is None:
+                continue
+            halos[flt.kind] = halo
         elif flt.kind == "luma_key" and fx.key_mode == 0:
             fx.key_mode = 2
             fx.luma = (float(s["luma_min"]), float(s["luma_max"]), float(s["smoothness"]))
@@ -244,7 +306,21 @@ def video_effects(filters) -> VideoEffects:
         else:
             continue
         fx.active = True
+    fx.halos = tuple(halos[k] for k in ("shadow", "glow", "stroke") if k in halos)
     return fx
+
+
+def _halo(kind: str, s: dict[str, Any]) -> Halo | None:
+    color = parse_color(s["color"])
+    if kind == "shadow":
+        alpha = float(s["opacity"]) / 100
+        return Halo(1, color, alpha, max(0.0, float(s["blur"])), (float(s["offset_x"]), float(s["offset_y"]))) \
+            if alpha > 0 else None
+    if kind == "glow":
+        alpha = float(s["strength"]) / 100
+        return Halo(1, color, alpha, max(1.0, float(s["size"])), boost=2.5) if alpha > 0 else None
+    alpha = float(s["opacity"]) / 100
+    return Halo(2, color, alpha, max(0.5, float(s["width"]))) if alpha > 0 else None
 
 
 # Audio ----------------------------------------------------------------------------------------
