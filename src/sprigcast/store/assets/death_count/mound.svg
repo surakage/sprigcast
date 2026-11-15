@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 170" width="600" height="170">
+  <!-- Death count's ground: a dirt mound with grass along the top. The stone rises out of it at y 40. -->
+  <defs>
+    <linearGradient id="dirt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a4b2a"/><stop offset="1" stop-color="#4f2f1a"/>
+    </linearGradient>
+    <linearGradient id="grass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8cc152"/><stop offset="1" stop-color="#5f9433"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="300" cy="162" rx="290" ry="12" fill="#000000" opacity="0.22"/>
+  <path d="M14 166 Q40 70 150 48 Q220 36 300 38 Q380 36 450 48 Q560 70 586 166 Z" fill="url(#dirt)"/>
+  <g fill="#3d2414" opacity="0.55">
+    <ellipse cx="160" cy="110" rx="9" ry="5"/><ellipse cx="420" cy="96" rx="7" ry="4"/>
+    <ellipse cx="300" cy="130" rx="11" ry="5"/><ellipse cx="96" cy="140" rx="6" ry="3.5"/><ellipse cx="500" cy="138" rx="8" ry="4"/>
+  </g>
+  <g fill="#a57a52" opacity="0.7">
+    <circle cx="230" cy="90" r="5"/><circle cx="380" cy="120" r="4"/><circle cx="120" cy="120" r="3.5"/><circle cx="470" cy="110" r="4.5"/>
+  </g>
+  <!-- grass lip -->
+  <path d="M60 86 Q150 44 300 42 Q450 44 540 86 Q520 70 470 60 Q420 52 300 52 Q180 52 130 60 Q80 70 60 86 Z" fill="url(#grass)"/>
+  <g fill="url(#grass)">
+    <path d="M86 78 L92 50 L100 72 L108 44 L114 70 Z"/>
+    <path d="M150 58 L156 30 L164 54 L172 26 L178 52 Z"/>
+    <path d="M232 50 L238 26 L246 48 Z"/>
+    <path d="M356 50 L362 24 L370 48 L378 30 L382 50 Z"/>
+    <path d="M430 56 L436 30 L444 54 L452 34 L458 58 Z"/>
+    <path d="M492 70 L498 46 L506 68 L514 50 L518 76 Z"/>
+  </g>
+  <!-- a little sprout at each side -->
+  <path d="M120 64 Q118 44 128 32" fill="none" stroke="#4f8a2c" stroke-width="3" stroke-linecap="round"/>
+  <ellipse cx="118" cy="38" rx="12" ry="5.5" transform="rotate(30 118 38)" fill="#3ecf7f"/>
+  <ellipse cx="138" cy="32" rx="12" ry="5.5" transform="rotate(-25 138 32)" fill="#8cc152"/>
+  <path d="M478 64 Q480 44 470 32" fill="none" stroke="#4f8a2c" stroke-width="3" stroke-linecap="round"/>
+  <ellipse cx="480" cy="38" rx="12" ry="5.5" transform="rotate(-30 480 38)" fill="#3ecf7f"/>
+  <ellipse cx="460" cy="32" rx="12" ry="5.5" transform="rotate(25 460 32)" fill="#8cc152"/>
+</svg>

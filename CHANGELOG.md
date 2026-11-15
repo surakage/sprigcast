@@ -100,6 +100,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Virtual camera Shows list: match the app, a whole canvas, one bloom or one source; fixed the camera not starting in TikTok LIVE Studio (#224).
 - When an older camera fails to start, SprigCast points you to Update (#227).
 - Media files no longer loop with Loop off, and .webm files end cleanly (#220, #222).
+- Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat
 

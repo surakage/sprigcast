@@ -27,11 +27,19 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Redeem: pixelate the camera for 15 s | `http://127.0.0.1:4455/api/hide.pixelate?source=Facecam&seconds=15&password=…` |
 | Redeem: black out the game for 10 s | `http://127.0.0.1:4455/api/hide.blackout?source=Game%20capture&seconds=10&password=…` |
 | Redeem: barrel roll the camera frame | `http://127.0.0.1:4455/api/roll.spin?sprig=Cam%20frame&seconds=15&password=…` |
+| Death: one more on the death count (the gravestone pops up) | `http://127.0.0.1:4455/api/deaths.add?password=…` |
+| Undo a death counted by mistake | `http://127.0.0.1:4455/api/deaths.remove?password=…` |
+| New game: death count back to 0 | `http://127.0.0.1:4455/api/deaths.reset?password=…` |
+| Chat command `!deaths`: show the count on stream | `http://127.0.0.1:4455/api/deaths.show?password=…` |
 | Change some text on screen | `http://127.0.0.1:4455/api/source.set?source=Goal%20text&settings=…&password=…` (or POST JSON, below) |
 | Switch bloom | `http://127.0.0.1:4455/api/bloom.show?bloom=Just%20Chatting&password=…` |
 | Mute the mic | `http://127.0.0.1:4455/api/sound.mute?sound=Mic&password=…` |
 
-Store plugins (Hide it, Barrel Roll, Snap) must be added first in Settings → Plugins.
+Store plugins (Hide it, Barrel Roll, Snap, Death count) must be added first in Settings → Plugins.
+
+### Death count with Streamer.bot
+
+Add **Death count** in Settings → Plugins, then + → Plugins → Death count in a bloom. Point a Stream Deck button or a mod-only `!death` command at `deaths.add`. Every `deaths.*` link answers `{"ok": true, "result": {"count": 7}}`, so a Fetch URL sub-action can save the answer to a variable and post it in chat (for example "That's death number 7"). `deaths.get` reads the count without popping it up. To keep a Streamer.bot global in step, listen for the `deaths.changed` event (below).
 
 To put words a viewer typed on screen, give a Text source a name and set it: `source.set` with `{"text": "…"}` (POST it as JSON, below).
 
