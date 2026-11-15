@@ -258,6 +258,7 @@ class LivePanel(QWidget):
         super().__init__()
         self.on_scene = on_scene
         self.on_edit = on_edit  # open a scene in Build mode (right-click menu)
+        self.on_project: Callable | None = None  # (menu, scene id): adds "Show full screen on"
         self.on_state = on_state or (lambda part_id, name: None)
         self.staged: set[str] = set()
         self.buttons: dict[str, QPushButton] = {}
@@ -455,6 +456,8 @@ class LivePanel(QWidget):
         menu.addAction(label).triggered.connect(lambda: self.on_scene(scene_id))
         if self.on_edit is not None:
             menu.addAction("Edit in Build mode").triggered.connect(lambda: self.on_edit(scene_id))
+        if self.on_project is not None:
+            self.on_project(menu, scene_id)
         return menu
 
     def set_clock(self, text: str, live: bool) -> None:

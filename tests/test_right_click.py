@@ -94,7 +94,7 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
         assert next(a for a in shape_menu.actions() if a.text() == "Circle").isChecked()
         next(a for a in shape_menu.actions() if a.text() == "Rectangle (none)").trigger()
         assert bg.filters == []
-        assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Full screen on…", "Canvas size and frame rate…"]
+        assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Show full screen on", "Canvas size and frame rate…"]
         w._set_mode("live")
         w._edit_in_build("h2")
         assert w.mode == "build" and w.selected_scene_id == "h2"

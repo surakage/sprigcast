@@ -1,8 +1,10 @@
-"""Projectors: a canvas, full screen on a monitor you choose (or in a window you can move).
+"""Projectors: a canvas, a bloom, a sprig or one source, full screen on a monitor you choose
+(or in a window you can move).
 
-The engine already renders each canvas once a frame; a projector just shows the newest frame of
-its canvas, at full size, with nothing drawn over it. Esc, a double-click or the right-click menu
-closes it.
+A canvas projector shows the newest frame the engine already renders for that canvas. A bloom,
+sprig or source projector uses one of the engine's views ("view:<name>", the same thing the
+virtual camera uses), drawn only while the projector is open, about 30 times a second, with no
+encoding. Esc, a double-click or the right-click menu closes it.
 """
 
 from __future__ import annotations
@@ -24,9 +26,11 @@ class Projector(QWidget):
     """One canvas on one screen. screen=None opens a normal window instead of full screen."""
 
     def __init__(self, canvas_id: str, title: str, screen: QScreen | None,
-                 on_closed: Callable[["Projector"], None]):
+                 on_closed: Callable[["Projector"], None], view: str | None = None):
         super().__init__(None, Qt.WindowType.Window)
         self.canvas_id = canvas_id
+        self.view = view  # engine view name for a bloom, sprig or source projector; None for a canvas
+        self.pending = None  # newest view frame, handed over by the render thread (see take_pending)
         self.on_closed = on_closed
         self._image: QImage | None = None
         self.setWindowTitle(f"{title} · SprigCast projector")
@@ -49,6 +53,15 @@ class Projector(QWidget):
     def pixel_size(self) -> tuple[int, int]:
         dpr = self.devicePixelRatioF()
         return int(self.width() * dpr), int(self.height() * dpr)
+
+    def tap(self, frame) -> None:
+        """Render thread: keep only the newest frame (one assignment, so no lock is needed)."""
+        self.pending = frame
+
+    def take_pending(self) -> None:
+        frame, self.pending = self.pending, None
+        if frame is not None:
+            self.set_frame(frame.data, frame.width, frame.height)
 
     def set_frame(self, data: bytes, width: int, height: int) -> None:
         self._image = QImage(data, width, height, width * 4, QImage.Format.Format_RGBA8888).copy()
