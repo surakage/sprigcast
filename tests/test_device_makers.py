@@ -17,3 +17,8 @@ def test_makers_and_labels():
 def test_effects():
     assert is_effects("Camera (NVIDIA Broadcast)") and is_effects("Streamfog Virtual Camera")
     assert not is_effects("EƖgato Virtual Camera") and not is_effects("OBS Virtual Camera")
+
+
+def test_whole_words_only():
+    assert maker("Camouflage Capture") is None
+    assert maker("Camo") == "Camo"

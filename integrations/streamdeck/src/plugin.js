@@ -25,8 +25,13 @@ streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
 });
 
 /** Lists for the property inspector's pickers (sdpi-select datasource). */
-async function listFor(event) {
+async function listFor(event, payload = {}) {
 	const lists = {
+		getGardens: async () => (await sprigcast.run("gardens.list")).gardens,
+		getPaths: async () => (await sprigcast.run("paths.list")).paths,
+		getMedia: async () => (await sprigcast.run("media.list")).media.map((m) => m.media),
+		getFilters: async () => (await sprigcast.run("filters.list", { source: payload.source ?? "" })).filters.map((f) => f.name),
+		getTransitions: async () => (await sprigcast.run("transition.get")).kinds,
 		getBlooms: async () => (await sprigcast.run("blooms.list")).blooms.map((b) => b.name),
 		getSounds: async () => (await sprigcast.run("sounds.list")).sounds.map((s) => s.name),
 		getSprigs: async () => (await sprigcast.run("sprigs.list")).sprigs.map((s) => s.name),
@@ -66,7 +71,7 @@ class SprigCastAction extends SingletonAction {
 	}
 
 	async onSendToPlugin(ev) {
-		const items = await listFor(ev.payload?.event);
+		const items = await listFor(ev.payload?.event, ev.payload);
 		if (items) await streamDeck.ui.sendToPropertyInspector({ event: ev.payload.event, items });
 	}
 
@@ -85,7 +90,7 @@ class SprigCastAction extends SingletonAction {
 
 	async repaintAll() {
 		for (const action of this.actions) {
-			if (action.isKey()) await this.paint(action, await action.getSettings());
+			await this.paint(action, await action.getSettings());
 		}
 	}
 }
@@ -120,6 +125,110 @@ class ToggleItem extends SprigCastAction {
 		const shown = sprigcast.state.items[`${s.bloom}/${s.item}`];
 		return typeof shown === "boolean" ? action.setState(shown ? 0 : 1) : undefined;
 	}
+}
+
+class SoundVolume extends SprigCastAction {
+	// A key changes the volume by a step (or sets it); on a Stream Deck + dial, turning changes it and
+	// pressing mutes.
+	constructor() { super("volume"); }
+	press(s) {
+		const db = Number(s.db);
+		if (s.mode === "set" && Number.isFinite(db)) return sprigcast.run("sound.volume", { sound: s.sound, db });
+		return sprigcast.run("sound.volume", { sound: s.sound, change: Number(s.step) || 1 });
+	}
+	async onDialRotate(ev) {
+		const s = ev.payload.settings;
+		const step = Math.abs(Number(s.step) || 1);
+		try {
+			await sprigcast.run("sound.volume", { sound: s.sound, change: ev.payload.ticks * step });
+		} catch {
+			await ev.action.showAlert();
+		}
+	}
+	async onDialDown(ev) {
+		try {
+			await sprigcast.run("sound.mute", { sound: ev.payload.settings.sound });
+		} catch {
+			await ev.action.showAlert();
+		}
+	}
+	paint(action, s) {
+		const db = sprigcast.state.volumes[s.sound];
+		if (!action.isDial() || db === undefined) return undefined;
+		const muted = sprigcast.state.sounds[s.sound];
+		const pct = Math.round(Math.max(0, Math.min(100, ((db + 60) / 66) * 100))); // -60 dB .. +6 dB
+		return action.setFeedback({
+			title: s.sound ?? "Sound",
+			value: muted ? "Muted" : `${db > 0 ? "+" : ""}${Number(db).toFixed(1)} dB`,
+			indicator: { value: muted ? 0 : pct },
+		});
+	}
+}
+
+class MediaKey extends SprigCastAction {
+	constructor() { super("media"); }
+	press(s) {
+		const verb = { play: "media.play", pause: "media.pause", restart: "media.restart", stop: "media.stop" }[s.mode];
+		return sprigcast.run(verb ?? "media.toggle", { media: s.media });
+	}
+	paint(action, s) { return action.setState(sprigcast.state.media[s.media] === "playing" ? 1 : 0); }
+}
+
+class FilterKey extends SprigCastAction {
+	constructor() { super("filter"); }
+	press(s) {
+		if (s.mode === "on" || s.mode === "off") return sprigcast.run("filter.set", { source: s.source, filter: s.filter, on: s.mode === "on" });
+		return sprigcast.run("filter.toggle", { source: s.source, filter: s.filter });
+	}
+	async paint(action, s) {
+		const key = `${s.source}/${s.filter}`;
+		if (sprigcast.state.filters[key] === undefined && sprigcast.ready && s.source && s.filter) {
+			try {
+				for (const f of (await sprigcast.run("filters.list", { source: s.source })).filters) {
+					sprigcast.state.filters[`${s.source}/${f.name}`] = f.on;
+				}
+			} catch {
+				return undefined;
+			}
+		}
+		return action.setState(sprigcast.state.filters[key] ? 1 : 0);
+	}
+}
+
+class TransitionKey extends SprigCastAction {
+	constructor() { super("transition"); }
+	press(s) {
+		const ms = Number(s.ms);
+		return sprigcast.run("transition.set", { ...(s.kind ? { kind: s.kind } : {}), ...(Number.isFinite(ms) && ms > 0 ? { ms } : {}) });
+	}
+	paint(action, s) {
+		const now = sprigcast.state.transition;
+		return action.setState(now && s.kind && now.kind === s.kind ? 1 : 0);
+	}
+}
+
+class GardenKey extends SprigCastAction {
+	constructor() { super("garden"); }
+	press(s) { return sprigcast.run("garden.switch", { garden: s.garden }); }
+	paint(action, s) { return action.setState(s.garden && sprigcast.state.garden === s.garden ? 1 : 0); }
+}
+
+class PathKey extends SprigCastAction {
+	constructor() { super("path"); }
+	press(s) { return sprigcast.run("path.switch", { path: s.path }); }
+	paint(action, s) { return action.setState(s.path && sprigcast.state.path === s.path ? 1 : 0); }
+}
+
+class ClipsKey extends SprigCastAction {
+	constructor() { super("clips"); }
+	press() { return sprigcast.run("clips.set", { on: !sprigcast.state.clips }); }
+	paint(action) { return action.setState(sprigcast.state.clips ? 1 : 0); }
+}
+
+class CameraKey extends SprigCastAction {
+	constructor() { super("camera"); }
+	press() { return sprigcast.run("camera.set"); }
+	paint(action) { return action.setState(sprigcast.state.camera ? 1 : 0); }
 }
 
 class GoLive extends SprigCastAction {
@@ -170,8 +279,9 @@ class RunAction extends SprigCastAction {
 	}
 }
 
-const actions = [new ShowBloom(), new MuteSound(), new ToggleItem(), new GoLive(), new Record(), new SaveClip(),
-	new Screenshot(), new SprigStateAction(), new DeathCount(), new RunAction()];
+const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(),
+	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
+	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new RunAction()];
 for (const action of actions) streamDeck.actions.registerAction(action);
 
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));

@@ -190,7 +190,8 @@ class AudioPage(QWidget):
 
             self.wavelink = QCheckBox("Keep Wave Link in step")
             self.wavelink.setToolTip("Mute or change the volume of a Wave Link channel here or in Wave Link,\n"
-                                     "and the other follows (Wave Link's Stream Mix).")
+                                     "and the other follows (Wave Link's Stream Mix).\n"
+                                     "When it connects, these sounds take Wave Link's levels.")
             self.wavelink.setChecked(wavelink_enabled())
             box.addWidget(self.wavelink)
             box.addWidget(_hint("Elgato Wave Link is here: its channels (Game, Music, System…) are at the top of "

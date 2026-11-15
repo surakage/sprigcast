@@ -6,6 +6,13 @@ const FIELDS = {
 	mute: [["sound", "Sound", "getSounds"], ["mode", "Press", ["toggle", "mute", "unmute"]]],
 	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getSources"], ["mode", "Press", ["toggle", "show", "hide"]]],
 	"sprig-state": [["sprig", "Sprig", "getSprigs"], ["state", "State", null]],
+	volume: [["sound", "Sound", "getSounds"], ["mode", "Press", ["change", "set"]], ["step", "Change (dB)", null],
+		["db", "Set to (dB)", null]],
+	media: [["media", "Media", "getMedia"], ["mode", "Press", ["toggle", "play", "pause", "restart", "stop"]]],
+	filter: [["source", "Source", "getSources"], ["filter", "Filter", "getFilters"], ["mode", "Press", ["toggle", "on", "off"]]],
+	transition: [["kind", "Transition", "getTransitions"], ["ms", "Length (ms)", null]],
+	garden: [["garden", "Garden", "getGardens"]],
+	path: [["path", "Path", "getPaths"]],
 	deaths: [["mode", "Press", ["add", "remove", "reset", "show"]]],
 	run: [["action", "Action", "getActions"], ["fields", "Fields (JSON)", "json"]],
 };
@@ -37,7 +44,7 @@ function build(kind) {
 				list.id = `list-${key}`;
 				input.setAttribute("list", list.id);
 				row.appendChild(list);
-				input.addEventListener("focus", () => send("sendToPlugin", { event: source }));
+				input.addEventListener("focus", () => send("sendToPlugin", { event: source, source: settings.source }));
 				input.dataset.source = source;
 			}
 		}

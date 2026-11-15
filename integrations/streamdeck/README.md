@@ -3,18 +3,29 @@
 Run SprigCast from a Stream Deck. The keys light up to match SprigCast: a bloom key lights while that
 bloom is on air, a sound key shows when it's muted, and Go live and Record turn pink while they're on.
 
-| Key | Does | Lights |
-| --- | --- | --- |
-| Show bloom | puts a bloom on air (both shapes, or one) | while it's on air |
-| Mute sound | toggles, mutes or unmutes a sound | while muted |
-| Show or hide | toggles, shows or hides an item in a bloom | while hidden |
-| Go live | starts or stops the stream | pink while live |
-| Record | starts or stops recording | pink while recording |
-| Save clip | saves a clip (Clips on) | ✓ on success |
-| Screenshot | takes a screenshot (Snap prints it on stream) | ✓ on success |
-| Sprig state | switches a sprig to one of its Live states | ✓ on success |
-| Death count | add, remove, reset or show (Death count plugin) | the count as its title |
-| Run action | any SprigCast action with JSON fields | ✓ on success |
+| Key | Does | Lights | OBS plugin's |
+| --- | --- | --- | --- |
+| Show bloom | puts a bloom on air (both shapes, or one) | while it's on air | Scene |
+| Show or hide | toggles, shows or hides an item in a bloom | while hidden | Source Visibility |
+| Garden | switches garden | while in use | Scene Collection |
+| Path | switches path | while in use | Profile |
+| Mute sound | toggles, mutes or unmutes a sound | while muted | Audio Mixer |
+| Sound volume | changes or sets a sound's volume; on a Stream Deck + dial, turn for volume and press to mute | dial shows the level | Audio Mixer |
+| Go live | starts or stops the stream | pink while live | Stream |
+| Record | starts or stops recording | pink while recording | Record |
+| Clips | keeps clips ready, or stops | while ready | Replay Buffer |
+| Save clip | saves a clip | ✓ on success | Replay Buffer Save |
+| Virtual camera | SprigCast Camera on or off (set it up once in Settings) | while on | Virtual Camera |
+| Screenshot | takes a screenshot (Snap prints it on stream) | ✓ on success | Screenshot |
+| Media | play/pause, play, pause, restart or stop a video or sound file | while playing | Media Source Control |
+| Filter | turns a filter on, off, or toggles it | while on | Filter |
+| Transition | picks the transition and/or its length | while it's in use | Transition |
+| Sprig state | switches a sprig to one of its Live states | ✓ on success | |
+| Death count | add, remove, reset or show (Death count plugin) | the count as its title | |
+| Run action | any SprigCast action with JSON fields | ✓ on success | |
+
+Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air), Record Pause and Chapter
+Marker (SprigCast recordings don't pause or take chapters yet).
 
 ## Light on the PC
 

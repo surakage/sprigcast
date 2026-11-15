@@ -7,7 +7,7 @@ streamer has one control instead of two.
 
 This talks to Wave Link 3's local WebSocket (JSON-RPC 2.0, the one Elgato's Stream Deck plugin uses).
 It isn't an official public API, so anything unexpected just leaves the two apps unsynced. Nothing runs
-unless a sound captures a Wave Link channel and Settings → Sound → Keep Wave Link in step is on: no
+unless Settings → Sound → Keep Wave Link in step is on (off by default) and a sound captures a Wave Link channel: no
 connection, no timers. Wave Link pushes changes, so there's no polling either.
 
 WaveLinkState is the logic (tested without Wave Link); WaveLinkSync is the Qt connection.
@@ -30,7 +30,7 @@ from sprigcast.sources.audio import _ELGATO_NAME, is_mixer_app_device
 
 log = logging.getLogger(__name__)
 
-SETTING = "wavelink/sync"  # on by default; only acts when a sound captures a Wave Link channel
+SETTING = "wavelink/sync"  # off until switched on: when it connects, SprigCast's strips take Wave Link's levels
 PORTS = range(1884, 1894)  # Wave Link 3; ws-info.json says which one
 RETRY_S = (10, 30, 60, 120, 300)  # Wave Link not running: look again less and less often
 SOUND_KINDS = ("audio_output", "audio_input")
@@ -155,7 +155,7 @@ class WaveLinkState:
 
 
 def enabled() -> bool:
-    return QSettings().value(SETTING, True, type=bool)
+    return QSettings().value(SETTING, False, type=bool)
 
 
 class WaveLinkSync(QObject):

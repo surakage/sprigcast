@@ -58,6 +58,7 @@ OBS_SETTING_NAMES = {
                 "restart_when_active": "reload_on_air"},
     "text": {"text": "text", "file": "file", "read_from_file": None},
 }
+PICTURE_REUSE_S = 1.0
 KEEP_ON_REPLACE = ("volume_db", "muted", "balance", "monitor", "sync_ms")  # mixer settings stay
 MEDIA_STATES = {"playing": "OBS_MEDIA_STATE_PLAYING", "paused": "OBS_MEDIA_STATE_PAUSED",
                 "stopped": "OBS_MEDIA_STATE_STOPPED", "ended": "OBS_MEDIA_STATE_ENDED"}
@@ -186,6 +187,7 @@ class ControlApi:
             name[7:]: getattr(self, name) for name in dir(self) if name.startswith("vendor_")
         }
         self.custom_event: Callable[[dict[str, Any]], None] = lambda data: None  # set by the server
+        self._pictures: dict[tuple[str, int | None], tuple[float, dict[str, Any]]] = {}  # see _picture
 
     @property
     def col(self) -> SceneCollection:
@@ -796,6 +798,31 @@ class ControlApi:
     req_ResumeRecord = req_PauseRecord
     req_ToggleRecordPause = req_PauseRecord
 
+    def _camera_on(self) -> bool:
+        return bool(getattr(self.host, "camera_on", lambda: False)())
+
+    def _set_camera(self, on: bool) -> None:
+        if on == self._camera_on():
+            raise RequestError(Status.OUTPUT_RUNNING if on else Status.OUTPUT_NOT_RUNNING,
+                               "SprigCast Camera is already " + ("on." if on else "off."))
+        problem = self.host.set_camera(on)
+        if problem:
+            raise RequestError(Status.INVALID_RESOURCE_STATE, problem)
+
+    def req_GetVirtualCamStatus(self, data):
+        return {"outputActive": self._camera_on()}
+
+    def req_StartVirtualCam(self, data):
+        self._set_camera(True)
+
+    def req_StopVirtualCam(self, data):
+        self._set_camera(False)
+
+    def req_ToggleVirtualCam(self, data):
+        on = not self._camera_on()
+        self._set_camera(on)
+        return {"outputActive": on}
+
     def req_GetReplayBufferStatus(self, data):
         return {"outputActive": self.host.clips_ready()}
 
@@ -865,8 +892,14 @@ class ControlApi:
         if not isinstance(overlay, bool):
             raise RequestError(Status.INVALID_REQUEST_FIELD_TYPE, "overlay has the wrong type.")
         theirs = settings_from_obs(source.kind, settings)
-        source.settings = {**source.settings, **theirs} if overlay else {
-            k: v for k, v in source.settings.items() if k in KEEP_ON_REPLACE} | theirs
+        if overlay:
+            source.settings = {**source.settings, **theirs}
+        else:  # OBS's "replace": back to the kind's defaults (so nothing it needs goes missing), mixer settings kept
+            from sprigcast.core.source import source_class
+
+            defaults = dict(getattr(source_class(source.kind), "defaults", None) or {})
+            kept = {k: v for k, v in source.settings.items() if k in KEEP_ON_REPLACE}
+            source.settings = {**defaults, **kept, **theirs}
         self.host.commit("sources")
 
     def req_SetInputName(self, data):
@@ -1007,9 +1040,18 @@ class ControlApi:
         width = data.get("imageWidth")
         if width is not None and (not isinstance(width, int) or not 8 <= width <= 4096):
             raise RequestError(Status.REQUEST_FIELD_OUT_OF_RANGE, "imageWidth must be between 8 and 4096.")
+        # Some apps ask for a picture every second or two for a key preview: answer those from a picture that's
+        # at most PICTURE_REUSE_S old, so grabbing and PNG-encoding never crowds out the encoders.
+        import time
+
+        key = (canvases[0], width)
+        cached = self._pictures.get(key)
+        if cached is not None and time.monotonic() - cached[0] < PICTURE_REUSE_S:
+            return cached[1]
         shots = self.host.screenshot([canvases[0]], width, False, True)
         if not shots:
             raise RequestError(Status.INVALID_RESOURCE_STATE, "Nothing is drawing right now, so there's nothing to picture.")
+        self._pictures = {key: (time.monotonic(), shots[0])}  # one kept: no pile of old pictures
         return shots[0]
 
     def req_GetSourceScreenshot(self, data):
@@ -1021,8 +1063,8 @@ class ControlApi:
         from pathlib import Path
 
         path = Path(_require(data, "imageFilePath", str))
-        if not path.is_absolute():
-            raise RequestError(Status.INVALID_REQUEST_FIELD, "imageFilePath must be a full path.")
+        if not path.is_absolute() or path.suffix.lower() != ".png":
+            raise RequestError(Status.INVALID_REQUEST_FIELD, "imageFilePath must be a full path ending in .png.")
         shot = self._picture(data)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1118,6 +1160,7 @@ class ControlApi:
             "stream": self.host.stream_status() is not None,
             "record": self.host.record_status() is not None,
             "clips": self.host.clips_ready(),
+            "camera": self._camera_on(),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts() if p.states},
             "filters": {(src.id, f.name): f.enabled for src in col.sources for f in src.filters},
@@ -1176,8 +1219,8 @@ class ControlApi:
                                                                   "inputVolumeDb": db, "inputVolumeMul": _db_to_mul(db)}))
 
         for key, event in (("stream", "StreamStateChanged"), ("record", "RecordStateChanged"),
-                           ("clips", "ReplayBufferStateChanged")):
-            if now[key] != last[key]:
+                           ("clips", "ReplayBufferStateChanged"), ("camera", "VirtualcamStateChanged")):
+            if now.get(key) != last.get(key):
                 state = "OBS_WEBSOCKET_OUTPUT_STARTED" if now[key] else "OBS_WEBSOCKET_OUTPUT_STOPPED"
                 events.append((event, Sub.OUTPUTS, {"outputActive": now[key], "outputState": state}))
 
