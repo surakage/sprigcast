@@ -37,7 +37,7 @@ from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, Sce
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
-                "plugin")
+                "plugin", "garden", "path")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
 SOUND_KINDS = ("audio_input", "audio_output", "app_audio", "media")
 MAX_STEPS = 100  # in one {"steps": [...]} list
@@ -354,6 +354,68 @@ class NativeApi:
     @action("hotkey.list", "Hotkey actions and what they do.")
     def hotkey_list(self, data):
         return {"hotkeys": [{"id": a, "about": label} for a, label in self.host.hotkeys()]}
+
+    # Gardens and paths -------------------------------------------------------------------
+    # A garden is a whole set of blooms (OBS's scene collection); a path is where and how the show
+    # goes out: places, encoder, recording (OBS's profile). See core/gardens.py.
+
+    def _shelf(self) -> dict[str, Any]:
+        lists = getattr(self.host, "shelf_lists", None)
+        if lists is None:
+            return {"garden": "Main", "gardens": ["Main"], "path": "Main", "paths": ["Main"]}
+        return lists()
+
+    def _shelf_do(self, kind: str, op: str, name: str, new_name: str = "") -> None:
+        run = getattr(self.host, "shelf_do", None)
+        if run is None:
+            raise ApiError("not_allowed", "Not here.")
+        problem = run(kind, op, name, new_name)
+        if problem:
+            code = "not_found" if problem.startswith("No ") else "busy" if problem.startswith("Stop ") else \
+                "not_allowed"
+            raise ApiError(code, problem)
+
+    @action("gardens.list", "Every garden (a whole set of blooms) A-Z, and the one in use.")
+    def gardens_list(self, data):
+        shelf = self._shelf()
+        return {"garden": shelf["garden"], "gardens": shelf["gardens"]}
+
+    @action("garden.switch", "Switch to another garden.", garden="name")
+    def garden_switch(self, data):
+        self._shelf_do("garden", "switch", _get(data, "garden", str))
+        return {"garden": self._shelf()["garden"]}
+
+    @action("garden.new", "Make a garden and switch to it: empty, or a copy of one.", name="name for it",
+            copy="?garden to copy")
+    def garden_new(self, data):
+        name, copy = _get(data, "name", str), _get(data, "copy", str, optional=True)
+        if copy:
+            self._shelf_do("garden", "duplicate", copy, name)
+        else:
+            self._shelf_do("garden", "new", name)
+        self._shelf_do("garden", "switch", name)
+        return {"garden": self._shelf()["garden"]}
+
+    @action("paths.list", "Every path (where and how you go out: places, encoder, recording) A-Z, and the one in use.")
+    def paths_list(self, data):
+        shelf = self._shelf()
+        return {"path": shelf["path"], "paths": shelf["paths"]}
+
+    @action("path.switch", "Switch to another path (not while live or recording).", path="name")
+    def path_switch(self, data):
+        self._shelf_do("path", "switch", _get(data, "path", str))
+        return {"path": self._shelf()["path"]}
+
+    @action("path.new", "Make a path and switch to it: empty, or a copy of one.", name="name for it",
+            copy="?path to copy")
+    def path_new(self, data):
+        name, copy = _get(data, "name", str), _get(data, "copy", str, optional=True)
+        if copy:
+            self._shelf_do("path", "duplicate", copy, name)
+        else:
+            self._shelf_do("path", "new", name)
+        self._shelf_do("path", "switch", name)
+        return {"path": self._shelf()["path"]}
 
     # Blooms -----------------------------------------------------------------------------
 
@@ -891,6 +953,7 @@ class NativeApi:
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
             "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
+            "shelf": self._shelf(),
         }
 
     def changes(self) -> list[tuple[str, dict[str, Any]]]:
@@ -908,6 +971,12 @@ class NativeApi:
             main = self._main_shape(scene) if scene is not None and scene.kind == "show" else scene
             return {"bloom": main.name if main else scene_id, "bloomId": main.id if main else scene_id}
 
+        shelf, old = now["shelf"], last["shelf"]
+        for kind in ("garden", "path"):
+            if shelf[kind + "s"] != old[kind + "s"]:
+                out.append((f"{kind}s.changed", {kind + "s": shelf[kind + "s"]}))
+            if shelf[kind] != old[kind]:
+                out.append((f"{kind}.changed", {kind: shelf[kind]}))
         if now["blooms"] != last["blooms"]:
             out.append(("blooms.changed", {"blooms": [{"id": i, "name": n} for i, n in now["blooms"]]}))
         for shape, scene_id in now["onAir"].items():
@@ -962,7 +1031,7 @@ def event_group(name: str) -> str:
     if head in _PLUGIN_EVENTS:
         return "plugin"
     return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
-            "places": "output", "items": "item"}.get(head, head)
+            "places": "output", "items": "item", "gardens": "garden", "paths": "path"}.get(head, head)
 
 
 @dataclass

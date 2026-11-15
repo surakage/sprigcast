@@ -123,6 +123,7 @@ class StreamPage(QWidget):
         super().__init__(parent)
         self.collection = collection
         self.outputs = [o.model_copy() for o in collection.outputs if o.type == "stream"]
+        self.other_paths_ids: set[str] = set()  # places in other paths (their ids name their keys)
         self.keys = {o.key_ref: get_key(o.key_ref) or "" for o in self.outputs if o.key_ref}
         self._saved_keys = dict(self.keys)  # only keys that change are written back
         self._loading = False
@@ -369,7 +370,7 @@ class StreamPage(QWidget):
         self._add()
 
     def _add(self) -> None:
-        taken = {o.id for o in self.outputs} | {o.id for o in self.collection.outputs}
+        taken = {o.id for o in self.outputs} | {o.id for o in self.collection.outputs} | self.other_paths_ids
         n = 1
         while f"out-{n}" in taken:
             n += 1

@@ -182,6 +182,14 @@ class WindowHost:
             out["outputSkippedFrames"], out["outputTotalFrames"] = status["skipped"], status["frames"] + status["skipped"]
         return out
 
+    def shelf_lists(self) -> dict[str, Any]:
+        """The garden and path in use, and every one of each, A-Z (by name)."""
+        return self.w.gardens.lists()
+
+    def shelf_do(self, kind: str, op: str, name: str, new_name: str = "") -> str | None:
+        """kind garden or path; op switch, new, duplicate, rename or remove. A problem, or None."""
+        return self.w.gardens.do(kind, op, name, new_name)
+
     def hotkeys(self) -> list[tuple[str, str]]:
         from sprigcast.app.hotkeys import actions
 

@@ -140,6 +140,10 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Show chat on your stream, and reply on Twitch (#181).
 - Fixed YouTube live lookup and Kick's chat key (#185).
 
+### Gardens and paths
+
+- Gardens: whole sets of blooms, sprigs and sources for different shows (OBS's scene collections). Paths: where and how you go out, with places, encoder and recording settings (OBS's profiles), e.g. Twitch only, Multistream, Recording only. Each has its own menu: New, Duplicate, Rename, Remove, Import, Export, and Gardens has Missing files. Your setup becomes the "Main" garden and the "Main" path. The window title shows which are in use. Works through the control API and the OBS door, so Streamer.bot can switch them.
+
 ### Control API
 
 - SprigCast's own control language at ws://127.0.0.1:4455/sprigcast (#176). See [docs/control-api.md](docs/control-api.md).

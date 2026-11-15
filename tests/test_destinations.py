@@ -602,7 +602,7 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
     w = MainWindow(_collection(), tmp_path / "scenes.json")
     try:
         titles = [a.text().replace("&", "") for a in w.menuBar().actions()]
-        assert titles == ["File", "Edit", "View", "Panels", "Tools", "Help"]
+        assert titles == ["File", "Edit", "View", "Panels", "Gardens", "Paths", "Tools", "Help"]
         panels = w.menuBar().actions()[3].menu()
         assert any("web panels" in a.text().lower() for a in panels.actions())
         lines = w.shortcut_lines()

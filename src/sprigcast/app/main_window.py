@@ -232,10 +232,18 @@ def _button(text: str, slot) -> QPushButton:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None):
+    def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None,
+                 shelf=None):
         super().__init__()
         self.collection = collection
         self.scenes_path = scenes_path
+        from sprigcast.app.gardens_menu import GardenControl
+        from sprigcast.core.gardens import Shelf
+
+        if shelf is None:  # tests and tools: gardens.json beside the scenes file
+            shelf = Shelf(scenes_path.parent)
+            shelf.sync_path(collection)
+        self.gardens = GardenControl(self, shelf)  # Gardens and Paths menus (scene collections, profiles)
         self.plugins_dir = plugins_dir
         self.plugin_report = None  # set by main.run() after loading plugins
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
@@ -266,7 +274,7 @@ class MainWindow(QMainWindow):
         if self.selected_scene_id is not None:
             self.selected_scene_id = collection.active_scenes.get(self.build_canvas, self.selected_scene_id)
 
-        self.setWindowTitle("SprigCast")
+        self.update_title()
         self.resize(1440, 860)
 
         # Previews ------------------------------------------------------------
@@ -1757,7 +1765,7 @@ class MainWindow(QMainWindow):
         from sprigcast.output import twitch_auth
 
         service = SERVICES.get(service_key, SERVICES["custom"])
-        taken = {o.id for o in self.collection.outputs}
+        taken = {o.id for o in self.collection.outputs} | self.gardens.taken_output_ids()  # ids name stream keys
         n = 1
         while f"out-{n}" in taken:
             n += 1
@@ -1779,7 +1787,8 @@ class MainWindow(QMainWindow):
             return
         if action == "remove":
             self.collection.outputs.remove(output)
-            if output.key_ref and not any(o.key_ref == output.key_ref for o in self.collection.outputs):
+            if output.key_ref and not any(o.key_ref == output.key_ref for o in self.collection.outputs) \
+                    and output.key_ref not in self.gardens.shelf.other_key_refs():
                 try:
                     set_key(output.key_ref, "")  # its saved key goes too
                 except Exception:  # no credential store: nothing saved to delete
@@ -1925,7 +1934,10 @@ class MainWindow(QMainWindow):
             self.scene_tree.set_thumb(scene_id, thumb)
 
     def _thumbs_dir(self) -> Path:
-        return self.scenes_path.parent / "thumbs"
+        """Pictures of the blooms: thumbs/ for the first garden, gardens/thumbs/<garden> for the others."""
+        if self.scenes_path.name == "scenes.json":
+            return self.scenes_path.parent / "thumbs"
+        return self.scenes_path.parent / "thumbs" / self.scenes_path.stem
 
     def _load_thumbs(self) -> None:
         """Pictures saved last time, so swatches and tiles aren't blank until each bloom is seen again."""
@@ -2315,14 +2327,19 @@ class MainWindow(QMainWindow):
         self.panels.shelve(wrapper)
         return wrapper
 
+    def update_title(self) -> None:
+        """SprigCast — the garden and path in use, so you always know which setup is on screen."""
+        shelf = self.gardens.shelf
+        self.setWindowTitle(f"SprigCast  ·  {shelf.garden().name}  ·  {shelf.path().name}")
+
     def _build_menu(self) -> None:
-        """File · Edit · View · Panels · Tools · Help."""
+        """File · Edit · View · Panels · Gardens · Paths · Tools · Help."""
         bar = self.menuBar()
 
         file_menu = bar.addMenu("&File")
         open_folder = QAction("Show scenes file location", self)
         open_folder.triggered.connect(
-            lambda: QMessageBox.information(self, "SprigCast", f"Scenes are saved to:\n{self.scenes_path}")
+            lambda: QMessageBox.information(self, "SprigCast", f"This garden is saved to:\n{self.scenes_path}")
         )
         file_menu.addAction(open_folder)
         recordings = QAction("Open recordings folder", self)
@@ -2406,6 +2423,8 @@ class MainWindow(QMainWindow):
         self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
         self.docks_menu.aboutToShow.connect(self._fill_docks_menu)
         self._fill_docks_menu()
+
+        self.gardens.build_menus(bar)
 
         settings_menu = bar.addMenu("&Tools")
         open_settings = settings_menu.addAction("Settings…")
@@ -2689,6 +2708,7 @@ class MainWindow(QMainWindow):
         self.chat_panel.shutdown()
         self._save_layout()
         self._save_thumbs()
+        self.gardens.close()
         self.hotkeys.stop()
         self.meter.stop()
         self.control.stop()
