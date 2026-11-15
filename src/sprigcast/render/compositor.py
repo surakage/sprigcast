@@ -661,7 +661,8 @@ class _Nv12Target:
 
 
 # How to read each source byte order as RGBA when sampling ("1" = fully opaque).
-SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1", "BGRX": "BGR1"}  # X: alpha ignored
+SWIZZLES = {"RGBA": "RGBA", "BGRA": "BGRA", "RGB": "RGB1", "BGR": "BGR1", "BGRX": "BGR1",  # X: alpha ignored
+            "pBGRA": "BGRA"}  # p: colours already multiplied by alpha (a QPainter picture as it is)
 # Colour matrices for planar YUV sources: Kr, Kb.
 YUV_MATRICES = {"601": (0.299, 0.114), "709": (0.2126, 0.0722), "2020": (0.2627, 0.0593)}
 
@@ -728,6 +729,7 @@ class Compositor:
         self.textures: dict[str, moderngl.Texture] = {}
         # Planar YUV sources: id -> (mode, (Kr, Kb, full), picture size); see planar_layout.
         self.planar: dict[str, tuple[int, tuple[float, float, float], tuple[int, int]]] = {}
+        self.premultiplied: set[str] = set()  # sources uploading "pBGRA": drawn like a part's texture
         self.targets: dict[str, _CanvasTarget] = {}
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
@@ -781,10 +783,15 @@ class Compositor:
             tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
             self.textures[source_id] = tex
         tex.swizzle = SWIZZLES.get(channel_order, "RGBA")
+        if channel_order == "pBGRA":
+            self.premultiplied.add(source_id)
+        else:
+            self.premultiplied.discard(source_id)
         tex.write(np.ascontiguousarray(frame, dtype=np.uint8))
 
     def forget(self, source_id: str) -> None:
         self.planar.pop(source_id, None)
+        self.premultiplied.discard(source_id)
         tex = self.textures.pop(source_id, None)
         if tex is not None:
             tex.release()
@@ -948,7 +955,7 @@ class Compositor:
                 self.program["quad_size"].value = (math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x0, y2 - y0))
             if fades:
                 self.program["opacity"].value = fades.get(item.source, 1.0)
-            self.program["premul"].value = part is not None
+            self.program["premul"].value = part is not None or item.source in self.premultiplied
             tex.use(location=0)
             if fx.halos:
                 self._draw_halos(fx, quad)

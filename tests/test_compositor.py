@@ -62,6 +62,20 @@ def test_bgra_frames_are_swizzled_on_the_gpu(compositor):
     assert tuple(pixels(compositor, canvas)[4, 4]) == (255, 0, 0, 255)
 
 
+def test_painted_pictures_go_up_premultiplied_without_a_conversion(compositor):
+    """Death count and Snap hand over QPainter's own pixels (colours already times alpha): no copy per frame."""
+    canvas = Canvas(id="pm", width=8, height=8)
+    half_red = np.full((8, 8, 4), (0, 0, 128, 128), dtype=np.uint8)  # 50% red, premultiplied, B G R A
+    compositor.upload("dc", half_red, "pBGRA")
+    scene = Scene(id="s", name="s", canvas="pm", items=[SceneItem(source="dc")])
+    compositor.render(canvas, scene, {"dc": (8, 8)})
+    r, g, b, a = pixels(compositor, canvas)[4, 4]
+    assert abs(int(r) - 128) <= 3 and g == 0 and b == 0 and abs(int(a) - 128) <= 3  # not darkened twice
+    compositor.upload("dc", np.full((8, 8, 4), (0, 0, 255, 255), dtype=np.uint8), "BGRA")
+    assert "dc" not in compositor.premultiplied  # back to a straight source
+    compositor.forget("dc")
+
+
 def test_three_channel_bgr_frames_render_opaque(compositor):
     canvas = Canvas(id="c3", width=6, height=4)
     bgr_blue = np.zeros((4, 6, 3), dtype=np.uint8)
