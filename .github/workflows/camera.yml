@@ -65,8 +65,9 @@ jobs:
           }
           $luma = [System.IO.File]::ReadAllBytes("camera-test-i420.raw")
           $last = $luma[-1]
-          Write-Output "last centre luma: $last (fed 180, placeholder 38)"
-          if ([math]::Abs($last - 180) -gt 6) { throw "the camera didn't show SprigCast's frames" }
+          # ffmpeg's gray is full range: SprigCast's Y=180 reads 191, the camera's placeholder Y=38 reads 26.
+          Write-Output "last centre luma: $last (expect 191 for SprigCast's frame, 26 for the placeholder)"
+          if ([math]::Abs($last - 191) -gt 6) { throw "the camera didn't show SprigCast's frames" }
           Get-Content "$env:ProgramData\SprigCast Camera\camera.log" -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
