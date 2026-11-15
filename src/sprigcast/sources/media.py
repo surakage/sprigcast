@@ -47,7 +47,7 @@ def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
     About 40% of the RGBA picture it replaces (1080p: 5 MB with alpha instead of 8), and the CPU skips
     the colour conversion. None when it doesn't fit (another pixel format, an odd size, a shrink needed).
     """
-    kind = {"yuv420p": "I420", "yuva420p": "I420A"}.get(frame.format.name)
+    kind = {"yuv420p": "I420", "yuvj420p": "I420", "yuva420p": "I420A"}.get(frame.format.name)
     w, h = frame.width, frame.height
     if kind is None or (w, h) != tuple(size) or w % 2 or h % 2:
         return None
@@ -65,7 +65,8 @@ def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
         out[h + ch:] = plane(3, w, h)
     # Untagged video is read as BT.601 TV range, as FFmpeg's own conversion did before.
     matrix = COLOR_MATRICES.get(int(frame.colorspace or 2), "601")
-    return out, f"{kind}/{matrix}/{'pc' if int(frame.color_range or 0) == 2 else 'tv'}"
+    full = int(frame.color_range or 0) == 2 or frame.format.name.startswith("yuvj")  # JPEG-style full range
+    return out, f"{kind}/{matrix}/{'pc' if full else 'tv'}"
 
 
 def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:

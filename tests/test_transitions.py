@@ -182,6 +182,12 @@ def test_kinds_go_from_old_to_new_on_both_shapes(compositor, kind):
             greens.append(round(float(img[..., 1].mean()) / 255, 3))
         assert greens[0] == 0.0 and 0.0 < greens[1] < 1.0 and greens[2] == 1.0, (kind, canvas.id, greens)
         compositor.end_transition(canvas.id)
+        kept = compositor.targets[canvas.id].in_fbo
+        assert kept is not None  # kept for the next switch: making them each time cost a frame
+        compositor.render(canvas, old, sizes, new, 0.5, Transition(kind=kind))  # reused, not made again
+        assert compositor.targets[canvas.id].in_fbo is kept
+        compositor.end_transition(canvas.id)
+        compositor.prune(now=time.monotonic() + compositor.TRANSITION_KEEP_S + 1)  # no switch for a while
         assert compositor.targets[canvas.id].in_fbo is None
 
 

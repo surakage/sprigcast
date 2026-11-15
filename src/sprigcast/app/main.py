@@ -160,6 +160,10 @@ def run() -> None:
     from sprigcast.app.theme import use_light_font_engine
 
     use_light_font_engine()  # 16 MB less than Qt's default on Windows
+    # The renderer and the window share Python's lock. By default a thread busy in Python keeps it up to
+    # 5 ms before handing it over, and the renderer asks for it several times a frame: while the window
+    # rebuilt itself after a bloom switch, that added up to a dropped frame. 1 ms keeps it on time.
+    sys.setswitchinterval(0.001)
     app = QApplication(sys.argv)
     app.setApplicationName("SprigCast")
     app.setOrganizationName("Slothbloom")

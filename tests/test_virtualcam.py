@@ -56,7 +56,8 @@ def test_feeds_the_canvas_that_matches_the_shape_only_while_watched():
     frame = types.SimpleNamespace(fmt="nv12", width=32, height=18, data=bytes(range(256)) * 4)
     engine.taps[0][1](frame)
     assert cam.frames == 1 and ctypes.c_uint32.from_address(block.address + 20).value == 18
-    _camera_side(block, 18, 32, clock[0])  # the app switched to portrait
+    clock[0] += 2500
+    _camera_side(block, 18, 32, clock[0])  # the app switched to portrait (landscape no longer asked for)
     cam.poll()
     assert [(c, s) for c, _, s in engine.taps] == [("vertical", (18, 32))]
     clock[0] += 5000  # heartbeat went stale: the app closed the camera
@@ -145,3 +146,32 @@ def test_set_up_installs_and_registers_both_sizes(monkeypatch, tmp_path):
     assert virtualcam.set_up()
     command = commands[0]
     assert command.count("regsvr32 /s") == 2 and "sprigcast_camera32.dll" in command
+
+
+def test_an_app_with_the_camera_open_twice_doesnt_flip_it_every_second():
+    """TikTok LIVE Studio opened it at 1080x1920 and 1920x1080: each copy writes its size into the block in
+    turn, and SprigCast re-made its copy for the other size every second (350 times in 10 minutes)."""
+    block = _block()
+    clock = [10_000]
+    canvases = [types.SimpleNamespace(id="horizontal", width=1920, height=1080, enabled=True),
+                types.SimpleNamespace(id="vertical", width=1080, height=1920, enabled=True)]
+    engine = _Engine()
+    cam = VirtualCamera(engine, lambda: canvases, open_block=lambda: block, clock=lambda: clock[0])
+    _camera_side(block, 18, 32, clock[0])
+    cam.poll()
+    tap = engine.taps[0]
+    assert (tap[0], tap[2]) == ("vertical", (18, 32))
+    frame = types.SimpleNamespace(fmt="nv12", width=18, height=32, data=bytes(18 * 32 * 3 // 2))
+    for second in range(10):
+        clock[0] += 500
+        _camera_side(block, 18, 32, clock[0])
+        tap[1](frame)  # the portrait copy asks between frames...
+        clock[0] += 500
+        _camera_side(block, 32, 18, clock[0])  # ...and the landscape copy wrote last when polled
+        cam.poll()
+        assert engine.taps == [tap], second
+    for _ in range(3):  # the portrait copy closed: only landscape is asked for now
+        clock[0] += 1000
+        _camera_side(block, 32, 18, clock[0])
+        cam.poll()
+    assert [(c, s) for c, _, s in engine.taps] == [("horizontal", (32, 18))]
