@@ -60,6 +60,7 @@ FinishedHeadingLabel=SprigCast is ready
 FinishedLabelNoIcons=SprigCast is installed.
 FinishedLabel=SprigCast is installed. Find it in the Start menu anytime.
 ClickFinish=
+ClickNext=
 
 [Files]
 Source: "{#BuildDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -177,6 +178,13 @@ begin
   Link.Font.Style := [fsUnderline];
   Link.Cursor := crHand;
   Link.OnClick := @OpenChangelog;
+end;
+
+// No Ready page, so Extras is the last step before installing: its button says Install.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = ExtrasPage.ID then
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
 end;
 
 function OneOrZero(Value: Boolean): String;

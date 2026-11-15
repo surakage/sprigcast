@@ -53,7 +53,7 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          # Open Setup (not silent) and snap Welcome, Install location and Extras, then close it before installing.
+          # Open Setup (not silent) and snap each page: Welcome, Install location, Extras and Finish.
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $shots = New-Item -ItemType Directory -Force packaging\out\screens
           $setup = Get-ChildItem packaging\out\*.exe | Select-Object -First 1
@@ -71,6 +71,10 @@ jobs:
           Snap "1-welcome"
           $shell.SendKeys("{ENTER}"); Snap "2-location"
           $shell.SendKeys("{ENTER}"); Snap "3-extras"
+          # Install (this runner is thrown away afterwards) and snap the Finish page.
+          $null = $shell.AppActivate("SprigCast Setup"); $shell.SendKeys("{ENTER}")
+          Start-Sleep -Seconds 90
+          $null = $shell.AppActivate("SprigCast Setup"); Snap "4-finish"
           Get-Process | Where-Object { $_.ProcessName -like "SprigCast-Setup*" -or $_.ProcessName -like "*.tmp" } | Stop-Process -Force -ErrorAction SilentlyContinue
           # Also print them into the log (base64, in short lines), for reviewers that can read logs but not artifacts.
           foreach ($f in Get-ChildItem $shots -Filter *.png) {
