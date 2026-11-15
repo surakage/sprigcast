@@ -80,6 +80,10 @@ class Host(Protocol):
 
     def media_info(self, source_id: str) -> dict[str, Any] | None: ...  # None until loaded
 
+    def source_instance(self, source_id: str): ...  # the running source, for plugins
+
+    def grab_picture(self, source_id: str | None, callback) -> None: ...  # see Engine.grab_source
+
     def media_control(self, source_id: str, what: str, seconds: float | None = None) -> dict[str, Any] | None: ...
     def stats(self) -> dict[str, Any]: ...
     def hotkeys(self) -> list[tuple[str, str]]: ...  # (action id, label)
