@@ -164,7 +164,7 @@ def test_encoder_settings_map_to_ffmpeg_options():
     from sprigcast.output.recorder import video_options
 
     nv = video_options("h264_nvenc", EncoderSettings(multipass="qres", lookahead=True, tuning="ll"), 6000)
-    assert nv["rc"] == "cbr" and nv["maxrate"] == "6000k" and nv["multipass"] == "qres"
+    assert nv["rc"] == "cbr" and nv["maxrate"] == "6000k" and nv["multipass"] == "qres" and nv["cbr_padding"] == "1"
     assert nv["tune"] == "ll" and nv["rc-lookahead"] == "16" and nv["preset"] == "p5"
     cq = video_options("h264_nvenc", EncoderSettings(rate_control="cqp", cq_level=18, adaptive_quant=False), 6000)
     assert cq["rc"] == "constqp" and cq["qp"] == "18" and cq["spatial-aq"] == "0" and "maxrate" not in cq

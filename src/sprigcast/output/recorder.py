@@ -487,7 +487,8 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
         if enc.rate_control == "cqp":
             opts.update(rc="constqp", qp=str(enc.cq_level))
         elif enc.rate_control == "cbr":
-            opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k")
+            # cbr_padding: filler data, so a still scene still sends the bitrate (see nvenc_d3d11.FILLER_BIT)
+            opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k", cbr_padding="1")
         else:
             opts.update(rc="vbr", maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
         if enc.lookahead:

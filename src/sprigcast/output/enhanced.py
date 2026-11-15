@@ -257,6 +257,8 @@ def encoder_options(encoder: str, settings: dict, bitrate_kbps: int) -> dict[str
             "forced-idr": "1",
             **rate,
         }
+        if options["rc"] == "cbr":
+            options["cbr_padding"] = "1"  # filler data: still scenes still send the bitrate
         multipass = str(settings.get("multipass") or "")
         if multipass in ("qres", "fullres", "disabled"):
             options["multipass"] = multipass

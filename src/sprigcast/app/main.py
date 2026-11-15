@@ -212,6 +212,12 @@ def run() -> None:
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(1500, window.first_run_optimizer)  # once: Optimize for this PC
+    from PySide6.QtCore import QTimer
+
+    from sprigcast.core import pacing
+
+    pacing.watch_gc()  # logs slow garbage collections (they made the late frames in long streams)
+    QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)

@@ -253,6 +253,10 @@ class Engine:
             self.events.put(EngineError(f"Could not start the GPU compositor: {exc}"))
             return
 
+        from sprigcast.core import pacing
+
+        if pacing.raise_thread_priority():  # wake on time even while the window or a game keeps the CPU busy
+            log.info("render thread priority raised")
         self._sync_sources(compositor)
         fps = max(c.fps for c in self._collection.canvases)
         interval = 1.0 / fps
@@ -291,9 +295,10 @@ class Engine:
                         dropped += missed
                         if now - late_logged >= 0.25:  # say where the time went (at most 4 a second)
                             late_logged = now
-                            log.info("late frame (%d missed): woke %.1f ms late, commands %.1f ms, frame %.1f ms%s",
+                            log.info("late frame (%d missed): woke %.1f ms late, commands %.1f ms, frame %.1f ms%s%s",
                                      missed, 1000 * max(0.0, woke - (next_tick - interval)),
-                                     1000 * (started - woke), 1000 * (render_times[-1]), self._where())
+                                     1000 * (started - woke), 1000 * (render_times[-1]), self._where(),
+                                     pacing.pause_since(next_tick - 2 * interval))
                         next_tick += missed * interval
                 else:
                     # Python 3.11+ sleeps with a high-resolution timer on Windows: no need to spin.

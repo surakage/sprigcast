@@ -88,3 +88,17 @@ def test_hevc_guid_and_idr_offsets():
     assert n.IDR_PERIOD == {"h264": 8, "hevc": 20}
     with pytest.raises(n.NvencError):
         n.D3D11Encoder(64, 64, 30, codec="av1")
+
+
+def test_cbr_turns_on_filler_data():
+    """CBR without filler is only a ceiling: a still scene went out at ~1,400 of 4,000 kbps on Twitch."""
+    import struct
+
+    for codec, (where, bit) in (("h264", (0, 17)), ("hevc", (16, 14))):
+        buf = (ctypes.c_uint8 * n.PRESET_CONFIG_SIZE)()
+        at = n.CONFIG_AT + n.CFG_H264 + where
+        struct.pack_into("<I", buf, at, 0b101)  # flags the preset already set stay set
+        n.set_filler(buf, codec)
+        assert struct.unpack_from("<I", buf, at)[0] == 0b101 | 1 << bit
+        # idrPeriod right after the flags is untouched
+        assert struct.unpack_from("<I", buf, n.CONFIG_AT + n.CFG_H264 + n.IDR_PERIOD[codec])[0] == 0
