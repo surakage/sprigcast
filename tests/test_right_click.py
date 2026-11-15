@@ -58,10 +58,9 @@ def test_live_scene_and_destination_menus(app):
     shown, edited = [], []
     panel = LivePanel(shown.append, on_edit=edited.append)
     menu = panel.scene_menu("h2")
-    assert _texts(menu) == ["Show now", "Edit in Build"]
+    assert _texts(menu) == ["Put on air"]  # editing is Build's job, not this menu's
     menu.actions()[0].trigger()
-    menu.actions()[1].trigger()
-    assert shown == ["h2"] and edited == ["h2"]
+    assert shown == ["h2"] and edited == []
     panel.studio.setChecked(True)
     assert _texts(panel.scene_menu("h2"))[0] == "Line up next"
 

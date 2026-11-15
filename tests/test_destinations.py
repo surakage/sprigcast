@@ -489,7 +489,7 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
         labels = [a.text() for a in full.actions() if a.text()]
         assert labels[0].startswith("Full screen on Screen 1") and "In a window" in labels
-        assert len(menu.actions()) == 1  # Live: only the projector, no editing items
+        assert [a.text() for a in menu.actions()] == ["Save screenshot", "Pop out"]  # Live: no editing items
         projector = w.open_projector("vertical", None)
         assert w.projectors == [projector] and "vertical" in w._watched_previews()
         w.showMinimized()
@@ -530,6 +530,21 @@ def test_projector_shows_a_bloom_or_a_source_from_its_right_click_menu(app, tmp_
         w.show()
         w._set_mode("live")
         menu = w.live_panel.scene_menu("h2")  # a bloom tile that isn't on air
+        texts = [a.text() for a in menu.actions() if a.text()]
+        assert texts == ["Put on air", "Comes in with", "Save screenshot", "Pop out", "Rename…", "Set a key…"]
+        assert not w.live_panel.scene_menu("h1").actions()[0].isEnabled()  # already on air
+        into = next(a for a in menu.actions() if a.text() == "Comes in with").menu()
+        next(a for a in into.actions() if a.text() == "Leaf").trigger()
+        rule = w.collection.transition_rules[-1]
+        assert (rule.from_scene, rule.to_scene, rule.transition.kind) == ("", "h2", "leaf")
+        into = next(a for a in w.live_panel.scene_menu("h2").actions() if a.text() == "Comes in with").menu()
+        assert next(a for a in into.actions() if a.text() == "Leaf").isChecked()
+        next(a for a in into.actions() if a.text().startswith("Usual")).trigger()
+        assert w.collection.transition_rules == []
+        shots = []
+        monkeypatch.setattr("sprigcast.app.screenshot.grab", lambda engine, ids: shots.append(dict(engine.views)) or {})
+        w._bloom_screenshot("h2")  # drawn through a view for that moment only
+        assert shots == [{"screenshot": ("horizontal", "bloom", "h2")}] and "screenshot" not in w.engine.views
         full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
         next(a for a in full.actions() if a.text() == "In a window").trigger()
         bloom = w.projectors[-1]
