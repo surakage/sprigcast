@@ -348,3 +348,19 @@ def test_the_first_frame_never_costs_the_second(tmp_path):
         rec = Recorder(tmp_path / "x.mkv", 64, 64, 30, 1000, "libx264", 0.0)
         got = [rec._assign_pts(F((i + phase) / 30)) for i in range(10)]
         assert None not in got and got == list(range(got[0], got[0] + 10)), (phase, got)
+
+
+def test_hevc_on_our_own_encoder_never_opens_ffmpegs(monkeypatch):
+    """FFmpeg's hevc_nvenc opens holding Python's lock while CUDA starts: every picture froze ~1.7 s."""
+    from sprigcast.output import recorder
+
+    monkeypatch.setattr(recorder, "_works", {})
+    monkeypatch.setattr(recorder, "nvenc_device", lambda: "direct")
+    monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: True)
+    tried = []
+    monkeypatch.setattr(recorder, "_try_encoder", lambda codec, hwaccel=None, options=None: tried.append(codec))
+    assert recorder.encoder_works("hevc_nvenc") and tried == []
+    monkeypatch.setattr(recorder, "_works", {})
+    monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: False)
+    monkeypatch.setattr(recorder, "_try_encoder", lambda codec, hwaccel=None, options=None: tried.append(codec) or True)
+    assert recorder.encoder_works("hevc_nvenc") and tried == ["hevc_nvenc"]

@@ -345,6 +345,11 @@ def encoder_works(codec: str) -> bool:
     """True when this encoder opens and encodes a frame here, with the options SprigCast would give it."""
     if codec == "h264_nvenc":
         return nvenc_works()
+    if codec == "hevc_nvenc" and codec not in _works and nvenc_device() == "direct" and direct_hevc_ok():
+        # SprigCast's own encoder makes HEVC here, so FFmpeg's needn't be tried. Trying it froze every
+        # picture for ~1.7 s at the first HEVC recording: PyAV opens a codec without letting go of
+        # Python's lock, and FFmpeg's NVENC spends that long setting up CUDA (which then stays loaded).
+        _works[codec] = True
     if codec not in _works:
         from sprigcast.core.scene import EncoderSettings
 
