@@ -262,7 +262,7 @@ class LiveSide(QWidget):
         row.addWidget(self.clip)
         # Virtual camera sits beside Record and Clips; its gear picks what it shows (the same setting as
         # Settings → Output → Virtual camera). Settings itself is the gear in the header.
-        self.camera = pill("Virtual cam", CARD_PILL_STYLE)
+        self.camera = pill("Virtual Cam", CARD_PILL_STYLE)
         self.camera.setToolTip("Virtual camera: show SprigCast as a camera in Zoom, Discord, TikTok LIVE Studio…")
         if on_camera is not None:
             self.camera.clicked.connect(on_camera)
@@ -357,7 +357,7 @@ class LiveSide(QWidget):
 
     def set_camera(self, on: bool, error: str = "") -> None:
         """Camera on (highlighted, not pink: pink is only for Live and Recording), or off with a short reason."""
-        self.camera.setText("Cam on" if on else "Virtual cam")
+        self.camera.setText("Cam on" if on else "Virtual Cam")
         self.camera.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
         self.camera_note.setText(error)
         self.camera_note.setVisible(bool(error) and not on)
