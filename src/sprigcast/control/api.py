@@ -350,13 +350,51 @@ class ControlApi:
     def req_Sleep(self, data):
         raise RequestError(Status.UNKNOWN_REQUEST_TYPE, "Sleep only works inside a request batch.")
 
-    # Config: one scene collection and one profile -------------------------------------
+    # Config: scene collections are gardens, profiles are paths (core/gardens.py) -----------------
+
+    def _shelf(self) -> dict[str, Any]:
+        lists = getattr(self.host, "shelf_lists", None)
+        if lists is None:  # a host without gardens (tests, tools)
+            return {"garden": "SprigCast", "gardens": ["SprigCast"], "path": "SprigCast", "paths": ["SprigCast"]}
+        return lists()
+
+    def _shelf_do(self, kind: str, op: str, name: str, new_name: str = "") -> None:
+        run = getattr(self.host, "shelf_do", None)
+        if run is None:
+            raise RequestError(Status.RESOURCE_ACTION_NOT_SUPPORTED, "Not here.")
+        problem = run(kind, op, name, new_name)
+        if problem:
+            code = Status.RESOURCE_NOT_FOUND if problem.startswith("No ") else \
+                Status.RESOURCE_ALREADY_EXISTS if "already" in problem else \
+                Status.OUTPUT_RUNNING if problem.startswith("Stop ") else Status.INVALID_RESOURCE_STATE
+            raise RequestError(code, problem)
 
     def req_GetSceneCollectionList(self, data):
-        return {"currentSceneCollectionName": "SprigCast", "sceneCollections": ["SprigCast"]}
+        shelf = self._shelf()
+        return {"currentSceneCollectionName": shelf["garden"], "sceneCollections": shelf["gardens"]}
+
+    def req_SetCurrentSceneCollection(self, data):
+        self._shelf_do("garden", "switch", _require(data, "sceneCollectionName", str))
+
+    def req_CreateSceneCollection(self, data):
+        name = _require(data, "sceneCollectionName", str)
+        self._shelf_do("garden", "new", name)
+        self._shelf_do("garden", "switch", name)
 
     def req_GetProfileList(self, data):
-        return {"currentProfileName": "SprigCast", "profiles": ["SprigCast"]}
+        shelf = self._shelf()
+        return {"currentProfileName": shelf["path"], "profiles": shelf["paths"]}
+
+    def req_SetCurrentProfile(self, data):
+        self._shelf_do("path", "switch", _require(data, "profileName", str))
+
+    def req_CreateProfile(self, data):
+        name = _require(data, "profileName", str)
+        self._shelf_do("path", "new", name)
+        self._shelf_do("path", "switch", name)
+
+    def req_RemoveProfile(self, data):
+        self._shelf_do("path", "remove", _require(data, "profileName", str))
 
     def req_GetVideoSettings(self, data):
         canvas = self.col.canvases[0]
@@ -857,6 +895,7 @@ class ControlApi:
             "clips": self.host.clips_ready(),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts() if p.states},
+            "shelf": self._shelf(),
         }
 
     def changes(self) -> list[tuple[str, int, dict[str, Any]]]:
@@ -929,6 +968,16 @@ class ControlApi:
                 events.append(("VendorEvent", Sub.VENDORS, {"vendorName": VENDOR, "eventType": "SprigStateChanged",
                                                             "eventData": {"sceneName": names.get(pid, pid),
                                                                           "sceneUuid": pid, "state": state}}))
+
+        shelf, old = now["shelf"], last["shelf"]
+        if shelf["gardens"] != old["gardens"]:
+            events.append(("SceneCollectionListChanged", Sub.CONFIG, {"sceneCollections": shelf["gardens"]}))
+        if shelf["garden"] != old["garden"]:
+            events.append(("CurrentSceneCollectionChanged", Sub.CONFIG, {"sceneCollectionName": shelf["garden"]}))
+        if shelf["paths"] != old["paths"]:
+            events.append(("ProfileListChanged", Sub.CONFIG, {"profiles": shelf["paths"]}))
+        if shelf["path"] != old["path"]:
+            events.append(("CurrentProfileChanged", Sub.CONFIG, {"profileName": shelf["path"]}))
         return events
 
     def meters(self, levels: dict[str, tuple[float, float]]) -> dict[str, Any]:

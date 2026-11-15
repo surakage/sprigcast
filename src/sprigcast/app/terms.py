@@ -15,3 +15,8 @@ def cap(word: str) -> str:
 def a(word: str) -> str:
     """The word with "a" or "an" in front."""
     return ("an " if word[:1].lower() in "aeiou" else "a ") + word
+
+# OBS's scene collections and profiles (core/gardens.py): a whole set of blooms, and a whole set of
+# output settings (where the show goes and how it's encoded and recorded).
+COLLECTION, COLLECTIONS = "garden", "gardens"
+PROFILE, PROFILES = "path", "paths"

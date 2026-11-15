@@ -192,7 +192,10 @@ def run() -> None:
 
     from sprigcast.app.main_window import MainWindow
 
-    scenes_path = config_dir() / "scenes.json"
+    from sprigcast.core.gardens import Shelf
+
+    shelf = Shelf(config_dir())  # Gardens and Paths; the first run with them keeps your setup as "Main"
+    scenes_path = shelf.garden_file()
     try:
         collection = load_collection(scenes_path)
     except Exception as exc:
@@ -206,7 +209,11 @@ def run() -> None:
     changed = lean_stream(collection) or changed
     if changed:
         collection.save(scenes_path)
-    window = MainWindow(collection, scenes_path, plugins_dir)
+    try:
+        shelf.sync_path(collection)  # the garden holds the newest copy of the path in use
+    except OSError as exc:
+        logging.warning("could not save the path: %s", exc)
+    window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
     window.plugin_report = plugins
     from sprigcast.app import autostart
 

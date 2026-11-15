@@ -34,6 +34,8 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Change some text on screen | `http://127.0.0.1:4455/api/source.set?source=Goal%20text&settings=…&password=…` (or POST JSON, below) |
 | Switch bloom | `http://127.0.0.1:4455/api/bloom.show?bloom=Just%20Chatting&password=…` |
 | Mute the mic | `http://127.0.0.1:4455/api/sound.mute?sound=Mic&password=…` |
+| Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
+| Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
 Store plugins (Hide it, Barrel Roll, Snap, Death count) must be added first in Settings → Plugins.
 

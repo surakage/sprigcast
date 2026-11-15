@@ -493,6 +493,9 @@ class SettingsWindow(QDialog):
 
     def _stream_page(self) -> QWidget:
         self.stream_page = StreamPage(self.collection)
+        gardens = getattr(self.parent(), "gardens", None)
+        if gardens is not None:
+            self.stream_page.other_paths_ids = gardens.taken_output_ids()
         widgets: list[QWidget] = [self.stream_page]
         if self.streaming:
             self.stream_page.setEnabled(False)

@@ -23,6 +23,8 @@ The port and password are the ones shown in Settings → Connections. Apps on ot
 | shape | a canvas: `horizontal` or `vertical` |
 | sound | anything in the mixer |
 | place | somewhere you stream to (Twitch, YouTube…) |
+| garden | a whole set of blooms, sprigs and sources (OBS's scene collection) |
+| path | where and how you go out: places, encoder and recording settings (OBS's profile) |
 
 Things are named by **name or id**. Any action that changes a bloom takes `shape`: `both` (the default), or one shape.
 
@@ -91,6 +93,8 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `output` | `stream.changed`, `record.changed`, `clips.changed` (on), `clip.saved` (files) |
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
+| `garden` | `garden.changed` (garden), `gardens.changed` (gardens) |
+| `path` | `path.changed` (path), `paths.changed` (paths) |
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
 | `plugin` | events sent by added plugins (`<plugin>.<what>`, see below) |
 | `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
@@ -154,6 +158,14 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `filters.kinds` | Filter kinds you can add, with their settings and limits. | none |
 | `filters.list` | A source's filters, top to bottom. | `source`: name or id |
 
+### garden
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `garden.new` | Make a garden and switch to it: empty, or a copy of one. | `name`: name for it, `copy` (optional): garden to copy |
+| `garden.switch` | Switch to another garden. | `garden`: name |
+| `gardens.list` | Every garden (a whole set of blooms) A-Z, and the one in use. | none |
+
 ### hotkey
 
 | Action | What it does | Fields |
@@ -192,6 +204,14 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | --- | --- | --- |
 | `place.set` | Switch a place on or off for the next Go live. | `place`: id from places.list, `on`: true or false |
 | `places.list` | Where the stream goes (Twitch, YouTube...), each one's shape and if it's on. | none |
+
+### path
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `path.new` | Make a path and switch to it: empty, or a copy of one. | `name`: name for it, `copy` (optional): path to copy |
+| `path.switch` | Switch to another path (not while live or recording). | `path`: name |
+| `paths.list` | Every path (where and how you go out: places, encoder, recording) A-Z, and the one in use. | none |
 
 ### record
 
@@ -291,7 +311,7 @@ Requests made by web pages on other sites are refused, so a page you visit can't
 
 ## The OBS-compatible door
 
-Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. That door is frozen: new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
+Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). That door is frozen: new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
 
 ## Adding actions from a plugin
 
