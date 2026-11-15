@@ -159,7 +159,7 @@ class _Page:
         if self.view.size().width() != w or self.view.size().height() != h:
             self.view.resize(w, h)
             self.dirty = True
-        fps = max(1, min(120, int(settings.get("fps", 30))))
+        fps = browser.page_fps(settings)
         self.timer.start(max(4, round(1000 / fps)))
         if any(old.get(k) != settings.get(k) for k in RELOAD_KEYS):
             self._set_up_sound()

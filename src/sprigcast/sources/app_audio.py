@@ -51,7 +51,7 @@ SOUND_TYPES: tuple[SoundType, ...] = (
               ("spotify.exe", "applemusic.exe", "itunes.exe", "foobar2000.exe", "musicbee.exe", "vlc.exe",
                "tidal.exe", "amazon music.exe", "deezer.exe", "aimp.exe", "winamp.exe", "pandora.exe",
                "youtube music desktop app.exe")),
-    SoundType("sfx", "SFX & alerts", "Streamer.bot, Soundpad, TikFinity…",
+    SoundType("sfx", "SFX", "Streamer.bot, Soundpad, TikFinity…",
               ("streamer.bot.exe", "soundpad.exe", "tikfinity.exe", "mixitup.exe", "firebot v5.exe",
                "sammi panel.exe", "lioranboard.exe", "voicemeeter macrobuttons.exe")),
     SoundType("tts", "Text to speech", "Speaker.bot, TTS Voice Wizard…",
