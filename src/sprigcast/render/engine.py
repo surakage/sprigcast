@@ -577,6 +577,27 @@ class Engine:
             if f.kind == "ducking" and f.enabled and f.settings.get("sound_id"))
         self._sync_audio_options()
 
+    def set_sound_out(self, device: str | None) -> None:
+        """Play the stream mix on a playback device too (None: stop), e.g. a virtual cable that TikTok LIVE
+        Studio uses as its mic, next to SprigCast Camera. Opened only while asked for."""
+        current = getattr(self, "_sound_out", None)
+        if current is not None and current.device == device:
+            return
+        if current is not None:
+            self.mixer.remove_tap(current.write)
+            current.stop()
+            self._sound_out = None
+        if device:
+            out = Monitor(device)
+            out.start()
+            self.mixer.add_tap(out.write, ("stream",))
+            self._sound_out = out
+
+    @property
+    def sound_out_status(self) -> str:
+        out = getattr(self, "_sound_out", None)
+        return out.status if out is not None else "off"
+
     def _sync_audio_options(self) -> None:
         """Ducking settings to the mixer; start monitoring when a source is monitored, stop when none is."""
         audio = self._collection.audio

@@ -135,6 +135,22 @@ def list_audio_devices(loopback: bool, rescan: bool = True) -> list[AudioDevice]
         return sorted(found, key=lambda d: not d.mixer_app) if loopback else found
 
 
+def list_playback_devices(rescan: bool = False) -> list[str]:
+    """Speakers, headphones and virtual cables SprigCast can play to (WASAPI outputs), by name."""
+    try:
+        pa_mod = _pyaudio()
+    except RuntimeError:
+        return []
+    with PortAudio.lock:
+        pa = PortAudio.get(pa_mod, rescan=rescan)
+        names: list[str] = []
+        for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
+            name = str(info["name"])
+            if not info.get("isLoopbackDevice") and info["maxOutputChannels"] > 0 and name not in names:
+                names.append(name)
+        return names
+
+
 def to_stereo(samples: np.ndarray) -> np.ndarray:
     """(N, C) float32 -> (N, 2): mono is duplicated, surround keeps front left and right."""
     if samples.ndim == 1:

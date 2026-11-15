@@ -477,7 +477,7 @@ class MainWindow(QMainWindow):
         self.hotkeys.apply(self.collection.hotkeys)
         self.camera = None  # SprigCast Camera (Settings → Output → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
-        self._camera_timer.timeout.connect(lambda: self.camera is not None and self.camera.poll())
+        self._camera_timer.timeout.connect(self._poll_camera)
         QTimer.singleShot(1500, self._sync_camera)
 
         self.mode = "build"
@@ -2722,6 +2722,7 @@ class MainWindow(QMainWindow):
             self._camera_timer.stop()
             self.camera.stop()
             self.camera = None
+        self.engine.set_sound_out(None)
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
@@ -5381,6 +5382,30 @@ class MainWindow(QMainWindow):
         window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
         window.exec()
 
+    def _poll_camera(self) -> None:
+        """Once a second while SprigCast Camera is on: feed it, and send the sound along while an app watches."""
+        if self.camera is None:
+            self.engine.set_sound_out(None)
+            return
+        self.camera.poll()
+        self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched() else None)
+
+    def _camera_sound_device(self) -> str | None:
+        """Settings → Output → Virtual camera → Sound to, unless SprigCast also captures that device (an echo)."""
+        from sprigcast.app.output_page import camera_sound
+
+        device = camera_sound()
+        if not device:
+            return None
+        captured = {str(s.settings.get("device", "")) for s in self.collection.sources_in_use() if s.kind == "audio_output"}
+        if device in captured:
+            if not getattr(self, "_sound_echo_said", False):
+                self._sound_echo_said = True
+                self._say(f"Camera sound not sent: {device} is captured as desktop sound, so it would echo")
+            return None
+        self._sound_echo_said = False
+        return device
+
     def _sync_camera(self) -> None:
         """Turn SprigCast Camera on or off to match Settings (it's only added while SprigCast runs)."""
         from sprigcast.app.output_page import camera_choice, camera_wanted
@@ -5401,6 +5426,7 @@ class MainWindow(QMainWindow):
             self._camera_timer.stop()
             self.camera.stop()
             self.camera = None
+            self.engine.set_sound_out(None)
         if self.camera is not None:
             self._camera_error = ""
         self.live_side.set_camera(self.camera is not None, getattr(self, "_camera_error", ""))
