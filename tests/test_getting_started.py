@@ -151,17 +151,14 @@ def test_gear_step_lists_devices_once_and_finds_the_capture_card():
     d.go.click()
     assert d.pages.currentIndex() == 1 and d.go.text().startswith("Get started") and d.skip.text() == "Back"
     picks = d.gear()
-    assert picks.camera is face and picks.capture is card and picks.mic == "default" and picks.sound == "wavelink"
+    assert picks.camera is face and picks.capture is card and picks.mic == "default"
+    assert not hasattr(d, "sound_pick")  # PC sound isn't asked: it's split by type for everyone
     assert d.mic_pick.findData("Game Capture HD60 X") == -1  # the card's sound isn't offered as a mic
     d.skip.click()  # back, then forward again: devices aren't listed twice
     d.go.click()
     assert calls == [1]
     assert gs.capture_audio(card.name, ["Mic (Wave XLR)", "Game Capture HD60 X"]) == "Game Capture HD60 X"
-    sounds, desktop = gs.plan_sound("wavelink", gear().speakers)
-    assert desktop is None and sounds == {"games": {"device": "Game (Elgato Virtual Audio)"},
-                                          "music": {"device": "Music (Elgato Virtual Audio)"},
-                                          "voice": {"device": "Voice Chat (Elgato Virtual Audio)"}}
-    assert gs.plan_sound("all", []) == (None, "default") and gs.plan_sound("none", []) == (None, None)
+    assert set(gs.plan_sound()) >= {"games", "music", "voice"}
 
 
 def test_a_capture_card_fills_the_gaming_bloom():

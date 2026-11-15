@@ -7,7 +7,7 @@
 
 The answers name a garden after what you make and a path after where it goes ("Twitch + TikTok",
 "Recording"), put a place on that path for each pick and switch on the canvases for the shape. Step 2
-("Your gear") takes the camera, capture card, mic and PC sound and makes the blooms that fit with the
+("Your gear") takes the camera, capture card and mic and makes the blooms that fit with the
 Starter kit's builder. Devices are listed only when step 2 opens.
 
 `plan_*` functions are plain data in, data out, so they're tested without a screen. Offered once on a
@@ -169,24 +169,6 @@ class GearPicks:
     camera: object | None = None  # a CameraDevice
     capture: object | None = None  # a CameraDevice that's a capture card
     mic: str | None = "default"
-    sound: str = "types"  # types, wavelink, all or none
-
-
-WAVE_LINK_WORDS = {"games": ("game",), "music": ("music",), "sfx": ("sfx", "system"), "tts": ("tts",),
-                   "voice": ("voice", "chat"), "browser": ("browser",)}
-
-
-def wave_link_sounds(speakers: list[str]) -> dict[str, dict]:
-    """Each sound type on its Elgato Wave Link channel, where one fits by name ("Game", "Voice Chat"...)."""
-    from sprigcast.sources.audio import device_label, is_mixer_app_device
-
-    channels = [n for n in speakers if is_mixer_app_device(n)]
-    picks: dict[str, dict] = {}
-    for key, words in WAVE_LINK_WORDS.items():
-        found = next((n for n in channels if any(w in device_label(n).split(" · ")[0].lower() for w in words)), None)
-        if found is not None and found not in [v["device"] for v in picks.values()]:
-            picks[key] = {"device": found}
-    return picks
 
 
 def capture_audio(card: str, mics: list[str]) -> str | None:
@@ -198,18 +180,12 @@ def capture_audio(card: str, mics: list[str]) -> str | None:
         next((m for m in mics if is_capture_card(m)), None)
 
 
-def plan_sound(sound: str, speakers: list[str]) -> tuple[dict | None, str | None]:
-    """(app_sounds, desktop) for the Starter kit: by type, Wave Link channels, all in one, or none."""
+def plan_sound() -> dict:
+    """PC sound for the Starter kit: one row per type (games, music, voice chat...), each catching its usual
+    apps. Works the same with or without a mixer app like Wave Link, so there's nothing to ask."""
     from sprigcast.sources.app_audio import SOUND_TYPES
 
-    if sound == "wavelink":
-        channels = wave_link_sounds(speakers)
-        return (channels, None) if channels else (None, "default")
-    if sound == "all":
-        return None, "default"
-    if sound == "none":
-        return None, None
-    return {t.key: None for t in SOUND_TYPES}, None
+    return {t.key: None for t in SOUND_TYPES}
 
 
 # Window ----------------------------------------------------------------------------------------------------
@@ -463,7 +439,7 @@ class GettingStartedDialog(QDialog):
     def _fill_gear_page(self) -> None:
         """Lists the devices once, the first time this step opens."""
         from sprigcast.app.starter import BOX_HEIGHT, combo_style
-        from sprigcast.sources.audio import device_label, is_mixer_app_device
+        from sprigcast.sources.audio import device_label
         from sprigcast.sources.camera import is_capture_card
 
         gear = self.found = self._list_gear()
@@ -519,20 +495,13 @@ class GettingStartedDialog(QDialog):
             if not is_capture_card(name):
                 self.mic_pick.addItem(device_label(name), name)
         self.mic_pick.addItem("No mic", None)
-        self.sound_pick = row("speaker", "PC sound")
-        if any(is_mixer_app_device(n) for n in gear.speakers):
-            self.sound_pick.addItem("Elgato Wave Link channels", "wavelink")
-        self.sound_pick.addItem("Split: games, music, chat…", "types")
-        self.sound_pick.addItem("All in one", "all")
-        self.sound_pick.addItem("No PC sound", "none")
-        self.sound_pick.setCurrentIndex(0)
 
     def gear(self) -> GearPicks:
         if self.found is None:
             return GearPicks()
         return GearPicks(camera=self.camera_pick.currentData(),
                          capture=self.capture_pick.currentData() if self.capture_pick is not None else None,
-                         mic=self.mic_pick.currentData(), sound=self.sound_pick.currentData() or "types")
+                         mic=self.mic_pick.currentData())
 
     # Moving between steps -------------------------------------------------------------------------------
 
