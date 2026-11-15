@@ -1540,6 +1540,32 @@ class MainWindow(QMainWindow):
         problem_box.addWidget(self.prop_fix, 0, Qt.AlignmentFlag.AlignLeft)
         self.prop_problem.hide()
         top.addWidget(self.prop_problem)
+        # A camera another app makes (Camera Hub, OBS...): the real one is much lighter on the GPU.
+        self.prop_vcam = QFrame()
+        self.prop_vcam.setObjectName("propVcam")
+        self.prop_vcam.setStyleSheet(f"#propVcam {{ background: {theme.SELECT_BG}; border-radius: 16px; }}"
+                                     f"QLabel {{ color: {theme.SELECT_TEXT}; background: transparent; }}")
+        vcam_box = QVBoxLayout(self.prop_vcam)
+        vcam_box.setContentsMargins(14, 12, 12, 12)
+        vcam_box.setSpacing(10)
+        vcam_text = QLabel("Virtual cameras use extra GPU. Your real camera is much lighter.")
+        vcam_text.setWordWrap(True)
+        vcam_box.addWidget(vcam_text)
+        vcam_row = QHBoxLayout()
+        vcam_row.setSpacing(8)
+        self.prop_vcam_use = QPushButton("Use the real camera")
+        self.prop_vcam_use.setStyleSheet(theme.PRIMARY_STYLE + "QPushButton { border-radius: 15px; padding: 7px 14px; }")
+        self.prop_vcam_use.clicked.connect(self._use_real_camera)
+        vcam_hide = QPushButton("Hide")
+        vcam_hide.setStyleSheet(theme.LINK_STYLE + f"QPushButton {{ color: {theme.SELECT_TEXT}; }}")
+        vcam_hide.clicked.connect(self._hide_vcam_tip)
+        for button in (self.prop_vcam_use, vcam_hide):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            vcam_row.addWidget(button)
+        vcam_row.addStretch(1)
+        vcam_box.addLayout(vcam_row)
+        self.prop_vcam.hide()
+        top.addWidget(self.prop_vcam)
         # A sprig placement: open it, and see (and jump to) every bloom it's in.
         self.prop_sprig = QWidget()
         sprig_box = QVBoxLayout(self.prop_sprig)
@@ -3053,6 +3079,7 @@ class MainWindow(QMainWindow):
                 self._problem_fix = problem[1]
                 self.prop_fix.setVisible(bool(problem[1]))
                 self.prop_fix.setText({"pick": "Pick it again", "retry": "Try again"}.get(problem[1], "Fix"))
+            self.prop_vcam.setVisible(self._vcam_tip_due(config))
             part = self.collection.part_of(config) if config.kind == PART_KIND else None
             self.prop_sprig.setVisible(part is not None)
             if part is not None:
@@ -3063,6 +3090,7 @@ class MainWindow(QMainWindow):
         else:
             self.prop_sprig.hide()
             self.prop_problem.hide()
+            self.prop_vcam.hide()
             self.prop_name.clear()
             self.prop_extra.setText("")
             self.prop_status.setText("")
@@ -3524,6 +3552,41 @@ class MainWindow(QMainWindow):
         self.last_bloom_id = copy.id
         self._changed()
         self._refresh_all()
+
+    def _vcam_tip_due(self, config: SourceConfig) -> bool:
+        from sprigcast.sources.camera import is_virtual
+
+        return (config.kind == "camera" and is_virtual(str(config.settings.get("name", "")))
+                and not QSettings().value(f"tips/vcam_hidden/{config.id}", False, type=bool))
+
+    def _hide_vcam_tip(self) -> None:
+        item = self._item()
+        if item is not None:
+            QSettings().setValue(f"tips/vcam_hidden/{item.source}", True)
+        self.prop_vcam.hide()
+
+    def _use_real_camera(self) -> None:
+        """Swap the virtual camera for the physical one behind it (same size and frame rate where it can)."""
+        from sprigcast.sources.camera import real_camera
+
+        item = self._item()
+        if item is None:
+            return
+        config = self.collection.source(item.source)
+        device = real_camera(list_cameras(), str(config.settings.get("name", "")))
+        if device is None:
+            self._edit_source_settings()  # nothing obvious: let them pick
+            return
+        wanted = {k: config.settings[k] for k in ("width", "height", "fps", "mirror", "pause_off_screen")
+                  if k in config.settings}
+        dialog = CameraDialog([device], {"name": device.name, "path": device.path, **wanted}, self,
+                              max_fps=self._camera_max_fps())
+        settings = dialog.settings()
+        dialog.deleteLater()
+        config.settings = {**config.settings, **settings, "name": device.name, "path": device.path}
+        self._changed()
+        self.statusBar().showMessage(f"Now using {device.name}.", 4000)
+        self._refresh_properties()
 
     def _fix_problem(self) -> None:
         """The inspector's fix button: pick the device/window/file again, or start the source again."""
