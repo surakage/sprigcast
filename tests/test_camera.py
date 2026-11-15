@@ -392,3 +392,25 @@ def test_own_virtual_camera_is_left_out_without_shifting_indexes(monkeypatch):
 
     monkeypatch.setattr(cam, "_dshow_list", lambda: [("Facecam", "a"), ("SprigCast Camera", ""), ("Cam B", "b")])
     assert [(c.index, c.name) for c in cam.list_cameras()] == [(0, "Facecam"), (2, "Cam B")]
+
+
+def test_a_camera_at_59_9999_fps_opens_in_its_own_mode():
+    """The Elgato Virtual Camera says fps=59.9999 (an interval of 166667 x 100 ns). "60" and "59.9999"
+    both reach dshow as 166666, which it refused, so the camera fell back to its default YUYV mode."""
+    from fractions import Fraction
+
+    from sprigcast.sources.camera import _rate, choose_modes, parse_dshow_modes
+
+    lines = ["DirectShow video device options (from video devices)",
+             ' Pin "Video" (alternative pin name "Video")',
+             "  pixel_format=yuyv422", "  min s=1920x1080 fps=59.9999 max s=1920x1080 fps=59.9999", "",
+             "  pixel_format=nv12", "  min s=1920x1080 fps=59.9999 max s=1920x1080 fps=59.9999", ""]
+    modes = parse_dshow_modes(lines)
+    for want_fps in (30, 60):
+        first = choose_modes(modes, 1280, 720, want_fps)[0]
+        assert first == {"video_size": "1920x1080", "framerate": "10000000/166667", "pixel_format": "nv12"}
+    # what dshow does with the rate we pass: interval = den * 10^7 / num, truncated
+    for rate, interval in ((59.9999, 166667), (60.0002, 166666), (30.0, 333333), (120.0, 83333), (29.97, 333667)):
+        r = Fraction(_rate(rate))
+        assert r.denominator * 10_000_000 // r.numerator == interval, rate
+    assert _rate(30.0) == "30" and _rate(120.0) == "120"

@@ -173,7 +173,16 @@ def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
 
 
 def _rate(value: float) -> str:
-    return f"{value:g}"
+    """A frame rate for FFmpeg's dshow, which matches a mode by its frame interval (100 ns units).
+
+    A camera listed at fps=59.9999 (the Elgato Virtual Camera) has an interval of 166667; "60" and
+    "59.9999" both reach dshow as 166666, which it refused, so the camera fell back to its default
+    mode (YUYV, a third more data than its NV12). Whole rates stay as they are; others are written
+    as the interval itself.
+    """
+    if value == round(value):
+        return str(round(value))
+    return f"10000000/{max(1, round(10_000_000 / value))}"
 
 
 _FORMAT_ORDER = {"mjpeg": 0, "nv12": 1, "yuyv422": 2}  # least data per frame first
@@ -194,7 +203,10 @@ def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
     exact = [m for m in at_size if m[4] - 0.01 <= fps <= m[5] + 0.01]
     others = sorted((m for m in at_size if m not in exact), key=lambda m: (m[5] < fps, abs(m[5] - fps)))
     out: list[dict[str, str]] = []
-    for group, rate in ((exact, lambda m: str(fps)), (others, lambda m: _rate(m[5]))):
+    def exact_rate(m) -> str:  # the rate asked when the mode really covers it, else the mode's own nearest
+        return str(fps) if m[4] <= fps <= m[5] else _rate(min(max(fps, m[4]), m[5]))
+
+    for group, rate in ((exact, exact_rate), (others, lambda m: _rate(m[5]))):
         for m in sorted(group, key=lambda m: _FORMAT_ORDER.get(m[1], 9)):
             option = {"video_size": f"{size[0]}x{size[1]}", "framerate": rate(m)}
             option["vcodec" if m[0] == "vcodec" else "pixel_format"] = m[1]
@@ -308,6 +320,8 @@ class _Feed:
                     self.open_errors.append(f"{name[:24]}… {mode}: {exc}")
                     continue
                 log.info("%s: opened %s with %s", self.id, name, mode or "the camera's default mode")
+                if not mode and self.open_errors:  # say why its own modes didn't open
+                    log.info("%s: modes offered %s; tried first: %s", self.id, self.modes_seen[:4], self.open_errors[:2])
                 self.opened_with = mode
                 return container
         log.info("%s: FFmpeg couldn't open %r, trying OpenCV", self.id, device.name)
