@@ -67,6 +67,14 @@ def register(kind: str):
     return wrap
 
 
+def unregister_module(module: str) -> list[str]:
+    """Forget the kinds a plugin module registered (when it's removed). Returns those kinds."""
+    gone = [kind for kind, cls in _REGISTRY.items() if getattr(cls, "__module__", "") == module]
+    for kind in gone:
+        del _REGISTRY[kind]
+    return gone
+
+
 def create_source(kind: str, source_id: str, settings: dict[str, Any]) -> Source:
     import sprigcast.sources  # noqa: F401  (registers the built-in kinds)
 

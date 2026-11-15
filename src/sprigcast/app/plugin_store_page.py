@@ -1,0 +1,224 @@
+"""Settings → Plugins: the plugin store, and the plugins you added yourself.
+
+Each store plugin is a soft card: its name, what it adds, one line about it and one pill (Add,
+Remove or Update). Adding loads it at once, so it shows up under + → Plugins without a restart.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+
+from sprigcast import plugin_store
+from sprigcast.app import theme
+from sprigcast.app.live_stage import heading
+from sprigcast.plugins import PluginReport
+
+
+def _hint(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setStyleSheet(theme.MUTED_STYLE)
+    return label
+
+
+def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
+    card = QFrame()
+    card.setObjectName("storeCard")
+    card.setStyleSheet(f"#storeCard {{ background: {theme.CARD}; border-radius: 20px; }}")
+    box = QVBoxLayout(card)
+    box.setContentsMargins(28, 22, 28, 24)
+    box.setSpacing(14)
+    if title:
+        box.addWidget(heading(title, 15))
+    return card, box
+
+
+ADD_STYLE = theme.PILL_STYLE + (f"QPushButton:enabled {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT};"
+                                 f" font-weight: 600; }}"
+                                 f"QPushButton:enabled:hover {{ background: {theme.ACCENT_HOVER}; }}")
+
+
+REMOVE_STYLE = theme.PILL_STYLE + (f"QPushButton {{ background: {theme.RAISED_HOVER}; }}"  # reads on a PANEL row
+                                    f"QPushButton:hover {{ background: {theme.HIGHLIGHT}; }}")
+
+
+def _pill(text: str, primary: bool = False) -> QPushButton:
+    button = QPushButton(text)
+    button.setStyleSheet(ADD_STYLE if primary else theme.PILL_STYLE)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setMinimumWidth(96)
+    return button
+
+
+class StoreRow(QFrame):
+    """One plugin in the store."""
+
+    def __init__(self, page: PluginStorePage, plugin: plugin_store.StorePlugin):
+        super().__init__()
+        self.page, self.plugin = page, plugin
+        self.setObjectName("storeRow")
+        self.setStyleSheet(f"#storeRow {{ background: {theme.PANEL}; border-radius: 16px; }}")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(20, 16, 16, 16)
+        row.setSpacing(16)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.name = QLabel(plugin.name)
+        self.name.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; font-size: 14px;")
+        top.addWidget(self.name)
+        if plugin.adds:
+            tag = QLabel(plugin.adds)
+            tag.setStyleSheet(f"background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; border-radius: 9px;"
+                              " padding: 2px 10px; font-size: 11px;")
+            top.addWidget(tag)
+        top.addStretch(1)
+        text.addLayout(top)
+        text.addWidget(_hint(plugin.about))
+        self.note = QLabel()
+        self.note.setStyleSheet(f"color: {theme.ACCENT}; font-size: 12px;")
+        self.note.hide()
+        text.addWidget(self.note)
+        row.addLayout(text, 1)
+        self.update_button = _pill("Update", primary=True)
+        self.update_button.clicked.connect(lambda: page.install(plugin))
+        self.button = _pill("Add")
+        self.button.clicked.connect(self._clicked)
+        row.addWidget(self.update_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.refresh()
+
+    @property
+    def installed(self) -> int | None:
+        return plugin_store.installed_version(self.page.plugins_dir, self.plugin.id)
+
+    def refresh(self) -> None:
+        version = self.installed
+        self.button.setText("Remove" if version is not None else "Add")
+        self.button.setStyleSheet(REMOVE_STYLE if version is not None else ADD_STYLE)
+        self.button.setEnabled(self.page.plugins_dir is not None)
+        self.update_button.setVisible(version is not None and version < self.plugin.version)
+        error = self.page.report.failed.get(f"{self.plugin.id}.py") if self.page.report else None
+        if error:
+            self.note.setText(f"Couldn't load: {error}")
+            self.note.setStyleSheet(f"color: {theme.BAD}; font-size: 12px;")
+            self.note.show()
+
+    def say(self, text: str) -> None:
+        self.note.setText(text)
+        self.note.setStyleSheet(f"color: {theme.ACCENT}; font-size: 12px;")
+        self.note.setVisible(bool(text))
+
+    def _clicked(self) -> None:
+        if self.installed is None:
+            self.page.install(self.plugin)
+        else:
+            self.page.remove(self.plugin)
+
+
+class PluginStorePage(QWidget):
+    changed = Signal()  # a plugin was added or removed: menus that list plugin sources should refresh
+
+    def __init__(self, plugins_dir: Path | None, report: PluginReport | None, open_plugins_folder=None,
+                 collection=None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.plugins_dir = plugins_dir
+        self.collection = collection  # to warn before removing a plugin something still uses
+        self.report = report if report is not None else PluginReport()
+        self.rows: dict[str, StoreRow] = {}
+
+        store, sbox = _card("Plugin store")
+        sbox.addWidget(_hint("Extras you can add when you want them. Each one adds something new to SprigCast; "
+                             "nothing here runs until you add it."))
+        sbox.addSpacing(4)
+        plugins = plugin_store.catalog()
+        for plugin in plugins:
+            row = StoreRow(self, plugin)
+            self.rows[plugin.id] = row
+            sbox.addWidget(row)
+        if not plugins:
+            sbox.addWidget(_hint("Nothing in the store yet."))
+
+        mine, mbox = _card("Your plugins")
+        self.mine = QLabel()
+        self.mine.setWordWrap(True)
+        self.mine.setTextFormat(Qt.TextFormat.RichText)
+        mbox.addWidget(self.mine)
+        mbox.addWidget(_hint("Made your own? Put its .py file in the plugins folder and restart SprigCast. "
+                             "Plugins can do anything SprigCast can, so only add ones you trust."))
+        if open_plugins_folder is not None:
+            folder = _pill("Open plugins folder")
+            folder.clicked.connect(open_plugins_folder)
+            line = QHBoxLayout()
+            line.addWidget(folder)
+            line.addStretch(1)
+            mbox.addLayout(line)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(20)
+        layout.addWidget(store)
+        layout.addWidget(mine)
+        layout.addStretch(1)
+        self._refresh_mine()
+
+    def _store_files(self) -> set[str]:
+        return {f"{pid}.py" for pid in self.rows}
+
+    def _refresh_mine(self) -> None:
+        store = self._store_files()
+        lines = [f"<span style='color:{theme.ACCENT}'>✓</span>&nbsp; {name}"
+                 for name in self.report.loaded if name not in store]
+        lines += [f"<span style='color:{theme.BAD}'>✗</span>&nbsp; {name}: {error}"
+                  for name, error in self.report.failed.items() if name not in store]
+        self.mine.setText("<br>".join(lines) if lines else f"<span style='color:{theme.MUTED}'>None yet.</span>")
+
+    def used_by(self, plugin_id: str) -> list[str]:
+        """Names of sources made with this plugin."""
+        if self.collection is None:
+            return []
+        from sprigcast.core.source import known_kinds, source_class
+
+        module = f"sprigcast_plugin_{plugin_id}"
+        kinds = {k for k in known_kinds() if getattr(source_class(k), "__module__", "") == module}
+        return [s.name for s in self.collection.sources if s.kind in kinds]
+
+    def install(self, plugin: plugin_store.StorePlugin) -> None:
+        if self.plugins_dir is None:
+            return
+        try:
+            error = plugin_store.install(self.plugins_dir, plugin, self.report)
+        except OSError as exc:
+            error = str(exc)
+        row = self.rows[plugin.id]
+        row.refresh()
+        if error is None:
+            row.say(f"Added. Find it under + → Plugins → {plugin.name}." if plugin.adds == "Source"
+                    else "Added.")
+        self.changed.emit()
+
+    def remove(self, plugin: plugin_store.StorePlugin) -> None:
+        if self.plugins_dir is None:
+            return
+        used = self.used_by(plugin.id)
+        if used:
+            from PySide6.QtWidgets import QMessageBox
+
+            names = ", ".join(used[:4]) + ("…" if len(used) > 4 else "")
+            answer = QMessageBox.question(self, "Remove plugin",
+                                          f"{names} use {plugin.name}. They'll show nothing once it's gone. Remove it?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            plugin_store.remove(self.plugins_dir, plugin.id, self.report)
+        except OSError as exc:
+            self.rows[plugin.id].say(f"Couldn't remove it: {exc}")
+            return
+        row = self.rows[plugin.id]
+        row.refresh()
+        row.say("Removed. It's gone for good the next time SprigCast starts.")
+        self.changed.emit()

@@ -44,17 +44,11 @@ def load_plugins(folder: Path | None) -> PluginReport:
         for path in sorted(folder.glob("*.py")):
             if path.name.startswith("_"):
                 continue
-            name = f"sprigcast_plugin_{path.stem}"
-            try:
-                spec = importlib.util.spec_from_file_location(name, path)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[name] = module
-                spec.loader.exec_module(module)
+            error = load_plugin_file(path)
+            if error is None:
                 report.loaded.append(path.name)
-            except Exception as exc:
-                sys.modules.pop(name, None)
-                log.warning("plugin %s failed to load: %s", path.name, exc)
-                report.failed[path.name] = f"{exc.__class__.__name__}: {exc}"
+            else:
+                report.failed[path.name] = error
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         try:
             ep.load()
@@ -63,6 +57,23 @@ def load_plugins(folder: Path | None) -> PluginReport:
             log.warning("plugin %s failed to load: %s", ep.name, exc)
             report.failed[ep.name] = f"{exc.__class__.__name__}: {exc}"
     return report
+
+
+def load_plugin_file(path: Path) -> str | None:
+    """Import one plugin file (again, if it was loaded before). Returns the error, or None."""
+    import sprigcast.sources  # noqa: F401
+
+    name = f"sprigcast_plugin_{path.stem}"
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return None
+    except Exception as exc:
+        sys.modules.pop(name, None)
+        log.warning("plugin %s failed to load: %s", path.name, exc)
+        return f"{exc.__class__.__name__}: {exc}"
 
 
 EXAMPLE = '''"""Example SprigCast plugin: a countdown timer source. Edit or copy it to make your own.

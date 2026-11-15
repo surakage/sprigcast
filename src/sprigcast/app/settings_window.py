@@ -10,7 +10,6 @@ import json
 from typing import Any
 
 from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,9 +39,7 @@ from sprigcast.app.output_page import OutputPage
 from sprigcast.app.recording_dialog import RecordingPage
 from sprigcast.app.stream_dialog import StreamPage
 from sprigcast.app.theme import THEMES, chosen_theme
-from sprigcast.core.filters import filter_kinds
 from sprigcast.core.scene import SceneCollection
-from sprigcast.core.source import known_kinds, source_class
 
 TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Connections", "Advanced", "Plugins"]
 TAB_ALIASES = {"Recording": "Output", "Clips": "Output"}  # older menu entries and Output's own tabs
@@ -55,7 +52,7 @@ ABOUT = {  # one line under each page's title
     "Hotkeys": "Keys that work even while you're in a game.",
     "Connections": "Let other apps on your PC control SprigCast.",
     "Advanced": "Process priority, file names, MP4 copies and colour. Most people never need these.",
-    "Plugins": "Extra sources and filters from the plugins folder.",
+    "Plugins": "Add extras from the store, or your own.",
 }
 
 
@@ -154,16 +151,6 @@ def apply_pending_video(collection: SceneCollection) -> bool:
     return True
 
 
-def plugin_source_kinds() -> list[str]:
-    """Labels of source kinds that come from plugins rather than SprigCast itself."""
-    out = []
-    for kind in known_kinds():
-        cls = source_class(kind)
-        if cls is not None and not cls.__module__.startswith("sprigcast."):
-            out.append(getattr(cls, "label", kind))
-    return sorted(out)
-
-
 def _hint(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
@@ -210,6 +197,7 @@ def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
 
 class SettingsWindow(QDialog):
     applied = Signal()
+    plugins_changed = Signal()  # a store plugin was added or removed
 
     def __init__(
         self,
@@ -220,6 +208,7 @@ class SettingsWindow(QDialog):
         audio_devices: dict[str, list[str]],
         plugin_report=None,
         open_plugins_folder=None,
+        plugins_dir=None,
         streaming: bool = False,
         recording: bool = False,
         control=None,
@@ -234,6 +223,7 @@ class SettingsWindow(QDialog):
         self.collection = collection
         self.default_recordings_folder = default_recordings_folder
         self.streaming, self.recording = streaming, recording
+        self.plugins_dir = plugins_dir
 
         self.tabs = QListWidget()  # the side menu (a list, so keys and screen readers work)
         self.tabs.setObjectName("settingsNav")
@@ -473,42 +463,11 @@ class SettingsWindow(QDialog):
         return _page(process, files, delay, colour)
 
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
-        files = QGroupBox("Installed plugins")
-        box = QVBoxLayout(files)
-        self.plugin_list = QListWidget()
-        self.plugin_list.setMinimumHeight(120)
-        if plugin_report is not None:
-            for name in plugin_report.loaded:
-                QListWidgetItem(f"✓  {name}", self.plugin_list)
-            for name, error in plugin_report.failed.items():
-                item = QListWidgetItem(f"✗  {name}: {error}", self.plugin_list)
-                item.setForeground(QColor(theme.BAD))
-        if not self.plugin_list.count():
-            QListWidgetItem("No plugins loaded.", self.plugin_list)
-        box.addWidget(self.plugin_list)
-        box.addWidget(_hint(
-            "Drop a .py file in the plugins folder and restart. Only install plugins you trust."
-        ))
-        if open_plugins_folder is not None:
-            open_button = QPushButton("Open plugins folder")
-            open_button.clicked.connect(open_plugins_folder)
-            row = QHBoxLayout()
-            row.addWidget(open_button)
-            row.addStretch(1)
-            box.addLayout(row)
+        from sprigcast.app.plugin_store_page import PluginStorePage
 
-        added = QGroupBox("What plugins added")
-        form = QFormLayout(added)
-        sources = plugin_source_kinds()
-        filters = [k.label for k in filter_kinds() if not k.builtin]
-        self.plugin_sources = QLabel(", ".join(sources) or "None")
-        self.plugin_filters = QLabel(", ".join(filters) or "None")
-        for label in (self.plugin_sources, self.plugin_filters):
-            label.setWordWrap(True)
-        form.addRow("Sources", self.plugin_sources)
-        form.addRow("Audio filters", self.plugin_filters)
-        form.addRow("", _hint("Plugin sources are under Sources → + → Plugins; plugin filters in a source's Filters window."))
-        return _page(files, added)
+        self.plugin_store = PluginStorePage(self.plugins_dir, plugin_report, open_plugins_folder, self.collection)
+        self.plugin_store.changed.connect(self.plugins_changed)
+        return self.plugin_store
 
     def _stream_page(self) -> QWidget:
         self.stream_page = StreamPage(self.collection)
