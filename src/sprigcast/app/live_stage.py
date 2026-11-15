@@ -152,7 +152,7 @@ class Destination:
 
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
-                   ("custom", "Custom RTMP"))
+                   ("x", "X"), ("custom", "Custom RTMP"))
 CHIP_STYLE = (
     f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 10px;"
     f" padding: 2px 10px; min-height: 16px; font-size: 11px; }}"
