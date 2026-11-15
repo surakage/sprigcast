@@ -152,3 +152,88 @@ def test_dragging_blooms_reorders_and_files_them(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_dragging_folders_reorders_them_and_sprigs_move_between_folders(tmp_path, monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings, Qt
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("DragFolderTest")
+    QSettings().clear()
+    from sprigcast.app.library import PART_ROOT
+    from sprigcast.app.main_window import ROLE_FOLDER, ROLE_ID, MainWindow
+    from sprigcast.core.scene import Scene
+
+    col = _collection()
+    first = col.add_folder("horizontal", "Main Scenes")
+    second = col.add_folder("horizontal", "Extras")
+    nested = col.add_folder("horizontal", "Nested Scenes", holds="part")
+    browser = col.add_folder("horizontal", "Browser Scenes", holds="part")
+    col.scenes.append(Scene(id="p1", name="Webcam", canvas="horizontal", kind="part", folder=nested.id))
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._refresh_scenes()
+
+        def heading(key):
+            return next(w.scene_tree.topLevelItem(i) for i in range(w.scene_tree.topLevelItemCount())
+                        if w.scene_tree.topLevelItem(i).data(0, ROLE_FOLDER) == key)
+
+        def child(holder, key):
+            return next(holder.child(i) for i in range(holder.childCount())
+                        if key in (holder.child(i).data(0, ROLE_ID), holder.child(i).data(0, ROLE_FOLDER)))
+
+        top = heading("")
+        assert child(top, first.id).flags() & Qt.ItemFlag.ItemIsDragEnabled
+        top.insertChild(0, top.takeChild(top.indexOfChild(child(top, second.id))))  # Extras above Main
+        w._scenes_dropped()
+        assert [f.id for f in col.folders_for("horizontal")] == [second.id, first.id]
+        sprigs = heading(PART_ROOT)
+        from_folder = child(sprigs, nested.id)
+        child(sprigs, browser.id).addChild(from_folder.takeChild(0))  # Webcam into Browser Scenes
+        w._scenes_dropped()
+        assert col.scene("p1").folder == browser.id
+        sprigs = heading(PART_ROOT)
+        holder = child(sprigs, browser.id)
+        sprigs.addChild(holder.takeChild(0))  # and out of any folder
+        w._scenes_dropped()
+        assert col.scene("p1").folder is None
+        sprigs = heading(PART_ROOT)
+        child(sprigs, browser.id).addChild(sprigs.takeChild(sprigs.indexOfChild(child(sprigs, nested.id))))
+        w._scenes_dropped()  # a folder in a folder is undone
+        assert [f.id for f in col.part_folders()] == [nested.id, browser.id]
+        top = heading("")
+        heading(PART_ROOT).addChild(top.takeChild(top.indexOfChild(child(top, first.id))))
+        w._scenes_dropped()  # a bloom folder among the sprigs is undone
+        assert first.holds == "show" and [f.id for f in col.folders_for("horizontal")] == [second.id, first.id]
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_folder_colour_row_picks_a_colour():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QPointF, QEvent, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.card import ColourRow, colour_row
+    from sprigcast.core.scene import FOLDER_COLOURS
+
+    picked = []
+    menu = QMenu()
+    action = colour_row(menu, FOLDER_COLOURS[0], picked.append)
+    row = action.defaultWidget()
+    assert isinstance(row, ColourRow) and row.current == FOLDER_COLOURS[0]
+    centre = row._rect(2).center()
+    row.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(centre), QPointF(centre),
+                                      Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                                      Qt.KeyboardModifier.NoModifier))
+    assert picked == [FOLDER_COLOURS[2]] and row.current == FOLDER_COLOURS[2]

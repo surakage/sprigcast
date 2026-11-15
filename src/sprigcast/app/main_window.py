@@ -102,6 +102,7 @@ from sprigcast.app.library import (
     LibraryTree,
     heading_item,
 )
+from sprigcast.app.card import colour_row
 from sprigcast.app.library import ROLE_NAME as LIB_NAME
 from sprigcast.app.library import ROLE_TAG as LIB_TAG
 from sprigcast.app.live_panel import LivePanel
@@ -155,10 +156,10 @@ from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 LEARNED_AFTER = 5  # sessions before Build's hints stop showing
 BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
-FOLDER_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
+FOLDER_FLAGS = (Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
+                | Qt.ItemFlag.ItemIsDragEnabled)
 
 
-COLOUR_NAMES = dict(zip(FOLDER_COLOURS, ("Pink", "Green", "Blue", "Yellow", "Orange", "Purple"), strict=True))
 
 
 def _dot(colour: str, size: int = 12) -> QIcon:
@@ -503,6 +504,7 @@ class MainWindow(QMainWindow):
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
         self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.scene_tree.dot_clicked.connect(self._pick_folder_colour)
         self.scene_tree.customContextMenuRequested.connect(self._scene_context_menu)
         self.scene_tree.itemExpanded.connect(lambda item: self._folder_expanded(item, True))
         self.scene_tree.itemCollapsed.connect(lambda item: self._folder_expanded(item, False))
@@ -967,12 +969,8 @@ class MainWindow(QMainWindow):
             scene = self._scene()
             if scene.kind == "show":
                 menu.addAction("Put on air").triggered.connect(self._make_active)
-                menu.addAction("Copy").triggered.connect(lambda _=False, sid=scene.id: self._copy_bloom(sid))
+                menu.addAction("Duplicate").triggered.connect(lambda _=False, sid=scene.id: self._copy_bloom(sid))
                 self._fill_move_menu(menu.addMenu("Move to folder"), scene)
-                up = menu.addAction("Move up")
-                up.triggered.connect(lambda: self._move_scene(scene.id, -1))
-                down = menu.addAction("Move down")
-                down.triggered.connect(lambda: self._move_scene(scene.id, 1))
                 if scene.canvas != self.collection.canvases[0].id:
                     link = menu.addMenu(icons.icon("link"), "Switch together with")
                     self._fill_link_menu(link)
@@ -995,10 +993,12 @@ class MainWindow(QMainWindow):
             menu.addAction("Rename…").triggered.connect(self._rename_scene)
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
-        menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
-        menu.addAction(f"New {SHOW} folder…").triggered.connect(lambda: self._add_folder())
-        menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
-        menu.addAction(f"New {PART} folder…").triggered.connect(lambda: self._add_folder(holds="part"))
+        new = menu.addMenu("New")
+        new.addAction(cap(SHOW)).triggered.connect(lambda: self._add_scene())
+        new.addAction(f"{cap(SHOW)} folder").triggered.connect(lambda: self._add_folder())
+        new.addSeparator()
+        new.addAction(cap(PART)).triggered.connect(lambda: self._add_part())
+        new.addAction(f"{cap(PART)} folder").triggered.connect(lambda: self._add_folder(holds="part"))
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
 
     # Folders -------------------------------------------------------------------------
@@ -1006,7 +1006,7 @@ class MainWindow(QMainWindow):
     def _folder_menu(self, menu: QMenu, folder) -> None:
         sprigs = folder.holds == "part"
         add = self._add_part if sprigs else self._add_scene
-        menu.addAction(f"New {PART if sprigs else SHOW} in “{literal(folder.name)}”…").triggered.connect(
+        menu.addAction(f"New {PART if sprigs else SHOW} here…").triggered.connect(
             lambda: (setattr(self, "selected_folder_id", folder.id), add()))
         menu.addSeparator()
         if not sprigs:
@@ -1015,15 +1015,13 @@ class MainWindow(QMainWindow):
             live.setChecked(folder.live)
             live.setToolTip(f"Its {SHOWS} become the buttons in Live mode")
             live.toggled.connect(lambda on: self._set_folder_live(folder.id, on))
-        menu.addAction("Rename folder…").triggered.connect(lambda: self._rename_folder(folder.id))
-        colours = menu.addMenu("Colour")
-        for colour in FOLDER_COLOURS:
-            action = colours.addAction(_dot(colour, 14), COLOUR_NAMES[colour])
-            action.setCheckable(True)
-            action.setChecked(folder.colour == colour)
-            action.triggered.connect(lambda _=False, c=colour: self._recolour_folder(folder.id, c))
+        menu.addAction("Rename…").triggered.connect(lambda: self._rename_folder(folder.id))
         menu.addSeparator()
-        menu.addAction(f"Remove folder (keeps its {PARTS if sprigs else SHOWS})").triggered.connect(lambda: self._remove_folder(folder.id))
+        menu.addAction(colour_row(menu, folder.colour, lambda c: self._recolour_folder(folder.id, c)))
+        menu.addSeparator()
+        remove = menu.addAction("Remove folder")
+        remove.setToolTip(f"Its {PARTS if sprigs else SHOWS} stay, out of the folder")
+        remove.triggered.connect(lambda: self._remove_folder(folder.id))
 
     def _fill_move_menu(self, menu: QMenu, scene: Scene) -> None:
         loose = menu.addAction("No folder")
@@ -1070,6 +1068,13 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_scenes()
 
+    def _pick_folder_colour(self, folder_id: str, at) -> None:
+        """Click a folder's dot: a small palette to recolour it."""
+        menu = QMenu(self)
+        menu.addAction(colour_row(menu, self.collection.folder(folder_id).colour,
+                                  lambda c: self._recolour_folder(folder_id, c)))
+        menu.exec(at)
+
     def _recolour_folder(self, folder_id: str, colour: str) -> None:
         self.collection.folder(folder_id).colour = colour
         self._changed()
@@ -1103,41 +1108,53 @@ class MainWindow(QMainWindow):
         self._refresh_scenes()
 
     def _scenes_dropped(self) -> None:
-        """Read the order and folders back from the library after a drag. Anything odd is undone."""
-        def read(heading_key: str) -> list[tuple[str, str | None]]:
+        """Read the order, folders and folder order back from the library after a drag. Anything odd is undone."""
+        def read(heading_key: str) -> tuple[list[tuple[str, str | None]], list[str]] | None:
             top = next((self.scene_tree.topLevelItem(i) for i in range(self.scene_tree.topLevelItemCount())
                         if self.scene_tree.topLevelItem(i).data(0, ROLE_FOLDER) == heading_key), None)
             placed: list[tuple[str, str | None]] = []
+            folder_order: list[str] = []
             if top is None:
-                return placed
+                return placed, folder_order
             for i in range(top.childCount()):
                 row = top.child(i)
                 if row.data(0, ROLE_ID):
                     if row.childCount():
-                        return []  # dropped onto a bloom or sprig
+                        return None  # dropped onto a bloom or sprig
                     placed.append((row.data(0, ROLE_ID), None))
                 elif row.data(0, ROLE_FOLDER):
                     folder_id = row.data(0, ROLE_FOLDER)
+                    folder_order.append(folder_id)
                     for j in range(row.childCount()):
                         child = row.child(j)
                         if not child.data(0, ROLE_ID) or child.childCount():
-                            return []  # a folder in a folder, or something dropped onto a row
+                            return None  # a folder in a folder, or something dropped onto a row
                         placed.append((child.data(0, ROLE_ID), folder_id))
-            return placed
+            return placed, folder_order
 
         shows, parts = self.collection.scenes_for(self.build_canvas), self.collection.parts()
-        placed_shows, placed_parts = read(""), read(PART_ROOT)
-        if (sorted(sid for sid, _ in placed_shows) != sorted(s.id for s in shows)
-                or sorted(pid for pid, _ in placed_parts) != sorted(p.id for p in parts)):
+        show_folders = [f.id for f in self.collection.folders_for(self.build_canvas)]
+        part_folders = [f.id for f in self.collection.part_folders()]
+        got_shows, got_parts = read(""), read(PART_ROOT)
+        if (got_shows is None or got_parts is None
+                or sorted(sid for sid, _ in got_shows[0]) != sorted(s.id for s in shows)
+                or sorted(pid for pid, _ in got_parts[0]) != sorted(p.id for p in parts)
+                or sorted(got_shows[1]) != sorted(show_folders) or sorted(got_parts[1]) != sorted(part_folders)):
             self._refresh_scenes()  # dropped somewhere it can't go (a bloom among sprigs, onto a row): put it back
             return
-        for group, placed in ((shows, placed_shows), (parts, placed_parts)):
+        for group, placed in ((shows, got_shows[0]), (parts, got_parts[0])):
             slots = [i for i, s in enumerate(self.collection.scenes) if s in group]
             by_id = {s.id: s for s in group}
             for slot, (scene_id, folder_id) in zip(slots, placed, strict=True):
                 scene = by_id[scene_id]
                 scene.folder = folder_id
                 self.collection.scenes[slot] = scene
+        for order in (got_shows[1], got_parts[1]):  # folders keep their new order, in the slots they had
+            folders = self.collection.folders
+            slots = [i for i, f in enumerate(folders) if f.id in order]
+            by_id = {f.id: f for f in folders}
+            for slot, folder_id in zip(slots, order, strict=True):
+                folders[slot] = by_id[folder_id]
         self._changed()
         self._refresh_scenes()
         self.live_panel.show_scenes(self.collection)
