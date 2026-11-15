@@ -20,7 +20,7 @@ jobs:
           # The runner's own Inno Setup may be older than 6.7, which the dark wizard needs: install a pinned copy.
           $dir = Join-Path $env:RUNNER_TEMP "InnoSetup"
           $exe = Join-Path $env:RUNNER_TEMP "innosetup.exe"
-          Invoke-WebRequest "https://files.jrsoftware.org/is/6/innosetup-6.7.4.exe" -OutFile $exe
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe" -OutFile $exe
           Start-Process $exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir" -Wait
           if (-not (Test-Path (Join-Path $dir "ISCC.exe"))) { throw "Inno Setup didn't install to $dir" }
           echo $dir | Out-File -FilePath $env:GITHUB_PATH -Append
