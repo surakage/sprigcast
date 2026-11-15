@@ -7,7 +7,7 @@ plus the sound keys its strip uses (volume_db, muted, monitor).
     │ ╰─────────────────────────────────╯   │
     │ ╭ Playback ───────────────────────╮   │
     │ │ Loop                        ( ) │   │
-    │ │ When shown   [Start over][Carry on]│
+    │ │ When shown   [Restart][Resume]│
     │ │ When it ends [Last picture][Nothing]│
     │ │ Speed   [½][¾][1×][1¼][1½][2×]  │   │
     │ │ Use graphics card           ( ) │   │
@@ -139,7 +139,7 @@ class MediaDialog(CardDialog):
         play, box = _section("Playback")
         self.loop = self._switch("loop", bool(s["loop"]))
         self.on_start = self._switch("play_on_start", bool(s["play_on_start"]))
-        self.shown = Choice(((True, "Start over"), (False, "Carry on")), bool(s["restart_on_show"]))
+        self.shown = Choice(((True, "Restart"), (False, "Resume")), bool(s["restart_on_show"]))
         self.ends = Choice(((False, "Last picture"), (True, "Nothing")), bool(s["clear_on_end"]))
         speed = clamp_speed(s.get("speed", 1.0))
         speeds = SPEEDS if any(abs(v - speed) < 1e-6 for v, _ in SPEEDS) else (*SPEEDS, (speed, f"{speed:g}×"))

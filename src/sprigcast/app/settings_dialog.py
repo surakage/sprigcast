@@ -43,7 +43,7 @@ LABELS = {
     "bubble_color": "Bubble colour",
     "background_color": "Box colour",
     "path": "File",
-    "restart_on_show": "Start over when shown",
+    "restart_on_show": "Restart when shown",
     "clear_on_end": "Show nothing when it ends",
     "play_on_start": "Play when SprigCast opens",
 }
