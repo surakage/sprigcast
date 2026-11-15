@@ -79,9 +79,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 ### Get started
 
 - A two-step Get started card on a new install (and any time from Tools → Get started): what you make, go live or record,
-  which shape, where you go live (Twitch, YouTube, Kick, TikTok, X), then your camera, capture card, mic and PC sound.
+  which shape, where you go live (Twitch, YouTube, Kick, TikTok, X), then your camera, capture card and mic (PC sound is split by type for everyone).
   It names a garden after the show and a path after where it goes, adds a place per pick, and makes the blooms that fit.
-  A capture card fills the Gaming bloom and brings its own sound; Elgato Wave Link channels are picked up by name.
+  A capture card fills the Gaming bloom and brings its own sound.
 - X is a streaming service choice.
 
 ### Optimize wizard

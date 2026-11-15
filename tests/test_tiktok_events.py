@@ -30,6 +30,6 @@ def test_apps_get_them_in_the_tiktok_group():
     assert event_group("tiktok.gift") == "tiktok"
     session = NativeSession(api=NativeApi.__new__(NativeApi))
     session.welcomed = True
+    assert session.event("tiktok.follow", {"user": "Leafy"}) is None  # not in "all": only asked for by name
+    session.events = {"bloom", "tiktok"}
     assert session.event("tiktok.follow", {"user": "Leafy"}) is not None
-    session.events = {"bloom"}
-    assert session.event("tiktok.follow", {"user": "Leafy"}) is None

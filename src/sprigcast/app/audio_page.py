@@ -184,7 +184,16 @@ class AudioPage(QWidget):
         if not global_ids:
             form.addRow(_hint("No global devices. Add a mic or desktop sound in Build → + Add."))
         box.addLayout(form)
+        self.wavelink = None
         if any(is_mixer_app_device(n) for n in audio_devices.get("audio_output", [])):
+            from sprigcast.audio.wavelink import enabled as wavelink_enabled
+
+            self.wavelink = QCheckBox("Keep Wave Link in step")
+            self.wavelink.setToolTip("Mute or change the volume of a Wave Link channel here or in Wave Link,\n"
+                                     "and the other follows (Wave Link's Stream Mix).\n"
+                                     "When it connects, these sounds take Wave Link's levels.")
+            self.wavelink.setChecked(wavelink_enabled())
+            box.addWidget(self.wavelink)
             box.addWidget(_hint("Elgato Wave Link is here: its channels (Game, Music, System…) are at the top of "
                                 "each list. A game or window capture can take its own sound too: right-click it → "
                                 "Sound. If you use a Wave Link mix that holds your mic, turn the separate Mic off."))
@@ -345,6 +354,12 @@ class AudioPage(QWidget):
         if audio.global_sources is None:  # pin the global devices before anything else moves
             audio.global_sources = collection.global_device_ids()
         audio.global_devices = self.global_on.isChecked()
+        if self.wavelink is not None:
+            from PySide6.QtCore import QSettings
+
+            from sprigcast.audio.wavelink import SETTING
+
+            QSettings().setValue(SETTING, self.wavelink.isChecked())
         audio.track_names = [e.text().strip() or TRACK_NAMES[i] for i, e in enumerate(self.track_names)]
         if not self.streaming:
             collection.stream_encoder = collection.stream_encoder.model_copy(

@@ -25,7 +25,11 @@ RETRY_SECONDS = 2.0
 
 
 class Monitor:
-    def __init__(self):
+    """Plays what write() gets on a playback device: the default one (monitoring), or a named one
+    (device=..., e.g. a virtual cable that TikTok LIVE Studio listens to)."""
+
+    def __init__(self, device: str | None = None):
+        self.device = device
         self.status = "off"
         self._ring: AudioRing | None = None
         self._resampler = None
@@ -82,6 +86,15 @@ class Monitor:
 
         return callback
 
+    def _device_info(self, pa, pa_mod) -> dict:
+        if not self.device:
+            return pa.get_default_wasapi_device(d_out=True)
+        for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
+            if (not info.get("isLoopbackDevice") and info["maxOutputChannels"] > 0
+                    and str(info["name"]) == self.device):
+                return info
+        raise RuntimeError(f"{self.device} isn't plugged in")
+
     def _run(self) -> None:
         try:
             pa_mod = audio_sources._pyaudio()
@@ -95,7 +108,7 @@ class Monitor:
             try:
                 with PortAudio.lock:
                     pa = PortAudio.get(pa_mod)
-                    info = pa.get_default_wasapi_device(d_out=True)
+                    info = self._device_info(pa, pa_mod)
                     rate = int(info["defaultSampleRate"])
                     channels = max(1, int(info.get("maxOutputChannels", 2)))
                     ring = AudioRing(capacity=int(rate * LATENCY_S))
@@ -114,7 +127,7 @@ class Monitor:
                     self._resampler = (
                         soxr.ResampleStream(SAMPLE_RATE, rate, 2, dtype="float32") if rate != SAMPLE_RATE else None
                     )
-                self.status = f"monitoring on {info['name']}"
+                self.status = f"playing on {info['name']}"
                 while not self._stop.is_set():
                     if not stream.is_active():
                         self.status = "playback device lost, retrying"

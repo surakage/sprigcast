@@ -37,7 +37,8 @@ def test_set_input_settings_replace_keeps_mixer():
     _ok(api, "SetInputSettings", {"inputName": "Hype", "overlay": False,
                                   "inputSettings": {"local_file": "b.mp4", "looping": True}})
     clip = next(s for s in host.collection.sources if s.id == "clip")
-    assert clip.settings == {"volume_db": -3, "path": "b.mp4", "loop": True}
+    assert clip.settings["volume_db"] == -3 and clip.settings["path"] == "b.mp4" and clip.settings["loop"] is True
+    assert clip.settings["speed"] == 1.0  # the rest back to defaults
 
 
 def test_set_input_settings_errors():
@@ -117,3 +118,15 @@ def test_source_screenshot(tmp_path):
     assert target.read_bytes() == b"PNG"
     assert _fails(api, "GetSourceScreenshot", {"sourceName": "BRB", "imageFormat": "png"}) == Status.INVALID_RESOURCE_STATE
     assert _fails(api, "GetSourceScreenshot", {"sourceName": "Chatting", "imageFormat": "jpg"}) == Status.INVALID_REQUEST_FIELD
+
+
+def test_replace_fills_defaults_and_pictures_are_reused():
+    api, host = _with_extras()
+    _ok(api, "SetInputSettings", {"inputName": "Goal text", "overlay": False, "inputSettings": {"text": "hi"}})
+    goal = next(s for s in host.collection.sources if s.id == "goal")
+    assert goal.settings["text"] == "hi" and "font" in goal.settings  # defaults back, not a bare dict
+    _ok(api, "GetSourceScreenshot", {"sourceName": "Chatting", "imageFormat": "png"})
+    _ok(api, "GetSourceScreenshot", {"sourceName": "Chatting", "imageFormat": "png"})
+    assert len(host.shots) == 1  # the second ask, a moment later, got the same picture
+    assert _fails(api, "SaveSourceScreenshot", {"sourceName": "Chatting", "imageFormat": "png",
+                                                "imageFilePath": "/tmp/x.exe"}) == Status.INVALID_REQUEST_FIELD

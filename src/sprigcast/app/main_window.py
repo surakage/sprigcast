@@ -477,7 +477,7 @@ class MainWindow(QMainWindow):
         self.hotkeys.apply(self.collection.hotkeys)
         self.camera = None  # SprigCast Camera (Settings → Output → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
-        self._camera_timer.timeout.connect(lambda: self.camera is not None and self.camera.poll())
+        self._camera_timer.timeout.connect(self._poll_camera)
         QTimer.singleShot(1500, self._sync_camera)
 
         self.mode = "build"
@@ -491,7 +491,14 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import start_for
 
         self.control = start_for(self)  # Streamer.bot, Stream Deck... (Settings → Connections; off by default)
+        from sprigcast.audio.wavelink import WaveLinkSync
+
+        self.wavelink = WaveLinkSync(self)  # connects only while a sound captures a Wave Link channel
+        self.wavelink.apply.connect(self._from_wavelink)
+        QTimer.singleShot(2000, self._sync_wavelink)
         self.chat_panel.hub.happened.connect(self.control.app_event)  # TikTok gifts, likes... to apps
+        # An app that asks for "tiktok" events by name keeps TikTok chat read while the Chat panel is hidden.
+        self.control.on_tiktok_wanted = lambda wanted: self.chat_panel.hub.want("api", wanted)
         from sprigcast.app.updates import Updater
 
         # New versions from GitHub Releases (app/updates.py); never shown or installed while live or recording.
@@ -2649,9 +2656,23 @@ class MainWindow(QMainWindow):
         self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
         self._chat_sources_changed()
+        self._sync_wavelink()
         control = getattr(self, "control", None)
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
+
+    def _sync_wavelink(self) -> None:
+        wavelink = getattr(self, "wavelink", None)
+        if wavelink is not None:
+            wavelink.update(self.collection.sources)
+
+    def _from_wavelink(self, source, change: dict) -> None:
+        """Wave Link changed a channel's mute or volume: the sound capturing it follows."""
+        if not any(s is source for s in self.collection.sources):
+            return  # another garden since
+        source.settings = {**source.settings, **change}
+        self._changed()
+        self._refresh_audio()
 
     # Undo and redo ------------------------------------------------------------------------
 
@@ -2723,6 +2744,8 @@ class MainWindow(QMainWindow):
             self._camera_timer.stop()
             self.camera.stop()
             self.camera = None
+        self.engine.set_sound_out(None)
+        self.wavelink.close()
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
@@ -4164,7 +4187,8 @@ class MainWindow(QMainWindow):
                               if s.id == getattr(self, "last_bloom_id", None) and s.kind == "show"), None)
                 scene = bloom or scene
             self.collection.sources.append(config)
-            self.collection.own_sprig(scene, config.id, tuple(size), config.name)
+            self.collection.own_sprig(scene, config.id, tuple(size), config.name,
+                                      getattr(cls, "own_sprig_corner", None))
             self._changed()
             self._refresh_all()
             return
@@ -5401,6 +5425,30 @@ class MainWindow(QMainWindow):
         window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
         window.exec()
 
+    def _poll_camera(self) -> None:
+        """Once a second while SprigCast Camera is on: feed it, and send the sound along while an app watches."""
+        if self.camera is None:
+            self.engine.set_sound_out(None)
+            return
+        self.camera.poll()
+        self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched() else None)
+
+    def _camera_sound_device(self) -> str | None:
+        """Settings → Output → Virtual camera → Sound to, unless SprigCast also captures that device (an echo)."""
+        from sprigcast.app.output_page import camera_sound
+
+        device = camera_sound()
+        if not device:
+            return None
+        captured = {str(s.settings.get("device", "")) for s in self.collection.sources_in_use() if s.kind == "audio_output"}
+        if device in captured:
+            if not getattr(self, "_sound_echo_said", False):
+                self._sound_echo_said = True
+                self._say(f"Camera sound not sent: {device} is captured as desktop sound, so it would echo")
+            return None
+        self._sound_echo_said = False
+        return device
+
     def _sync_camera(self) -> None:
         """Turn SprigCast Camera on or off to match Settings (it's only added while SprigCast runs)."""
         from sprigcast.app.output_page import camera_choice, camera_wanted
@@ -5421,6 +5469,7 @@ class MainWindow(QMainWindow):
             self._camera_timer.stop()
             self.camera.stop()
             self.camera = None
+            self.engine.set_sound_out(None)
         if self.camera is not None:
             self._camera_error = ""
         self.live_side.set_camera(self.camera is not None, getattr(self, "_camera_error", ""))
@@ -5902,10 +5951,9 @@ class MainWindow(QMainWindow):
             monitors = list_monitors()
             m = next((m for m in monitors if m.primary), monitors[0] if monitors else None)
             monitor = (m.index, m.width, m.height) if m is not None else None
-        app_sounds, desktop = gs.plan_sound(picks.sound, gear.speakers)
         choice = StarterChoice(
             camera=self._camera_settings(picks.camera) if picks.camera is not None else None,
-            monitor=monitor, mic=picks.mic, desktop=desktop, app_sounds=app_sounds, blooms=blooms,
+            monitor=monitor, mic=picks.mic, desktop=None, app_sounds=gs.plan_sound(), blooms=blooms,
             vertical=answers.shape != "horizontal", replace_example=is_fresh(self.collection), names=names,
             capture=self._camera_settings(picks.capture) if picks.capture is not None else None,
             capture_audio=gs.capture_audio(picks.capture.name, gear.mics) if picks.capture is not None else None)
@@ -5918,9 +5966,15 @@ class MainWindow(QMainWindow):
         palette.open()
         return palette
 
+    def _hotkey_note(self, text: str) -> None:
+        """A hotkey that couldn't do anything says why: in the status bar, and back to an app that ran it."""
+        self._last_hotkey_note = text
+        self._say(text)
+
     def _on_hotkey(self, action: str) -> None:
         from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE
 
+        self._last_hotkey_note = None
         if action.startswith(("garden:", "path:")):
             self.gardens.hotkey(action)
         elif action == TOGGLE_CLIPS:
@@ -5948,7 +6002,7 @@ class MainWindow(QMainWindow):
         elif action.startswith("plugin:"):
             from sprigcast import plugin_hooks
 
-            plugin_hooks.run_hotkey(self.api, action, self._say)
+            plugin_hooks.run_hotkey(self.api, action, self._hotkey_note)
         elif action.startswith(GAME_PREFIX):
             self._game_grab(action[len(GAME_PREFIX):])
         elif action.startswith(MEDIA_PREFIX):

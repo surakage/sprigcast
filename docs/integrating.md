@@ -44,7 +44,7 @@ For pickers in your UI: `blooms.list`, `sprigs.list`, `items.list`, `sources.lis
 
 ## Events
 
-Ask for groups in the auth message (`"events": ["bloom", "sound", "tiktok"]`, `"all"` or `"none"`): `bloom`, `item`, `sprig`, `sound`, `filter`, `source`, `output`, `transition`, `media`, `custom`, `plugin`, `garden`, `path`, `tiktok`, and `meters` (about 15 a second, only when named). Each event is one JSON object: `{"event": "bloom.shown", "bloom": "BRB", ...}`.
+Ask for groups in the auth message (`"events": ["bloom", "sound", "tiktok"]`, `"all"` or `"none"`): `bloom`, `item`, `sprig`, `sound`, `filter`, `source`, `output`, `transition`, `media`, `custom`, `plugin`, `garden`, `path`, and two that come only when named: `meters` (about 15 a second) and `tiktok` (every gift, like, follow, share and comment; asking for it keeps SprigCast reading TikTok chat). Each event is one JSON object: `{"event": "bloom.shown", "bloom": "BRB", ...}`.
 
 ## Plugins
 

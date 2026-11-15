@@ -417,6 +417,7 @@ def enhanced_in_use(collection: SceneCollection) -> bool:
 
 CAMERA_ON = "camera/on"  # QSettings: show SprigCast as a camera while it runs
 CAMERA_SHOWS = "camera/shows"  # "auto", "canvas:<id>", "bloom:<scene id>" or "source:<source id>"
+CAMERA_SOUND = "camera/sound_to"  # a playback device that gets the stream mix while an app watches, or ""
 VIDEO_KINDS_SKIP = ("audio_input", "audio_output", "app_audio", "scene")
 
 
@@ -424,6 +425,12 @@ def camera_choice() -> str:
     from PySide6.QtCore import QSettings
 
     return QSettings().value(CAMERA_SHOWS, "auto", type=str) or "auto"
+
+
+def camera_sound() -> str:
+    from PySide6.QtCore import QSettings
+
+    return QSettings().value(CAMERA_SOUND, "", type=str) or ""
 
 
 def camera_wanted() -> bool:
@@ -469,10 +476,25 @@ class CameraTab(QWidget):
         current = self.shows.findData(camera_choice())
         self.shows.setCurrentIndex(max(0, current))
         form.addRow("Shows", self.shows)
+        self.sound = QComboBox()
+        self.sound.addItem("Not sent", "")
+        from sprigcast.sources.audio import device_label, list_playback_devices
+
+        chosen = camera_sound()
+        names = list_playback_devices()
+        if chosen and chosen not in names:
+            names.append(chosen)  # not plugged in right now: still shown
+        for name in names:
+            self.sound.addItem(device_label(name), name)
+        self.sound.setCurrentIndex(max(0, self.sound.findData(chosen)))
+        form.addRow("Sound to", self.sound)
         inner.addLayout(form)
         inner.addWidget(_hint("TikTok LIVE Studio, Zoom, Discord, OBS and browsers list it as "
                               "\u201cSprigCast Camera\u201d. If the app wants another shape than what it shows, "
                               "you get black bars instead of a stretched picture."))
+        inner.addWidget(_hint("For TikTok LIVE Studio, send the sound to a virtual cable (like CABLE Input) and "
+                              "pick its other end (CABLE Output) as the mic there. It plays only while an app "
+                              "has the camera open."))
         self.status = QLabel()
         self.status.setWordWrap(True)
         inner.addWidget(self.status)
@@ -553,3 +575,4 @@ class CameraTab(QWidget):
 
         QSettings().setValue(CAMERA_ON, self.on.isChecked())
         QSettings().setValue(CAMERA_SHOWS, self.shows.currentData())
+        QSettings().setValue(CAMERA_SOUND, self.sound.currentData() or "")

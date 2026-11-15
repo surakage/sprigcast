@@ -37,8 +37,8 @@ from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, Sce
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
-                "plugin", "garden", "path", "tiktok")
-HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
+                "plugin", "garden", "path")
+HIGH_VOLUME = ("meters", "tiktok")  # only when asked for by name: meters ~15 a second, tiktok every comment/like
 SOUND_KINDS = ("audio_input", "audio_output", "app_audio", "media")
 MAX_STEPS = 100  # in one {"steps": [...]} list
 MAX_WAIT_MS = 10 * 60 * 1000  # all its waits together
@@ -344,12 +344,14 @@ class NativeApi:
     def app_broadcast(self, data):
         self.custom_event(_get(data, "data", dict))
 
-    @action("hotkey.run", "Do what a hotkey does (hotkey.list shows them).", hotkey="hotkey action id")
+    @action("hotkey.run", "Do what a hotkey does (hotkey.list shows them). note says why when it couldn't.",
+            hotkey="hotkey action id")
     def hotkey_run(self, data):
         wanted = _get(data, "hotkey", str)
         if wanted not in {a for a, _ in self.host.hotkeys()}:
             raise _missing(f"No hotkey action {wanted!r}.")
-        self.host.trigger_hotkey(wanted)
+        note = self.host.trigger_hotkey(wanted)
+        return {"hotkey": wanted, "note": note if isinstance(note, str) else None}
 
     @action("hotkey.list", "Hotkey actions and what they do.")
     def hotkey_list(self, data):
@@ -795,6 +797,21 @@ class NativeApi:
             if problem:
                 raise ApiError("not_allowed", problem)
 
+    @action("camera.status", "Whether SprigCast Camera (the virtual camera) is on.")
+    def camera_status(self, data):
+        return {"on": bool(getattr(self.host, "camera_on", lambda: False)())}
+
+    @action("camera.set", "Turn SprigCast Camera on or off (no on: toggle).", on="?true or false")
+    def camera_set(self, data):
+        current = bool(getattr(self.host, "camera_on", lambda: False)())
+        on = _get(data, "on", bool, optional=True)
+        on = (not current) if on is None else on
+        if on != current:
+            problem = self.host.set_camera(on)
+            if problem:
+                raise ApiError("not_allowed", problem)
+        return {"on": on}
+
     @action("clip.save", "Save the last seconds as a clip (gets clips ready first if they're off).")
     def clip_save(self, data):
         if not self.host.clips_ready():
@@ -950,6 +967,7 @@ class NativeApi:
             "stream": self.host.stream_status() is not None,
             "record": self.host.record_status() is not None,
             "clips": self.host.clips_ready(),
+            "camera": bool(getattr(self.host, "camera_on", lambda: False)()),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
             "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
@@ -1008,8 +1026,9 @@ class NativeApi:
             if sid in last["settings"] and last["settings"][sid] != settings and sources[sid].kind != PART_KIND:
                 out.append(("source.changed", {"source": sources[sid].name, "sourceId": sid,
                                                "settings": dict(sources[sid].settings)}))
-        for key, name in (("stream", "stream.changed"), ("record", "record.changed"), ("clips", "clips.changed")):
-            if now[key] != last[key]:
+        for key, name in (("stream", "stream.changed"), ("record", "record.changed"), ("clips", "clips.changed"),
+                          ("camera", "camera.changed")):
+            if now.get(key) != last.get(key):
                 out.append((name, {"on": now[key]}))
         if now["transition"] != last["transition"]:
             out.append(("transition.changed", {"kind": now["transition"][0], "ms": now["transition"][1]}))
@@ -1031,7 +1050,7 @@ def event_group(name: str) -> str:
     if head in _PLUGIN_EVENTS:
         return "plugin"
     return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
-            "places": "output", "items": "item", "gardens": "garden", "paths": "path"}.get(head, head)
+            "places": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path"}.get(head, head)
 
 
 @dataclass
