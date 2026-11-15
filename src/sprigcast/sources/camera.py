@@ -206,6 +206,13 @@ def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
             option["vcodec" if m[0] == "vcodec" else "pixel_format"] = m[1]
             if option not in out:
                 out.append(option)
+    # Some cameras (the Elgato Virtual Camera) refuse every frame rate asked of them, even their own
+    # listed interval, yet open in a listed size and format when no rate is asked: try those next,
+    # so NV12 still beats the camera's default YUYV.
+    for option in list(out):
+        plain = {k: v for k, v in option.items() if k != "framerate"}
+        if plain not in out:
+            out.append(plain)
     return out
 
 
@@ -216,7 +223,7 @@ def mode_cost(option: dict[str, str], fps: int) -> float:
     """Roughly how many bytes a second a dshow option takes in (copied, converted, shrunk)."""
     w, h = (int(v) for v in option["video_size"].split("x"))
     fmt = option.get("pixel_format") or option.get("vcodec", "")
-    num, _, den = option["framerate"].partition("/")
+    num, _, den = option.get("framerate", str(fps)).partition("/")
     rate = float(num) / float(den) if den else float(num)
     return w * h * _BYTES_PER_PIXEL.get(fmt, 3.0) * rate
 
@@ -224,9 +231,11 @@ def mode_cost(option: dict[str, str], fps: int) -> float:
 def plain_mode(option: dict[str, str]) -> str:
     """e.g. "1920 x 1080 at 60 fps (NV12)"."""
     w, h = option["video_size"].split("x")
+    fmt = (option.get("pixel_format") or option.get("vcodec", "")).upper().replace("YUYV422", "YUY2")
+    if "framerate" not in option:
+        return f"{w} x {h} at its own rate ({fmt})" if fmt else f"{w} x {h} at its own rate"
     num, _, den = option["framerate"].partition("/")
     rate = round(float(num) / float(den) if den else float(num))
-    fmt = (option.get("pixel_format") or option.get("vcodec", "")).upper().replace("YUYV422", "YUY2")
     return f"{w} x {h} at {rate} fps ({fmt})" if fmt else f"{w} x {h} at {rate} fps"
 
 
