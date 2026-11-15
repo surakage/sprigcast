@@ -167,7 +167,7 @@ def _sloth_item(collection: SceneCollection, pictures: dict[str, SourceConfig], 
         scale = min(1.0, canvas.height * 0.5 / h)
         x, y = canvas.width * 0.94 - w * scale, canvas.height * 0.9 - h * scale  # bottom right, clear of the title
     else:
-        scale = min(1.0, canvas.width * 0.6 / w)
+        scale = min(1.0, canvas.width * 0.6 / w, canvas.height * 0.3 / h)  # fits between the title and the bottom
         x, y = (canvas.width - w * scale) / 2, canvas.height * 0.62
     return SceneItem(source=config.id, scale=scale, x=x, y=y)
 
