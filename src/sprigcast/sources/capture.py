@@ -51,6 +51,10 @@ class _CaptureSource(Source):
     def _target(self) -> dict[str, Any] | None:
         raise NotImplementedError
 
+    def _should_retarget(self) -> bool:
+        """Checked while capturing: True starts over on a new target (a game capture's next game)."""
+        return False
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():  # still winding down after sleep()
             self._thread.join(timeout=3)
@@ -144,7 +148,8 @@ class _CaptureSource(Source):
                 continue
             self.status = "capturing"
 
-            while not (self._stop.is_set() or self._restart.is_set() or ended.is_set() or control.is_finished()):
+            while not (self._stop.is_set() or self._restart.is_set() or ended.is_set() or control.is_finished()
+                       or self._should_retarget()):
                 self._restart.wait(0.2)
             try:
                 control.stop()
@@ -178,3 +183,53 @@ class WindowCaptureSource(_CaptureSource):
         if window is None:
             return None
         return {"window_hwnd": window.hwnd}
+
+
+@register("game_capture")
+class GameCaptureSource(WindowCaptureSource):
+    """A game: the full-screen game in front (mode "any", the default), or one game's window (mode "window",
+    with title and process like a window capture). The cursor is off by default, as games draw their own.
+
+    In "any" mode it switches when another full-screen game comes to the front, and keeps the last game
+    while you alt-tab to the desktop or a chat, so the stream doesn't flash your other windows.
+    """
+
+    label = "Game capture"
+    CHECK_SECONDS = 2.0
+
+    def __init__(self, source_id: str, settings: dict[str, Any]):
+        super().__init__(source_id, settings)
+        self._game: tuple[int, int, str] | None = None  # (window handle, pid, exe) of the game being shown
+        self._checked = 0.0
+
+    def _target(self) -> dict[str, Any] | None:
+        if self.settings.get("mode", "any") == "window":
+            return super()._target()
+        from sprigcast.sources.app_audio import fullscreen_window
+
+        found = fullscreen_window()
+        if found is not None:
+            self._game = found
+        if self._game is None or not _window_alive(self._game[0]):
+            self._game = None
+            return None
+        self.status = f"capturing {self._game[2]}"
+        return {"window_hwnd": self._game[0]}
+
+    def _should_retarget(self) -> bool:
+        if self.settings.get("mode", "any") == "window":
+            return False
+        now = time.monotonic()
+        if now - self._checked < self.CHECK_SECONDS:
+            return False
+        self._checked = now
+        from sprigcast.sources.app_audio import fullscreen_window
+
+        found = fullscreen_window()
+        return found is not None and self._game is not None and found[0] != self._game[0]
+
+
+def _window_alive(hwnd: int) -> bool:
+    import ctypes
+
+    return bool(ctypes.windll.user32.IsWindow(hwnd))

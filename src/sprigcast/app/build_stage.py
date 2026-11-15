@@ -178,13 +178,15 @@ ACTION_W = 26  # each of the row's icons at the end: lock, settings, remove
 ACTIONS = ("lock", "settings", "remove")
 ICON = 22
 
-KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "camera": "camera", "color": "colour",
+KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_capture": "game",
+              "slideshow": "slide show",  # the Slide show plugin "camera": "camera", "color": "colour",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
               "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
 
 
 def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False) -> None:
     """A small drawn icon on a soft chip saying what a source is: screen, window, camera, picture..."""
+    kind = {"game_capture": "window_capture", "slideshow": "image"}.get(kind, kind)  # drawn like their cousins
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setPen(Qt.PenStyle.NoPen)

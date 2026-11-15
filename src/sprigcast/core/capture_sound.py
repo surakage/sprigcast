@@ -14,7 +14,7 @@ from __future__ import annotations
 from sprigcast.core.scene import SceneCollection, SourceConfig
 
 APP = "app"
-CAPTURE_KINDS = ("window_capture",)
+CAPTURE_KINDS = ("window_capture", "game_capture")
 
 
 def capture_sound(collection: SceneCollection, capture_id: str) -> SourceConfig | None:

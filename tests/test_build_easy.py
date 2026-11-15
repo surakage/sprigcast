@@ -143,7 +143,7 @@ def test_build_tabs_sound_sections_add_undo(tmp_path, monkeypatch):
         monkeypatch.setattr(mw, "list_cameras", lambda: [])
         w._fill_add_source_menu()
         titles = [a.text() for a in w.add_source_menu.actions()]
-        assert "Camera" in titles and "Screen" in titles and "Picture…" in titles
+        assert "Video capture" in titles and "Screen" in titles and "Picture…" in titles
         # Undo and redo the whole collection.
         w._copy_bloom("h1")
         assert len(col.scenes_for("horizontal")) == 2
