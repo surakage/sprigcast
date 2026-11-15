@@ -852,7 +852,7 @@ class MainWindow(QMainWindow):
 
     def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
         """Right-click in a preview: the same menu as the Sources list for what's under the mouse.
-        In Live (nothing to edit) it offers a screenshot and Pop out."""
+        In Live (nothing to edit) it offers Pop out and this canvas's settings."""
         if canvas_id.startswith("part:") or (self.mode == "live" and canvas_id in self.previews):
             menu = QMenu(self)
         else:
@@ -872,9 +872,6 @@ class MainWindow(QMainWindow):
         """Right-click a canvas on Live: things about this canvas only (nothing here edits a bloom)."""
         canvas = self.collection.canvas(canvas_id)
         menu.setToolTipsVisible(True)
-        shot = menu.addAction(icons.icon("camera", theme.MUTED), "Save screenshot")
-        shot.setToolTip("A PNG of what's on air here, in your Screenshots folder")
-        shot.triggered.connect(lambda: self._screenshot([canvas_id]))
         self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
         preview = self.previews.get(canvas_id)
         if preview is not None and preview.zoom > 1.0:
@@ -2067,6 +2064,14 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
+        self.screenshot_button = QToolButton()
+        self.screenshot_button.setIcon(icons.icon("shutter", theme.MUTED, 18))
+        self.screenshot_button.setIconSize(QSize(18, 18))
+        self.screenshot_button.setFixedSize(38, 38)
+        self.screenshot_button.setToolTip("Screenshot every canvas, to your Screenshots folder")
+        self.screenshot_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.screenshot_button.clicked.connect(lambda: self._screenshot())
+        bar.addWidget(self.screenshot_button)
         self.palette_button = QToolButton()
         self.palette_button.setIcon(icons.icon("search", theme.MUTED, 18))
         self.palette_button.setIconSize(QSize(18, 18))
@@ -2077,6 +2082,7 @@ class MainWindow(QMainWindow):
             f"QToolButton:hover {{ background: {theme.RAISED}; color: {theme.TEXT}; }}")
         self.palette_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.palette_button.clicked.connect(lambda: self._open_palette())
+        self.screenshot_button.setStyleSheet(self.palette_button.styleSheet())
         bar.addWidget(self.palette_button)
         self.settings_button = QToolButton()
         self.settings_button.setIcon(icons.icon("gear", theme.MUTED, 18))

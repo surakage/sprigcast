@@ -88,6 +88,14 @@ CARD_PILL_STYLE = _snug(theme.PILL_STYLE) + (
 )
 CARD_ON_AIR_STYLE = _snug(theme.PILL_ON_AIR_STYLE)
 CARD_SELECTED_STYLE = _snug(theme.PILL_SELECTED_STYLE)
+# Virtual Cam and its gear share one mini card, so the gear reads as the camera's settings.
+_LEFT_HALF = "QPushButton { border-top-right-radius: 0; border-bottom-right-radius: 0; }"
+CAM_STYLE = CARD_PILL_STYLE + "QPushButton { background: transparent; }" + _LEFT_HALF
+CAM_ON_STYLE = CARD_SELECTED_STYLE + _LEFT_HALF
+CAM_GEAR_STYLE = CARD_PILL_STYLE + (
+    "QPushButton { background: transparent; border-top-left-radius: 0; border-bottom-left-radius: 0;"
+    " padding: 7px 10px; }"
+)
 
 
 def pill(text: str, style: str = "") -> QPushButton:
@@ -262,20 +270,31 @@ class LiveSide(QWidget):
         row.addWidget(self.clip)
         # Virtual camera sits beside Record and Clips; its gear picks what it shows (the same setting as
         # Settings → Output → Virtual camera). Settings itself is the gear in the header.
-        self.camera = pill("Virtual Cam", CARD_PILL_STYLE)
+        self.camera_card = QFrame()
+        self.camera_card.setObjectName("camCard")
+        self.camera_card.setStyleSheet(f"#camCard {{ background: {theme.RAISED}; border-radius: 16px; }}")
+        card_row = QHBoxLayout(self.camera_card)
+        card_row.setContentsMargins(0, 0, 0, 0)
+        card_row.setSpacing(0)
+        self.camera = pill("Virtual Cam", CAM_STYLE)
         self.camera.setToolTip("Virtual camera: show SprigCast as a camera in Zoom, Discord, TikTok LIVE Studio…")
         if on_camera is not None:
             self.camera.clicked.connect(on_camera)
-        row.addWidget(self.camera)
-        self.camera_settings = pill("", CARD_PILL_STYLE)
+        card_row.addWidget(self.camera, 1)
+        divider = QFrame()
+        divider.setFixedSize(1, 18)
+        divider.setStyleSheet(f"background: {theme.PANEL};")
+        card_row.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.camera_settings = pill("", CAM_GEAR_STYLE)
         self.camera_settings.setIcon(icons.icon("gear"))
-        self.camera_settings.setFixedWidth(40)
-        self.camera_settings.setToolTip("What the virtual camera shows")
+        self.camera_settings.setFixedWidth(38)
+        self.camera_settings.setToolTip("Virtual camera settings: what it shows")
         if on_camera_settings is not None:
             self.camera_settings.clicked.connect(on_camera_settings)
-        row.addWidget(self.camera_settings)
-        for button in (self.camera, self.camera_settings):
-            button.setVisible(on_camera is not None)
+        card_row.addWidget(self.camera_settings)
+        self.camera_card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)  # snug, like a pill
+        row.addWidget(self.camera_card)
+        self.camera_card.setVisible(on_camera is not None)
         buttons.addLayout(row)
         self.camera_note = QLabel("")
         self.camera_note.setWordWrap(True)
@@ -359,7 +378,7 @@ class LiveSide(QWidget):
     def set_camera(self, on: bool, error: str = "") -> None:
         """Camera on (highlighted, not pink: pink is only for Live and Recording), or off with a short reason."""
         self.camera.setText("Cam on" if on else "Virtual Cam")
-        self.camera.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
+        self.camera.setStyleSheet(CAM_ON_STYLE if on else CAM_STYLE)
         from sprigcast.output.virtualcam import PRIVACY_HINT, PRIVACY_PAGE
 
         if error == PRIVACY_HINT:
