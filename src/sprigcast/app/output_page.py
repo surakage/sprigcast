@@ -197,6 +197,91 @@ class EncoderForm(QGroupBox):
         )
 
 
+class SpaceBox(QGroupBox):
+    """Space: how big the recordings folder is, how much the drive has left, and how many screenshots and
+    clips to keep. The size is counted off the UI thread (a folder of long recordings can be big)."""
+
+    def __init__(self, collection: SceneCollection, folder_edit=None, parent: QWidget | None = None):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QFormLayout
+
+        super().__init__("Space", parent)
+        self._folder_edit = folder_edit
+        self._fallback = collection.recording.folder
+        form = QFormLayout(self)
+        form.setVerticalSpacing(12)
+        self.usage = QLabel("Counting…")
+        self.usage.setWordWrap(True)
+        form.addRow("Recordings", self.usage)
+        rec = collection.recording
+        self.keep_screenshots = self._keep_box(rec.keep_screenshots, "screenshots")
+        form.addRow("Screenshots", self.keep_screenshots)
+        self.keep_clips = self._keep_box(rec.keep_clips, "clips")
+        form.addRow("Clips", self.keep_clips)
+        form.addRow(_hint("Screenshots and clips go in a folder for each day. With a limit, the oldest are "
+                          "deleted as new ones arrive. Recordings are never deleted."))
+        self._result: list = []
+        self._poll = QTimer(self, interval=200)
+        self._poll.timeout.connect(self._show)
+        self.count()
+        if folder_edit is not None:
+            folder_edit.editingFinished.connect(self.count)
+
+    @staticmethod
+    def _keep_box(value: int, what: str) -> QSpinBox:
+        box = QSpinBox()
+        box.setRange(0, 10000)
+        box.setSingleStep(10)
+        box.setSpecialValueText("Keep all")
+        box.setPrefix("Keep the last ")
+        box.setSuffix(f" {what}")
+        box.setValue(max(0, value))
+        box.setFixedWidth(260)
+        return box
+
+    def folder(self):
+        from pathlib import Path
+
+        text = self._folder_edit.text().strip() if self._folder_edit is not None else self._fallback
+        return Path(text) if text else None
+
+    def count(self) -> None:
+        import threading
+
+        from sprigcast.output import storage
+
+        folder = self.folder()
+        if folder is None:
+            self.usage.setText("Pick a folder above.")
+            return
+        self.usage.setText("Counting…")
+        result: list = []
+        self._result = result
+
+        def work():
+            used = storage.folder_size(folder) if folder.is_dir() else 0
+            result.append((used, storage.free_bytes(folder)))
+
+        threading.Thread(target=work, name="sprigcast-folder-size", daemon=True).start()
+        self._poll.start()
+
+    def _show(self) -> None:
+        from sprigcast.output import storage
+
+        if not self._result:
+            return
+        self._poll.stop()
+        used, free = self._result[0]
+        text = f"{storage.size_text(used)} in this folder"
+        if free is not None:
+            text += f"  ·  {storage.size_text(free)} free on the drive"
+        self.usage.setText(text)
+
+    def apply_to(self, collection: SceneCollection) -> None:
+        collection.recording.keep_screenshots = self.keep_screenshots.value()
+        collection.recording.keep_clips = self.keep_clips.value()
+
+
 class OutputPage(QWidget):
     """Streaming and Recording sub-tabs. The Recording sub-tab holds the RecordingPage passed in."""
 
@@ -251,6 +336,8 @@ class OutputPage(QWidget):
         self.record_form = EncoderForm("Encoder", collection.recording.encoder, encoder_name)
         self.record_form.setEnabled(not recording)
         box.addWidget(self.record_form)
+        self.space = SpaceBox(collection, getattr(recording_page, "folder", None))
+        box.addWidget(self.space)
         box.addStretch(1)
         self.tabs.addTab(record_tab, "Recording")
 
@@ -278,6 +365,7 @@ class OutputPage(QWidget):
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()
+        self.space.apply_to(collection)
         self.camera_tab.apply()
 
     def _clips_group(self, collection: SceneCollection) -> QGroupBox:

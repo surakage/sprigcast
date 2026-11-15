@@ -292,7 +292,7 @@ def test_screenshot_grabs_the_next_frame(tmp_path):
     shots = screenshot.take(engine, ["horizontal", "vertical"], tmp_path, width=None, as_data=True)
     assert len(shots) == 1 and shots[0]["shape"] == "horizontal" and (shots[0]["width"], shots[0]["height"]) == (4, 2)
     saved = Path(shots[0]["path"])
-    assert saved.parent == tmp_path and saved.suffix == ".png" and saved.exists()
+    assert saved.parent.parent == tmp_path and saved.suffix == ".png" and saved.exists()  # a folder per day
     assert shots[0]["png"].startswith("iVBOR")  # PNG magic, base64
     assert engine.taps == {}  # taps removed again
     when = datetime(2026, 11, 14, 9, 40, 0)
