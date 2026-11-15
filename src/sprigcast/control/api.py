@@ -49,6 +49,42 @@ OBS_TRANSITION_KINDS = {"cut": "cut_transition", "fade": "fade_transition", "sli
                         "swipe": "swipe_transition", "wipe": "wipe_transition", "stinger": "obs_stinger_transition"}
 
 
+# OBS setting names -> SprigCast's, per source kind (anything else passes through as is).
+OBS_SETTING_NAMES = {
+    "image": {"file": "path"},
+    "media": {"local_file": "path", "looping": "loop", "restart_on_activate": "restart_on_show",
+              "close_when_inactive": "clear_on_end", "speed_percent": "speed", "hw_decode": "hw_decode"},
+    "browser": {"local_file": "file", "is_local_file": None, "reroute_audio": None, "css": "css",
+                "restart_when_active": "reload_on_air"},
+    "text": {"text": "text", "file": "file", "read_from_file": None},
+}
+KEEP_ON_REPLACE = ("volume_db", "muted", "balance", "monitor", "sync_ms")  # mixer settings stay
+MEDIA_STATES = {"playing": "OBS_MEDIA_STATE_PLAYING", "paused": "OBS_MEDIA_STATE_PAUSED",
+                "stopped": "OBS_MEDIA_STATE_STOPPED", "ended": "OBS_MEDIA_STATE_ENDED"}
+MEDIA_ACTIONS = {"OBS_WEBSOCKET_MEDIA_INPUT_ACTION_NONE": "", "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY": "play",
+                 "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE": "pause", "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP": "stop",
+                 "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART": "restart",
+                 "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_NEXT": "restart", "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PREVIOUS": "restart"}
+
+
+def settings_from_obs(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """An OBS app's inputSettings in SprigCast's words (e.g. an image's "file" is our "path")."""
+    names = OBS_SETTING_NAMES.get(kind, {})
+    out: dict[str, Any] = {}
+    for key, value in settings.items():
+        ours = names.get(key, key)
+        if ours is None:
+            continue
+        if kind == "media" and ours == "speed" and isinstance(value, (int, float)):
+            value = value / 100
+        out[ours] = value
+    return out
+
+
+def _ms(seconds: Any) -> int | None:
+    return None if seconds is None else int(float(seconds) * 1000)
+
+
 class Host(Protocol):
     """The app as the API sees it. Everything runs on the UI thread."""
 
@@ -805,6 +841,195 @@ class ControlApi:
                                 "outputFlags": {}})
         return {"outputs": outputs}
 
+    # Input settings, filters, media and source pictures: what TikFinity, Streamer.bot and Stream
+    # Deck's OBS actions send most (change a text, turn a filter on, play a sound, grab a picture).
+
+    def req_GetInputDefaultSettings(self, data):
+        kind = _require(data, "inputKind", str)
+        ours = next((k for k, obs in INPUT_KINDS.items() if obs == kind), kind)
+        import sprigcast.sources  # noqa: F401  (registers the built-in kinds)
+        from sprigcast.core.source import source_class
+
+        try:
+            cls = source_class(ours)
+        except Exception:
+            cls = None
+        if cls is None:
+            raise RequestError(Status.INVALID_REQUEST_FIELD, f"Unknown inputKind {kind!r}.")
+        return {"defaultInputSettings": dict(getattr(cls, "defaults", {}) or {})}
+
+    def req_SetInputSettings(self, data):
+        source = self._input(data)
+        settings = _require(data, "inputSettings", dict)
+        overlay = data.get("overlay", True)
+        if not isinstance(overlay, bool):
+            raise RequestError(Status.INVALID_REQUEST_FIELD_TYPE, "overlay has the wrong type.")
+        theirs = settings_from_obs(source.kind, settings)
+        source.settings = {**source.settings, **theirs} if overlay else {
+            k: v for k, v in source.settings.items() if k in KEEP_ON_REPLACE} | theirs
+        self.host.commit("sources")
+
+    def req_SetInputName(self, data):
+        source = self._input(data)
+        name = _require(data, "newInputName", str).strip()
+        if not name:
+            raise RequestError(Status.REQUEST_FIELD_EMPTY, "newInputName is empty.")
+        if any(s.name == name and s is not source for s in self._inputs()):
+            raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"A source called {name!r} already exists.")
+        source.name = name
+        self.host.commit("sources")
+
+    def req_PressInputPropertiesButton(self, data):
+        source = self._input(data)
+        button = _require(data, "propertyName", str)
+        if source.kind != "browser" or button not in ("refreshnocache", "refresh"):
+            raise RequestError(Status.INVALID_REQUEST_FIELD, f"{source.name!r} has no {button!r} button.")
+        running = self.host.source_instance(source.id)
+        if running is not None and hasattr(running, "reload"):
+            running.reload()
+
+    def _filter_source(self, data: dict[str, Any]) -> SourceConfig:
+        """The source a filter request names: an input, or a sprig (its first placement)."""
+        uuid, name = data.get("sourceUuid"), data.get("sourceName")
+        if uuid is None and name is None:
+            raise RequestError(Status.MISSING_REQUEST_FIELD, "sourceName or sourceUuid is missing.")
+        for source in self._inputs():
+            if (uuid is not None and source.id == uuid) or (uuid is None and source.name == name):
+                return source
+        try:
+            scene = self._scene({"sceneName": name, "sceneUuid": uuid})
+        except RequestError:
+            scene = None
+        if scene is not None:
+            placed = next((s for s in self.col.sources if s.kind == PART_KIND and self.col.part_of(s) is scene), None)
+            if placed is not None:
+                return placed
+        raise RequestError(Status.RESOURCE_NOT_FOUND, f"No source called {uuid or name!r}.")
+
+    def _source_filter(self, data: dict[str, Any]) -> tuple[SourceConfig, Any]:
+        source = self._filter_source(data)
+        wanted = _require(data, "filterName", str)
+        found = next((f for f in source.filters if f.name == wanted), None)
+        if found is None:
+            raise RequestError(Status.RESOURCE_NOT_FOUND, f"{source.name!r} has no filter {wanted!r}.")
+        return source, found
+
+    @staticmethod
+    def _filter_obs(index: int, f) -> dict[str, Any]:
+        return {"filterName": f.name, "filterKind": f.kind, "filterIndex": index,
+                "filterEnabled": f.enabled, "filterSettings": dict(f.settings)}
+
+    def req_GetSourceFilterList(self, data):
+        source = self._filter_source(data)
+        return {"filters": [self._filter_obs(i, f) for i, f in enumerate(source.filters)]}
+
+    def req_GetSourceFilter(self, data):
+        source, found = self._source_filter(data)
+        info = self._filter_obs(source.filters.index(found), found)
+        info.pop("filterName")
+        return info
+
+    def req_SetSourceFilterEnabled(self, data):
+        _, found = self._source_filter(data)
+        found.enabled = _require(data, "filterEnabled", bool)
+        self.host.commit("filters")
+
+    def req_SetSourceFilterSettings(self, data):
+        _, found = self._source_filter(data)
+        settings = _require(data, "filterSettings", dict)
+        overlay = data.get("overlay", True)
+        found.settings = {**found.settings, **settings} if overlay is not False else dict(settings)
+        self.host.commit("filters")
+
+    def req_SetSourceFilterName(self, data):
+        source, found = self._source_filter(data)
+        name = _require(data, "newFilterName", str).strip()
+        if not name:
+            raise RequestError(Status.REQUEST_FIELD_EMPTY, "newFilterName is empty.")
+        if any(f.name == name and f is not found for f in source.filters):
+            raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"{source.name!r} already has a filter {name!r}.")
+        found.name = name
+        self.host.commit("filters")
+
+    def _media_input(self, data: dict[str, Any]) -> SourceConfig:
+        source = self._input(data)
+        if source.kind != "media":
+            raise RequestError(Status.INVALID_RESOURCE_TYPE, f"{source.name!r} isn't a video or sound file.")
+        return source
+
+    def _media_run(self, source: SourceConfig, what: str, seconds: float | None = None) -> dict[str, Any]:
+        info = self.host.media_control(source.id, what, seconds)
+        if info is None:
+            raise RequestError(Status.INVALID_RESOURCE_STATE, f"{source.name!r} isn't loaded yet: put its bloom on screen first.")
+        return info
+
+    def req_GetMediaInputStatus(self, data):
+        source = self._media_input(data)
+        info = self.host.media_info(source.id)
+        if not info:
+            return {"mediaState": "OBS_MEDIA_STATE_NONE", "mediaDuration": None, "mediaCursor": None}
+        return {"mediaState": MEDIA_STATES.get(info.get("state"), "OBS_MEDIA_STATE_NONE"),
+                "mediaDuration": _ms(info.get("duration")), "mediaCursor": _ms(info.get("position"))}
+
+    def req_TriggerMediaInputAction(self, data):
+        source = self._media_input(data)
+        action = _require(data, "mediaAction", str)
+        what = MEDIA_ACTIONS.get(action)
+        if what is None:
+            raise RequestError(Status.INVALID_REQUEST_FIELD, f"Unknown mediaAction {action!r}.")
+        if what:
+            self._media_run(source, what)
+
+    def req_SetMediaInputCursor(self, data):
+        source = self._media_input(data)
+        self._media_run(source, "seek", max(0.0, _number(data, "mediaCursor") / 1000))
+
+    def req_OffsetMediaInputCursor(self, data):
+        source = self._media_input(data)
+        info = self.host.media_info(source.id)
+        if not info:
+            raise RequestError(Status.INVALID_RESOURCE_STATE, f"{source.name!r} isn't loaded yet: put its bloom on screen first.")
+        self._media_run(source, "seek", max(0.0, float(info.get("position") or 0) + _number(data, "mediaCursorOffset") / 1000))
+
+    def _picture(self, data: dict[str, Any]) -> dict[str, Any]:
+        """A PNG of a bloom that's on air (or the canvas it's on air in). Other sources can't be
+        pictured on their own yet: OBS apps nearly always ask for the program scene."""
+        fmt = str(data.get("imageFormat", "png")).lower()
+        if fmt != "png":
+            raise RequestError(Status.INVALID_REQUEST_FIELD, "SprigCast saves pictures as png only.")
+        name = data.get("sourceName")
+        uuid = data.get("sourceUuid")
+        scene = self._scene({"sceneName": name, "sceneUuid": uuid})
+        canvases = [cid for cid, sid in self.col.active_scenes.items()
+                    if sid == scene.id or any(t.id == sid for t in self.col.linked_with(scene.id))]
+        if not canvases:
+            raise RequestError(Status.INVALID_RESOURCE_STATE, f"{self._scene_name(scene)!r} isn't on air, so there's nothing to picture.")
+        width = data.get("imageWidth")
+        if width is not None and (not isinstance(width, int) or not 8 <= width <= 4096):
+            raise RequestError(Status.REQUEST_FIELD_OUT_OF_RANGE, "imageWidth must be between 8 and 4096.")
+        shots = self.host.screenshot([canvases[0]], width, False, True)
+        if not shots:
+            raise RequestError(Status.INVALID_RESOURCE_STATE, "Nothing is drawing right now, so there's nothing to picture.")
+        return shots[0]
+
+    def req_GetSourceScreenshot(self, data):
+        shot = self._picture(data)
+        return {"imageData": "data:image/png;base64," + shot["png"]}
+
+    def req_SaveSourceScreenshot(self, data):
+        import base64
+        from pathlib import Path
+
+        path = Path(_require(data, "imageFilePath", str))
+        if not path.is_absolute():
+            raise RequestError(Status.INVALID_REQUEST_FIELD, "imageFilePath must be a full path.")
+        shot = self._picture(data)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(base64.b64decode(shot["png"]))
+        except OSError as exc:
+            raise RequestError(Status.GENERIC_ERROR, f"Couldn't save the picture: {exc}") from exc
+
     # SprigCast's own requests (CallVendorRequest, vendorName "sprigcast") -------------------
 
     def vendor_GetCanvases(self, data):
@@ -895,6 +1120,7 @@ class ControlApi:
             "clips": self.host.clips_ready(),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts() if p.states},
+            "filters": {(src.id, f.name): f.enabled for src in col.sources for f in src.filters},
             "shelf": self._shelf(),
         }
 
@@ -968,6 +1194,11 @@ class ControlApi:
                 events.append(("VendorEvent", Sub.VENDORS, {"vendorName": VENDOR, "eventType": "SprigStateChanged",
                                                             "eventData": {"sceneName": names.get(pid, pid),
                                                                           "sceneUuid": pid, "state": state}}))
+
+        for (sid, fname), on in now.get("filters", {}).items():
+            if last.get("filters", {}).get((sid, fname), on) != on:
+                events.append(("SourceFilterEnableStateChanged", Sub.FILTERS,
+                               {"sourceName": self._source_name(sid), "filterName": fname, "filterEnabled": on}))
 
         shelf, old = now["shelf"], last["shelf"]
         if shelf["gardens"] != old["gardens"]:
