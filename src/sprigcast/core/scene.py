@@ -427,6 +427,31 @@ class SceneCollection(BaseModel):
         off = set(self.global_device_ids())
         return [s for s in self.sources if not (s.kind in AUDIO_DEVICE_KINDS and s.id in off)]
 
+    # Sound per bloom ---------------------------------------------------------------------
+
+    def bloom_choices(self) -> list[Scene]:
+        """Blooms a sound can be set to play in: every bloom that isn't a twin of another (linked)."""
+        return [s for s in self.scenes if s.kind == "show" and s.linked_to is None]
+
+    def sound_blooms(self, source: SourceConfig) -> list[str]:
+        """The blooms a sound plays in (settings["blooms"], deleted ones left out); [] means every bloom."""
+        picked = source.settings.get("blooms") or []
+        valid = {s.id for s in self.bloom_choices()}
+        return [b for b in picked if b in valid]
+
+    def sound_plays(self, source: SourceConfig) -> bool:
+        """True when the sound plays in a bloom on air right now (on any shape that's switched on)."""
+        blooms = self.sound_blooms(source)
+        if not blooms:
+            return True
+        on_air = {self.bloom_key(self.active_scenes.get(c.id)) for c in self.canvases if c.enabled}
+        on_air.discard(None)
+        return not on_air or bool(on_air & set(blooms))
+
+    def sounds_off_here(self) -> frozenset[str]:
+        """Ids of the sounds that stay quiet in the blooms on air now (picked for other blooms only)."""
+        return frozenset(s.id for s in self.sources if s.settings.get("blooms") and not self.sound_plays(s))
+
     def folders_for(self, canvas_id: str) -> list[SceneFolder]:
         """The bloom folders on a canvas."""
         return [f for f in self.folders if f.canvas == canvas_id and f.holds == "show"]
