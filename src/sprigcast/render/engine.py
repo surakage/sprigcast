@@ -118,6 +118,7 @@ class Engine:
         # kind "bloom" (a bloom drawn whether or not it's on air) or "source" (one source, fitted).
         # Replaced whole by the UI (see set_view); drawn only while something taps them.
         self.views: dict[str, tuple[str, str, str]] = {}
+        self._view_at: dict[str, float] = {}  # view name -> when a screen-only view was last drawn
 
     # Called from the UI thread ----------------------------------------------
 
@@ -214,6 +215,10 @@ class Engine:
             outputs = taps.get(f"view:{name}", ())
             if not outputs:
                 continue
+            if all(size is None for _cb, size in outputs):  # only screens watch it (a projector): ~30 fps is plenty
+                if now - self._view_at.get(name, -1.0) < 1 / PREVIEW_FPS - 0.002:
+                    continue
+                self._view_at[name] = now
             canvas, scene = self._view_scene(name, sizes)
             if canvas is None:
                 continue

@@ -486,7 +486,7 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         w.show()
         w._set_mode("live")
         menu = w._preview_menu("vertical", -1)
-        full = next(a for a in menu.actions() if a.text() == "Full screen on…").menu()
+        full = next(a for a in menu.actions() if a.text() == "Show full screen on").menu()
         labels = [a.text() for a in full.actions() if a.text()]
         assert labels[0].startswith("Monitor 1:") and "In a window" in labels
         assert len(menu.actions()) == 1  # Live: only the projector, no editing items
@@ -509,6 +509,68 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_projector_shows_a_bloom_or_a_source_from_its_right_click_menu(app, tmp_path, monkeypatch):
+    import keyring
+    import types
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ProjectorTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SceneItem, SourceConfig
+
+    col = _collection()
+    col.sources.append(SourceConfig(id="cam", kind="color", name="Facecam"))
+    col.scenes[1].items.append(SceneItem(source="cam"))
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._set_mode("live")
+        menu = w.live_panel.scene_menu("h2")  # a bloom tile that isn't on air
+        full = next(a for a in menu.actions() if a.text() == "Show full screen on").menu()
+        next(a for a in full.actions() if a.text() == "In a window").trigger()
+        bloom = w.projectors[-1]
+        assert bloom.view and w.engine.views[bloom.view] == ("horizontal", "bloom", "h2")
+        assert "BRB" in bloom.windowTitle() and bloom.view not in w._watched_previews()
+        bloom.tap(types.SimpleNamespace(data=b"\x00" * (4 * 4 * 4), width=4, height=4))
+        w._poll_engine()  # the newest frame reaches the projector on the UI thread
+        assert bloom.pending is None and bloom._image is not None
+        source = w.open_projector("horizontal", None, "source", "cam")
+        assert w.engine.views[source.view] == ("horizontal", "source", "cam") and "Facecam" in source.windowTitle()
+        bloom.close()
+        assert bloom.view not in w.engine.views and not w.engine._taps.get(f"view:{bloom.view}")
+        source.close()
+        assert w.engine.views == {} and w.projectors == []
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_projector_views_are_drawn_at_screen_rate_only():
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection
+    from sprigcast.render.engine import Engine
+
+    class Fake:
+        def __init__(self):
+            self.drawn = 0
+
+        def render(self, *a, **k):
+            self.drawn += 1
+
+        def read(self, key):
+            return b""
+
+    engine = Engine(SceneCollection(canvases=[Canvas(id="h", width=16, height=9)],
+                                    scenes=[Scene(id="a", name="A", canvas="h")], active_scenes={"h": "a"}))
+    fake, got = Fake(), []
+    engine.set_view("p", "h", "bloom", "a")
+    taps = {"view:p": [(got.append, None)]}
+    for i in range(6):  # 60 ticks a second: every other one is drawn
+        engine._render_views(fake, {}, 10 + i / 60, taps)
+    assert fake.drawn == 3 and len(got) == 3
 
 
 def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):

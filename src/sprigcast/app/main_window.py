@@ -869,41 +869,73 @@ class MainWindow(QMainWindow):
         if index < 0 and not canvas_id.startswith("part:"):
             if menu.actions():
                 menu.addSeparator()
-            self._fill_projector_menu(menu.addMenu("Full screen on…"), canvas_id)
+            self._fill_projector_menu(menu.addMenu("Show full screen on"), canvas_id)
             if self.mode != "live":
                 menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
         return menu
 
     # Projectors ------------------------------------------------------------------------
 
-    def _fill_projector_menu(self, menu: QMenu, canvas_id: str) -> None:
+    def _fill_projector_menu(self, menu: QMenu, canvas_id: str, kind: str = "canvas", ref: str = "") -> None:
+        """Monitors to show this on full screen, or a window. kind: "canvas" (canvas_id is what's on air),
+        "bloom" (ref is a bloom or sprig id) or "source" (ref is a source id)."""
         from sprigcast.app.projector import screen_label
 
+        target = (kind, ref or canvas_id)
         for i, screen in enumerate(QGuiApplication.screens()):
             menu.addAction(screen_label(i, screen)).triggered.connect(
-                lambda _=False, sc=screen: self.open_projector(canvas_id, sc))
+                lambda _=False, sc=screen: self.open_projector(canvas_id, sc, kind, ref))
         menu.addSeparator()
-        menu.addAction("In a window").triggered.connect(lambda: self.open_projector(canvas_id, None))
-        if any(p.canvas_id == canvas_id for p in self.projectors):
-            menu.addAction("Close this canvas's projectors").triggered.connect(
-                lambda: [p.close() for p in list(self.projectors) if p.canvas_id == canvas_id])
+        menu.addAction("In a window").triggered.connect(lambda: self.open_projector(canvas_id, None, kind, ref))
+        if any(p.target == target for p in self.projectors):
+            menu.addAction("Close its projectors").triggered.connect(
+                lambda: [p.close() for p in list(self.projectors) if p.target == target])
 
-    def open_projector(self, canvas_id: str, screen):
-        """Show a canvas full screen on `screen` (None: in a window). One per screen: a new one replaces it."""
+    def _projector_menu(self, menu: QMenu, kind: str, ref: str) -> None:
+        """Add "Show full screen on" for a bloom, sprig or source."""
+        if kind == "bloom":
+            scene = next((sc for sc in self.collection.scenes if sc.id == ref), None)
+            if scene is None:
+                return
+            canvas_id = scene.canvas
+        else:  # a source: on the shape of the bloom it's in
+            scene = self._scene()
+            canvas_id = scene.canvas if scene is not None else self.collection.canvases[0].id
+        self._fill_projector_menu(menu.addMenu("Show full screen on"), canvas_id, kind, ref)
+
+    def open_projector(self, canvas_id: str, screen, kind: str = "canvas", ref: str = ""):
+        """Show a canvas (or a bloom, sprig or source on that canvas's size) full screen on `screen`
+        (None: in a window). One per screen: a new one replaces it."""
         from sprigcast.app.projector import Projector
 
         if screen is not None:
             for old in [p for p in self.projectors if p.screen() is screen and p.isFullScreen()]:
                 old.close()
-        canvas = self.collection.canvas(canvas_id)
-        projector = Projector(canvas_id, canvas_id.capitalize() if canvas else canvas_id, screen,
-                              self._projector_closed)
+        if kind == "canvas":
+            canvas = self.collection.canvas(canvas_id)
+            projector = Projector(canvas_id, canvas_id.capitalize() if canvas else canvas_id, screen,
+                                  self._projector_closed)
+        else:
+            self._projector_count = getattr(self, "_projector_count", 0) + 1
+            view = f"projector{self._projector_count}"
+            if kind == "bloom":
+                title = next((sc.name for sc in self.collection.scenes if sc.id == ref), ref)
+            else:
+                config = next((c for c in self.collection.sources if c.id == ref), None)
+                title = config.name if config is not None else ref
+            projector = Projector(canvas_id, title, screen, self._projector_closed, view=view)
+            self.engine.set_view(view, canvas_id, kind, ref)
+            self.engine.add_frame_tap(f"view:{view}", projector.tap)
+        projector.target = (kind, ref or canvas_id)
         self.projectors.append(projector)
         return projector
 
     def _projector_closed(self, projector) -> None:
         if projector in self.projectors:
             self.projectors.remove(projector)
+        if projector.view is not None:
+            self.engine.remove_frame_tap(f"view:{projector.view}", projector.tap)
+            self.engine.set_view(projector.view, None)
 
     def _fill_capture_sound_menu(self, menu: QMenu, capture_id: str) -> None:
         """A capture's own sound, like OBS's Capture audio: none, the app's own, or an output such as
@@ -955,6 +987,12 @@ class MainWindow(QMainWindow):
                     lambda _=False, sid=item.source: self.browser_host.reload(sid))
                 menu.addAction("Interact…").triggered.connect(
                     lambda _=False, sid=item.source: self._interact(sid))
+            if item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS:
+                if self.collection.source(item.source).kind == PART_KIND:
+                    part = self.collection.source(item.source).settings.get("scene", "")
+                    self._projector_menu(menu, "bloom", part)
+                else:
+                    self._projector_menu(menu, "source", item.source)
             count = len(self.source_list.selectedItems())
             turn = menu.addAction(f"Turn into {a(PART)}…" if count < 2 else f"Turn these {count} into {a(PART)}…")
             turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
@@ -1026,6 +1064,8 @@ class MainWindow(QMainWindow):
                 states.triggered.connect(lambda _=False, pid=part.id: self._edit_states(pid))
                 self._fill_move_menu(menu.addMenu("Move to folder"), part)
                 menu.addSeparator()
+            self._projector_menu(menu, "bloom", scene.id)
+            menu.addSeparator()
             menu.addAction("Rename…").triggered.connect(self._rename_scene)
             menu.addAction("Remove").triggered.connect(self._remove_scene)
             menu.addSeparator()
@@ -1629,6 +1669,7 @@ class MainWindow(QMainWindow):
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, self._set_studio, self._studio_go,
                                     self._edit_in_build)
+        self.live_panel.on_project = lambda menu, sid: self._projector_menu(menu, "bloom", sid)
         self._build_transition_menu()
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
@@ -2386,7 +2427,7 @@ class MainWindow(QMainWindow):
 
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
-        projected = {p.canvas_id for p in self.projectors}
+        projected = {p.canvas_id for p in self.projectors if p.view is None}
         if self.isMinimized() or not self.isVisible():
             return frozenset(projected)  # a projector keeps showing while the main window is down
         keys = projected | {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
@@ -2407,13 +2448,16 @@ class MainWindow(QMainWindow):
                 r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
                 aw, ah = preview.aspect  # zoomed in, never ask for more pixels than the canvas has
                 sizes[key] = (min(int(r.width() * dpr), int(aw)), min(int(r.height() * dpr), int(ah)))
-        for projector in self.projectors:  # a projector wants its screen's worth of pixels
+        for projector in [p for p in self.projectors if p.view is None]:  # a screen's worth of pixels
             pw, ph = projector.pixel_size()
             old = sizes.get(projector.canvas_id, (0, 0))
             sizes[projector.canvas_id] = (max(old[0], pw), max(old[1], ph))
         return sizes
 
     def _poll_engine(self) -> None:
+        for projector in self.projectors:
+            if projector.view is not None:
+                projector.take_pending()
         watched = self._watched_previews()
         if watched != self.engine.previews:
             self.engine.previews = watched
@@ -2426,7 +2470,7 @@ class MainWindow(QMainWindow):
                 continue
             view = self.engine.staged if self.mode == "build" else {}
             for projector in self.projectors:
-                if projector.canvas_id == canvas_id:
+                if projector.view is None and projector.canvas_id == canvas_id:
                     projector.set_frame(frame.data, frame.width, frame.height)
             if canvas_id in self.previews:
                 if canvas_id not in view:  # else the preview shows the bloom being edited (next:)
