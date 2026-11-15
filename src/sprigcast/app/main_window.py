@@ -2093,6 +2093,7 @@ class MainWindow(QMainWindow):
             self.mode_actions[mode] = action
         self.mode_actions["build"].setChecked(True)
         bar.addWidget(pills)
+        bar.addWidget(self.gardens.make_chip())  # the garden and path in use; click to switch
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
@@ -5726,7 +5727,9 @@ class MainWindow(QMainWindow):
     def _on_hotkey(self, action: str) -> None:
         from sprigcast.app.hotkeys import MUTE_ALL, SOUND_PREFIX, TOGGLE_CLIPS, TOGGLE_MODE
 
-        if action == TOGGLE_CLIPS:
+        if action.startswith(("garden:", "path:")):
+            self.gardens.hotkey(action)
+        elif action == TOGGLE_CLIPS:
             self._toggle_replay(self.replay is None)
         elif action == TOGGLE_MODE:
             self._set_mode("live" if self.mode == "build" else "build")

@@ -5,8 +5,17 @@ from importlib import resources
 
 import pytest
 
-from sprigcast.core.convert import (ConvertError, convert, detect, divider_name, from_obs, obs_color, read_json,
-                                    scene_collection_files, strip_vertical)
+from sprigcast.core.convert import (
+    ConvertError,
+    convert,
+    detect,
+    divider_name,
+    from_obs,
+    obs_color,
+    read_json,
+    scene_collection_files,
+    strip_vertical,
+)
 from sprigcast.core.scene import PART_KIND, SceneCollection
 
 MAIN = "6c69626f-6273-4c00-9d88-c5136d61696e"
@@ -92,7 +101,10 @@ def test_obs_blooms_sprigs_folders_and_vertical_twins():
     assert col.scene(rule.to_scene).name == "Just Chatting" and rule.transition.stinger.cut_ms == 650
     assert col.transition.kind == "fade" and col.transition.duration_ms == 400
     assert any("Playlist" in n for n in notes) and any("Fancy blur" in n for n in notes)
-    assert any("Mic" in n and "sound device" in n for n in notes)
+    assert any("[AIC] Mic: uses your" in n for n in notes)  # OBS's only mic, its device not here: your Mic
+    assert not any(c.name == "[AIC] Mic" for c in col.sources)
+    mic = next(c for c in col.sources if c.id in col.global_device_ids() and c.kind == "audio_input")
+    assert mic.settings["muted"] is True and [f.kind for f in mic.filters] == ["compressor"]
     SceneCollection.model_validate(col.model_dump())
 
 
@@ -197,3 +209,40 @@ def test_scenes_without_dividers_are_sorted_by_what_they_hold():
     assert where["Music"] == "Audio Scenes" and where["Corner"] == "Capture Scenes"
     shows = [s for s in col.scenes if s.kind == "show" and s.shape_of is None]
     assert all(col.folder(s.folder).name == "Main Scenes" for s in shows)
+
+
+def test_sounds_are_not_doubled_and_play_in_their_blooms():
+    data = obs_file()
+    data["sources"] += [
+        {"id": "wasapi_output_capture", "name": "Desktop", "uuid": "a1", "settings": {"device_id": "default"}},
+        {"id": "wasapi_output_capture", "name": "[AOC] Voice Chat", "uuid": "a2", "settings": {"device_id": "{x}"}},
+        {"id": "wasapi_output_capture", "name": "[AOC] Music", "uuid": "a3", "settings": {"device_id": "{y}"}},
+    ]
+    brb = next(s for s in data["sources"] if s.get("name") == "BRB")
+    brb["settings"]["items"].append(_item("a3"))
+    like = _like()
+    col, notes = from_obs(data, like, audio_devices=["Voice Chat (Elgato Virtual Audio)"])
+    names = {c.name: c for c in col.sources}
+    assert "Desktop" not in names  # OBS's default desktop sound is your Desktop audio
+    assert names["[AOC] Voice Chat"].settings["device"] == "Voice Chat (Elgato Virtual Audio)"
+    assert names["[AOC] Music"].settings["muted"] is True  # its device isn't here: quiet, not doubled
+    bloom = next(s for s in col.scenes if s.kind == "show" and s.name == "BRB")
+    assert names["[AOC] Music"].settings["blooms"] == [bloom.id]
+    assert "blooms" not in names["[AOC] Voice Chat"].settings  # in no scene: plays everywhere
+
+
+def test_obs_hotkeys_and_text():
+    data = obs_file()
+    brb = next(s for s in data["sources"] if s.get("name") == "BRB")
+    brb["hotkeys"] = {"OBSBasic.SelectScene": [{"key": "OBS_KEY_F2", "control": True, "alt": True}]}
+    data["sources"].append({"id": "text_gdiplus_v3", "name": "Title", "uuid": "t1",
+                            "settings": {"text": "Hello", "font": {"face": "Segoe UI", "size": 48}}})
+    brb["settings"]["items"].append(_item("t1", 960, 540, align=0))
+    col, _ = from_obs(data, _like())
+    bloom = next(s for s in col.scenes if s.kind == "show" and s.name == "BRB")
+    assert col.hotkeys[f"scene:{bloom.id}"] == "Ctrl+Alt+F2"
+    title = next(c for c in col.sources if c.name == "Title")
+    assert title.settings["font"] == "segoeui.ttf"
+    sprig = next(s for s in col.parts() if s.name == "BRB")
+    item = next(i for i in sprig.items if i.source == title.id)
+    assert item.x < 960 and item.y < 540  # the text's real size was used to centre it

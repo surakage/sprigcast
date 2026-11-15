@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -42,6 +43,7 @@ from sprigcast.core.gardens import (
     ShelfError,
     exports_folder,
     file_name,
+    find_in_folder,
     missing_files,
     replace_file,
 )
@@ -51,6 +53,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+SHELF_HOTKEYS = ("garden:", "path:")  # hotkeys that switch gardens and paths
 WORDS = {"garden": (COLLECTION, COLLECTIONS), "path": (PROFILE, PROFILES)}
 
 
@@ -61,6 +64,13 @@ class GardenControl:
         self.w = window
         self.shelf = shelf
         self.last_notes: list[str] = []  # what the last import couldn't bring over
+        from sprigcast.app import hotkeys
+
+        hotkeys.shelf_actions = self.hotkey_actions
+
+    def hotkey_actions(self) -> list[tuple[str, str]]:
+        return [*((f"garden:{g.id}", f"{cap(COLLECTION)}: {g.name}") for g in self.shelf.gardens()),
+                *((f"path:{p.id}", f"{cap(PROFILE)}: {p.name}") for p in self.shelf.paths())]
 
     # What the API sees --------------------------------------------------------------------------
 
@@ -129,6 +139,9 @@ class GardenControl:
             entry, incoming = self.shelf.use_garden(entry_id, w.collection)
         except (ShelfError, OSError, ValueError) as exc:
             return str(exc) if isinstance(exc, ShelfError) else "That garden's file can't be read."
+        # Hotkeys that switch gardens and paths work from every garden: they come along.
+        incoming.hotkeys = {**{k: v for k, v in incoming.hotkeys.items() if not k.startswith(SHELF_HOTKEYS)},
+                            **{k: v for k, v in w.collection.hotkeys.items() if k.startswith(SHELF_HOTKEYS)}}
         w.scenes_path = self.shelf.garden_file(entry)
         w.selected_folder_id = None
         w.live_panel.thumbs.clear()
@@ -154,6 +167,7 @@ class GardenControl:
 
     def _changed(self) -> None:
         self.w.update_title()
+        self.refresh_chip()
         control = getattr(self.w, "control", None)
         if control is not None:
             control.soon()
@@ -162,6 +176,10 @@ class GardenControl:
         return self.shelf.taken_output_ids()
 
     def close(self) -> None:
+        from sprigcast.app import hotkeys
+
+        if hotkeys.shelf_actions == self.hotkey_actions:  # a closed window's gardens aren't offered any more
+            hotkeys.shelf_actions = hotkeys._no_shelf
         try:
             self.shelf.sync_path(self.w.collection)
         except OSError as exc:
@@ -217,7 +235,63 @@ class GardenControl:
             QMessageBox.information(self.w, "SprigCast", problem)
 
     def _pick(self, kind: str, entry_id: str) -> None:
+        if kind == "garden" and self.w.streaming is not None:
+            name = self.shelf.find("garden", entry_id).name
+            answer = QMessageBox.question(self.w, "SprigCast", f"You're live. Switch to {name} now?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self._report(self.switch(kind, entry_id))
+
+    def hotkey(self, action: str) -> None:
+        """A "garden:<id>" or "path:<id>" hotkey."""
+        kind, _, entry_id = action.partition(":")
+        problem = self.switch(kind, entry_id)
+        if problem:
+            self.w.statusBar().showMessage(problem, 6000)
+
+    # The chip in the header: which garden and path are in use, and a quick way to switch ------
+
+    def make_chip(self) -> QToolButton:
+        from sprigcast.app import icons, theme
+
+        chip = QToolButton()
+        chip.setObjectName("shelfChip")
+        chip.setIcon(icons.icon("leaf", theme.ACCENT, 16))
+        chip.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        chip.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        chip.setStyleSheet(
+            f"QToolButton#shelfChip {{ background: {theme.PANEL}; border: none; border-radius: 18px;"
+            f" padding: 8px 16px; color: {theme.TEXT}; }}"
+            f"QToolButton#shelfChip:hover {{ background: {theme.RAISED}; }}"
+            "QToolButton#shelfChip::menu-indicator { image: none; width: 0; }")
+        menu = QMenu(chip)
+        menu.aboutToShow.connect(lambda: self._fill_chip(menu))
+        chip.setMenu(menu)
+        self.chip = chip
+        self.refresh_chip()
+        return chip
+
+    def refresh_chip(self) -> None:
+        chip = getattr(self, "chip", None)
+        if chip is not None:
+            garden, path = self.shelf.garden().name, self.shelf.path().name
+            chip.setText(f"{garden}  ·  {path}".replace("&", "&&"))
+            chip.setToolTip(f"{cap(COLLECTION)}: {garden}\n{cap(PROFILE)}: {path}")
+
+    def _fill_chip(self, menu: QMenu) -> None:
+        menu.clear()
+        for kind in ("garden", "path"):
+            entries = self.shelf.gardens() if kind == "garden" else self.shelf.paths()
+            current = (self.shelf.garden() if kind == "garden" else self.shelf.path()).id
+            menu.addSection(cap(WORDS[kind][1]))
+            locked = kind == "path" and self.busy()
+            for entry in entries:
+                action = menu.addAction(entry.name.replace("&", "&&"))
+                action.setCheckable(True)
+                action.setChecked(entry.id == current)
+                action.setEnabled(not locked or entry.id == current)
+                action.triggered.connect(lambda _=False, k=kind, e=entry.id: self._pick(k, e))
 
     def _ask_name(self, title: str, text: str = "") -> str | None:
         name, ok = QInputDialog.getText(self.w, title, "Name:", text=text)
@@ -357,7 +431,10 @@ class MissingFiles(QDialog):
         self.box.addWidget(self.rows)
         close = QPushButton("Done")
         close.clicked.connect(self.accept)
+        self.look = QPushButton("Look in a folder…")
+        self.look.clicked.connect(self.look_in_folder)
         end = QHBoxLayout()
+        end.addWidget(self.look)
         end.addStretch(1)
         end.addWidget(close)
         self.box.addLayout(end)
@@ -369,6 +446,8 @@ class MissingFiles(QDialog):
             if item.widget() is not None:
                 item.widget().deleteLater()
         missing = missing_files(self.w.collection)
+        if hasattr(self, "look"):
+            self.look.setVisible(bool(missing))
         if not missing:
             self.rows_box.addWidget(QLabel("Every file is there."))
             return
@@ -384,6 +463,22 @@ class MissingFiles(QDialog):
             holder.setLayout(row)
             row.setContentsMargins(0, 0, 0, 0)
             self.rows_box.addWidget(holder)
+
+    def look_in_folder(self) -> None:
+        """Find every missing file at once in a folder you pick (e.g. the drive they moved to)."""
+        folder = QFileDialog.getExistingDirectory(self, "Look in a folder", str(Path.home()))
+        if not folder:
+            return
+        self.relink(find_in_folder(missing_files(self.w.collection), Path(folder)))
+
+    def relink(self, found: dict[str, str]) -> None:
+        changed = sum(replace_file(self.w.collection, old, new) for old, new in found.items())
+        if changed:
+            self.w._changed()
+            self.w._refresh_sources()
+        self.w.statusBar().showMessage(f"Found {len(found)} file(s)." if found else "None of them are in that folder.",
+                                       6000)
+        self.fill()
 
     def locate(self, old: str) -> None:
         start = Path(old).parent if Path(old).parent.exists() else Path.home()

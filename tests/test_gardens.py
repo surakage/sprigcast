@@ -274,3 +274,32 @@ def test_window_imports_an_obs_scene_collection(window, tmp_path):
     assert w.gardens.last_notes
     (tmp_path / "junk.json").write_text("[]", encoding="utf-8")
     assert "isn't a scene collection" in w.gardens.import_garden(tmp_path / "junk.json")
+
+
+def test_find_missing_files_in_a_folder(tmp_path):
+    from sprigcast.core.gardens import find_in_folder
+
+    (tmp_path / "Overlays" / "old").mkdir(parents=True)
+    (tmp_path / "Overlays" / "frame.png").write_bytes(b"x")
+    (tmp_path / "Other").mkdir()
+    (tmp_path / "Other" / "frame.png").write_bytes(b"x")
+    found = find_in_folder(["C:\\Stream\\Overlays\\frame.png", "D:/gone/nowhere.webm"], tmp_path)
+    assert found == {"C:\\Stream\\Overlays\\frame.png": str(tmp_path / "Overlays" / "frame.png")}
+
+
+def test_window_chip_and_switch_hotkeys(window, tmp_path):
+    from sprigcast.app import hotkeys
+
+    w = window
+    g = w.gardens
+    assert g.chip.text() == "Main  ·  Main"
+    event = g.shelf.new_garden("Event", w.collection)
+    twitch = g.shelf.new_path("Twitch only", w.collection)
+    actions = dict(hotkeys.actions(w.collection))
+    assert actions[f"garden:{event.id}"] == "Garden: Event" and actions[f"path:{twitch.id}"] == "Path: Twitch only"
+    w.collection.hotkeys[f"garden:{event.id}"] = "Ctrl+F9"
+    w._on_hotkey(f"path:{twitch.id}")
+    assert g.shelf.path().name == "Twitch only" and g.chip.text() == "Main  ·  Twitch only"
+    w._on_hotkey(f"garden:{event.id}")
+    assert g.shelf.garden().name == "Event"
+    assert w.collection.hotkeys[f"garden:{event.id}"] == "Ctrl+F9"  # came along to the other garden

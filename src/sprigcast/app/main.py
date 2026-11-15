@@ -196,6 +196,7 @@ def run() -> None:
 
     shelf = Shelf(config_dir())  # Gardens and Paths; the first run with them keeps your setup as "Main"
     scenes_path = shelf.garden_file()
+    had_garden = scenes_path.exists()
     try:
         collection = load_collection(scenes_path)
     except Exception as exc:
@@ -209,6 +210,14 @@ def run() -> None:
     changed = lean_stream(collection) or changed
     if changed:
         collection.save(scenes_path)
+    fresh = not had_garden or scenes_path.with_suffix(".broken.json").exists() and \
+        scenes_path.with_suffix(".broken.json").stat().st_mtime >= scenes_path.stat().st_mtime - 5
+    if fresh and shelf.path_file().exists():
+        try:  # a new or rebuilt garden: your path's settings go into it, not the other way round
+            shelf.load_path(shelf.path()).apply_to(collection)
+            collection.save(scenes_path)
+        except (OSError, ValueError) as exc:
+            logging.warning("could not read the path: %s", exc)
     try:
         shelf.sync_path(collection)  # the garden holds the newest copy of the path in use
     except OSError as exc:

@@ -111,6 +111,13 @@ def convert(data: Any, like: SceneCollection, size_of: SizeOf | None = None,
 
 def file_size_of(kind: str, settings: dict[str, Any]) -> tuple[int, int] | None:
     """The default size_of: reads pictures (Pillow) and videos (PyAV) that are on this PC."""
+    if kind == "text":
+        try:  # drawn the way SprigCast draws it
+            from sprigcast.sources.text import TextSource
+
+            return TextSource("size", dict(settings)).size
+        except Exception:
+            return None
     path = str(settings.get("path", "") or "")
     if not path or not Path(path).is_file():
         return None
@@ -223,7 +230,9 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
                         "width": int(_num(s.get("width"), 1920)), "height": int(_num(s.get("height"), 1080))}
     elif kind.startswith(("text_gdiplus", "text_ft2_source")):
         font = s.get("font") or {}
+        face = re.sub(r"[^a-z0-9]", "", str(font.get("face", "")).lower())
         settings = {"text": str(s.get("text", "")), "size": int(_num(font.get("size"), 72)),
+                    **({"font": f"{face}.ttf"} if face else {}),
                     "color": obs_color(s.get("color", s.get("color1", 0xFFFFFFFF)))}
         if s.get("read_from_file") or s.get("from_file"):
             settings["file"] = str(s.get("file", s.get("text_file", "")))
@@ -257,7 +266,11 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     elif kind in ("wasapi_input_capture", "wasapi_output_capture", "coreaudio_input_capture",
                   "coreaudio_output_capture", "pulse_input_capture", "pulse_output_capture"):
         sk = "audio_input" if "input" in kind else "audio_output"
-        out = sk, {"device": _device(name, str(s.get("device_id", "default")), audio_devices, notes)}
+        device_id = str(s.get("device_id", "default") or "default")
+        device = "default" if device_id == "default" else _device(name, device_id, audio_devices)
+        out = sk, {"device": device or "default"}
+        if device is None:  # not found here: kept quiet, so it can't double another sound
+            out[1]["unmatched"] = True
     elif kind == "wasapi_process_output_capture":
         _title, exe = _window_parts(s.get("window", ""))
         out = "app_audio", {"apps": [exe] if exe else []}
@@ -271,16 +284,13 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     return SourceConfig(id="", kind=sk, name=name, settings=settings, filters=_filters(obs, notes))
 
 
-def _device(name: str, device_id: str, devices: list[str] | None, notes: list[str]) -> str:
+def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
     """OBS names sound devices by a Windows id, SprigCast by name: match the source's name to one."""
-    if device_id in ("", "default"):
-        return "default"
     clean = re.sub(r"^\s*\[[^\]]*\]\s*", "", name).strip().casefold()  # "[AOC] Voice Chat" -> "voice chat"
     for device in devices or []:
         if clean and (clean in device.casefold() or device.casefold().split(" (")[0] == clean):
             return device
-    notes.append(f"{name}: pick its sound device again (it's on the default one).")
-    return "default"
+    return None
 
 
 _KEY_COLORS = {"green": "#00ff00", "blue": "#0000ff", "magenta": "#ff00ff"}
@@ -448,6 +458,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         config.id = col.new_id(_slug_prefix(config.kind))
         col.sources.append(config)
         sources[id(obs)] = config
+    _merge_sounds(col, sources, keep, notes)
 
     # Scenes and groups: ids first, so items can point at any of them.
     made: dict[int, Scene] = {}
@@ -543,8 +554,10 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         col.active_scenes[canvas_id] = on.id
 
     _transitions(data, col, by_name, made, notes)
+    _hotkeys(raw, made, sources, col)
     col.wrap_blooms()
     sort_by_content(col)
+    plays_in(col)
     if not any(s.kind == "show" for s in col.scenes):
         raise ConvertError("That scene collection has no scenes.")
     col = SceneCollection.model_validate(col.model_dump())
@@ -591,6 +604,122 @@ def sort_by_content(col: SceneCollection) -> None:
             scene.folder = folder(name, scene).id
 
 
+def _merge_sounds(col: SceneCollection, sources: dict[int, SourceConfig], globals_: set[str],
+                  notes: list[str]) -> None:
+    """Sounds the import would double: OBS's mic (or desktop sound) on the default device, or the only mic
+    it has when that device isn't on this PC, becomes your Mic (or Desktop audio) from Settings → Audio,
+    with OBS's volume, mute and filters. Other sounds whose device isn't here start muted."""
+    mine = {c.kind: c for c in col.sources if c.id in globals_ and c.kind in ("audio_input", "audio_output")}
+    imported = [c for c in sources.values() if c.kind in ("audio_input", "audio_output")]
+    mics = [c for c in imported if c.kind == "audio_input"]
+    for config in imported:
+        unmatched = bool(config.settings.pop("unmatched", False))
+        target = mine.get(config.kind)
+        merge = target is not None and (config.settings["device"] == "default" and not unmatched
+                                         or unmatched and config.kind == "audio_input" and len(mics) == 1)
+        if merge:
+            target.settings["volume_db"] = config.settings.get("volume_db", 0.0)
+            target.settings["muted"] = config.settings.get("muted", False)
+            if config.filters:
+                target.filters = config.filters
+            for key, value in list(sources.items()):
+                if value is config:
+                    sources[key] = target
+            col.sources.remove(config)
+            mine.pop(config.kind)  # one OBS sound per device of yours
+            notes.append(f"{config.name}: uses your {target.name} from Settings → Audio.")
+        elif unmatched:
+            config.settings["muted"] = True
+            notes.append(f"{config.name}: muted until you pick its sound device (that device wasn't found).")
+
+
+def plays_in(col: SceneCollection) -> None:
+    """In OBS a sound plays only while a scene holding it is on air: Plays in picks the same blooms.
+    A sound in every bloom (or in none) plays everywhere, as before."""
+    kinds = {c.id: c for c in col.sources}
+    reach: dict[str, set[str]] = {}
+
+    def inside(scene: Scene, seen: frozenset = frozenset()) -> set[str]:
+        out: set[str] = set()
+        for layout in [scene, *col.shapes(scene)] if scene.kind == "part" else [scene]:
+            for item in layout.items:
+                config = kinds.get(item.source)
+                if config is None:
+                    continue
+                out.add(config.id)
+                part_id = config.settings.get("scene") if config.kind == PART_KIND else None
+                if part_id and part_id not in seen:
+                    try:
+                        out |= inside(col.scene(part_id), seen | {part_id})
+                    except StopIteration:
+                        pass
+        return out
+
+    blooms = col.bloom_choices()
+    for bloom in blooms:
+        reach[bloom.id] = inside(bloom).union(*(inside(t) for t in col.linked_with(bloom.id) if t.id != bloom.id))
+    globals_ = set(col.global_device_ids())  # your own Mic and Desktop audio keep playing everywhere
+    for config in col.sources:
+        if config.kind not in ("audio_input", "audio_output", "app_audio") or config.settings.get("blooms") \
+                or config.id in globals_:
+            continue
+        where = [b.id for b in blooms if config.id in reach[b.id]]
+        if where and len(where) < len(blooms):
+            config.settings["blooms"] = where
+
+
+_OBS_KEYS = {"SPACE": "Space", "RETURN": "Return", "ENTER": "Enter", "ESCAPE": "Esc", "TAB": "Tab",
+             "BACKSPACE": "Backspace", "INSERT": "Ins", "DELETE": "Del", "HOME": "Home", "END": "End",
+             "PAGEUP": "PgUp", "PAGEDOWN": "PgDown", "LEFT": "Left", "RIGHT": "Right", "UP": "Up", "DOWN": "Down",
+             "PAUSE": "Pause", "PRINT": "Print", "SCROLLLOCK": "ScrollLock", "MINUS": "-", "EQUAL": "=",
+             "COMMA": ",", "PERIOD": ".", "SLASH": "/", "SEMICOLON": ";", "APOSTROPHE": "'",
+             "BRACKETLEFT": "[", "BRACKETRIGHT": "]", "BACKSLASH": "\\", "QUOTELEFT": "`"}
+
+
+def obs_key(binding: dict[str, Any]) -> str | None:
+    """One OBS hotkey binding ({"key": "OBS_KEY_F1", "control": true}) as Qt's "Ctrl+F1"."""
+    key = str(binding.get("key", "")).removeprefix("OBS_KEY_")
+    if key.startswith("NUM") and key[3:].isdigit():
+        key = key[3:]
+    if len(key) == 1 and key.isalnum() or key.startswith("F") and key[1:].isdigit():
+        name = key
+    else:
+        name = _OBS_KEYS.get(key)
+    if not name:
+        return None
+    mods = [label for flag, label in (("control", "Ctrl"), ("alt", "Alt"), ("shift", "Shift"), ("command", "Meta"))
+            if binding.get(flag)]
+    return "+".join([*mods, name])
+
+
+def _hotkeys(raw: list[dict[str, Any]], made: dict[int, Scene], sources: dict[int, SourceConfig],
+             col: SceneCollection) -> None:
+    """OBS's scene keys show the bloom; a sound's mute and unmute keys come along too."""
+    taken: set[str] = set()
+
+    def first(bindings: Any) -> str | None:
+        for binding in bindings if isinstance(bindings, list) else []:
+            combo = obs_key(binding) if isinstance(binding, dict) else None
+            if combo and combo not in taken:
+                taken.add(combo)
+                return combo
+        return None
+
+    for obs in raw:
+        keys = obs.get("hotkeys") or {}
+        scene = made.get(id(obs))
+        if scene is not None and scene.kind == "show":
+            combo = first(keys.get("OBSBasic.SelectScene"))
+            if combo:
+                col.hotkeys[f"scene:{scene.id}"] = combo
+        config = sources.get(id(obs))
+        if config is not None and config.kind in ("audio_input", "audio_output", "app_audio"):
+            for obs_name, what in (("libobs.mute", "mute"), ("libobs.unmute", "unmute")):
+                combo = first(keys.get(obs_name))
+                if combo:
+                    col.hotkeys[f"sound:{config.id}:{what}"] = combo
+
+
 AUDIO_IDS = {"wasapi_input_capture", "wasapi_output_capture", "coreaudio_input_capture", "coreaudio_output_capture",
              "pulse_input_capture", "pulse_output_capture"}
 
@@ -616,7 +745,7 @@ def _size(config: SourceConfig, size_of: SizeOf, canvas: tuple[float, float]) ->
         return _num(s.get("width"), 1920), _num(s.get("height"), 1080)
     if config.kind in ("display_capture", "window_capture", "game_capture"):
         return canvas
-    if config.kind in ("image", "media"):
+    if config.kind in ("image", "media", "text"):
         found = size_of(config.kind, s)
         return (float(found[0]), float(found[1])) if found else None
     return None
