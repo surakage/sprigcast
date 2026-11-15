@@ -4510,7 +4510,7 @@ class MainWindow(QMainWindow):
             from sprigcast.core.capture_sound import APP, capture_sound, follow_capture, set_capture_sound
 
             dialog = GameCaptureDialog(config.settings, list_windows(), capture_sound(self.collection, config.id)
-                                       is not None, self)
+                                       is not None, self, list_windows=list_windows)
             if not dialog.exec():
                 return
             changes, sound = dialog.values()

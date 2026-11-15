@@ -174,12 +174,33 @@ def _draw(p: QPainter, name: str) -> None:
         else:
             p.drawLine(P(16, 9.5), P(21, 14.5))
             p.drawLine(P(21, 9.5), P(16, 14.5))
+    elif name == "gamepad":  # a controller: rounded body, d-pad, two buttons
+        body = QPainterPath(P(7, 7.5))
+        body.lineTo(P(17, 7.5))
+        body.cubicTo(P(21, 7.5), P(22, 18.5), P(19, 18.5))
+        body.cubicTo(P(17, 18.5), P(16.5, 15.5), P(14.5, 15.5))
+        body.lineTo(P(9.5, 15.5))
+        body.cubicTo(P(7.5, 15.5), P(7, 18.5), P(5, 18.5))
+        body.cubicTo(P(2, 18.5), P(3, 7.5), P(7, 7.5))
+        p.drawPath(body)
+        p.drawLine(P(6, 11.5), P(10, 11.5))
+        p.drawLine(P(8, 9.5), P(8, 13.5))
+        p.drawPoint(P(15.5, 10.5))
+        p.drawPoint(P(17.5, 12.5))
+    elif name == "keyboard":
+        p.drawRoundedRect(QRectF(3, 6.5, 18, 11), 2.5, 2.5)
+        for x in (7, 10, 13, 16):
+            p.drawPoint(P(x, 10))
+        for x in (8.5, 11.5, 14.5):
+            p.drawPoint(P(x, 12.75))
+        p.drawLine(P(9, 15.5), P(15, 15.5))
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
 
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
-         "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off")
+         "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
+         "gamepad", "keyboard")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:
