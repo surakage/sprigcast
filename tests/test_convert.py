@@ -182,3 +182,18 @@ def test_helpers(tmp_path):
     (tmp_path / "obs-studio" / "basic" / "scenes" / "Streaming.json").write_text("{}", encoding="utf-8")
     (tmp_path / "obs-studio" / "basic" / "scenes" / "Streaming.json.bak").write_text("{}", encoding="utf-8")
     assert [p.name for p in scene_collection_files(tmp_path)["obs"]] == ["Streaming.json"]
+
+
+def test_scenes_without_dividers_are_sorted_by_what_they_hold():
+    data = obs_file()
+    data["scene_order"] = [o for o in data["scene_order"] if not o["name"].startswith("---")]
+    data["sources"] = [s for s in data["sources"] if not s["name"].startswith("---")]
+    data["sources"].append(_scene("Webcam", "w1", [_item("d1")]))
+    data["sources"].append(_scene("Music", "mu", [_item("m1")]))
+    data["sources"].append(_scene("Live", "lv", [_item("w1"), _item("mu")]))
+    col, _ = from_obs(data, _like(), size_of=lambda kind, s: (200, 100))
+    where = {s.name: col.folder(s.folder).name for s in col.scenes if s.folder and s.shape_of is None}
+    assert where["Overlay"] == "Browser Scenes" and where["Webcam"] == "Capture Scenes"
+    assert where["Music"] == "Audio Scenes" and where["Corner"] == "Capture Scenes"
+    shows = [s for s in col.scenes if s.kind == "show" and s.shape_of is None]
+    assert all(col.folder(s.folder).name == "Main Scenes" for s in shows)

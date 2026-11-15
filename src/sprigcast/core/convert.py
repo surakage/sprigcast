@@ -544,10 +544,51 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
 
     _transitions(data, col, by_name, made, notes)
     col.wrap_blooms()
+    sort_by_content(col)
     if not any(s.kind == "show" for s in col.scenes):
         raise ConvertError("That scene collection has no scenes.")
     col = SceneCollection.model_validate(col.model_dump())
     return col, _dedupe(notes)
+
+
+# A sprig no divider sorted goes in the folder for what most of it is (ties: earlier in this list wins).
+CONTENT_FOLDERS = (
+    ("Capture Scenes", {"display_capture", "window_capture", "game_capture", "camera"}),
+    ("Browser Scenes", {"browser", "chat"}),
+    ("Media Scenes", {"media", "image", "text", "color"}),
+    ("Audio Scenes", {"audio_input", "audio_output", "app_audio"}),
+    ("Nested Scenes", {PART_KIND}),
+)
+MAIN_FOLDER = "Main Scenes"
+
+
+def content_folder(kinds: list[str]) -> str | None:
+    """The folder name for a sprig holding sources of these kinds, or None when it's empty."""
+    counts = [(sum(k in members for k in kinds), -i, name) for i, (name, members) in enumerate(CONTENT_FOLDERS)]
+    best = max(counts)
+    return best[2] if best[0] else None
+
+
+def sort_by_content(col: SceneCollection) -> None:
+    """Blooms no divider sorted go in Main Scenes; sprigs in Browser, Media, Audio, Capture or Nested Scenes
+    by what they hold. Folders that already have the name are reused."""
+    kinds = {c.id: c.kind for c in col.sources}
+
+    def folder(name: str, scene: Scene) -> SceneFolder:
+        holds = scene.kind
+        found = next((f for f in col.folders if f.name == name and f.holds == holds
+                      and (holds == "part" or f.canvas == scene.canvas)), None)
+        return found or col.add_folder(scene.canvas, name, holds=holds)
+
+    for scene in list(col.scenes):
+        if scene.folder is not None or scene.shape_of is not None:
+            continue
+        if scene.kind == "show":
+            scene.folder = folder(MAIN_FOLDER, scene).id
+            continue
+        name = content_folder([kinds.get(i.source, "") for i in scene.items])
+        if name is not None:
+            scene.folder = folder(name, scene).id
 
 
 AUDIO_IDS = {"wasapi_input_capture", "wasapi_output_capture", "coreaudio_input_capture", "coreaudio_output_capture",
