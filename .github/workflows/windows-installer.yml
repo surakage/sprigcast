@@ -72,6 +72,13 @@ jobs:
           $shell.SendKeys("{ENTER}"); Snap "2-location"
           $shell.SendKeys("{ENTER}"); Snap "3-extras"
           Get-Process | Where-Object { $_.ProcessName -like "SprigCast-Setup*" -or $_.ProcessName -like "*.tmp" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          # Also print them into the log (base64, in short lines), for reviewers that can read logs but not artifacts.
+          foreach ($f in Get-ChildItem $shots -Filter *.png) {
+            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName))
+            "SHOT-BEGIN $($f.Name)"
+            for ($i = 0; $i -lt $b64.Length; $i += 4000) { "SHOT " + $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i)) }
+            "SHOT-END $($f.Name)"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: SprigCast-Setup
