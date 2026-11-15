@@ -96,3 +96,29 @@ def test_installed_camera_counts_without_a_bundled_one(monkeypatch, tmp_path):
     assert virtualcam.supported() == (True, "")
     monkeypatch.setattr(virtualcam, "registered_path", lambda: None)
     assert not virtualcam.supported()[0]
+
+
+def test_privacy_block_names_the_switch_that_is_off():
+    values = {}
+    read = lambda hive, key, name: values.get((hive, key.rsplit("\\", 1)[-1], name))  # noqa: E731
+    assert virtualcam.privacy_block(read) == ""
+    values[("HKCU", "NonPackaged", "Value")] = "Deny"
+    assert "Desktop apps" in virtualcam.privacy_block(read)
+    values[("HKLM", "webcam", "Value")] = "Deny"
+    assert "this PC" in virtualcam.privacy_block(read)
+    values[("HKLM", "AppPrivacy", "LetAppsAccessCamera")] = 2
+    assert "organisation" in virtualcam.privacy_block(read)
+
+
+def test_refused_start_points_to_privacy(monkeypatch, tmp_path):
+    dll = types.SimpleNamespace(SC_Start=lambda name: -1072873851,  # 0xC00D3E85
+                                SC_Stage=lambda: 3, SC_SelfTest=lambda: 0)
+    monkeypatch.setattr(virtualcam, "registered_path", lambda: tmp_path / "x.dll")
+    monkeypatch.setattr(virtualcam.ctypes, "WinDLL", lambda path: dll, raising=False)
+    monkeypatch.setattr(virtualcam, "privacy_block", lambda: "")
+    monkeypatch.setattr(virtualcam, "needs_update", lambda: False)
+    cam = VirtualCamera(object(), lambda: [])
+    assert not cam.start() and cam.privacy and cam.error == virtualcam.PRIVACY_HINT
+    assert virtualcam.state.privacy_failed
+    monkeypatch.setattr(virtualcam, "needs_update", lambda: True)
+    assert not cam.start() and not cam.privacy and "Update the camera" in cam.error

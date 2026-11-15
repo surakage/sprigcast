@@ -400,6 +400,12 @@ class CameraTab(QWidget):
         self.remove.setCursor(Qt.CursorShape.PointingHandCursor)
         self.remove.clicked.connect(self._remove)
         row.addWidget(self.remove)
+        self.privacy = QPushButton("Open settings")
+        self.privacy.setToolTip("Windows Settings → Privacy & security → Camera")
+        self.privacy.setStyleSheet(theme.PILL_STYLE)
+        self.privacy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.privacy.clicked.connect(lambda: self.vc.open_privacy_settings())
+        row.addWidget(self.privacy)
         row.addStretch(1)
         inner.addLayout(row)
         inner.addWidget(_hint("Setting up copies the camera into Program Files and registers it with Windows. "
@@ -429,7 +435,13 @@ class CameraTab(QWidget):
             text = "Set up, but this SprigCast has a newer camera. Press Update."
         else:
             text = "Set up. It turns on when you press Apply." if self.on.isChecked() else "Set up."
+        blocked = self.vc.privacy_block() if ok else ""
+        if blocked:
+            text = f"{blocked} Windows won't add SprigCast Camera until you turn it on."
+        elif installed and self.vc.state.privacy_failed:
+            text = "Windows blocked the camera. Its camera settings may say why."
         self.status.setText(text)
+        self.privacy.setVisible(bool(blocked) or self.vc.state.privacy_failed)
         self.status.setStyleSheet(f"color: {theme.MUTED if installed or not ok else theme.TEXT}")
         self.setup.setVisible(ok and (not installed or self.vc.needs_update()))
         self.setup.setText("Update the camera" if installed else "Set up the camera")

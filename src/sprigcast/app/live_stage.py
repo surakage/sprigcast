@@ -281,6 +281,7 @@ class LiveSide(QWidget):
         self.camera_note.setWordWrap(True)
         self.camera_note.setStyleSheet(f"color: {theme.WARN}; background: transparent;")
         self.camera_note.setVisible(False)
+        self.camera_note.setOpenExternalLinks(True)  # "Open settings" for Windows camera privacy
         buttons.addWidget(self.camera_note)
         self.rec_note = QLabel("")
         self.rec_note.setStyleSheet(f"color: {theme.LIVE_TEXT}; background: transparent;")
@@ -359,6 +360,10 @@ class LiveSide(QWidget):
         """Camera on (highlighted, not pink: pink is only for Live and Recording), or off with a short reason."""
         self.camera.setText("Cam on" if on else "Virtual Cam")
         self.camera.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
+        from sprigcast.output.virtualcam import PRIVACY_HINT, PRIVACY_PAGE
+
+        if error == PRIVACY_HINT:
+            error = (f'{error} <a href="{PRIVACY_PAGE}" style="color: {theme.ACCENT};">Open settings</a>')
         self.camera_note.setText(error)
         self.camera_note.setVisible(bool(error) and not on)
 

@@ -83,6 +83,54 @@ def registered_path() -> Path | None:
     return path if path.exists() else None
 
 
+class _State:
+    privacy_failed = False  # the last start failed the way a privacy block does (Settings offers the page)
+
+
+state = _State()
+PRIVACY_PAGE = "ms-settings:privacy-webcam"
+PRIVACY_HINT = "Windows blocked the camera."
+_CONSENT = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+
+
+def privacy_block(read=None) -> str:
+    """Which Windows camera privacy switch is off ('' when none is). SprigCast is a desktop app, and Windows'
+    camera service refuses to add a virtual camera for an app that may not use cameras."""
+    if read is None:
+        if sys.platform != "win32":
+            return ""
+        read = _read_reg
+    checks = (
+        ("HKLM", r"Software\Policies\Microsoft\Windows\AppPrivacy", "LetAppsAccessCamera", "2",
+         "Your organisation turned camera access off."),
+        ("HKLM", _CONSENT, "Value", "Deny", "Camera access is off for this PC."),
+        ("HKCU", _CONSENT, "Value", "Deny", "Camera access is off."),
+        ("HKCU", _CONSENT + r"\NonPackaged", "Value", "Deny", "Desktop apps may not use the camera."),
+    )
+    for hive, key, name, deny, why in checks:
+        if str(read(hive, key, name)) == deny:
+            return why
+    return ""
+
+
+def _read_reg(hive: str, key: str, name: str):
+    import winreg
+
+    root = winreg.HKEY_LOCAL_MACHINE if hive == "HKLM" else winreg.HKEY_CURRENT_USER
+    try:
+        with winreg.OpenKey(root, key) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except OSError:
+        return None
+
+
+def open_privacy_settings() -> None:
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    QDesktopServices.openUrl(QUrl(PRIVACY_PAGE))
+
+
 def camera_log() -> Path:
     """Where the camera DLL writes its steps (made writable for Windows' Frame Server when registered)."""
     return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / NAME / "camera.log"
@@ -229,6 +277,7 @@ class VirtualCamera:
         # (tap id, picture size, camera size): "horizontal", "view:camera"...; picture fits inside camera size
         self.tap: tuple[str, tuple[int, int], tuple[int, int]] | None = None
         self._view = self._shown = None  # (canvas id, "bloom"|"source", ref) for a view tap
+        self.privacy = False  # the last start failed because of Windows camera privacy
         self._retired: SharedBlock | None = None  # unmapped a poll later, so a frame mid-copy can't fault
         self.error = ""
         self.frames = 0
@@ -251,12 +300,20 @@ class VirtualCamera:
             return False
         if hr < 0:
             self.error = f"Windows refused the camera (0x{hr & 0xFFFFFFFF:08X})."
+            # Access denied, or the camera service gave up on it (MF_E_SHUTDOWN): Windows itself said no. A privacy
+            # switch is one cause; some Windows builds refuse virtual cameras with every switch on.
+            self.privacy = bool(privacy_block()) or (hr & 0xFFFFFFFF) in (0x80070005, 0xC00D3E85)
+            state.privacy_failed = self.privacy
             if needs_update():
+                self.privacy = False
                 self.error += " Click Update the camera, then restart SprigCast."
+            elif self.privacy:
+                self.error = PRIVACY_HINT
             log.warning("virtual camera: SC_Start failed 0x%08X at step %s; in-process self test %s; "
                         "camera log: %s", hr & 0xFFFFFFFF, self._stage(), self._self_test(), camera_log())
             return False
-        self.error = ""
+        self.error, self.privacy = "", False
+        state.privacy_failed = False
         log.info("virtual camera on")
         return True
 
