@@ -203,6 +203,10 @@ def blank_garden(like: SceneCollection) -> SceneCollection:
     return col
 
 
+# Copies SprigCast keeps beside a garden or path: an unreadable one set aside, the one from before sprigs.
+_SPARE_FILES = (".tmp", ".broken.json", ".before-sprigs.json")
+
+
 class Shelf:
     """The list of gardens and paths in one config folder (see the module notes)."""
 
@@ -228,7 +232,7 @@ class Shelf:
             known = {e.file for e in entries}
             for file in sorted((self.folder / f"{kind}s").glob("*.json")):
                 rel = f"{kind}s/{file.name}"
-                if rel not in known and not file.name.endswith(".tmp"):
+                if rel not in known and not file.name.endswith(_SPARE_FILES):
                     name = file.stem.removeprefix(f"{kind}-").replace("-", " ").strip().capitalize() or kind
                     taken = {e.name.casefold() for e in entries}
                     base, n = name[:NAME_MAX], 2

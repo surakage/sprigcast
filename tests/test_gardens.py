@@ -324,3 +324,55 @@ def test_window_imports_a_garden_pack(window, tmp_path, monkeypatch):
     garden_menu = QMenu()
     w.gardens.fill(garden_menu, "garden")
     assert "Export with files…" in [a.text() for a in garden_menu.actions()]
+
+
+def test_set_aside_files_are_not_gardens(setup):
+    folder, shelf, col = setup
+    entry = shelf.new_garden("Gaming", col)
+    file = shelf.garden_file(entry)
+    file.with_suffix(".broken.json").write_text("{", encoding="utf-8")
+    file.with_suffix(".before-sprigs.json").write_text("{}", encoding="utf-8")
+    shelf.index_path.unlink()  # a lost list is rebuilt from the files: the set-aside copies stay out of it
+    again = Shelf(folder)
+    assert sorted(g.name for g in again.gardens()) == ["Gaming", "Main"]
+
+
+def test_window_import_while_live_asks_first(window, tmp_path, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QMessageBox
+    from test_convert import obs_file
+
+    w = window
+    file = tmp_path / "Streaming.json"
+    file.write_text(json.dumps(obs_file()), encoding="utf-8")
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.No)
+    w.streaming = object()
+    assert w.gardens.import_garden(file, show_notes=False) is None
+    assert asked and w.gardens.shelf.garden().name == "Main"  # added, but the show on air stays
+    assert "Streaming" in [g.name for g in w.gardens.shelf.gardens()]
+    w.streaming = None
+
+
+def test_window_waits_for_packing_and_open_windows(window, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    w = window
+    w.gardens.do("garden", "new", "Other")
+    w.gardens.working = True
+    assert w.gardens.do("garden", "switch", "Other") == "Wait for the pack to finish."
+    assert w.gardens.switch("garden", "Other") == "Wait for the pack to finish."
+    w.gardens.working = False
+    monkeypatch.setattr(QApplication, "activeModalWidget", staticmethod(lambda: w))  # e.g. Settings is open
+    assert w.gardens.do("garden", "switch", "Other") == "Close the open window first."
+    w.gardens.hotkey(f"garden:{w.gardens.shelf.find('garden', 'Other').id}")
+    assert w.gardens.shelf.garden().name == "Main"
+
+
+def test_background_work_hands_back_its_result_and_errors(window):
+    from sprigcast.app.gardens_menu import _Progress
+
+    assert _Progress(window, "x").run(lambda p: (p(1, 2), 42)[1]) == 42
+    with pytest.raises(ValueError):
+        _Progress(window, "x").run(lambda p: (_ for _ in ()).throw(ValueError("no")))

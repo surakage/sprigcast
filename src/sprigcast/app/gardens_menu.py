@@ -66,6 +66,7 @@ class GardenControl:
         self.w = window
         self.shelf = shelf
         self.last_notes: list[str] = []  # what the last import couldn't bring over
+        self.working = False  # packing or unpacking in the background: no switching meanwhile
         from sprigcast.app import hotkeys
 
         hotkeys.shelf_actions = self.hotkey_actions
@@ -82,6 +83,9 @@ class GardenControl:
 
     def do(self, kind: str, op: str, name: str = "", new_name: str = "") -> str | None:
         """op: switch, new, duplicate, rename or remove. Returns a problem in plain words, or None."""
+        problem = self.blocked()
+        if problem:
+            return problem
         try:
             if op == "switch":
                 return self.switch(kind, name)
@@ -96,6 +100,8 @@ class GardenControl:
                 return f"Can't {op} a {kind}."
         except ShelfError as exc:
             return str(exc)
+        except OSError as exc:
+            return f"Couldn't save it: {exc.strerror or exc}"
         self._changed()
         return None
 
@@ -104,7 +110,17 @@ class GardenControl:
     def busy(self) -> bool:
         return self.w.streaming is not None or self.w.recording is not None
 
+    def blocked(self) -> str | None:
+        """Why a hotkey or the API can't change gardens or paths right now (None when it can)."""
+        if self.working:
+            return "Wait for the pack to finish."
+        if QApplication.activeModalWidget() is not None:  # e.g. Settings, which saves into the garden on screen
+            return "Close the open window first."
+        return None
+
     def switch(self, kind: str, wanted: str) -> str | None:
+        if self.working:
+            return "Wait for the pack to finish."
         try:
             entry = self.shelf.find(kind, wanted)
         except ShelfError as exc:
@@ -254,7 +270,7 @@ class GardenControl:
     def hotkey(self, action: str) -> None:
         """A "garden:<id>" or "path:<id>" hotkey."""
         kind, _, entry_id = action.partition(":")
-        problem = self.switch(kind, entry_id)
+        problem = self.blocked() or self.switch(kind, entry_id)
         if problem:
             self.w.statusBar().showMessage(problem, 6000)
 
@@ -380,8 +396,10 @@ class GardenControl:
             if convert.is_overlay_file(path):
                 entry, notes = self._import_overlay(path)
             elif pack.is_pack(path):
-                with self._progress(f"Unpacking {path.stem}…") as progress:
-                    entry = self.shelf.import_pack(path, self._media(), progress)
+                folder = pack.free_folder(self._media(), path.stem)
+                garden = self._in_background(f"Unpacking {path.stem}…",
+                                             lambda progress: pack.read_pack(path, folder, progress))
+                entry = self.shelf.add_garden(path.stem, garden)
             elif (app := convert.detect(data := convert.read_json(path))) == "sprigcast":
                 entry = self.shelf.import_file("garden", path)
             elif app:
@@ -389,16 +407,21 @@ class GardenControl:
                 entry = self.shelf.add_garden(convert.guess_name(path, data), garden)
             else:
                 return f"{path.name} isn't a scene collection from SprigCast, OBS, Streamlabs or Meld."
-        except (convert.ConvertError, ShelfError) as exc:
+        except (convert.ConvertError, ShelfError, pack.PackError) as exc:
             return str(exc)
         except Exception:
             log.exception("importing %s", path)
             return f"{path.name} couldn't be turned into a {COLLECTION}."
         self._changed()
-        problem = self.switch("garden", entry.id)
-        if problem:
-            return problem
         self.last_notes = notes
+        if self.w.streaming is not None and QMessageBox.question(
+                self.w, "SprigCast", f"Added {entry.name}. You're live: switch to it now?") \
+                != QMessageBox.StandardButton.Yes:
+            self.w.statusBar().showMessage(f"Added {entry.name} to {COLLECTIONS}.", 8000)
+        else:
+            problem = self.switch("garden", entry.id)
+            if problem:
+                return problem
         if notes and show_notes:
             ImportNotes(self.w, entry.name, notes).exec()
         return None
@@ -424,15 +447,21 @@ class GardenControl:
     def _media(self) -> Path:
         return pack.media_folder(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)))
 
-    def _progress(self, label: str) -> _Progress:
-        return _Progress(self.w, label)
+    def _in_background(self, label: str, work):
+        """Run work(progress) on its own thread with a progress bar, so the window and the stream stay
+        smooth (zip and disk work let go of Python's lock); switching waits until it's done."""
+        self.working = True
+        try:
+            return _Progress(self.w, label).run(work)
+        finally:
+            self.working = False
 
     def _import_overlay(self, path: Path):
         """A Streamlabs .overlay: its media unpack to Documents/SprigCast/Media/<name>, then it's converted."""
         import shutil
 
         folder = pack.free_folder(self._media(), path.stem)
-        data = convert.unpack_overlay(path, folder)
+        data = self._in_background(f"Unpacking {path.stem}…", lambda _progress: convert.unpack_overlay(path, folder))
         try:
             garden, notes = convert.convert(data, self.w.collection, audio_devices=self._audio_names())
             return self.shelf.add_garden(path.stem, garden), notes
@@ -450,9 +479,11 @@ class GardenControl:
         target = Path(path)
         target = target.with_name(file_name(target.stem) + pack.PACK_SUFFIX)
         self.w.collection.save(self.w.scenes_path)
+        snapshot = self.w.collection.model_copy(deep=True)  # the garden as it is now, whatever happens meanwhile
         try:
-            with self._progress(f"Packing {current.name}…") as progress:
-                left_out = self.shelf.export_pack(current.id, target, self.w.collection, progress)
+            left_out = self._in_background(f"Packing {current.name}…",
+                                           lambda progress: self.shelf.export_pack(current.id, target, snapshot,
+                                                                                   progress))
         except ShelfError as exc:
             return self._report(str(exc))
         except OSError as exc:
@@ -523,7 +554,9 @@ class MissingFiles(QDialog):
         folder = QFileDialog.getExistingDirectory(self, "Look in a folder", str(Path.home()))
         if not folder:
             return
-        self.relink(find_in_folder(missing_files(self.w.collection), Path(folder)))
+        missing = missing_files(self.w.collection)
+        self.relink(self.w.gardens._in_background(
+            "Looking for the files…", lambda _progress: find_in_folder(missing, Path(folder))))
 
     def relink(self, found: dict[str, str]) -> None:
         changed = sum(replace_file(self.w.collection, old, new) for old, new in found.items())
@@ -560,15 +593,40 @@ class _Progress:
             self.bar.setWindowModality(Qt.WindowModality.WindowModal)
         return self
 
-    def __call__(self, done: int, total: int) -> None:
-        if self.bar is not None:
-            self.bar.setValue(int(1000 * done / total) if total else 1000)
-            QApplication.processEvents()
+    def __call__(self, done: int, total: int) -> None:  # from the worker thread: just noted
+        self.share = done / total if total else 1.0
 
     def __exit__(self, *exc) -> None:
         if self.bar is not None:
             self.bar.close()
             self.bar.deleteLater()
+
+    def run(self, work):
+        """work(self) on a thread; the window keeps running until it's done. Its error is raised here."""
+        import threading
+
+        from PySide6.QtCore import QEventLoop
+
+        self.share = 0.0
+        result: dict = {}
+
+        def target() -> None:
+            try:
+                result["value"] = work(self)
+            except BaseException as exc:  # noqa: BLE001 (handed back to the window's thread below)
+                result["error"] = exc
+
+        with self:
+            thread = threading.Thread(target=target, name="sprigcast-pack", daemon=True)
+            thread.start()
+            while thread.is_alive():
+                if self.bar is not None:
+                    self.bar.setValue(int(1000 * self.share))
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 30)
+                thread.join(0.03)
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
 
 
 class ImportNotes(QDialog):
