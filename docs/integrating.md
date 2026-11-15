@@ -44,7 +44,7 @@ For pickers in your UI: `blooms.list`, `sprigs.list`, `items.list`, `sources.lis
 
 ## Events
 
-Ask for groups in the auth message (`"events": ["bloom", "sound", "tiktok"]`, `"all"` or `"none"`): `bloom`, `item`, `sprig`, `sound`, `filter`, `source`, `output`, `transition`, `media`, `custom`, `plugin`, `garden`, `path`, and two that come only when named: `meters` (about 15 a second) and `tiktok` (every gift, like, follow, share and comment; asking for it keeps SprigCast reading TikTok chat). Each event is one JSON object: `{"event": "bloom.shown", "bloom": "BRB", ...}`.
+Ask for groups in the auth message (`"events": ["bloom", "sound"]`, `"all"` or `"none"`): `bloom`, `item`, `sprig`, `sound`, `filter`, `source`, `output`, `transition`, `media`, `custom`, `plugin`, `garden`, `path`, and `meters` (about 15 a second, only when named). SprigCast doesn't pass on platform events (TikTok gifts, Twitch follows...): tools like TikFinity and Streamer.bot already have them. Each event is one JSON object: `{"event": "bloom.shown", "bloom": "BRB", ...}`.
 
 ## Plugins
 
@@ -61,6 +61,15 @@ A good first version of native support in a tool like Streamer.bot:
 
 - Connection settings (host, port, password) with auto-detect of 4455/4456, and reconnect when SprigCast restarts.
 - Sub-actions: show bloom, show/hide/toggle item, set sprig state, mute/volume sound, set text, filter on/off, media play/stop, screenshot, save clip, stream/record start/stop/toggle, switch garden/path, and a generic "run action" with JSON fields, filled from `app.actions`.
-- Triggers from events: bloom shown, stream/record started and stopped, clip saved, plugin events, and `tiktok.*`.
+- Triggers from events: bloom shown, stream/record started and stopped, clip saved, and plugin events.
 
 Questions or changes that would help your integration: open an issue on [the SprigCast repository](https://github.com/surakage/sprigcast).
+
+## Going live on TikTok LIVE Studio at the same time
+
+SprigCast feeds LIVE Studio through SprigCast Camera, and LIVE Studio does its own encoding and TikTok upload.
+
+- In LIVE Studio, add a camera source and pick SprigCast Camera. With the camera on "Auto", a portrait request gets the vertical canvas.
+- Sound needs no extra device, the same as with OBS (whose virtual camera carries no sound either). LIVE Studio picks up the PC's sound itself: its own desktop sound and mic, or a mix such as Wave Link's Stream mix. Leave Settings → Output → Virtual camera → Sound to off (the default). It's only for a setup that wants SprigCast's own mix sent to a virtual cable.
+- It stays light: SprigCast only feeds the camera while an app is watching. When the vertical canvas is already being streamed or recorded at the size LIVE Studio asks for, the camera reuses the same frame instead of making another one.
+- TikTok gifts, likes and follows go through TikFinity or Streamer.bot. They can call SprigCast's API (see [streamerbot.md](streamerbot.md)). SprigCast doesn't read or pass on TikTok events itself.
