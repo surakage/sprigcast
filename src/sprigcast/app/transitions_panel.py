@@ -746,7 +746,7 @@ class PopUp(QDialog):
         layout.addLayout(head)
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
-        done = QPushButton("Done")
+        self.done_button = done = QPushButton("Done")
         done.setStyleSheet(theme.PRIMARY_STYLE)
         done.clicked.connect(self.accept)
         layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
