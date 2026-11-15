@@ -345,12 +345,6 @@ class MainWindow(QMainWindow):
         self.part_uses_note.linkActivated.connect(self._jump_to_bloom)
         self.part_uses_note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 14px; margin: 4px 8px 0 8px;")
         part_layout.addWidget(self.part_uses_note)
-        self.part_empty = QLabel(
-            f"Empty {PART}: add sources with Sources → +, or right-click sources in {a(SHOW)} → Turn into {a(PART)}."
-        )
-        self.part_empty.setWordWrap(True)
-        self.part_empty.setStyleSheet(theme.NOTE_STYLE + " padding: 8px 12px; margin: 4px 8px;")
-        part_layout.addWidget(self.part_empty)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
         splitter.installEventFilter(self)  # Live re-shares the stage when it changes size
@@ -704,6 +698,26 @@ class MainWindow(QMainWindow):
         self.build_stage.left.addWidget(self.inside_empty)
         self.build_stage.left.addWidget(self.panels.cards["build"], 1)  # panels you choose for Build
 
+    def _fill_bloom_add_menu(self, menu: QMenu, parts: list[Scene]) -> None:
+        """+ Add in a bloom: its sprigs, by folder, and New sprig. Sources are added inside a sprig."""
+        sprig = icons.icon("sprig", theme.ACCENT)
+        folders = {f.id: f for f in self.collection.part_folders()}
+        for part in parts:
+            if part.folder not in folders:
+                menu.addAction(sprig, literal(part.name)).triggered.connect(
+                    lambda _=False, pid=part.id: self._add_part_source(pid))
+        for folder in folders.values():
+            inside = [p for p in parts if p.folder == folder.id]
+            if not inside:
+                continue
+            sub = menu.addMenu(_dot(folder.colour, 12), literal(folder.name))
+            for part in inside:
+                sub.addAction(sprig, literal(part.name)).triggered.connect(
+                    lambda _=False, pid=part.id: self._add_part_source(pid))
+        if menu.actions():
+            menu.addSeparator()
+        menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
+
     def _fill_add_source_menu(self) -> None:
         """+ Add: your real cameras, screens and windows by name (one click adds them), then the rest.
         The device lists are read when their submenu opens, so opening + Add stays instant."""
@@ -711,6 +725,9 @@ class MainWindow(QMainWindow):
         menu.clear()
         scene = self._scene()
         parts = [p for p in self.collection.parts() if scene is None or not self.collection.contains(p, scene.id)]
+        if scene is not None and scene.kind == "show":  # blooms hold sprigs only
+            self._fill_bloom_add_menu(menu, parts)
+            return
         parts_menu = menu.addMenu(icons.icon("sprig", theme.ACCENT), cap(PART))
         for part in parts:
             parts_menu.addAction(literal(part.name)).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
@@ -2582,6 +2599,29 @@ class MainWindow(QMainWindow):
         self._refresh_previews()
         self._refresh_stream_boxes()
 
+    def _has_content(self, scene: Scene, seen: frozenset = frozenset()) -> bool:
+        """Anything to see: a source, or a sprig with something in it (at any depth)."""
+        sources = {c.id: c for c in self.collection.sources}
+        for item in scene.items:
+            config = sources.get(item.source)
+            part = self.collection.part_of(config) if config is not None else None
+            if part is None:
+                return True
+            if part.id not in seen and self._has_content(self.collection.shape_for(part, scene.canvas), seen | {part.id}):
+                return True
+        return False
+
+    def _empty_hint(self, scene: Scene | None) -> tuple[str, str] | None:
+        """The card in the middle of an empty bloom or sprig."""
+        if scene is None or self._has_content(scene):
+            return None
+        if scene.kind == "part":
+            return f"Empty {PART}", f"+ Add a camera, screen, text or another {PART}"
+        sprig = self.collection.bloom_sprig(scene)
+        if sprig is None:
+            return f"Empty {SHOW}", f"+ Add {a(PART)} to fill it"
+        return f"{sprig.name} is empty", "Double-click to open it and add things"
+
     def _refresh_previews(self) -> None:
         self._sync_engine_staged()
         in_place = self._in_place_state()
@@ -2598,6 +2638,7 @@ class MainWindow(QMainWindow):
                 continue
             if preview.inner is not None:
                 preview.set_inner(None, None)
+            preview.hint = None
             preview.subtitle = scene.name if scene else "no scene"
             if scene is not None and scene.id != self.collection.active_scenes.get(canvas_id):
                 preview.subtitle += "  ·  not on air"
@@ -2606,14 +2647,15 @@ class MainWindow(QMainWindow):
             # Build's big canvas: the bloom's name and "on air" are right above the card already.
             preview.show_title = self.mode != "build" or preview.twin
             index = self._item_index() if scene is not None and scene.id == self.selected_scene_id else None
+            preview.hint = self._empty_hint(scene) if self.mode == "build" else None
             preview.set_scene(scene, index)
             selected = self._item()
             preview.ghost_index = next((i for i, it in enumerate(scene.items) if it.source == selected.source),
                                        None) if preview.twin and scene is not None and selected is not None else None
         part = self._scene()
         if part is not None and part.kind == "part" and self.part_preview.canvas_id == f"part:{part.id}":
+            self.part_preview.hint = self._empty_hint(part)
             self.part_preview.set_scene(part, self._item_index())
-            self.part_empty.setVisible(not part.items)
         self.live_panel.show_scenes(self.collection)
         if getattr(self, "mode", "build") == "live":
             QTimer.singleShot(0, self._fit_tiles)
@@ -3337,6 +3379,8 @@ class MainWindow(QMainWindow):
         self.collection.scenes.append(part)
         if add_to_show and show is not None:
             self._add_part_source(part.id, show.id)
+        if show is not None:
+            self.last_bloom_id = show.id
         self.selected_scene_id = part.id
         self._changed()
         self._refresh_all()
@@ -3555,7 +3599,7 @@ class MainWindow(QMainWindow):
         self.part_uses_note.setText(
             f"This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
             "What you change here changes in all of them." if uses else
-            f"This {PART} isn't in any {SHOW} yet. Put it in one with Leaves → + Add → {cap(PART)}.")
+            f"This {PART} isn't in any {SHOW} yet. Pick {a(SHOW)}, then + Add and choose it.")
         back = getattr(self, "last_bloom_id", None)
         back_scene = next((s for s in self.collection.scenes if s.id == back and s.kind == "show"), None)
         self.part_back.setText(f"← {back_scene.name}" if back_scene else "← Back")
@@ -3786,10 +3830,29 @@ class MainWindow(QMainWindow):
         if scene is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
+        if scene.kind == "show" and config.kind != PART_KIND:  # blooms hold sprigs only: it goes into the bloom's sprig, opened to edit
+            scene = self._open_bloom_sprig(scene)
         self.collection.sources.append(config)
         scene.items.append(SceneItem(source=config.id))
         self._changed()
         self._refresh_sources(keep_row=0)
+
+    def _open_bloom_sprig(self, show: Scene) -> Scene:
+        """The sprig this bloom shows (made, named after it, if it has none yet), selected for editing."""
+        part = self.collection.bloom_sprig(show)
+        if part is None:
+            part = Scene(id=self.collection.new_id("part"), name=show.name, canvas=show.canvas, kind="part")
+            self.collection.scenes.append(part)
+            placement = SourceConfig(id=self.collection.new_id("part-src"), kind=PART_KIND, name=show.name,
+                                     settings={"scene": part.id})
+            self.collection.sources.append(placement)
+            show.items.append(SceneItem(source=placement.id))
+        shape = self.collection.shape_for(part, show.canvas)
+        self.last_bloom_id = show.id
+        self.selected_scene_id = shape.id
+        self._refresh_scenes()
+        self._show_part_editor()
+        return shape
 
     def _add_color(self) -> None:
         scene = self._scene()

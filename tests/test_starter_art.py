@@ -32,7 +32,7 @@ def test_starter_blooms_get_one_sharp_sloth_each():
         if scene.kind != "show":
             continue
         canvas = next(c for c in col.canvases if c.id == scene.canvas)
-        arts = [i for i in scene.items if i.source in pictures]
+        arts = [i for i in col.shape_for(col.bloom_sprig(scene), scene.canvas).items if i.source in pictures]
         base = scene.name.replace(" (vertical)", "")
         assert len(arts) == (1 if base in ART else 0), scene.name
         for item in arts:
