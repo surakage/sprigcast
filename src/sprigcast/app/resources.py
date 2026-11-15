@@ -7,6 +7,8 @@ take a moment; without an NVIDIA card it is simply left out.
 
 from __future__ import annotations
 
+import functools
+
 import os
 import sys
 import threading
@@ -80,18 +82,29 @@ def _private_working_set(process) -> int:
     return process.memory_info().rss
 
 
-def windows_private_working_set() -> int | None:
-    """This process's private working set in bytes from PROCESS_MEMORY_COUNTERS_EX2, or None."""
+@functools.cache
+def _counters_type():
+    """PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later), made once: it's read every second."""
     import ctypes
     from ctypes import wintypes
 
-    class Counters(ctypes.Structure):  # PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later)
+    class Counters(ctypes.Structure):
         _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
             (name, ctypes.c_size_t)
             for name in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
                          "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage",
                          "PeakPagefileUsage", "PrivateUsage", "PrivateWorkingSetSize", "SharedCommitUsage")
         ]
+
+    return Counters
+
+
+def windows_private_working_set() -> int | None:
+    """This process's private working set in bytes from PROCESS_MEMORY_COUNTERS_EX2, or None."""
+    import ctypes
+    from ctypes import wintypes
+
+    Counters = _counters_type()
 
     try:
         kernel32 = ctypes.WinDLL("kernel32")
