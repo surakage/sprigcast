@@ -27,7 +27,7 @@ jobs:
             $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
             $bmp.Save("shots\$name.png")
           }
-          for ($i = 1; $i -le 4; $i++) {
+          for ($i = 1; $i -le 3; $i++) {
             Start-Sleep 6
             $null = $shell.AppActivate("Setup - SprigCast")
             Shot "page$i"
@@ -35,6 +35,11 @@ jobs:
             $shell.SendKeys("{ENTER}")
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          foreach ($f in Get-ChildItem shots\*.png) {
+            "SHOT-BEGIN $($f.Name)"
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($f.FullName)) -split '(.{1000})' | Where-Object { $_ }
+            "SHOT-END"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: shots
