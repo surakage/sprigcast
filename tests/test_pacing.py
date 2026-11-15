@@ -40,3 +40,32 @@ def test_watch_gc_is_added_once():
 def test_thread_priority_is_windows_only(monkeypatch):
     monkeypatch.setattr(pacing.sys, "platform", "linux")
     assert pacing.raise_thread_priority() is False
+
+
+def test_tidy_freezes_what_survives_and_settle_frees_cycles_from_the_show():
+    """Soak: a full collection every ~10 min took ~70 ms. Tidying often walks only what is new."""
+    import gc
+
+    from sprigcast.core import pacing
+
+    pacing.tidy()
+    before = gc.get_freeze_count()
+    kept = [[n] for n in range(1000)]
+    frozen, _ms = pacing.tidy()
+    assert frozen >= before + 1000  # the survivors are frozen: later collections skip them
+    loop = []
+    loop.append(loop)  # a cycle that dies after being frozen
+    pacing.tidy()
+    ref = __import__("weakref").ref
+    class Box:  # noqa: D401
+        pass
+    box = Box()
+    box.me = box
+    probe = ref(box)
+    pacing.tidy()
+    del box
+    gc.collect()
+    assert probe() is not None  # frozen: the cycle finder doesn't see it
+    pacing.settle()
+    assert probe() is None  # at rest everything is looked at once
+    del kept, loop

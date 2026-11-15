@@ -72,6 +72,34 @@ def tame_gc() -> None:
              1000 * (time.perf_counter() - began))
 
 
+TIDY_EVERY_MS = 5 * 60_000
+
+
+def tidy() -> tuple[int, float]:
+    """Collect what was made since the last tidy, then freeze the survivors. Returns (frozen, ms).
+
+    The 2-hour soak had a full collection every ~10 minutes at ~70 ms: everything made after start-up
+    (chat, encoders, plugins, libraries loaded on first use) was walked each time, and the frame that
+    ran into it was late. Collecting every few minutes walks only what is new, a few ms, and once frozen
+    those objects are skipped by every later collection. Freezing only skips the cycle finder: objects
+    that die later are still freed as usual, unless they are in a reference cycle, and settle() takes
+    care of those when the show ends."""
+    began = time.perf_counter()
+    gc.collect()
+    gc.freeze()
+    return gc.get_freeze_count(), 1000 * (time.perf_counter() - began)
+
+
+def settle() -> float:
+    """At rest (nothing recorded or streamed): look through everything once, frozen included, so cycles
+    from the show (a stopped encoder, a closed window) are freed; then freeze again. Returns ms."""
+    began = time.perf_counter()
+    gc.unfreeze()
+    gc.collect()
+    gc.freeze()
+    return 1000 * (time.perf_counter() - began)
+
+
 def raise_thread_priority() -> bool:
     """Run the calling thread at Windows' "highest" thread priority. True if it took effect."""
     if sys.platform != "win32":
