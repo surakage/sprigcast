@@ -730,6 +730,27 @@ class SceneCollection(BaseModel):
             made.append(part)
         return made
 
+    def own_sprig(self, scene: Scene, source_id: str, size: tuple[int, int], name: str) -> Scene:
+        """Put a source in a sprig of its own, filling the canvas, on top of this bloom and the blooms
+        linked to it (each shape gets a layout fitted to it). For overlays like Snap. Returns the sprig."""
+        def fitted(canvas_id: str) -> SceneItem:
+            canvas = self.canvas(canvas_id)
+            scale = min(canvas.width / size[0], canvas.height / size[1])
+            return SceneItem(source=source_id, scale=scale, x=(canvas.width - size[0] * scale) / 2,
+                             y=(canvas.height - size[1] * scale) / 2)
+
+        blooms = self.linked_with(scene.id) if scene.kind == "show" else [scene]
+        part = Scene(id=self.new_id("part"), name=name, canvas=scene.canvas, kind="part", items=[fitted(scene.canvas)])
+        self.scenes.append(part)
+        for bloom in blooms[1:]:
+            shape = self.add_shape(part, bloom.canvas, self.new_id("part"))
+            shape.items = [fitted(bloom.canvas)]
+        for bloom in blooms:
+            placement = SourceConfig(id=self.new_id("part-src"), kind=PART_KIND, name=name, settings={"scene": part.id})
+            self.sources.append(placement)
+            bloom.items.append(SceneItem(source=placement.id))  # last is on top
+        return part
+
     def remove_shape(self, shape: Scene) -> None:
         """Drop a part's extra layout; shows on that canvas go back to its main layout, refitted."""
         if shape.shape_of is None:

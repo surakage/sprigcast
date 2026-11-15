@@ -36,7 +36,8 @@ from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, Sce
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 PREVIEW = API_VERSION == 0
-EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "media", "custom")
+EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "studio", "transition", "media", "custom",
+                "plugin")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
 SOUND_KINDS = ("audio_input", "audio_output", "app_audio", "media")
 MAX_STEPS = 100  # in one {"steps": [...]} list
@@ -64,6 +65,7 @@ class Action:
     fields: dict[str, str]  # field -> short description ("?" first = optional)
     about: str
     run: Callable[[dict[str, Any]], Any]
+    module: str = ""  # the plugin that added it
 
 
 def action(name: str, about: str, /, **fields: str):
@@ -93,6 +95,19 @@ def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional
 
 
 _PLUGIN_ACTIONS: dict[str, Action] = {}
+_PLUGIN_EVENTS: set[str] = set()  # the first word of events plugins send ("snap" for snap.taken): group "plugin"
+
+
+def send_event(api, name: str, data: dict[str, Any]) -> None:
+    """For plugins: tell connected apps something happened, e.g. send_event(api, "snap.taken", {...}).
+
+    Apps get it in the "plugin" event group as {"event": name, ...data}. Call it on the UI thread
+    (an action, hotkey or right-click entry is).
+    """
+    if "." not in name:
+        raise ValueError("plugin events are named '<plugin>.<what>'")
+    _PLUGIN_EVENTS.add(name.split(".", 1)[0])
+    api.plugin_event(name, data)
 
 
 def register_action(name: str, about: str, fields: dict[str, str], run: Callable[[Any, dict[str, Any]], Any]) -> None:
@@ -103,7 +118,18 @@ def register_action(name: str, about: str, fields: dict[str, str], run: Callable
     """
     if "." not in name:
         raise ValueError("name plugin actions <plugin>.<thing>")
-    _PLUGIN_ACTIONS[name] = Action(name, dict(fields), about, run)
+    import sys
+
+    module = sys._getframe(1).f_globals.get("__name__", "")
+    _PLUGIN_ACTIONS[name] = Action(name, dict(fields), about, run, module)
+
+
+def unregister_actions(module: str) -> list[str]:
+    """Forget the actions a plugin module added (when it's removed)."""
+    gone = [n for n, a in _PLUGIN_ACTIONS.items() if module and a.module == module]
+    for name in gone:
+        del _PLUGIN_ACTIONS[name]
+    return gone
 
 
 class NativeApi:
@@ -116,20 +142,27 @@ class NativeApi:
             if meta:
                 name, about, fields = meta
                 self.actions[name] = Action(name, fields, about, fn)
-        for name, extra in _PLUGIN_ACTIONS.items():
-            if name not in self.actions:
-                self.actions[name] = Action(name, extra.fields, extra.about,
-                                            lambda data, run=extra.run: run(self, data))
         self._last: dict[str, Any] | None = None
         self.custom_event: Callable[[dict[str, Any]], None] = lambda data: None
+        self.plugin_event: Callable[[str, dict[str, Any]], None] = lambda name, data: None  # set by the server
         self.last_clip: list[str] = []
 
     @property
     def col(self):
         return self.host.collection
 
+    def all_actions(self) -> dict[str, Action]:
+        """Built-in actions and plugin ones (plugins can arrive and leave while SprigCast runs)."""
+        out = dict(self.actions)
+        for name, extra in _PLUGIN_ACTIONS.items():
+            if name not in out:
+                out[name] = Action(name, extra.fields, extra.about, lambda data, run=extra.run: run(self, data))
+        return out
+
     def run(self, name: str, data: dict[str, Any]) -> Any:
         found = self.actions.get(name)
+        if found is None and name in _PLUGIN_ACTIONS:
+            return _PLUGIN_ACTIONS[name].run(self, data)
         if found is None:
             raise ApiError("unknown_action", f"No action {name!r}. app.actions lists them all.")
         return found.run(data)
@@ -286,7 +319,22 @@ class NativeApi:
     @action("app.actions", "Every action with what it does and its fields (fields starting with ? are optional).")
     def app_actions(self, data):
         return {"actions": [{"do": a.name, "about": a.about, "fields": a.fields}
-                            for a in sorted(self.actions.values(), key=lambda a: a.name)]}
+                            for a in sorted(self.all_actions().values(), key=lambda a: a.name)]}
+
+    @action("plugins.list", "The plugins that are added, each with the actions it brings.")
+    def plugins_list(self, data):
+        import sys
+
+        found: dict[str, dict[str, Any]] = {}
+        for extra in sorted(_PLUGIN_ACTIONS.values(), key=lambda a: a.name):
+            if extra.module.startswith("sprigcast_plugin_") and extra.module not in sys.modules:
+                continue  # removed
+            pid = extra.module.removeprefix("sprigcast_plugin_") or extra.name.split(".", 1)[0]
+            head = getattr(sys.modules.get(extra.module), "PLUGIN", None) or {}
+            entry = found.setdefault(pid, {"plugin": pid, "name": head.get("name", pid),
+                                           "version": head.get("version"), "actions": []})
+            entry["actions"].append(extra.name)
+        return {"plugins": list(found.values())}
 
     @action("app.stats", "Frames per second, render time and memory.")
     def app_stats(self, data):
@@ -935,6 +983,8 @@ class NativeApi:
 def event_group(name: str) -> str:
     """bloom.shown -> bloom; stream.changed -> output; meters -> meters."""
     head = name.split(".", 1)[0]
+    if head in _PLUGIN_EVENTS:
+        return "plugin"
     return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
             "places": "output", "items": "item"}.get(head, head)
 

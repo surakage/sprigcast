@@ -72,6 +72,7 @@ class FilterKind:
     fields: list[Field]
     processor: type | None = None  # audio: an AudioFilter subclass
     builtin: bool = True
+    module: str = ""  # a plugin's module, for unregister_filters
 
     @property
     def defaults(self) -> dict[str, Any]:
@@ -82,13 +83,30 @@ _KINDS: dict[str, FilterKind] = {}
 
 
 def register_filter(kind: str, label: str, media: Literal["video", "audio"], fields: list[Field]):
-    """Register an audio filter class (used as a decorator). Video filters are built in only."""
+    """Register an audio filter class (used as a decorator).
+
+    Video filters are drawn by the GPU, so a plugin can only switch on one the drawing already knows:
+    "pixelate", "blackout" and "barrel_roll" (see PLUGIN_VIDEO_KINDS). Register them with
+    `register_filter(kind, label, "video", fields)(None)`; until a plugin does, they do nothing.
+    """
+
+    import sys
+
+    module = sys._getframe(1).f_globals.get("__name__", "")  # the plugin, so removing it can take these away
 
     def wrap(cls):
-        _KINDS[kind] = FilterKind(kind, label, media, list(fields), cls, builtin=False)
+        _KINDS[kind] = FilterKind(kind, label, media, list(fields), cls, builtin=False, module=module)
         return cls
 
     return wrap
+
+
+def unregister_filters(module: str) -> list[str]:
+    """Forget the filter kinds a plugin module registered (when it's removed)."""
+    gone = [k for k, info in _KINDS.items() if module and info.module == module]
+    for kind in gone:
+        del _KINDS[kind]
+    return gone
 
 
 def filter_kind(kind: str) -> FilterKind | None:
@@ -184,6 +202,9 @@ _video("shape", "Shape", [
 ])
 
 
+PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll")  # drawn by the GPU, offered by plugins
+
+
 def parse_color(text: str) -> tuple[float, float, float]:
     text = str(text).strip().lstrip("#")
     try:
@@ -236,6 +257,8 @@ class VideoEffects:
     blur: float = 0.0  # source pixels: a soft blur radius
     pixelate: float = 0.0  # source pixels: block size
     halos: tuple[Halo, ...] = ()  # shadow, glow and stroke, drawn behind in this order
+    blackout: float = 0.0  # 0 .. 1 toward black (Hide it plugin)
+    spin: tuple[float, float, int] = (0.0, 0.0, 0)  # (turns, seconds, run): a barrel roll (Barrel Roll plugin)
     active: bool = field(default=False, compare=False)
 
 
@@ -292,6 +315,16 @@ def video_effects(filters) -> VideoEffects:
             if not source or float(s["amount"]) <= 0:
                 continue
             fx.lut, fx.lut_amount = source, max(0.0, min(1.0, float(s["amount"]) / 100))
+        elif flt.kind in PLUGIN_VIDEO_KINDS:
+            if flt.kind not in _KINDS:  # its plugin isn't added (any more): leave the picture alone
+                continue
+            if flt.kind == "pixelate":
+                fx.pixelate = max(1.0, float(s.get("size", 24)))
+            elif flt.kind == "blackout":
+                fx.blackout = max(0.0, min(1.0, float(s.get("amount", 100)) / 100))
+            else:
+                turns = float(s.get("turns", 1)) * (-1.0 if s.get("direction") == "anticlockwise" else 1.0)
+                fx.spin = (turns, max(0.1, float(s.get("seconds", 2.0))), int(flt.settings.get("run", 0)))  # run isn't a field: each trigger bumps it
         elif flt.kind == "shape":
             shape = str(s["shape"])
             if shape not in SHAPE_IDS or (shape == "image" and not str(s["mask_file"]).strip()):

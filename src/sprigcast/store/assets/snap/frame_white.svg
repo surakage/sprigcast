@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1064 776" width="1064" height="776">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0.2" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F1F0EB"/>
+    </linearGradient>
+  </defs>
+  <path fill-rule="evenodd" fill="url(#paper)"
+        d="M10 0 H1054 Q1064 0 1064 10 V766 Q1064 776 1054 776 H10 Q0 776 0 766 V10 Q0 0 10 0 Z M67 33 V616 H1000 V33 Z"/>
+  <rect x="65.5" y="31.5" width="936" height="586" fill="none" stroke="#DCDBD4" stroke-width="3"/>
+</svg>

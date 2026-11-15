@@ -79,6 +79,7 @@ uniform vec2 sil_radius;    // in the source's local units
 uniform vec4 sil_color;     // rgb, alpha
 uniform float sil_boost;
 uniform float sil_px;       // the halo's size in canvas pixels
+uniform float blackout;     // 0 .. 1 toward black, keeping the outline
 in vec2 uv;
 in vec2 local;
 out vec4 color;
@@ -342,6 +343,7 @@ void main() {
         }
         c.a *= 1.0 - smoothstep(-feather - aa, aa, d);
     }
+    c.rgb = mix(c.rgb, vec3(0.0), blackout);
     color = c * vec4(1.0, 1.0, 1.0, opacity * fx_opacity);
 }
 """
@@ -740,6 +742,7 @@ class Compositor:
         # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
         self.parts: dict[tuple[str, str], moderngl.Texture] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
+        self._spins: dict[tuple[str, int], float] = {}  # (source id, run) -> when its barrel roll started
         self.downscale: dict[str, str] = {}  # canvas id -> how outputs smaller than it are scaled (Canvas.downscale)
         self.time = 0.0  # seconds, drives the Scroll filter
         self._applied: VideoEffects | None = None
@@ -918,6 +921,9 @@ class Compositor:
             quad = item.quad(size)
             if not quad:
                 continue
+            fx = self.effects.get(item.source, NO_EFFECTS)
+            if fx.spin[0]:
+                quad = self._spun(item.source, quad, fx.spin)
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
             planar = None if part is not None else self.planar.get(item.source)
             if planar is not None:
@@ -929,7 +935,6 @@ class Compositor:
                 self.program["planar"].value = 0
                 self._applied = None
             planar_on = planar is not None
-            fx = self.effects.get(item.source, NO_EFFECTS)
             self._apply_effects(fx, planar[2] if planar is not None else tex.size)
             if fx.shape or fx.halos:
                 (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = quad[:3]
@@ -970,6 +975,41 @@ class Compositor:
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
         p["sil"].value = 0
 
+    def _spun(self, source_id: str, quad: list, spin: tuple[float, float, int]) -> list:
+        """The quad turned around its middle: a barrel roll that eases in and out and lands where it began."""
+        turns, seconds, run = spin
+        if len(self._spins) > 64:  # old rolls
+            self._spins.clear()
+        start = self._spins.setdefault((source_id, run), self.time)
+        t = min(1.0, max(0.0, (self.time - start) / seconds))
+        eased = t * t * (3.0 - 2.0 * t)
+        a = math.tau * turns * eased
+        cx = sum(p[0] for p in quad) / 4
+        cy = sum(p[1] for p in quad) / 4
+        ca, sa = math.cos(a), math.sin(a)
+        return [(cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca, u, v) for x, y, u, v in quad]
+
+    def render_source(self, source_id: str, source_sizes: dict[str, tuple[int, int]], canvas_id: str,
+                      limit: int = 1920) -> np.ndarray | None:
+        """One source drawn on its own (with its filters), as an H x W x 4 RGBA array. For Snap."""
+        from sprigcast.core.scene import SceneItem
+
+        part = self.parts.get((source_id, canvas_id))
+        size = part.size if part is not None else source_sizes.get(source_id)
+        if not size or not size[0] or not size[1] or (part is None and source_id not in self.textures):
+            return None
+        scale = min(1.0, limit / max(size))
+        out = (max(1, round(size[0] * scale)), max(1, round(size[1] * scale)))
+        scene = Scene(id="grab", name="grab", canvas=canvas_id, items=[SceneItem(source=source_id, scale=scale)])
+        target = self._target_sized("grab", out)
+        try:
+            self._draw_scene(target.fbo, out, scene, source_sizes)
+            data = target.fbo.read(components=4, alignment=1)
+        finally:
+            target.release()
+            self.targets.pop("grab", None)
+        return np.frombuffer(data, dtype=np.uint8).reshape(out[1], out[0], 4).copy()
+
     def _apply_effects(self, fx: VideoEffects, size: tuple[int, int]) -> None:
         moving = fx.scroll != (0.0, 0.0)
         if fx is self._applied and not moving:
@@ -994,6 +1034,7 @@ class Compositor:
         p["saturation"].value = fx.saturation
         p["hue"].value = fx.hue
         p["fx_opacity"].value = fx.opacity
+        p["blackout"].value = fx.blackout
         p["tint"].value = fx.tint
         look = self._look(fx.lut) if fx.lut else None
         p["use_lut"].value = look is not None
