@@ -486,6 +486,7 @@ class Engine:
         compositor.downscale = {c.id: c.downscale for c in self._collection.canvases}
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
+        self.mixer.bloom_out = self._collection.sounds_off_here()  # sound per bloom, as blooms switch
         self._sync_audio_options()
 
     def _sync_audio_options(self) -> None:

@@ -14,6 +14,8 @@ Two extras on top of the plain mix:
   to the voice track), plus "vod" (VOD-safe: everything recorded except music) and "track4" and
   "track5" (your own picks); see source_tracks. Only the tracks some output asks for are mixed.
 - Source record's "clean" track: the recording track less the sources in clean_out.
+- Sound per bloom: sources in bloom_out (picked to play only in blooms that aren't on air) fade out
+  over BLOOM_FADE_S, and fade back in when one of their blooms goes on air.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ log = logging.getLogger(__name__)
 BLOCK = 1024
 FLOOR_DB = -60.0
 LEVELS_EVERY = 3  # blocks between level reports (about 15 per second)
+BLOOM_FADE_S = 0.25  # a sound fading out or in as its blooms go off or on air
 
 
 def to_db(value: float) -> float:
@@ -169,6 +172,9 @@ class Mixer:
         self._delays: dict[str, np.ndarray] = {}
         # Source record: its "clean" track is the "recording" track without these sources' sound.
         self.clean_out: frozenset[str] = frozenset()
+        # Sound per bloom: these sources are quiet in the blooms on air now (the engine sets it).
+        self.bloom_out: frozenset[str] = frozenset()
+        self._bloom_gates: dict[str, float] = {}  # source id -> gain now, while fading or quiet
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
@@ -210,6 +216,19 @@ class Mixer:
     def remove_monitor_tap(self, callback: Callable[[np.ndarray], None]) -> None:
         with self._lock:
             self._monitor_taps = [t for t in self._monitor_taps if t != callback]
+
+    def _bloom_gate(self, source_id: str) -> np.ndarray | float:
+        """This block's gain for a sound per bloom: 1.0 normally, 0.0 while quiet, a ramp while fading."""
+        target = 0.0 if source_id in self.bloom_out else 1.0
+        start = self._bloom_gates.get(source_id, 1.0)
+        if start == target:
+            if target == 1.0:
+                self._bloom_gates.pop(source_id, None)
+            return target
+        step = BLOCK / SAMPLE_RATE / BLOOM_FADE_S
+        end = min(target, start + step) if target > start else max(target, start - step)
+        self._bloom_gates[source_id] = end
+        return np.linspace(start, end, BLOCK, dtype=np.float32)[:, None]
 
     def _duck_ramp(self, voice_db: float) -> np.ndarray | float:
         """Per-sample gain for non-voice sources this block: a glide from the last gain toward the target."""
@@ -259,6 +278,9 @@ class Mixer:
             if settings.get("mono") or settings.get("balance") or settings.get("delay_ms") \
                     or source.id in self._delays:
                 block = shape(block, settings, self._delays, source.id)
+            gate = self._bloom_gate(source.id) if (self.bloom_out or self._bloom_gates) else 1.0
+            if isinstance(gate, np.ndarray) or gate != 1.0:
+                block = block * gate
             gain = source.gain
             voice = is_voice(source)
             if voice and gain:
