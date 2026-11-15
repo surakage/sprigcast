@@ -92,10 +92,17 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   without a copy (about 4x less work while they move, none while held). In the 60-minute soak they made the canvas miss
   frames and starved the recording's encoder, so recordings and clips dropped to about 50 fps. Slide show decodes the
   next picture in the background. Store plugins you added update themselves when SprigCast does.
+- Death count engraves its stone once per number instead of redrawing the text every frame, and painted plugin frames
+  go to the GPU premultiplied, as QPainter leaves them, with no conversion (about half the work per moving frame).
+  A full-screen popout draws its frame straight, without scaling or a copy, when it already matches the screen.
+- Slide show leaves out SprigCast's own screenshots and Snap polaroids. Pointed at the Screenshots folder in the soak,
+  it played pictures of the canvas back onto the canvas, which looked like trails of old frames.
 - A sprig nothing has shown for a few seconds lets go of its full-canvas texture (they stayed until SprigCast closed),
   and removing a plugin stops its sources straight away instead of at the next restart. Stopping a recording or
   stream logs the app's memory, so long sessions can be compared.
 - The first frame is drawn before the frame clock starts, so start-up no longer has a one-second hitch.
+- App sound's once-a-second app check no longer leaves objects behind. Over a night they piled up into millions, so
+  Python's clean-up pauses grew from 36 ms to 289 ms (16 missed frames each) and memory crept up.
 
 ### Sources and effects
 

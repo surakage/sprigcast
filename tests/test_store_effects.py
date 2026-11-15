@@ -448,7 +448,7 @@ def test_a_still_show_is_not_painted_again_and_reads_as_working(added, tmp_path)
     from sprigcast.app.names import short_status
 
     _col, _host, dc, api = _dc_setup(added, tmp_path, 1)
-    assert dc.channel_order == "BGRA"
+    assert dc.channel_order == "pBGRA"  # painted pictures go up as they are, no conversion
     dc.video_frame()
     api.run("deaths.add", {})
     assert dc.video_frame() is not None
@@ -472,3 +472,15 @@ def test_a_still_show_is_not_painted_again_and_reads_as_working(added, tmp_path)
     snap._job.started = __import__("time").monotonic() - (still + 0.1)
     assert snap.video_frame() is not None and snap.video_frame() is None
     assert short_status(snap.status) == ""
+
+
+def test_the_engraved_stone_is_drawn_once_per_number(added, tmp_path):
+    """Text is the slowest thing QPainter draws: a standing stone reuses its engraving."""
+    _col, _host, dc, api = _dc_setup(added, tmp_path, 1)
+    job = __import__("sprigcast.store.death_count", fromlist=["_Job"])._Job(1, 2)
+    dc.paint(job, 0.8)
+    first = dc._stone_cache
+    dc.paint(job, 0.9)
+    assert dc._stone_cache is first  # same number: the same picture
+    dc.paint(job, job.flip_at + 1.0)
+    assert dc._stone_cache is not first and dc._stone_cache[0][1] == 2  # the new number, engraved once

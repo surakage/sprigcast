@@ -38,6 +38,10 @@ class Source(ABC):
     def wake(self) -> None:
         """Start again and send a fresh frame. Called on the render thread."""
 
+    def set_hidden(self, hidden: bool) -> None:
+        """Its eye in Build went off (True) or on again, while something on screen still places it.
+        Called on the render thread when it changes, and again after each wake. A video pauses."""
+
     @property
     @abstractmethod
     def size(self) -> tuple[int, int]:

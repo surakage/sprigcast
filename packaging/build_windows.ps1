@@ -2,7 +2,7 @@
 # wrapped by Inno Setup. No freezing (PyInstaller) step, so plugins, lazy imports and "Start with
 # Windows" (which runs pythonw.exe -m sprigcast.app.main) work exactly as they do from source.
 #
-# Needs: uv and Inno Setup 6 (iscc) on PATH. Output: packaging\out\SprigCast-Setup-<version>.exe
+# Needs: uv and Inno Setup 6.7+ (iscc) on PATH. Output: packaging\out\SprigCast-Setup-<version>.exe
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true  # a failing uv or iscc stops the build too
 $root = Split-Path -Parent $PSScriptRoot

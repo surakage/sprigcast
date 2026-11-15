@@ -1634,12 +1634,61 @@ class MainWindow(QMainWindow):
                                       f" color: {theme.SELECT_TEXT}; }}")
         self.keep_shape.setMinimumHeight(36)
         self.keep_shape.toggled.connect(self._set_keep_shape)
-        keep_cell = QVBoxLayout()
-        keep_cell.setSpacing(5)
-        keep_cell.addWidget(QLabel(""))
-        keep_cell.addWidget(self.keep_shape)
-        grid.addLayout(keep_cell, 2, 1)
+        from sprigcast.app.pin_grid import PinGrid
+        from sprigcast.app.starter import BOX_HEIGHT, combo_style
+
+        def small_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
+            return label
+
+        self.pin_grid = PinGrid(lambda align: self._on_pin_picked("align", align))
+        self.pin_grid.setToolTip("Pin point")
+        pin_cell = QVBoxLayout()
+        pin_cell.setSpacing(5)
+        pin_cell.addWidget(small_label("Pin"))
+        pin_cell.addWidget(self.pin_grid, 0, Qt.AlignmentFlag.AlignHCenter)
+        grid.addLayout(pin_cell, 2, 1, 2, 1, Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(self.keep_shape, 3, 0)
         place.addLayout(grid)
+
+        bounds = section("Bounds")
+        self.bounds_mode = QComboBox()
+        self.bounds_mode.setStyleSheet(combo_style())
+        self.bounds_mode.setFixedHeight(BOX_HEIGHT)
+        self.bounds_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        for key, text in (("off", "Off"), ("fit", "Fit inside"), ("fill", "Fill and crop"), ("stretch", "Stretch")):
+            self.bounds_mode.addItem(text, key)
+        self.bounds_mode.currentIndexChanged.connect(lambda _i: self._on_bounds_mode())
+        self.bounds_grid = PinGrid(lambda align: self._on_pin_picked("bounds_align", align))
+        self.bounds_grid.setToolTip("Where it sits in its box")
+        brow = QHBoxLayout()
+        brow.setSpacing(12)
+        brow.addWidget(self.bounds_mode, 1, Qt.AlignmentFlag.AlignVCenter)
+        brow.addWidget(self.bounds_grid)
+        bounds.addLayout(brow)
+
+        crop = section("Crop")
+        cgrid = QGridLayout()
+        cgrid.setHorizontalSpacing(12)
+        cgrid.setVerticalSpacing(12)
+        self.crop_spin: dict[int, QDoubleSpinBox] = {}
+        for i, (label, row, column) in enumerate((("Left", 0, 0), ("Top", 0, 1), ("Right", 1, 0), ("Bottom", 1, 1))):
+            box = QDoubleSpinBox()
+            box.setRange(0, 20000)
+            box.setDecimals(0)
+            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            box.setMinimumHeight(36)
+            box.setToolTip("Or hold Alt and drag a side on the canvas")
+            box.valueChanged.connect(lambda value, side=i: self._on_crop_edited(side, int(value)))
+            self.crop_spin[i] = box
+            cell = QVBoxLayout()
+            cell.setSpacing(5)
+            cell.addWidget(small_label(label))
+            cell.addWidget(box)
+            cgrid.addLayout(cell, row, column)
+        crop.addLayout(cgrid)
         self.prop_locked = QCheckBox("Locked (clicks pass through it)")
         self.prop_locked.toggled.connect(self._on_locked_toggled)
         self.prop_locked.hide()  # kept for Ctrl+L; the lock lives on each Leaves row
@@ -1665,10 +1714,6 @@ class MainWindow(QMainWindow):
             chips.addWidget(chip)
         chips.addStretch(1)
         look.addLayout(chips)
-        crop_hint = QLabel("Crop: hold Alt and drag a side or corner on the canvas.")
-        crop_hint.setWordWrap(True)
-        crop_hint.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px;")
-        look.addWidget(crop_hint)
 
         shapes = section("Shapes")
         self.prop_shapes: dict[str, QLabel] = {}
@@ -4352,6 +4397,12 @@ class MainWindow(QMainWindow):
         w, h = item.cropped_size(size)
         if not w or not h:
             return
+        if item.bounded:  # the box fills the canvas; the picture fits in it its own way
+            item.bounds_size, item.rotation = (float(canvas.width), float(canvas.height)), 0.0
+            item.x = item.y = 0.0
+            self._changed()
+            self._refresh_properties()
+            return
         item.scale = min(canvas.width / w, canvas.height / h)
         item.scale_y = None
         item.rotation = 0.0
@@ -4385,7 +4436,7 @@ class MainWindow(QMainWindow):
     def _stretch_item(self) -> None:
         def change(item, canvas, size):
             cw, ch = item.cropped_size(size)
-            item.rotation, item.x, item.y = 0.0, 0.0, 0.0
+            item.rotation, item.x, item.y, item.bounds = 0.0, 0.0, 0.0, "off"
             item.scale = canvas[0] / cw
             item.scale_y = None if abs(canvas[1] / ch - item.scale) < 1e-6 else canvas[1] / ch
         self._edit_item(change)
@@ -4394,7 +4445,7 @@ class MainWindow(QMainWindow):
         """Cover the whole canvas, keeping the shape: what sticks out is cropped evenly off both sides
         (a 4:3 or 5:3 camera on a 16:9 canvas: no empty strips, nothing squashed)."""
         def change(item, canvas, size):
-            item.rotation, item.x, item.y, item.scale_y = 0.0, 0.0, 0.0, None
+            item.rotation, item.x, item.y, item.scale_y, item.bounds = 0.0, 0.0, 0.0, None, "off"
             item.crop, item.scale = cover(size, canvas)
         self._edit_item(change)
 
@@ -4406,7 +4457,7 @@ class MainWindow(QMainWindow):
 
     def _reset_item_size(self) -> None:
         def change(item, canvas, size):
-            item.scale, item.scale_y, item.rotation, item.crop = 1.0, None, 0.0, (0, 0, 0, 0)
+            item.scale, item.scale_y, item.rotation, item.crop, item.bounds = 1.0, None, 0.0, (0, 0, 0, 0), "off"
         self._edit_item(change)
 
     def _to_edge(self, front: bool) -> None:
@@ -4492,16 +4543,45 @@ class MainWindow(QMainWindow):
         self._changed()
 
     def _show_spin_values(self, item: SceneItem) -> None:
-        """Fill X, Y, Width, Height and Rotation (width and height in canvas pixels)."""
+        """Fill Place (X and Y are the pin point), Bounds and Crop for the selected item."""
         size = self.source_sizes.get(item.source)
-        w, h = item.drawn_size(size) if size and size[0] and size[1] else (0.0, 0.0)
-        values = {"x": item.x, "y": item.y, "w": w, "h": h, "rotation": item.rotation}
+        known = bool(size and size[0] and size[1])
+        w, h = item.drawn_size(size) if known else (0.0, 0.0)
+        x, y = item.pin(size) if known else (item.x, item.y)
+        values = {"x": x, "y": y, "w": w, "h": h, "rotation": item.rotation}
         for key, box in self.spin.items():
             box.blockSignals(True)
             box.setValue(float(values[key]))
             box.blockSignals(False)
         for key in ("w", "h"):
             self.spin[key].setEnabled(bool(w and h))
+        self.pin_grid.set_current(item.align)
+        self.bounds_grid.set_current(item.bounds_align)
+        self.bounds_mode.blockSignals(True)
+        self.bounds_mode.setCurrentIndex(max(0, self.bounds_mode.findData(item.bounds if item.bounded else "off")))
+        self.bounds_mode.blockSignals(False)
+        self.bounds_grid.setVisible(item.bounded and item.bounds != "stretch")
+        for side, box in self.crop_spin.items():
+            box.blockSignals(True)
+            if known:
+                box.setMaximum(max(0, (size[0] if side in (0, 2) else size[1]) - 2))
+            box.setValue(float(item.crop[side]))
+            box.blockSignals(False)
+
+    def _item_and_size(self):
+        """The selected item and its source's size, or (None, None) while either is missing."""
+        item = self._item()
+        size = self.source_sizes.get(item.source) if item is not None else None
+        if item is None or not size or not size[0] or not size[1]:
+            return None, None
+        return item, size
+
+    def _after_place_edit(self, item: SceneItem) -> None:
+        self._changed()
+        self._updating = True
+        self._show_spin_values(item)
+        self._updating = False
+        self._refresh_previews()
 
     def _on_transform_edited(self, key: str, value: float) -> None:
         if self._updating:
@@ -4509,30 +4589,95 @@ class MainWindow(QMainWindow):
         item = self._item()
         if item is None:
             return
-        if key in ("w", "h"):
-            size = self.source_sizes.get(item.source)
-            cw, ch = item.cropped_size(size) if size else (0, 0)
-            if not cw or not ch or value < 1:
-                return
-            sx, sy = item.scale, item.sy
-            if key == "w":
-                new_sx = max(0.01, value / cw)
-                sy = sy * new_sx / sx if self.keep_shape.isChecked() else sy
-                sx = new_sx
+        size = self.source_sizes.get(item.source)
+        known = bool(size and size[0] and size[1])
+        if key in ("x", "y"):
+            if not known:
+                setattr(item, key, value)
             else:
-                new_sy = max(0.01, value / ch)
-                sx = sx * new_sy / sy if self.keep_shape.isChecked() else sx
-                sy = new_sy
-            item.scale, item.scale_y = sx, (None if abs(sx - sy) < 1e-6 else sy)
+                x, y = item.pin(size)
+                item.set_pin(size, value if key == "x" else x, value if key == "y" else y)
             self._changed()
-            self._updating = True
-            self._show_spin_values(item)
-            self._updating = False
             self._refresh_previews()
+            return
+        if key in ("w", "h"):
+            if not known or value < 1:
+                return
+            pin = item.pin(size)
+            if item.bounded:
+                bw, bh = item.bounds_size
+                if key == "w":
+                    bh = bh * value / bw if self.keep_shape.isChecked() else bh
+                    bw = value
+                else:
+                    bw = bw * value / bh if self.keep_shape.isChecked() else bw
+                    bh = value
+                item.bounds_size = (max(2.0, bw), max(2.0, bh))
+            else:
+                cw, ch = item.cropped_size(size)
+                if not cw or not ch:
+                    return
+                sx, sy = item.scale, item.sy
+                if key == "w":
+                    new_sx = max(0.01, value / cw)
+                    sy = sy * new_sx / sx if self.keep_shape.isChecked() else sy
+                    sx = new_sx
+                else:
+                    new_sy = max(0.01, value / ch)
+                    sx = sx * new_sy / sy if self.keep_shape.isChecked() else sx
+                    sy = new_sy
+                item.scale, item.scale_y = sx, (None if abs(sx - sy) < 1e-6 else sy)
+            item.set_pin(size, *pin)  # it grows and shrinks around its pin point
+            self._after_place_edit(item)
             return
         setattr(item, key, value)
         self._changed()
         self._refresh_previews()
+
+    def _on_pin_picked(self, field: str, align: str) -> None:
+        """A new pin point (stays put on the canvas) or a new spot for the picture in its box."""
+        item, size = self._item_and_size()
+        if item is None:
+            return
+        if field == "align":
+            item.set_align(size, align)
+        else:
+            item.bounds_align = align
+        self._after_place_edit(item)
+
+    def _on_bounds_mode(self) -> None:
+        if self._updating:
+            return
+        item, size = self._item_and_size()
+        if item is None:
+            return
+        mode = self.bounds_mode.currentData()
+        pin = item.pin(size)
+        if mode != "off" and not item.bounded:
+            item.bounds_size = item.drawn_size(size)  # the box starts where it is now
+        elif mode == "off" and item.bounded:
+            sx, sy = item.picture_scale(size)  # keep the picture's size
+            item.scale, item.scale_y = sx, (None if abs(sx - sy) < 1e-6 else sy)
+        item.bounds = mode
+        item.set_pin(size, *pin)
+        self._after_place_edit(item)
+
+    def _on_crop_edited(self, side: int, value: int) -> None:
+        if self._updating:
+            return
+        item, size = self._item_and_size()
+        if item is None:
+            return
+        crop = list(item.crop)
+        crop[side] = value
+        limit = size[0] if side in (0, 2) else size[1]
+        other = 2 if side == 0 else 0 if side == 2 else 3 if side == 1 else 1
+        crop[side] = min(value, max(0, limit - crop[other] - 2))
+        pin = item.pin(size)
+        item.crop = tuple(crop)
+        item.set_pin(size, *pin)
+        self._after_place_edit(item)
+        self.prop_uncrop.setVisible(any(item.crop))
 
     def _set_keep_shape(self, on: bool) -> None:
         QSettings().setValue("edit/keep_aspect", on)
@@ -4623,6 +4768,10 @@ class MainWindow(QMainWindow):
                 host = self.browser_host
                 dialog = WebPageDialog(config.name, config.settings, self,
                                        on_reload=(lambda: host.reload(config.id)) if host else None)
+            elif config.kind == "media":
+                from sprigcast.app.media_dialog import MediaDialog
+
+                dialog = MediaDialog(config.name, config.settings, self)
             else:
                 dialog = SettingsDialog(config.name, defaults, config.settings, self)
             if not dialog.exec():

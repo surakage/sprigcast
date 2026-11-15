@@ -14,8 +14,10 @@ MASCOT = ROOT / "brand" / "art" / "sloth-installer.png"  # the sloth hugging a v
 ICON = ROOT / "src" / "sprigcast" / "data" / "logo.svg"
 MARK = ROOT / "brand" / "sprigcast-s-white-pink.svg"
 
-# Night Canopy (app/theme.py). HEADER must match the header colour set in sprigcast.iss.
-HEADER = "#0e1311"
+# Night Canopy (app/theme.py). PAGE must match WizardBackColor in sprigcast.iss: the art's edges fade
+# into it so the picture and the page read as one surface.
+PAGE = "#0e1311"
+HEADER = PAGE
 DEEP = "#0b0f0d"
 CANOPY = "#1d3428"
 TEXT = "#f2f7f3"
@@ -36,9 +38,14 @@ def _side(w: int, h: int):
     p = QPainter(image)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    p.fillRect(0, 0, w, h, QColor(PAGE))
+    # A low canopy glow from the bottom, so the panel has depth but no edge against the page.
     fall = QLinearGradient(0, 0, 0, h)
-    fall.setColorAt(0.0, QColor(DEEP))
-    fall.setColorAt(1.0, QColor(CANOPY))
+    fall.setColorAt(0.0, QColor(PAGE))
+    fall.setColorAt(0.55, QColor(PAGE))
+    canopy = QColor(CANOPY)
+    canopy.setAlpha(150)
+    fall.setColorAt(1.0, canopy)
     p.fillRect(0, 0, w, h, fall)
     # A soft glow behind the mascot.
     glow = QRadialGradient(QPointF(w / 2, h * 0.70), w * 0.62)
@@ -78,6 +85,13 @@ def _side(w: int, h: int):
     small = picture.scaled(round(sw), round(sh), Qt.AspectRatioMode.IgnoreAspectRatio,
                            Qt.TransformationMode.SmoothTransformation)
     p.drawImage(QPointF((w - small.width()) / 2, h - small.height()), small)
+    # Melt the right edge into the page colour: no seam where the picture meets the text.
+    edge = QLinearGradient(w * 0.82, 0, w, 0)
+    clear = QColor(PAGE)
+    clear.setAlpha(0)
+    edge.setColorAt(0.0, clear)
+    edge.setColorAt(1.0, QColor(PAGE))
+    p.fillRect(QRectF(w * 0.82, 0, w * 0.18 + 1, h), edge)
     p.end()
     return image
 
