@@ -27,6 +27,75 @@
       "DisableAutomaticStates": true
     },
     {
+      "Name": "Show or hide",
+      "UUID": "com.sprigcast.sprigcast.item",
+      "Icon": "imgs/actions/item/icon",
+      "Tooltip": "Show or hide something in a bloom.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/item/key0",
+          "Name": "Shown",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/item/key1",
+          "Name": "Hidden",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Garden",
+      "UUID": "com.sprigcast.sprigcast.garden",
+      "Icon": "imgs/actions/garden/icon",
+      "Tooltip": "Switch to another garden (set of blooms). Lights while in use.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/garden/key0",
+          "Name": "Other",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/garden/key1",
+          "Name": "In use",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Path",
+      "UUID": "com.sprigcast.sprigcast.path",
+      "Icon": "imgs/actions/path/icon",
+      "Tooltip": "Switch to another path (where and how you go out). Lights while in use.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/path/key0",
+          "Name": "Other",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/path/key1",
+          "Name": "In use",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
       "Name": "Mute sound",
       "UUID": "com.sprigcast.sprigcast.mute",
       "Icon": "imgs/actions/mute/icon",
@@ -50,27 +119,28 @@
       "DisableAutomaticStates": true
     },
     {
-      "Name": "Show or hide",
-      "UUID": "com.sprigcast.sprigcast.item",
-      "Icon": "imgs/actions/item/icon",
-      "Tooltip": "Show or hide something in a bloom.",
+      "Name": "Sound volume",
+      "UUID": "com.sprigcast.sprigcast.volume",
+      "Icon": "imgs/actions/volume/icon",
+      "Tooltip": "Turn a sound up or down. On a Stream Deck + dial: turn for volume, press to mute.",
       "PropertyInspectorPath": "ui/settings.html",
       "Controllers": [
-        "Keypad"
+        "Keypad",
+        "Encoder"
       ],
       "States": [
         {
-          "Image": "imgs/actions/item/key0",
-          "Name": "Shown",
-          "TitleAlignment": "bottom"
-        },
-        {
-          "Image": "imgs/actions/item/key1",
-          "Name": "Hidden",
+          "Image": "imgs/actions/volume/key0",
           "TitleAlignment": "bottom"
         }
       ],
-      "DisableAutomaticStates": true
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "Volume",
+          "Push": "Mute"
+        }
+      }
     },
     {
       "Name": "Go live",
@@ -119,6 +189,29 @@
       "DisableAutomaticStates": true
     },
     {
+      "Name": "Clips",
+      "UUID": "com.sprigcast.sprigcast.clips",
+      "Icon": "imgs/actions/clips/icon",
+      "Tooltip": "Keep clips ready, or stop. Lights while ready.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/clips/key0",
+          "Name": "Off",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/clips/key1",
+          "Name": "Ready",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
       "Name": "Save clip",
       "UUID": "com.sprigcast.sprigcast.clip",
       "Icon": "imgs/actions/clip/icon",
@@ -136,6 +229,29 @@
       ]
     },
     {
+      "Name": "Virtual camera",
+      "UUID": "com.sprigcast.sprigcast.camera",
+      "Icon": "imgs/actions/camera/icon",
+      "Tooltip": "Turn SprigCast Camera on or off. Lights while on.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/camera/key0",
+          "Name": "Off",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/camera/key1",
+          "Name": "On",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
       "Name": "Screenshot",
       "UUID": "com.sprigcast.sprigcast.screenshot",
       "Icon": "imgs/actions/screenshot/icon",
@@ -151,6 +267,75 @@
           "ShowTitle": true
         }
       ]
+    },
+    {
+      "Name": "Media",
+      "UUID": "com.sprigcast.sprigcast.media",
+      "Icon": "imgs/actions/media/icon",
+      "Tooltip": "Play, pause, restart or stop a video or sound file. Lights while playing.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/media/key0",
+          "Name": "Stopped",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/media/key1",
+          "Name": "Playing",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Filter",
+      "UUID": "com.sprigcast.sprigcast.filter",
+      "Icon": "imgs/actions/filter/icon",
+      "Tooltip": "Turn a filter on or off. Lights while on.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/filter/key0",
+          "Name": "Off",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/filter/key1",
+          "Name": "On",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Transition",
+      "UUID": "com.sprigcast.sprigcast.transition",
+      "Icon": "imgs/actions/transition/icon",
+      "Tooltip": "Pick the transition and its length. Lights while it's the one in use.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/transition/key0",
+          "Name": "Other",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/transition/key1",
+          "Name": "In use",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
     },
     {
       "Name": "Sprig state",
@@ -207,7 +392,7 @@
   "Category": "SprigCast",
   "CategoryIcon": "imgs/plugin/category-icon",
   "CodePath": "bin/plugin.js",
-  "Description": "Run SprigCast from your Stream Deck: switch blooms, mute sounds, go live, record, save clips and use SprigCast plugins. Keys light up to match SprigCast.",
+  "Description": "Run SprigCast from your Stream Deck: switch blooms and gardens, mute and turn sounds (dials on Stream Deck +), go live, record, clips, virtual camera, media, filters, transitions and SprigCast plugins. Keys light up to match SprigCast.",
   "Icon": "imgs/plugin/marketplace",
   "SDKVersion": 3,
   "Software": {

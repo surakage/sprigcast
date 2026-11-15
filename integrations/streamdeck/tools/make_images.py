@@ -49,6 +49,21 @@ GLYPHS = {
     "deaths": '<path d="M28 84V40q0-22 22-22t22 22v44z" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>'
               '<path d="M50 34v26M40 44h20" stroke="{c}" stroke-width="6" stroke-linecap="round"/>'
               '<path d="M16 86h68" stroke="{c}" stroke-width="7" stroke-linecap="round"/>',
+    "volume": '<path d="M16 40h12l16-14v48L28 60H16z" fill="{c}"/><path d="M58 34h28M58 50h20M58 66h12" stroke="{c}" '
+              'stroke-width="7" stroke-linecap="round"/>',
+    "clips": '<circle cx="50" cy="50" r="32" fill="none" stroke="{c}" stroke-width="7"/><path d="M50 30v20l13 9" fill="none" '
+             'stroke="{c}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>',
+    "camera": '<rect x="12" y="30" width="54" height="40" rx="10" fill="none" stroke="{c}" stroke-width="7"/>'
+              '<path d="M66 44l22-12v36L66 56z" fill="{c}"/>',
+    "media": '<path d="M30 22l46 28-46 28z" fill="{c}"/>',
+    "media-on": '<rect x="28" y="22" width="15" height="56" rx="4" fill="{c}"/><rect x="57" y="22" width="15" height="56" rx="4" fill="{c}"/>',
+    "filter": '<path d="M14 22h72L58 54v24l-16 8V54z" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>',
+    "transition": '<rect x="12" y="26" width="34" height="48" rx="8" fill="none" stroke="{c}" stroke-width="7"/>'
+                  '<rect x="54" y="26" width="34" height="48" rx="8" fill="{c}"/>',
+    "garden": '<path d="M50 84V46" stroke="{c}" stroke-width="7" stroke-linecap="round"/><circle cx="50" cy="32" r="14" fill="{c}"/>'
+              '<path d="M50 64q-24 0-32-20q22-2 32 20zM50 58q22 0 30-18q-20-2-30 18z" fill="{c}"/>',
+    "path": '<path d="M24 86q4-26 26-36t26-36" fill="none" stroke="{c}" stroke-width="8" stroke-linecap="round" '
+            'stroke-dasharray="2 14"/><circle cx="76" cy="16" r="9" fill="{c}"/>',
     "run": '<path d="M56 12L24 56h22l-6 32 34-46H52z" fill="{c}" stroke="{c}" stroke-width="3" stroke-linejoin="round"/>',
 }
 
@@ -60,6 +75,14 @@ KEYS = {
     "live": (("live", DIM), ("live", PINK)),
     "record": (("record", DIM), ("record", PINK)),
     "clip": (("clip", MINT), None),
+    "volume": (("volume", MINT), None),
+    "clips": (("clips", DIM), ("clips", MINT)),
+    "camera": (("camera", DIM), ("camera", MINT)),
+    "media": (("media", MINT), ("media-on", MINT)),
+    "filter": (("filter", DIM), ("filter", MINT)),
+    "transition": (("transition", DIM), ("transition", MINT)),
+    "garden": (("garden", DIM), ("garden", MINT)),
+    "path": (("path", DIM), ("path", MINT)),
     "screenshot": (("screenshot", MINT), None),
     "sprig-state": (("sprig", MINT), None),
     "deaths": (("deaths", MINT), None),

@@ -24,7 +24,11 @@ export class SprigCast extends EventEmitter {
 		this.socket = null;
 		this.ready = false;
 		this.wanted = false;
-		this.state = { onAir: {}, sounds: {}, items: {}, stream: false, record: false, deaths: null };
+		this.state = {
+			onAir: {}, sounds: {}, volumes: {}, items: {}, media: {}, filters: {},
+			stream: false, record: false, clips: false, camera: false,
+			garden: null, path: null, transition: null, deaths: null,
+		};
 		this._nextId = 0;
 		this._pending = new Map();
 		this._tries = 0;
@@ -111,7 +115,7 @@ export class SprigCast extends EventEmitter {
 		if (message.hello) {
 			const auth = message.hello.auth;
 			const answer = auth ? authAnswer(this.password, auth.salt, auth.challenge) : null;
-			this.socket.send(JSON.stringify({ auth: answer, events: ["bloom", "sound", "output", "item", "plugin"] }));
+			this.socket.send(JSON.stringify({ auth: answer, events: ["bloom", "sound", "output", "item", "plugin", "media", "filter", "transition", "garden", "path"] }));
 		} else if (message.welcome) {
 			this.ready = true;
 			this._tries = 0;
@@ -131,9 +135,18 @@ export class SprigCast extends EventEmitter {
 			const current = await this.run("bloom.current");
 			for (const [shape, bloom] of Object.entries(current.onAir ?? {})) this.state.onAir[shape] = bloom?.name ?? null;
 			const sounds = await this.run("sounds.list");
-			for (const s of sounds.sounds ?? []) this.state.sounds[s.name] = s.muted;
+			for (const s of sounds.sounds ?? []) {
+				this.state.sounds[s.name] = s.muted;
+				this.state.volumes[s.name] = s.volumeDb;
+			}
 			this.state.stream = Boolean((await this.run("stream.status")).on);
 			this.state.record = Boolean((await this.run("record.status")).on);
+			this.state.clips = Boolean((await this.run("clips.status")).on);
+			this.state.camera = Boolean((await this.run("camera.status").catch(() => ({}))).on);
+			this.state.garden = (await this.run("gardens.list")).garden ?? null;
+			this.state.path = (await this.run("paths.list")).path ?? null;
+			this.state.transition = await this.run("transition.get");
+			for (const m of (await this.run("media.list")).media ?? []) this.state.media[m.media] = m.state;
 		} catch {
 			// a half-ready SprigCast: events fill the state in as things change
 		}
@@ -141,12 +154,22 @@ export class SprigCast extends EventEmitter {
 
 	_event(message) {
 		const { event } = message;
-		if (event === "bloom.shown") this.state.onAir[message.shape] = message.bloom;
-		else if (event === "sound.changed") this.state.sounds[message.name] = message.muted;
-		else if (event === "stream.changed") this.state.stream = Boolean(message.on);
-		else if (event === "record.changed") this.state.record = Boolean(message.on);
-		else if (event === "deaths.changed") this.state.deaths = message.count;
-		else if (event === "item.changed" && message.bloom) this.state.items[`${message.bloom}/${message.item}`] = message.visible;
+		const st = this.state;
+		if (event === "bloom.shown") st.onAir[message.shape] = message.bloom;
+		else if (event === "sound.changed") {
+			st.sounds[message.name] = message.muted;
+			st.volumes[message.name] = message.volumeDb;
+		} else if (event === "stream.changed") st.stream = Boolean(message.on);
+		else if (event === "record.changed") st.record = Boolean(message.on);
+		else if (event === "clips.changed") st.clips = Boolean(message.on);
+		else if (event === "camera.changed") st.camera = Boolean(message.on);
+		else if (event === "garden.changed") st.garden = message.garden;
+		else if (event === "path.changed") st.path = message.path;
+		else if (event === "transition.changed") st.transition = { kind: message.kind, ms: message.ms };
+		else if (event === "media.changed") st.media[message.media] = message.state;
+		else if (event === "filter.changed") st.filters[`${message.source}/${message.name}`] = message.on;
+		else if (event === "deaths.changed") st.deaths = message.count;
+		else if (event === "item.changed" && message.bloom) st.items[`${message.bloom}/${message.item}`] = message.visible;
 		this.emit("event", message);
 		this.emit("changed");
 	}

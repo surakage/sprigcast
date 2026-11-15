@@ -16,7 +16,9 @@ Nothing has been sent to Elgato. These are the steps and the listing, ready for 
 - [ ] Install `com.sprigcast.sprigcast.streamDeckPlugin`, enter the port and password once.
 - [ ] Show bloom: switches, and the key lights for the bloom on air; switching in SprigCast moves the light.
 - [ ] Mute sound: toggles; muting in SprigCast changes the key.
-- [ ] Show or hide, Go live, Record, Save clip, Screenshot, Sprig state, Death count, Run action.
+- [ ] Show or hide, Garden, Path, Go live, Record, Clips, Save clip, Virtual camera, Screenshot, Media, Filter,
+      Transition, Sprig state, Death count, Run action.
+- [ ] Sound volume on a key, and on a Stream Deck + dial (turn, press to mute, the level shows on the screen).
 - [ ] Close SprigCast: keys show an alert when pressed; open it again: they work again within about 30 s.
 - [ ] Wrong password: keys show an alert, and the Stream Deck log says "Wrong password".
 - [ ] Remove every SprigCast key from the profile: SprigCast's Connections page shows no app connected.
@@ -28,8 +30,9 @@ Nothing has been sent to Elgato. These are the steps and the listing, ready for 
 **Short description:** Control SprigCast, the light streaming app, from your Stream Deck.
 
 **Description:**
-Switch blooms, mute sounds, go live, record, save clips and take screenshots in SprigCast, right from your Stream
-Deck. Keys light up to match SprigCast: the bloom on air, muted sounds, and pink while you're live or recording.
+Switch blooms and gardens, mute and turn sounds (with dials on Stream Deck +), go live, record, keep clips, save
+clips, turn the virtual camera on, play media, flip filters, pick transitions and take screenshots in SprigCast,
+right from your Stream Deck. Keys light up to match SprigCast: the bloom on air, muted sounds, and pink while you're live or recording.
 SprigCast plugins work too: add to the Death count, change a sprig's Live state, or run any SprigCast action.
 The plugin connects only while a SprigCast key is on screen, so it adds nothing to your PC while idle.
 Requires SprigCast with the API turned on (Settings → Connections).
