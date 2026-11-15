@@ -96,6 +96,11 @@ RECONFIGURE_INIT_AT = 8  # NV_ENC_RECONFIGURE_PARAMS: version, then the initiali
 # flags and level before it; NV_ENC_CONFIG_HEVC has level, tier, minCUSize, maxCUSize and a word of flags.
 H264_IDR_PERIOD, HEVC_IDR_PERIOD = 8, 20
 IDR_PERIOD = {"h264": H264_IDR_PERIOD, "hevc": HEVC_IDR_PERIOD}
+# enableFillerDataInsertion: (offset of the flags word in the codec part, bit). H.264's flags come first
+# (bit 17, after useConstrainedIntraPred); HEVC's sit after level, tier and the two CU sizes (bit 14,
+# after chromaFormatIDC and the 3 bit-depth bits). Without filler, NVENC's CBR is only a ceiling: a
+# still scene went out at 200-900 kbps of 4000 on Twitch (2026-11-15), where OBS pads up to the bitrate.
+FILLER_BIT = {"h264": (0, 17), "hevc": (16, 14)}
 STATUS_NAMES = [
     "SUCCESS", "NO_ENCODE_DEVICE", "UNSUPPORTED_DEVICE", "INVALID_ENCODERDEVICE", "INVALID_DEVICE",
     "DEVICE_NOT_EXIST", "INVALID_PTR", "INVALID_EVENT", "INVALID_PARAM", "INVALID_CALL", "OUT_OF_MEMORY",
@@ -274,6 +279,15 @@ def _release(com: c_void_p) -> None:
         ctypes.WINFUNCTYPE(c_uint32, c_void_p)(vtable[2])(com)
 
 
+def set_filler(buf, codec: str) -> None:
+    """Turn on filler data in a preset config buffer, so CBR really sends the bitrate on still scenes."""
+    import struct
+
+    where, bit = FILLER_BIT[codec]
+    at = CONFIG_AT + CFG_H264 + where
+    struct.pack_into("<I", buf, at, struct.unpack_from("<I", buf, at)[0] | 1 << bit)
+
+
 class D3D11Encoder:
     """One H.264 or HEVC encoder on its own Direct3D 11 device. encode() takes NV12 bytes, returns packets.
 
@@ -379,6 +393,8 @@ class D3D11Encoder:
             if buffer_kbits:
                 struct.pack_into("<I", buf, rc + RC_VBV_SIZE, buffer_kbits * 1000)
                 struct.pack_into("<I", buf, rc + RC_VBV_DELAY, buffer_kbits * 1000)
+        if rate_control == "cbr" and kbps:
+            set_filler(buf, self.codec)
         if adaptive_quant:
             flags = struct.unpack_from("<I", buf, rc + RC_FLAGS)[0]
             struct.pack_into("<I", buf, rc + RC_FLAGS, flags | RC_FLAG_AQ)

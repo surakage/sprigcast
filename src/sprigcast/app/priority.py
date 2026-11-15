@@ -67,11 +67,37 @@ def raise_gpu_priority() -> str:
     return ""
 
 
+def stop_power_throttling() -> bool:
+    """Opt out of EcoQoS and timer coarsening for this process. True if Windows accepted it."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        class State(ctypes.Structure):  # PROCESS_POWER_THROTTLING_STATE
+            _fields_ = [("Version", ctypes.c_ulong), ("ControlMask", ctypes.c_ulong), ("StateMask", ctypes.c_ulong)]
+
+        execution_speed, ignore_timer_resolution = 0x1, 0x4
+        # ControlMask says which policies we decide; StateMask 0 = throttling off for each of them.
+        state = State(1, execution_speed | ignore_timer_resolution, 0)
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.SetProcessInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+        process_power_throttling = 4  # PROCESS_INFORMATION_CLASS
+        return bool(kernel32.SetProcessInformation(kernel32.GetCurrentProcess(), process_power_throttling,
+                                                   ctypes.byref(state), ctypes.sizeof(state)))
+    except Exception as exc:
+        log.info("could not turn off power throttling: %s", exc)
+        return False
+
+
 def apply(level: str | None = None) -> str:
     """Apply the saved (or given) CPU priority and raise GPU priority. Returns a short summary."""
     level = level or chosen()
     cpu = set_cpu_priority(level)
     gpu = raise_gpu_priority()
-    summary = f"CPU priority {LEVELS[level].split(' (')[0].lower() if cpu else 'unchanged'}, GPU priority {gpu or 'normal'}"
+    awake = stop_power_throttling()
+    summary = (f"CPU priority {LEVELS[level].split(' (')[0].lower() if cpu else 'unchanged'}, "
+               f"GPU priority {gpu or 'normal'}, power throttling {'off' if awake else 'unchanged'}")
     log.info(summary)
     return summary
