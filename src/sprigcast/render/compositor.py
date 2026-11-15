@@ -811,6 +811,9 @@ class Compositor:
         scenes on two canvases costs one render.
         """
         target = self._target_sized(f"part:{part_id}", size)
+        # A sprig nothing shows for a while (a bloom you left, a removed plugin's own sprig) lets go of its
+        # full-canvas texture in prune(); it's made again the moment it's shown.
+        self._used[("canvas", f"part:{part_id}")] = time.monotonic()
         self._draw_scene(target.fbo, size, scene, source_sizes, fades)
         return target.color
 

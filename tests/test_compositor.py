@@ -219,3 +219,18 @@ def test_video_planes_convert_on_the_gpu_like_ffmpeg(compositor, fmt, colorspace
     assert diff.max() <= 8, (order, diff.max(), bad[:3].tolist(), got[tuple(bad[0][:2])].tolist(), want[tuple(bad[0][:2])].tolist())
     compositor.forget("vid")
     assert "vid" not in compositor.planar
+
+
+def test_a_sprig_nothing_shows_lets_go_of_its_texture(compositor):
+    """Soak 2026-11-15: every sprig ever shown kept a full-canvas texture until SprigCast closed."""
+    import time
+
+    from sprigcast.core.scene import Scene
+
+    compositor.ctx.__enter__()
+    compositor.render_part("gone", (64, 36), Scene(id="gone", name="Gone", canvas="pr", kind="part"), {})
+    assert "part:gone" in compositor.targets
+    compositor.prune(now=time.monotonic() + 100)
+    assert "part:gone" not in compositor.targets
+    compositor.render_part("gone", (64, 36), Scene(id="gone", name="Gone", canvas="pr", kind="part"), {})
+    assert "part:gone" in compositor.targets  # back as soon as it's shown again

@@ -139,3 +139,21 @@ def test_a_camera_set_to_pause_off_screen_sleeps_like_the_rest():
     engine.sleep_policy = "off"  # "never pause" still wins
     engine._tick(fake, 20.0)
     assert not engine._sources["cam"].asleep
+
+
+def test_a_removed_plugins_sources_stop_now_not_at_restart(monkeypatch):
+    from sprigcast.core import source as source_module
+
+    engine, _col = _engine()
+    compositor = FakeCompositor()
+    engine._sync_sources(compositor)  # real colour sources in place of the test sleepers
+    compositor.forgotten.clear()
+    game = engine._sources["game"]
+    stopped = []
+    monkeypatch.setattr(game, "stop", lambda: stopped.append("game"))
+    monkeypatch.setitem(source_module._REGISTRY, "color", None)  # as if its plugin was taken out
+    monkeypatch.delitem(source_module._REGISTRY, "color")
+    engine._sync_sources(compositor)
+    assert stopped and "game" not in engine._sources and "game" in compositor.forgotten
+    engine._sync_sources(compositor)  # no new attempt (and no error) every time the blooms change
+    assert "game" not in engine._sources and engine.events.empty()
