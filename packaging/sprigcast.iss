@@ -28,8 +28,13 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: "camera"; Description: "Set up the SprigCast Camera, so Discord, Zoom and TikTok LIVE Studio can use SprigCast as a webcam (Windows asks for permission once)"; GroupDescription: "Virtual camera:"; Check: IsWindows11
+Name: "desktopicon"; Description: "Desktop shortcut"
+Name: "camera"; Description: "SprigCast Camera: use SprigCast as a webcam"; Check: IsWindows11
+
+[Messages]
+WizardSelectTasks=Extras
+SelectTasksDesc=Pick what to add.
+SelectTasksLabel2=
 
 [Files]
 Source: "{#BuildDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
