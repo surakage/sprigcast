@@ -127,3 +127,15 @@ class _SourcesCheck:
 
         self.collection = NS(sources=[NS(id="b", name="Alerts")])
         self.statuses = {"b": "No page set"}
+
+
+def test_too_old_windows_says_so_instead_of_check_its_plugged_in():
+    from types import SimpleNamespace as NS
+
+    from sprigcast.app import doctor
+
+    check = NS(collection=NS(sources=[NS(id="v", name="Voice chat")]),
+               statuses={"v": "unavailable: needs Windows 10 (2004) or newer"})
+    [finding] = doctor._sources(check)
+    assert "plugged in" not in finding.text and "this Windows" in finding.text
+    assert "needs Windows 10 (2004) or newer" in finding.text

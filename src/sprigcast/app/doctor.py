@@ -241,6 +241,10 @@ def _sources(c: Checkup) -> list[Finding]:
         if status == "No page set":  # an empty browser source shows nothing: a note, not a reason to stop
             found.append(Finding("info", "Sources", f"{s.name} has no page yet: it shows nothing until you add one."))
             continue
+        if status and "needs Windows" in status:  # nothing to plug in: this Windows is too old for it
+            found.append(Finding("bad", "Sources", f"{s.name} doesn't work on this Windows "
+                                                   f"({status.removeprefix('unavailable: ')}): remove it in Sources."))
+            continue
         if status and not status.startswith(OK_STATUSES):
             found.append(Finding("bad", "Sources", f"{s.name} isn't working ({status}): "
                                                    "check it's plugged in or open, or edit it in Sources."))

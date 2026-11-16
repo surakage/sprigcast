@@ -62,12 +62,9 @@ def install_dir() -> Path:
 
 
 def windows_build() -> int:
-    if sys.platform != "win32":
-        return 0
-    try:
-        return sys.getwindowsversion().build
-    except Exception:  # noqa: BLE001
-        return 0
+    from sprigcast.winver import windows_build as real_build
+
+    return real_build()
 
 
 def supported() -> tuple[bool, str]:
