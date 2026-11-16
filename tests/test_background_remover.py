@@ -285,7 +285,8 @@ def test_engine_parks_a_watcher_nothing_feeds(watched):
     engine._tick(fake, 10.1)
     watcher = Watcher.made[-1]
     engine._visible = set()
-    engine._show_hidden = lambda: None  # keep it "not showing"
+    engine._visible_sources = lambda: set()  # keep it "not showing"
+    engine._show_hidden = lambda: None
     engine._tick(fake, 10.1 + engine_mod.WATCHER_PARK_S + 1)
     assert watcher.closed and not engine._watchers
 

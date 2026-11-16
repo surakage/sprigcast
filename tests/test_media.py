@@ -541,10 +541,10 @@ def test_rapid_wake_sleep_loop_and_controls_from_many_threads(tmp_path):
         source.stop()
 
 
-def test_a_bloom_of_seven_media_waking_and_sleeping_reuses_files_and_decoders(tmp_path, monkeypatch):
+def test_a_bloom_of_seven_media_waking_and_sleeping_leaves_no_threads(tmp_path, monkeypatch):
     """The PC's Heavy test bloom: 4 GIFs and 3 see-through webms on and off screen 10 times, with Python's cycle
-    collector off. Each file is opened once and its decoder kept (no new FFmpeg threads per wake), and the
-    thread count ends where it started."""
+    collector off. Off air each closes its file (opened again on each wake), and the thread count ends where it
+    started: closing never leaves FFmpeg's decoder threads behind (#361)."""
     import gc
     import threading
 
@@ -583,7 +583,7 @@ def test_a_bloom_of_seven_media_waking_and_sleeping_reuses_files_and_decoders(tm
                 source.wake()
             time.sleep(0.2)
         assert abs(process.num_threads() - before) <= 10
-        assert sorted(opened) == sorted(files)  # once each, never again on a wake
+        assert set(opened) == set(files) and len(opened) > len(files)  # closed asleep, opened again awake
     finally:
         gc.enable()
         stop.set()
@@ -592,12 +592,11 @@ def test_a_bloom_of_seven_media_waking_and_sleeping_reuses_files_and_decoders(tm
             source.stop()
 
 
-def test_asleep_long_enough_the_thread_closes_its_file_and_ends(tmp_path, monkeypatch):
+def test_asleep_the_thread_closes_its_file_and_ends(tmp_path, monkeypatch):
     import threading
 
     from sprigcast.sources import media
 
-    monkeypatch.setattr(media, "PARK_S", 0.3)
     released = []
     real_release = media._Held.release
     monkeypatch.setattr(media._Held, "release",
@@ -606,8 +605,6 @@ def test_asleep_long_enough_the_thread_closes_its_file_and_ends(tmp_path, monkey
     source.start()
     assert _until(lambda: source.status == "ok")
     source.sleep()
-    time.sleep(0.15)
-    assert [t for t in threading.enumerate() if t.name == "media-brb"]  # still parked with the file open
     assert _until(lambda: not [t for t in threading.enumerate() if t.name == "media-brb"])
     assert True in released  # it closed its open file on its own thread
     source.wake()  # and a later wake starts again
@@ -670,3 +667,197 @@ def test_sound_resamplers_and_audio_filters_start_no_thread_pools(tmp_path):
     finally:
         gc.enable()
         source.stop()
+
+
+def _media_threads(name):
+    import threading
+
+    return [t for t in threading.enumerate() if t.name == f"media-{name}"]
+
+
+def test_played_to_the_end_it_lets_everything_go_and_play_starts_again(tmp_path, monkeypatch):
+    from sprigcast.sources import media
+
+    released = []
+    real_release = media._Held.release
+    monkeypatch.setattr(media._Held, "release",
+                        lambda self: released.append(self.container is not None) or real_release(self))
+    source = MediaSource("end", {"path": _video(tmp_path / "clip.mp4", seconds=0.5)})
+    source.start()
+    try:
+        frames = []
+        _play(source, 0.9, frames)
+        assert source.state == "ended" and frames
+        assert _until(lambda: not _media_threads("end"))  # no decoder thread, no open file
+        assert True in released
+        assert source.video_frame() is None  # the canvas keeps its last picture
+        source.play()
+        assert _media_threads("end") and _play(source, 0.3) > 5  # plays again from the top
+        _play(source, 0.5)
+        assert source.state == "ended" and _until(lambda: not _media_threads("end"))
+        source.seek(0.2)
+        assert _play(source, 0.2) > 3
+    finally:
+        source.stop()
+
+
+def test_a_looping_video_keeps_its_thread(tmp_path):
+    source = MediaSource("loop", {"path": _video(tmp_path / "clip.mp4", seconds=0.3), "loop": True})
+    source.start()
+    try:
+        _play(source, 0.8)
+        assert source.state == "playing" and _media_threads("loop")
+    finally:
+        source.stop()
+
+
+def test_a_sound_file_waiting_for_play_holds_no_thread(tmp_path):
+    source = MediaSource("ding", {"path": _sound(tmp_path / "ding.wav", seconds=0.3)})
+    source.start()
+    try:
+        assert _until(lambda: source.status == "ok" and source.duration)
+        assert _until(lambda: not _media_threads("ding"))
+        source.play()
+        assert _play(source, 0.2) > 5
+    finally:
+        source.stop()
+
+
+def test_hidden_then_asleep_it_plays_again_when_shown(tmp_path):
+    source = MediaSource("m", {"path": _video(tmp_path / "clip.mp4", seconds=2.0), "restart_on_show": False})
+    source.start()
+    try:
+        _play(source, 0.4)
+        source.set_hidden(True)
+        at = source.position
+        source.asleep = True
+        source.sleep()
+        assert _until(lambda: not _media_threads("m"))
+        source.asleep = False
+        source.wake()
+        assert source.state == "playing" and source.position == pytest.approx(at, abs=0.05)
+    finally:
+        source.stop()
+
+
+def test_ended_and_off_air_it_comes_back_ended_with_its_last_picture(tmp_path):
+    source = MediaSource("m", {"path": _video(tmp_path / "clip.mp4", seconds=0.5), "restart_on_show": False})
+    source.start()
+    try:
+        _play(source, 0.9)
+        assert source.state == "ended"
+        source.asleep = True
+        source.sleep()
+        source.asleep = False
+        source.wake()
+        frames = []
+        _play(source, 0.4, frames)
+        assert frames and source.state == "ended"  # the last picture again, not the whole clip
+        assert _until(lambda: not _media_threads("m"))
+    finally:
+        source.stop()
+
+
+def _engine_with_two_blooms(tmp_path, transition_ms=0):
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render.engine import Engine
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=64, height=36)],
+        sources=[SourceConfig(id="a", kind="media", name="A", settings={"path": _video(tmp_path / "a.mp4"),
+                                                                       "loop": True}),
+                 SourceConfig(id="b", kind="media", name="B", settings={"path": _video(tmp_path / "b.mp4"),
+                                                                       "loop": True})],
+        scenes=[Scene(id="one", name="One", canvas="h", items=[SceneItem(source="a")]),
+                Scene(id="two", name="Two", canvas="h", items=[SceneItem(source="b")])],
+        active_scenes={"h": "one"},
+    )
+    return Engine(col), col
+
+
+class _Comp:
+    targets, parts, downscale, effects = {}, {}, {}, {}
+
+    def __init__(self):
+        self.textures = {}
+        self.forgotten = []
+
+    def forget(self, source_id):
+        self.forgotten.append(source_id)
+        self.textures.pop(source_id, None)
+
+
+def test_off_air_sources_sleep_as_soon_as_nothing_draws_them(tmp_path):
+    engine, col = _engine_with_two_blooms(tmp_path)
+    comp = _Comp()
+    engine._sync_sources(comp)
+    try:
+        a, b = engine._sources["a"], engine._sources["b"]
+        assert not a.asleep and b.asleep  # only the bloom on air runs
+        engine._collection.active_scenes = {"h": "two"}  # a cut
+        engine._rest_sources(comp, 1.0)
+        assert a.asleep and not b.asleep and "a" in comp.forgotten  # no 5 s wait off air
+        assert _until(lambda: not _media_threads("a"))
+    finally:
+        for source in engine._sources.values():
+            source.stop()
+
+
+def test_a_transition_is_the_handover(tmp_path):
+    from sprigcast.render.engine import Running
+
+    engine, col = _engine_with_two_blooms(tmp_path)
+    comp = _Comp()
+    engine._sync_sources(comp)
+    try:
+        a, b = engine._sources["a"], engine._sources["b"]
+        outgoing = engine._collection.scene("one")
+        engine._collection.active_scenes = {"h": "two"}
+        engine._transitions["h"] = Running(outgoing, time.perf_counter(), 0.5, None)
+        engine._rest_sources(comp, 1.0)
+        assert not a.asleep and not b.asleep  # both run while the transition draws both
+        del engine._transitions["h"]  # it ended
+        engine._rest_sources(comp, 1.6)
+        assert a.asleep and not b.asleep
+    finally:
+        for source in engine._sources.values():
+            source.stop()
+
+
+def test_an_eye_off_source_sleeps_after_a_moment(tmp_path):
+    from sprigcast.render.engine import SLEEP_AFTER
+
+    engine, col = _engine_with_two_blooms(tmp_path)
+    comp = _Comp()
+    engine._sync_sources(comp)
+    try:
+        a = engine._sources["a"]
+        engine._collection.scenes[0].items[0].visible = False
+        engine._rest_sources(comp, 1.0)
+        engine._show_hidden(engine._visible)
+        assert not a.asleep and a.state == "paused"  # a quick hide and show stays instant
+        engine._rest_sources(comp, 1.0 + SLEEP_AFTER + 0.1)
+        assert a.asleep  # then it lets everything go
+        engine._collection.scenes[0].items[0].visible = True
+        engine._rest_sources(comp, 10.0)
+        assert not a.asleep
+    finally:
+        for source in engine._sources.values():
+            source.stop()
+
+
+def test_a_cut_to_a_closed_video_waits_for_its_first_picture(tmp_path):
+    engine, col = _engine_with_two_blooms(tmp_path)
+    comp = _Comp()
+    engine._sync_sources(comp)
+    try:
+        new = engine._collection.model_copy(deep=True)
+        new.active_scenes = {"h": "two"}
+        engine._wait_for_waking("h", engine._collection.scene("one"), new, "two")
+        assert engine._waking["h"][2] == {"b"}  # the old bloom stays up until b has a picture
+        assert engine._still_waking(comp, "h", time.perf_counter()) is not None
+        comp.textures["b"] = object()
+        assert engine._still_waking(comp, "h", time.perf_counter()) is None
+    finally:
+        for source in engine._sources.values():
+            source.stop()

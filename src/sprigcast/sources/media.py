@@ -5,8 +5,11 @@ goes to the mixer. A sound file has no picture, so it lives in Sound like a mic 
 
 A small thread decodes a little ahead (a few frames, about a second of sound) and the render and mixer
 threads take what's due on the media's own clock, so picture and sound stay together. Paused, the
-thread waits; asleep (its bloom off screen) every frame is let go and the thread waits with its file and
-decoder open, so a bloom that comes back reuses them; after PARK_S asleep it closes them and ends.
+thread waits. Nothing is kept running for nothing (2026-11-16, the user's rule):
+- asleep (its bloom went off air), every frame is let go and the thread closes its file and decoder and ends;
+- once it has played to the end (not looping), the thread closes them and ends too. The canvas keeps the last
+  picture (it's a texture there), and play, restart or a seek start a new thread.
+A bloom switch waits for its first picture (slow_wake, see Engine._wait_for_waking), so nothing pops in late.
 
 Controls (play, pause, restart, stop, seek) are safe to call from any thread: the control API, hotkeys
 and the right-click menu call them directly.
@@ -42,7 +45,8 @@ SYNC_S = 0.08  # sound further off the clock than this is skipped or waited for
 MAX_SIZE = (1920, 1920)  # bigger videos are shrunk while decoding: no canvas needs more
 STATES = ("playing", "paused", "stopped", "ended")
 SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
-PARK_S = 60.0  # asleep this long, the decoder thread closes its file and decoder and ends (until then a wake reuses them)
+PARK_S = 0.0  # asleep, the decoder thread closes its file and decoder and ends right away (a wake that comes
+# before it noticed reuses them). Was 60 s (#361); the user wants nothing off air kept open.
 HW_DEVICES = ("d3d11va", "cuda", "dxva2", "videotoolbox", "vaapi")  # tried in this order, where FFmpeg has them
 
 
@@ -229,6 +233,20 @@ class MediaSource(Source):
         return self.has_video
 
     @property
+    def slow_wake(self) -> bool:
+        """A bloom switch to it waits (briefly) for its first picture, as the file opens again."""
+        return self.has_video and not str(self.status).startswith("can't") and self.status != "no file"
+
+    def _ensure_thread(self) -> None:
+        """After a control: start a decoder thread if the last one ended (it does once the file played out)."""
+        if self.asleep or self._parked:
+            return  # wake starts one
+        with self._lock:
+            alive = self._thread is not None and self._thread.is_alive() and not self._stop.is_set()
+        if not alive:
+            self.start()
+
+    @property
     def size(self) -> tuple[int, int]:
         return self._size
 
@@ -287,13 +305,20 @@ class MediaSource(Source):
             self._wake.notify_all()
 
     def wake(self) -> None:
-        self._hidden = self._paused_by_hide = False  # the renderer says again if its eye is off
         with self._lock:
+            resume = self._paused_by_hide  # its eye was off when it went to sleep: it plays again when shown
+            self._hidden = self._paused_by_hide = False  # the renderer says again if its eye is off
             self._parked = False
             if self.settings.get("restart_on_show", True):
                 self._jump_locked(0.0, "playing")
+            elif self._state == "ended":
+                if self.settings.get("clear_on_end") or not self.duration:
+                    self._blank = np.zeros((2, 2, 4), dtype=np.uint8)  # nothing, as when it ended
+                    return
+                self._jump_locked(max(0.0, self.duration - 0.1), "playing")  # its last picture, then ended again
             else:
-                self._jump_locked(self._base % self.duration if self.duration else self._base, self._state)
+                state = "playing" if resume else self._state
+                self._jump_locked(self._base % self.duration if self.duration else self._base, state)
         self.start()
 
     def update(self, settings: dict[str, Any]) -> None:
@@ -306,6 +331,7 @@ class MediaSource(Source):
             self._size = (0, 0)
             self.status = "starting" if settings.get("path") else "no file"
             self._jump(0.0, "playing" if self.has_video or settings.get("play_on_start") else "stopped")
+            self._ensure_thread()
         elif reopen or clamp_speed(settings.get("speed", 1.0)) != self._speed:
             with self._lock:  # decode again from here: new speed (its sound is resampled for it) or decoder
                 if self._state in ("playing", "paused"):
@@ -314,6 +340,7 @@ class MediaSource(Source):
                     self._paused_by_hide = paused_by_hide
                 else:
                     self._speed = clamp_speed(settings.get("speed", 1.0))
+            self._ensure_thread()
 
     def set_hidden(self, hidden: bool) -> None:
         """Its eye went off (pause) or on again (start over, or carry on). Any thread."""
@@ -335,6 +362,8 @@ class MediaSource(Source):
                 self._paused_by_hide = False
                 self._state = "playing"
                 self._wake.notify_all()
+        if not hidden:
+            self._ensure_thread()
 
     # Controls (any thread) -----------------------------------------------------------------------
 
@@ -346,6 +375,7 @@ class MediaSource(Source):
             elif self._state == "paused":
                 self._state = "playing"
                 self._wake.notify_all()
+        self._ensure_thread()
 
     def pause(self) -> None:
         with self._lock:
@@ -363,6 +393,7 @@ class MediaSource(Source):
 
     def restart(self) -> None:
         self._jump(0.0, "playing")
+        self._ensure_thread()
 
     def stop_playing(self) -> None:
         """Stop and show nothing; play starts from the beginning."""
@@ -375,6 +406,7 @@ class MediaSource(Source):
             paused_by_hide = self._paused_by_hide
             self._jump_locked(min(max(0.0, seconds), max(0.0, limit - 0.05)), state)
             self._paused_by_hide = paused_by_hide
+        self._ensure_thread()
 
     @property
     def state(self) -> str:
@@ -510,7 +542,12 @@ class MediaSource(Source):
             while not self._stop.is_set() and self._mine():
                 if self._parked and not self._park(held):
                     return
-                self._play_once(held)
+                generation = self._generation
+                if self._play_once(held):
+                    with self._wake:  # played to the end (or waiting for play): let everything go, unless a
+                        if self._generation == generation and self._mine():  # control just asked for more
+                            self._thread = None
+                            return
         finally:
             held.release()  # on this thread, after its last frame: nothing else ever touches them
 
@@ -524,19 +561,21 @@ class MediaSource(Source):
                 self._thread = None  # a wake from now on starts a new thread
             return False
 
-    def _play_once(self, held: _Held) -> None:
+    def _play_once(self, held: _Held) -> bool:
+        """Play from where the clock says. True when it's done (played out, or a sound file waiting for play):
+        the thread then ends and lets its file go."""
         path = str(self.settings.get("path", ""))
         with self._lock:
             generation, start_at, speed = self._generation, self._start_at, self._speed
-        if self._parked:
-            return
+        if self._parked or generation != self._generation:
+            return False
         if not path:
             self.status = "no file"
             held.release()
             self._wait_for_change(generation)
-            return
+            return False
         try:
-            self._decode(path, generation, start_at, speed, held)
+            return self._decode(path, generation, start_at, speed, held)
         except Exception as exc:
             held.release()  # broken partway: open it fresh next time
             log.warning("media %s could not be played: %s", path, exc)
@@ -549,6 +588,7 @@ class MediaSource(Source):
                 self._wait_for_change(generation)
             else:  # couldn't open it: try again in a bit (a file still copying, a drive waking up)
                 self._wait_for_change(generation, timeout=5.0)
+            return False
 
     def _wait_for_change(self, generation: int, timeout: float | None = None) -> None:
         with self._wake:
@@ -571,7 +611,8 @@ class MediaSource(Source):
         return av.open(path)
 
     def _decode(self, path: str, generation: int, start_at: float, speed: float = 1.0,
-                held: _Held | None = None) -> None:
+                held: _Held | None = None) -> bool:
+        """Decode until the end, a jump or sleep. True when it played out (or is a file waiting for play)."""
         import av
 
         if not Path(path).exists():
@@ -595,8 +636,7 @@ class MediaSource(Source):
                             if probe.duration is not None:
                                 self.duration = max(0.04, probe.duration / 1_000_000)
                     self.status = "ok"
-                    self._wait_for_change(generation)
-                    return
+                    return True  # play starts a thread again
                 if container is None:
                     container = held.container = self._open(path)
                 elif not _rewind(container):  # the next pass: from the top of the open file
@@ -681,9 +721,9 @@ class MediaSource(Source):
                     with self._lock:
                         if self._generation == generation:
                             self._finished_at = offset + length
-                    self._wait_for_change(generation)
-                    return
+                    return True  # played out: the thread closes the file and ends (_run)
                 offset += length
+            return False
         finally:
             # Only this thread ever touches its decoder and file. They stay in `held` for the next play; the
             # thread lets them go itself when it ends (_run). Pictures it handed over are copies of their own

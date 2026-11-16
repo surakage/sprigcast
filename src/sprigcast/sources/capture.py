@@ -56,10 +56,13 @@ class _CaptureSource(Source):
         return False
 
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():  # still winding down after sleep()
-            self._thread.join(timeout=3)
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._supervise, name=f"capture-{self.id}", daemon=True)
+        """A new supervisor with its own stop flag. Never waits for one still winding down after sleep(): it
+        stops by its own flag (a bloom switched straight back used to wait here, on the render thread)."""
+        if self._thread is not None and self._thread.is_alive() and not self._stop.is_set():
+            return
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._supervise, args=(self._stop,), name=f"capture-{self.id}",
+                                        daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -116,7 +119,8 @@ class _CaptureSource(Source):
         self._size = (int(frame.width), int(frame.height))
         self._frames.put(frame.frame_buffer)
 
-    def _supervise(self) -> None:
+    def _supervise(self, stop: threading.Event | None = None) -> None:
+        stop = stop or self._stop
         try:
             windows_capture_cls = _load_backend()
         except RuntimeError as exc:
@@ -124,7 +128,7 @@ class _CaptureSource(Source):
             log.warning("%s: %s", self.id, exc)
             return
 
-        while not self._stop.is_set():
+        while not stop.is_set():
             self._restart.clear()
             target = self._target()
             if target is None:
@@ -134,7 +138,7 @@ class _CaptureSource(Source):
             ended = threading.Event()
 
             def on_frame_arrived(frame, control):
-                if self._stop.is_set() or self._restart.is_set():
+                if stop.is_set() or self._restart.is_set():
                     control.stop()
                     return
                 self._on_frame(frame)
@@ -165,14 +169,14 @@ class _CaptureSource(Source):
                 continue
             self.status = "capturing"
 
-            while not (self._stop.is_set() or self._restart.is_set() or ended.is_set() or control.is_finished()
+            while not (stop.is_set() or self._restart.is_set() or ended.is_set() or control.is_finished()
                        or self._should_retarget()):
                 self._restart.wait(0.2)
             try:
                 control.stop()
             except Exception:
                 pass
-            if ended.is_set() and not (self._stop.is_set() or self._restart.is_set()):
+            if ended.is_set() and not (stop.is_set() or self._restart.is_set()):
                 self.status = "target closed, retrying"
                 time.sleep(RETRY_SECONDS)
 
