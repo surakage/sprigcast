@@ -284,6 +284,7 @@ class EnhancedStreamer(Streamer):
         vf = track.reformatter.reformat(
             vf, width=track.cfg.width, height=track.cfg.height, interpolation="BICUBIC",
             format=_sw_format(track.cfg.encoder), dst_colorspace=Colorspace.ITU709, dst_color_range=ColorRange.MPEG,
+            threads=2,  # FFmpeg's default is a pool as big as the CPU, per track
         )
         vf.pts = pts
         group = pts // (track.cfg.keyint_sec * track.fps)

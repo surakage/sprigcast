@@ -18,6 +18,7 @@ from collections import deque
 
 import numpy as np
 
+from sprigcast.core.frames import reformat
 from sprigcast.sources.audio import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -184,7 +185,7 @@ class StingerPlayer:
                     t = float(pts * video.time_base) if pts is not None else 0.0
                     if first is None:
                         first = t
-                    picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
+                    picture = reformat(frame, width=size[0], height=size[1], format="rgba").to_ndarray()
                     if not self._add_frame(t - first, picture):
                         return
             if decoder is not None:
@@ -193,7 +194,7 @@ class StingerPlayer:
                 except EOFError:
                     tail = []
                 for frame in tail:
-                    picture = frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray()
+                    picture = reformat(frame, width=size[0], height=size[1], format="rgba").to_ndarray()
                     pts = frame.pts or 0
                     self._add_frame(float(pts * video.time_base) - (first or 0.0), picture)
 

@@ -26,8 +26,10 @@ def _frames(n: int = 6):
     import numpy as np
 
     rng = np.random.default_rng(7)
-    return [av.VideoFrame.from_ndarray(rng.integers(0, 256, (HEIGHT, WIDTH, 3), dtype=np.uint8), format="rgb24")
-            .reformat(format="yuv420p") for _ in range(n)]
+    from sprigcast.core.frames import reformat
+
+    return [reformat(av.VideoFrame.from_ndarray(rng.integers(0, 256, (HEIGHT, WIDTH, 3), dtype=np.uint8),
+                                                format="rgb24"), format="yuv420p") for _ in range(n)]
 
 
 def stream_test(url: str, seconds: float = SECONDS, ceiling_kbps: int = CEILING_KBPS, open_container=None,

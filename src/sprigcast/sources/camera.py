@@ -21,6 +21,7 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast.core.frames import reformat
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.source import Source, register
 
@@ -305,16 +306,16 @@ def camera_picture(frame, target: tuple[int, int] | None) -> tuple[np.ndarray, s
         full = name.startswith("yuvj") or int(getattr(frame, "color_range", 0) or 0) == 2
         if name != "yuv420p" or (frame.width, frame.height) != (w, h):
             # MJPEG decodes to full-range YUV: keep that range rather than squeeze it (it's labelled below).
-            frame = frame.reformat(width=w, height=h, format="yuv420p", interpolation="BILINEAR",
-                                   **({"src_color_range": 2, "dst_color_range": 2} if full else {}))
+            frame = reformat(frame, width=w, height=h, format="yuv420p", interpolation="BILINEAR",
+                             **({"src_color_range": 2, "dst_color_range": 2} if full else {}))
         packed = pack_i420(frame, (w, h))
         if packed is not None:
             array, order = packed
             if full and order.endswith("/tv"):
                 order = order[:-3] + "/pc"
             return array, order, (w, h)
-    picture = frame.to_ndarray(format="bgr24", **({"width": w, "height": h, "interpolation": "BILINEAR"}
-                                                   if target else {}))
+    picture = reformat(frame, format="bgr24", **({"width": w, "height": h, "interpolation": "BILINEAR"}
+                                                 if target else {})).to_ndarray()
     return picture, "BGR", (picture.shape[1], picture.shape[0])
 
 
