@@ -7,7 +7,8 @@ A source class can also give:
     choices = {"language": (("en", "English"), ("es", "Spanish"))}  # a drop-down instead of a text box
               (or a function returning that list, read each time the form opens: devices plugged in now)
     secrets = {"google_key": "captions/google_key"}  # a hidden box whose value is kept DPAPI-encrypted in
-              SprigCast's settings under that name, never in the garden file (so it isn't shared or exported)
+              SprigCast's settings under that name, never in the garden file (so it isn't shared or exported);
+    secrets_after = "engine"  # where those boxes go in the form (at the end without it)
 """
 
 from __future__ import annotations
@@ -61,6 +62,11 @@ LABELS = {
     "engine": "Captions by",
     "google_key": "Google key",
     "lines": "Lines",
+    "look": "Style",
+    "text_size": "Size",
+    "all_caps": "All caps",
+    "align": "Alignment",
+    "outline_color": "Outline colour",
 }
 
 
@@ -74,6 +80,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.choices: dict[str, Any] = dict(getattr(cls, "choices", None) or {})
         self.secrets: dict[str, str] = dict(getattr(cls, "secrets", None) or {})
+        self.secret_fields: dict[str, QLineEdit] = {}
+        secrets_after = getattr(cls, "secrets_after", None)  # the field the secrets follow (else at the end)
         self.setWindowTitle(title)
         self.setMinimumWidth(460)
         self.defaults = defaults
@@ -83,12 +91,10 @@ class SettingsDialog(QDialog):
             value = settings.get(key, default)
             widget = self._field(key, default, value)
             form.addRow(_label(key), widget)
-        self.secret_fields: dict[str, QLineEdit] = {}
-        for key in self.secrets:
-            edit = QLineEdit(read_secret(self.secrets[key]))
-            edit.setEchoMode(QLineEdit.EchoMode.Password)
-            self.secret_fields[key] = edit
-            form.addRow(_label(key), edit)
+            if key == secrets_after:
+                self._add_secrets(form)
+        if secrets_after not in defaults:
+            self._add_secrets(form)
         if "text" in defaults:
             tip = QLabel("{time}, {time12} and {date} show a live clock. A file's text replaces Text when set.")
             tip.setWordWrap(True)
@@ -101,7 +107,7 @@ class SettingsDialog(QDialog):
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
-        if "hide_after" in defaults:
+        if "hide_after" in defaults and "bubble_color" in defaults:  # the chat source
             tip = QLabel("Shows the chats you picked in the Chat panel (⋯ → Channels…). Hide after 0 keeps "
                          "messages up. A colour ending in 00 is see-through.")
             tip.setWordWrap(True)
@@ -111,6 +117,13 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+    def _add_secrets(self, form: QFormLayout) -> None:
+        for key in self.secrets:
+            edit = QLineEdit(read_secret(self.secrets[key]))
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.secret_fields[key] = edit
+            form.addRow(_label(key), edit)
 
     def _field(self, key: str, default: Any, value: Any) -> QWidget:
         if key in self.choices:
