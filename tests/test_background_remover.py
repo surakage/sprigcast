@@ -49,7 +49,7 @@ def test_does_nothing_until_added_then_maps_its_modes(plugin):
     assert video_effects([_bg(mode="replace", picture_file="C:/a.png")]).cutout == 3
     assert video_effects([_bg(mode="replace")]).cutout == 1  # no picture yet: see-through
     assert not video_effects([_bg(mode="blur")][:0]).active
-    assert plugin.status("cam") == "Starts when the camera is on screen"
+    assert plugin.status("cam") == "Starts when it's on screen"
 
 
 def test_removed_plugin_leaves_the_camera_alone(tmp_path, app):
@@ -114,7 +114,7 @@ def test_watcher_masks_the_middle_and_blurs_the_room(plugin):
     assert loads == ["wide", "square", "better"]
     assert cut.process(small, {"mode": "remove"})["backdrop"] is None
     cut.close()
-    assert plugin.status("cam") == "Starts when the camera is on screen"
+    assert plugin.status("cam") == "Starts when it's on screen"
 
 
 def test_mask_settles_over_time_instead_of_flickering(plugin):

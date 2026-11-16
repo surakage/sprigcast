@@ -33,7 +33,7 @@ from sprigcast.plugin_hooks import FrameWatcher, register_frame_watcher
 
 PLUGIN = {"id": "background_remover", "name": "Background remover", "version": 1, "adds": "Effect",
           "about": "Remove, blur or replace the room behind you on a camera. No green screen needed.",
-          "new": "New."}
+          "new": "First version."}
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ _STATUS: dict[str, str] = {}  # source id -> how it's doing, for the Filters win
 
 
 def status(source_id: str) -> str:
-    return _STATUS.get(source_id, "Starts when the camera is on screen")
+    return _STATUS.get(source_id, "Starts when it's on screen")
 
 
 register_filter("background", "Background remover", "video", [
