@@ -347,10 +347,51 @@ def test_off_air_it_stops_listening_and_lets_the_pictures_go(tuber, monkeypatch,
     source.asleep = True
     source.sleep()
     assert closed and source._mic is None
-    assert source._park is not None
-    source._park.cancel()
-    source._let_go()
+    assert source._model is None  # let go at once, not a minute later
+
+
+def test_back_on_air_it_sends_nothing_until_the_pictures_are_in(tuber, monkeypatch, tmp_path):
+    source, clock, level = _ready(tuber, monkeypatch, _model(tmp_path / "m"))
+    source.asleep = True
+    source.sleep()
+    started = []
+    monkeypatch.setattr(tuber.threading, "Thread", lambda target, args, **k: type(
+        "T", (), {"start": lambda self: started.append((target, args))})())
+    source.asleep = False
+    source.wake()
+    assert started and source.video_frame() is None  # loading: the engine keeps the old bloom up (slow_wake)
+    target, args = started[0]
+    target(*args)
+    frame = source.video_frame()
+    assert frame is not None and frame[..., 3].any()
+
+
+def test_a_load_that_ends_after_going_back_to_sleep_is_not_kept(tuber, monkeypatch, tmp_path):
+    source, clock, level = _ready(tuber, monkeypatch, _model(tmp_path / "m"))
+    source.asleep = True
+    source.sleep()
+    source._load(tmp_path / "m")
     assert source._model is None
+
+
+def test_big_animated_emotes_are_kept_small(tuber, tmp_path, monkeypatch):
+    """Frames are kept at the size they're shown and, past the budget, animated pictures keep fewer frames;
+    no picture is ever held at its own (big) size."""
+    folder = tmp_path / "emotes"
+    _picture(folder / "idle.gif", (200, 150, 100, 255), size=(1600, 1600), gif_frames=40)
+    _picture(folder / "talk.gif", (200, 150, 100, 255), size=(1600, 1600), gif_frames=40, mouth=(0, 0, 0, 255))
+    seen = []
+    real_fit = tuber._fit
+    monkeypatch.setattr(tuber, "_fit", lambda f, *a: (seen.append(f.size), real_fit(f, *a))[1])
+    monkeypatch.setattr(tuber, "MOST_BYTES", 8 * 1024 * 1024)
+    model = tuber.load_model(folder)
+    kept = [p for states in model.pictures.values() for p in states.values()]
+    total = sum(px.nbytes for p in kept for px, _x, _y in p.frames)
+    assert total <= 8 * 1024 * 1024
+    assert all(2 <= len(p.frames) < 40 for p in kept)
+    assert all(p.times[-1] == pytest.approx(2.0) for p in kept)  # same length, fewer frames
+    assert len(seen) == sum(len(p.frames) for p in kept)  # only kept frames were ever fitted
+    assert all(px.shape[0] <= tuber.H and px.shape[1] <= tuber.W for p in kept for px, _x, _y in p.frames)
 
 
 def test_own_mic_opens_only_when_no_sprigcast_sound(tuber, monkeypatch, tmp_path):
