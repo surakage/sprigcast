@@ -223,6 +223,20 @@ def style_graphite(glyph: str, lit: bool, pink: bool, _group: str, size: int):
 DRAW = {"canopy": style_canopy, "colour": style_colour, "graphite": style_graphite}
 
 
+def offline_image(glyph: str, size: int):
+    """While SprigCast is closed or gone: every key goes dark (one look for all styles), with a small grey ring
+    in the corner, so it's plain the keys aren't connected."""
+    from PIL import ImageDraw
+
+    out = finish(radial(size, "#161a18", "#070908", cy=0.2), glyph_mask(glyph, size, size * 0.22, 5.5),
+                 "#4c5651", "#353d39", 0.0, None, 0.0, ("#ffffff", 10))
+    draw = ImageDraw.Draw(out)
+    r, c, w = size * 0.07, size * 0.84, max(1, size // 48)
+    draw.ellipse([c - r, size * 0.16 - r, c + r, size * 0.16 + r], outline=rgb("#6b7570"), width=w)
+    draw.line([c - r * 0.7, size * 0.16 + r * 0.7, c + r * 0.7, size * 0.16 - r * 0.7], fill=rgb("#6b7570"), width=w)
+    return out
+
+
 def key_image(style: str, action: str, glyph: str, colour: str, size: int):
     return DRAW[style](glyph, colour != DIM, colour == PINK, GROUP[action], size)
 
@@ -269,6 +283,9 @@ def main() -> None:
                 for size, name in ((72, f"key{n}.png"), (144, f"key{n}@2x.png")):
                     key_image(style, action, state[0], state[1], size).save(str(folder / name))
         both(svg_icon(states[0][0]), 20, IMGS / "actions" / action / "icon", render_icon)
+        offline = IMGS / "offline"
+        offline.mkdir(parents=True, exist_ok=True)
+        offline_image(states[0][0], 144).save(str(offline / f"{action}.png"))
     tile = (BRAND / "sprigcast-app-icon.svg").read_text(encoding="utf-8")
     both(tile, 256, IMGS / "plugin" / "marketplace")
     render(tile, 288, IMGS / "plugin" / "store-icon-288.png")

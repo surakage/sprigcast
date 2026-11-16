@@ -250,3 +250,13 @@ test("a pairing code is sent once and the key it gets becomes the password", asy
 	assert.match(again.status, /Pair a device/);
 	again.want(false);
 });
+
+test("every key has a dark offline picture for when SprigCast is closed", async () => {
+	const { readFileSync, existsSync } = await import("node:fs");
+	const root = new URL("../com.sprigcast.sprigcast.sdPlugin/", import.meta.url);
+	const manifest = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8"));
+	for (const action of manifest.Actions) {
+		const suffix = action.UUID.split(".").pop();
+		assert.ok(existsSync(new URL(`imgs/offline/${suffix}.png`, root)), suffix);
+	}
+});
