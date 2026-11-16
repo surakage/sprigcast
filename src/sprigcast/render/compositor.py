@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import math
+import re
 import time
 
 import moderngl
@@ -12,6 +14,8 @@ from sprigcast.core import looks
 from sprigcast.core.filters import VideoEffects
 from sprigcast.core.looks import SHAPE_IDS
 from sprigcast.core.scene import Canvas, Scene, Transition
+
+log = logging.getLogger(__name__)
 
 NO_EFFECTS = VideoEffects()
 
@@ -1230,9 +1234,65 @@ class Compositor:
         self.ctx.release()
 
 
+class GraphicsError(RuntimeError):
+    """The graphics driver can't give SprigCast an OpenGL 3.3 context. The message is for the user."""
+
+
+def gl_version(text: str) -> tuple[int, int] | None:
+    """(4, 0) from a GL_VERSION string like "4.0.0 - Build 10.18.10.5161" or "3.1.0 - Build 9.17"."""
+    match = re.match(r"\s*(?:OpenGL ES )?(\d+)\.(\d+)", text or "")
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def graphics_message(version: str, renderer: str, detail: str = "") -> str:
+    """What to tell the user when OpenGL 3.3 can't start, from what the driver says it offers."""
+    name = (renderer or "").strip()
+    if not name or any(word in name for word in ("GDI Generic", "Basic Render", "Basic Display")):
+        return ("SprigCast can't start its graphics: Windows is running without a graphics driver"
+                + (f" ({name})" if name else "") + ".\n\nInstall the graphics driver from your PC maker's support "
+                "page, or from Intel, AMD or NVIDIA, then open SprigCast again.")
+    found = gl_version(version)
+    if found is not None and found < (3, 3):
+        return (f"SprigCast needs OpenGL 3.3 graphics. This PC's graphics ({name}) offer OpenGL "
+                f"{found[0]}.{found[1]}.\n\nA newer graphics driver from your PC maker, Intel or AMD may add it. "
+                "Graphics from before 2012 (like Intel HD 3000) can't run SprigCast.")
+    return (f"SprigCast couldn't start its graphics ({name or 'unknown graphics'}"
+            + (f", OpenGL {found[0]}.{found[1]}" if found else "") + ").\n\nUpdate the graphics driver from your "
+            "PC maker, Intel, AMD or NVIDIA, then open SprigCast again." + (f"\n\nDetails: {detail}" if detail else ""))
+
+
+def probe_graphics() -> tuple[str, str]:
+    """GL_VERSION and GL_RENDERER from whatever context the driver gives without a version asked for."""
+    for kwargs in ({"require": 100}, {"require": 100, "backend": "egl"}):
+        try:
+            ctx = moderngl.create_standalone_context(**kwargs)
+        except Exception:
+            continue
+        try:
+            info = ctx.info
+            return str(info.get("GL_VERSION", "")), str(info.get("GL_RENDERER", ""))
+        finally:
+            ctx.release()
+    return "", ""
+
+
 def create_context() -> moderngl.Context:
-    """A headless OpenGL 3.3 context. On Windows this uses WGL; on Linux it falls back to EGL."""
+    """A headless OpenGL 3.3 context. On Windows this uses WGL; on Linux it falls back to EGL.
+
+    Raises GraphicsError, with a message for the user, when the driver can't give one: no driver
+    (Microsoft Basic Display Adapter), or graphics older than OpenGL 3.3 (Intel HD 2000/3000).
+    Intel HD 2500/4000 and newer offer OpenGL 4.0 or more on Windows, so 2012 PCs onwards are fine."""
     try:
-        return moderngl.create_standalone_context(require=330)
+        ctx = moderngl.create_standalone_context(require=330)
+    except Exception as first:
+        try:
+            ctx = moderngl.create_standalone_context(require=330, backend="egl")
+        except Exception:
+            version, renderer = probe_graphics()
+            log.warning("OpenGL 3.3 unavailable: %s (driver offers %r on %r)", first, version, renderer)
+            raise GraphicsError(graphics_message(version, renderer, str(first))) from first
+    try:
+        log.info("graphics: %s, OpenGL %s", ctx.info.get("GL_RENDERER"), ctx.info.get("GL_VERSION"))
     except Exception:
-        return moderngl.create_standalone_context(require=330, backend="egl")
+        pass
+    return ctx

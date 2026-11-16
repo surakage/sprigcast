@@ -60,7 +60,20 @@ class PcProfile:
     def weak_reasons(self) -> list[str]:
         from sprigcast.app import lowend
 
-        return lowend.weak_reasons(lowend.PcFacts(self.threads, self.memory_gb, self.codec))
+        return lowend.weak_reasons(self.facts)
+
+    @property
+    def facts(self):
+        from sprigcast.app import lowend
+
+        return lowend.PcFacts(self.threads, self.memory_gb, self.codec, self.cpu_name, tuple(self.extra.get("gpus", ())))
+
+    @property
+    def older(self) -> bool:
+        """A PC from about 2015 or before, like a 2013 all-in-one: older CPU or older built-in graphics."""
+        from sprigcast.app import lowend
+
+        return bool(lowend.older_reasons(self.facts))
 
 
 @dataclass
@@ -117,18 +130,9 @@ def register_check(check: Check, before: str | None = None) -> None:
 
 
 def _cpu_name() -> str:
-    import platform
-    import sys
+    from sprigcast.app.lowend import cpu_name
 
-    if sys.platform == "win32":
-        try:
-            import winreg
-
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
-                return str(winreg.QueryValueEx(k, "ProcessorNameString")[0]).strip()
-        except OSError:
-            pass
-    return platform.processor() or ""
+    return cpu_name()
 
 
 def _check_cpu(p: PcProfile) -> str:
@@ -148,6 +152,16 @@ def _check_memory(p: PcProfile) -> str:
     except Exception:
         return "Couldn't tell"
     return f"{round(p.memory_gb)} GB"
+
+
+def _check_graphics(p: PcProfile) -> str:
+    from sprigcast.app.lowend import gpu_names, short_gpu
+
+    try:
+        p.extra["gpus"] = gpu_names()
+    except Exception:
+        p.extra["gpus"] = ()
+    return ", ".join(short_gpu(g) for g in p.extra["gpus"]) or "Couldn't tell"
 
 
 def _check_encoder(p: PcProfile) -> str:
@@ -254,6 +268,7 @@ def _check_upload(p: PcProfile) -> str:
 for _check in (
     Check("cpu", "CPU", _check_cpu),
     Check("memory", "Memory", _check_memory),
+    Check("graphics", "Graphics", _check_graphics),
     Check("encoder", "Video encoder", _check_encoder, background=False),
     Check("x264", "CPU encoding speed", _check_x264, when=lambda p: not p.hardware),
     Check("upload", "Upload speed", _check_upload, when=lambda p: p.wants_stream and p.extra.get("test_upload", True)),
@@ -534,6 +549,30 @@ def encoder_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
     return changes
 
 
+def recording_drive_is_hdd(p: PcProfile, c: SceneCollection) -> bool:
+    """Whether recordings land on a spinning hard drive (asked once, kept in PcProfile.extra)."""
+    from sprigcast.app import lowend
+
+    if "hdd" not in p.extra:
+        try:
+            p.extra["hdd"] = lowend.on_hard_drive(lowend.recordings_folder(c))
+        except Exception:
+            p.extra["hdd"] = None
+    return bool(p.extra["hdd"])
+
+
+def older_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
+    """An older PC (a 2013 all-in-one, say): one canvas, clips only when pressed, lighter browser
+    sources; recordings on a hard drive: one MKV file."""
+    from sprigcast.app import lowend
+
+    hdd = p.wants_record and recording_drive_is_hdd(p, c)
+    if not p.older and not hdd:
+        return []
+    return [Change(group, line, now, change)
+            for group, line, now, change in lowend.older_changes(c, hdd=hdd, older=p.older)]
+
+
 Rule = Callable[[PcProfile, SceneCollection], list[Change]]
 RULES: list[Rule] = []
 
@@ -543,7 +582,7 @@ def register_rule(rule: Rule) -> None:
         RULES.append(rule)
 
 
-for _rule in (video_rule, stream_rule, recording_rule, encoder_rule):
+for _rule in (video_rule, stream_rule, recording_rule, encoder_rule, older_rule):
     register_rule(_rule)
 
 
