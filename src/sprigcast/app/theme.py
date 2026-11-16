@@ -149,7 +149,11 @@ QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
 }}
-QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 12px; outline: none; }}
+QComboBox QAbstractItemView {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; border-radius: 12px; outline: none;
+    padding: 4px; }}
+QComboBox QAbstractItemView::item {{ padding: 6px 10px; min-height: 18px; border-radius: 9px; border: none; }}
+QComboBox QAbstractItemView::item:hover {{ background: {RAISED}; }}
+QComboBox QAbstractItemView::item:selected {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 14px; height: 14px; border: 1px solid {EDGE_STRONG}; background: {CHROME};
 }}
@@ -161,16 +165,18 @@ QCheckBox, QRadioButton {{ spacing: 8px; }}
 QListWidget, QTreeWidget, QListView, QTreeView, QTableView {{
     background: {PANEL}; border: 1px solid {EDGE}; border-radius: 14px; outline: none;
 }}
-QListWidget::item, QTreeWidget::item {{ padding: 3px 6px; border-radius: 9px; }}
+QListWidget::item, QTreeWidget::item {{ padding: 3px 6px; border-radius: 7px; }}
+QTreeView {{ show-decoration-selected: 0; }}
 QListWidget::item:hover, QTreeWidget::item:hover {{ background: {RAISED}; }}
 QListWidget::item:selected, QTreeWidget::item:selected {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}
 QListWidget::indicator {{ width: 12px; height: 12px; border: 1px solid {EDGE_STRONG}; border-radius: 3px; background: {CHROME}; }}
 QListWidget::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QHeaderView::section {{ background: {CHROME}; color: {MUTED}; border: none; border-bottom: 1px solid {EDGE}; padding: 4px; }}
 QTabWidget::pane {{ border: 1px solid {EDGE}; border-radius: 14px; top: -1px; }}
-QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 6px 14px; border: none; }}
+QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 6px 14px; margin: 2px; border: none; border-radius: 12px;
+    min-height: 16px; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
-QTabBar::tab:selected {{ color: {TEXT_BRIGHT}; border-bottom: 2px solid {ACCENT}; }}
+QTabBar::tab:selected {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border: none; }}
 QMenuBar {{ background: {CHROME}; color: {MUTED}; border-bottom: 1px solid {EDGE}; }}
 QMenuBar::item {{ padding: 4px 10px; border-radius: 9px; }}
 QMenuBar::item:selected {{ background: {RAISED}; color: {TEXT}; }}

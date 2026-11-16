@@ -84,7 +84,8 @@ def window_style() -> str:
 #settingsWindow QTabBar::tab {{ background: transparent; color: {t.MUTED}; border: none; border-radius: 15px;
     padding: 7px 18px; margin-right: 6px; min-height: 18px; }}
 #settingsWindow QTabBar::tab:hover {{ background: {t.PANEL}; color: {t.TEXT}; }}
-#settingsWindow QTabBar::tab:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600; }}
+#settingsWindow QTabBar::tab:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600;
+    border: none; }}
 #settingsWindow QScrollArea {{ background: transparent; border: none; }}
 #settingsWindow QScrollArea > QWidget > QWidget {{ background: transparent; }}
 """

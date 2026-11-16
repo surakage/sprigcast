@@ -363,10 +363,10 @@ class MainWindow(QMainWindow):
         self.canvas_tabs.setCursor(Qt.CursorShape.PointingHandCursor)
         self.canvas_tabs.setStyleSheet(
             "#shapeTabs { background: transparent; }"
-            f"#shapeTabs::tab {{ padding: 8px 16px; margin: 3px; border: none; border-radius: 16px;"
+            f"#shapeTabs::tab {{ padding: 0px 16px; margin: 4px 2px; height: 30px; border: none; border-radius: 15px;"
             f" background: transparent; color: {theme.MUTED}; font-weight: 600; }}"
             f"#shapeTabs::tab:hover {{ color: {theme.TEXT}; }}"
-            f"#shapeTabs::tab:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+            f"#shapeTabs::tab:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; border: none; }}"
         )
         for canvas in collection.canvases:
             mark = "▯" if canvas.height > canvas.width else "▭"
@@ -2143,6 +2143,7 @@ class MainWindow(QMainWindow):
         shapes = QFrame()
         shapes.setObjectName("shapePill")
         shapes.setStyleSheet(f"#shapePill {{ background: {theme.PANEL}; border-radius: 19px; }}")
+        shapes.setFixedHeight(38)  # tabs 30 high + 4 each side: the highlight sits evenly inside the pill
         shapes_row = QHBoxLayout(shapes)
         shapes_row.setContentsMargins(2, 0, 2, 0)
         shapes_row.addWidget(self.canvas_tabs)
