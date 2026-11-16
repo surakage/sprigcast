@@ -6085,6 +6085,23 @@ class MainWindow(QMainWindow):
         self._sweep_due = False
         log.info("python cleanup: looked through everything in %.0f ms while minimized", pacing.settle())
 
+    def show_minimized_drawn(self, settle_ms: int = 300) -> None:
+        """Start minimized, but drawn: shown see-through and without taking focus, drawn once, then minimized.
+        A window minimized before it was ever drawn showed white in the taskbar preview and did all its
+        first-time work (styles, fonts, icons, layouts) the moment it was opened, which took seconds."""
+        began = time.perf_counter()
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setWindowOpacity(0.0)
+        self.show()
+
+        def minimize() -> None:
+            self.showMinimized()
+            self.setWindowOpacity(1.0)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+            log.info("started minimized: drawn once first (%.0f ms)", 1000 * (time.perf_counter() - began))
+
+        QTimer.singleShot(settle_ms, minimize)
+
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
