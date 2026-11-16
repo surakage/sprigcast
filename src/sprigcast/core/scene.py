@@ -834,14 +834,21 @@ class SceneCollection(BaseModel):
                   corner: str | None = None) -> Scene:
         """Put a source in a sprig of its own, on top of this bloom and the blooms linked to it (each
         shape gets a layout fitted to it). It fills the canvas (overlays like Snap), or with corner
-        ("top_right" ...) it sits small in that corner (a clock). Returns the sprig."""
+        ("top_right" ...) it sits small in that corner (a clock); "bottom_center" is a wide band along
+        the bottom (captions). Returns the sprig."""
         def fitted(canvas_id: str) -> SceneItem:
             canvas = self.canvas(canvas_id)
             if corner:
-                scale = min(canvas.width, canvas.height) * 0.36 / size[0]  # about a third of the short side
                 margin = min(canvas.width, canvas.height) * 0.035
+                if "center" in corner:  # a wide band across the middle (captions): most of the width
+                    scale = canvas.width * (0.9 if canvas.height > canvas.width else 0.72) / size[0]
+                else:
+                    scale = min(canvas.width, canvas.height) * 0.36 / size[0]  # about a third of the short side
                 w, h = size[0] * scale, size[1] * scale
-                x = margin if "left" in corner else canvas.width - w - margin
+                if "center" in corner:
+                    x = (canvas.width - w) / 2
+                else:
+                    x = margin if "left" in corner else canvas.width - w - margin
                 y = margin if "top" in corner else canvas.height - h - margin
                 return SceneItem(source=source_id, scale=scale, x=x, y=y)
             scale = min(canvas.width / size[0], canvas.height / size[1])

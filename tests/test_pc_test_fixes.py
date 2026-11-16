@@ -92,7 +92,7 @@ def test_a_plugin_overlay_goes_into_the_sprig_you_have_open(tmp_path, monkeypatc
             label, defaults, own_sprig = "Snap", {}, (800, 1000)
 
         class Accept:
-            def __init__(self, *_a):
+            def __init__(self, *_a, **_kw):
                 pass
 
             def exec(self):

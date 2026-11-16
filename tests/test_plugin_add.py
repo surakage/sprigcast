@@ -40,7 +40,7 @@ def test_a_slide_show_fills_the_canvas(window, monkeypatch):
     w, col = window
 
     class Accept:
-        def __init__(self, _title, values, _defaults, _parent):
+        def __init__(self, _title, values, _defaults, _parent, cls=None):
             self._values = dict(values)
 
         def exec(self):
