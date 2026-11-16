@@ -91,8 +91,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   A capture card fills the Gaming bloom and brings its own sound.
 - X is a streaming service choice.
 - Sign in to YouTube or Kick (in Get started, or Sign in beside the stream key) and SprigCast fills in the key, and
-  Kick's server, for you. YouTube makes a reusable key if there's none. Needs SprigCast registered with each
-  (docs/sign-in-setup.md); until then the button is hidden.
+  Kick's server, for you. YouTube makes a reusable key if there's none. The client secrets stay out of the app:
+  a small sign-in helper at signin.slothbloom.com finishes each sign-in (integrations/signin-helper).
 
 ### Optimize wizard
 
