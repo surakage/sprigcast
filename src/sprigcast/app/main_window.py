@@ -287,6 +287,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         for canvas in collection.canvases:
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
+            preview.output_size = lambda c=canvas.id: self.collection.canvas(c).output_size()
+            preview.zoom_locked = QSettings().value("build/zoom_locked", False, type=bool)
             preview.selected.connect(self._on_preview_selected)
             preview.edited.connect(self._on_preview_edited)
             preview.opened.connect(self._on_preview_opened)
@@ -301,6 +303,7 @@ class MainWindow(QMainWindow):
             splitter.setStretchFactor(splitter.count() - 1, 3 if canvas.width >= canvas.height else 1)
         # While a part is open in Build mode, the canvases make way for the part, edited in place.
         self.part_preview = Preview("part:", "Part", (16, 9))
+        self.part_preview.zoom_locked = QSettings().value("build/zoom_locked", False, type=bool)
         self.part_preview.selected.connect(self._on_preview_selected)
         self.part_preview.edited.connect(self._on_preview_edited)
         self.part_preview.sprig_dropped.connect(self._sprig_dropped)
@@ -3904,6 +3907,7 @@ class MainWindow(QMainWindow):
         self.part_preview.title = scene.name
         self.part_preview.subtitle = "updates everywhere it's used"
         self.part_preview.aspect = (canvas.width, canvas.height)
+        self.part_preview.output_size = lambda c=canvas.id: self.collection.canvas(c).output_size()
         self.engine.editing_part = scene.id
         self.center.setCurrentIndex(1)
         self._refresh_previews()
