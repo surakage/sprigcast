@@ -943,6 +943,7 @@ class Compositor:
         overlay: str | None = None,
         cut: bool = False,
         wipe_map: str | None = None,
+        move=None,
     ) -> None:
         """Draw a scene's visible items back to front onto its canvas.
 
@@ -953,6 +954,8 @@ class Compositor:
         scenes are drawn to their own textures and mixed into the canvas the way `transition` says
         (a fade when None). For a stinger, `overlay` is the texture key of the clip's current frame
         and `cut` says whether the cut point has passed; `wipe_map` is the texture key of a wipe image.
+        For a Move transition, `move()` gives this frame's pieces (render/move.py Draw): drawn straight
+        onto the canvas, without the two scene textures the other kinds mix.
         """
         target = self._target(canvas)
         if canvas.id.startswith(("clean:", "shot:")):  # output-only copies: let go once unused (prune)
@@ -960,6 +963,9 @@ class Compositor:
         size = (canvas.width, canvas.height)
         if previous is None or progress >= 1.0:
             self._draw_scene(target.fbo, size, scene, source_sizes)
+            return
+        if move is not None and transition is not None and transition.kind == "move":
+            self._draw_move(target.fbo, size, move())
             return
         self._used.pop(("transition", canvas.id), None)  # in use again
         self._draw_scene(target.aux(), size, previous, source_sizes)
@@ -1027,24 +1033,55 @@ class Compositor:
         self.program["tex"].value = 0
         self.program["opacity"].value = 1.0
         self.program["planar"].value = 0
-        planar_on = False
-        cutting = False
         self.program["cutout"].value = 0
         self._applied = None
+        self._draw_pieces(self._scene_pieces(scene, source_sizes, fades))
+
+    def _draw_move(self, fbo, size: tuple[int, int], draws) -> None:
+        """One frame of a Move transition: its pieces (render/move.py Draw), bottom first."""
+        fbo.use()
+        self.ctx.viewport = (0, 0, size[0], size[1])
+        self.ctx.clear(0.0, 0.0, 0.0, 0.0)
+        self._blend()
+        self.program["canvas_size"].value = (float(size[0]), float(size[1]))
+        self.program["tex"].value = 0
+        self.program["opacity"].value = 1.0
+        self.program["planar"].value = 0
+        self.program["cutout"].value = 0
+        self._applied = None
+        self._draw_pieces((d.source, d.canvas, d.quad, d.opacity) for d in draws)
+
+    def _scene_pieces(self, scene: Scene, source_sizes: dict[str, tuple[int, int]], fades: dict[str, float] | None):
+        """A scene's visible items as (source id, canvas id, quad, opacity), bottom first."""
         for item in scene.items:
+            if not item.visible:
+                continue
             part = self.parts.get((item.source, scene.canvas))
-            tex = part or self.textures.get(item.source)
             size = part.size if part is not None else source_sizes.get(item.source)
-            if not item.visible or tex is None or size is None:
+            if size is None:
                 continue
             quad = item.quad(size)
-            if not quad:
+            if quad:
+                yield item.source, scene.canvas, quad, fades.get(item.source, 1.0) if fades else 1.0
+
+    def _draw_pieces(self, pieces) -> None:
+        """Draw (source id, canvas id, quad, opacity) pieces in order, onto the framebuffer in use.
+
+        A scene's items come here (see _scene_pieces), and so does each frame of a Move transition, whose
+        quads are somewhere between two blooms."""
+        planar_on = False
+        cutting = False
+        opacity = 1.0
+        for source_id, canvas_id, quad, alpha in pieces:
+            part = self.parts.get((source_id, canvas_id))
+            tex = part or self.textures.get(source_id)
+            if tex is None:
                 continue
-            fx = self.effects.get(item.source, NO_EFFECTS)
+            fx = self.effects.get(source_id, NO_EFFECTS)
             if fx.spin[0]:
-                quad = self._spun(item.source, quad, fx.spin)
+                quad = self._spun(source_id, quad, fx.spin)
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
-            planar = None if part is not None else self.planar.get(item.source)
+            planar = None if part is not None else self.planar.get(source_id)
             if planar is not None:
                 self.program["planar"].value = planar[0]
                 self.program["yuv"].value = planar[1]
@@ -1056,7 +1093,7 @@ class Compositor:
             planar_on = planar is not None
             self._apply_effects(fx, planar[2] if planar is not None else tex.size)
             if fx.cutout:
-                self._use_cutout(item.source, fx, planar[2] if planar is not None else tex.size)
+                self._use_cutout(source_id, fx, planar[2] if planar is not None else tex.size)
                 cutting = True
             elif cutting:
                 self.program["cutout"].value = 0
@@ -1064,14 +1101,16 @@ class Compositor:
             if fx.shape or fx.halos:
                 (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = quad[:3]
                 self.program["quad_size"].value = (math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x0, y2 - y0))
-            if fades:
-                self.program["opacity"].value = fades.get(item.source, 1.0)
-            self.program["premul"].value = part is not None or item.source in self.premultiplied
+            if alpha != opacity:
+                self.program["opacity"].value = opacity = alpha
+            self.program["premul"].value = part is not None or source_id in self.premultiplied
             tex.use(location=0)
             if fx.halos:
                 self._draw_halos(fx, quad)
                 self.vbo.write(np.array(quad, dtype="f4").tobytes())
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
+        if opacity != 1.0:
+            self.program["opacity"].value = 1.0
 
     def _draw_halos(self, fx: VideoEffects, quad) -> None:
         """Shadow, glow and stroke: one quad each behind the source, grown by their size, in its shape."""
