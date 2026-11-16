@@ -581,7 +581,10 @@ class StreamSession:
         threading.Thread(target=finish, name=f"sprigcast-drop-{output_id}", daemon=True).start()
         return True
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = True) -> None:
+        """Take the outputs off the picture and sound, then let each finish. wait=False (the window): they
+        finish on a thread of their own, so ending a stream never holds the window (637 ms on the PC,
+        2026-11-16, joining an encoder); finished() then waits, if anything needs to."""
         taps = getattr(self, "taps", None) or [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
         for canvas_id, callback, *_ in taps:
             self.engine.remove_frame_tap(canvas_id, callback)
@@ -590,7 +593,24 @@ class StreamSession:
             self.engine.mixer.remove_tap(st.push_audio)
         for enc in shared:
             self.engine.mixer.remove_tap(enc.push_audio)
-        for _, st in self.streamers:
-            st.stop(timeout=5)
-        for enc in shared:  # after the links: nothing is waiting on its packets any more
-            enc.stop(timeout=5)
+
+        def finish():
+            for _, st in self.streamers:
+                st.stop(timeout=5)
+            for enc in shared:  # after the links: nothing is waiting on its packets any more
+                enc.stop(timeout=5)
+
+        if wait:
+            finish()
+            return
+        # Not a daemon: closing SprigCast right after still lets every connection end properly.
+        self._finishing = threading.Thread(target=finish, name="sprigcast-stream-end")
+        self._finishing.start()
+
+    def finished(self, timeout: float | None = None) -> bool:
+        """Wait for a stop(wait=False) to be done. True when it is."""
+        thread = getattr(self, "_finishing", None)
+        if thread is not None:
+            thread.join(timeout)
+            return not thread.is_alive()
+        return True
