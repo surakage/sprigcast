@@ -5582,23 +5582,54 @@ class MainWindow(QMainWindow):
     REST_AFTER_MS = 10_000
 
     def _rest_soon(self) -> None:
-        """A recording, the stream or clips just stopped: once nothing is left running, give memory back."""
-        QTimer.singleShot(self.REST_AFTER_MS, self._rest_if_idle)
+        """A recording, the stream or clips just stopped: once nothing is left running, give memory back.
+
+        One timer for all of them: stopping everything at once stops several outputs, and the soak ran
+        the clean-up three times in 0.4 s, once for each."""
+        timer = getattr(self, "_rest_timer", None)
+        if timer is None:
+            timer = self._rest_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._rest_if_idle)
+        timer.start(self.REST_AFTER_MS)
 
     def _rest_if_idle(self) -> None:
         """Nothing is being recorded, streamed or kept for clips: let go of what the show left behind.
 
         After a 2-hour soak the app sat at ~415 MB at rest against ~200 MB fresh, flat for an hour: pages
-        touched during the show (encoders, the clips buffer, frames in flight) and cached plugin art."""
-        if self.recording is not None or self.streaming is not None or self.replay is not None:
+        touched during the show (encoders, the clips buffer, frames in flight) and cached plugin art.
+        Python's clean-up here only looks at what was made since its last tidy, a few ms. Looking through
+        everything (pacing.settle) took 191 ms after the soak, 22 late preview frames, so that waits
+        until SprigCast is minimized (see changeEvent)."""
+        if self._busy_with_outputs():
             return
         from sprigcast.core import painted, pacing
 
         painted.forget_art()
-        pacing.settle()
+        pacing.tidy()
+        self._sweep_due = True
+        if self.isMinimized():
+            self._sweep_if_due()
         trimmed = pacing.trim_working_set()
         log.info("at rest: let go of what the show held%s; memory: %s",
                  " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line())
+
+    def _busy_with_outputs(self) -> bool:
+        return self.recording is not None or self.streaming is not None or self.replay is not None
+
+    def _sweep_if_due(self) -> None:
+        """Minimized and at rest: the one full look through Python's objects, where a hitch can't be seen."""
+        if not getattr(self, "_sweep_due", False) or self._busy_with_outputs():
+            return
+        from sprigcast.core import pacing
+
+        self._sweep_due = False
+        log.info("python cleanup: looked through everything in %.0f ms while minimized", pacing.settle())
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            QTimer.singleShot(1000, self._sweep_if_due)
 
     def _show_render_health(self, event) -> None:
         """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""

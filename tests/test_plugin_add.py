@@ -79,8 +79,33 @@ def test_at_rest_the_show_lets_go_of_what_it_held(window, monkeypatch):
     w._rest_if_idle()
     assert not trims and painted._ART
     w.recording = None
+    swept = []
+    monkeypatch.setattr(pacing, "settle", lambda: swept.append(1) or 0.0)
     w._rest_if_idle()
     assert trims == [1] and not painted._ART
+    assert not swept  # on screen: the full look through Python's objects waits (191 ms, 22 late frames)
+    w.showMinimized()
+    w._sweep_if_due()
+    assert swept == [1]
+    w._sweep_if_due()
+    assert swept == [1]  # once per rest
+
+
+def test_stopping_several_outputs_rests_once(window, monkeypatch):
+    """The soak's stop ran the at-rest clean-up three times in 0.4 s, once per output."""
+    w, _col = window
+    rests = []
+    monkeypatch.setattr(w, "_rest_if_idle", lambda: rests.append(1))
+    w.REST_AFTER_MS = 10
+    for _ in range(3):  # recording, stream and clips stop together
+        w._rest_soon()
+    from PySide6.QtCore import QCoreApplication, QElapsedTimer
+
+    clock = QElapsedTimer()
+    clock.start()
+    while clock.elapsed() < 200:
+        QCoreApplication.processEvents()
+    assert rests == [1]
 
 
 def test_one_hitch_in_a_second_does_not_read_busy(window):
