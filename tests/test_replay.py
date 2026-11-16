@@ -161,3 +161,16 @@ def test_sound_does_not_pile_up_while_no_picture_keyframe_comes():
         buf._trim()
     span = buf._packets[-1].seconds - buf._packets[0].seconds
     assert span <= 5 + KEY_SLACK_S + 0.1
+
+
+def test_buffered_packets_are_slim_and_share_their_time_base():
+    from fractions import Fraction
+
+    from sprigcast.output.replay import _Packet
+
+    a = _Packet("video", b"x", 120, 120, Fraction(1, 60), True)
+    b = _Packet("video", b"y", 180, 180, Fraction(1, 60), False)
+    assert a.time_base is b.time_base  # one Fraction for the stream, not one per packet
+    assert a.seconds == 2.0 and b.seconds == 3.0
+    assert not hasattr(a, "__dict__")
+    assert _Packet("audio", b"z", None, 96000, Fraction(1, 48000), False).seconds == 2.0
