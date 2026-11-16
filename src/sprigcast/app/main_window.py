@@ -8,6 +8,7 @@ import os
 import queue
 import time
 import uuid
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl
@@ -122,7 +123,7 @@ from sprigcast.app.settings_window import (
 from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.panels import Panel, Panels
 from sprigcast.app.stats_panel import StatsPanel, StatsStrip
-from sprigcast.app.terms import PART, PARTS, SHOW, SHOWS, a, cap
+from sprigcast.app.terms import COLLECTION, PART, PARTS, SHOW, SHOWS, a, cap
 from sprigcast.audio.mixer import source_tracks
 from sprigcast.core.events import (
     AudioLevels,
@@ -2346,8 +2347,6 @@ class MainWindow(QMainWindow):
             if first is not None:
                 self.canvas_tabs.setCurrentIndex(first)  # moves Build to a canvas that's on
         choice = self.canvas_choice()
-        for key, action in getattr(self, "canvas_choice_actions", {}).items():
-            action.setChecked(key == choice)
         self._apply_canvas_view()
 
     def _set_safe_zones(self, choice: str) -> None:
@@ -2453,23 +2452,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"SprigCast  ·  {shelf.garden().name}  ·  {shelf.path().name}")
 
     def _build_menu(self) -> None:
-        """File · Edit · View · Panels · Gardens · Paths · Tools · Help."""
+        """File · Edit · Panels · Gardens · Paths · Tools · Help. Only what has no button on screen: Live and
+        Build are the header tabs, the canvas choice is the Both/Horizontal/Vertical pills, Pop out is on the
+        canvas right-click, Settings is the gear and the palette is the search button (their keys still work)."""
         bar = self.menuBar()
 
         file_menu = bar.addMenu("&File")
-        open_folder = QAction("Show scenes file location", self)
-        open_folder.triggered.connect(
-            lambda: QMessageBox.information(self, "SprigCast", f"This garden is saved to:\n{self.scenes_path}")
-        )
-        file_menu.addAction(open_folder)
-        recordings = QAction("Open recordings folder", self)
-        recordings.triggered.connect(self._open_recordings_folder)
-        file_menu.addAction(recordings)
-        plugins = QAction("Open plugins folder", self)
+        file_menu.addAction("Open recordings folder").triggered.connect(self._open_recordings_folder)
+        plugins = file_menu.addAction("Open plugins folder")
         plugins.triggered.connect(self._open_plugins_folder)
         plugins.setEnabled(self.plugins_dir is not None)
-        file_menu.addAction(plugins)
-        file_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
+        file_menu.addAction(f"Show {COLLECTION} file").triggered.connect(lambda: self._show_garden_file())
         file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
@@ -2499,36 +2492,15 @@ class MainWindow(QMainWindow):
         for key in ("hide", "lock", "remove"):
             edit_menu.addAction(a[key])
 
-        # View: which screen, which canvases, projectors.
-        view_menu = bar.addMenu("&View")
-        live = view_menu.addAction("Live")
-        live.setShortcut(QKeySequence("Ctrl+1"))
-        live.triggered.connect(lambda: self._set_mode("live"))
-        build = view_menu.addAction("Build")
-        build.setShortcut(QKeySequence("Ctrl+2"))
-        build.triggered.connect(lambda: self._set_mode("build"))
-        view_menu.addSeparator()
-        shown = view_menu.addMenu("Show canvases")
-        shown_group = QActionGroup(self)
-        self.canvas_choice_actions: dict[str, QAction] = {}
-        labels = [("both", "Horizontal and vertical")]
-        labels += [(c.id, f"{c.id.capitalize()} only") for c in self.collection.canvases]
-        for key, label in labels:
-            action = shown.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(key == self.canvas_choice())
-            shown_group.addAction(action)
-            action.triggered.connect(lambda _=False, k=key: self.show_canvases(k))
-            self.canvas_choice_actions[key] = action
-        projectors = view_menu.addMenu("Pop out a canvas")
-        projectors.aboutToShow.connect(lambda: self._fill_projectors_menu(projectors))
-        self._fill_projectors_menu(projectors)
-        view_menu.addSeparator()
-        palette_action = QAction("Command palette…", self)
-        palette_action.setShortcuts([QKeySequence("Ctrl+K"), QKeySequence("Ctrl+Shift+P")])
-        palette_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        palette_action.triggered.connect(lambda: self._open_palette())
-        view_menu.addAction(palette_action)
+        # Keys for things that are buttons on screen, so they need no menu.
+        # (Ctrl+1 and Ctrl+2 are on the Live and Build tabs' own actions.)
+        for keys, slot in ((["Ctrl+K", "Ctrl+Shift+P"], lambda: self._open_palette()),
+                           (["Ctrl+,"], lambda: self._open_settings())):
+            action = QAction(self)
+            action.setShortcuts([QKeySequence(k) for k in keys])
+            action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+            action.triggered.connect(lambda _=False, f=slot: f())
+            self.addAction(action)
 
         self.docks_menu = bar.addMenu("&Panels")
         self.stats_action = QAction("Stats", self)
@@ -2538,7 +2510,7 @@ class MainWindow(QMainWindow):
         self.addAction(self.stats_action)
         self.reset_layout_action = QAction("Reset panels", self)
         self.reset_layout_action.triggered.connect(lambda: self.panels.reset())
-        self.custom_docks_action = QAction("Add or edit web panels…", self)
+        self.custom_docks_action = QAction("Web panels…", self)
         self.custom_docks_action.setToolTip("A web page as a panel: activity feed, Streamer.bot, TikFinity…")
         self.custom_docks_action.triggered.connect(lambda: self._edit_custom_docks())
         self.docks_menu.aboutToShow.connect(self._fill_docks_menu)
@@ -2546,45 +2518,33 @@ class MainWindow(QMainWindow):
 
         self.gardens.build_menus(bar)
 
-        settings_menu = bar.addMenu("&Tools")
-        open_settings = settings_menu.addAction("Settings…")
-        open_settings.setShortcut(QKeySequence("Ctrl+,"))
-        open_settings.triggered.connect(lambda: self._open_settings())
-        settings_menu.addAction("Get started…").triggered.connect(lambda: self.open_getting_started())
-        settings_menu.addAction("Starter kit…").triggered.connect(lambda: self.open_starter())
-        settings_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
-        settings_menu.addSeparator()
-        for tab, label in (
-            ("Stream", "Stream outputs…"),
-            ("Output", "Output (encoder)…"),
-            ("Recording", "Recording…"),
-            ("Audio", "Audio devices…"),
-            ("Video", "Canvases…"),
-            ("Hotkeys", "Hotkeys…"),
-            ("Plugins", "Plugins…"),
-        ):
-            settings_menu.addAction(label).triggered.connect(lambda _=False, t=tab: self._open_settings(t))
-        settings_menu.addSeparator()
-        settings_menu.addAction("Stream health…").triggered.connect(lambda: self._open_health())
-        doctor_action = settings_menu.addAction("Stream doctor…")
+        tools_menu = bar.addMenu("&Tools")
+        tools_menu.addAction("Get started…").triggered.connect(lambda: self.open_getting_started())
+        tools_menu.addAction("Starter kit…").triggered.connect(lambda: self.open_starter())
+        tools_menu.addSeparator()
+        tools_menu.addAction("Optimize for this PC…").triggered.connect(lambda: self.open_optimizer())
+        doctor_action = tools_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
-        settings_menu.addAction("Ducking (mic first)…").triggered.connect(lambda: self._open_ducking())
-        settings_menu.addAction("Optimize for this PC…").triggered.connect(lambda: self.open_optimizer())
-        settings_menu.addAction("Light settings for a slower PC…").triggered.connect(
-            lambda: self.use_light_settings())
+        tools_menu.addSeparator()
+        tools_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
-        help_menu.addAction("Open logs folder (for bug reports)").triggered.connect(lambda: self._open_logs())
+        help_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
         help_menu.addSeparator()
         help_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
 
-    def _fill_projectors_menu(self, menu: QMenu) -> None:
-        menu.clear()
-        for canvas in self.collection.canvases:
-            self._fill_projector_menu(menu.addMenu(canvas.id.capitalize()), canvas.id)
+    def _show_garden_file(self) -> None:
+        """Explorer, open on this garden's file and with it selected."""
+        path = Path(self.scenes_path)
+        if sys.platform == "win32" and path.exists():
+            import subprocess
+
+            subprocess.Popen(["explorer", "/select,", str(path)])
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def shortcut_lines(self) -> list[tuple[str, str]]:
         """(keys, what) for Help → Keyboard shortcuts: every menu action with a shortcut, plus canvas moves."""
@@ -2601,7 +2561,8 @@ class MainWindow(QMainWindow):
         for top in self.menuBar().actions():
             if top.menu() is not None:
                 walk(top.menu(), "")
-        lines += [("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
+        lines += [("Ctrl+1", "Live"), ("Ctrl+2", "Build"), ("Ctrl+K", "Search"), ("Ctrl+,", "Settings"),
+                  ("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
                   ("Ctrl+0", "Fit the canvas"), ("Alt + drag a side", "Crop"),
                   ("Shift + drag a corner", "Free shape (or keep it, if Keep shape is off)")]
         seen, unique = set(), []
@@ -2627,8 +2588,8 @@ class MainWindow(QMainWindow):
 
     def _fill_docks_menu(self) -> None:
         """Each panel this screen offers (ticked when shown), Pop out, then adding web panels and Stats."""
-        self.panels.fill_menu(self.docks_menu, [self.custom_docks_action, self.stats_action,
-                                                self.reset_layout_action])
+        self.panels.fill_menu(self.docks_menu, [self.custom_docks_action, self.reset_layout_action],
+                              after_panels=[self.stats_action])
 
     def _edit_custom_docks(self) -> None:
         if not custom_docks.web_engine_available():
@@ -3430,8 +3391,8 @@ class MainWindow(QMainWindow):
         if changes.get("hidden"):
             self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
 
-    def _open_ducking(self) -> None:
-        dialog = DuckingDialog(self.collection, self)
+    def _open_ducking(self, parent: QWidget | None = None) -> None:
+        dialog = DuckingDialog(self.collection, parent or self)
         if dialog.exec():
             dialog.apply_to(self.collection)
             self._changed()
@@ -5622,6 +5583,7 @@ class MainWindow(QMainWindow):
         elif output_id:
             window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
+        window.audio_page.on_ducking = self._open_ducking
         window.plugins_changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
         window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
@@ -5879,7 +5841,22 @@ class MainWindow(QMainWindow):
             Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
             Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
             Command("Stream health", "Action", lambda: self._open_health()),
+            Command("Light settings for a slower PC", "Action", lambda: self.use_light_settings()),
+            Command("Ducking", "Sound", lambda: self._open_ducking()),
         ]
+        choice = self.canvas_choice()
+        for key, label in [("both", "both canvases"),
+                           *((c.id, f"{c.id.capitalize()} only") for c in self.collection.canvases)]:
+            commands.append(Command(f"Show {label.lower()}", "Canvas",
+                                    lambda k=key: self.show_canvases(k), checked=key == choice))
+        for canvas in self.collection.canvases:
+            commands.append(Command(f"Pop out {canvas.id}", "Canvas",
+                                    lambda cid=canvas.id: self.open_projector(cid, None)))
+        for tab, label in (("General", "General"), ("Stream", "Stream outputs"), ("Output", "Output (encoder)"),
+                           ("Audio", "Audio devices"), ("Video", "Canvases"), ("Hotkeys", "Hotkeys"),
+                           ("Connections", "Connections"), ("Advanced", "Advanced"), ("Plugins", "Plugins")):
+            commands.append(Command(f"Settings: {label}", "Settings", lambda t=tab: self._open_settings(t),
+                                    "Ctrl+," if tab == "General" else ""))
         for part in self.collection.parts():
             if part.states:
                 commands.append(Command(f"{part.name}: as built", "Sprig",
@@ -5907,12 +5884,13 @@ class MainWindow(QMainWindow):
         for action in menu.actions():
             if action.isSeparator() or not action.isVisible():
                 continue
-            text = prefix + action.text().replace("&", "").rstrip("…").strip()
+            label, _, tail = action.text().partition("\t")  # "Main\t✓": the tick on the one in use
+            text = prefix + label.replace("&", "").rstrip("…").strip()
             if action.menu() is not None:
                 out += self._menu_commands(action.menu(), group, text + ": ")
             elif action.isEnabled():
-                out.append(Command(text, group, action.trigger, action.shortcut().toString(),
-                                   action.isChecked() if action.isCheckable() else None))
+                checked = action.isChecked() if action.isCheckable() else ("✓" in tail or None)
+                out.append(Command(text, group, action.trigger, action.shortcut().toString(), checked))
         return out
 
     def use_light_settings(self, why: str = "") -> bool:

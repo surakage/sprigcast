@@ -280,6 +280,15 @@ def roomy_style():
     return RoomyStyle(QStyleFactory.create("Fusion"))
 
 
+def ticked(action, on: bool) -> None:
+    """Mark the one that's on with a tick at the right end of its row, not a checkbox column.
+
+    A checkable item makes Qt keep an empty tick column on the left of every row in the menu,
+    so the lists in the top menus use plain items with the tick where a shortcut would go."""
+    text = action.text().partition("\t")[0]
+    action.setText(f"{text}\t✓" if on else text)
+
+
 NUMBER_PAD = 12  # px between a number and the left edge of its box, the same as text fields
 
 

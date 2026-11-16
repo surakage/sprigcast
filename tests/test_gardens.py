@@ -323,7 +323,11 @@ def test_window_imports_a_garden_pack(window, tmp_path, monkeypatch):
 
     garden_menu = QMenu()
     w.gardens.fill(garden_menu, "garden")
-    assert "Export with files…" in [a.text() for a in garden_menu.actions()]
+    texts = [a.text() for a in garden_menu.actions()]
+    assert texts.index("Party\t✓") < texts.index("New…")  # the list first, a tick on the one in use
+    export = next(a.menu() for a in garden_menu.actions() if a.text() == "Export")
+    assert [a.text() for a in export.actions()] == ["Just the garden…", "With its files…"]
+    assert not any(a.isCheckable() for a in garden_menu.actions())
 
 
 def test_set_aside_files_are_not_gardens(setup):

@@ -333,19 +333,17 @@ class Panels(QObject):
 
     # The Panels menu ---------------------------------------------------------------------
 
-    def fill_menu(self, menu, extra_actions=()) -> None:
+    def fill_menu(self, menu, extra_actions=(), after_panels=()) -> None:
+        """This screen's panels (a tick on the ones showing), then after_panels, Pop out, then extra_actions."""
         menu.clear()
-        where = menu.addAction(f"Shown on {WHERE[self.mode]}")
-        where.setEnabled(False)
         offered = [p for p in self.panels.values() if self.mode in p.modes]
         for panel in offered:
+            on = self.is_shown(panel.key) or self.is_popped(panel.key)
             action = menu.addAction(panel.title + ("  (popped out)" if self.is_popped(panel.key) else ""))
-            action.setCheckable(True)
-            action.setChecked(self.is_shown(panel.key) or self.is_popped(panel.key))
-            action.toggled.connect(lambda on, k=panel.key: self._menu_toggle(k, on))
-        if not offered:
-            empty = menu.addAction("No panels yet: add a web panel below")
-            empty.setEnabled(False)
+            theme.ticked(action, on)
+            action.triggered.connect(lambda _=False, k=panel.key, on=on: self._menu_toggle(k, not on))
+        for action in after_panels:
+            menu.addAction(action)
         shown = [p for p in offered if self.is_shown(p.key) and not self.is_popped(p.key)]
         if shown:
             pop = menu.addMenu("Pop out")

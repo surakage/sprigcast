@@ -212,43 +212,48 @@ class GardenControl:
             self.fill(menu, kind)
 
     def fill(self, menu: QMenu, kind: str) -> None:
+        """The list first (a tick on the one in use), then New…, Duplicate…, Rename…, Remove, Import, Export."""
+        from sprigcast.app.theme import ticked
+
         menu.clear()
         entries = self.shelf.gardens() if kind == "garden" else self.shelf.paths()
         current = (self.shelf.garden() if kind == "garden" else self.shelf.path()).id
+        locked = kind == "path" and self.busy()
+        for entry in entries:
+            action = menu.addAction(entry.name.replace("&", "&&"))
+            ticked(action, entry.id == current)
+            action.setEnabled(not locked or entry.id == current)
+            if entry.id != current:
+                action.triggered.connect(lambda _=False, e=entry.id: self._pick(kind, e))
+        menu.addSeparator()
         menu.addAction("New…").triggered.connect(lambda: self._ask_new(kind, copy=False))
         menu.addAction("Duplicate…").triggered.connect(lambda: self._ask_new(kind, copy=True))
         menu.addAction("Rename…").triggered.connect(lambda: self._ask_rename(kind))
         remove = menu.addAction("Remove")
         remove.setEnabled(len(entries) > 1)
         remove.triggered.connect(lambda: self._ask_remove(kind))
-        menu.addAction("Import…").triggered.connect(lambda: self._import(kind))
-        if kind == "garden":
-            for app, files in self._other_apps().items():
-                sub = menu.addMenu(f"Import from {convert.APP_NAMES[app]}")
-                names = convert.streamlabs_names(files[0].parent) if app == "streamlabs" else {}
-                if names:  # files the manifest doesn't list are collections Streamlabs deleted
-                    files = sorted((f for f in files if f.stem in names), key=lambda f: names[f.stem].casefold())
-                if not files:
-                    menu.removeAction(sub.menuAction())
-                    continue
-                for file in files:
-                    label = names.get(file.stem, file.stem.replace("_", " "))
-                    sub.addAction(label.replace("&", "&&")).triggered.connect(
-                        lambda _=False, f=file: self._report(self.import_garden(f)))
-        menu.addAction("Export…").triggered.connect(lambda: self._export(kind))
-        if kind == "garden":
-            menu.addAction("Export with files…").triggered.connect(lambda: self._export_pack())
         menu.addSeparator()
-        if kind == "garden":
-            menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
-            menu.addSeparator()
-        locked = kind == "path" and self.busy()
-        for entry in entries:
-            action = menu.addAction(entry.name.replace("&", "&&"))
-            action.setCheckable(True)
-            action.setChecked(entry.id == current)
-            action.setEnabled(not locked or entry.id == current)
-            action.triggered.connect(lambda _=False, e=entry.id: self._pick(kind, e))
+        if kind == "path":
+            menu.addAction("Import…").triggered.connect(lambda: self._import(kind))
+            menu.addAction("Export…").triggered.connect(lambda: self._export(kind))
+            return
+        imports = menu.addMenu("Import")
+        imports.addAction("From a file…").triggered.connect(lambda: self._import(kind))
+        for app, files in self._other_apps().items():
+            names = convert.streamlabs_names(files[0].parent) if app == "streamlabs" else {}
+            if names:  # files the manifest doesn't list are collections Streamlabs deleted
+                files = sorted((f for f in files if f.stem in names), key=lambda f: names[f.stem].casefold())
+            if not files:
+                continue
+            sub = imports.addMenu(convert.APP_NAMES[app])
+            for file in files:
+                label = names.get(file.stem, file.stem.replace("_", " "))
+                sub.addAction(label.replace("&", "&&")).triggered.connect(
+                    lambda _=False, f=file: self._report(self.import_garden(f)))
+        exports = menu.addMenu("Export")
+        exports.addAction(f"Just the {COLLECTION}…").triggered.connect(lambda: self._export(kind))
+        exports.addAction("With its files…").triggered.connect(lambda: self._export_pack())
+        menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
 
     def _other_apps(self) -> dict[str, list[Path]]:
         """OBS and Streamlabs scene collections on this PC (Windows keeps them under %APPDATA%)."""
