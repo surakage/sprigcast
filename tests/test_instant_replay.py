@@ -300,3 +300,41 @@ def test_actions_and_hotkey_say_why_when_it_cannot_play(ir, app):
     said = []
     plugin_hooks.run_hotkey(api, "plugin:replay:rp", said.append)
     assert said == ["Instant replay isn't on air."]
+
+
+def test_names_and_ids_from_apps_become_the_choice_and_unknown_ones_are_refused(ir):
+    from sprigcast.control.native import ApiError, NativeApi
+
+    col = _collection()
+    assert ir.pick_ref(col, "Cam") == "source:cam"
+    assert ir.pick_ref(col, "cam") == "source:cam"  # an id, or the name in any case
+    assert ir.pick_ref(col, "frame") == "sprig:p-frame"  # a sprig's name wins
+    assert ir.pick_ref(col, "source:Alert") == "source:alert"
+    assert ir.pick_ref(col, "sprig:p-frame") == "sprig:p-frame" and ir.pick_ref(col, "") == ""
+    with pytest.raises(ValueError, match="no sprig or source called 'Camera'"):
+        ir.pick_ref(col, "Camera")
+    with pytest.raises(ValueError, match="no picture"):
+        ir.pick_ref(col, "Mic")
+    assert ir.resolve(col, "Cam") == ("cam", "horizontal")  # settings saved as a name still work
+    col.sources.append(SourceConfig(id="rp", kind=ir.KIND, name="Instant replay"))
+    api = NativeApi(Host(col))
+    with pytest.raises(ApiError, match="no sprig or source called 'Camera'"):
+        api.run("source.set", {"source": "rp", "settings": {"capture": "Camera"}})
+    assert col.source("rp").settings.get("capture") is None  # nothing was kept
+    out = api.run("source.set", {"source": "rp", "settings": {"capture": "Frame", "corner": "Cam"}})
+    assert out["settings"]["capture"] == "sprig:p-frame" and out["settings"]["corner"] == "source:cam"
+    with pytest.raises(ApiError, match="no sprig or source"):
+        api.run("source.new", {"name": "Replay 2", "kind": ir.KIND, "settings": {"capture": "Nope"}})
+
+
+def test_a_bad_pick_says_what_it_was_when_it_tries_to_play(ir):
+    col = _collection()
+    with pytest.raises(ValueError, match="'Camera'"):
+        ir.view_scene(col, {"capture": "Camera"}, "replay-x")
+    engine = FakeEngine(col)
+    source = ir.InstantReplaySource("rp", {**ir.InstantReplaySource.defaults, "capture": "Camera"})
+    source.engine = engine
+    source._want, source._gen = True, 1
+    source._arm_now(1)
+    assert source._buffer is None and "Camera" in source.status
+    assert source.play() == "Instant replay: There's no sprig or source called 'Camera'."

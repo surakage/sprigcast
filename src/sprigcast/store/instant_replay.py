@@ -435,10 +435,47 @@ def _scenes_placing(col, source_id: str) -> list:
     return [sc for sc in col.scenes if any(i.source == source_id for i in sc.items)]
 
 
+def pick_ref(col, value: Any) -> str:
+    """What an app or older settings name ("Camera", an id, "sprig:Gameplay", "source:cam-1") as the choice
+    the settings keep ("sprig:<id>" or "source:<id>"), or "" for nothing. A sprig's name wins over a
+    source's. Raises ValueError saying what's wrong (no such thing, or nothing it can picture)."""
+    from sprigcast.core.scene import PART_KIND
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    what, _, ident = text.partition(":")
+    if what not in ("sprig", "source") or not ident:
+        what, ident = "", text
+    ident = ident.strip()
+    if what in ("", "sprig"):
+        for part in col.parts():
+            if part.id == ident or part.name.casefold() == ident.casefold():
+                if not placements(col, part):
+                    raise ValueError(f"The sprig {part.name!r} isn't in any bloom yet.")
+                return f"sprig:{part.id}"
+    if what in ("", "source"):
+        for source in col.sources:
+            if source.kind == PART_KIND:
+                continue
+            if source.id == ident or source.name.casefold() == ident.casefold():
+                if source.kind in AUDIO_KINDS or source.kind == KIND:
+                    raise ValueError(f"{source.name!r} has no picture to replay.")
+                if not _scenes_placing(col, source.id):
+                    raise ValueError(f"{source.name!r} isn't in any bloom or sprig yet.")
+                return f"source:{source.id}"
+    raise ValueError(f"There's no sprig or source called {ident!r}.")
+
+
 def resolve(col, ref: str) -> tuple[str, str] | None:
-    """A capture choice ("sprig:<id>" or "source:<id>") as (source id to draw, canvas it sits on), or None
-    when it's gone or not placed. A landscape canvas is picked first: replays are mostly gameplay."""
-    if not ref or ":" not in ref:
+    """A capture choice ("sprig:<id>" or "source:<id>", or a name: see pick_ref) as (source id to draw,
+    canvas it sits on), or None when it's gone or not placed. A landscape canvas is picked first: replays
+    are mostly gameplay."""
+    try:
+        ref = pick_ref(col, ref)
+    except ValueError:
+        return None
+    if not ref:
         return None
     what, ident = ref.split(":", 1)
     canvases = {c.id: c for c in col.canvases}
@@ -465,9 +502,12 @@ def view_scene(col, settings: dict[str, Any], name: str):
     in its corner. Raises ValueError with a short reason when it can't."""
     from sprigcast.core.scene import Scene, SceneItem
 
+    if not settings.get("capture"):
+        raise ValueError("pick what to replay")
+    pick_ref(col, settings.get("capture"))  # says what's wrong, by name
     main = resolve(col, str(settings.get("capture") or ""))
     if main is None:
-        raise ValueError("pick what to replay" if not settings.get("capture") else "what it replays is gone")
+        raise ValueError(f"can't show {settings.get('capture')!r}")
     source_id, canvas_id = main
     canvas = col.canvas(canvas_id)
     items = [SceneItem(source=source_id, bounds="fit", bounds_size=(canvas.width, canvas.height))]
@@ -649,6 +689,15 @@ class InstantReplaySource(Source):
     choices = {"capture": _capture_choices, "corner": _corner_choices, "corner_at": CORNERS, "speed": SPEEDS, "badge": BADGES,
                "quality": (("light", "Light (720p)"), ("sharp", "Sharp (1080p)"))}
     sleeps = True  # off air (or its eye off), it keeps nothing and costs nothing
+
+    @staticmethod
+    def check_settings(col, settings: dict[str, Any]) -> dict[str, Any]:
+        """For apps (source.set / source.new): Replay and In the corner take a name or id and are kept as
+        the choice they match; anything unknown is refused, saying why."""
+        for key in ("capture", "corner"):
+            if key in settings:
+                settings[key] = pick_ref(col, settings[key])
+        return settings
     wants_engine = True  # the engine hands itself over, for the frame and sound taps
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
     channel_order = "pBGRA"
@@ -762,6 +811,7 @@ class InstantReplaySource(Source):
                 canvas, scene = view_scene(engine._collection, self.settings, name)
             except ValueError as exc:
                 self.status = str(exc)
+                log.warning("instant replay %s: can't keep replays: %s", self.id, exc)
                 return
             from sprigcast.output.recorder import resolve_codec, shrink_to
             from sprigcast.output.replay import ReplayBuffer
@@ -815,7 +865,7 @@ class InstantReplaySource(Source):
             return "A replay is already playing."
         buf = self._buffer
         if buf is None or not buf.running:
-            return "Instant replay isn't on air." if self.status == "ok" else f"Instant replay: {self.status}."
+            return "Instant replay isn't on air." if self.status == "ok" else f"Instant replay: {self.status.rstrip('.')}."
         have = buf.buffered_seconds
         if have < 1.0:
             return "The replay isn't ready yet."
