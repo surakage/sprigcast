@@ -5214,22 +5214,31 @@ class MainWindow(QMainWindow):
         else:
             self._stop_recording()
 
-    def _start_recording(self) -> None:
+    def _start_recording(self, remote: bool = False, force: bool = False) -> dict:
+        """Start recording. From an app (remote) nothing waits on a pop-up: a problem or the low-space warning
+        comes back in the answer ({"problem"} / {"warnings"}), and force records anyway."""
         settings = self.collection.recording
         canvases = [c for c in self.collection.canvases if c.enabled and c.id in settings.canvases]
         if not canvases:
-            QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
-            return
+            if not remote:
+                QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
+            return {"problem": "Tick at least one canvas to record."}
         from sprigcast.output import storage
 
         # Room on the drive for every file this recording writes (each canvas, twice with source record).
         kbps = (settings.bitrate_kbps + settings.encoder.audio_kbps) * len(canvases) * (2 if settings.source_record else 1)
         self._space_watch = storage.SpaceWatch(self._recordings_folder(), kbps)
         space = self._space_watch.check()
+        warnings: list[str] = []
         if space and (self._space_watch.left or 0) < 1:
-            answer = QMessageBox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+            if remote:
+                warnings = [space]
+                if not force:
+                    return {"warnings": warnings}
+            else:
+                answer = QMessageBox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
+                if answer != QMessageBox.StandardButton.Yes:
+                    return {"problem": "Cancelled."}
         self._say("Starting the recording…")
         self._set_encoder_tracks()
         try:
@@ -5239,8 +5248,9 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             self.recording = None
-            QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
-            return
+            if not remote:
+                QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
+            return {"problem": f"Could not start recording: {exc}"}
         if settings.source_record:
             self._start_source_record(canvases)
         log.info("recording started: %s, %d kbps, %s, size %s, encoder %s preset %s",
@@ -5252,6 +5262,7 @@ class MainWindow(QMainWindow):
         if space:
             log.warning("recording: %s", space)
             self.statusBar().showMessage(space, 20000)
+        return {"started": True, "warnings": warnings}
 
     # Replay buffer ---------------------------------------------------------------------
 
@@ -5536,25 +5547,37 @@ class MainWindow(QMainWindow):
         else:
             self._stop_streaming()
 
-    def _start_streaming(self) -> None:
+    def _start_streaming(self, remote: bool = False, force: bool = False) -> dict:
+        """Go live. From an app (remote) nothing ever waits on a pop-up: problems and the Stream doctor's
+        warnings come back in the answer instead ({"problem"} / {"warnings"}), and force goes live past the
+        warnings. Returns {"started": True, "warnings": [...]} when it went live."""
         outputs = [o for o in self.collection.outputs if o.type == "stream" and o.enabled]
         if not outputs:
-            QMessageBox.information(self, "SprigCast", "Tick at least one place to stream to, or add one with Stream….")
-            return
+            text = "Tick at least one place to stream to, or add one with Stream…."
+            if not remote:
+                QMessageBox.information(self, "SprigCast", text)
+            return {"problem": text}
         targets, problems = [], []
         for output in outputs:
-            target, problem = self._stream_target(output)
+            target, problem = self._stream_target(output, ask=not remote, quiet=remote)
             if problem:
                 problems.append(problem)
             elif target is None:
-                return  # the user chose not to go live
+                return {"problem": "Cancelled."}  # the user chose not to go live
             else:
                 targets.append(target)
         if problems:
-            QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
-            return
-        if not self._doctor_says_go():
-            return
+            if not remote:
+                QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
+            return {"problem": "Not ready to go live: " + " ".join(problems)}
+        warnings: list[str] = []
+        if remote:
+            warnings = self._doctor_warnings()
+            if warnings and not force:
+                log.info("an app asked to go live; the Stream doctor said wait: %s", " | ".join(warnings))
+                return {"warnings": warnings}
+        elif not self._doctor_says_go():
+            return {"problem": "Cancelled."}
         self._say("Connecting…")
         try:
             from sprigcast.app.settings_window import stream_delay
@@ -5564,8 +5587,11 @@ class MainWindow(QMainWindow):
                                                  self.collection.stream_encoder, delay_s=stream_delay())
         except Exception as exc:
             self.streaming = None
-            QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
-            return
+            if not remote:
+                QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
+            else:
+                self._say(f"Could not go live: {exc}")
+            return {"problem": f"Could not go live: {exc}"}
         self.live_side.set_live(True)
         from sprigcast.app import transitions_panel
 
@@ -5585,10 +5611,12 @@ class MainWindow(QMainWindow):
         self._health = SessionHealth(self.streaming)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
+        return {"started": True, "warnings": warnings}
 
-    def _stream_target(self, output, ask: bool = True):
+    def _stream_target(self, output, ask: bool = True, quiet: bool = False):
         """What going live sends to one place: (target, None), (None, problem), or (None, None) when the
-        user said no to Twitch's question. ask=False (an app starting a place): no questions, one quality."""
+        user said no to Twitch's question. ask=False (an app starting a place): no questions, one quality.
+        quiet (an app going live): Enhanced Broadcasting still, but no questions (single quality if Twitch can't)."""
         service = SERVICES.get(output.service or "custom", SERVICES["custom"])
         server = service.server or output.server
         key = get_key(output.key_ref)
@@ -5606,8 +5634,8 @@ class MainWindow(QMainWindow):
         target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
                               output.bandwidth_test and service.bandwidth_test, output_id=output.id,
                               auto_bitrate=output.auto_bitrate)
-        if ask and output.enhanced and output.service == "twitch":
-            return self._enhanced_target(output, target), None
+        if (ask or quiet) and output.enhanced and output.service == "twitch":
+            return self._enhanced_target(output, target, quiet=quiet), None
         return target, None
 
     def start_place(self, output_id: str) -> str | None:
@@ -5650,8 +5678,9 @@ class MainWindow(QMainWindow):
         self._refresh_stream_status()
         return None
 
-    def _enhanced_target(self, output, target):
-        """Ask Twitch which qualities to send. Returns the target to use, or None to cancel going live."""
+    def _enhanced_target(self, output, target, quiet: bool = False):
+        """Ask Twitch which qualities to send. Returns the target to use, or None to cancel going live.
+        quiet: no questions (an app going live): single quality if it's unavailable, and Twitch's warnings logged."""
         from sprigcast import __version__
         from sprigcast.output import enhanced
 
@@ -5672,13 +5701,17 @@ class MainWindow(QMainWindow):
                                            bandwidth_test=target.bandwidth_test)
         except Exception as exc:
             log.warning("Enhanced Broadcasting unavailable: %s", exc)
+            if quiet:
+                return target
             answer = QMessageBox.question(
                 self, "SprigCast",
                 f"Enhanced Broadcasting isn't available right now:\n\n{exc}\n\n"
                 "Go live with a single quality instead?",
             )
             return target if answer == QMessageBox.StandardButton.Yes else None
-        if config.warning:
+        if config.warning and quiet:
+            log.warning("Twitch says: %s (an app is going live, so no question)", config.warning)
+        elif config.warning:
             answer = QMessageBox.question(self, "SprigCast", f"Twitch says:\n\n{config.warning}\n\nGo live anyway?")
             if answer != QMessageBox.StandardButton.Yes:
                 return None
@@ -6654,14 +6687,18 @@ class MainWindow(QMainWindow):
             recording_planned=bool(self.collection.recording.canvases),
         )
 
-    def _doctor_says_go(self) -> bool:
-        """Quick check when going live: only serious problems ask first."""
+    def _doctor_warnings(self) -> list[str]:
+        """The Stream doctor's quick check when going live: only serious problems."""
         checkup = self._checkup()
         checkup.gpu_pct = None  # nvidia-smi can take a moment; the full doctor checks it
-        bad = [f for f in doctor.examine(checkup) if f.level == "bad"]
+        return [f.text for f in doctor.examine(checkup) if f.level == "bad"]
+
+    def _doctor_says_go(self) -> bool:
+        """Quick check when going live: only serious problems ask first."""
+        bad = self._doctor_warnings()
         if not bad:
             return True
-        box = QMessageBox(QMessageBox.Icon.Warning, "Stream doctor", "\n\n".join(f.text for f in bad), parent=self)
+        box = QMessageBox(QMessageBox.Icon.Warning, "Stream doctor", "\n\n".join(bad), parent=self)
         go = box.addButton("Go live anyway", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Open doctor", QMessageBox.ButtonRole.HelpRole)
         box.addButton(QMessageBox.StandardButton.Cancel)

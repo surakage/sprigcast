@@ -544,6 +544,7 @@ def test_hotkey_run_tells_apps_why_it_did_nothing():
 
     class Window:
         _last_hotkey_note = None
+        streaming = object()  # live: Go live's key ends it (going live from an app is tested with the doctor)
 
         def _on_hotkey(self, action):
             self._last_hotkey_note = "Not in this bloom: Facecam" if action == "plugin:hide:pixelate:fc" else None
