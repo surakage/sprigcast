@@ -175,8 +175,10 @@ def x264_speed(frames: int = 40, width: int = 1280, height: int = 720) -> float 
         rng = np.random.default_rng(1)
         base = np.add.outer(np.arange(height) // 3, np.arange(width) // 5).astype(np.uint8)
         noise = rng.integers(0, 40, (8, height, width), dtype=np.uint8)
-        pictures = [av.VideoFrame.from_ndarray(np.stack([base + noise[i % 8]] * 3, axis=-1), format="rgb24")
-                    .reformat(format="yuv420p") for i in range(8)]
+        from sprigcast.core.frames import reformat
+
+        pictures = [reformat(av.VideoFrame.from_ndarray(np.stack([base + noise[i % 8]] * 3, axis=-1), format="rgb24"),
+                             format="yuv420p") for i in range(8)]
         for i in range(5):  # warm up: the first frames pay for setting up threads
             ctx.encode(pictures[i % 8])
         start = time.perf_counter()

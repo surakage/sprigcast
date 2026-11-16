@@ -104,11 +104,28 @@ def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
     return out, f"{kind}/{matrix}/{'pc' if full else 'tv'}"
 
 
+def _rewind(container) -> bool:
+    """Back to the start of an open file for the next pass of a loop, with its decoders reset. False if the
+    file can't seek (then it's opened again). Opening the file again on every pass started FFmpeg's
+    threads again each time: a 3-second GIF looping all show added threads every few seconds."""
+    try:
+        container.seek(0)
+        for stream in container.streams:
+            if stream.type in ("video", "audio") and stream.codec_context.is_open:
+                stream.codec_context.flush_buffers()
+        return True
+    except Exception as exc:  # noqa: BLE001 (a format without seeking: open it again)
+        log.info("media: can't seek back in %s (%s); opening it again", getattr(container, "name", "?"), exc)
+        return False
+
+
 def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:
     packed = pack_i420(frame, size)
     if packed is not None:
         return packed
-    return frame.reformat(width=size[0], height=size[1], format="rgba").to_ndarray(), "RGBA"
+    from sprigcast.core.frames import reformat
+
+    return reformat(frame, width=size[0], height=size[1], format="rgba").to_ndarray(), "RGBA"
 
 
 def is_sound_file(path: str) -> bool:
@@ -487,17 +504,23 @@ class MediaSource(Source):
         if not Path(path).exists():
             raise FileNotFoundError("file not found")
         offset = 0.0  # added to each pass's times when looping, so the timeline keeps running
-        while self._current(generation):
-            if self.state == "stopped":  # waiting for play: just learn what the file is
-                if self.duration is None:
-                    with av.open(path) as container:
-                        self.has_video = bool(container.streams.video)
-                        if container.duration is not None:
-                            self.duration = max(0.04, container.duration / 1_000_000)
-                self.status = "ok"
-                self._wait_for_change(generation)
-                return
-            with self._open(path) as container:
+        container = None  # kept open from one pass to the next: looping seeks back to the start
+        try:
+            while self._current(generation):
+                if self.state == "stopped":  # waiting for play: just learn what the file is
+                    if self.duration is None:
+                        with av.open(path) as probe:
+                            self.has_video = bool(probe.streams.video)
+                            if probe.duration is not None:
+                                self.duration = max(0.04, probe.duration / 1_000_000)
+                    self.status = "ok"
+                    self._wait_for_change(generation)
+                    return
+                if container is None:
+                    container = self._open(path)
+                elif not _rewind(container):  # the next pass: from the top of the open file
+                    container.close()
+                    container = self._open(path)
                 video = container.streams.video[0] if container.streams.video else None
                 audio = container.streams.audio[0] if container.streams.audio else None
                 if video is None and audio is None:
@@ -516,7 +539,7 @@ class MediaSource(Source):
                         # FFmpeg's default is a thread per CPU thread (17 on the user's Ryzen), every loop
                         decoder.thread_count = decode_threads(video.codec_context.width,
                                                               video.codec_context.height)
-                    else:
+                    elif not video.codec_context.is_open:  # set once: later passes reuse the open decoder
                         video.thread_type = "AUTO"
                         video.codec_context.thread_count = decode_threads(video.codec_context.width,
                                                                           video.codec_context.height)
@@ -568,14 +591,17 @@ class MediaSource(Source):
                     for frame in tail:
                         at = float((frame.pts or 0) * video.time_base) - origin
                         self._push_frame(offset + at, _picture(frame, size), generation)
-            length = self.duration or 0.0
-            if not self.settings.get("loop") or length <= 0.05:
-                with self._lock:
-                    if self._generation == generation:
-                        self._finished_at = offset + length
-                self._wait_for_change(generation)
-                return
-            offset += length
+                length = self.duration or 0.0
+                if not self.settings.get("loop") or length <= 0.05:
+                    with self._lock:
+                        if self._generation == generation:
+                            self._finished_at = offset + length
+                    self._wait_for_change(generation)
+                    return
+                offset += length
+        finally:
+            if container is not None:
+                container.close()
 
     def _push_frame(self, t: float, picture: tuple[np.ndarray, str], generation: int) -> bool:
         pixels, order = picture

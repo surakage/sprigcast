@@ -81,3 +81,29 @@ def test_the_stall_watch_logs_a_long_wait(caplog):
             break
         time.sleep(0.01)
     assert "everything waited 450 ms" in caplog.text
+
+
+def test_picture_conversion_starts_no_threads():
+    import time
+
+    import av
+    import psutil
+
+    from sprigcast.core.frames import reformat
+
+    process = psutil.Process()
+    peak, stop = [0], threading.Event()
+
+    def watch():
+        while not stop.is_set():
+            peak[0] = max(peak[0], process.num_threads())
+            time.sleep(0.0005)
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    time.sleep(0.02)
+    before = process.num_threads()
+    for _ in range(40):  # fresh frames, as a decoder hands them out
+        reformat(av.VideoFrame(1920, 1080, "nv12"), format="rgba", width=1280, height=720).to_ndarray()
+    stop.set()
+    watcher.join()
+    assert peak[0] <= before  # FFmpeg's own default started a pool as big as the CPU for each one

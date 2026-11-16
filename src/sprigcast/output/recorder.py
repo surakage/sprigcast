@@ -271,7 +271,9 @@ def _try_encoder(codec_name: str, hwaccel=None, options: dict[str, str] | None =
             ctx.bit_rate = 2_000_000
             ctx.options = options
         frame = av.VideoFrame.from_ndarray(np.zeros((256, 256, 3), dtype=np.uint8), format="rgb24")
-        ctx.encode(frame.reformat(format=ctx.pix_fmt))
+        from sprigcast.core.frames import reformat
+
+        ctx.encode(reformat(frame, format=ctx.pix_fmt))
         ctx.encode(None)
         return True
     except Exception as exc:  # no NVIDIA GPU, old driver, encoder sessions all in use, ...
@@ -939,6 +941,7 @@ class Recorder:
             format="nv12",  # not stream.pix_fmt: with a shared GPU context that reads "cuda" once open
             dst_colorspace=Colorspace.ITU709,
             dst_color_range=ColorRange.MPEG,
+            threads=2,  # FFmpeg's default is a pool as big as the CPU, per encoder
         )
         vf.pts = pts
         self._mux(container, self._encode_video(stream, vf))
