@@ -117,6 +117,7 @@ class BloomTile(QPushButton):
     blooms on screen at once."""
 
     HEIGHT = 38
+    TALL = 54  # two lines of name, for a list too narrow for it on one
 
     def __init__(self, name: str, colour: str | None = None):
         super().__init__(name)
@@ -131,6 +132,40 @@ class BloomTile(QPushButton):
         font.setWeight(font.Weight.DemiBold)
         self.setFont(font)
         self.setFixedHeight(self.HEIGHT)
+        self.wrap = False
+
+    def _lines(self, width: float) -> list[str]:
+        """The name in at most two lines for `width` (the second ends in "…" if it still doesn't fit)."""
+        metrics = QFontMetrics(self.font())
+        text = self.text()
+        if metrics.horizontalAdvance(text) <= width or not self.wrap:
+            return [text]
+        words = text.split()
+        first = ""
+        for i, word in enumerate(words):
+            trial = f"{first} {word}".strip()
+            if metrics.horizontalAdvance(trial) > width:
+                rest = " ".join(words[i:])
+                break
+            first = trial
+        else:
+            return [text]
+        if not first:  # one long word: break it where it runs out of room
+            cut = len(text)
+            while cut > 1 and metrics.horizontalAdvance(text[:cut]) > width:
+                cut -= 1
+            first, rest = text[:cut], text[cut:]
+        return [first, metrics.elidedText(rest, Qt.TextElideMode.ElideRight, int(width))]
+
+    def _text_width(self) -> float:
+        return self.width() - 46 - self._key_width()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.wrap:
+            height = self.TALL if len(self._lines(self._text_width())) > 1 else self.HEIGHT
+            if height != self.height():
+                self.setFixedHeight(height)
 
     def sizeHint(self) -> QSize:  # noqa: N802
         text = QFontMetrics(self.font()).horizontalAdvance(self.text())
@@ -171,7 +206,7 @@ class BloomTile(QPushButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        radius = outer.height() / 2
+        radius = min(outer.height(), self.HEIGHT - 2) / 2  # a two-line tile keeps the pill's round ends
         hover = self.underMouse() and self.isEnabled()
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(theme.RAISED_HOVER if hover else theme.RAISED))
@@ -197,9 +232,11 @@ class BloomTile(QPushButton):
             p.setFont(small)
             p.drawText(chip, Qt.AlignmentFlag.AlignCenter, self.key)
             p.restore()
-        text_rect = QRectF(32, 0, self.width() - 46 - key_w, self.height())
-        name = QFontMetrics(self.font()).elidedText(self.text(), Qt.TextElideMode.ElideRight, int(text_rect.width()))
-        p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
+        text_rect = QRectF(32, 0, self._text_width(), self.height())
+        lines = self._lines(text_rect.width())
+        if len(lines) == 1:
+            lines = [QFontMetrics(self.font()).elidedText(lines[0], Qt.TextElideMode.ElideRight, int(text_rect.width()))]
+        p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "\n".join(lines))
         if on_air:
             p.setPen(QPen(QColor(theme.LIVE), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -426,6 +463,7 @@ class LivePanel(QWidget):
             # Shrink with the card (the name ends in "…"; the whole name is in the tooltip).
             button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             button.setMinimumWidth(90)
+            button.wrap = True  # a narrow card shows a long name on two lines rather than "St…"
             column.addWidget(button)
 
     def _add_grid(self, scenes, colour: str | None = None) -> None:
@@ -448,7 +486,7 @@ class LivePanel(QWidget):
             else:
                 button = BloomTile(scene.name + ("  ⇄" if scene.linked_to else ""), tint)
             if scene.linked_to:
-                button.setToolTip("Linked: switches together with its partner on the other canvas")
+                button.setToolTip(f"{scene.name}\nLinked: switches together with its partner on the other canvas")
             else:
                 partners = [s.name for s in self._collection.scenes if s.linked_to == scene.id]
                 button.setToolTip(scene.name + (f"\nAlso switches: {', '.join(partners)}" if partners else ""))

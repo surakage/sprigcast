@@ -103,3 +103,24 @@ def test_transitions_card_is_short_and_says_how_many_rules(app):
                                              Qt.KeyboardModifier.NoModifier))
     assert panel.length.value() == before + panel.length.singleStep()  # the up chevron
     panel.close()
+
+
+def test_a_long_bloom_name_takes_two_lines_in_a_narrow_list(app):
+    from sprigcast.app.live_panel import BloomTile
+
+    tile = BloomTile("Just Chatting with a very long bloom name")
+    tile.wrap = True
+    tile.show()
+    tile.resize(140, BloomTile.HEIGHT)
+    assert tile.height() == BloomTile.TALL  # two lines instead of "Just…"
+    first, second = tile._lines(tile._text_width())
+    assert first.startswith("Just") and second
+    tile.resize(600, tile.height())
+    assert tile.height() == BloomTile.HEIGHT  # room again: back to one line
+    short = BloomTile("Gaming")
+    short.wrap = True
+    short.show()
+    short.resize(140, BloomTile.HEIGHT)
+    assert short.height() == BloomTile.HEIGHT
+    tile.close()
+    short.close()
