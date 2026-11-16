@@ -40,7 +40,7 @@ jobs:
           "SprigCast.exe runs as: $(Get-Content $probe)"
           # Its manifest must say Windows 10/11, or Windows reports build 9200 and Windows 10 features switch off.
           $build = [int]((Get-Content $probe) -split ' ')[-1]
-          if ($build -lt 10000) { throw "SprigCast.exe sees Windows build $build: its manifest is missing" }
+          if ($build -lt 10000) { throw "SprigCast.exe sees Windows build ${build}: its manifest is missing" }
       - name: Fingerprints and a Microsoft Defender scan
         shell: pwsh
         run: |
