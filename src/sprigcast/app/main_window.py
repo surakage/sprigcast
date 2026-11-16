@@ -2480,6 +2480,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(f"Show {COLLECTION} file").triggered.connect(lambda: self._show_garden_file())
         file_menu.addSeparator()
         file_menu.addAction("Repot as MP4…").triggered.connect(lambda: self._ask_repot())
+        file_menu.addAction("Export report…").triggered.connect(lambda: self.export_report())
         file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
@@ -2555,6 +2556,36 @@ class MainWindow(QMainWindow):
         help_menu.addSeparator()
         help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
 
+    def export_report(self, target: Path | None = None, reveal: bool = True) -> Path | None:
+        """File → Export report: one .zip with the recent logs, stream reports, crash notes, this PC and the
+        settings that matter, private things hidden (app/tester_report.py). Shown in its folder after."""
+        from sprigcast.app import tester_report
+
+        if target is None:
+            picked, _ = QFileDialog.getSaveFileName(
+                self, "Export report", str(tester_report.default_folder() / tester_report.default_name()),
+                "Zip files (*.zip)")
+            if not picked:
+                return None
+            target = Path(picked)
+        if target.suffix.lower() != ".zip":
+            target = target.with_name(target.name + ".zip")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            tester_report.build(target, collection=self.collection, settings=QSettings(),
+                                plugins_dir=self.plugins_dir)
+        except OSError as exc:
+            log.warning("report: couldn't save %s: %s", target.name, exc)
+            self.statusBar().showMessage(f"Couldn't save the report: {exc.strerror or exc}", 8000)
+            return None
+        finally:
+            QApplication.restoreOverrideCursor()
+        log.info("report exported")
+        self.statusBar().showMessage(f"Report saved: {target.name}", 8000)
+        if reveal:
+            self._reveal(target)
+        return target
+
     def _ask_repot(self) -> None:
         """File → Repot as MP4: pick recordings (MKV, FLV, MOV, TS) and copy each into an MP4 beside it."""
         paths, _ = QFileDialog.getOpenFileNames(
@@ -2592,7 +2623,10 @@ class MainWindow(QMainWindow):
 
     def _show_garden_file(self) -> None:
         """Explorer, open on this garden's file and with it selected."""
-        path = Path(self.scenes_path)
+        self._reveal(Path(self.scenes_path))
+
+    def _reveal(self, path: Path) -> None:
+        """Explorer, open on the file's folder with the file selected."""
         if sys.platform == "win32" and path.exists():
             import subprocess
 

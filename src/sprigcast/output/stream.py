@@ -364,6 +364,7 @@ class Streamer(Recorder):
                 self.connected = True
                 self._connected_at = time.monotonic()
                 self.status = "live"
+                log_live(self)
 
     def stop(self, timeout: float = 15.0) -> None:
         """Stop sending. With a stream delay the delayed part still goes out first (like OBS), in the
@@ -428,6 +429,15 @@ class Streamer(Recorder):
                     self.status = "stopped"
                     return
                 delay = min(delay * 2, RETRY_MAX)
+
+
+def log_live(st) -> None:
+    """One line when a destination starts going out, and when it's back after dropping."""
+    if st.reconnects:
+        log.info("stream %s back live after %d reconnect%s", st.name, st.reconnects,
+                 "" if st.reconnects == 1 else "s")
+    else:
+        log.info("stream %s live", st.name)
 
 
 class StreamSession:
