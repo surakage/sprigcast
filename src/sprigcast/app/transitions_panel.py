@@ -467,7 +467,7 @@ class TransitionsPanel(QWidget):
         self.changed = changed
         self.probe = probe
         self.collection = collection
-        self._narrow = 200 if compact else NARROW  # Live's card keeps labels beside their settings
+        self._narrow = 180 if compact else NARROW  # Live's card keeps labels beside their settings
         self._updating = False
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)

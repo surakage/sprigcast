@@ -890,7 +890,7 @@ class LiveStage(QWidget):
         self.blooms_card, self.transitions_card = side_card(), side_card()
         self.shares = {self.blooms_card: 5, side.sound_card: 7, self.transitions_card: 3}
         # Each card keeps enough room for its own controls; past that they share by these weights.
-        self.least = {self.blooms_card: 240, side.sound_card: 250, self.transitions_card: 250}
+        self.least = {self.blooms_card: 240, side.sound_card: 225, self.transitions_card: 235}
         for card, share in self.shares.items():
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             card.setMinimumWidth(self.least[card])
@@ -906,7 +906,7 @@ class LiveStage(QWidget):
     def set_blooms_wide(self, wide: bool) -> None:
         """Two bloom columns (both canvases) need more room than one; Sound takes what's left."""
         self.bottom_row.setStretch(0, 7 if wide else 3)
-        self.blooms_card.setMinimumWidth(310 if wide else 200)  # two lists side by side need a little more
+        self.blooms_card.setMinimumWidth(360 if wide else 200)  # two lists side by side need a little more
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
