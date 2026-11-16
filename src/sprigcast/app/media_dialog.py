@@ -14,7 +14,7 @@ plus the sound keys its strip uses (volume_db, muted, monitor).
     │ ╰─────────────────────────────────╯   │
     │ ╭ Sound ──────────────────────────╮   │
     │ │ Volume ────────●──── 0 dB  Mute │   │
-    │ │ Who hears it [Stream][Both][Just me]│
+    │ │ Listeners    [Stream][Both][Just me]│
     │ ╰─────────────────────────────────╯   │
     │                     Cancel  [ Save ]  │
     ╰────────────────────────────────────────╯
@@ -202,7 +202,7 @@ class MediaDialog(CardDialog):
         grid.addLayout(volume_row, 0, 1)
         monitor = s.get("monitor", False)
         self.hear = Choice(HEAR, "only" if monitor == "only" else bool(monitor))
-        hear_label = _name("Who hears it")
+        hear_label = _name("Listeners")
         hear_label.setFixedWidth(LABEL_WIDTH)
         grid.addWidget(hear_label, 1, 0)
         grid.addWidget(self.hear, 1, 1)

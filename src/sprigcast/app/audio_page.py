@@ -5,7 +5,7 @@
 - Tracks: a recording can keep up to five sound tracks. 1 is everything, 2 is VOD-safe (everything
   but the sounds you keep out of it, music by default), 3 is your voice, 4 and 5 are yours to fill.
 - Sounds: one row per sound, like OBS's Advanced Audio Properties: volume, mono, balance, sync
-  offset, who hears it and its tracks. The Sound card's ⚙ opens it.
+  offset, listeners and its tracks. The Sound card's ⚙ opens it.
 - Bitrate: how good the sound is on the stream and in recordings (clips and source record too).
 """
 
@@ -274,7 +274,7 @@ class AudioPage(QWidget):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
         tracks = len(AUDIO_TRACKS)
-        heads = ["Sound", "Volume", "Mono", "Balance", "Sync offset", "Who hears it",
+        heads = ["Sound", "Volume", "Mono", "Balance", "Sync offset", "Listeners",
                  *(str(n) for n in range(1, tracks + 1))]
         for col, text in enumerate(heads):
             head = QLabel(text)
