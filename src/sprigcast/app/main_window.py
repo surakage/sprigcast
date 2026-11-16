@@ -472,6 +472,8 @@ class MainWindow(QMainWindow):
         from sprigcast.app.browser_host import start_host
 
         self.browser_host = start_host(self)  # draws browser sources; Chromium loads with the first one
+        if self.browser_host is not None:
+            self.browser_host.state_of = self._page_state
         self.engine = Engine(collection)
         from sprigcast.app.settings_window import apply_naming, sleep_policy
 
@@ -5557,6 +5559,35 @@ class MainWindow(QMainWindow):
             self._start_streaming()
         else:
             self._stop_streaming()
+
+    def _page_state(self) -> dict:
+        """What Web page sources see in window.sprigcast: the bloom on air in each shape, which shape each page is
+        shown in, and whether SprigCast is live or recording (app/browser_host.py)."""
+        col = self.collection
+        blooms, shapes = {}, {}
+        sources = {s.id: s for s in col.sources}
+        for canvas in col.canvases:
+            if not canvas.enabled:
+                continue
+            scene = col.active_scene(canvas.id)
+            if scene is None:
+                continue
+            blooms[canvas.id] = scene.name
+            todo, seen = [scene], set()
+            while todo:
+                layout = todo.pop()
+                if layout.id in seen:
+                    continue
+                seen.add(layout.id)
+                for item in layout.items:
+                    source = sources.get(item.source)
+                    part = col.part_of(source) if source is not None else None
+                    if part is not None:
+                        todo.append(col.shape_for(part, canvas.id))
+                    elif source is not None and source.kind == "browser":
+                        shapes.setdefault(source.id, canvas.id)
+        return {"blooms": blooms, "shapes": shapes, "streaming": self.streaming is not None,
+                "recording": self.recording is not None}
 
     def _start_streaming(self, remote: bool = False, force: bool = False) -> dict:
         """Go live. From an app (remote) nothing ever waits on a pop-up: problems and the Stream doctor's
