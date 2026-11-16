@@ -4,7 +4,7 @@ import numpy as np
 
 from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
 from sprigcast.core.source import Source
-from sprigcast.render.engine import SLEEP_AFTER, Engine
+from sprigcast.render.engine import CAMERA_SLEEP_AFTER, SLEEP_AFTER, Engine
 
 
 class FakeCompositor:
@@ -91,7 +91,9 @@ def test_policy_all_pauses_cameras_and_off_wakes_everything():
     engine.sleep_policy = "all"
     engine._tick(fake, 1.0)
     engine._tick(fake, 1.0 + SLEEP_AFTER + 0.1)
-    assert engine._sources["cam"].asleep and engine._sources["game"].asleep
+    assert engine._sources["game"].asleep and not engine._sources["cam"].asleep  # cameras wait longer
+    engine._tick(fake, 1.0 + CAMERA_SLEEP_AFTER + 0.1)
+    assert engine._sources["cam"].asleep
     engine.sleep_policy = "off"
     engine._tick(fake, 20.0)
     assert not any(s.asleep for s in engine._sources.values())
@@ -131,11 +133,19 @@ def test_image_is_decoded_only_when_asked_and_again_after_waking(tmp_path):
 def test_a_camera_set_to_pause_off_screen_sleeps_like_the_rest():
     engine, col = _engine()
     fake = FakeCompositor()
-    engine._sources["cam"].settings = {"pause_off_screen": True}
+    engine._sources["cam"].settings = {}  # cameras made before the setting existed pause too
     col.active_scenes["h"] = "b"
     engine._tick(fake, 1.0)
     engine._tick(fake, 1.0 + SLEEP_AFTER + 0.1)
+    assert not engine._sources["cam"].asleep  # a camera gets 30 s: they take a second to open again
+    engine._tick(fake, 1.0 + CAMERA_SLEEP_AFTER + 0.1)
     assert engine._sources["cam"].asleep
+    engine._sources["cam"].settings = {"pause_off_screen": False}  # this camera is set to stay ready
+    engine.sleep_policy = "not_cameras"
+    engine._tick(fake, 40.0)
+    assert not engine._sources["cam"].asleep
+    engine.sleep_policy = "not_cameras"
+    engine._sources["cam"].settings = {}
     engine.sleep_policy = "off"  # "never pause" still wins
     engine._tick(fake, 20.0)
     assert not engine._sources["cam"].asleep
@@ -157,3 +167,34 @@ def test_a_removed_plugins_sources_stop_now_not_at_restart(monkeypatch):
     assert stopped and "game" not in engine._sources and "game" in compositor.forgotten
     engine._sync_sources(compositor)  # no new attempt (and no error) every time the blooms change
     assert "game" not in engine._sources and engine.events.empty()
+
+
+def test_a_switch_waits_for_a_closed_camera_to_open(monkeypatch):
+    """The bloom on air stays until the camera of the next one has a picture, so the cut lands on it."""
+    from sprigcast.render import engine as module
+
+    engine, col = _engine()
+    fake = FakeCompositor()
+    fake.textures, fake.rendered = {}, []
+    fake.upload = lambda sid, *a: fake.textures.setdefault(sid, 1)
+    fake.forget = lambda sid: fake.textures.pop(sid, None)
+    fake.render = lambda canvas, scene, *a, **k: fake.rendered.append(scene.id if scene else None)
+    engine.previews = None
+    col.scenes[1].items.append(SceneItem(source="cam"))  # "Starting soon" shows the camera too
+    col.scenes[0].items = [SceneItem(source="game")]
+    engine._tick(fake, 1.0)
+    engine._tick(fake, 1.0 + CAMERA_SLEEP_AFTER + 0.1)
+    cam = engine._sources["cam"]
+    assert cam.asleep and "cam" not in fake.textures
+    cam.video_frame = lambda: None  # opening: no picture yet
+    new = col.model_copy(deep=True)
+    new.active_scenes["h"] = "b"
+    engine._start_transitions(col, new)
+    engine._collection = new
+    clock = [module.time.perf_counter()]
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0])
+    engine._tick(fake, 40.0)
+    assert fake.rendered[-1] == "a" and not cam.asleep  # still the old bloom, camera opening
+    cam.video_frame = lambda: np.zeros((8, 8, 4), dtype=np.uint8)
+    engine._tick(fake, 40.1)
+    assert fake.rendered[-1] == "b"  # its first picture is in: switch

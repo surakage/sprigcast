@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 
 
 SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing it left the screen
+# Cameras and capture cards take a second or two to open, so they wait longer before closing; closing
+# them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
+CAMERA_SLEEP_AFTER = 30.0
+WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 
 
@@ -91,6 +95,8 @@ class Engine:
         self._taps_lock = threading.Lock()
         self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
+        # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
+        self._waking: dict[str, tuple] = {}
         self._wipe_maps: dict[str, np.ndarray] = {}  # wipe image path -> its small grey picture
         self._release_later: list[tuple[str, str]] = []  # ("canvas" | "texture", key) to free on the next tick
         self._pruned_at = 0.0  # when idle output targets were last let go (compositor.prune)
@@ -392,6 +398,7 @@ class Engine:
             transition = new.transition_for(before, after)
             self._finish_transition(canvas.id)
             outgoing = next((s for s in old.scenes if s.id == before), None)
+            self._wait_for_waking(canvas.id, outgoing, new, after)
             if outgoing is None or transition.kind == "cut":
                 continue
             now = time.perf_counter()
@@ -411,6 +418,40 @@ class Engine:
                 wipe_map = ""
             self._transitions[canvas.id] = Running(outgoing, now, transition.duration_ms / 1000, transition,
                                                    wipe_map=wipe_map)
+
+    def _wait_for_waking(self, canvas_id: str, outgoing, collection: SceneCollection, scene_id: str) -> None:
+        """Switching to a bloom with a closed camera: keep showing the old bloom until it has a picture
+        (at most WAKE_WAIT_S), so the cut or transition lands on the camera, not on an empty spot."""
+        self._waking.pop(canvas_id, None)
+        scene = next((s for s in collection.scenes if s.id == scene_id), None)
+        if scene is None or outgoing is None:
+            return
+        stack, seen, ids = [scene], {scene.id}, set()
+        while stack:
+            shown = stack.pop()
+            ids.update(item.source for item in shown.items if item.visible)
+            for inner in collection.inner_shapes(shown):
+                if inner.id not in seen:
+                    seen.add(inner.id)
+                    stack.append(inner)
+        asleep = {sid for sid in ids if (src := self._sources.get(sid)) is not None and src.asleep
+                  and src.kind == "camera"}
+        if asleep:
+            self._waking[canvas_id] = (outgoing, time.perf_counter() + WAKE_WAIT_S, asleep)
+
+    def _still_waking(self, compositor, canvas_id: str, now: float):
+        """The scene to keep showing while a switch waits for a camera to open, or None to go ahead."""
+        waiting = self._waking.get(canvas_id)
+        if waiting is None:
+            return None
+        outgoing, give_up, ids = waiting
+        if now < give_up and not all(sid in compositor.textures for sid in ids):
+            return outgoing
+        del self._waking[canvas_id]
+        running = self._transitions.get(canvas_id)
+        if running is not None and running.began is not None:
+            running.began = now  # the transition starts now that the camera is there
+        return None
 
     def _new_stinger(self, path: str, transition, collection: SceneCollection) -> StingerPlayer:
         width = max(c.width for c in collection.canvases)
@@ -666,8 +707,8 @@ class Engine:
             return False
         if self.sleep_policy == "all" or source.kind != "camera":
             return True
-        # A camera pauses when its own "Pause when not on screen" is on (new cameras have it on).
-        return bool((getattr(source, "settings", None) or {}).get("pause_off_screen", False))
+        # A camera pauses when its own "Pause when not on screen" is on (the default; it waits CAMERA_SLEEP_AFTER).
+        return bool((getattr(source, "settings", None) or {}).get("pause_off_screen", True))
 
     def _shown_sources(self) -> set[str]:
         """Sources placed in anything drawn right now: on air, fading out, staged, the sprig being edited,
@@ -734,7 +775,8 @@ class Engine:
                 if source.asleep:
                     source.asleep = False
                     source.wake()
-            elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= SLEEP_AFTER:
+            elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
+                    CAMERA_SLEEP_AFTER if source.kind == "camera" else SLEEP_AFTER):
                 source.asleep = True
                 source.sleep()
                 compositor.forget(source_id)
@@ -751,6 +793,9 @@ class Engine:
             running = self._transitions.get(canvas.id)
             if running is not None and running.outgoing not in drawn:
                 drawn.append(running.outgoing)
+            waiting = self._waking.get(canvas.id)
+            if waiting is not None and waiting[0] not in drawn:  # still on screen while a camera opens
+                drawn.append(waiting[0])
         for name in list(self.views):  # what the virtual camera shows wakes its sources (and sprigs)
             _canvas, scene = self._view_scene(name)
             if scene is not None and scene not in drawn:
@@ -969,14 +1014,15 @@ class Engine:
         for canvas in self._collection.canvases:
             if not canvas.enabled:
                 continue
-            extra = self._transition_step(compositor, canvas.id, now) or {}
+            held = self._still_waking(compositor, canvas.id, now)
+            extra = {} if held is not None else self._transition_step(compositor, canvas.id, now) or {}
             outputs = taps.get(canvas.id, ())
             preview = self._preview_due(canvas.id, now)
             self._render_staged(compositor, canvas, sizes, now)
             self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
-            compositor.render(canvas, self._collection.active_scene(canvas.id), sizes, **extra)
+            compositor.render(canvas, held or self._collection.active_scene(canvas.id), sizes, **extra)
             frames: dict = {}  # nv12 size (None = RGBA) -> Frame, so outputs of one size share one readback
             if preview:
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height))

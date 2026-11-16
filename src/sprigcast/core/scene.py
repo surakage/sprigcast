@@ -324,6 +324,10 @@ class RecordingSettings(BaseModel):
     replay_seconds: int = 30  # clip length (15, 30, 45 or 60 in Settings); saved clips land in the recordings folder
     clip_shapes: Literal["horizontal", "vertical", "both"] = "both"  # which canvases a clip saves
     clips_on_start: bool = False  # keep clips ready from the moment SprigCast opens
+    # Clips kept ready with nothing streamed or recorded pause after this many minutes without a clip
+    # saved (0: never). The buffer is an encoder running all the time: ~175 MB and ~11% of the GPU's
+    # encoder for a whole idle hour on the user's PC.
+    clips_idle_minutes: int = 15
     keep_screenshots: int = 0  # keep only the newest this many screenshots (0: keep all)
     keep_clips: int = 0  # keep only the newest this many clip files (0: keep all)
     voice_track: bool = True  # old setting, read once: now track 3 in audio_tracks (kept in step with it)

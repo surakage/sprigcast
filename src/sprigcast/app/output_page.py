@@ -365,6 +365,7 @@ class OutputPage(QWidget):
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()
+        collection.recording.clips_idle_minutes = int(self.clips_idle.currentData())
         self.space.apply_to(collection)
         self.camera_tab.apply()
 
@@ -408,6 +409,14 @@ class OutputPage(QWidget):
         self.clips_on_start.setToolTip("Otherwise the first press of Clips on Live gets them ready")
         self.clips_on_start.setChecked(collection.recording.clips_on_start)
         form.addRow("", self.clips_on_start)
+        self.clips_idle = QComboBox()
+        for minutes, label in ((5, "After 5 minutes"), (15, "After 15 minutes"), (30, "After 30 minutes"), (0, "Never")):
+            self.clips_idle.addItem(label, minutes)
+        idle = collection.recording.clips_idle_minutes
+        self.clips_idle.setCurrentIndex(max(0, self.clips_idle.findData(idle if idle in (0, 5, 15, 30) else 15)))
+        self.clips_idle.setToolTip("While nothing is streamed or recorded and no clip is saved, clips pause to\n"
+                                   "save memory and the graphics card. They come back when you go live or record.")
+        form.addRow("Pause when unused", self.clips_idle)
         return group
 
 

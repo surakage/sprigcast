@@ -42,4 +42,4 @@ packages = ["src/sprigcast"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]  # "." lets tests import shared helpers from other test files
