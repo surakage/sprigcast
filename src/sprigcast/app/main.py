@@ -262,7 +262,9 @@ def run() -> None:
 
         QTimer.singleShot(1500, window.first_run_optimizer)  # once: Optimize for this PC
         if crashed is not None:
-            QTimer.singleShot(1200, lambda: crash_report.show_note(window, crashed, logbook.log_dir()))
+            from sprigcast.app import problem_report
+
+            QTimer.singleShot(1200, lambda: problem_report.ask(window, crashed))  # what happened? send it?
     from PySide6.QtCore import QTimer
 
     from sprigcast.core import pacing

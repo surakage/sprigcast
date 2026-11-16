@@ -8,7 +8,8 @@ there at start, the last run ended unexpectedly. What it left behind is gathered
 * Windows' own record (Event Viewer → Application, "Application Error" 1000): the faulting module
   (``nvcuda64.dll``, ``avcodec-61.dll`` ...) and exception code, matched by process id.
 
-The finding is written to crash.log and today's log, and the window shows a short note.
+The finding is written to crash.log and today's log, and the window asks what happened and offers to send
+a report (app/problem_report.py).
 """
 
 from __future__ import annotations
@@ -159,28 +160,3 @@ def closed_cleanly(folder: Path) -> None:
         (folder / MARK).unlink()
     except OSError:
         pass
-
-
-def show_note(parent, crash: Crash, logs: Path | None) -> None:
-    """A short card: SprigCast closed unexpectedly, and what happened."""
-    from PySide6.QtCore import QUrl
-    from PySide6.QtGui import QDesktopServices
-    from PySide6.QtWidgets import QLabel
-
-    from sprigcast.app import theme
-    from sprigcast.app.card import CardDialog
-
-    card = CardDialog("SprigCast closed unexpectedly", parent)
-    text = QLabel(crash.summary() + ".")
-    text.setWordWrap(True)
-    text.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
-    card.body.addWidget(text)
-    ok = card.add_buttons("OK", "Open logs" if logs else "Close")
-    ok.setFocus()
-    if logs is not None:
-        from PySide6.QtWidgets import QPushButton
-
-        for button in card.findChildren(QPushButton):
-            if button.text() == "Open logs":
-                button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs))))
-    card.exec()
