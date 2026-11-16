@@ -323,3 +323,10 @@ def test_two_copies_with_the_same_settings_keep_each_others_pairings(monkeypatch
             "Soak test harness", "THSV StreamBridge"]
     finally:
         QSettings().clear()
+
+
+def test_not_inside_a_store_app_package_off_windows():
+    """main.inside_package: "" unless Windows runs SprigCast inside another app's package (then its saves vanish)."""
+    from sprigcast.app.main import inside_package
+
+    assert inside_package() == ""
