@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast import plugin_hooks
 from sprigcast.app.labels import literal
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
@@ -2555,6 +2556,9 @@ class MainWindow(QMainWindow):
         doctor_action.triggered.connect(lambda: self._open_doctor())
         tools_menu.addSeparator()
         tools_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
+        self._tools_menu = tools_menu
+        self._plugin_tool_actions: list = []
+        tools_menu.aboutToShow.connect(self._fill_plugin_tools)
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
@@ -2565,6 +2569,24 @@ class MainWindow(QMainWindow):
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
         help_menu.addSeparator()
         help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
+
+    def _fill_plugin_tools(self) -> None:
+        """Tools menu entries that added plugins bring (Auto clip's Suggested clips…), under Plugin store."""
+        for action in self._plugin_tool_actions:
+            self._tools_menu.removeAction(action)
+            action.deleteLater()
+        self._plugin_tool_actions = []
+        for label, fn in plugin_hooks.tools():
+            action = self._tools_menu.addAction(label)
+            action.triggered.connect(lambda _=False, fn=fn: self._run_plugin_tool(fn))
+            self._plugin_tool_actions.append(action)
+
+    def _run_plugin_tool(self, fn) -> None:
+        try:
+            fn(self.api)
+        except Exception:
+            log.exception("a plugin's Tools entry failed")
+            self.statusBar().showMessage("That plugin hit a problem (it's in the log).", 6000)
 
     def export_report(self, target: Path | None = None, reveal: bool = True) -> Path | None:
         """File → Export report: one .zip with the recent logs, stream reports, crash notes, this PC and the
@@ -2825,6 +2847,8 @@ class MainWindow(QMainWindow):
                     self.sound_strips.set_levels(event.levels)
                 self.peak_watch.feed(event.levels)
                 self.control.meters(event.levels)  # only when a connected app asked for meters
+                if plugin_hooks._LEVEL_WATCHERS:  # Auto clip listens for loud moments
+                    plugin_hooks.levels_heard(self.api, event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
                 for preview in [*self.previews.values(), self.part_preview]:
@@ -5765,7 +5789,10 @@ class MainWindow(QMainWindow):
                 max_tracks=output.enhanced_max_tracks or None,
                 max_bitrate_kbps=output.enhanced_max_kbps or None,
             )
-            config = enhanced.parse_config(enhanced.fetch_config(request), target.key, pick_codec(),
+            from sprigcast.core.workers import wait_answering
+
+            answer = wait_answering(enhanced.fetch_config, request)  # a web request: off the window's thread
+            config = enhanced.parse_config(answer, target.key, pick_codec(),
                                            bandwidth_test=target.bandwidth_test)
         except Exception as exc:
             log.warning("Enhanced Broadcasting unavailable: %s", exc)
@@ -5796,7 +5823,9 @@ class MainWindow(QMainWindow):
 
         self._say("Getting your stream key from Twitch…")
         try:
-            key = twitch_auth.fetch_stream_key()
+            from sprigcast.core.workers import wait_answering
+
+            key = wait_answering(twitch_auth.fetch_stream_key)  # a web request: off the window's thread
         except Exception as exc:
             log.warning("could not fetch the Twitch stream key: %s", exc)
             self.statusBar().showMessage(f"{exc} Using the saved stream key.", 15000)

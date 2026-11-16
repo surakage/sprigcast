@@ -48,7 +48,8 @@ STREAM_FLAGS = {"OBS_OUTPUT_AUDIO": True, "OBS_OUTPUT_VIDEO": True, "OBS_OUTPUT_
                 "OBS_OUTPUT_SERVICE": True}
 TRANSITION_NAMES = {kind: kind.capitalize() for kind in TRANSITION_KINDS}  # "fade" -> "Fade"
 OBS_TRANSITION_KINDS = {"cut": "cut_transition", "fade": "fade_transition", "slide": "slide_transition",
-                        "swipe": "swipe_transition", "wipe": "wipe_transition", "stinger": "obs_stinger_transition"}
+                        "swipe": "swipe_transition", "wipe": "wipe_transition", "stinger": "obs_stinger_transition",
+                        "move": "move_transition"}
 
 
 # OBS setting names -> SprigCast's, per source kind (anything else passes through as is).

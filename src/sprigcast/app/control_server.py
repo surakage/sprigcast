@@ -260,6 +260,32 @@ class WindowHost:
     def save_clip(self) -> list[str]:
         return [str(p) for p in self.w._save_replay()]
 
+    # For Auto clip (store/auto_clip.py) ------------------------------------------------------------
+
+    def recordings_folder(self) -> Path:
+        return self.w._recordings_folder()
+
+    def save_clip_into(self, folder: Path) -> list[Path]:
+        """Save the clips buffer into folder/<day> without the "Clip saved" note. Safe off the UI thread
+        (each encoder writes the clip itself, between frames); raises if clips aren't ready."""
+        from datetime import datetime
+
+        from sprigcast.output.replay import replay_path
+
+        replay = self.w.replay
+        if replay is None:
+            raise RuntimeError("clips aren't ready")
+        when = datetime.now()
+        return [enc.save(replay_path(Path(folder), enc.canvas_id, when, replay.container)) for enc in replay.buffers]
+
+    def chat_hub(self):
+        """The one set of chat readers (chat/hub.py), or None."""
+        panel = getattr(self.w, "chat_panel", None)
+        return getattr(panel, "hub", None)
+
+    def say(self, text: str, ms: int = 6000) -> None:
+        self.w.statusBar().showMessage(text, ms)
+
     def source_sizes(self) -> dict[str, tuple[int, int]]:
         return self.w.source_sizes
 

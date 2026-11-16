@@ -10,6 +10,8 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
+from typing import Any
 
 import numpy as np
 
@@ -25,8 +27,9 @@ from sprigcast.core.events import (
 )
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, STATE_FADE_S, SceneCollection
+from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
+from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer
 
 log = logging.getLogger(__name__)
@@ -36,6 +39,11 @@ SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing i
 # Cameras and capture cards take a second or two to open, so they wait longer before closing; closing
 # them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
 CAMERA_SLEEP_AFTER = 30.0
+# A camera that's needed again soon after it closed waits longer next time: twice as long each time it comes
+# back within CAMERA_BACK_SOON_S, up to CAMERA_SLEEP_MAX. On the PC (2026-11-16) one closed and opened 14 times
+# an hour as blooms switched, each time starting Camera Hub again. Left closed that long, it's back to 30 s.
+CAMERA_SLEEP_MAX = 300.0
+CAMERA_BACK_SOON_S = 600.0
 WATCHER_PARK_S = 60.0  # a frame watcher (background remover) nothing fed for this long lets go of everything
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
@@ -103,6 +111,7 @@ class Engine:
         self._taps_lock = threading.Lock()
         self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
+        self._filtered: frozenset[str] = frozenset()  # sources with video filters, see _sync_filters
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
         self._waking: dict[str, tuple] = {}
         self._source_ms: dict[str, float] = {}  # source id -> average ms per frame it was asked for
@@ -129,6 +138,8 @@ class Engine:
         # to open), "all", or "off". Set by the UI from Settings → General.
         self.sleep_policy = "not_cameras"
         self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
+        self._camera_wait: dict[str, float] = {}  # camera id -> how long it stays open off screen (see above)
+        self._slept_at: dict[str, float] = {}  # camera id -> when it last closed
         self._told_hidden: dict[str, bool] = {}  # source id -> what set_hidden() last said (see _show_hidden)
         self._visible: set[str] = set()  # sources showing in what's drawn, this tick (see _show_hidden)
         # Plugins' frame watchers (plugin_hooks.register_frame_watcher): source id -> (filter kind, its settings)
@@ -139,9 +150,10 @@ class Engine:
         # frame taps on that id get. Replaced whole by the UI (see set_clean).
         self.clean_hidden: dict[str, frozenset[str]] = {}
         # Extra pictures for taps on "view:<name>" (the virtual camera): name -> (canvas id, kind, ref),
-        # kind "bloom" (a bloom drawn whether or not it's on air) or "source" (one source, fitted).
+        # kind "bloom" (a bloom drawn whether or not it's on air), "source" (one source, fitted) or
+        # "scene" (ref is a Scene a plugin made, e.g. Instant replay's game with the camera in a corner).
         # Replaced whole by the UI (see set_view); drawn only while something taps them.
-        self.views: dict[str, tuple[str, str, str]] = {}
+        self.views: dict[str, tuple[str, str, Any]] = {}
         self._view_at: dict[str, float] = {}  # view name -> when a screen-only view was last drawn
 
     # Called from the UI thread ----------------------------------------------
@@ -207,8 +219,9 @@ class Engine:
             clean[canvas_id] = frozenset(hidden)
         self.clean_hidden = clean
 
-    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref: str = "") -> None:
-        """Draw a bloom or a single source on a canvas's size for taps on "view:<name>" (None: stop)."""
+    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref=None) -> None:
+        """Draw a bloom, a single source or a plugin's own Scene on a canvas's size for taps on "view:<name>"
+        (None: stop)."""
         views = dict(self.views)
         if canvas_id is None:
             views.pop(name, None)
@@ -227,6 +240,8 @@ class Engine:
             return None, None
         if kind == "bloom":
             return canvas, next((sc for sc in collection.scenes if sc.id == ref), None)
+        if kind == "scene":
+            return canvas, ref if isinstance(ref, Scene) else None
         if kind == "source" and any(src.id == ref for src in collection.sources):
             w, h = (sizes or {}).get(ref) or (canvas.width, canvas.height)
             k = min(canvas.width / max(1, w), canvas.height / max(1, h))
@@ -631,6 +646,10 @@ class Engine:
             self._finish_transition(canvas_id, compositor)
             return None
         extra = {"previous": running.outgoing, "progress": max(0.0, progress), "transition": running.settings}
+        if running.settings.kind == "move":
+            canvas = next((c for c in self._collection.canvases if c.id == canvas_id), None)
+            if canvas is not None:
+                extra["move"] = partial(self._move_frame, running, canvas, max(0.0, progress))
         if running.stinger is not None:
             frame = running.stinger.frame_at(elapsed)
             if frame is not None:
@@ -682,6 +701,8 @@ class Engine:
                     self._stopped_unknown.add(source_id)
                 self._sources.pop(source_id).stop()
                 self._last_shown.pop(source_id, None)
+                self._camera_wait.pop(source_id, None)
+                self._slept_at.pop(source_id, None)
                 compositor.forget(source_id)
         for source_id, config in wanted.items():
             existing = self._sources.get(source_id)
@@ -690,6 +711,8 @@ class Engine:
             if existing is None:
                 try:
                     source = create_source(config.kind, config.id, config.settings)
+                    if getattr(source, "wants_engine", False):  # plugins that tap frames or sound (Instant replay)
+                        source.engine = self
                     if self._may_sleep(source) and source_id not in self._shown_sources():
                         source.asleep = True  # not on screen: don't even start it until it is
                         source.sleep()
@@ -789,6 +812,7 @@ class Engine:
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
         compositor.effects = effects
+        self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
         self._watched = watched
         for source_id in [s for s, w in self._watchers.items() if watched.get(s, ("",))[0] != w[1]]:
             self._close_watcher(compositor, source_id)  # its filter went (or the plugin was removed)
@@ -943,12 +967,28 @@ class Engine:
                 self._last_shown[source_id] = now
                 if source.asleep:
                     source.asleep = False
+                    if source.kind == "camera":
+                        self._camera_back(source_id, now)
                     source.wake()
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
-                    CAMERA_SLEEP_AFTER if source.kind == "camera" else SLEEP_AFTER):
+                    self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera" else SLEEP_AFTER):
                 source.asleep = True
+                if source.kind == "camera":
+                    self._slept_at[source_id] = now
                 source.sleep()
                 compositor.forget(source_id)
+
+    def _camera_back(self, source_id: str, now: float) -> None:
+        """A closed camera is on screen again: back soon, it stays open longer next time; else 30 s again."""
+        slept = self._slept_at.pop(source_id, None)
+        if slept is None or now - slept > CAMERA_BACK_SOON_S:
+            self._camera_wait.pop(source_id, None)
+            return
+        wait = min(CAMERA_SLEEP_MAX, 2 * self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER))
+        if wait != self._camera_wait.get(source_id):
+            log.info("camera %s needed again %.0f s after it closed: now stays open %.0f s off screen",
+                     source_id, now - slept, wait)
+        self._camera_wait[source_id] = wait
 
     def _drawn_scenes(self, collection: SceneCollection) -> list:
         drawn = []
@@ -971,6 +1011,60 @@ class Engine:
                 drawn.append(scene)
         return drawn
 
+    # Move transition -----------------------------------------------------------------------------------
+
+    def _move_pieces(self, scene, sizes: dict, hidden: frozenset = frozenset()) -> list:
+        """A bloom as the pieces a Move transition moves (render/move.py flatten): sprigs that fill the
+        canvas one to one are opened up so what's inside them moves on its own."""
+        collection = self._collection
+        canvases = {c.id: (c.width, c.height) for c in collection.canvases}
+        sources = {s.id: s for s in collection.sources}
+
+        def part_size(source_id: str, canvas_id: str):
+            source = sources.get(source_id)
+            part = collection.part_of(source) if source is not None else None
+            return canvases.get(collection.shape_for(part, canvas_id).canvas) if part is not None else None
+
+        def view(shape, source):
+            layout, fades = self._state_view(collection, shape)
+            if collection.hidden_here(source):
+                layout = collection.placement_view(source, layout)
+            return layout, fades
+
+        filtered = self._filtered
+        return move.flatten(scene, collection, sizes, part_size, view, lambda sid: sid not in filtered,
+                            canvases.get(scene.canvas, (0, 0)), hidden)
+
+    def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
+        """This frame of a Move transition on a canvas, as pieces to draw (see compositor.render)."""
+        sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        new = self._collection.active_scene(canvas.id)
+        old = self._move_pieces(running.outgoing, sizes, hidden)
+        now = self._move_pieces(new, sizes, hidden) if new is not None else []
+        t = running.settings
+        return move.frame(old, now, progress, t.easing, t.unmatched, (canvas.width, canvas.height))
+
+    def _move_light(self, collection: SceneCollection, drawn: list) -> list:
+        """What to draw sprigs for: during a Move, the bloom it moves out of needs only the sprigs it draws
+        whole, not the ones opened up into their pieces (their sources are drawn straight onto the canvas)."""
+        outgoing = {id(r.outgoing): r for r in self._transitions.values()
+                    if r.settings.kind == "move" and r.began is not None}
+        if not outgoing:
+            return drawn
+        held = {id(w[0]) for w in self._waking.values()}  # shown as it is while a camera opens
+        out = []
+        for scene in drawn:
+            if id(scene) not in outgoing or id(scene) in held:
+                out.append(scene)
+                continue
+            whole: dict[str, list] = {}  # canvas id -> sprigs drawn whole
+            for piece in self._move_pieces(scene, {}):
+                if collection.part_of(collection.source(piece.source)) is not None:
+                    whole.setdefault(piece.canvas, []).append(SceneItem(source=piece.source))
+            for canvas_id, items in whole.items():  # stand-ins placing just those sprigs, so they are drawn
+                out.append(Scene(id=f"~move:{scene.id}", name="", canvas=canvas_id, items=items))
+        return out
+
     def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
         """Render every part layout in use once (inner ones first), then point each placement at its texture."""
         collection = self._collection
@@ -978,7 +1072,7 @@ class Engine:
         # transition fades out of, the bloom being edited in Build, and the Part editor. The other blooms'
         # sprigs cost nothing until they are switched to.
         used: set[str] = set()
-        stack = self._drawn_scenes(collection)
+        stack = self._move_light(collection, self._drawn_scenes(collection))
         if self.editing_part:
             stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
             used.add(self.editing_part)
@@ -1005,8 +1099,9 @@ class Engine:
             textures[part.id] = compositor.render_part(part.id, size, view, sizes, fades)
             if part.id == self.editing_part and self._preview_due("part", now):
                 self.readbacks += 1
-                data = compositor.read(f"part:{part.id}")
-                self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, now))
+                data, drawn = self._read_full(compositor, f"part:{part.id}", now)
+                if data is not None:
+                    self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, drawn))
             # Placements of this layout with their own tweaks (hidden items) get their own copy.
             main = collection.main_part(part)
             for source in collection.sources:
@@ -1103,8 +1198,10 @@ class Engine:
             more = dict(extra)
             if more.get("previous") is not None:
                 more["previous"] = collection.hide_items(more["previous"], set(hidden))
+            if more.get("move") is not None:  # a Move: its pieces without them, however deep
+                more["move"] = partial(more["move"], hidden=frozenset(hidden))
             compositor.render(target, collection.hide_items(scene, set(hidden)) if scene else scene, sizes, **more)
-            frame = self._frame(compositor, target, None, now, {})
+            frame = Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now)  # now, not later
         except Exception:
             log.exception("drawing a screenshot without %s failed", sorted(hidden))
             return False
@@ -1126,7 +1223,8 @@ class Engine:
             return made[nv12_size]
         self.readbacks += 1
         if nv12_size is None:
-            frame = Frame(canvas.id, canvas.width, canvas.height, compositor.read(canvas.id), now)
+            data, drawn = self._read_full(compositor, canvas.id, now)
+            frame = None if data is None else Frame(canvas.id, canvas.width, canvas.height, data, drawn)
         elif self.wait_free:
             data, drawn = compositor.read_nv12_later(canvas.id, nv12_size, now, now)
             frame = None if data is None else Frame(canvas.id, nv12_size[0], nv12_size[1], data, drawn, "nv12")
@@ -1135,6 +1233,15 @@ class Engine:
             frame = Frame(canvas.id, nv12_size[0], nv12_size[1], data, now, "nv12")
         made[nv12_size] = frame
         return frame
+
+    def _read_full(self, compositor, target_id: str, now: float) -> tuple[bytes | None, float]:
+        """A whole canvas as RGBA: with wait_free a tick late without waiting on the GPU (it waited 100-140 ms
+        about ten times an hour on the PC, 2026-11-16), else now. (None, 0) while nothing is ready yet."""
+        later = getattr(compositor, "read_full_later", None) if self.wait_free else None
+        if later is None:  # waiting reads, or a compositor without it
+            return compositor.read(target_id), now
+        data, drawn = later(target_id, now, now)
+        return data, (drawn if data is not None else 0.0)
 
     def _preview_size(self, key: str, canvas_size: tuple[int, int]) -> tuple[int, int] | None:
         """The size to copy a preview at, or None for full size (shown big, or size unknown)."""
@@ -1151,8 +1258,9 @@ class Engine:
     def _preview_frame(self, compositor, target_id: str, canvas_size: tuple[int, int], now: float) -> Frame | None:
         self.readbacks += 1
         size = self._preview_size(target_id, canvas_size)
-        if size is None:
-            return Frame(target_id, *canvas_size, compositor.read(target_id), now)
+        if size is None:  # shown big: a full-size copy
+            data, drawn = self._read_full(compositor, target_id, now)
+            return None if data is None else Frame(target_id, *canvas_size, data, drawn)
         if self.wait_free:
             data, drawn = compositor.read_scaled_later(target_id, size, now, now)
             return None if data is None else Frame(target_id, size[0], size[1], data, drawn, canvas_size=canvas_size)
