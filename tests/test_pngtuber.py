@@ -429,6 +429,29 @@ def test_without_a_pngtuber_apps_hear_which_plugin_to_add(tuber):
     assert "Add a PNGtuber" in err.value.message
 
 
+def test_a_pngtuber_with_no_pictures_asks_for_them(tuber, tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    col = _collection()
+    col.sources.append(SourceConfig(id="tuber", kind="pngtuber", name="Avatar", settings={"folder": str(empty)}))
+    col.scene("chat-h").items.append(SceneItem(source="tuber"))
+    host = Host(col)
+    host.instances["tuber"] = create_source("pngtuber", "tuber", {"folder": str(empty)})
+    api = NativeApi(host)
+    for action, data in (("pngtuber.next", {}), ("pngtuber.reset", {}), ("pngtuber.expression", {"expression": "x"}),
+                         ("pngtuber.next", {"seconds": 5})):
+        with pytest.raises(ApiError) as err:
+            api.run(action, data)
+        assert err.value.message == tuber.NO_PICTURES
+    assert api.run("pngtuber.expressions", {}) == {"expression": "default", "expressions": []}
+    notes = []
+    plugin_hooks.run_hotkey(api, "plugin:pngtuber:next", notes.append)
+    assert notes == [tuber.NO_PICTURES]
+    entries = []
+    plugin_hooks.fill_item_menu(api, col.source("tuber"), lambda label, fn: entries.append((label, fn)))
+    assert entries == []
+
+
 def test_the_settings_form_lists_sprigcast_sounds_and_mics(tuber, monkeypatch):
     from PySide6.QtWidgets import QComboBox
 

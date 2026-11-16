@@ -789,6 +789,9 @@ def _num(value, default: float) -> float:
 # Expressions from apps, hotkeys and the right-click menu ------------------------------------------
 
 
+NO_PICTURES = "Add pictures to the PNGtuber first (idle and talk)."
+
+
 def _tubers(api, data: dict | None = None) -> list:
     if data and data.get("source") is not None:
         source = api._source(data, "source")
@@ -807,10 +810,13 @@ def _choices_of(source) -> list[str]:
 
 def change(api, sources, how, seconds: float = 0.0) -> dict:
     """Set each PNGtuber's expression to how(list of its expressions, the one now). Saved with your blooms
-    unless it's only for some seconds."""
+    unless it's only for some seconds. PNGtubers with no pictures yet are left alone."""
+    named = [(source, _choices_of(source)) for source in sources]
+    named = [(source, names) for source, names in named if names]
+    if not named:
+        raise ApiError("not_found", NO_PICTURES)
     shown = DEFAULT
-    for source in sources:
-        names = _choices_of(source)
+    for source, names in named:
         now = str(source.settings.get("expression") or DEFAULT).lower()
         instance = api.host.source_instance(source.id)
         if instance is not None and hasattr(instance, "expression"):
@@ -826,7 +832,7 @@ def change(api, sources, how, seconds: float = 0.0) -> dict:
         send_event(api, "pngtuber.expression", {"expression": shown})
     except Exception:
         log.debug("couldn't tell apps about the expression", exc_info=True)
-    out = {"expression": shown, "expressions": _choices_of(sources[0])}
+    out = {"expression": shown, "expressions": named[0][1]}
     if seconds > 0:
         out["seconds"] = seconds
     return out
