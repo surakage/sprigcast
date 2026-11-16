@@ -89,13 +89,14 @@ class SprigCastAction extends SingletonAction {
 	async onWillAppear(ev) {
 		visible.add(ev.action.id);
 		refreshConnection();
-		if (keyStyle !== "canopy") await this.dress(ev.action);
+		if (keyStyle !== "canopy" || !sprigcast.ready) await this.dress(ev.action);
 		return this.paint(ev.action, ev.payload.settings);
 	}
 
 	/** The key's pictures in the chosen Key style (canopy = the manifest's own, so the pictures reset). */
 	async dress(action) {
 		if (!action.isKey()) return;
+		if (!sprigcast.ready) return action.setImage(`imgs/offline/${this.suffix}.png`); // SprigCast closed: dark key
 		if (keyStyle === "canopy") return action.setImage();
 		const image = (n) => `imgs/styles/${keyStyle}/${this.suffix}/key${n}@2x.png`;
 		if (this.states === 1) return action.setImage(image(0));
@@ -327,7 +328,8 @@ class DeathCount extends SprigCastAction {
 		if (typeof result.count === "number") await action.setTitle(String(result.count));
 	}
 	paint(action) {
-		return sprigcast.state.deaths === null ? undefined : action.setTitle(String(sprigcast.state.deaths));
+		if (sprigcast.state.deaths === null) return sprigcast.ready ? undefined : action.setTitle(undefined); // no old count while dark
+		return action.setTitle(String(sprigcast.state.deaths));
 	}
 }
 
@@ -346,7 +348,11 @@ const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new Toggle
 for (const action of actions) streamDeck.actions.registerAction(action);
 
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));
-sprigcast.on("connection", () => all.forEach((a) => a.repaintAll().catch(() => {})));
+// Connected or gone: every key swaps between its own picture and the dark offline one, then shows SprigCast's state.
+sprigcast.on("connection", () => all.forEach((kind) => {
+	for (const action of kind.actions) kind.dress(action).catch(() => {});
+	kind.repaintAll().catch(() => {});
+}));
 sprigcast.on("refused", (why) => streamDeck.logger.warn(`SprigCast refused the connection: ${why}`));
 sprigcast.on("status", () => sendStatus());
 // Paired with a code: keep this device's own key as the password (the code only works once).
