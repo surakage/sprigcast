@@ -204,6 +204,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
   clips are yours to set. It reads the levels the meters already have and does nothing while clips are off.
   `autoclip.*` API actions (`autoclip.mark` for Streamer.bot raids) and an `autoclip.suggested` event.
+- Auto clip is stricter: 2 minutes between suggestions by default (1 at least), 10 an hour at most, none while one
+  is still saving; looping videos and sounds are left out, and the same loud bit coming round again doesn't count
+  (the PC heavy run saved one a minute under a loud looping video).
 - Freeze store plugin: freeze a sprig, game or camera on the frame showing now for a set time (a redeem that
   freezes your game for 10 seconds), then it's live again by itself. Right-click, hotkeys, and `freeze.start`,
   `freeze.stop` and `freeze.toggle` for Streamer.bot and other apps, with an `effect.ended` event when it ends.
