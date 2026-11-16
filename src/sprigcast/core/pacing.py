@@ -258,6 +258,11 @@ def ui_beat() -> None:
     _ui["beat"], _ui["ident"] = now, threading.get_ident()
 
 
+def ui_rest() -> None:
+    """The window is closing: stop watching it (the beat stops with it)."""
+    _ui["beat"], _ui["where"] = None, None
+
+
 def _check_window(now: float) -> None:
     beat, ident = _ui["beat"], _ui["ident"]
     if beat is None or _ui["where"] is not None or 1000 * (now - beat) < UI_STALL_MS:

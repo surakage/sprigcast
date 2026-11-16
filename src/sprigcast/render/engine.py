@@ -91,6 +91,7 @@ class Engine:
         self._sources: dict[str, Source] = {}
         self._stopped_unknown: set[str] = set()  # sources whose plugin was removed while they ran
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
+        self._stopping: threading.Thread | None = None  # see stop(wait=False)
         self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
         self.monitor = Monitor()  # plays monitored sources on the speakers, opened only when one is
         self._monitoring = False
@@ -248,8 +249,26 @@ class Engine:
                 except Exception:
                     log.exception("frame tap for view %s failed", name)
 
-    def stop(self, timeout: float = 2.0) -> None:
+    def stop(self, timeout: float = 2.0, wait: bool = True) -> None:
+        """Stop drawing and sound. wait=False (closing the window): the render thread finishes its tick and lets
+        go of the graphics card on a thread of its own, so the window isn't held up (348-392 ms on the PC,
+        2026-11-16); finish_stopping() then waits for it, after the window has gone."""
         self.commands.put(Shutdown())
+        if wait and self._stopping is not None:  # already stopping on its own thread
+            self._stopping.join(timeout + 5.0)
+        elif wait:
+            self._finish(timeout)
+            return
+        if self._stopping is None:
+            self._stopping = threading.Thread(target=self._finish, args=(timeout,), name="sprigcast-stop")
+            self._stopping.start()  # not a daemon: Python waits for it before it exits, so sound closes cleanly
+
+    def finish_stopping(self, timeout: float = 5.0) -> None:
+        """Wait for a stop(wait=False) to be done."""
+        if self._stopping is not None:
+            self._stopping.join(timeout)
+
+    def _finish(self, timeout: float) -> None:
         self._thread.join(timeout)
         self.mixer.stop()
         self.monitor.stop()

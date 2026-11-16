@@ -2927,6 +2927,10 @@ class MainWindow(QMainWindow):
         self.live_panel.show_scenes(self.collection)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        self.hide()  # gone at once; what follows only tidies up
+        from sprigcast.core import pacing
+
+        pacing.ui_rest()  # a hidden window isn't one that doesn't answer
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()
@@ -2951,7 +2955,7 @@ class MainWindow(QMainWindow):
             self.replay.stop()
             self.replay = None
         self.timer.stop()
-        self.engine.stop()
+        self.engine.stop(wait=False)  # the render thread lets go of the card on its own time (main waits)
         if self.browser_host is not None:
             self.browser_host.shutdown()
         self.updater.install_on_quit()  # a downloaded update runs once SprigCast has closed

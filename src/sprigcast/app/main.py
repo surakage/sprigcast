@@ -283,7 +283,9 @@ def run() -> None:
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
-    sys.exit(app.exec())
+    code = app.exec()
+    window.engine.finish_stopping()  # the window is gone: now wait for drawing and sound to stop
+    sys.exit(code)
 
 
 if __name__ == "__main__":
