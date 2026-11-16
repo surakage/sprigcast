@@ -68,6 +68,8 @@ class Preview(QWidget):
         self.align = "center"  # Live's stage: "right"/"left" so two canvases sit together, evenly spaced
         self.ring: str | None = None
         self.zoom = 1.0  # 1 = the whole canvas fits; the wheel zooms at the mouse (Build only), Ctrl+0 fits again
+        self.zoom_locked = False  # Build's "Fit to window, locked": the wheel and drags leave the view alone
+        self.output_size = None  # Build: a callable giving the canvas's output size, for the scaling menu
         self.pan = QPointF(0, 0)  # widget pixels the zoomed canvas is shifted by (middle-drag or Space+drag)
         self._panning: QPointF | None = None
         self._space_down = False
@@ -153,16 +155,36 @@ class Preview(QWidget):
         pad = 6.0 if self.live_look else 0.0  # room for the on-air ring
         avail_w, avail_h = float(self.width()) - 2 * pad, float(self.height()) - top - pad
         aw, ah = self.aspect
-        scale = min(avail_w / aw, avail_h / ah) * self.zoom
+        scale = self._fit_scale() * self.zoom
         w, h = aw * scale, ah * scale
         spare = avail_w - w
         x = pad + (spare if self.align == "right" else 0.0 if self.align == "left" else spare / 2)
         return QRectF(x + self.pan.x(), top + (avail_h - h) / 2 + self.pan.y(), w, h)
 
+    def _fit_scale(self) -> float:
+        """Screen pixels per canvas pixel when the whole canvas fits."""
+        top = 24.0 if self.show_title else 4.0
+        pad = 6.0 if self.live_look else 0.0
+        avail_w, avail_h = float(self.width()) - 2 * pad, float(self.height()) - top - pad
+        aw, ah = self.aspect
+        return max(1e-6, min(avail_w / aw, avail_h / ah))
+
+    def pixel_scale(self) -> float:
+        """Screen pixels per canvas pixel right now: 1.0 is the canvas at its real size (OBS's 100%)."""
+        return self._fit_scale() * self.zoom
+
+    def set_pixel_scale(self, k: float) -> None:
+        """Show the canvas at `k` screen pixels per canvas pixel, centred (1.0 = real size)."""
+        self.zoom = min(ZOOM_MAX, max(ZOOM_MIN, k / self._fit_scale()))
+        self.pan = QPointF(0, 0)
+        self.update()
+
     def zoom_at(self, factor: float, at: QPointF | None = None) -> None:
         """Zoom by `factor` keeping the canvas point under `at` (widget pixels) where it is."""
         at = at or QPointF(self.width() / 2, self.height() / 2)
         before = self.canvas_rect()
+        if self.zoom_locked:
+            return
         new = min(ZOOM_MAX, max(ZOOM_MIN, self.zoom * factor))
         if abs(new - 1.0) < 0.04:  # passing through "fits" snaps to it, so it's easy to land on
             new = 1.0
@@ -252,7 +274,7 @@ class Preview(QWidget):
         p.setPen(QColor(theme.MUTED))
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
         if self.zoom != 1.0 and not self._zoom_bar_shown():
-            label += f"   ·   {self.zoom * 100:.0f}%  (Ctrl+0 to fit)"
+            label += f"   ·   {self.pixel_scale() * 100:.0f}%  (Ctrl+0 to fit)"
         if not self.show_title:
             if self.zoom != 1.0 and not self._zoom_bar_shown():  # only the zoom, in a small chip in the corner
                 text = f"{self.zoom * 100:.0f}%  ·  Ctrl+0 to fit"
@@ -290,7 +312,7 @@ class Preview(QWidget):
 
     def _zoom_bar(self) -> dict[str, QRectF]:
         """The little zoom pill in the bottom-right corner: −, the zoom (click: fit), +."""
-        h, button, label = 28.0, 28.0, 56.0
+        h, button, label = 28.0, 28.0, 60.0
         right, bottom = self.width() - 12.0, self.height() - 12.0
         left = right - (button * 2 + label)
         return {"out": QRectF(left, bottom - h, button, h), "fit": QRectF(left + button, bottom - h, label, h),
@@ -312,10 +334,45 @@ class Preview(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(theme.RAISED))
                 p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 12, 12)
-            text = {"out": "−", "in": "+"}.get(key, f"{self.zoom * 100:.0f}%")
+            text = {"out": "−", "in": "+"}.get(key, ("Fit" if self.zoom_locked else f"{self.pixel_scale() * 100:.0f}%"))
             p.setPen(QColor(theme.TEXT if key != "fit" or self.zoom != 1.0 else theme.MUTED))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
+
+    def _scaling_menu(self, at) -> None:
+        """Like OBS's Preview Scaling: fit (or fit and locked), the canvas's real size, its output size, zoom."""
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        aw, ah = self.aspect
+        fit = menu.addAction("Fit to window")
+        fit.setCheckable(True)
+        fit.setChecked(self.zoom == 1.0 and self.pan.isNull() and not self.zoom_locked)
+        fit.triggered.connect(lambda: (self.set_zoom_locked(False), self.fit_view()))
+        lock = menu.addAction("Fit and lock")
+        lock.setCheckable(True)
+        lock.setChecked(self.zoom_locked)
+        lock.triggered.connect(lambda on: self.set_zoom_locked(on))
+        menu.addSeparator()
+        real = menu.addAction(f"Canvas ({aw} x {ah})")
+        real.triggered.connect(lambda: (self.set_zoom_locked(False), self.set_pixel_scale(1.0)))
+        out = self.output_size() if callable(self.output_size) else None
+        if out and tuple(out) != (aw, ah):
+            action = menu.addAction(f"Output ({out[0]} x {out[1]})")
+            action.triggered.connect(lambda: (self.set_zoom_locked(False), self.set_pixel_scale(out[0] / aw)))
+        menu.addSeparator()
+        menu.addAction("Zoom in\tCtrl+=").triggered.connect(lambda: (self.set_zoom_locked(False), self.zoom_at(1.25)))
+        menu.addAction("Zoom out\tCtrl+-").triggered.connect(lambda: (self.set_zoom_locked(False), self.zoom_at(0.8)))
+        menu.exec(at - QPoint(0, menu.sizeHint().height() + 6))
+
+    def set_zoom_locked(self, on: bool) -> None:
+        self.zoom_locked = bool(on)
+        if on:
+            self.fit_view()
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue("build/zoom_locked", self.zoom_locked)
+        self.update()
 
     def _zoom_bar_at(self, pos: QPointF) -> str | None:
         if not self._zoom_bar_shown():
@@ -555,12 +612,14 @@ class Preview(QWidget):
         bar = self._zoom_bar_at(event.position()) if event.button() == Qt.MouseButton.LeftButton else None
         if bar is not None:
             if bar == "fit":
-                self.fit_view()
+                self._scaling_menu(self.mapToGlobal(self._zoom_bar()["fit"].topLeft().toPoint()))
             else:
+                if self.zoom_locked:
+                    self.set_zoom_locked(False)
                 self.zoom_at(1.25 if bar == "in" else 1 / 1.25)
             return
         middle = event.button() == Qt.MouseButton.MiddleButton
-        can_pan = self.editable and (self.zoom != 1.0 or not self.pan.isNull())
+        can_pan = self.editable and not self.zoom_locked and (self.zoom != 1.0 or not self.pan.isNull())
         if (middle or (self._space_down and event.button() == Qt.MouseButton.LeftButton)) and can_pan:
             self._panning = event.position() - self.pan  # pan the zoomed canvas
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -665,6 +724,8 @@ class Preview(QWidget):
             super().wheelEvent(event)
             return
         steps = event.angleDelta().y() / 120 or event.angleDelta().x() / 120
+        if self.zoom_locked:
+            return
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             self.pan += QPointF(steps * 80, 0)
             self.update()

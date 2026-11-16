@@ -97,3 +97,25 @@ def test_build_canvas_zooms_out_past_fit_and_snaps_back(qapp=None):
     assert preview._zoom_bar_at(preview._zoom_bar()["in"].center()) == "in"
     preview.editable = False  # Live: no zoom bar
     assert preview._zoom_bar_at(preview._zoom_bar()["in"].center()) is None
+
+
+def test_build_canvas_real_size_and_lock():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.preview import Preview
+
+    QApplication.instance() or QApplication([])
+    preview = Preview("horizontal", "Build", (1920, 1080))
+    preview.resize(1000, 600)
+    preview.set_pixel_scale(1.0)  # OBS's "Canvas (1920x1080)": one screen pixel per canvas pixel
+    assert abs(preview.canvas_rect().width() - 1920) < 1 and abs(preview.pixel_scale() - 1.0) < 1e-6
+    preview.set_zoom_locked(True)
+    assert preview.zoom == 1.0
+    preview.zoom_at(2.0)
+    assert preview.zoom == 1.0  # locked to fit
+    preview.set_zoom_locked(False)
+    preview.zoom_at(2.0)
+    assert preview.zoom == 2.0
