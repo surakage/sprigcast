@@ -22,8 +22,7 @@ dependencies = [
     "psutil>=5.9",  # CPU and memory in the stats panel (M10)
     "TikTokLive>=7.0.1",  # TikTok chat when TikFinity isn't running (unofficial; loaded only when used)
     "pedalboard>=0.9.26",  # VST3 plug-ins as sound filters (GPL-3; loaded only when a sound uses one)
-    "faster-whisper>=1.1",  # Live captions store plugin, on this PC (loaded only while captions are on air)
-    "onnxruntime-directml>=1.20; sys_platform == 'win32'",  # Background remover plugin: AI models on any GPU (loaded only when used)
+    "onnxruntime-directml>=1.20; sys_platform == 'win32'",  # Background remover and Live captions: AI models on any GPU (loaded only when used)
     "onnxruntime>=1.20; sys_platform != 'win32'",
     "winrt-Windows.Media.Control>=3.0; sys_platform == 'win32'",  # Now playing store plugin: the song Windows says is playing (loaded only while on screen)
     "winrt-runtime>=3.0; sys_platform == 'win32'",
@@ -36,10 +35,9 @@ sprigcast-teststream = "sprigcast.tools.teststream:main"
 sprigcast-memcheck = "sprigcast.tools.memcheck:main"
 
 [tool.uv]
-# faster-whisper asks for onnxruntime only for its own voice detector, which Live captions doesn't use
-# (it finds speech itself). On Windows, onnxruntime-directml brings the same module, so plain
-# onnxruntime is left out there; elsewhere it stays. onnxruntime also lists sympy (about 70 MB with mpmath)
-# for its model tools; running a model (Background remover) never imports it, so it's left out everywhere.
+# On Windows, onnxruntime-directml brings the onnxruntime module, so plain onnxruntime is never pulled in
+# there; elsewhere it stays. onnxruntime also lists sympy (about 70 MB with mpmath) for its model tools;
+# running a model (Background remover, Live captions) never imports it, so it's left out everywhere.
 override-dependencies = ["onnxruntime>=1.20; sys_platform != 'win32'", "sympy; sys_platform == 'never'"]
 
 [dependency-groups]

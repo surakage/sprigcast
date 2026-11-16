@@ -168,6 +168,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   minute after.
   How captions look on stream: Card, Outline, Shadow or Plain; any font on the PC; Small / Medium / Large; Bold;
   All caps; left, centre or right; text, card and outline colours.
+  Captions run on the graphics card (NVIDIA, AMD or Intel Arc, through DirectML: nothing extra to download)
+  and fall back to the processor; Run on picks. Whisper now runs through ONNX Runtime, so faster-whisper
+  and its CUDA needs are gone from the installer, and the old model downloads are deleted.
+  The Stream doctor no longer stops go-live because captions are Listening (waiting for you to talk), and
+  blooms going on and off air reuse one listening thread instead of adding one each time.
 - Instant replay store plugin: plays the last few seconds back on stream. Pick one sprig or source to replay (your game
   or Elgato capture), and optionally a second one in a corner (your camera). Its hotkey, right-click, Stream Deck or
   an app (`replay.play`) starts it: canopy bands sweep in, REPLAY shows, the replay plays with a badge and a progress

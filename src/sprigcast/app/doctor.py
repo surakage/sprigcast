@@ -41,7 +41,9 @@ LISTEN_SECONDS = 3.0
 SILENT_DB = -50.0  # a mic that never peaks above this while you talk is probably the wrong device
 CLIPPING_DB = -1.0
 LOW_DISK_GB = 10.0
-OK_STATUSES = ("ok", "starting", "capturing", "waiting", "paused")  # paused: asleep while off screen (#87)
+# Statuses that are fine, by how they start (any case). paused: asleep while off screen (#87); listening,
+# loading, getting: Live captions waiting for you to talk, or getting its speech model ready.
+OK_STATUSES = ("ok", "starting", "capturing", "waiting", "paused", "listening", "loading", "getting")
 
 
 @dataclass
@@ -245,7 +247,7 @@ def _sources(c: Checkup) -> list[Finding]:
             found.append(Finding("bad", "Sources", f"{s.name} doesn't work on this Windows "
                                                    f"({status.removeprefix('unavailable: ')}): remove it in Sources."))
             continue
-        if status and not status.startswith(OK_STATUSES):
+        if status and not status.lower().startswith(OK_STATUSES):
             found.append(Finding("bad", "Sources", f"{s.name} isn't working ({status}): "
                                                    "check it's plugged in or open, or edit it in Sources."))
     return found
