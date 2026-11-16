@@ -18,7 +18,9 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 CODE_SECONDS = 120
-MOST_TRIES = 5  # wrong codes before the code is cancelled (no guessing it in 2 minutes)
+MOST_TRIES = 5  # wrong codes within TRY_WINDOW before pairing locks (and the code is cancelled)
+TRY_WINDOW = 60.0
+LOCK_SECONDS = 60.0  # no tries are even looked at while locked (soak 2026-11-16: ~100 guesses a second got answers)
 MOST_DEVICES = 50
 
 
@@ -38,7 +40,8 @@ class Pairing:
         self.on_change = on_change
         self.code = ""
         self._until = 0.0
-        self._wrong = 0
+        self._wrong: list[float] = []  # when the recent wrong tries came (any code, or none showing)
+        self._locked_until = 0.0
 
     # The code ----------------------------------------------------------------------------
 
@@ -46,7 +49,6 @@ class Pairing:
         """A new code (any old one stops working)."""
         self.code = f"{secrets.randbelow(1_000_000):06d}"
         self._until = self._clock() + CODE_SECONDS
-        self._wrong = 0
         return self.code
 
     def cancel(self) -> None:
@@ -61,17 +63,30 @@ class Pairing:
             return 0
         return int(left + 0.999)
 
+    def locked_seconds(self) -> int:
+        """Seconds left of a lock after too many wrong codes (0 = not locked)."""
+        left = self._locked_until - self._clock()
+        return int(left + 0.999) if left > 0 else 0
+
+    def _wrong_try(self) -> None:
+        now = self._clock()
+        self._wrong = [t for t in self._wrong if now - t < TRY_WINDOW] + [now]
+        if len(self._wrong) >= MOST_TRIES:
+            self._locked_until = now + LOCK_SECONDS
+            self._wrong.clear()
+            self.code = ""  # a fresh code is needed after a lock, so guesses never carry over
+
     def redeem(self, code: object, name: object = "") -> Device | None:
-        """The new device for a right code (the code is then used up), else None."""
-        if not self.seconds_left():
+        """The new device for a right code (the code is then used up), else None. MOST_TRIES wrong codes within
+        TRY_WINDOW lock pairing for LOCK_SECONDS: tries are refused unread, and the code is cancelled."""
+        if self.locked_seconds():
             return None
         given = "".join(ch for ch in str(code) if ch.isdigit())
-        if not secrets.compare_digest(given.encode(), self.code.encode()):
-            self._wrong += 1
-            if self._wrong >= MOST_TRIES:
-                self.code = ""
+        if not self.seconds_left() or not secrets.compare_digest(given.encode(), self.code.encode()):
+            self._wrong_try()
             return None
         self.code = ""
+        self._wrong.clear()
         label = " ".join(str(name or "").split())[:40] or "Device"
         device = Device(id=secrets.token_hex(4), name=label, key="sc_" + secrets.token_urlsafe(24),
                         added=time.strftime("%Y-%m-%d"))

@@ -50,7 +50,7 @@ server → {"paired": {"key": "sc_…", "name": "Stream Deck"}}
 server → {"welcome": {"api": 0, "events": [...]}}
 ```
 
-Keep the `key`: from then on use it exactly where the password goes (the `auth` answer, `Authorization: Bearer`, `?password=`, and the OBS-compatible door). Each device has its own key; **Remove** next to it in Settings → Connections stops it at once without changing the password for anything else. A wrong or expired code closes with `4011`; five wrong tries cancel the code.
+Keep the `key`: from then on use it exactly where the password goes (the `auth` answer, `Authorization: Bearer`, `?password=`, and the OBS-compatible door). Each device has its own key; **Remove** next to it in Settings → Connections stops it at once without changing the password for anything else. A wrong or expired code closes with `4011`. Five wrong codes within a minute lock pairing for a minute: the code is cancelled and every try is refused (web links answer `429`) until the minute is up, then press Pair a device for a new code.
 
 Web links can pair too, even while **Allow web links** is off (the key also opens the WebSocket):
 
