@@ -60,8 +60,10 @@ def _res(w: int, h: int, fps: str | None) -> str:
 def short_status(status: str) -> str:
     """The quiet tag for a row: '' when it's working, else one or two words."""
     s = (status or "").lower()
-    if not s or s == "ok" or s.startswith("capturing") or s.startswith("monitoring"):
+    if not s or s == "ok" or s.startswith(("capturing", "monitoring", "listening")):
         return ""
+    if s.startswith(("loading", "getting")):  # getting ready (Live captions' speech model)
+        return "starting"
     for words, tag in (("paused", "asleep"), ("not found", "not found"), ("disconnected", "unplugged"),
                        ("lost", "lost"), ("closed", "closed"), ("busy", "busy"), ("waiting", "waiting"),
                        ("starting", "starting")):

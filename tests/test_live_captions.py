@@ -7,6 +7,7 @@ import json
 import sys
 import threading
 import urllib.error
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -100,17 +101,23 @@ def test_model_follows_the_setting_and_the_pc(cap):
     assert cap.pick_model("auto", "es", cpu_count=4) == "tiny"
     assert cap.pick_model("small", "auto") == "small"
     for name in ("tiny", "tiny.en", "base", "base.en", "small", "small.en"):
-        assert set(cap.MODELS[name]["files"]) == {"config.json", "tokenizer.json", "vocabulary.txt", "model.bin"}
+        cpu = [f for f, _, _ in cap.model_files(name, "cpu")]
+        gpu = [f for f, _, _ in cap.model_files(name, "gpu")]
+        assert cpu == [f"{name}-encoder.int8.onnx", f"{name}-decoder.int8.onnx", f"{name}-tokens.txt"]
+        assert gpu == [f"{name}-encoder.onnx", f"{name}-decoder.onnx", f"{name}-tokens.txt"]
+        assert all(len(sha) == 64 and size > 0 for _, size, sha in cap.model_files(name, "gpu"))
 
 
-def test_the_model_downloads_once_and_wrong_files_are_thrown_away(cap, monkeypatch):
-    small = {"config.json": b"{}", "tokenizer.json": b"tok", "vocabulary.txt": b"a\nb"}
-    big = b"weights" * 100
-    files = {}
-    for name, data in small.items():
-        files[name] = (len(data), "git", hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest())
-    files["model.bin"] = (len(big), "sha256", hashlib.sha256(big).hexdigest())
-    monkeypatch.setitem(cap.MODELS, "tiny", {"rev": "abc", "files": files})
+def test_the_model_downloads_once_only_the_files_it_needs_and_old_ones_go(cap, monkeypatch):
+    data = {"tiny-encoder.int8.onnx": b"enc8" * 50, "tiny-decoder.int8.onnx": b"dec8" * 80,
+            "tiny-tokens.txt": b"IQ== 0\n", "tiny-encoder.onnx": b"enc" * 99, "tiny-decoder.onnx": b"dec" * 99}
+
+    def entry(file):
+        return (file, len(data[file]), hashlib.sha256(data[file]).hexdigest())
+
+    monkeypatch.setitem(cap.MODELS, "tiny", {"rev": "abc", "tokens": entry("tiny-tokens.txt"),
+                                             "cpu": (entry("tiny-encoder.int8.onnx"), entry("tiny-decoder.int8.onnx")),
+                                             "gpu": (entry("tiny-encoder.onnx"), entry("tiny-decoder.onnx"))})
     calls = []
 
     class Reply(io.BytesIO):
@@ -126,33 +133,40 @@ def test_the_model_downloads_once_and_wrong_files_are_thrown_away(cap, monkeypat
 
     def opener(request, timeout=0):
         calls.append(request.full_url)
-        name = request.full_url.rsplit("/", 1)[1]
-        return Reply(big if name == "model.bin" else small[name])
+        return Reply(data[request.full_url.rsplit("/", 1)[1]])
 
     from sprigcast import update
 
     real = update.download
     monkeypatch.setattr(update, "download", lambda url, dest, p=None, c=lambda: False, **kw:
                         real(url, dest, p, c, opener=opener, **{k: v for k, v in kw.items() if k != "opener"}))
+    old = models.path_for("whisper-base/model.bin")  # what the first version downloaded
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old")
     seen = []
-    assert not cap.model_ready("tiny")
-    folder = cap.fetch_model("tiny", lambda d, t: seen.append((d, t)))
-    assert cap.model_ready("tiny") and (folder / "model.bin").read_bytes() == big
-    assert len(calls) == 4 and all("/resolve/abc/" in u for u in calls)
-    assert seen[-1][0] == seen[-1][1] == sum(f[0] for f in files.values())
-    cap.fetch_model("tiny")
-    assert len(calls) == 4  # already here: nothing downloaded again
+    assert not cap.model_ready("tiny", "cpu")
+    folder = cap.fetch_model("tiny", "cpu", lambda d, t: seen.append((d, t)))
+    assert cap.model_ready("tiny", "cpu") and not cap.model_ready("tiny", "gpu")
+    assert sorted(p.name for p in folder.iterdir()) == ["tiny-decoder.int8.onnx", "tiny-encoder.int8.onnx",
+                                                        "tiny-tokens.txt"]
+    assert len(calls) == 3 and all("sherpa-onnx-whisper-tiny/resolve/abc/" in u for u in calls)
+    assert seen[-1][0] == seen[-1][1] == sum(len(data[f]) for f, _, _ in cap.model_files("tiny", "cpu"))
+    assert not old.exists() and not old.parent.exists()  # the old model's space is given back
+    cap.fetch_model("tiny", "cpu")
+    assert len(calls) == 3  # already here: nothing downloaded again
+    cap.fetch_model("tiny", "gpu")
+    assert len(calls) == 5  # the graphics card's files; the tokens are shared
 
-    (folder / "vocabulary.txt").unlink()
-    small["vocabulary.txt"] = b"a\nc"  # same size, different bytes: not what was pinned
+    (folder / "tiny-decoder.onnx").unlink()
+    data["tiny-decoder.onnx"] = b"bad" * 99  # same size, different bytes: not what was pinned
     with pytest.raises(models.ModelError):
-        cap.fetch_model("tiny")
-    assert not (folder / "vocabulary.txt").exists()
+        cap.fetch_model("tiny", "gpu")
+    assert not (folder / "tiny-decoder.onnx").exists()
 
     stop = threading.Event()
     stop.set()
     with pytest.raises(InterruptedError):
-        cap.fetch_model("tiny", cancel=stop)
+        cap.fetch_model("tiny", "gpu", cancel=stop)
 
 
 class _Reply(io.BytesIO):
@@ -191,35 +205,135 @@ def test_a_refused_google_key_is_told_apart(cap):
         cap.GoogleEngine("bad", "en", opener=opener).transcribe(_tone(0.5))
 
 
-def test_whisper_runs_on_the_cpu_when_the_graphics_card_cant(cap, monkeypatch, tmp_path):
-    made = []
+class _FakeOrt:
+    """onnxruntime with a scripted "model": the decoder says `script` one token at a time."""
 
-    class Seg:
-        def __init__(self, text, no_speech=0.0):
-            self.text, self.no_speech_prob = text, no_speech
-            self.avg_logprob = -1.5 if no_speech else -0.2  # unsure and probably not speech: dropped
+    SOT, EOT, NO_TS, NO_SPEECH, TRANSCRIBE, EN, ES = 50258, 50257, 50363, 50362, 50359, 50259, 50262
+    VOCAB = 51865
 
-    class FakeModel:
-        def __init__(self, path, device, compute_type, **kw):
-            made.append((device, compute_type, kw))
-            self.device = device
+    def __init__(self, script, gpu_fails=False, multilingual=True, quiet=False, heard="es"):
+        self.script, self.gpu_fails, self.multilingual, self.quiet, self.heard = script, gpu_fails, multilingual, quiet, heard
+        self.opened, self.prompts = [], []
+        self.ExecutionMode = type("EM", (), {"ORT_SEQUENTIAL": 1})
 
-        def transcribe(self, audio, **kw):
-            if self.device == "cuda":
-                raise RuntimeError("Library cublas64_12.dll is not found")
-            assert kw["language"] == "en" and kw["vad_filter"] is False
-            return iter([Seg(" Hi"), Seg(" there."), Seg(" ghost", no_speech=0.9)]), None
+    def set_default_logger_severity(self, _n):
+        pass
 
-    fake_fw = type(sys)("faster_whisper")
-    fake_fw.WhisperModel = FakeModel
-    fake_ct = type(sys)("ctranslate2")
-    fake_ct.get_cuda_device_count = lambda: 1
-    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
-    monkeypatch.setitem(sys.modules, "ctranslate2", fake_ct)
-    engine = cap.WhisperEngine(tmp_path, "en")
-    assert engine.device == "cpu" and [m[0] for m in made] == ["cuda", "cpu"]
-    assert made[1][1] == "int8" and 1 <= made[1][2]["cpu_threads"] <= 4
+    def get_available_providers(self):
+        return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+    def SessionOptions(self):  # noqa: N802
+        return type("Opts", (), {})()
+
+    def InferenceSession(self, path, opts, providers):  # noqa: N802
+        fake = self
+        fake.opened.append((Path(path).name, providers[0], opts))
+        if fake.gpu_fails and providers[0] == "DmlExecutionProvider":
+            raise RuntimeError("DirectML: the driver is too old")
+        meta = {"n_text_layer": "2", "n_text_state": "8", "n_text_ctx": "448", "eot": str(fake.EOT),
+                "sot": str(fake.SOT), "no_timestamps": str(fake.NO_TS), "transcribe": str(fake.TRANSCRIBE),
+                "no_speech": str(fake.NO_SPEECH), "is_multilingual": "1" if fake.multilingual else "0",
+                "all_language_codes": "en,es", "all_language_tokens": f"{fake.EN},{fake.ES}"}
+
+        class Session:
+            def get_modelmeta(self):
+                return type("M", (), {"custom_metadata_map": meta})()
+
+            def run(self, _outputs, feed):
+                if "mel" in feed:
+                    assert feed["mel"].shape[1] == 80
+                    t = feed["mel"].shape[2] // 2
+                    return [np.zeros((2, 1, t, 8), np.float32)] * 2
+                tokens = list(feed["tokens"][0])
+                offset = int(feed["offset"][0])
+                logits = np.zeros((1, len(tokens), fake.VOCAB), np.float32)
+                if offset == 0:
+                    fake.prompts.append(tokens)
+                    logits[0, 0, fake.NO_SPEECH] = 30.0 if fake.quiet else 0.0
+                    if tokens == [fake.SOT]:  # which language?
+                        logits[0, -1, fake.ES if fake.heard == "es" else fake.EN] = 5.0
+                    said = 0
+                else:
+                    said = offset - len(fake.prompts[-1]) + 1
+                nxt = fake.script[said] if said < len(fake.script) else fake.EOT
+                logits[0, -1, nxt] += 10.0
+                cache = feed["in_n_layer_self_k_cache"]
+                return [logits, cache, cache]
+
+        return Session()
+
+
+def _model_folder(tmp_path, folder_name="tiny", name="tiny"):
+    folder = tmp_path / folder_name
+    folder.mkdir()
+    import base64
+
+    lines = [f"{base64.b64encode(w.encode()).decode()} {i}" for i, w in enumerate([" Hi", " there", ".", " chat"])]
+    (folder / f"{name}-tokens.txt").write_text("\n".join(lines), encoding="utf-8")
+    return folder
+
+
+def test_whisper_on_the_graphics_card_and_the_processor_when_it_cant(cap, monkeypatch, tmp_path):
+    fake = _FakeOrt([0, 1, 2], gpu_fails=True)
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    engine = cap.WhisperEngine(_model_folder(tmp_path), "tiny", "en", "gpu")
+    assert engine.device == "cpu"
+    assert [(f, p) for f, p, _ in fake.opened] == [("tiny-encoder.onnx", "DmlExecutionProvider"),
+                                                   ("tiny-encoder.int8.onnx", "CPUExecutionProvider"),
+                                                   ("tiny-decoder.int8.onnx", "CPUExecutionProvider")]
+    opts = fake.opened[-1][2]
+    assert opts.enable_cpu_mem_arena is False and 1 <= opts.intra_op_num_threads <= 4
     assert engine.transcribe(_tone(1.0)) == "Hi there."
+    assert fake.prompts[-1] == [fake.SOT, fake.EN, fake.TRANSCRIBE, fake.NO_TS]
+
+    fake = _FakeOrt([0, 3])
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    engine = cap.WhisperEngine(_model_folder(tmp_path, "tiny2"), "tiny", "auto", "gpu")
+    assert engine.device == "gpu" and fake.opened[0][2].enable_mem_pattern is False
+    assert engine.transcribe(_tone(1.0)) == "Hi chat"
+    assert fake.prompts[-2] == [fake.SOT] and fake.prompts[-1][1] == fake.ES  # Any: it heard Spanish
+
+
+def test_whisper_stops_when_it_repeats_itself_and_says_nothing_to_quiet(cap, monkeypatch, tmp_path):
+    loop = [0, 1, 3, 2, 0, 1, 3, 2, 0, 1] * 3 + [0, 1, 3, 2, 0, 1, 3, 2]
+    fake = _FakeOrt(loop, multilingual=False)
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    engine = cap.WhisperEngine(_model_folder(tmp_path), "tiny", "en", "cpu")
+    text = engine.transcribe(_tone(3.0))
+    assert text.count("Hi there chat.") <= 3 and len(text) < 60
+    assert fake.prompts[-1] == [fake.SOT, fake.NO_TS]
+    fake.quiet = True
+    assert engine.transcribe(_quiet(1.0)) == ""
+    fake.quiet = False
+    fake.script = [0]
+    assert cap.repeat_start([5, 6, 7, 5, 6, 7, 5, 6, 7]) == 3
+    assert cap.repeat_start(list(range(8)) * 2) == 8
+    assert cap.repeat_start([1, 2, 3, 4, 1, 2, 3, 4]) is None  # a short phrase said twice can be real
+    assert cap.bracketed("[ Sound ]") and cap.bracketed("(music)") and not cap.bracketed("Hi (there)!")
+
+
+def test_log_mel_is_whispers_picture_of_the_sound(cap):
+    mel = cap.log_mel(_tone(1.0))
+    assert mel.dtype == np.float32 and mel.shape == (80, (RATE + cap.TAIL) // 160)
+    assert mel.max() <= 2.5 and mel.min() >= mel.max() - 2.0 - 1e-6  # 8 decades, scaled by 4
+    peak = int(np.argmax(mel[:, 20]))
+    assert 5 <= peak <= 15  # 220 Hz sits low on the mel scale
+    filters = cap.mel_filters()
+    assert filters.shape == (80, 201) and (filters >= 0).all() and (filters.sum(axis=1) > 0).all()
+
+
+def test_auto_uses_a_graphics_card_only_when_there_is_one(cap, monkeypatch):
+    from sprigcast.app import lowend
+
+    fake = _FakeOrt([])
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("NVIDIA GeForce RTX 4070",))
+    assert cap.graphics_card()
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("Intel(R) UHD Graphics 770",))
+    assert not cap.graphics_card()
+    monkeypatch.setattr(fake, "get_available_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("NVIDIA GeForce RTX 4070",))
+    assert not cap.graphics_card()
 
 
 def test_the_card_is_drawn_only_when_the_words_change(cap):
@@ -236,9 +350,22 @@ def test_the_card_is_drawn_only_when_the_words_change(cap):
     assert source.video_frame() is not None
 
 
+def _captions_threads(source_id="c"):
+    return [t for t in threading.enumerate() if t.name.startswith(f"captions-{source_id}") and t.is_alive()]
+
+
+def _until(check, seconds=3.0):
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not check() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return check()
+
+
 def test_it_listens_only_while_on_air(cap, monkeypatch):
     runs = []
-    monkeypatch.setattr(cap, "PARK_SECONDS", 0.05)
+    monkeypatch.setattr(cap, "PARK_SECONDS", 0.2)
 
     def run(self, stop):
         runs.append(stop)
@@ -248,23 +375,67 @@ def test_it_listens_only_while_on_air(cap, monkeypatch):
     monkeypatch.setattr(cap.LiveCaptionsSource, "_run", run)
     source = create_source("live_captions", "c", {})
     source.sleep()  # added off air: nothing starts
-    assert runs == []
+    assert runs == [] and _captions_threads() == []
     source.wake()
     source.wake()
-    assert len(runs) == 1  # one listener, however often it's woken
+    assert _until(lambda: len(runs) == 1) and len(_captions_threads()) == 1  # one listener, however often woken
     source.set_hidden(True)
-    assert runs[0].is_set()
+    assert runs[0].is_set() and source.status == "paused"
     source.set_hidden(False)
-    assert len(runs) == 2 and not runs[1].is_set()
+    assert _until(lambda: len(runs) == 2) and not runs[1].is_set() and len(_captions_threads()) == 1
     source.sleep()
     assert runs[1].is_set() and source._engine is not None  # the model stays a little while...
-    import time
-
-    deadline = time.monotonic() + 2
-    while source._engine is not None and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert source._engine is None  # ...then it's let go
+    assert _until(lambda: source._engine is None and not _captions_threads())  # ...then it and the thread go
     source.stop()
+
+
+def test_blooms_going_on_and_off_air_never_pile_up_threads(cap, monkeypatch):
+    """The PC run: threads went from 3 to 5 across bloom wake and sleep cycles."""
+    from sprigcast.sources import audio
+
+    monkeypatch.setattr(cap, "PARK_SECONDS", 30.0)
+    mics = []
+
+    class FakeMic:
+        def __init__(self, source_id, settings):
+            self.ring = None
+            self.alive = threading.Event()
+            mics.append(self)
+
+        def start(self):
+            self.alive.set()
+
+        def stop(self):
+            self.alive.clear()
+
+    class Engine:
+        def transcribe(self, clip):
+            return ""
+
+    loads = []
+    monkeypatch.setattr(audio, "MicSource", FakeMic)
+    source = create_source("live_captions", "c", {})
+
+    def make(stop):
+        if source._engine is None:
+            loads.append(1)
+            source._engine = Engine()
+        return source._engine
+
+    monkeypatch.setattr(source, "_make_engine", make)
+    before = threading.active_count()
+    for _ in range(25):
+        source.wake()
+        source.set_hidden(False)  # the renderer says this after each wake
+        assert _until(lambda: any(m.alive.is_set() for m in mics))
+        source.sleep()
+        assert _until(lambda: not any(m.alive.is_set() for m in mics))  # the mic is let go each time
+    assert len(_captions_threads()) == 1 and threading.active_count() <= before + 1
+    assert len(loads) == 1  # the model was loaded once and reused within the minute
+    source.update({**source.settings, "language": "es"})  # off air: nothing starts
+    assert not any(m.alive.is_set() for m in mics)
+    source.stop()
+    assert _until(lambda: not _captions_threads()) and source._engine is None
 
 
 def test_without_a_google_key_it_says_so(cap, monkeypatch):

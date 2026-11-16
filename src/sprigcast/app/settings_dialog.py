@@ -64,6 +64,7 @@ LABELS = {
     "engine": "Captions by",
     "google_key": "Google key",
     "lines": "Lines",
+    "run_on": "Run on",
     "color": "Colour",
     "peak_color": "Peak colour",
     "talk_at": "Talks above (dB)",
