@@ -4,6 +4,7 @@ own Google key), the model download, and the caption card."""
 import hashlib
 import io
 import json
+import os
 import sys
 import threading
 import urllib.error
@@ -11,6 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # same as the other Qt tests, so this file runs on its own
 
 from sprigcast import models, plugin_store
 from sprigcast.core.scene import SourceConfig
@@ -810,5 +813,8 @@ def test_the_model_downloads_when_captions_join_a_garden_not_when_they_go_on_air
 
 
 def test_a_helper_that_cant_load_says_why(cap, tmp_path):
-    with pytest.raises(RuntimeError, match="NoSuchFile|No such file|FileNotFound|doesn't exist|INVALID|Load model"):
+    # The reason comes back from the helper: the missing model file, or onnxruntime itself where a checkout
+    # was set up before it was a dependency.
+    reasons = "NoSuchFile|No such file|FileNotFound|doesn't exist|INVALID|Load model|No module named 'onnxruntime"
+    with pytest.raises(RuntimeError, match=reasons):
         cap.ProcessEngine(tmp_path, "tiny", "en", "cpu")
