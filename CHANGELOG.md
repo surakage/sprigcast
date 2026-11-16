@@ -163,6 +163,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   own Google Speech-to-Text key for slower PCs (kept encrypted, never in the garden file). Pick the mic, language,
   Light / Balanced / Sharper, 1 to 3 lines and colours. It listens only while it's on air and lets the model go a
   minute after.
+- Background remover store plugin: a camera filter that removes the room behind you, blurs it, or puts a picture
+  there, no green screen needed. A small model (Google's MediaPipe selfie segmentation, Apache 2.0) runs on the
+  graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
+  hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
+  camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

@@ -898,10 +898,14 @@ class MainWindow(QMainWindow):
 
     def _source_context_menu(self, pos) -> None:
         on_item = self.source_list.itemAt(pos) is not None
-        self._source_menu(on_item).exec(self.source_list.viewport().mapToGlobal(pos))
+        menu = self._source_menu(on_item)
+        menu.exec(self.source_list.viewport().mapToGlobal(pos))
+        menu.deleteLater()  # a new menu each right-click: kept, each one held a window handle for good
 
     def _on_preview_menu(self, canvas_id: str, index: int, where) -> None:
-        self._preview_menu(canvas_id, index).exec(where)
+        menu = self._preview_menu(canvas_id, index)
+        menu.exec(where)
+        menu.deleteLater()
 
     def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
         """Right-click in a preview: the same menu as the Sources list for what's under the mouse.
@@ -1200,10 +1204,12 @@ class MainWindow(QMainWindow):
         if folder_id:
             self._folder_menu(menu, self.collection.folder(folder_id))
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+            menu.deleteLater()
             return
         if under is not None and under.data(0, ROLE_ROW) == "sound":
             self._fill_sound_menu(menu, under.data(0, ROLE_ID))
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+            menu.deleteLater()
             return
         if under is not None and self._scene() is not None:
             scene = self._scene()
@@ -1242,6 +1248,7 @@ class MainWindow(QMainWindow):
         new.addAction(cap(PART)).triggered.connect(lambda: self._add_part())
         new.addAction(f"{cap(PART)} folder").triggered.connect(lambda: self._add_folder(holds="part"))
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
+        menu.deleteLater()
 
     # Sounds in Build's library --------------------------------------------------------
 
@@ -2628,7 +2635,9 @@ class MainWindow(QMainWindow):
         """Help → Support SprigCast: what the project is and why a tip helps, then Close or the tip page."""
         from sprigcast.app.support import support_dialog
 
-        support_dialog(self).exec()
+        dialog = support_dialog(self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _show_garden_file(self) -> None:
         """Explorer, open on this garden's file and with it selected."""
@@ -2869,9 +2878,11 @@ class MainWindow(QMainWindow):
         """Wave Link changed a channel's mute or volume: the sound capturing it follows."""
         if not any(s is source for s in self.collection.sources):
             return  # another garden since
+        if all(source.settings.get(k) == v for k, v in change.items()):
+            return  # Wave Link telling us what we just told it: nothing to save or redraw
         source.settings = {**source.settings, **change}
         self._changed()
-        self._refresh_audio()
+        self._refresh_audio_soon()
 
     # Undo and redo ------------------------------------------------------------------------
 
@@ -6064,7 +6075,9 @@ class MainWindow(QMainWindow):
         ok = virtualcam.supported()[0]
         repair = virtualcam.set_up if ok and (not virtualcam.installed() or virtualcam.needs_update()) else None
         status = getattr(self, "_camera_error", "") if self.camera is None else ""
-        camera_popup(self.collection, self, repair, status).exec()
+        pop = camera_popup(self.collection, self, repair, status)
+        pop.exec()
+        pop.deleteLater()  # one per open: kept, each held its widgets (and handles) until SprigCast closed
 
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""

@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -312,6 +312,10 @@ class FiltersDialog(QDialog):
         left.addLayout(bar)
 
         self.title = QLabel("")
+        # A plugin filter that reports how it's doing ("Downloading 40%"): its note beside the name, kept fresh.
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(500)
+        self._status_timer.timeout.connect(self._show_status)
         self.title.setStyleSheet("font-weight: 600; font-size: 15px;")
         self.form_area = QScrollArea()
         self.form_area.setWidgetResizable(True)
@@ -468,6 +472,7 @@ class FiltersDialog(QDialog):
         info = filter_kind(flt.kind)
         self.save_look_button.setVisible(flt.kind == "color_correction")
         self.title.setText(info.label if info else flt.kind)
+        self._show_status()
         if info is None:
             self.form_area.setWidget(QLabel(f"The {flt.kind!r} filter comes from a plugin that isn't loaded."))
             self.form = None
@@ -475,6 +480,20 @@ class FiltersDialog(QDialog):
         self.form = FilterForm(info.fields, settings_for(flt.kind, flt.settings), sounds=self.sounds)
         self.form.changed.connect(self._edited)
         self.form_area.setWidget(self.form)
+
+    def _show_status(self) -> None:
+        flt = self._current()
+        info = filter_kind(flt.kind) if flt is not None else None
+        if info is None or info.status is None:
+            self._status_timer.stop()
+            return
+        try:
+            note = info.status(self.source.id)
+        except Exception:  # a plugin's note: never break the window for it
+            note = ""
+        self.title.setText(f"{info.label}  ·  {note}" if note else info.label)
+        if not self._status_timer.isActive():
+            self._status_timer.start()
 
     def _edited(self) -> None:
         flt = self._current()

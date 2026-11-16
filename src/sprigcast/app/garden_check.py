@@ -206,13 +206,19 @@ class GardenCheckPage(QWidget):
     def show_snapshot(self, s: GardenSnapshot) -> None:
         level = s.level()
         line, picture = MOODS[level]
-        self.mood.setText(line)
-        self.mood.setStyleSheet(f"color: {LEVEL_COLOURS[level]}; font-weight: 600; background: transparent;")
-        self.sloth.set_art(picture)
+        if getattr(self, "_level", None) != level:  # once a second: restyle only when the mood changes
+            self._level = level
+            self.mood.setText(line)
+            self.mood.setStyleSheet(f"color: {LEVEL_COLOURS[level]}; font-weight: 600; background: transparent;")
+            self.sloth.set_art(picture)
 
         def put(key: str, text: str, colour: str = theme.TEXT_BRIGHT) -> None:
-            self.values[key].setText(text)
-            self.values[key].setStyleSheet(f"color: {colour}; font-size: 18px; font-weight: 700; background: transparent;")
+            label = self.values[key]
+            if label.text() != text:
+                label.setText(text)
+            style = f"color: {colour}; font-size: 18px; font-weight: 700; background: transparent;"
+            if label.styleSheet() != style:  # a new stylesheet re-polishes: only when the colour changes
+                label.setStyleSheet(style)
 
         put("cpu", f"{s.cpu:.1f}%" if s.cpu is not None else "–")
         put("ram", f"{s.ram_mb:.0f} MB" if s.ram_mb is not None else "–")
@@ -221,15 +227,15 @@ class GardenCheckPage(QWidget):
             theme.WARN if s.disk_gb is not None and s.disk_gb < 10 else theme.TEXT_BRIGHT)
         put("dropped", f"{s.dropped}", theme.WARN if s.dropped else theme.TEXT_BRIGHT)
         put("render", f"{s.render_ms:.1f} ms" if s.render_ms is not None else "–")
-        put("upload", f"{s.upload_kbps / 1000:.1f} Mbps" if s.upload_kbps else "Not live")
-        put("recording", s.recording or "Off", theme.LIVE_TEXT if s.recording else theme.TEXT_BRIGHT)
-        if s.upload_kbps is None:
-            self.values["upload"].setStyleSheet(f"color: {theme.MUTED}; font-size: 18px; font-weight: 700;"
-                                                " background: transparent;")
-        if not s.recording:
-            self.values["recording"].setStyleSheet(f"color: {theme.MUTED}; font-size: 18px; font-weight: 700;"
-                                                   " background: transparent;")
+        put("upload", f"{s.upload_kbps / 1000:.1f} Mbps" if s.upload_kbps else "Not live",
+            theme.MUTED if s.upload_kbps is None else theme.TEXT_BRIGHT)
+        put("recording", s.recording or "Off", theme.LIVE_TEXT if s.recording else theme.MUTED)
 
+        # Rows and chips are made again only when what they say changes, not every second.
+        lists = (tuple(s.rows), tuple(s.checks))
+        if getattr(self, "_lists", None) == lists:
+            return
+        self._lists = lists
         while self.rows.count():
             widget = self.rows.takeAt(0).widget()
             if widget is not None:
@@ -306,4 +312,6 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
     pop.timer = QTimer(pop)
     pop.timer.timeout.connect(lambda: pop.garden.refresh() if pop.garden.stack.currentIndex() == 0 else None)
     pop.timer.start(1000)
+    # Gone when closed: a closed one used to stay, its timer rebuilding hidden rows every second for good.
+    pop.finished.connect(lambda _result: (pop.timer.stop(), pop.deleteLater()))
     return pop
