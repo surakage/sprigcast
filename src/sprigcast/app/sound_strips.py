@@ -176,7 +176,7 @@ class Strip(QFrame):
         more.setIcon(icons.icon("gear", theme.MUTED, 15))
         more.setFixedSize(34, 26)
         more.setCursor(Qt.CursorShape.PointingHandCursor)
-        more.setToolTip("Volume, who hears it, filters and tracks")
+        more.setToolTip("Volume, listeners, filters and tracks")
         more.setStyleSheet(f"QPushButton {{ background: transparent; border: none; border-radius: 13px;"
                            f" color: {theme.MUTED}; font-size: 16px; }}"
                            f"QPushButton:hover {{ background: {theme.RAISED}; color: {theme.TEXT}; }}")

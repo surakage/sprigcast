@@ -12,7 +12,7 @@
 A group's meter is its loudest sound. A sound shows under its group while it is playing (and for a
 few seconds after), when it is pinned, or when it is muted (so a muted mic is never forgotten);
 the rest fold into "N quiet". Edit shows every sound. Clicking a sound opens its Tune page:
-volume, left/right, mono, delay, who hears it, filters, group, pin and ducking.
+volume, left/right, mono, delay, listeners, filters, group, pin and ducking.
 """
 
 from __future__ import annotations
@@ -655,7 +655,7 @@ class TunePage(QWidget):
         pair.addWidget(self.delay, 1)
         box.addLayout(pair)
 
-        _route, box = self._section(col, "Who hears it")
+        _route, box = self._section(col, "Listeners")
         hear = QHBoxLayout()
         hear.setSpacing(6)
         self.hear: dict[object, QPushButton] = {}
