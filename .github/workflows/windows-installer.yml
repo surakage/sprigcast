@@ -35,9 +35,12 @@ jobs:
           & $py -m sprigcast.tools.check
           # SprigCast.exe runs the same Python (a single-dash first argument passes straight to Python).
           $probe = Join-Path $env:RUNNER_TEMP "launcher.txt"
-          $p = Start-Process "packaging\build\python\SprigCast.exe" -ArgumentList "-c", "`"import sys, sprigcast; open(r'$probe', 'w').write(sys.executable)`"" -Wait -PassThru
+          $p = Start-Process "packaging\build\python\SprigCast.exe" -ArgumentList "-c", "`"import sys, sprigcast; open(r'$probe', 'w').write(f'{sys.executable} {sys.getwindowsversion().build}')`"" -Wait -PassThru
           if ($p.ExitCode -ne 0 -or -not (Test-Path $probe)) { throw "SprigCast.exe didn't run Python (exit $($p.ExitCode))" }
           "SprigCast.exe runs as: $(Get-Content $probe)"
+          # Its manifest must say Windows 10/11, or Windows reports build 9200 and Windows 10 features switch off.
+          $build = [int]((Get-Content $probe) -split ' ')[-1]
+          if ($build -lt 10000) { throw "SprigCast.exe sees Windows build ${build}: its manifest is missing" }
       - name: Fingerprints and a Microsoft Defender scan
         shell: pwsh
         run: |

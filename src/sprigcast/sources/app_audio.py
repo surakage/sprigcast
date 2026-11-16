@@ -31,6 +31,7 @@ import numpy as np
 
 from sprigcast.core.source import Source, register
 from sprigcast.sources.audio import CHANNELS, SAMPLE_RATE, AudioRing
+from sprigcast.winver import windows_build
 
 log = logging.getLogger(__name__)
 
@@ -364,7 +365,7 @@ class AppAudioSource(Source):
         return found
 
     def _run(self) -> None:
-        if sys.platform != "win32" or sys.getwindowsversion().build < 19041:
+        if windows_build() < 19041:
             self.status = "unavailable: needs Windows 10 (2004) or newer"
             return
         _com_init()
