@@ -5315,8 +5315,10 @@ class MainWindow(QMainWindow):
         names = ", ".join(p.name for p in session.paths)
         from sprigcast.core.pacing import memory_line
 
-        log.info("recording stopped after %.0f s: %s; %d frames dropped%s; memory: %s", session.elapsed,
-                 names or "no files", session.dropped, f"; errors: {errors}" if errors else "", memory_line())
+        eased = int(getattr(session, "eased", 0))
+        log.info("recording stopped after %.0f s: %s; %d frames dropped%s%s; memory: %s", session.elapsed,
+                 names or "no files", session.dropped, f", {eased} eased" if eased else "",
+                 f"; errors: {errors}" if errors else "", memory_line())
         self._rest_soon()
         if errors:
             self.live_panel.set_recording("")

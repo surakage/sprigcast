@@ -102,8 +102,11 @@ def settle() -> float:
     return 1000 * (time.perf_counter() - began)
 
 
-def raise_thread_priority() -> bool:
-    """Run the calling thread at Windows' "highest" thread priority. True if it took effect."""
+HIGHEST, ABOVE_NORMAL = 2, 1  # Windows' THREAD_PRIORITY_* values
+
+
+def raise_thread_priority(level: int = HIGHEST) -> bool:
+    """Run the calling thread at Windows' "highest" (or `level`) thread priority. True if it took effect."""
     if sys.platform != "win32":
         return False
     try:
@@ -112,9 +115,9 @@ def raise_thread_priority() -> bool:
         kernel32 = ctypes.WinDLL("kernel32")
         kernel32.GetCurrentThread.restype = ctypes.c_void_p
         kernel32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        return bool(kernel32.SetThreadPriority(kernel32.GetCurrentThread(), 2))  # THREAD_PRIORITY_HIGHEST
+        return bool(kernel32.SetThreadPriority(kernel32.GetCurrentThread(), level))
     except Exception as exc:
-        log.info("could not raise the render thread's priority: %s", exc)
+        log.info("could not raise thread priority: %s", exc)
         return False
 
 
