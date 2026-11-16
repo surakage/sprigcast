@@ -867,12 +867,22 @@ class ControlApi:
     def req_GetStreamStatus(self, data):
         return self._output_status(self.host.stream_status())
 
+    def _start(self, start, data: dict[str, Any], what: str) -> None:
+        """StartStream / StartRecord never wait on a pop-up in SprigCast: if the Stream doctor (or low space) would
+        ask first, nothing starts and the comment lists why. A "force": true field goes ahead (SprigCast's own)."""
+        force = data.get("force") is True
+        out = start(force=True) if force else start()
+        if isinstance(out, dict):
+            if not out.get("started"):
+                raise RequestError(Status.OUTPUT_DISABLED, f"Not {what}: "
+                                   + " ".join(out.get("warnings", [])))
+        elif out:
+            raise RequestError(Status.OUTPUT_DISABLED, out)
+
     def req_StartStream(self, data):
         if self.host.stream_status() is not None:
             raise RequestError(Status.OUTPUT_RUNNING, "Already live.")
-        problem = self.host.start_stream()
-        if problem:
-            raise RequestError(Status.OUTPUT_DISABLED, problem)
+        self._start(self.host.start_stream, data, "live")
 
     def req_StopStream(self, data):
         if self.host.stream_status() is None:
@@ -895,9 +905,7 @@ class ControlApi:
     def req_StartRecord(self, data):
         if self.host.record_status() is not None:
             raise RequestError(Status.OUTPUT_RUNNING, "Already recording.")
-        problem = self.host.start_record()
-        if problem:
-            raise RequestError(Status.OUTPUT_DISABLED, problem)
+        self._start(self.host.start_record, data, "recording")
 
     def req_StopRecord(self, data):
         status = self.host.record_status()

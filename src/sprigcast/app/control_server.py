@@ -97,6 +97,16 @@ def saved_settings() -> dict[str, Any]:
     }
 
 
+def _outcome(out: dict | None) -> str | dict | None:
+    """_start_streaming / _start_recording's answer as the API's hosts give it."""
+    out = out or {}
+    if out.get("problem"):
+        return str(out["problem"])
+    if out.get("warnings"):
+        return {"warnings": list(out["warnings"]), "started": bool(out.get("started"))}
+    return None
+
+
 class WindowHost:
     """ControlApi's view of the main window (see control/api.py Host)."""
 
@@ -180,24 +190,30 @@ class WindowHost:
     def clips_ready(self) -> bool:
         return self.w.replay is not None
 
-    # Starting things can ask a question (stream doctor) or show an error: do it just after replying,
-    # so the app gets its answer at once and the question never blocks the socket.
+    # Going live or recording from an app never waits on a pop-up (the Stream doctor's warnings, low space...):
+    # problems and warnings come back in the answer, and force goes ahead past the warnings.
 
-    def start_stream(self) -> str | None:
+    def start_stream(self, force: bool = False) -> str | dict | None:
+        """None: live now. A problem (text), or {"warnings": [...]} when the doctor says wait (nothing started).
+        {"warnings": [...], "started": True} when force went live past them."""
         if not any(o.type == "stream" and o.enabled for o in self.w.collection.outputs):
             return "No place to stream to is switched on (Live → Destinations)."
-        QTimer.singleShot(0, lambda: self.w.streaming is None and self.w._start_streaming())
-        return None
+        if self.w.streaming is not None:
+            return None
+        out = self.w._start_streaming(remote=True, force=force)
+        return _outcome(out)
 
     def stop_stream(self) -> None:
         QTimer.singleShot(0, self.w._stop_streaming)
 
-    def start_record(self) -> str | None:
+    def start_record(self, force: bool = False) -> str | dict | None:
+        """Like start_stream, for recording (the warning is low space on the drive)."""
         col = self.w.collection
         if not any(c.enabled and c.id in col.recording.canvases for c in col.canvases):
             return "No canvas is ticked for recording (Settings → Output)."
-        QTimer.singleShot(0, lambda: self.w.recording is None and self.w._start_recording())
-        return None
+        if self.w.recording is not None:
+            return None
+        return _outcome(self.w._start_recording(remote=True, force=force))
 
     def stop_record(self) -> None:
         QTimer.singleShot(0, self.w._stop_recording)
@@ -289,6 +305,14 @@ class WindowHost:
 
     def trigger_hotkey(self, action: str) -> str | None:
         """Do what the hotkey does. Returns its note when it couldn't ("Not in this bloom: Facecam")."""
+        from sprigcast.app.hotkeys import TOGGLE_RECORD, TOGGLE_STREAM
+
+        start = {TOGGLE_STREAM: ("streaming", self.start_stream), TOGGLE_RECORD: ("recording", self.start_record)}.get(action)
+        if start is not None and getattr(self.w, start[0], None) is None:  # going live or recording from an app: no pop-ups
+            out = start[1]()
+            if isinstance(out, dict):
+                return "Not started: " + " ".join(out["warnings"])
+            return out
         self.w._on_hotkey(action)
         return getattr(self.w, "_last_hotkey_note", None)
 

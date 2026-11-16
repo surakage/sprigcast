@@ -271,3 +271,97 @@ def test_one_source_picture_from_the_engine(tmp_path):
     assert shot["width"] == 80 and shot["height"] == 45 and shot["png"]
     assert "Face_cam" in shot["path"] and shot["path"].endswith(".png")
     assert screenshot.take_one(Engine(), "gone", "Gone", None, as_data=True) is None
+
+
+class DoctorHost(PlacesHost):
+    """Going live or recording when SprigCast would ask first: the doctor's warnings, or low space."""
+
+    warnings = ["Your PC is busy (CPU 95%)."]
+
+    def start_stream(self, force=False):
+        if not force:
+            return {"warnings": list(self.warnings), "started": False}
+        self.live = {"seconds": 0.0}
+        return {"warnings": list(self.warnings), "started": True}
+
+    def start_record(self, force=False):
+        if not force:
+            return {"warnings": ["Only 3 minutes of space left."], "started": False}
+        self.rec = {"seconds": 0.0, "path": "C:/rec.mkv"}
+        return {"warnings": ["Only 3 minutes of space left."], "started": True}
+
+
+def test_remote_starts_never_wait_on_the_doctor():
+    from sprigcast.control.native import NativeApi, answer as handle_message
+
+    host = DoctorHost(_host().collection)
+    api = NativeApi(host)
+    answer = handle_message(api, {"id": "1", "do": "stream.start"})
+    assert answer["ok"] is False and answer["error"]["code"] == "doctor_warnings"
+    assert answer["error"]["warnings"] == ["Your PC is busy (CPU 95%)."] and host.live is None
+    assert _fails(api, "stream.toggle") == "doctor_warnings" and host.live is None
+    assert _ok(api, "stream.start", force=True) == {"on": True, "warnings": ["Your PC is busy (CPU 95%)."]}
+    assert host.live is not None
+    assert _fails(api, "record.start") == "doctor_warnings" and host.rec is None
+    assert _ok(api, "record.toggle", force=True)["on"] is True and host.rec is not None
+    # With nothing to warn about it just goes live.
+    host = DoctorHost(_host().collection)
+    host.warnings = []
+    host.start_stream = lambda force=False: None
+    assert _ok(NativeApi(host), "stream.start") == {"on": True}
+
+
+def test_obs_door_starts_never_wait_on_the_doctor():
+    host = DoctorHost(_host().collection)
+    api = ControlApi(host)
+    assert _obs_fails(api, "StartStream") == Status.OUTPUT_DISABLED and host.live is None
+    assert _obs_fails(api, "ToggleStream") == Status.OUTPUT_DISABLED and host.live is None
+    assert _obs_fails(api, "StartOutput", {"outputName": "simple_stream"}) == Status.OUTPUT_DISABLED
+    _obs_ok(api, "StartStream", {"force": True})
+    assert host.live is not None
+    assert _obs_fails(api, "StartRecord") == Status.OUTPUT_DISABLED and host.rec is None
+
+
+def test_main_window_remote_start_asks_nothing(monkeypatch):
+    """The real going-live code from an app: the doctor's warnings come back, and no pop-up ever opens."""
+    import types
+
+    pytest_mw = __import__("pytest").importorskip("sprigcast.app.main_window")
+    from PySide6.QtWidgets import QMessageBox
+
+    def no_popups(*args, **kwargs):
+        raise AssertionError("a pop-up opened")
+
+    for name in ("information", "warning", "critical", "question"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(no_popups))
+    monkeypatch.setattr(QMessageBox, "exec", no_popups)
+    col = _host().collection
+    window = types.SimpleNamespace(collection=col, _stream_target=lambda o, ask=True, quiet=False: (object(), None),
+                                   _doctor_warnings=lambda: ["Your PC is busy (CPU 95%)."],
+                                   _doctor_says_go=no_popups)
+    start = pytest_mw.MainWindow._start_streaming
+    assert start(window, remote=True) == {"warnings": ["Your PC is busy (CPU 95%)."]}
+    window._stream_target = lambda o, ask=True, quiet=False: (None, "Twitch: add your stream key in Stream…")
+    assert start(window, remote=True) == {"problem": "Not ready to go live: Twitch: add your stream key in Stream…"}
+    col.outputs = []
+    assert "Tick at least one place" in start(window, remote=True)["problem"]
+
+
+def test_go_live_hotkey_from_an_app_asks_nothing():
+    from sprigcast.app.control_server import WindowHost
+
+    col = _host().collection
+
+    class Window:
+        collection, streaming, recording = col, None, None
+
+        def _start_streaming(self, remote=False, force=False):
+            assert remote
+            return {"warnings": ["Your PC is busy (CPU 95%)."]}
+
+        def _on_hotkey(self, action):
+            raise AssertionError("the window's own hotkey path can ask with a pop-up")
+
+    host = WindowHost.__new__(WindowHost)
+    host.w = Window()
+    assert host.trigger_hotkey("toggle_stream") == "Not started: Your PC is busy (CPU 95%)."

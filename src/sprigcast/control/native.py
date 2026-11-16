@@ -47,10 +47,11 @@ MAX_WAIT_MS = 10 * 60 * 1000  # all its waits together
 
 
 class ApiError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, **extra: Any):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.extra = extra  # more for the app, e.g. doctor_warnings' list of warnings
 
 
 def _bad(message: str) -> ApiError:
@@ -912,13 +913,27 @@ class NativeApi:
             self.host.commit("places")
         return {"places": self._places_now()}
 
-    @action("stream.start", "Go live to every place that's switched on.")
+    def _start(self, start, data, what: str) -> dict[str, Any]:
+        """stream.start / record.start: never waits on a pop-up in SprigCast. If the Stream doctor (or low space)
+        would ask first, nothing starts and the answer is doctor_warnings with the list; force: true goes ahead."""
+        force = _get(data, "force", bool, optional=True, default=False)
+        out = start(force=True) if force else start()
+        if isinstance(out, dict):
+            warnings = list(out.get("warnings", []))
+            if not out.get("started"):
+                raise ApiError("doctor_warnings", f"Not {what}: " + " ".join(warnings) + " Send force: true to go ahead.",
+                               warnings=warnings)
+            return {"on": True, "warnings": warnings}
+        if out:
+            raise ApiError("not_allowed", out)
+        return {"on": True}
+
+    @action("stream.start", "Go live to every place that's switched on. If the Stream doctor would warn first, "
+            "nothing starts: doctor_warnings lists them.", force="?true: go live past the doctor's warnings")
     def stream_start(self, data):
         if self.host.stream_status() is not None:
             raise ApiError("busy", "Already live.")
-        problem = self.host.start_stream()
-        if problem:
-            raise ApiError("not_allowed", problem)
+        return self._start(self.host.start_stream, data, "live")
 
     @action("stream.stop", "End the stream.")
     def stream_stop(self, data):
@@ -927,11 +942,11 @@ class NativeApi:
         self.host.stop_stream()
         return {"on": False}  # it ends a moment later (stream.changed follows); nothing more goes out
 
-    @action("stream.toggle", "Go live, or end the stream.")
+    @action("stream.toggle", "Go live, or end the stream (going live answers like stream.start).",
+            force="?true: go live past the doctor's warnings")
     def stream_toggle(self, data):
         if self.host.stream_status() is None:
-            self.stream_start(data)
-            return {"on": True}
+            return self.stream_start(data)
         self.host.stop_stream()
         return {"on": False}
 
@@ -955,13 +970,12 @@ class NativeApi:
     def record_status(self, data):
         return self._status(self.host.record_status())
 
-    @action("record.start", "Start recording.")
+    @action("record.start", "Start recording. If the drive is nearly full, nothing starts: doctor_warnings says so.",
+            force="?true: record anyway")
     def record_start(self, data):
         if self.host.record_status() is not None:
             raise ApiError("busy", "Already recording.")
-        problem = self.host.start_record()
-        if problem:
-            raise ApiError("not_allowed", problem)
+        return self._start(self.host.start_record, data, "recording")
 
     @action("record.stop", "Stop recording.")
     def record_stop(self, data):
@@ -971,11 +985,11 @@ class NativeApi:
         self.host.stop_record()
         return {"file": status.get("path", "")}
 
-    @action("record.toggle", "Start or stop recording.")
+    @action("record.toggle", "Start or stop recording (starting answers like record.start).",
+            force="?true: record anyway")
     def record_toggle(self, data):
         if self.host.record_status() is None:
-            self.record_start(data)
-            return {"on": True}
+            return self.record_start(data)
         self.host.stop_record()
         return {"on": False}
 
@@ -1433,7 +1447,7 @@ def answer(api: NativeApi, message: dict[str, Any]) -> dict[str, Any]:
         data = {k: v for k, v in message.items() if k not in ("do", "id")}
         result = api.run(name, data)
     except ApiError as exc:
-        out.update(ok=False, error={"code": exc.code, "message": exc.message})
+        out.update(ok=False, error={"code": exc.code, "message": exc.message, **getattr(exc, "extra", {})})
         return out
     except Exception as exc:  # a bug must not drop the connection
         out.update(ok=False, error={"code": "failed", "message": f"{type(exc).__name__}: {exc}"})
