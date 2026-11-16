@@ -270,13 +270,34 @@ def _check_window(now: float) -> None:
     frame = sys._current_frames().get(ident)
     if frame is None:
         return
+    _ui["since"] = beat
+    _ui["where"] = _where(frame)
+    del frame
+
+
+def _where(frame, depth: int = 5) -> str:
+    """Where a thread is: its innermost frames, file:line name, innermost first. Inside an import, Python's
+    own import machinery is left out and the module being loaded is named (the PC saw 2.4 s and 5.7 s in
+    "<frozen importlib…>" with no clue which module)."""
     import os
     import traceback
 
-    stack = traceback.extract_stack(frame)[::-1][:5]
-    del frame
-    _ui["since"] = beat
-    _ui["where"] = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack) or "?"
+    importing = []
+    walk = frame
+    while walk is not None:
+        if walk.f_code.co_name == "_find_and_load" and walk.f_code.co_filename.startswith("<frozen"):
+            name = walk.f_locals.get("name")
+            if isinstance(name, str):
+                importing.append(name)
+        walk = walk.f_back
+    del walk
+    stack = traceback.extract_stack(frame)[::-1]
+    if importing:
+        stack = [f for f in stack if not f.filename.startswith("<frozen")]
+    text = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack[:depth]) or "?"
+    if importing:  # outermost first: what the code asked for, then what that pulled in
+        text = f"loading {' > '.join(importing[::-1])}: {text}"
+    return text
 
 
 def raise_thread_priority(level: int = HIGHEST) -> bool:
