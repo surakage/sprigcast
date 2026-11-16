@@ -149,7 +149,11 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     from PySide6.QtTest import QTest
 
     # The strips refresh once changes settle (100 ms); a busy test run can take longer to get there.
-    assert QTest.qWaitFor(lambda: _sound_rows(w)[0]["game"].db.text() == "muted", 3000)
+    for _ in range(60):
+        QTest.qWait(50)
+        if _sound_rows(w)[0]["game"].db.text() == "muted":
+            break
+    assert _sound_rows(w)[0]["game"].db.text() == "muted"
 
 
 def test_rename_keeps_a_to_z_and_remove_drops_a_sound(window, monkeypatch):
