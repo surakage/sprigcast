@@ -39,7 +39,8 @@ from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_
 log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "death_count", "name": "Death count", "version": 5, "adds": "Source",
-          "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down."}
+          "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down.",
+          "new": "Lighter on your PC: the number flip is drawn ahead of time."}
 
 KIND = "death_count"
 W, H = 800, 1000  # the box (same as Snap's, so it sits the same way on both shapes)

@@ -281,13 +281,23 @@ class SavedNote(QWidget):
         tick.setStyleSheet(f"background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border-radius: 14px;"
                            " font-size: 16px; font-weight: 800;")
         row.addWidget(tick)
+        from PySide6.QtWidgets import QVBoxLayout
+
+        words = QVBoxLayout()
+        words.setSpacing(2)
         self.title = QLabel("")
         self.title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 16px; font-weight: 700; background: transparent;")
-        row.addWidget(self.title)
+        words.addWidget(self.title)
+        self.detail = QLabel("")  # a line under the title (what's new in an updated plugin)
+        self.detail.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
+        self.detail.hide()
+        words.addWidget(self.detail)
+        row.addLayout(words)
         self.open = QLabel("Open folder")
         self.open.setStyleSheet(f"color: {theme.ACCENT}; background: transparent;")
         row.addWidget(self.open)
         self.folder = None
+        self.on_click = None
         self.fade = QGraphicsOpacityEffect(self)
         self.setGraphicsEffect(self.fade)
         self._anim = QPropertyAnimation(self.fade, b"opacity", self)
@@ -296,10 +306,16 @@ class SavedNote(QWidget):
         self._timer.timeout.connect(lambda: self._fade_to(0.0, 500))
         self.hide()
 
-    def say(self, title: str, folder=None) -> None:
+    def say(self, title: str, folder=None, detail: str = "", link: str = "", on_click=None, ms: int | None = None) -> None:
+        """Show the note; a click opens `folder`, or runs `on_click` (named by `link`)."""
         self.title.setText(title)
+        self.detail.setText(detail)
+        self.detail.setVisible(bool(detail))
         self.folder = folder
-        self.open.setVisible(folder is not None)
+        self.on_click = on_click
+        self.open.setText(link or "Open folder")
+        self.open.setVisible(folder is not None or on_click is not None)
+        self._timer.setInterval(ms or self.SHOW_MS)
         self.adjustSize()
         parent = self.parentWidget()
         self.move(max(0, (parent.width() - self.width()) // 2), max(0, parent.height() - self.height() - 48))
@@ -309,7 +325,9 @@ class SavedNote(QWidget):
         self._timer.start()
 
     def mousePressEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
-        if self.folder is not None:
+        if self.on_click is not None:
+            self.on_click()
+        elif self.folder is not None:
             from PySide6.QtCore import QUrl
             from PySide6.QtGui import QDesktopServices
 

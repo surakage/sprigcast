@@ -8,13 +8,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtWidgets import QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast import plugin_store
 from sprigcast.app import theme
 from sprigcast.app.live_stage import heading
 from sprigcast.plugins import PluginReport
+
+HOLD_ON_AIR = "plugins/hold_on_air"
+
+
+def hold_on_air() -> bool:
+    """Settings → Plugins: an Update pressed while live or recording waits until both stop (on unless switched off)."""
+    return QSettings().value(HOLD_ON_AIR, True, type=bool)
 
 
 def _hint(text: str) -> QLabel:
@@ -85,7 +92,7 @@ class StoreRow(QFrame):
         text.addWidget(self.note)
         row.addLayout(text, 1)
         self.update_button = _pill("Update", primary=True)
-        self.update_button.clicked.connect(lambda: page.install(plugin))
+        self.update_button.clicked.connect(lambda: page.update(plugin))
         self.button = _pill("Add")
         self.button.clicked.connect(self._clicked)
         row.addWidget(self.update_button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -101,7 +108,8 @@ class StoreRow(QFrame):
         self.button.setText("Remove" if version is not None else "Add")
         self.button.setStyleSheet(REMOVE_STYLE if version is not None else ADD_STYLE)
         self.button.setEnabled(self.page.plugins_dir is not None)
-        self.update_button.setVisible(version is not None and version < self.plugin.version)
+        self.update_button.setVisible(version is not None and version < self.plugin.version
+                                      and self.plugin.id not in plugin_store.waiting)
         error = self.page.report.failed.get(f"{self.plugin.id}.py") if self.page.report else None
         if error:
             self.note.setText(f"Couldn't load: {error}")
@@ -124,9 +132,10 @@ class PluginStorePage(QWidget):
     changed = Signal()  # a plugin was added or removed: menus that list plugin sources should refresh
 
     def __init__(self, plugins_dir: Path | None, report: PluginReport | None, open_plugins_folder=None,
-                 collection=None, parent: QWidget | None = None):
+                 collection=None, parent: QWidget | None = None, on_air: bool = False):
         super().__init__(parent)
         self.plugins_dir = plugins_dir
+        self.on_air = on_air  # live or recording when Settings opened
         self.collection = collection  # to warn before removing a plugin something still uses
         self.report = report if report is not None else PluginReport()
         self.rows: dict[str, StoreRow] = {}
@@ -142,6 +151,11 @@ class PluginStorePage(QWidget):
             sbox.addWidget(row)
         if not plugins:
             sbox.addWidget(_hint("Nothing in the store yet."))
+        self.hold = QCheckBox("Hold plugin updates while live or recording")
+        self.hold.setChecked(hold_on_air())
+        self.hold.toggled.connect(lambda on: QSettings().setValue(HOLD_ON_AIR, on))
+        sbox.addSpacing(4)
+        sbox.addWidget(self.hold)
 
         mine, mbox = _card("Your plugins")
         self.mine = QLabel()
@@ -200,6 +214,18 @@ class PluginStorePage(QWidget):
             row.say(f"Added. Find it under + → Plugins → {plugin.name}." if plugin.adds == "Source"
                     else "Added.")
         self.changed.emit()
+
+    def update(self, plugin: plugin_store.StorePlugin) -> None:
+        """Update now, or once the stream and recording stop (Hold plugin updates while live or recording)."""
+        if self.on_air and hold_on_air():
+            plugin_store.waiting[plugin.id] = plugin
+            row = self.rows[plugin.id]
+            row.refresh()
+            row.say("Updates once you stop.")
+            return
+        self.install(plugin)
+        if plugin.new:
+            self.rows[plugin.id].say(f"Updated. {plugin.new}")
 
     def remove(self, plugin: plugin_store.StorePlugin) -> None:
         if self.plugins_dir is None:

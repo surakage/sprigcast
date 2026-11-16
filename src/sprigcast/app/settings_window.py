@@ -482,7 +482,8 @@ class SettingsWindow(QDialog):
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
         from sprigcast.app.plugin_store_page import PluginStorePage
 
-        self.plugin_store = PluginStorePage(self.plugins_dir, plugin_report, open_plugins_folder, self.collection)
+        self.plugin_store = PluginStorePage(self.plugins_dir, plugin_report, open_plugins_folder, self.collection,
+                                            on_air=self.streaming or self.recording)
         self.plugin_store.changed.connect(self.plugins_changed)
         return self.plugin_store
 

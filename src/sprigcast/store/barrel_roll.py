@@ -17,7 +17,8 @@ from sprigcast.core.filters import Field, register_filter
 from sprigcast.plugin_hooks import filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
 
 PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 2, "adds": "Effect",
-          "about": "Spin a sprig round and round for a few seconds, then it lands back exactly where it was."}
+          "about": "Spin a sprig round and round for a few seconds, then it lands back exactly where it was.",
+          "new": "Its hotkeys now say what they do."}
 
 TURNS_PER_SECOND = 1.0  # when a trigger gives seconds but no turns
 
