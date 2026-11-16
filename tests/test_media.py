@@ -421,3 +421,26 @@ def test_the_engine_tells_a_video_when_its_eye_goes_off_and_on(tmp_path):
     finally:
         for source in engine._sources.values():
             source.stop()
+
+
+def test_waking_and_sleeping_a_looping_alpha_video_leaves_no_threads_behind(tmp_path):
+    import threading
+
+    import psutil
+
+    source = MediaSource("brb", {"path": _webm(tmp_path / "brb.webm", seconds=0.5), "loop": True})
+    source.start()
+    time.sleep(0.3)
+    process = psutil.Process()
+    before = process.num_threads()
+    for _ in range(30):  # the soak's Be right back bloom, on and off screen quickly
+        source.sleep()
+        began = time.perf_counter()
+        source.wake()
+        assert time.perf_counter() - began < 0.05  # never waits on the old decoder thread
+        time.sleep(0.03)
+    time.sleep(0.5)
+    deciding = [t for t in threading.enumerate() if t.name == "media-brb"]
+    assert len(deciding) == 1  # one decoder thread, never two decoding the same file
+    assert process.num_threads() <= before + 3
+    source.stop()

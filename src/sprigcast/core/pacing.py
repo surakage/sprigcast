@@ -89,7 +89,10 @@ def tidy() -> tuple[int, float]:
     began = time.perf_counter()
     gc.collect()
     gc.freeze()
-    return gc.get_freeze_count(), 1000 * (time.perf_counter() - began)
+    ms = 1000 * (time.perf_counter() - began)
+    if ms >= SLOW_GC_MS:
+        log.info("python tidy took %.0f ms (%d objects kept aside)", ms, gc.get_freeze_count())
+    return gc.get_freeze_count(), ms
 
 
 THREADS_MOVED = 20  # log the thread count when it moved this much since the last line
@@ -147,6 +150,57 @@ def settle() -> float:
 
 
 HIGHEST, ABOVE_NORMAL = 2, 1  # Windows' THREAD_PRIORITY_* values
+
+
+# Stall watch: Python's lock held so long that nothing else ran. The 2026-11-16 soak had hitches of
+# 280 and 750 ms that landed in whichever step the render thread was in (a camera, the canvases), with
+# no garbage collection at the time. A small thread wakes every 50 ms; when it wakes far too late,
+# it notes where every busy thread is right then, which names the one that held the lock.
+STALL_MS = 200.0
+STALL_EVERY_S = 10.0
+_IDLE_CALLS = {"wait", "sleep", "get", "select", "_wait_for_tstate_lock", "join", "acquire", "run_forever",
+               "_run_once", "accept", "recv", "read", "readinto", "wait_for", "exec", "_worker"}
+
+
+def busy_stacks(skip: set[int] | None = None) -> str:
+    """"name at file.py:line func <- file.py:line func" for each thread not waiting, newest call first."""
+    import os
+    import threading
+    import traceback
+
+    names = {t.ident: t.name for t in threading.enumerate()}
+    parts = []
+    for ident, frame in sys._current_frames().items():
+        if skip and ident in skip:
+            continue
+        stack = traceback.extract_stack(frame)[::-1]
+        if not stack or stack[0].name in _IDLE_CALLS:
+            continue
+        where = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack[:3])
+        parts.append(f"{names.get(ident, ident)} at {where}")
+    return "; ".join(parts) or "no Python thread busy (native code or the system)"
+
+
+def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
+    """Start the stall watch (once). Logs at most one line every STALL_EVERY_S."""
+    import threading
+
+    if any(t.name == "sprigcast-stall-watch" for t in threading.enumerate()):
+        return
+
+    def run():
+        me = {threading.get_ident()}
+        logged = float("-inf")
+        last = clock()
+        while True:
+            time.sleep(interval)
+            now = clock()
+            late = 1000 * (now - last - interval)
+            last = now
+            if late >= STALL_MS and now - logged >= STALL_EVERY_S:
+                logged = now
+                log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
+    threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
 
 
 def raise_thread_priority(level: int = HIGHEST) -> bool:

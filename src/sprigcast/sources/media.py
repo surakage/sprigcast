@@ -178,13 +178,21 @@ class MediaSource(Source):
     # Lifecycle (render thread) ---------------------------------------------------------------
 
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2)
-            if self._thread.is_alive():
-                return
+        """Start a decoder thread. Never waits for an old one: a thread that is no longer self._thread
+        stops on its own at its next check (waiting here froze the picture, and a join that timed out
+        used to leave two threads decoding the same file, each with its own decoder threads)."""
+        if self._thread is not None and self._thread.is_alive() and not self._stop.is_set():
+            return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name=f"media-{self.id}", daemon=True)
-        self._thread.start()
+        thread = threading.Thread(target=self._run, name=f"media-{self.id}", daemon=True)
+        self._thread = thread
+        with self._wake:
+            self._wake.notify_all()  # an old thread still waiting sees it isn't the one any more
+        thread.start()
+
+    def _mine(self) -> bool:
+        """True on the decoder thread that is current (an old one finishing up gets False)."""
+        return self._thread is threading.current_thread()
 
     def stop(self) -> None:
         self._stop.set()
@@ -204,6 +212,7 @@ class MediaSource(Source):
             self._pause_clock()
             self._base = position
         self._stop.set()
+        self._thread = None  # it closes its file and decoder and ends by itself; nothing waits for it
         with self._wake:
             self._wake.notify_all()
         with self._lock:
@@ -213,9 +222,6 @@ class MediaSource(Source):
             self._shown = None
 
     def wake(self) -> None:
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-            self._thread = None
         self._hidden = self._paused_by_hide = False  # the renderer says again if its eye is off
         if self.settings.get("restart_on_show", True):
             self._jump(0.0, "playing")
@@ -433,7 +439,7 @@ class MediaSource(Source):
     # Decoder thread -------------------------------------------------------------------------------------
 
     def _run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop.is_set() and self._mine():
             path = str(self.settings.get("path", ""))
             with self._lock:
                 generation, start_at, speed = self._generation, self._start_at, self._speed
@@ -457,10 +463,11 @@ class MediaSource(Source):
 
     def _wait_for_change(self, generation: int, timeout: float | None = None) -> None:
         with self._wake:
-            self._wake.wait_for(lambda: self._stop.is_set() or self._generation != generation, timeout)
+            self._wake.wait_for(lambda: self._stop.is_set() or self._generation != generation or not self._mine(),
+                                timeout)
 
     def _current(self, generation: int) -> bool:
-        return not self._stop.is_set() and self._generation == generation
+        return not self._stop.is_set() and self._generation == generation and self._mine()
 
     def _open(self, path: str):
         import av
@@ -506,6 +513,9 @@ class MediaSource(Source):
                     name = video.codec_context.name
                     if name in LIBVPX and LIBVPX[name] in av.codecs_available:
                         decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps see-through parts
+                        # FFmpeg's default is a thread per CPU thread (17 on the user's Ryzen), every loop
+                        decoder.thread_count = decode_threads(video.codec_context.width,
+                                                              video.codec_context.height)
                     else:
                         video.thread_type = "AUTO"
                         video.codec_context.thread_count = decode_threads(video.codec_context.width,

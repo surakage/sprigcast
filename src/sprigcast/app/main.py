@@ -268,6 +268,7 @@ def run() -> None:
     from sprigcast.core import pacing
 
     pacing.watch_gc()  # logs slow garbage collections (they made the late frames in long streams)
+    pacing.watch_stalls()  # names the thread whenever something holds everything up for 200 ms or more
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
     tidy.timeout.connect(pacing.tidy)

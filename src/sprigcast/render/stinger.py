@@ -154,7 +154,10 @@ class StingerPlayer:
             name = video.codec_context.name
             decoder = None
             if name in LIBVPX and LIBVPX[name] in av.codecs_available:
+                from sprigcast.sources.media import decode_threads
+
                 decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps the alpha channel
+                decoder.thread_count = decode_threads(video.codec_context.width, video.codec_context.height)
             else:
                 from sprigcast.sources.media import decode_threads
 
