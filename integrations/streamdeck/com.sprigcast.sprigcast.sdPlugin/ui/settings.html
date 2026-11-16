@@ -9,10 +9,10 @@
 		<form id="fields" autocomplete="off"></form>
 		<details id="connection">
 			<summary>Connection</summary>
-			<label class="row"><span>Port</span><input id="port" type="number" min="1" max="65535" placeholder="Auto" /></label>
-			<label class="row"><span>Password</span><input id="password" type="password" /></label>
+			<label class="row"><span>Port</span><input id="port" type="number" min="1" max="65535" placeholder="Automatic" /></label>
+			<label class="row"><span>Password</span><input id="password" type="password" placeholder="Automatic" /></label>
 			<p class="note" id="status"></p>
-			<p class="note">From SprigCast: Settings → Connections. Leave the port blank to look on 4455 and 4456. Every SprigCast key shares these.</p>
+			<p class="note">Leave both empty: the plugin finds SprigCast on this PC by itself and connects when it opens.</p>
 		</details>
 		<script src="settings.js"></script>
 	</body>

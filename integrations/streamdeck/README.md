@@ -31,17 +31,21 @@ Marker (SprigCast recordings don't pause or take chapters yet).
 
 The plugin runs inside the Stream Deck app. It opens one connection to SprigCast only while a SprigCast key is
 on screen, and closes it when none is. SprigCast sends changes as they happen, so nothing polls. When SprigCast
-isn't running, or closes or restarts, the plugin looks again after 1, 2, 5, then every 10 seconds, and its keys go
-dark until it's back. A quiet connection is checked every 15 seconds, so a PC waking from sleep finds SprigCast again.
+isn't running, the plugin only checks every 2 seconds whether SprigCast's api.json is there (no connection tries),
+and its keys go dark until SprigCast is back. A quiet connection is checked every 15 seconds, so a PC waking from sleep finds SprigCast again.
 
 ## Set up
 
-1. In SprigCast: Settings → Connections → turn on the API and set a password. Note the port (4455, or e.g. 4456
-   next to OBS). Leave the plugin's port blank and it looks on 4455 and 4456 itself, stepping past OBS.
-2. Double-click `com.sprigcast.sprigcast.streamDeckPlugin` to install it (Stream Deck 7.1 or newer).
-3. Drag any SprigCast key onto your Stream Deck. Under **Connection** enter the port and password once (every
-   SprigCast key shares them). The Connection box says whether SprigCast is found, and on which port. Names
-   (blooms, sounds...) fill in from SprigCast while it runs.
+1. Double-click `com.sprigcast.sprigcast.streamDeckPlugin` to install it (Stream Deck 7.1 or newer).
+2. Drag any SprigCast key onto your Stream Deck. That's it: with SprigCast open, the keys connect by themselves.
+
+While its API runs (on by default: Settings → Connections), SprigCast keeps its port and password in
+`%LOCALAPPDATA%\Slothbloom\SprigCast\api.json`, and the plugin reads them there, the way Elgato's OBS plugin
+reads obs-websocket's settings. If OBS holds port 4455, SprigCast takes the next free port and the file says so.
+The plugin looks for the file every 2 seconds, so keys come alive as soon as SprigCast opens.
+
+To connect to a SprigCast elsewhere, type a port and password under **Connection** in any key's settings (every
+key shares them); they win over the file. The line there says whether SprigCast is found.
 
 ## Build
 

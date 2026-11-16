@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QGuiApplication, QImage, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 HERE = Path(__file__).resolve().parent.parent
@@ -23,48 +23,65 @@ DIM = "#6f8f7e"
 PINK = "#ff5c93"  # only for live and recording
 WHITE = "#ffffff"
 
-# Glyphs drawn in a 0..100 box, stroke-based, with {c} for the colour.
+# Glyphs drawn in a 0..100 box, rounded strokes like the app's own icons, {c} for the colour and {bg} for the
+# tile behind (for cut-outs). Every key has its own picture; leaves and petals keep them in the sprig family.
+SW = 'stroke="{c}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"'
 GLYPHS = {
-    "bloom": '<g fill="{c}"><circle cx="50" cy="30" r="13"/><circle cx="69" cy="44" r="13"/><circle cx="62" cy="66" r="13"/>'
-             '<circle cx="38" cy="66" r="13"/><circle cx="31" cy="44" r="13"/></g><circle cx="50" cy="50" r="9" fill="{bg}"/>',
-    "sound": '<path d="M22 40h14l18-15v50L36 60H22z" fill="{c}"/><path d="M64 36q10 14 0 28M72 28q18 22 0 44" fill="none" '
-             'stroke="{c}" stroke-width="6" stroke-linecap="round"/>',
-    "muted": '<path d="M22 40h14l18-15v50L36 60H22z" fill="{c}"/><path d="M64 38l20 24M84 38L64 62" stroke="{c}" '
-             'stroke-width="7" stroke-linecap="round"/>',
-    "eye": '<path d="M12 50q38-40 76 0q-38 40-76 0z" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>'
-           '<circle cx="50" cy="50" r="11" fill="{c}"/>',
-    "eye-off": '<path d="M12 50q38-40 76 0q-38 40-76 0z" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>'
-               '<path d="M22 80L78 20" stroke="{c}" stroke-width="7" stroke-linecap="round"/>',
-    "live": '<rect x="14" y="30" width="72" height="40" rx="20" fill="none" stroke="{c}" stroke-width="7"/>'
-            '<circle cx="33" cy="50" r="8" fill="{c}"/><path d="M50 40v20h12M68 40v20" stroke="{c}" stroke-width="6" '
-            'stroke-linecap="round" fill="none"/>',
-    "record": '<circle cx="50" cy="50" r="30" fill="none" stroke="{c}" stroke-width="7"/><circle cx="50" cy="50" r="17" fill="{c}"/>',
-    "clip": '<rect x="18" y="26" width="64" height="48" rx="10" fill="none" stroke="{c}" stroke-width="7"/>'
-            '<path d="M44 38l18 12-18 12z" fill="{c}"/>',
-    "screenshot": '<rect x="16" y="32" width="68" height="46" rx="10" fill="none" stroke="{c}" stroke-width="7"/>'
-                  '<path d="M38 32l6-10h12l6 10" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>'
-                  '<circle cx="50" cy="55" r="12" fill="none" stroke="{c}" stroke-width="7"/>',
-    "sprig": '<path d="M50 86V40" stroke="{c}" stroke-width="7" stroke-linecap="round"/><path d="M50 52q-26 2-30-24q26-2 30 24z'
-             'M50 44q22-2 28-26q-24-2-28 26z" fill="{c}"/>',
-    "deaths": '<path d="M28 84V40q0-22 22-22t22 22v44z" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>'
-              '<path d="M50 34v26M40 44h20" stroke="{c}" stroke-width="6" stroke-linecap="round"/>'
-              '<path d="M16 86h68" stroke="{c}" stroke-width="7" stroke-linecap="round"/>',
-    "volume": '<path d="M16 40h12l16-14v48L28 60H16z" fill="{c}"/><path d="M58 34h28M58 50h20M58 66h12" stroke="{c}" '
-              'stroke-width="7" stroke-linecap="round"/>',
-    "clips": '<circle cx="50" cy="50" r="32" fill="none" stroke="{c}" stroke-width="7"/><path d="M50 30v20l13 9" fill="none" '
-             'stroke="{c}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>',
-    "camera": '<rect x="12" y="30" width="54" height="40" rx="10" fill="none" stroke="{c}" stroke-width="7"/>'
-              '<path d="M66 44l22-12v36L66 56z" fill="{c}"/>',
-    "media": '<path d="M30 22l46 28-46 28z" fill="{c}"/>',
-    "media-on": '<rect x="28" y="22" width="15" height="56" rx="4" fill="{c}"/><rect x="57" y="22" width="15" height="56" rx="4" fill="{c}"/>',
-    "filter": '<path d="M14 22h72L58 54v24l-16 8V54z" fill="none" stroke="{c}" stroke-width="7" stroke-linejoin="round"/>',
-    "transition": '<rect x="12" y="26" width="34" height="48" rx="8" fill="none" stroke="{c}" stroke-width="7"/>'
-                  '<rect x="54" y="26" width="34" height="48" rx="8" fill="{c}"/>',
-    "garden": '<path d="M50 84V46" stroke="{c}" stroke-width="7" stroke-linecap="round"/><circle cx="50" cy="32" r="14" fill="{c}"/>'
-              '<path d="M50 64q-24 0-32-20q22-2 32 20zM50 58q22 0 30-18q-20-2-30 18z" fill="{c}"/>',
-    "path": '<path d="M24 86q4-26 26-36t26-36" fill="none" stroke="{c}" stroke-width="8" stroke-linecap="round" '
-            'stroke-dasharray="2 14"/><circle cx="76" cy="16" r="9" fill="{c}"/>',
-    "run": '<path d="M56 12L24 56h22l-6 32 34-46H52z" fill="{c}" stroke="{c}" stroke-width="3" stroke-linejoin="round"/>',
+    # Show bloom: a five-petal bloom.
+    "bloom": '<g fill="{c}"><circle cx="50" cy="29" r="14"/><circle cx="70" cy="44" r="14"/><circle cx="62" cy="68" r="14"/>'
+             '<circle cx="38" cy="68" r="14"/><circle cx="30" cy="44" r="14"/></g><circle cx="50" cy="52" r="10" fill="{bg}"/>',
+    # Show or hide: an eye, and the eye shut.
+    "eye": f'<path d="M10 50q40-42 80 0q-40 42-80 0z" {SW}/><circle cx="50" cy="50" r="12" fill="{{c}}"/>',
+    "eye-off": f'<path d="M10 46q40 40 80 0" {SW}/><path d="M24 60l-8 10M50 66v12M76 60l8 10" {SW}/>',
+    # Garden: a planter with three sprouts (a whole set of blooms).
+    "garden": f'<path d="M18 60h64l-8 26H26z" fill="{{c}}"/><path d="M50 58V30M30 58V42M70 58V42" {SW}/>'
+              '<path d="M50 34q-14-2-16-16q14 2 16 16zM50 30q12-2 14-14q-12 2-14 14z" fill="{c}"/>'
+              '<circle cx="30" cy="38" r="6" fill="{c}"/><circle cx="70" cy="38" r="6" fill="{c}"/>',
+    # Path: a winding trail to a pin.
+    "path": f'<path d="M20 86q2-22 24-28t24-26" {SW} stroke-dasharray="1 13"/>'
+            '<path d="M72 8a14 14 0 0 1 14 14c0 11-14 24-14 24s-14-13-14-24a14 14 0 0 1 14-14z" fill="{c}"/>'
+            '<circle cx="72" cy="22" r="5" fill="{bg}"/>',
+    # Mute sound: a speaker with waves, and with a cross.
+    "sound": f'<path d="M14 40h14l20-16v52L28 60H14z" fill="{{c}}"/><path d="M62 38q8 12 0 24M72 28q16 22 0 44" {SW}/>',
+    "muted": f'<path d="M14 40h14l20-16v52L28 60H14z" fill="{{c}}"/><path d="M62 38l22 24M84 38L62 62" {SW}/>',
+    # Sound volume: a level knob with its arc (the dial).
+    "volume": f'<path d="M24 76a34 34 0 1 1 52 0" {SW}/><circle cx="50" cy="52" r="16" fill="{{c}}"/>'
+              f'<path d="M50 52L38 38" stroke="{{bg}}" stroke-width="7" stroke-linecap="round"/>',
+    # Go live: a broadcast dot with waves.
+    "live": f'<circle cx="50" cy="50" r="11" fill="{{c}}"/><path d="M34 34a22 22 0 0 0 0 32M66 34a22 22 0 0 1 0 32'
+            f'M22 22a40 40 0 0 0 0 56M78 22a40 40 0 0 1 0 56" {SW}/>',
+    # Record: the record ring and dot.
+    "record": f'<circle cx="50" cy="50" r="32" {SW}/><circle cx="50" cy="50" r="18" fill="{{c}}"/>',
+    # Clips: a rewind arrow round a dot (the last seconds kept ready).
+    "clips": f'<path d="M24 50a26 26 0 1 0 8-19" {SW}/><path d="M22 18v16h16" {SW}/><circle cx="50" cy="50" r="9" fill="{{c}}"/>',
+    # Save clip: a film strip with a save arrow.
+    "clip": f'<rect x="16" y="14" width="68" height="48" rx="9" {SW}/>'
+            '<g fill="{c}"><rect x="24" y="21" width="8" height="7" rx="2"/><rect x="24" y="48" width="8" height="7" rx="2"/>'
+            '<rect x="68" y="21" width="8" height="7" rx="2"/><rect x="68" y="48" width="8" height="7" rx="2"/></g>'
+            f'<path d="M50 30v36M36 54l14 14 14-14" {SW}/><path d="M22 88h56" {SW}/>',
+    # Virtual camera: a webcam on its stand.
+    "camera": f'<circle cx="50" cy="42" r="28" {SW}/><circle cx="50" cy="42" r="11" fill="{{c}}"/>'
+              f'<path d="M36 84h28M50 70v14" {SW}/>',
+    # Screenshot: viewfinder corners round a dot.
+    "screenshot": f'<path d="M14 32V20a6 6 0 0 1 6-6h12M68 14h12a6 6 0 0 1 6 6v12M86 68v12a6 6 0 0 1-6 6H68M32 86H20'
+                  f'a6 6 0 0 1-6-6V68" {SW}/><circle cx="50" cy="50" r="14" fill="{{c}}"/>',
+    # Media: a play button in a frame, and paused.
+    "media": f'<rect x="12" y="18" width="76" height="64" rx="14" {SW}/><path d="M41 35l24 15-24 15z" fill="{{c}}"/>',
+    "media-on": f'<rect x="12" y="18" width="76" height="64" rx="14" {SW}/>'
+                '<rect x="37" y="35" width="9" height="30" rx="3" fill="{c}"/><rect x="54" y="35" width="9" height="30" rx="3" fill="{c}"/>',
+    # Filter: three overlapping lenses.
+    "filter": f'<circle cx="38" cy="38" r="22" {SW}/><circle cx="62" cy="38" r="22" {SW}/><circle cx="50" cy="60" r="22" {SW}/>',
+    # Transition: one frame sliding into the next.
+    "transition": f'<rect x="8" y="22" width="44" height="56" rx="9" {SW}/><rect x="48" y="22" width="44" height="56" rx="9" fill="{{c}}"/>'
+                  f'<path d="M58 50h22M72 42l8 8-8 8" stroke="{{bg}}" stroke-width="6" stroke-linecap="round" '
+                  'stroke-linejoin="round" fill="none"/>',
+    # Sprig state: a sprig with two leaves.
+    "sprig": f'<path d="M50 88V36" {SW}/><path d="M50 56q-28 0-32-26q28 0 32 26zM50 44q24 0 30-26q-26 0-30 26z" fill="{{c}}"/>',
+    # Death count: a gravestone on its mound.
+    "deaths": f'<path d="M28 80V40q0-22 22-22t22 22v40" {SW}/><path d="M50 32v24M40 42h20" {SW}/>'
+              '<path d="M12 86q38-14 76 0z" fill="{c}"/>',
+    # Run action: a bolt.
+    "run": '<path d="M58 8L22 56h24l-6 36 38-50H54z" fill="{c}" stroke="{c}" stroke-width="3" stroke-linejoin="round"/>',
 }
 
 # action -> (state 0 glyph, colour), (state 1 glyph, colour) or None
@@ -94,12 +111,14 @@ def svg_key(glyph: str, colour: str, on: bool) -> str:
     bg = "#0f2a1d" if not on else TILE
     body = GLYPHS[glyph].format(c=colour, bg=bg)
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" fill="{bg}"/>'
-            f'<g transform="translate(25 20) scale(0.94)">{body}</g></svg>')
+            f'<g transform="translate(19 12) scale(1.06)">{body}</g></svg>')
 
 
 def svg_icon(glyph: str) -> str:
+    """White on black: render_icon turns black see-through (so cut-outs show the list behind, as Elgato asks)."""
     body = GLYPHS[glyph].format(c=WHITE, bg="#000000")
-    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">{body}</svg>'
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#000000"/>'
+            f'{body}</svg>')
 
 
 def render(svg: str, size: int, path: Path) -> None:
@@ -114,9 +133,20 @@ def render(svg: str, size: int, path: Path) -> None:
     image.save(str(path))
 
 
-def both(svg: str, size: int, base: Path) -> None:
-    render(svg, size, base.with_suffix(".png"))
-    render(svg, size * 2, base.with_name(base.name + "@2x.png"))
+def render_icon(svg: str, size: int, path: Path) -> None:
+    """A white glyph on transparent: brightness becomes alpha."""
+    render(svg, size, path)
+    image = QImage(str(path)).convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            level = image.pixelColor(x, y).red()
+            image.setPixelColor(x, y, QColor(255, 255, 255, level))
+    image.save(str(path))
+
+
+def both(svg: str, size: int, base: Path, draw=render) -> None:
+    draw(svg, size, base.with_suffix(".png"))
+    draw(svg, size * 2, base.with_name(base.name + "@2x.png"))
 
 
 def main() -> None:
@@ -125,12 +155,12 @@ def main() -> None:
         for n, state in enumerate(states):
             if state is not None:
                 both(svg_key(state[0], state[1], n == 1), 72, IMGS / "actions" / action / f"key{n}")
-        both(svg_icon(states[0][0]), 20, IMGS / "actions" / action / "icon")
+        both(svg_icon(states[0][0]), 20, IMGS / "actions" / action / "icon", render_icon)
     tile = (BRAND / "sprigcast-app-icon.svg").read_text(encoding="utf-8")
     both(tile, 256, IMGS / "plugin" / "marketplace")
     render(tile, 288, IMGS / "plugin" / "store-icon-288.png")
-    sloth = (BRAND / "sprigcast-sloth-white.svg").read_text(encoding="utf-8")
-    both(sloth, 28, IMGS / "plugin" / "category-icon")
+    logo = (BRAND / "sprigcast-s-white.svg").read_text(encoding="utf-8")  # the S, not the sloth
+    both(logo, 28, IMGS / "plugin" / "category-icon")
     print("images written to", IMGS)
 
 

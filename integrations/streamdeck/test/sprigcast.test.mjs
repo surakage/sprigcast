@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 
-import { AUTO_PORTS, EVENTS, SprigCast, authAnswer } from "../src/sprigcast.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { AUTO_PORTS, EVENTS, SprigCast, authAnswer, infoFile } from "../src/sprigcast.js";
 
 test("password answer matches SprigCast's (obs-websocket 5 scheme)", () => {
 	assert.equal(authAnswer("leafy", "salt1", "chal2"), "0CjBF+kyqOBOjAwldo0zscggufE/eEKk/jy6hl6VImM=" /* sprigcast.control.protocol.auth_string */);
@@ -99,7 +103,7 @@ test("looks on 4455 then 4456 with no port set, and steps past OBS", async (t) =
 	t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
 	FakeSocket.all = [];
 	assert.deepEqual(AUTO_PORTS, [4455, 4456]);
-	const sc = new SprigCast({ WebSocketClass: FakeSocket });
+	const sc = new SprigCast({ WebSocketClass: FakeSocket, info: "" });
 	sc.want(true);
 	assert.equal(FakeSocket.last.url, "ws://127.0.0.1:4455/sprigcast");
 	FakeSocket.last.say({ op: 0, d: { obsWebSocketVersion: "5.5.0" } }); // OBS holds 4455
@@ -162,4 +166,38 @@ test("a connection that never says hello, or stops answering pings, is dropped",
 	t.mock.timers.tick(1000);
 	assert.equal(FakeSocket.all.length, 2);
 	sc.want(false);
+});
+
+test("connects by itself from SprigCast's api.json, as soon as SprigCast opens", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+	FakeSocket.all = [];
+	const dir = mkdtempSync(join(tmpdir(), "sprigcast-"));
+	const info = join(dir, "api.json");
+	assert.equal(infoFile({ LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }).replace(/\\/g, "/"),
+		"C:/Users/me/AppData/Local/Slothbloom/SprigCast/api.json");
+	const sc = new SprigCast({ WebSocketClass: FakeSocket, info });
+	sc.want(true);
+	assert.equal(FakeSocket.all.length, 0); // SprigCast closed: no connection tried, just a look for the file
+	assert.equal(sc.status, "Waiting for SprigCast to open");
+	writeFileSync(info, JSON.stringify({ app: "SprigCast", port: 4457, path: "/sprigcast", password: "leafy" }));
+	t.mock.timers.tick(2000);
+	assert.equal(FakeSocket.last.url, "ws://127.0.0.1:4457/sprigcast");
+	FakeSocket.last.say({ hello: { auth: { salt: "s", challenge: "c" } } });
+	assert.equal(FakeSocket.last.sent[0].auth, authAnswer("leafy", "s", "c"));
+	sc.want(false);
+	rmSync(dir, { recursive: true, force: true });
+});
+
+test("a password typed in the key settings wins over api.json", async () => {
+	FakeSocket.all = [];
+	const dir = mkdtempSync(join(tmpdir(), "sprigcast-"));
+	const info = join(dir, "api.json");
+	writeFileSync(info, JSON.stringify({ port: 4457, password: "leafy" }));
+	const sc = new SprigCast({ WebSocketClass: FakeSocket, info, port: 4456, password: "typed" });
+	sc.want(true);
+	assert.equal(FakeSocket.last.url, "ws://127.0.0.1:4456/sprigcast");
+	FakeSocket.last.say({ hello: { auth: { salt: "s", challenge: "c" } } });
+	assert.equal(FakeSocket.last.sent[0].auth, authAnswer("typed", "s", "c"));
+	sc.want(false);
+	rmSync(dir, { recursive: true, force: true });
 });

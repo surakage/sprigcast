@@ -186,7 +186,14 @@ def filter_on(api, source, kind: str, name: str, settings: dict | None = None, s
     if seconds > 0:
         from PySide6.QtCore import QTimer
 
-        QTimer.singleShot(int(seconds * 1000), lambda: _RUNS.get(key) == run and filter_off(api, source, kind))
+        def later():
+            if _RUNS.get(key) != run:
+                return  # triggered again (or switched off) since
+            now = next((s for s in api.col.sources if s.id == key[0]), None)  # the collection may be a new copy now
+            if now is not None:
+                filter_off(api, now, kind)
+
+        QTimer.singleShot(int(seconds * 1000), later)
     return flt
 
 
