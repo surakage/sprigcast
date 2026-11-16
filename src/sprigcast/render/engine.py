@@ -693,25 +693,11 @@ class Engine:
         collection = self._collection
         configs = {s.id: s for s in collection.sources}
         visible: set[str] = set()
-
-        def walk(scene, hidden: set[str], path: tuple[str, ...]) -> None:
-            if scene.kind == "part":
-                hidden = hidden | collection.state_hidden(scene)
-            for item in scene.items:
-                if not item.visible or item.source in hidden:
-                    continue
-                visible.add(item.source)
-                config = configs.get(item.source)
-                part = collection.part_of(config) if config is not None else None
-                if part is not None and part.id not in path and len(path) < 16:
-                    walk(collection.shape_for(part, scene.canvas), collection.hidden_here(config),
-                         (*path, part.id))
-
         drawn = self._drawn_scenes(collection)
         if self.editing_part:
             drawn += [p for p in collection.part_scenes() if p.id == self.editing_part]
         for scene in drawn:
-            walk(scene, set(), (scene.id,))
+            _walk_visible(collection, configs, visible, scene, set(), (scene.id,))
         return visible
 
     def _show_hidden(self) -> None:
@@ -1014,3 +1000,19 @@ class Engine:
         if self._grabs:
             self._serve_grabs(compositor, sizes)
             self._mark("snapshots")
+
+
+def _walk_visible(collection, configs, visible: set[str], scene, hidden: set[str], path: tuple[str, ...]) -> None:
+    """Engine._visible_sources' walk. Not a closure: a nested function that calls itself is a reference
+    cycle, so every frame left two for Python's cleanup to find (with the frames' sets and lists)."""
+    if scene.kind == "part":
+        hidden = hidden | collection.state_hidden(scene)
+    for item in scene.items:
+        if not item.visible or item.source in hidden:
+            continue
+        visible.add(item.source)
+        config = configs.get(item.source)
+        part = collection.part_of(config) if config is not None else None
+        if part is not None and part.id not in path and len(path) < 16:
+            _walk_visible(collection, configs, visible, collection.shape_for(part, scene.canvas),
+                          collection.hidden_here(config), (*path, part.id))

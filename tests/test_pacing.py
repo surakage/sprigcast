@@ -69,3 +69,26 @@ def test_tidy_freezes_what_survives_and_settle_frees_cycles_from_the_show():
     pacing.settle()
     assert probe() is None  # at rest everything is looked at once
     del kept, loop
+
+
+def test_the_per_frame_walks_leave_no_reference_cycles():
+    """Two nested functions that called themselves left a cycle every frame for the collector to find."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render.engine import _walk_visible
+
+    col = SceneCollection(canvases=[Canvas(id="h", width=64, height=36)],
+                          sources=[SourceConfig(id="c", kind="color", name="C")],
+                          scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="c")])],
+                          active_scenes={"h": "a"})
+    gc.collect()
+    gc.set_debug(gc.DEBUG_SAVEALL)
+    try:
+        visible: set[str] = set()
+        for _ in range(50):
+            col.part_order()
+            _walk_visible(col, {s.id: s for s in col.sources}, visible, col.scene("a"), set(), ("a",))
+        gc.collect()
+        assert gc.garbage == [] and visible == {"c"}
+    finally:
+        gc.set_debug(0)
+        gc.garbage.clear()
