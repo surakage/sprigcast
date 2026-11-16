@@ -285,9 +285,14 @@ class Engine:
         readbacks_at = 0
 
         late_logged, late_held = float("-inf"), 0
+        gpu = self._gpu_wait(compositor)
+        gpu_waited = 0.0
         try:
             while True:
                 woke = time.perf_counter()
+                # The card finishes the last tick before any OpenGL call of this one: if it fell behind, this
+                # waits without Python's lock, instead of an OpenGL call waiting with it (render/gpu_wait.py).
+                gpu_waited = gpu.wait() if gpu is not None else 0.0
                 if not self._drain_commands(compositor):
                     break
                 started = time.perf_counter()
@@ -299,6 +304,8 @@ class Engine:
                         last_problem = problem
                         log.exception("a frame failed to render")
                         self.events.put(EngineError(f"A frame failed to render: {problem}"))
+                if gpu is not None:
+                    gpu.mark()
                 render_times.append(time.perf_counter() - started)
                 ticks += 1
 
@@ -316,9 +323,11 @@ class Engine:
                         # (878 lines on 2026-11-15), with how many were let go since.
                         if now - late_logged >= LATE_LOG_EVERY_S:
                             late_logged = now
-                            log.info("late frame (%d missed): woke %.1f ms late, commands %.1f ms, frame %.1f ms%s%s%s",
+                            log.info("late frame (%d missed): woke %.1f ms late, %scommands %.1f ms, frame %.1f ms%s%s%s",
                                      missed, 1000 * max(0.0, woke - (next_tick - interval)),
-                                     1000 * (started - woke), 1000 * (render_times[-1]), self._where(),
+                                     f"graphics card behind {1000 * gpu_waited:.1f} ms, " if gpu_waited >= 0.001
+                                     else "",
+                                     1000 * (started - woke - gpu_waited), 1000 * (render_times[-1]), self._where(),
                                      pacing.pause_since(next_tick - 2 * interval),
                                      f"; {late_held - 1} more late since the last line" if late_held > 1 else "")
                             late_held = 0
@@ -344,7 +353,21 @@ class Engine:
                 self._finish_transition(canvas_id, compositor)
             for source in self._sources.values():
                 source.stop()
+            if gpu is not None:
+                gpu.release()
             compositor.release()
+
+    @staticmethod
+    def _gpu_wait(compositor):
+        """Fences for this thread's OpenGL context, or None (a test stand-in, or no sync objects)."""
+        import moderngl
+
+        if not isinstance(getattr(compositor, "ctx", None), moderngl.Context):
+            return None
+        from sprigcast.render.gpu_wait import GpuWait
+
+        gpu = GpuWait()
+        return gpu if gpu.ok else None
 
     def _drain_commands(self, compositor) -> bool:
         while True:

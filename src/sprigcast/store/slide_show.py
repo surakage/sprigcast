@@ -171,15 +171,11 @@ class SlideShowSource(Source):
                     return np.zeros((2, 2, 4), dtype=np.uint8)  # see-through for its turn, then the next
                 self.status = "ok"
                 return picture
-            if self._first_shown:
-                self._make_locked(want)
-                return None
-        self._first_shown = True  # the very first picture: no picture to keep showing, so make it now
-        picture = prepare(*want)
-        if picture is None:
-            self.status = f"can't read {want[0].name}"
-            return np.zeros((2, 2, 4), dtype=np.uint8)
-        return picture
+            # Even the very first picture is made on a worker: made here it held the canvas up (149 ms for a
+            # big photo on 2026-11-16). The slide shows a moment later instead.
+            self._first_shown = True
+            self._make_locked(want)
+            return None
 
     def _make(self, want: tuple) -> None:
         with self._lock:

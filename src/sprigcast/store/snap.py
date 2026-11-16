@@ -98,6 +98,21 @@ def frame_art(frame: str):
     return name, size, QRect(*window)
 
 
+def cover_scaled(picture: np.ndarray, width: int, height: int) -> np.ndarray:
+    """The middle of an RGBA picture cut to width:height and scaled to exactly that size."""
+    from PIL import Image
+
+    h, w = picture.shape[:2]
+    cover = max(width / w, height / h)
+    sw, sh = min(w, max(1, round(width / cover))), min(h, max(1, round(height / cover)))
+    x, y = (w - sw) // 2, (h - sh) // 2
+    crop = np.ascontiguousarray(picture[y:y + sh, x:x + sw, :4])
+    if (sw, sh) == (width, height):
+        return crop
+    return np.asarray(Image.fromarray(crop, "RGBA").resize((width, height), Image.Resampling.BILINEAR,
+                                                           reducing_gap=2.0))
+
+
 def to_qimage(picture: np.ndarray):
     from PySide6.QtGui import QImage
 
@@ -135,11 +150,11 @@ def compose(picture: np.ndarray | None, frame: str, width: int | None = None):
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.fillRect(win.adjusted(-2, -2, 2, 2), QColor(24, 22, 20))
     if picture is not None and picture.size:
-        photo = to_qimage(picture)
-        cover = max(win.width() / photo.width(), win.height() / photo.height())
-        sw, sh = win.width() / cover, win.height() / cover
-        source = QRectF((photo.width() - sw) / 2, (photo.height() - sh) / 2, sw, sh)
-        p.drawImage(win, photo, source)
+        tw, th = max(1, round(win.width())), max(1, round(win.height()))
+        # Shrunk to the window first by Pillow, which lets go of Python's lock while it works; QPainter then
+        # only copies it in. QPainter scaling a whole screenshot took ~30 ms with the lock held (every
+        # other thread waited: the 09:09:27 late frame).
+        p.drawImage(QRectF(win.x(), win.y(), tw, th), to_qimage(cover_scaled(picture, tw, th)))
     draw_art(p, art, QRectF(0, 0, out_w, out_h))
     p.end()
     return card, win
@@ -181,7 +196,8 @@ def save(picture: np.ndarray | None, frame: str, path: Path) -> bool:
 class _Job:
     def __init__(self, picture: np.ndarray | None, path: Path | None):
         self.picture, self.path = picture, path
-        self.card = None  # (QImage, window), made on the render thread
+        self.card = None  # (QImage, window), made on a worker thread; the animation starts once it's ready
+        self.composing = False
         self.started = 0.0
         self.saved = False
 
@@ -255,8 +271,25 @@ class SnapSource(Source):
         frame = "polaroid"
         _art, (art_w, art_h), _w = frame_art(frame)
         width = min(W * 0.86, art_w * (H * 0.80) / art_h)
-        job.card = compose(job.picture, frame, int(width))
+        card = compose(job.picture, frame, int(width))
+        job.started = time.monotonic()  # the animation starts now, from its first frame
+        job.card = card
         self._save(job)
+
+    def _compose_later(self, job: _Job) -> None:
+        """Make the card off the render thread (it used to take ~36 ms there)."""
+        job.composing = True
+
+        def run():
+            try:
+                self._picture_in(job)
+            except Exception:
+                log.exception("snap: making the polaroid failed")
+                job.card = (None, None)
+
+        from sprigcast.core import workers
+
+        workers.run(run, name="snap-card")
 
     def _save(self, job: _Job) -> None:
         if job.path is None:
@@ -285,7 +318,14 @@ class SnapSource(Source):
                 return painted.clear_frame(W, H)
             return None
         if job.card is None:
-            self._picture_in(job)
+            if not job.composing:
+                self._compose_later(job)
+            return None  # a moment until the card is made
+        if job.card[0] is None:  # couldn't make it: skip this snap
+            with self._lock:
+                if self._job is job:
+                    self._job = None
+            return None
         t = time.monotonic() - job.started
         if t >= self._length():
             with self._lock:
