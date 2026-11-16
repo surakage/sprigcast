@@ -1,5 +1,7 @@
 // The settings panel for every SprigCast key. Stream Deck calls connectElgatoStreamDeckSocket().
-// Fields per key are below; names fill in from SprigCast while it runs (any text works too).
+// Fields per key are below. Names (blooms, sounds...) are drop-down lists filled from SprigCast: the whole list
+// every time, whatever is picked now. A name that isn't in SprigCast's list right now stays in it, so a key set up
+// while SprigCast is closed keeps its setting.
 
 const FIELDS = {
 	bloom: [["bloom", "Bloom", "getBlooms"], ["shape", "Shape", ["both", "horizontal", "vertical"]]],
@@ -37,22 +39,20 @@ function build(kind) {
 		} else if (source === "json") {
 			input = document.createElement("textarea");
 			input.placeholder = '{"bloom": "BRB"}';
+		} else if (source) {
+			input = document.createElement("select");
+			input.dataset.source = source;
+			input.dataset.key = key;
+			fillSelect(input, []);
 		} else {
 			input = document.createElement("input");
-			if (source) {
-				const list = document.createElement("datalist");
-				list.id = `list-${key}`;
-				input.setAttribute("list", list.id);
-				row.appendChild(list);
-				input.addEventListener("focus", () => send("sendToPlugin", { event: source, source: settings.source }));
-				input.dataset.source = source;
-			}
 		}
 		input.id = `f-${key}`;
-		input.value = settings[key] ?? (Array.isArray(source) ? source[0] : "");
+		if (input.tagName !== "SELECT" || Array.isArray(source)) input.value = settings[key] ?? (Array.isArray(source) ? source[0] : "");
 		input.addEventListener("change", () => {
 			settings[key] = input.value;
 			send("setSettings", settings);
+			if (key === "source") askLists("getFilters"); // a source's own filters
 		});
 		row.appendChild(input);
 		form.appendChild(row);
@@ -60,10 +60,28 @@ function build(kind) {
 	if (!(FIELDS[kind] ?? []).length) document.getElementById("connection").open = true;
 }
 
+/** Every name SprigCast has, plus the one picked now (even if SprigCast doesn't have it right now). */
+function fillSelect(select, items) {
+	const picked = settings[select.dataset.key] ?? "";
+	const names = items.filter((i) => i.value).map((i) => i.value);
+	const options = [new Option(names.length || picked ? "Choose…" : "Open SprigCast to pick", "")];
+	options[0].disabled = true;
+	if (picked && !names.includes(picked)) options.push(new Option(picked, picked));
+	for (const name of names) options.push(new Option(name, name));
+	select.replaceChildren(...options);
+	select.value = picked;
+}
+
 function fillList(event, items) {
-	for (const input of document.querySelectorAll(`[data-source="${event}"]`)) {
-		const list = document.getElementById(input.getAttribute("list"));
-		list.replaceChildren(...items.filter((i) => i.value).map((i) => new Option(i.label, i.value)));
+	for (const select of document.querySelectorAll(`select[data-source="${event}"]`)) fillSelect(select, items);
+}
+
+/** Ask the plugin for the lists (all of them, or one). */
+function askLists(only) {
+	const wanted = new Set([...document.querySelectorAll("select[data-source]")].map((s) => s.dataset.source));
+	for (const event of wanted) {
+		if (event === "getFilters" && !settings.source) continue; // pick a source first
+		if (!only || event === only) send("sendToPlugin", { event, source: settings.source });
 	}
 }
 
@@ -90,6 +108,7 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionI
 		socket.send(JSON.stringify({ event: registerEvent, uuid }));
 		send("getGlobalSettings");
 		send("sendToPlugin", { event: "getStatus" });
+		askLists();
 	};
 	socket.onmessage = (message) => {
 		const data = JSON.parse(message.data);
@@ -97,7 +116,9 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionI
 			globals = data.payload?.settings ?? {};
 			showGlobals();
 		} else if (data.event === "sendToPropertyInspector" && data.payload?.event === "status") {
-			document.getElementById("status").textContent = data.payload.text ?? "";
+			const text = data.payload.text ?? "";
+			if (text.startsWith("Connected") && !document.getElementById("status").textContent.startsWith("Connected")) askLists();
+			document.getElementById("status").textContent = text;
 		} else if (data.event === "sendToPropertyInspector" && data.payload?.items) {
 			fillList(data.payload.event, data.payload.items);
 		}
