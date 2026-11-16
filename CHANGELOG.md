@@ -173,6 +173,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   and its CUDA needs are gone from the installer, and the old model downloads are deleted.
   The Stream doctor no longer stops go-live because captions are Listening (waiting for you to talk), and
   blooms going on and off air reuse one listening thread instead of adding one each time.
+  The speech model runs in its own low-priority helper process, so loading it (1.4 s on the PC test) never
+  freezes the picture or the stream, and its memory all goes when captions leave the air. The model downloads
+  when captions are added or SprigCast starts, not when they go on air.
 - Instant replay store plugin: plays the last few seconds back on stream. Pick one sprig or source to replay (your game
   or Elgato capture), and optionally a second one in a corner (your camera). Its hotkey, right-click, Stream Deck or
   an app (`replay.play`) starts it: canopy bands sweep in, REPLAY shows, the replay plays with a badge and a progress

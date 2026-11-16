@@ -16,7 +16,8 @@ Two ways to turn speech into words (Settings → Captions by):
   for your Windows account, never in the garden file.
 
 It only works while it's on air: hidden, or in a bloom that isn't showing, it stops listening, and a
-minute later it lets the speech model go too, so it costs nothing when you aren't using it.
+minute later it lets the speech model go too, so it costs nothing when you aren't using it. The model
+runs in a small helper process at low priority, so getting it ready never holds up the stream.
 
 A SprigCast store plugin: add it from Settings → Plugins.
 """
@@ -39,9 +40,9 @@ import numpy as np
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "live_captions", "name": "Live captions", "version": 3, "adds": "Source",
+PLUGIN = {"id": "live_captions", "name": "Live captions", "version": 4, "adds": "Source",
           "about": "What you say, as captions on stream. Runs on your PC, or with your own Google key.",
-          "new": "Runs on your graphics card (any NVIDIA, AMD or Intel Arc card), with nothing more to install."}
+          "new": "Getting the speech model ready no longer freezes the picture for a moment."}
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,8 @@ KIND = "live_captions"
 W, H = 1600, 260  # the card's box; scale it on the canvas like anything else
 RATE = 16_000  # what speech models listen at
 SECRET = "captions/google_key"  # where the Google key is kept (encrypted), see settings_dialog.secrets
-PARK_SECONDS = 60.0  # after going off air, keep the model this long in case it comes straight back
+PARK_SECONDS = 60.0
+PREFETCH = True  # download the model when captions join a garden (off in tests)  # after going off air, keep the model this long in case it comes straight back
 GOOGLE_URL = "https://speech.googleapis.com/v1/speech:recognize"
 
 # Languages: (Whisper's code, Google's code, name). "auto" lets Whisper work it out (Google uses en-US).
@@ -395,19 +397,177 @@ def bracketed(text: str) -> bool:
     return len(t) > 1 and t[0] + t[-1] in ("[]", "()", "**", "♪♪")
 
 
+def directml() -> bool:
+    """ONNX Runtime with DirectML is installed (onnxruntime-directml, on Windows). Checked without
+    importing it, so SprigCast itself never loads ONNX Runtime for captions (the helper does)."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("onnxruntime")
+    except (ImportError, ValueError):
+        return False
+    if spec is None or not spec.origin:
+        return False
+    return (Path(spec.origin).parent / "capi" / "DirectML.dll").exists()
+
+
 def graphics_card() -> bool:
     """A graphics card worth handing the model to: an NVIDIA, AMD Radeon RX/Pro or Intel Arc card, and
     DirectML there to run on it. Built-in graphics stay free for the stream (the processor is fine)."""
     try:
-        import onnxruntime as ort
-
-        if "DmlExecutionProvider" not in ort.get_available_providers():
+        if not directml():
             return False
         from sprigcast.app.lowend import CARD_GPU, gpu_names
 
         return any(CARD_GPU.search(g) for g in gpu_names())
     except Exception:  # noqa: BLE001
         return False
+
+
+# The helper process ------------------------------------------------------------------------------
+#
+# The speech model runs in a small helper process, not in SprigCast. Creating a graphics-card session
+# for a 200 MB model held Python's lock (the GIL) for 1.3 s on the PC test, which froze the picture and
+# the stream. In its own process nothing it does can hold SprigCast up; when captions leave the air the
+# helper ends, and every byte of the model goes with it. It runs at below-normal priority, so the stream
+# always comes first. Messages are 4-byte lengths and pickles over its stdin and stdout.
+
+def _send(stream, message) -> None:
+    import pickle
+    import struct
+
+    data = pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL)
+    stream.write(struct.pack("<I", len(data)) + data)
+    stream.flush()
+
+
+def _receive(stream):
+    import pickle
+    import struct
+
+    head = stream.read(4)
+    if len(head) < 4:
+        raise EOFError("the captions helper closed")
+    size = struct.unpack("<I", head)[0]
+    data = stream.read(size)
+    if len(data) < size:
+        raise EOFError("the captions helper closed")
+    return pickle.loads(data)
+
+
+def _hold_for_test(seconds: float) -> None:
+    """What a session load does to Python on Windows: one C call that keeps the GIL (for the test)."""
+    import re
+
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        re.match(r"(a+)+$", "a" * 22 + "b")  # backtracks inside one C call, holding the GIL
+
+
+def serve(stdin=None, stdout=None) -> None:
+    """The helper's side: load the model when asked, then turn audio into words until told to stop."""
+    import sys
+
+    stdin = stdin or sys.stdin.buffer
+    if stdout is None:  # keep the real stdout for messages; anything else printed goes to stderr
+        stdout = os.fdopen(os.dup(1), "wb")
+        os.dup2(2, 1)
+        sys.stdout = sys.stderr
+    engine = None
+    while True:
+        try:
+            message = _receive(stdin)
+        except EOFError:
+            return
+        op = message.get("op")
+        try:
+            if op == "load":
+                if message.get("hold"):
+                    _hold_for_test(float(message["hold"]))
+                    _send(stdout, {"ok": True, "device": "cpu"})
+                    continue
+                engine = WhisperEngine(Path(message["folder"]), message["name"], message["language"],
+                                       message["device"])
+                _send(stdout, {"ok": True, "device": engine.device})
+            elif op == "transcribe":
+                _send(stdout, {"text": engine.transcribe(message["audio"]) if engine else ""})
+            elif op == "quit":
+                return
+        except Exception as exc:  # noqa: BLE001 (said to SprigCast, which logs it)
+            _send(stdout, {"error": f"{exc.__class__.__name__}: {exc}"})
+
+
+def helper_command() -> list[str]:
+    """Python running serve() from this very file (the installed copy in the plugins folder)."""
+    import sys
+
+    here = str(Path(__file__).resolve())
+    code = ("import runpy, sys; sys.path[:0] = [p for p in sys.argv[1:] if p]; "
+            f"runpy.run_path({here!r})['serve']()")
+    return [sys.executable, "-I", "-c", code, *[p for p in sys.path if p and Path(p).is_dir()]]
+
+
+class ProcessEngine:
+    """The speech model in the helper process. transcribe() waits on a pipe (Python's lock is free)."""
+
+    def __init__(self, folder: Path | None, name: str, language: str, device: str, hold: float = 0.0):
+        import subprocess
+        import sys
+
+        flags = 0
+        if sys.platform == "win32":
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        self.proc = subprocess.Popen(helper_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+        self.lock = threading.Lock()
+        reply = self._ask({"op": "load", "folder": str(folder or ""), "name": name, "language": language,
+                           "device": device, "hold": hold})
+        if "error" in reply:
+            self.close()
+            raise RuntimeError(reply["error"])
+        self.device = reply.get("device", device)
+
+    def _ask(self, message: dict) -> dict:
+        with self.lock:
+            try:
+                _send(self.proc.stdin, message)
+                return _receive(self.proc.stdout)
+            except (OSError, EOFError, ValueError) as exc:
+                return {"error": f"the captions helper stopped ({exc})"}
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        reply = self._ask({"op": "transcribe", "audio": np.ascontiguousarray(audio, dtype=np.float32)})
+        if "error" in reply:
+            raise RuntimeError(reply["error"])
+        return str(reply.get("text", ""))
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def close(self) -> None:
+        """End the helper; its memory goes back to Windows at once."""
+        proc = self.proc
+        try:
+            proc.stdin.close()  # it reads the end and quits
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+            proc.wait(timeout=2)
+        for pipe in (proc.stdout,):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def __del__(self):
+        try:
+            if self.proc.poll() is None:
+                self.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class WhisperEngine:
@@ -704,6 +864,8 @@ class LiveCaptionsSource(Source):
         self._want = threading.Event()
         self._halt: threading.Event | None = None  # set to stop the current listening (off air, new settings)
         self._dead = False
+        self._prefetch: threading.Thread | None = None
+        self._prefetch_stop = threading.Event()
         self._engine = None
         self._engine_key: tuple | None = None
         self._hidden = False
@@ -716,6 +878,7 @@ class LiveCaptionsSource(Source):
     # Running only while on air ---------------------------------------------------------------
 
     def start(self) -> None:
+        self._prefetch_soon()
         self._listen()
 
     def wake(self) -> None:
@@ -724,6 +887,7 @@ class LiveCaptionsSource(Source):
             self._listen()
 
     def sleep(self) -> None:
+        self._prefetch_soon()  # added off air, or at start: get the model ready meanwhile
         self._quiet()
         self._frame.release()
         self._shown = None
@@ -739,6 +903,7 @@ class LiveCaptionsSource(Source):
         """Removed: stop listening now and let the model go (the thread ends straight away)."""
         with self._lock:
             self._dead = True
+        self._prefetch_stop.set()
         self._quiet()
         self._want.set()  # wakes a parked thread so it sees it's done
         with self._lock:
@@ -751,6 +916,8 @@ class LiveCaptionsSource(Source):
         before = {k: self.settings.get(k) for k in listening}
         super().update(settings)
         self._shown = None
+        if listening != before:
+            self._prefetch_soon()  # a new model or device: fetch it now
         if listening != before and self._want.is_set():
             self._quiet()  # start again with the new mic, model or language (same thread)
             self._listen()
@@ -776,10 +943,10 @@ class LiveCaptionsSource(Source):
         self.board.clear()
 
     def _drop_engine(self) -> None:
-        self._engine, self._engine_key = None, None
-        import gc
-
-        gc.collect()  # the model's memory goes back to Windows now, not whenever Python next tidies up
+        engine, self._engine, self._engine_key = self._engine, None, None
+        close = getattr(engine, "close", None)
+        if close is not None:
+            close()  # the helper process ends: the model's memory goes back to Windows at once
 
     def _life(self) -> None:
         """The listening thread: listen while wanted; off air for PARK_SECONDS, let the model go and end."""
@@ -806,6 +973,35 @@ class LiveCaptionsSource(Source):
 
     # The listening thread --------------------------------------------------------------------
 
+    def _model_choice(self) -> tuple[str, str]:
+        """(model name, "gpu" or "cpu") for the settings now."""
+        name = pick_model(str(self.settings.get("model", "auto")), str(self.settings.get("language", "en")))
+        run_on = str(self.settings.get("run_on", "auto"))
+        return name, "gpu" if run_on == "gpu" or (run_on == "auto" and graphics_card()) else "cpu"
+
+    def _prefetch_soon(self) -> None:
+        """Download the model in the background as soon as captions are in a garden (added, or at start),
+        so going on air never waits for it. Loading stays for on air: an unused model costs nothing."""
+        if not PREFETCH or self.settings.get("engine", "pc") != "pc" or self._dead:
+            return
+        if self._prefetch is not None and self._prefetch.is_alive():
+            return
+        name, device = self._model_choice()
+        if model_ready(name, device):
+            return
+
+        def fetch() -> None:
+            try:
+                fetch_model(name, device, cancel=self._prefetch_stop)
+                log.info("captions: %s speech model ready for the %s", name, device)
+            except InterruptedError:
+                pass
+            except Exception as exc:  # noqa: BLE001 (tried again when captions go on air)
+                log.info("captions: couldn't get the speech model ahead of time: %s", exc)
+
+        self._prefetch = threading.Thread(target=fetch, name=f"captions-fetch-{self.id}", daemon=True)
+        self._prefetch.start()
+
     def _make_engine(self, stop: threading.Event):
         engine_kind = self.settings.get("engine", "pc")
         language = str(self.settings.get("language", "en"))
@@ -817,13 +1013,11 @@ class LiveCaptionsSource(Source):
                 self.status = "Add your Google key in Settings"
                 return None
             return GoogleEngine(key, language)
-        name = pick_model(str(self.settings.get("model", "auto")), language)
-        run_on = str(self.settings.get("run_on", "auto"))
-        device = "gpu" if run_on == "gpu" or (run_on == "auto" and graphics_card()) else "cpu"
+        name, device = self._model_choice()
         wanted = ("pc", name, language, device)
-        if self._engine is not None and self._engine_key == wanted:
+        if self._engine is not None and self._engine_key == wanted and getattr(self._engine, "alive", lambda: True)():
             return self._engine
-        self._engine = None  # let the old one go before loading another
+        self._drop_engine()  # let the old one go before loading another
         if not model_ready(name, device):
             def progress(done: int, total: int) -> None:
                 self.status = f"Getting the speech model ({done * 100 // max(1, total)}%)"
@@ -832,7 +1026,7 @@ class LiveCaptionsSource(Source):
             progress = None
         folder = fetch_model(name, device, progress, cancel=stop)
         self.status = "Loading the speech model"
-        engine = WhisperEngine(folder, name, language, device)
+        engine = ProcessEngine(folder, name, language, device)  # nothing shows until it's ready
         self._engine, self._engine_key = engine, wanted
         log.info("captions: %s model on the %s", name, "graphics card" if engine.device == "gpu" else "processor")
         return engine
