@@ -61,6 +61,12 @@ LABELS = {
     "engine": "Captions by",
     "google_key": "Google key",
     "lines": "Lines",
+    "capture": "Replay",
+    "corner": "In the corner",
+    "corner_at": "Corner",
+    "corner_size": "Corner size (%)",
+    "replay_sound": "Replay sound",
+    "sound_level": "Sound level (%)",
 }
 
 

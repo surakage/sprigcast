@@ -344,8 +344,12 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `deaths.reset` | Death count | Back to 0. | `source` (optional) |
 | `deaths.show` | Death count | Pop the gravestone up with the count as it is. | `source` (optional) |
 | `deaths.get` | Death count | The count, without showing it. | `source` (optional) |
+| `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
+| `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
+
+**Instant replay** keeps the last Seconds (default 20) of what you picked in its settings: one sprig or source, plus an optional one in a corner (a camera). It keeps nothing while its bloom is off air or its eye is off, so `replay.play` then answers `not_allowed` ("Instant replay isn't on air."), as it does while one is already playing. It answers `{"playing": [names]}` and sends `replay.started` (`source`, `sourceId`, `seconds`, `speed`) and `replay.ended` (`source`, `sourceId`, `reason`: ended, stopped or failed) in the `plugin` group. Adding it (+ → Plugins → Instant replay) makes a sprig of its own that fills the canvas, on top of the bloom; it's see-through except while a replay plays.
 
 **Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing.
 
