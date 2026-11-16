@@ -19,6 +19,7 @@ import ctypes
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -220,6 +221,10 @@ class SharedBlock:
     def __init__(self, address: int, size: int = BLOCK_SIZE, close=None):
         self.address, self.size = address, size
         self._close = close
+        # The render thread copies frames in while the UI thread may close it (camera turned off): closing
+        # waits for a copy in progress, and nothing is read or written once it's closed (unmapped memory).
+        self._lock = threading.Lock()
+        self.closed = False
 
     def _u32(self, offset: int) -> ctypes.c_uint32:
         return ctypes.c_uint32.from_address(self.address + offset)
@@ -229,31 +234,42 @@ class SharedBlock:
 
     @property
     def valid(self) -> bool:
-        return self._u32(0).value == MAGIC
+        with self._lock:
+            return not self.closed and self._u32(0).value == MAGIC
 
     def wanted(self) -> tuple[int, int]:
-        return self._u32(8).value, self._u32(12).value
+        with self._lock:
+            return (0, 0) if self.closed else (self._u32(8).value, self._u32(12).value)
 
     def heartbeat(self) -> int:
-        return self._u64(32).value
+        with self._lock:
+            return 0 if self.closed else self._u64(32).value
 
     def write(self, width: int, height: int, nv12) -> bool:
         """Copy one NV12 frame (bytes or a numpy array) in (seqlock: the count is odd while writing)."""
         n = width * height * 3 // 2
         if len(nv12) < n or HEADER + n > self.size:
             return False
+        with self._lock:
+            if self.closed:
+                return False
+            self._copy(width, height, nv12, n)
+        return True
+
+    def _copy(self, width: int, height: int, nv12, n: int) -> None:
         seq = self._u64(24)
         seq.value += 1
         self._u32(16).value, self._u32(20).value = width, height
         # A numpy array is copied straight from its own memory, with no bytes copy in between.
         ctypes.memmove(self.address + HEADER, getattr(getattr(nv12, "ctypes", None), "data", nv12), n)
         seq.value += 1
-        return True
 
     def close(self) -> None:
-        if self._close:
-            self._close()
-            self._close = None
+        with self._lock:
+            self.closed = True
+            if self._close:
+                self._close()
+                self._close = None
 
 
 def open_block() -> SharedBlock | None:

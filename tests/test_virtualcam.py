@@ -1,4 +1,5 @@
 import ctypes
+import time
 import types
 
 from sprigcast.output import virtualcam
@@ -11,6 +12,13 @@ def _block(size=HEADER + 64 * 64 * 3 // 2):
     block._buf = buf  # keep it alive
     ctypes.c_uint32.from_address(block.address).value = MAGIC
     return block
+
+
+def _again(block):
+    """The same shared memory opened again (each open is a new view; a closed one stays closed)."""
+    view = SharedBlock(block.address, block.size)
+    view._buf = block._buf
+    return view
 
 
 def _camera_side(block, w, h, beat):
@@ -55,7 +63,7 @@ def test_feeds_the_canvas_that_matches_the_shape_only_while_watched():
     canvases = [types.SimpleNamespace(id="horizontal", width=1920, height=1080, enabled=True),
                 types.SimpleNamespace(id="vertical", width=1080, height=1920, enabled=True)]
     engine = _Engine()
-    cam = VirtualCamera(engine, lambda: canvases, open_block=lambda: block, clock=lambda: clock[0])
+    cam = VirtualCamera(engine, lambda: canvases, open_block=lambda: _again(block), clock=lambda: clock[0])
     cam.poll()
     assert engine.taps == []  # nobody watching yet
     _camera_side(block, 32, 18, clock[0])
@@ -168,7 +176,7 @@ def test_an_app_with_the_camera_open_twice_doesnt_flip_it_every_second():
     canvases = [types.SimpleNamespace(id="horizontal", width=1920, height=1080, enabled=True),
                 types.SimpleNamespace(id="vertical", width=1080, height=1920, enabled=True)]
     engine = _Engine()
-    cam = VirtualCamera(engine, lambda: canvases, open_block=lambda: block, clock=lambda: clock[0])
+    cam = VirtualCamera(engine, lambda: canvases, open_block=lambda: _again(block), clock=lambda: clock[0])
     _camera_side(block, 18, 32, clock[0])
     cam.poll()
     tap = engine.taps[0]
@@ -219,3 +227,34 @@ def test_set_up_registers_both_even_if_the_first_fails(monkeypatch, tmp_path):
     steps = commands[0].split(" & ")
     assert steps[-1].startswith("regsvr32 /s") and "camera32" in steps[-1]
     assert sum(s.startswith("regsvr32 /s") for s in steps) == 2
+
+
+def test_turning_the_camera_off_never_unmaps_a_frame_mid_copy():
+    """The render thread copies frames in while the UI thread turns the camera off: close() waits for the
+    copy, and nothing is written, read or unmapped afterwards."""
+    import threading
+
+    block = _block()
+    closed_while_copying = []
+    copying = threading.Event()
+    real_copy = block._copy
+
+    def slow_copy(*args):
+        copying.set()
+        time.sleep(0.05)
+        closed_while_copying.append(block.closed)
+        real_copy(*args)
+
+    block._copy = slow_copy
+    calls = []
+    block._close = lambda: calls.append("unmapped")
+    frame = bytes(64 * 64 * 3 // 2)
+    writer = threading.Thread(target=block.write, args=(64, 64, frame))
+    writer.start()
+    copying.wait(1)
+    block.close()
+    writer.join()
+    assert closed_while_copying == [False]
+    assert calls == ["unmapped"]
+    assert block.write(64, 64, frame) is False
+    assert block.wanted() == (0, 0) and block.heartbeat() == 0 and not block.valid

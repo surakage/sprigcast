@@ -18,7 +18,7 @@ from collections import deque
 
 import numpy as np
 
-from sprigcast.core.frames import reformat
+from sprigcast.core.frames import owned, picture_array
 from sprigcast.sources.audio import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -175,7 +175,7 @@ class StingerPlayer:
                 if packet.stream is audio:
                     for frame in packet.decode():
                         for out in resampler.resample(frame):
-                            self._add_audio(out.to_ndarray().reshape(-1, 2))
+                            self._add_audio(owned(out.to_ndarray().reshape(-1, 2)))
                     continue
                 if decoder is not None and packet.size == 0:
                     continue  # demux's empty end-of-file packet: our own decoder is flushed once below
@@ -185,7 +185,7 @@ class StingerPlayer:
                     t = float(pts * video.time_base) if pts is not None else 0.0
                     if first is None:
                         first = t
-                    picture = reformat(frame, width=size[0], height=size[1], format="rgba").to_ndarray()
+                    picture = picture_array(frame, width=size[0], height=size[1], format="rgba")
                     if not self._add_frame(t - first, picture):
                         return
             if decoder is not None:
@@ -194,7 +194,7 @@ class StingerPlayer:
                 except EOFError:
                     tail = []
                 for frame in tail:
-                    picture = reformat(frame, width=size[0], height=size[1], format="rgba").to_ndarray()
+                    picture = picture_array(frame, width=size[0], height=size[1], format="rgba")
                     pts = frame.pts or 0
                     self._add_frame(float(pts * video.time_base) - (first or 0.0), picture)
 

@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast.core.frames import owned
 from sprigcast.core.source import Source, register
 from sprigcast.render.stinger import LIBVPX, fit_size
 from sprigcast.sources.audio import SAMPLE_RATE
@@ -123,9 +124,9 @@ def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:
     packed = pack_i420(frame, size)
     if packed is not None:
         return packed
-    from sprigcast.core.frames import reformat
+    from sprigcast.core.frames import picture_array
 
-    return reformat(frame, width=size[0], height=size[1], format="rgba").to_ndarray(), "RGBA"
+    return picture_array(frame, width=size[0], height=size[1], format="rgba"), "RGBA"
 
 
 def is_sound_file(path: str) -> bool:
@@ -505,6 +506,7 @@ class MediaSource(Source):
             raise FileNotFoundError("file not found")
         offset = 0.0  # added to each pass's times when looping, so the timeline keeps running
         container = None  # kept open from one pass to the next: looping seeks back to the start
+        decoder = None  # libvpx (see-through webm): made once, flushed for each new pass
         try:
             while self._current(generation):
                 if self.state == "stopped":  # waiting for play: just learn what the file is
@@ -530,11 +532,12 @@ class MediaSource(Source):
                     self.duration = max(0.04, container.duration / 1_000_000)
                 elif video is not None and video.duration is not None and video.time_base is not None:
                     self.duration = max(0.04, float(video.duration * video.time_base))
-                decoder = None
                 size = (0, 0)
                 if video is not None:
                     name = video.codec_context.name
-                    if name in LIBVPX and LIBVPX[name] in av.codecs_available:
+                    if decoder is not None:
+                        decoder.flush_buffers()  # the next pass: same decoder and threads, nothing left over
+                    elif name in LIBVPX and LIBVPX[name] in av.codecs_available:
                         decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps see-through parts
                         # FFmpeg's default is a thread per CPU thread (17 on the user's Ryzen), every loop
                         decoder.thread_count = decode_threads(video.codec_context.width,
@@ -565,7 +568,7 @@ class MediaSource(Source):
                             for out in resampler.resample(frame):
                                 if t is None:
                                     continue
-                                samples = out.to_ndarray().reshape(-1, 2).astype(np.float32, copy=False)
+                                samples = owned(out.to_ndarray().reshape(-1, 2).astype(np.float32, copy=False))
                                 at = t - origin
                                 if at + len(samples) * speed / SAMPLE_RATE < skip_to:
                                     continue
@@ -600,6 +603,10 @@ class MediaSource(Source):
                     return
                 offset += length
         finally:
+            # Only this thread ever touches its decoder and file, and it lets them go here, decoder first, after
+            # its last frame is decoded: nothing frees them while FFmpeg is still working on them. Pictures it
+            # handed over are copies of their own (core/frames.owned), so none points back into the decoder.
+            decoder = None
             if container is not None:
                 container.close()
 
