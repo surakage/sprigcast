@@ -7,12 +7,13 @@ out of the slot as a polaroid. It develops, grows to the middle, holds for a few
 away. The polaroid is shaped to the screenshot, so the whole picture shows, edges and all, and it
 stays inside the canvas the whole way.
 
-The polaroid is only for show: the file saved is the screenshot itself (recordings folder →
-Screenshots, named by date and time), without the polaroid frame and without a polaroid that's
-still on screen from an earlier snap.
+The polaroid is for show: the file saved is the screenshot itself (recordings folder → Screenshots,
+named by date and time), without the polaroid frame and without a polaroid that's still on screen
+from an earlier snap.
 
-Settings: Seconds (how long the polaroid stays up) and Flash. It's only an animation: nothing about
-your viewers is read or kept.
+Settings: Seconds (how long the polaroid stays up), Flash, and Save a polaroid copy (off unless you
+turn it on: also saves the framed polaroid next to the screenshot). It's only an animation: nothing
+about your viewers is read or kept.
 
 A SprigCast store plugin: add it from Settings → Plugins.
 """
@@ -23,6 +24,7 @@ import logging
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +38,7 @@ log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "snap", "name": "Snap", "version": 4, "adds": "Source",
           "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot.",
-          "new": "The polaroid shows the whole screenshot and stays inside the canvas; only the screenshot is saved."}
+          "new": "The polaroid shows the whole screenshot and stays inside the canvas; a polaroid copy is saved only if you turn it on."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down
@@ -232,9 +234,43 @@ def held_rect(card_w: float, card_h: float) -> tuple[float, float, float, float,
     return cx - card_w / 2, cy - card_h / 2, card_w, card_h, room
 
 
+_SAVING = threading.Lock()
+_TAKEN: set[Path] = set()  # names given out, so two snaps in the same second get different ones
+
+
+def snap_name(folder: Path, when: datetime | None = None) -> Path:
+    """Where a polaroid copy taken now goes: "snap 2026-11-14 20-03-05.png", with (2), (3)... in the same second."""
+    when = when or datetime.now()
+    with _SAVING:
+        path = folder / when.strftime("snap %Y-%m-%d %H-%M-%S.png")
+        n = 2
+        while path.exists() or path in _TAKEN:
+            path = folder / when.strftime(f"snap %Y-%m-%d %H-%M-%S ({n}).png")
+            n += 1
+        _TAKEN.add(path)
+        return path
+
+
+def save(picture: np.ndarray | None, path: Path) -> bool:
+    """The polaroid copy (Save a polaroid copy, off unless turned on), full size, written whole then named."""
+    try:
+        card, _win = compose(picture)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _SAVING:
+            part = path.with_name(path.name + ".part")  # never a half-saved snap
+            if not card.save(str(part), "PNG"):
+                raise OSError(f"couldn't write {path}")
+            part.replace(path)
+        log.info("snap polaroid copy saved to %s", path)
+        return True
+    except Exception:
+        log.exception("saving a polaroid copy failed")
+        return False
+
+
 class _Job:
-    def __init__(self, picture: np.ndarray | None):
-        self.picture = picture
+    def __init__(self, picture: np.ndarray | None, path: Path | None = None):
+        self.picture, self.path = picture, path  # path: where the polaroid copy goes (None: no copy)
         self.card = None  # (QImage, window), made on a worker thread; the animation starts once it's ready
         self.composing = False
         self.started = 0.0
@@ -243,7 +279,7 @@ class _Job:
 @register("snap")
 class SnapSource(Source):
     label = "Snap"
-    defaults = {"seconds": 6.0, "flash": True}
+    defaults = {"seconds": 6.0, "flash": True, "save_polaroid_copy": False}
     sleeps = False  # a screenshot can come while it's hidden; it costs nothing until then
     in_screenshots = False  # only for show: a screenshot taken while a polaroid is up doesn't have it in
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
@@ -274,14 +310,14 @@ class SnapSource(Source):
 
     # Triggers (UI thread) ------------------------------------------------------------------------
 
-    def show(self, picture: np.ndarray | None, _path: Any = None) -> int:
-        """Print this picture as a polaroid: only on stream, nothing is saved (the screenshot already is).
-        Returns how many are ahead of it, or -1 if too many are waiting already."""
+    def show(self, picture: np.ndarray | None, path: Path | None = None) -> int:
+        """Print this picture as a polaroid on stream (and save a polaroid copy to path, when given: only with
+        Save a polaroid copy on). Returns how many are ahead of it, or -1 if too many are waiting already."""
         with self._lock:
             ahead = len(self._queue) + (self._job is not None)
             if ahead >= MOST_WAITING:
                 return -1
-            self._queue.append(_Job(picture))
+            self._queue.append(_Job(picture, path))
             return ahead
 
     def clear(self) -> None:
@@ -312,6 +348,14 @@ class SnapSource(Source):
         card = compose(job.picture, int(width))
         job.started = time.monotonic()  # the animation starts now, from its first frame
         job.card = card
+        if job.path is not None:
+            self._save(job)
+
+    def _save(self, job: _Job) -> None:
+        args = (job.picture, job.path)
+        from sprigcast.core import workers
+
+        workers.run(lambda: save(*args), name="snap-save")
 
     def _compose_later(self, job: _Job) -> None:
         """Make the card off the render thread (it used to take ~36 ms there)."""
@@ -464,8 +508,8 @@ def _picture(image) -> np.ndarray | None:
 
 
 def on_screenshot(api, shots: list[dict]) -> None:
-    """Every Snap prints the first shape's screenshot (its "image"). Only the screenshot is saved (by
-    SprigCast, before this): the polaroid is just for show."""
+    """Every Snap prints the first shape's screenshot (its "image"). The screenshot itself is saved by
+    SprigCast before this; a Snap with Save a polaroid copy on (off by default) also saves the polaroid."""
     shot = next((s for s in shots if s.get("image") is not None), None)
     if shot is None:
         return
@@ -476,7 +520,10 @@ def on_screenshot(api, shots: list[dict]) -> None:
             continue
         if picture is None:
             picture = _picture(shot["image"])
-        instance.show(picture)
+        path = None  # save_polaroid (older Snaps) is ignored: everyone starts with the copy off
+        if snap.settings.get("save_polaroid_copy") is True and shot.get("path"):
+            path = snap_name(Path(shot["path"]).parent)
+        instance.show(picture, path)
 
 
 register_on_screenshot(on_screenshot)

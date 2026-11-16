@@ -49,6 +49,7 @@ LABELS = {
     "restart_on_show": "Restart when shown",
     "clear_on_end": "Show nothing when it ends",
     "play_on_start": "Play when SprigCast opens",
+    "save_polaroid_copy": "Save a polaroid copy",
 }
 
 
