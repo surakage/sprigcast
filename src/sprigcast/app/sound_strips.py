@@ -18,6 +18,7 @@ with the heading.
 from __future__ import annotations
 
 from collections.abc import Callable
+from types import SimpleNamespace
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
@@ -146,7 +147,7 @@ class Strip(QFrame):
         small = self.tag.font()
         small.setPixelSize(10)  # on the font, not in the style sheet, so measuring it gives the size it's shown at
         self.tag.setFont(small)
-        self.tag_text = ""
+        self.tag_text: str | None = None  # set_tag fills it
         self.tag.setFixedHeight(QFontMetrics(self.tag.font()).height())  # kept when empty, so strips line up
         col.addWidget(self.tag)
         middle = QHBoxLayout()
@@ -171,7 +172,7 @@ class Strip(QFrame):
             f"QPushButton {{ background: {theme.RAISED}; border: none; border-radius: 13px; }}"
             f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
             f"QPushButton:checked {{ background: {theme.SELECT_BG}; }}")
-        self.mute.clicked.connect(lambda on: self.on_change(self.sound_id, {"muted": on}))
+        self.mute.clicked.connect(self._mute_clicked)
         more = QPushButton()
         more.setIcon(icons.icon("gear", theme.MUTED, 15))
         more.setFixedSize(34, 26)
@@ -189,22 +190,37 @@ class Strip(QFrame):
         self.show_sound(sound)
 
     def set_selected(self, on: bool) -> None:
+        if getattr(self, "_selected", None) == on:
+            return  # a new stylesheet re-polishes the whole strip: only when the ring really changes
+        self._selected = on
         edge = theme.ACCENT if on else theme.CARD
         self.setStyleSheet(f"#soundStrip {{ background: {theme.SELECT_BG if on else theme.CARD};"
                            f" border: 1px solid {edge}; border-radius: 18px; }}")
 
     def set_tag(self, text: str) -> None:
         """Where it plays, when that isn't every bloom ("Gaming", "2 blooms")."""
+        if getattr(self, "tag_text", None) == text:
+            return
         self.tag_text = text
         metrics = QFontMetrics(self.tag.font())
         self.tag.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, STRIP_W - 20))
         self.tag.setToolTip(f"Plays in {text}" if text else "Plays in every bloom")
+
+    def _mute_clicked(self, on: bool) -> None:
+        """Show it at once on this strip; the rest of the window catches up when changes settle."""
+        name, db, _muted = getattr(self, "_shown", None) or (self.full_name, self.fader.db, not on)
+        self.show_sound(SimpleNamespace(name=name, volume_db=db, muted=on))
+        self.on_change(self.sound_id, {"muted": on})
 
     def _volume(self, db: float) -> None:
         self.db.setText(f"{db:+.0f} dB" if db else "0 dB")
         self.on_change(self.sound_id, {"volume_db": db})
 
     def show_sound(self, sound) -> None:
+        shown = (sound.name, sound.volume_db, sound.muted)
+        if getattr(self, "_shown", None) == shown:
+            return  # nothing to redo: every change used to reset every strip's labels and icons
+        self._shown = shown
         self.full_name = sound.name
         metrics = QFontMetrics(_bold(self.name.font()))
         self.name.setText(metrics.elidedText(sound.name, Qt.TextElideMode.ElideRight, STRIP_W - 36))

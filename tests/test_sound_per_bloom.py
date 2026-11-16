@@ -146,6 +146,9 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     assert "blooms" not in w.collection.source("game").settings
     next(a for a in menu.actions() if a.text() == "Mute").trigger()
     assert w.collection.source("game").settings["muted"] is True
+    from PySide6.QtTest import QTest
+
+    QTest.qWait(150)  # the strips refresh once changes settle (100 ms)
     assert _sound_rows(w)[0]["game"].db.text() == "muted"
 
 

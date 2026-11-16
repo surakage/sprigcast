@@ -219,6 +219,8 @@ class SoundCard(QWidget):
         self.rows: dict[str, QWidget] = {}
         self.parts: dict[str, dict] = {}
         self.tuning: str | None = None
+        self.names: dict[str, QLabel] = {}
+        self._muted_shown: dict[str, bool] = {}
         self._shape: tuple | None = None
         self._lit: dict[str, tuple] = {}
 
@@ -292,14 +294,17 @@ class SoundCard(QWidget):
         """Sound items (or old-style (id, name, muted) tuples)."""
         items = [s if isinstance(s, Sound) else Sound(s[0], s[1], bool(s[2])) for s in sounds]
         self.sounds = {s.id: s for s in items}
-        shape = tuple((s.id, s.name, s.group, s.muted, s.pinned) for s in items)
+        # Muting changes colours in place (_show_muted): rebuilding every row for it froze the window.
+        shape = tuple((s.id, s.name, s.group, s.pinned) for s in items)
         if shape != self._shape:
             self._shape = shape
             self._build()
+        self._show_muted()
         for sid, sound in self.sounds.items():  # volume changes in place: a drag isn't cut off by a rebuild
             note = self.notes.get(sid)
-            if note is not None:
-                note.setText("muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else "")
+            text = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+            if note is not None and note.text() != text:
+                note.setText(text)
             meter = self.meters.get(sid)
             if isinstance(meter, VolumeMeter) and meter.db != sound.volume_db:
                 meter.db = sound.volume_db
@@ -338,6 +343,8 @@ class SoundCard(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self.meters, self.group_meters, self.rows, self.parts, self.notes = {}, {}, {}, {}, {}
+        self.names: dict[str, QLabel] = {}
+        self._muted_shown: dict[str, bool] = {}  # what each row and group head shows now
         self._lit = {}
         if not self.sounds:
             from sprigcast.app.empty import EmptyState
@@ -375,10 +382,10 @@ class SoundCard(QWidget):
         sub.setStyleSheet(f"color: {theme.MUTED}; background: transparent; font-size: 12px;")
         for label in (dot, name, sub):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        all_muted = all(s.muted for s in members)
-        mute = _chip("Muted" if all_muted else "Mute", MUTED_CHIP_STYLE if all_muted else CHIP_STYLE)
-        mute.setToolTip(f"Unmute every {group} sound" if all_muted else f"Mute every {group} sound")
-        mute.clicked.connect(lambda _=False, ids=[s.id for s in members], on=not all_muted: self._mute_all(ids, on))
+        mute = _chip("Mute")  # its words and colour come from _show_muted
+        ids = [s.id for s in members]
+        mute.clicked.connect(lambda _=False, ids=ids: self._mute_all(
+            ids, not all(self.sounds[i].muted for i in ids if i in self.sounds)))
         head.addWidget(dot)
         head.addWidget(name)
         head.addWidget(sub, 1)
@@ -386,7 +393,6 @@ class SoundCard(QWidget):
         col.addWidget(head_row)
         meter = ThinMeter()
         meter.colour = colour
-        meter.muted = all_muted
         self.group_meters[group] = meter
         col.addWidget(meter)
         inner_box = QWidget()
@@ -398,8 +404,8 @@ class SoundCard(QWidget):
             self.rows[sound.id] = row
             inner.addWidget(row)
         col.addWidget(inner_box)
-        self.parts[group] = {"name": name, "sub": sub, "inner": inner_box, "dot": dot,
-                             "muted": [s.name for s in members if s.muted], "count": len(members)}
+        self.parts[group] = {"name": name, "sub": sub, "inner": inner_box, "dot": dot, "mute": mute, "ids": ids,
+                             "muted": [], "count": len(members)}
         return box
 
     def _sound_row(self, sound: Sound, colour: str) -> QWidget:
@@ -412,13 +418,11 @@ class SoundCard(QWidget):
         col.setSpacing(0)  # the volume bar has its own breathing room (it's 14 px tall for the knob)
         line = QHBoxLayout()
         line.setSpacing(8)
-        name = QLabel(sound.name)
-        name.setStyleSheet(f"color: {theme.MUTED if sound.muted else theme.TEXT}; background: transparent;")
+        name = QLabel(sound.name)  # its colour, and the note's, come from _show_muted
         name.setWordWrap(True)
+        self.names[sound.id] = name
         note = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
         right = QLabel(note)
-        right.setStyleSheet(f"color: {theme.LIVE_TEXT if sound.muted else theme.MUTED}; background: transparent;"
-                            " font-size: 12px;")
         for label in (name, right):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         line.addWidget(name, 1)
@@ -427,10 +431,39 @@ class SoundCard(QWidget):
         self.notes[sound.id] = right
         meter = VolumeMeter(sound.volume_db, lambda db, sid=sound.id: self._drag_volume(sid, db))
         meter.colour = colour
-        meter.muted = sound.muted
         self.meters[sound.id] = meter
         col.addWidget(meter)
         return row
+
+    def _show_muted(self) -> None:
+        """Muted or not, in place: each row's name, note and bar, and each group's Mute chip and bar."""
+        for sid, sound in self.sounds.items():
+            name = self.names.get(sid)
+            if name is None or self._muted_shown.get(sid) == sound.muted:
+                continue
+            self._muted_shown[sid] = sound.muted
+            name.setStyleSheet(f"color: {theme.MUTED if sound.muted else theme.TEXT}; background: transparent;")
+            self.notes[sid].setStyleSheet(f"color: {theme.LIVE_TEXT if sound.muted else theme.MUTED};"
+                                          " background: transparent; font-size: 12px;")
+            self.meters[sid].muted = sound.muted
+            self.meters[sid].update()
+        for group, part in self.parts.items():
+            members = [self.sounds[i] for i in part["ids"] if i in self.sounds]
+            muted = [s.name for s in members if s.muted]
+            if muted != part["muted"]:
+                part["muted"] = muted
+                self._lit.pop(group, None)  # its "N muted" line redraws
+            all_muted = bool(members) and all(s.muted for s in members)
+            key = "group:" + group
+            if self._muted_shown.get(key) == all_muted:
+                continue
+            self._muted_shown[key] = all_muted
+            chip = part["mute"]
+            chip.setText("Muted" if all_muted else "Mute")
+            chip.setStyleSheet(MUTED_CHIP_STYLE if all_muted else CHIP_STYLE)
+            chip.setToolTip(f"Unmute every {group} sound" if all_muted else f"Mute every {group} sound")
+            self.group_meters[group].muted = all_muted
+            self.group_meters[group].update()
 
     def _drag_volume(self, sound_id: str, db: float) -> None:
         sound = self.sounds.get(sound_id)
@@ -494,6 +527,11 @@ class SoundCard(QWidget):
         self._apply_visibility()
 
     def _mute_all(self, ids: list[str], on: bool) -> None:
+        for sound_id in ids:  # shown at once here; the rest of the window catches up when changes settle
+            if sound_id in self.sounds:
+                self.sounds[sound_id].muted = on
+        self._show_muted()
+        self._apply_visibility()
         for sound_id in ids:
             self.on_change(sound_id, {"muted": on})
 
