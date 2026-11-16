@@ -56,6 +56,13 @@ function sendStatus() {
 	return streamDeck.ui.sendToPropertyInspector({ event: "status", text: sprigcast.status }).catch(() => {});
 }
 
+/** A word on the key for a moment, then the key's own title again (a tick alone is easy to miss). */
+async function flash(action, text) {
+	if (!text) return;
+	await action.setTitle(text).catch(() => {});
+	setTimeout(() => action.setTitle(undefined).catch(() => {}), 1800);
+}
+
 class SprigCastAction extends SingletonAction {
 	constructor(suffix) {
 		super();
@@ -86,12 +93,21 @@ class SprigCastAction extends SingletonAction {
 
 	async onKeyDown(ev) {
 		try {
-			await this.press(ev.payload.settings, ev.action);
-			if (this.okAfterPress) await ev.action.showOk();
+			const result = await this.press(ev.payload.settings, ev.action);
+			if (this.okAfterPress) {
+				await ev.action.showOk();
+				await flash(ev.action, this.said(result));
+			}
 		} catch (error) {
 			streamDeck.logger.warn(`${this.manifestId}: ${error.message}`);
 			await ev.action.showAlert();
+			if (this.okAfterPress) await flash(ev.action, sprigcast.ready ? "Didn't\nwork" : "SprigCast\nclosed");
 		}
+	}
+
+	/** The word a one-shot key shows for a moment after it worked. */
+	said() {
+		return "Done";
 	}
 
 	/** Light or title the key from SprigCast's state (state 1 = on). */
@@ -263,11 +279,13 @@ class Record extends SprigCastAction {
 class SaveClip extends SprigCastAction {
 	constructor() { super("clip"); this.okAfterPress = true; }
 	press() { return sprigcast.run("clip.save"); }
+	said(result) { return result?.started ? "Clips\nstarting" : "Clip\nsaved"; } // clips were off: this press turned them on
 }
 
 class Screenshot extends SprigCastAction {
 	constructor() { super("screenshot"); this.okAfterPress = true; }
 	press() { return sprigcast.run("screenshot.take"); }
+	said() { return "Saved"; }
 }
 
 class SprigStateAction extends SprigCastAction {
