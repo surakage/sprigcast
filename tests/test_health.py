@@ -115,7 +115,7 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         w._refresh_garden()
         assert side.garden.numbers.text() == "CPU 4.6%  ·  209 MB  ·  0 dropped" and side.garden.level == "good"
         health.save(QSettings(), health.HealthRecord(started="2026-11-15 20:10", seconds=600))
-        pop = w._open_health()  # Tools → Stream health: the Garden check, on the last streams
+        pop = w._open_health()  # Stream health: the Garden check, on the last streams
         assert pop.page.records[0].seconds == 600 and pop.garden.stack.currentWidget() is pop.page
         pop.close()
         side.garden.click()

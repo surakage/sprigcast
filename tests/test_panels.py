@@ -78,10 +78,12 @@ def test_menu_lists_panels_for_this_screen(app):
     menu = QMenu()
     panels.fill_menu(menu)
     texts = [a.text() for a in menu.actions()]
-    assert "Chat" in texts and "Tools" not in texts and texts[0].startswith("Shown on Live")
-    chat = next(a for a in menu.actions() if a.text() == "Chat")
-    chat.trigger()
+    assert texts[0] == "Chat" and "Tools" not in texts  # no label row, no tick column: plain rows
+    assert not any(a.isCheckable() for a in menu.actions())
+    menu.actions()[0].trigger()
     assert panels.is_shown("chat") and panels.cards["live"].isVisible()
+    panels.fill_menu(menu)
+    assert menu.actions()[0].text() == "Chat\t✓"  # the tick sits at the right end
     panels.reset()
     assert not panels.is_shown("chat")
     window.close()

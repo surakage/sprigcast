@@ -278,7 +278,6 @@ def test_show_one_canvas_at_a_time(app, tmp_path, monkeypatch):
         assert [c.enabled for c in col.canvases] == [True, False] and w.canvas_choice() == "horizontal"
         assert w.build_canvas == "horizontal" and not w.canvas_tabs.isTabVisible(1)
         assert w.canvas_columns["horizontal"].isVisible() and not w.canvas_columns["vertical"].isVisible()
-        assert w.canvas_choice_actions["horizontal"].isChecked()
         w._set_mode("live")
         assert not w.canvas_columns["vertical"].isVisible()
         assert "v1" not in w.live_panel.buttons and "h1" in w.live_panel.buttons
@@ -610,12 +609,16 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
     w = MainWindow(_collection(), tmp_path / "scenes.json")
     try:
         titles = [a.text().replace("&", "") for a in w.menuBar().actions()]
-        assert titles == ["File", "Edit", "View", "Panels", "Gardens", "Paths", "Tools", "Help"]
-        panels = w.menuBar().actions()[3].menu()
+        assert titles == ["File", "Edit", "Panels", "Gardens", "Paths", "Tools", "Help"]
+        panels = w.menuBar().actions()[2].menu()
         assert any("web panels" in a.text().lower() for a in panels.actions())
         lines = w.shortcut_lines()
         assert lines and len(lines) == len(set(lines))
         assert any("Ctrl+K" in str(line) for line in lines)
+        tools = [a.text() for a in w.menuBar().actions()[5].menu().actions() if not a.isSeparator()]
+        assert tools == ["Get started…", "Starter kit…", "Optimize for this PC…", "Stream doctor…", "Plugin store…"]
+        for menu_action in w.menuBar().actions():  # no tick column on the left of any top menu
+            assert not any(a.isCheckable() for a in menu_action.menu().actions())
     finally:
         w.close()
         QSettings().clear()

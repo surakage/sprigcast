@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -104,9 +106,22 @@ class AudioPage(QWidget):
             box = QVBoxLayout(tab)
             box.setContentsMargins(0, 4, 0, 0)
             box.addWidget(card)
+            if name == "Sounds":
+                box.addLayout(self._ducking_row())
             box.addStretch(1)
             self.tabs.addTab(tab, name)
         layout.addWidget(self.tabs)
+
+    def _ducking_row(self) -> QHBoxLayout:
+        """Ducking's amounts, next to the sounds it lowers (Live's Mic first switch turns it on and off)."""
+        self.on_ducking = None  # set by the main window: opens the Ducking window
+        row = QHBoxLayout()
+        self.ducking_button = QPushButton("Ducking…")
+        self.ducking_button.setToolTip("How much other sounds dip while you talk (Mic first on Live)")
+        self.ducking_button.clicked.connect(lambda: self.on_ducking and self.on_ducking(self))
+        row.addWidget(self.ducking_button)
+        row.addStretch(1)
+        return row
 
     def show_tab(self, name: str) -> None:
         if name in self.TABS:
