@@ -218,3 +218,56 @@ def test_connection_file_says_where_without_secrets(tmp_path):
     finally:
         server.stop()
     assert not server.connection_path.exists()
+
+
+class ShotHost(PlacesHost):
+    def source_screenshot(self, source_id, name, width, save, as_data):
+        self.shots.append((source_id, name, width, save, as_data))
+        return {"width": 160, "height": 90, "png": "iVBOR"} if source_id != "alert" else None
+
+
+def test_native_screenshot_of_one_source_or_bloom():
+    api, host = _native(ShotHost(_host().collection))
+    out = _ok(api, "screenshot.take", source="Cam", save=False, data=True)
+    assert out == {"shots": [{"width": 160, "height": 90, "png": "iVBOR", "source": "Cam"}]}
+    assert host.shots[-1] == ("cam", "Cam", None, False, True)
+    assert _fails(api, "screenshot.take", source="Alert", save=False, data=True) == "not_allowed"  # not drawing
+    assert _fails(api, "screenshot.take", source="Nobody", save=False, data=True) == "not_found"
+    # A bloom on air is its canvas; one off air holding one sprig is that sprig on its own.
+    on_air = _ok(api, "screenshot.take", bloom="Chatting", save=False, data=True)["shots"]
+    assert [s["shape"] for s in on_air] == ["horizontal"] and on_air[0]["bloom"] == "Chatting"
+    _ok(api, "bloom.new", name="Snap me")
+    _ok(api, "item.add", bloom="Snap me", source="Cam")
+    shot = _ok(api, "screenshot.take", bloom="Snap me", save=False, data=True)["shots"][0]
+    assert shot["bloom"] == "Snap me" and host.shots[-1][1] == "Snap me"
+    assert _fails(api, "screenshot.take", bloom="BRB", save=False, data=True) == "not_allowed"  # empty, off air
+    assert _fails(api, "screenshot.take", bloom="Nobody", save=False, data=True) == "not_found"
+
+
+def test_native_stream_stop_answers_off_and_rotate():
+    api, host = _native()
+    host.start_stream()
+    assert _ok(api, "stream.stop") == {"on": False}
+    assert _ok(api, "stream.status")["on"] is False
+    out = _ok(api, "source.rotate", source="Alert", degrees=-90)
+    assert out == {"source": "Alert", "degrees": 270.0, "items": 2}
+    assert all(i.rotation == 270.0 for s in host.collection.scenes for i in s.items if i.source == "alert")
+    assert _fails(api, "source.rotate", source="Desktop audio", degrees=10) == "not_allowed"
+    assert _fails(api, "source.rotate", source="Nobody", degrees=10) == "not_found"
+    assert _fails(api, "bloom.show", bloom="Nobody") == "not_found"
+    assert _fails(api, "filter.set", source="Cam", filter="Nobody", on=True) == "not_found"
+
+
+def test_one_source_picture_from_the_engine(tmp_path):
+    import numpy as np
+
+    from sprigcast.app import screenshot
+
+    class Engine:
+        def grab_source(self, source_id, callback):
+            callback(np.full((90, 160, 4), 200, dtype=np.uint8) if source_id == "cam" else None)
+
+    shot = screenshot.take_one(Engine(), "cam", "Face/cam", tmp_path, width=80, as_data=True)
+    assert shot["width"] == 80 and shot["height"] == 45 and shot["png"]
+    assert "Face_cam" in shot["path"] and shot["path"].endswith(".png")
+    assert screenshot.take_one(Engine(), "gone", "Gone", None, as_data=True) is None

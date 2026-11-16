@@ -84,6 +84,7 @@ Error codes:
 | `not_allowed` | it can't be done here, e.g. putting a sprig on air |
 | `busy` | already doing it, e.g. already live |
 | `unknown_action` | no such action |
+| `plugin_missing` | the action comes with a store plugin that isn't added; the message names it |
 | `failed` | something went wrong inside SprigCast |
 
 `app.actions` returns every action with its fields, so a plugin can build its menus from it.
@@ -158,7 +159,7 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | `app.broadcast` | Send your own event to every connected app. | `data`: any object |
 | `app.info` | Version, API version and the shapes that are turned on. | none |
 | `app.stats` | Frames per second, render time and memory. | none |
-| `plugins.list` | The plugins that are added, each with the actions it brings. | none |
+| `plugins.list` | The plugins that are added (enabled) and the store's others (not enabled), each with the actions it brings. | none |
 
 ### bloom
 
@@ -271,7 +272,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `screenshot.take` | A picture of what's on air in each shape. | `shape` (optional): both (default), horizontal or vertical, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
+| `screenshot.take` | A picture of what's on air in each shape, or of one source or bloom. | `shape` (optional): both (default), horizontal or vertical, `source` (optional): just this source (a camera...), name or id, `bloom` (optional): just this bloom, name or id, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
 ### sound
 
@@ -290,6 +291,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | `source.get` | A source's settings. | `source`: name or id |
 | `source.new` | Make a source (a browser page, text, image...). Put it in a bloom with item.add. | `name`: name, `kind`: browser, text, image, color, media..., `settings` (optional): {key: value}, e.g. url, width, height |
 | `source.rename` | Give a source a new name. | `source`: name or id, `name`: new name |
+| `source.rotate` | Turn a source to an angle wherever it's shown (0: upright again). | `source`: name or id, `degrees`: clockwise, -3600 to 3600 |
 | `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a colour... | `source`: name or id, `settings`: {key: value} |
 | `sources.list` | Every source (cameras, text, browser pages, images, sounds...). | none |
 
@@ -318,7 +320,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 ## Store plugins
 
-Plugins added from **Settings → Plugins** bring their own actions. They're in `app.actions` and `plugins.list` only while the plugin is added; without it they answer `unknown_action`.
+Plugins added from **Settings → Plugins** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
 
 | Action | Plugin | What it does | Fields |
 | --- | --- | --- | --- |
