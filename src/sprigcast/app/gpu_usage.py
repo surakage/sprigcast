@@ -89,12 +89,27 @@ class GpuCounter:
 
 
 _counter: GpuCounter | None | bool = None  # False once we know the counters can't be used
+_opened_at = 0.0
+RENEW_S = 300.0  # a "(*)" query collects handles as processes come and go: a fresh one every 5 minutes
 
 
 def windows_gpu_load() -> float | None:
     """GPU busy % from Windows' counters, or None when they aren't available (then NVML is tried)."""
-    global _counter
+    global _counter, _opened_at
+    import time
+
+    now = time.monotonic()
+    if _counter and now - _opened_at > RENEW_S:
+        # Windows' GPU Engine counter has one instance per process per engine. A wildcard query that
+        # keeps collecting while apps start and stop holds on to handles (+10 a minute in the hour-long
+        # retest, never given back); closing the query frees them.
+        try:
+            _counter.close()
+        except OSError:
+            pass
+        _counter = None
     if _counter is None:
+        _opened_at = now
         try:
             _counter = GpuCounter()
         except (OSError, AttributeError):

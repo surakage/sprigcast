@@ -36,6 +36,7 @@ from sprigcast.winver import windows_build
 log = logging.getLogger(__name__)
 
 SCAN_SECONDS = 2.0  # how often to look for the apps starting or closing
+RETRY_FIRST_S, RETRY_MAX_S = 10.0, 300.0  # an app Windows won't hand over: ask again later and later
 
 
 @dataclass(frozen=True)
@@ -291,6 +292,7 @@ class AppAudioSource(Source):
         self._rescan = threading.Event()
         self._thread: threading.Thread | None = None
         self._game: tuple[int, str] | None = None
+        self._failed: dict[int, tuple[float, float]] = {}  # pid -> (try again at, last wait)
         self._device = None  # a DesktopAudioSource when the sound comes from an output (settings "device")
         self.status = "starting"
 
@@ -381,6 +383,8 @@ class AppAudioSource(Source):
             self._close_all()
 
     def _sync(self, wanted: dict[int, str]) -> None:
+        for pid in set(self._failed) - set(wanted):
+            del self._failed[pid]  # gone: a new process with that id starts fresh
         with self._lock:
             current = dict(self._captures)
         for pid in set(current) - set(wanted):
@@ -391,13 +395,24 @@ class AppAudioSource(Source):
             capture = current.get(pid)
             if capture is not None and capture.alive:
                 continue
-            if capture is not None:
+            now = time.monotonic()
+            if capture is not None:  # its stream ended while the app runs on: wait a little before asking again
                 capture.close()
+                with self._lock:
+                    self._captures.pop(pid, None)
+                if pid not in self._failed:
+                    self._failed[pid] = (now + RETRY_FIRST_S, RETRY_FIRST_S / 2)
+            failed = self._failed.get(pid)
+            if failed is not None and now < failed[0]:
+                continue  # it refused lately: asking Windows again every scan cost handles each time
             try:
                 capture = _ProcessCapture(pid, name, self.id)
             except Exception as exc:  # the app closed meanwhile, or Windows refused
-                log.info("%s: can't catch %s (%d): %s", self.id, name, pid, exc)
+                wait = min(RETRY_MAX_S, (failed[1] * 2) if failed else RETRY_FIRST_S)
+                self._failed[pid] = (now + wait, wait)
+                log.info("%s: can't catch %s (%d), trying again in %.0f s: %s", self.id, name, pid, wait, exc)
                 continue
+            self._failed.pop(pid, None)
             with self._lock:
                 self._captures[pid] = capture
         with self._lock:

@@ -5,6 +5,7 @@ import os
 import pytest
 
 from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig
+from sprigcast.sources import app_audio
 from sprigcast.sources.app_audio import (
     TYPES,
     AppAudioSource,
@@ -147,3 +148,57 @@ def test_the_once_a_second_scan_leaves_nothing_behind():
         resources._counters_type()
     gc.collect()
     assert len(gc.get_objects()) - before < 20
+
+
+def test_an_app_windows_refuses_is_asked_again_later_and_later(monkeypatch):
+    """Asking every 2 s scan for an app Windows wouldn't hand over cost handles each time."""
+    tries = []
+
+    def refuse(pid, name, owner):
+        tries.append(pid)
+        raise OSError("Windows refused the app's sound")
+
+    clock = [1000.0]
+    monkeypatch.setattr(app_audio, "_ProcessCapture", refuse)
+    monkeypatch.setattr(app_audio.time, "monotonic", lambda: clock[0])
+    src = AppAudioSource("game", {"apps": ["Game.exe"]})
+    for _ in range(5):  # 10 s of scans
+        src._sync({42: "Game.exe"})
+        clock[0] += 2
+    assert tries == [42]  # once, then a wait
+    clock[0] += app_audio.RETRY_FIRST_S
+    src._sync({42: "Game.exe"})
+    assert tries == [42, 42]
+    assert src._failed[42][1] == 2 * app_audio.RETRY_FIRST_S  # the next wait is longer
+    src._sync({})  # the app closed
+    assert 42 not in src._failed
+
+
+def test_the_gpu_query_is_opened_fresh_every_few_minutes(monkeypatch):
+    from sprigcast.app import gpu_usage
+
+    made, closed = [], []
+
+    class Fake:
+        encode = 0.0
+
+        def __init__(self):
+            made.append(self)
+
+        def read(self):
+            return 5.0
+
+        def close(self):
+            closed.append(self)
+
+    clock = [0.0]
+    monkeypatch.setattr(gpu_usage, "GpuCounter", Fake)
+    monkeypatch.setattr(gpu_usage, "_counter", None)
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    for _ in range(100):  # 300 s of reads, every 3 s
+        assert gpu_usage.windows_gpu_load() == 5.0
+        clock[0] += 3
+    assert len(made) == 1 and not closed
+    clock[0] += 10
+    gpu_usage.windows_gpu_load()
+    assert len(made) == 2 and closed == [made[0]]  # the old query closed: its handles go back
