@@ -50,7 +50,7 @@ No setup: with SprigCast open on the same PC, the keys connect by themselves.
 | Plugin icon 256×256 and 512×512 | `com.sprigcast.sprigcast.sdPlugin/imgs/plugin/marketplace.png`, `marketplace@2x.png` | the app icon |
 | Store icon 288×288 | `com.sprigcast.sprigcast.sdPlugin/imgs/plugin/store-icon-288.png` | upload in the Maker Console |
 | Category icon 28×28 and 56×56 | `imgs/plugin/category-icon*.png` | the white SprigCast S |
-| Action icons 20×20 and 40×40, key images 72×72 and 144×144 | `imgs/actions/*` | made by `tools/make_images.py`: one picture per key, white on transparent in the list, mint (pink for live and recording) on the dark green tile on keys |
+| Action icons 20×20 and 40×40, key images 72×72 and 144×144 | `imgs/actions/*` | made by `tools/make_images.py`: one picture per key, thin white lines on transparent in the list; keys come in three styles (Canopy in the manifest, Colour and Graphite under `imgs/styles/`), picked under **Key style** in any key's settings |
 | Gallery pictures (1920×960 suggested) | to make | photos or renders of a Stream Deck with SprigCast keys, plus a SprigCast screenshot |
 | Thumbnail | to make | from the brand banner |
 
