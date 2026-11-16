@@ -801,7 +801,9 @@ class ChatPanel(QWidget):
     # The ⋯ menu -------------------------------------------------------------------------
 
     def _open_menu(self) -> None:
-        self.build_menu().exec(self.more.mapToGlobal(self.more.rect().bottomLeft()))
+        menu = self.build_menu()
+        menu.exec(self.more.mapToGlobal(self.more.rect().bottomLeft()))
+        menu.deleteLater()
 
     def build_menu(self) -> QMenu:
         menu = QMenu(self)

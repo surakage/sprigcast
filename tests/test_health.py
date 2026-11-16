@@ -200,3 +200,28 @@ def test_stream_health_rows_keep_name_and_detail_apart(app):
         assert name.width() == 110 and name.geometry().right() < detail.x()  # the name never sits over its detail
     assert rows[0].findChildren(Elided)[1].toolTip() == long  # cut short on screen, whole on hover
     pop.close()
+
+
+def test_garden_check_reuses_rows_and_goes_away_when_closed(app):
+    """Kept open, it redrew every row each second; closed, it stayed with its timer running (handles crept up)."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QFrame, QWidget
+
+    from sprigcast.app.garden_check import GardenSnapshot, garden_check_popup
+
+    snap = GardenSnapshot(rows=[("Twitch", "6000 kbps", "good", "steady")], checks=[("Mic heard", True, "")])
+    parent = QWidget()
+    pop = garden_check_popup(lambda: snap, [], parent)
+    pop.show()
+    app.processEvents()
+    row = pop.findChildren(QFrame, "healthRow")[0]
+    pop.garden.refresh()
+    assert pop.findChildren(QFrame, "healthRow")[0] is row  # same words: the same row
+    snap.cpu = 7.5
+    pop.garden.refresh()
+    assert pop.garden.values["cpu"].text() == "7.5%"
+    pop.accept()
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not [c for c in parent.children() if type(c).__name__ == "PopUp"]
+    parent.deleteLater()

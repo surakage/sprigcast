@@ -72,3 +72,4 @@ def show_about(parent: QWidget | None = None) -> None:
     dialog = PopUp("About SprigCast", parent)
     dialog.add_tab("about", "About", about_page())
     dialog.exec()
+    dialog.deleteLater()

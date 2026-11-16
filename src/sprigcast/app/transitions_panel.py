@@ -840,12 +840,16 @@ class TransitionsPanel(QWidget):
         return self.popup("transition")
 
     def open_settings(self) -> None:
-        self.settings_dialog().exec()
+        dialog = self.settings_dialog()
+        dialog.exec()
+        dialog.deleteLater()  # a new pop-up each time: kept, each one held its widgets until SprigCast closed
         self.load(self.transition)
         self.show_rule_count()
 
     def open_rules(self) -> None:
-        self.rules_dialog().exec()
+        dialog = self.rules_dialog()
+        dialog.exec()
+        dialog.deleteLater()
         self.show_rule_count()
 
     def set_kind(self, kind: str) -> None:
