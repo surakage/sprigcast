@@ -177,7 +177,7 @@ def test_a_folder_without_a_model_says_so(tuber, tmp_path):
 def test_the_sample_sloth_ships_with_an_expression(tuber):
     model = tuber.load_model(tuber.model_folder({}))
     assert model.expressions == ["default", "blush"]
-    assert set(model.pictures["default"]) == {"idle", "talk", "blink", "talk_blink", "yell"}
+    assert set(model.pictures["default"]) == {"idle", "talk", "blink", "talk_blink", "yell", "yell_blink"}
 
 
 class Clock:
