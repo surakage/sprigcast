@@ -67,6 +67,12 @@ LABELS = {
     "all_caps": "All caps",
     "align": "Alignment",
     "outline_color": "Outline colour",
+    "capture": "Replay",
+    "corner": "In the corner",
+    "corner_at": "Corner",
+    "corner_size": "Corner size (%)",
+    "replay_sound": "Replay sound",
+    "sound_level": "Sound level (%)",
 }
 
 
