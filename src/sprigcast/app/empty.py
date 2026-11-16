@@ -179,6 +179,14 @@ class LiveCheer(QWidget):
         self.title.setText(title)
         self.where.setText(line)
         self.where.setVisible(bool(line))
+        for w in (self, self.title, self.where):
+            w.ensurePolished()  # sized with the 18 px bold title, not the plain font it has before it's styled
+        if line:  # the line under it wraps rather than being cut off
+            width = min(max(170, self.where.fontMetrics().horizontalAdvance(line) + 2), 280)
+            self.where.setFixedWidth(width)
+            self.where.setFixedHeight(self.where.heightForWidth(width))
+        self.layout().invalidate()
+        self.layout().activate()
         self.adjustSize()
         parent = self.parentWidget()
         self.move(max(0, (parent.width() - self.width()) // 2), 24)
@@ -262,6 +270,7 @@ class SavedNote(QWidget):
     from a hotkey, the Stream Deck or a bot is easy to see. A click opens the folder."""
 
     SHOW_MS = 3000
+    MAX_W = 620  # wider than this, the words wrap (and never past the window's edges)
 
     def __init__(self, parent: QWidget):
         from PySide6.QtCore import QPropertyAnimation, QTimer
@@ -271,28 +280,29 @@ class SavedNote(QWidget):
         self.setObjectName("savedNote")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(f"#savedNote {{ background: {theme.PANEL}; border-radius: 20px; }}")
+        self.setStyleSheet(f"#savedNote {{ background: {theme.RAISED}; border: 1px solid {theme.EDGE_STRONG};"
+                           " border-radius: 20px; }")  # stands out from the cards it floats over
         row = QHBoxLayout(self)
         row.setContentsMargins(18, 10, 22, 10)
         row.setSpacing(12)
-        tick = QLabel("\u2713")
+        self.tick = tick = QLabel("\u2713")
         tick.setFixedSize(28, 28)
         tick.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tick.setStyleSheet(f"background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border-radius: 14px;"
-                           " font-size: 16px; font-weight: 800;")
-        row.addWidget(tick)
+        row.addWidget(tick, 0, Qt.AlignmentFlag.AlignTop)
         from PySide6.QtWidgets import QVBoxLayout
 
         words = QVBoxLayout()
         words.setSpacing(2)
         self.title = QLabel("")
+        self.title.setWordWrap(True)
         self.title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 16px; font-weight: 700; background: transparent;")
         words.addWidget(self.title)
         self.detail = QLabel("")  # a line under the title (what's new in an updated plugin)
+        self.detail.setWordWrap(True)
         self.detail.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
         self.detail.hide()
         words.addWidget(self.detail)
-        row.addLayout(words)
+        row.addLayout(words, 1)
         self.open = QLabel("Open folder")
         self.open.setStyleSheet(f"color: {theme.ACCENT}; background: transparent;")
         row.addWidget(self.open)
@@ -306,8 +316,14 @@ class SavedNote(QWidget):
         self._timer.timeout.connect(lambda: self._fade_to(0.0, 500))
         self.hide()
 
-    def say(self, title: str, folder=None, detail: str = "", link: str = "", on_click=None, ms: int | None = None) -> None:
-        """Show the note; a click opens `folder`, or runs `on_click` (named by `link`)."""
+    def say(self, title: str, folder=None, detail: str = "", link: str = "", on_click=None, ms: int | None = None,
+            kind: str = "done") -> None:
+        """Show the note; a click opens `folder`, or runs `on_click` (named by `link`). kind "warn": an amber "!"
+        for a heads-up (the PC is busy) instead of the green tick."""
+        warn = kind == "warn"
+        self.tick.setText("!" if warn else "\u2713")
+        self.tick.setStyleSheet(f"background: {theme.WARN if warn else theme.ACCENT}; color: {theme.ACCENT_TEXT};"
+                                " border-radius: 14px; font-size: 16px; font-weight: 800;")
         self.title.setText(title)
         self.detail.setText(detail)
         self.detail.setVisible(bool(detail))
@@ -316,13 +332,44 @@ class SavedNote(QWidget):
         self.open.setText(link or "Open folder")
         self.open.setVisible(folder is not None or on_click is not None)
         self._timer.setInterval(ms or self.SHOW_MS)
-        self.adjustSize()
+        self._fit()
         parent = self.parentWidget()
         self.move(max(0, (parent.width() - self.width()) // 2), max(0, parent.height() - self.height() - 48))
         self.raise_()
         self.show()
         self._fade_to(1.0, 200, start=0.0 if self.fade.opacity() <= 0.01 or not self.isVisible() else None)
         self._timer.start()
+
+    def _fit(self) -> None:
+        """As wide as its words, up to MAX_W (and the window less a margin each side); longer words wrap onto
+        more lines, so nothing is ever cut off. Sized after its look is applied: the 16 px bold title is
+        wider than the plain font a not-yet-styled label measures with."""
+        for w in (self, self.tick, self.title, self.detail, self.open):
+            w.ensurePolished()
+        parent = self.parentWidget()
+        limit = min(self.MAX_W, (parent.width() if parent is not None else self.MAX_W) - 64)
+        margins = self.layout().contentsMargins()
+        spacing = self.layout().spacing()
+        fixed = margins.left() + margins.right() + self.tick.width() + spacing
+        if self.open.isVisibleTo(self):
+            fixed += self.open.sizeHint().width() + spacing
+        room = max(120, limit - fixed)
+        words = 0
+        for label in (self.title, self.detail):
+            label.setMinimumSize(0, 0)
+            label.setMaximumSize(16777215, 16777215)
+            if label.isHidden() and label is self.detail:
+                continue
+            natural = label.fontMetrics().horizontalAdvance(label.text()) + 2
+            words = max(words, min(natural, room))
+        for label in (self.title, self.detail):
+            if label is self.detail and not self.detail.text():
+                continue
+            label.setFixedWidth(words)
+            label.setFixedHeight(label.heightForWidth(words))
+        self.layout().invalidate()
+        self.layout().activate()
+        self.adjustSize()
 
     def mousePressEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
         if self.on_click is not None:
