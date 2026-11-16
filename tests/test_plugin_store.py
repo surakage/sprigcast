@@ -85,11 +85,15 @@ def test_slide_show_fits_each_picture_and_moves_on(tmp_path, app):
             img.save(str(pictures / name))
         show = create_source("slideshow", "s", {"folder": str(pictures), "seconds": 0.5, "width": 400, "height": 200})
         assert show.size == (400, 200) and show.status == "ok"
-        first = show.video_frame()
+        import time
+
+        deadline, first = time.monotonic() + 5, None
+        while first is None and time.monotonic() < deadline:  # even the first is made in the background
+            first = show.video_frame()
+            time.sleep(0.01)
         assert first.shape == (200, 400, 4) and first[100, 200, 0] > 200  # red, fitted
         assert show.video_frame() is None  # nothing new until its time is up
         show._next_at = 0
-        import time
 
         deadline, second = time.monotonic() + 5, None
         while second is None and time.monotonic() < deadline:  # the next one is made in the background

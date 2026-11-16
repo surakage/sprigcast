@@ -158,6 +158,18 @@ def _shot(tmp_path, colour=(220, 30, 30)):
             {"shape": "vertical", "path": str(folder / "v.png"), "image": None}]
 
 
+def _next_frame(source, timeout=3.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = source.video_frame()
+        if frame is not None:
+            return frame
+        time.sleep(0.01)
+    return None
+
+
 def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     import sys
     import time
@@ -175,7 +187,8 @@ def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     assert snap.video_frame() is None
 
     plugin_hooks.screenshot_taken(api, _shot(tmp_path))
-    frame = snap.video_frame()
+    assert snap.video_frame() is None  # the card is made off the render thread first
+    frame = _next_frame(snap)
     assert frame.shape == (1000, 800, 4) and snap.busy
     job = snap._job
     assert to_array(snap.paint(job, 0.5))[..., 3].any()  # the camera
@@ -467,7 +480,7 @@ def test_a_still_show_is_not_painted_again_and_reads_as_working(added, tmp_path)
     snap.video_frame()
     sys.modules["sprigcast_plugin_snap"].on_screenshot(NativeApi(Host(_collection(), tmp_path)), [])  # nothing shot
     snap.show(None)
-    assert snap.video_frame() is not None
+    assert _next_frame(snap) is not None
     still = sys.modules["sprigcast_plugin_snap"].STILL_FROM
     snap._job.started = __import__("time").monotonic() - (still + 0.1)
     assert snap.video_frame() is not None and snap.video_frame() is None

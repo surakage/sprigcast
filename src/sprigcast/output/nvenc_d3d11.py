@@ -475,9 +475,12 @@ class D3D11Encoder:
             if pitch == w:
                 ctypes.memmove(dst, src, min(len(src), w * rows))
             else:
-                base = ctypes.cast(ctypes.c_char_p(src), c_void_p).value
-                for row in range(rows):
-                    ctypes.memmove(dst + row * pitch, base + row * w, w)
+                # One strided copy. A memmove per row (1,620 at 1080p) gave up Python's lock and had to win it
+                # back 1,620 times a frame: with other threads busy, each could wait its turn (5 ms).
+                import numpy as np
+
+                into = np.ctypeslib.as_array((ctypes.c_uint8 * (pitch * rows)).from_address(dst))
+                into.reshape(rows, pitch)[:, :w] = np.frombuffer(src, np.uint8, count=w * rows).reshape(rows, w)
             return pitch
         finally:
             _fn(F_UNLOCK_INPUT, c_void_p, c_void_p)(self.encoder, self.input)

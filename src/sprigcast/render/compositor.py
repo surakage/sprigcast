@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
 
@@ -621,12 +622,13 @@ class _Pbos:
         read_into(self.buffers[self.turn])
         self.tags[self.turn], self.when[self.turn] = tag, now
 
-    def take(self, now: float) -> tuple[bytes | None, object]:
-        """The frame queued the tick before, with its tag, or (None, None); then swap buffers."""
+    def take(self, now: float, read=None) -> tuple[bytes | None, object]:
+        """The frame queued the tick before, with its tag, or (None, None); then swap buffers.
+        read(buffer) fetches it (UnlockedGL.read_buffer), else moderngl's buffer.read()."""
         other = 1 - self.turn
         data, tag = None, self.tags[other]
         if tag is not None and now - self.when[other] <= self.STALE_S:
-            data = self.buffers[other].read()
+            data = read(self.buffers[other]) if read is not None else self.buffers[other].read()
         self.tags[other] = None
         self.turn = other
         return data, (tag if data is not None else None)
@@ -727,6 +729,14 @@ class Compositor:
 
     def __init__(self, ctx: moderngl.Context | None = None):
         self.ctx = ctx or create_context()
+        # Uploads and read-backs through ctypes, without Python's lock while the driver makes them wait
+        # (render/gl_unlocked.py). None: moderngl's own calls, as before.
+        self.gl = None
+        if not os.environ.get("SPRIGCAST_MODERNGL_CALLS"):
+            from sprigcast.render.gl_unlocked import UnlockedGL
+
+            gl = UnlockedGL(self.ctx)
+            self.gl = gl if gl.ok else None
         self.program = self.ctx.program(vertex_shader=VERTEX_SHADER, fragment_shader=FRAGMENT_SHADER)
         self.vbo = self.ctx.buffer(reserve=4 * 4 * 4, dynamic=True)  # 4 vertices x (x, y, u, v) float32
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
@@ -791,7 +801,11 @@ class Compositor:
             self.premultiplied.add(source_id)
         else:
             self.premultiplied.discard(source_id)
-        tex.write(np.ascontiguousarray(frame, dtype=np.uint8))
+        pixels = np.ascontiguousarray(frame, dtype=np.uint8)
+        if self.gl is not None:
+            self.gl.write_texture(tex, pixels)
+        else:
+            tex.write(pixels)
 
     def forget(self, source_id: str) -> None:
         self.planar.pop(source_id, None)
@@ -1152,6 +1166,9 @@ class Compositor:
         """Like read_scaled without waiting for the GPU: returns the previous call's frame and tag (see _Pbos)."""
         target = self._draw_scaled(canvas_id, size)
         pbos = target.pbos
+        if self.gl is not None:
+            pbos.fill(tag, now, lambda buf: self.gl.read_into(target.fbo, buf, 4))
+            return pbos.take(now, self.gl.read_buffer)
         pbos.fill(tag, now, lambda buf: target.fbo.read_into(buf, components=4, alignment=1))
         return pbos.take(now)
 
@@ -1182,6 +1199,10 @@ class Compositor:
         w, h = size
         # Both planes land in one buffer: one allocation per frame instead of three (Y, CbCr, joined).
         data = bytearray(w * h * 3 // 2)
+        if self.gl is not None:
+            self.gl.read_into(target.y_fbo, data, 1)
+            self.gl.read_into(target.uv_fbo, data, 2, write_offset=w * h)
+            return data
         target.y_fbo.read_into(data, components=1, alignment=1)
         target.uv_fbo.read_into(data, components=2, alignment=1, write_offset=w * h)
         return data
@@ -1193,11 +1214,15 @@ class Compositor:
         w, h = size
 
         def queue(buf):
+            if self.gl is not None:
+                self.gl.read_into(target.y_fbo, buf, 1)
+                self.gl.read_into(target.uv_fbo, buf, 2, write_offset=w * h)
+                return
             target.y_fbo.read_into(buf, components=1, alignment=1)
             target.uv_fbo.read_into(buf, components=2, alignment=1, write_offset=w * h)
 
         target.pbos.fill(tag, now, queue)
-        return target.pbos.take(now)
+        return target.pbos.take(now, self.gl.read_buffer if self.gl is not None else None)
 
     def prune(self, idle_s: float = 3.0, now: float | None = None) -> int:
         """Let go of output-only targets nobody has drawn for idle_s: the NV12 and scaled copies (with

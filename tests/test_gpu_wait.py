@@ -1,0 +1,108 @@
+"""Waiting for the graphics card on a fence, through ctypes (which lets go of Python's lock), not in OpenGL."""
+
+import ctypes
+
+import pytest
+
+from sprigcast.render.gpu_wait import GpuWait
+
+
+@pytest.fixture
+def compositor():
+    from sprigcast.render.compositor import Compositor
+
+    try:
+        comp = Compositor()
+    except Exception as exc:
+        pytest.skip(f"no OpenGL context: {exc}")
+    yield comp
+    comp.release()
+
+
+def test_a_fence_marks_a_tick_and_the_next_waits_for_it(compositor):
+    gpu = GpuWait()
+    assert gpu.ok
+    # Foreign functions called through ctypes run without the GIL: the rest of SprigCast keeps going.
+    assert isinstance(gpu._client_wait, ctypes._CFuncPtr)
+    fbo = compositor.ctx.simple_framebuffer((640, 360))
+    buffer = compositor.ctx.buffer(reserve=640 * 360 * 4)
+    for level in (0.2, 0.6):
+        fbo.use()
+        fbo.clear(level, 0.0, 0.0, 1.0)
+        fbo.read_into(buffer, components=4)
+        gpu.mark()
+        assert 0.0 <= gpu.wait() < 1.0
+    assert buffer.read()[0] == round(0.6 * 255)
+    assert gpu.wait() == 0.0  # nothing marked since
+    gpu.release()
+    fbo.release()
+    buffer.release()
+
+
+def test_the_engine_uses_fences_with_a_real_context(compositor):
+    from sprigcast.render.engine import Engine
+
+    assert Engine._gpu_wait(compositor) is not None
+    assert Engine._gpu_wait(object()) is None  # a test stand-in compositor: nothing changes
+
+
+def test_without_sync_objects_nothing_changes():
+    gpu = GpuWait(lookups=[lambda name: 0])
+    assert not gpu.ok
+    gpu.mark()
+    assert gpu.wait() == 0.0
+    gpu.release()
+
+
+def test_direct_calls_give_the_same_pixels_as_moderngl(compositor):
+    import numpy as np
+
+    from sprigcast.render.gl_unlocked import UnlockedGL
+
+    gl = compositor.gl
+    assert isinstance(gl, UnlockedGL) and gl.ok
+    assert isinstance(gl.glReadPixels, ctypes._CFuncPtr)  # through ctypes: no Python lock while it runs
+    ctx = compositor.ctx
+    rng = np.random.default_rng(3)
+    for components, size in ((1, (37, 21)), (3, (33, 17)), (4, (64, 36)), (2, (15, 9))):
+        pixels = rng.integers(0, 256, (size[1], size[0], components), dtype=np.uint8)
+        texture = ctx.texture(size, components, alignment=1)
+        gl.write_texture(texture, np.ascontiguousarray(pixels))
+        assert texture.read(alignment=1) == pixels.tobytes()
+        fbo = ctx.framebuffer(color_attachments=[texture])
+        out = bytearray(8 + size[0] * size[1] * components)
+        gl.read_into(fbo, out, components, write_offset=8)
+        assert bytes(out[8:]) == fbo.read(components=components, alignment=1)
+        buffer = ctx.buffer(reserve=size[0] * size[1] * components)
+        gl.read_into(fbo, buffer, components)
+        assert gl.read_buffer(buffer) == buffer.read() == bytes(out[8:])
+        for obj in (buffer, fbo, texture):
+            obj.release()
+
+
+def test_uploads_and_nv12_read_backs_match_without_direct_calls(compositor, monkeypatch):
+    """The compositor's own upload and NV12 read-back give the same bytes either way."""
+    import numpy as np
+
+    from sprigcast.core.scene import Canvas
+
+    canvas = Canvas(id="horizontal", width=64, height=36)
+    frame = np.random.default_rng(5).integers(0, 256, (36, 64, 4), dtype=np.uint8)
+    results = []
+    for direct in (True, False):
+        gl = compositor.gl
+        if not direct:
+            compositor.gl = None
+        compositor.upload("pic", frame, "RGBA")
+        results.append(compositor.textures["pic"].read(alignment=1))
+        target = compositor._target(canvas)
+        target.fbo.use()
+        target.fbo.clear(0.2, 0.4, 0.6, 1.0)
+        results.append(bytes(compositor.read_nv12("horizontal", (32, 18))))
+        first = compositor.read_nv12_later("horizontal", (32, 18), "a", 0.0)
+        second = compositor.read_nv12_later("horizontal", (32, 18), "b", 0.01)
+        assert first == (None, None) and second[1] == "a"
+        results.append(bytes(second[0]))
+        compositor.gl = gl
+        compositor.nv12_targets.clear()
+    assert results[:3] == results[3:]

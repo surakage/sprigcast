@@ -102,3 +102,34 @@ def test_cbr_turns_on_filler_data():
         assert struct.unpack_from("<I", buf, at)[0] == 0b101 | 1 << bit
         # idrPeriod right after the flags is untouched
         assert struct.unpack_from("<I", buf, n.CONFIG_AT + n.CFG_H264 + n.IDR_PERIOD[codec])[0] == 0
+
+
+def test_a_frame_goes_into_a_wider_input_buffer_row_by_row(monkeypatch):
+    """The driver's input rows can be wider than the picture (pitch): one strided copy puts each row in place."""
+    import ctypes
+
+    import numpy as np
+
+    from sprigcast.output import nvenc_d3d11 as n
+
+    w, h, pitch = 6, 4, 8
+    rows = h * 3 // 2
+    driver = (ctypes.c_uint8 * (pitch * rows))(*([0xEE] * (pitch * rows)))
+
+    def fake_fn(index, *argtypes):
+        def call(encoder, arg):
+            if index == n.F_LOCK_INPUT:
+                lock = n.LockInputBuffer.from_address(arg)
+                lock.bufferDataPtr, lock.pitch = ctypes.addressof(driver), pitch
+            return 0
+        return call
+
+    monkeypatch.setattr(n, "_fn", fake_fn)
+    enc = n.D3D11Encoder.__new__(n.D3D11Encoder)
+    enc.width, enc.height, enc.api, enc.input, enc.encoder = w, h, (n.API_MAJOR, n.API_MINOR), None, None
+    enc._check = lambda status, what: None
+    frame = bytes(range(w * rows))
+    assert enc._fill(frame) == pitch
+    got = np.frombuffer(bytes(driver), np.uint8).reshape(rows, pitch)
+    assert got[:, :w].tobytes() == frame
+    assert (got[:, w:] == 0xEE).all()  # the padding past each row is left alone
