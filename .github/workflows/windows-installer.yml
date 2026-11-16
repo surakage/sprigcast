@@ -33,6 +33,11 @@ jobs:
           $py = "packaging\build\python\python.exe"
           & $py -c "import sprigcast, av, moderngl, PySide6.QtWidgets, numpy; print('imports OK', sprigcast.__file__)"
           & $py -m sprigcast.tools.check
+          # SprigCast.exe runs the same Python (a single-dash first argument passes straight to Python).
+          $probe = Join-Path $env:RUNNER_TEMP "launcher.txt"
+          $p = Start-Process "packaging\build\python\SprigCast.exe" -ArgumentList "-c", "`"import sys, sprigcast; open(r'$probe', 'w').write(sys.executable)`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $probe)) { throw "SprigCast.exe didn't run Python (exit $($p.ExitCode))" }
+          "SprigCast.exe runs as: $(Get-Content $probe)"
       - name: Fingerprints and a Microsoft Defender scan
         shell: pwsh
         run: |

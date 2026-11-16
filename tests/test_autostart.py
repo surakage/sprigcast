@@ -25,6 +25,13 @@ def test_command_runs_this_python_minimised():
     assert cmd.startswith('"') and str(sys.executable).rsplit("python", 1)[0] in cmd
 
 
+def test_installed_copy_starts_through_the_launcher(tmp_path, monkeypatch):
+    python = tmp_path / "python.exe"
+    (tmp_path / "SprigCast.exe").write_bytes(b"")
+    monkeypatch.setattr(sys, "executable", str(python))
+    assert autostart.command() == f'"{tmp_path / "SprigCast.exe"}" --minimized'
+
+
 def test_start_minimised_from_flag_or_setting(qapp):
     from PySide6.QtCore import QSettings
 
