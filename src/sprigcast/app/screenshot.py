@@ -33,7 +33,8 @@ PNG_QUALITY = 50
 
 
 def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QImage]:
-    """The next frame of each canvas as a QImage. A canvas that isn't drawing is left out."""
+    """The next frame of each canvas as a QImage. A canvas that isn't drawing is left out. Sources that are
+    only for show (Snap's polaroid) are left out of it."""
     got: dict = {}
     done = threading.Event()
     lock = threading.Lock()
@@ -51,12 +52,12 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
                     done.set()
 
         taps[canvas_id] = tap
-        engine.add_frame_tap(canvas_id, tap)
+        engine.add_frame_tap(f"shot:{canvas_id}", tap)  # what's on air, without Snap's polaroid (see Engine)
     try:
         done.wait(timeout)
     finally:
         for canvas_id, tap in taps.items():
-            engine.remove_frame_tap(canvas_id, tap)
+            engine.remove_frame_tap(f"shot:{canvas_id}", tap)
     with lock:
         frames = dict(got)
     return {canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
