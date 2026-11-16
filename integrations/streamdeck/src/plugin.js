@@ -16,12 +16,12 @@ function refreshConnection() {
 
 async function loadGlobalSettings() {
 	const settings = await streamDeck.settings.getGlobalSettings();
-	sprigcast.configure({ port: Number(settings.port) || 4455, password: settings.password ?? "" });
+	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
 }
 
 streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
 	const settings = ev.settings ?? {};
-	sprigcast.configure({ port: Number(settings.port) || 4455, password: settings.password ?? "" });
+	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
 });
 
 /** Lists for the property inspector's pickers (sdpi-select datasource). */
@@ -48,6 +48,11 @@ async function listFor(event, payload = {}) {
 	}
 }
 
+/** The Connection box in the key settings says whether SprigCast is found (and on which port). */
+function sendStatus() {
+	return streamDeck.ui.sendToPropertyInspector({ event: "status", text: sprigcast.status }).catch(() => {});
+}
+
 class SprigCastAction extends SingletonAction {
 	constructor(suffix) {
 		super();
@@ -71,6 +76,7 @@ class SprigCastAction extends SingletonAction {
 	}
 
 	async onSendToPlugin(ev) {
+		if (ev.payload?.event === "getStatus") return sendStatus();
 		const items = await listFor(ev.payload?.event, ev.payload);
 		if (items) await streamDeck.ui.sendToPropertyInspector({ event: ev.payload.event, items });
 	}
@@ -121,8 +127,16 @@ class ToggleItem extends SprigCastAction {
 			}
 		});
 	}
-	paint(action, s) {
-		const shown = sprigcast.state.items[`${s.bloom}/${s.item}`];
+	async paint(action, s) {
+		const key = `${s.bloom}/${s.item}`;
+		if (sprigcast.state.items[key] === undefined && sprigcast.ready && s.bloom && s.item) {
+			try {
+				sprigcast.state.items[key] = (await sprigcast.run("item.status", { bloom: s.bloom, item: s.item })).visible;
+			} catch {
+				return undefined;
+			}
+		}
+		const shown = sprigcast.state.items[key];
 		return typeof shown === "boolean" ? action.setState(shown ? 0 : 1) : undefined;
 	}
 }
@@ -287,6 +301,7 @@ for (const action of actions) streamDeck.actions.registerAction(action);
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));
 sprigcast.on("connection", () => all.forEach((a) => a.repaintAll().catch(() => {})));
 sprigcast.on("refused", (why) => streamDeck.logger.warn(`SprigCast refused the connection: ${why}`));
+sprigcast.on("status", () => sendStatus());
 
 await streamDeck.connect();
 await loadGlobalSettings();

@@ -31,15 +31,17 @@ Marker (SprigCast recordings don't pause or take chapters yet).
 
 The plugin runs inside the Stream Deck app. It opens one connection to SprigCast only while a SprigCast key is
 on screen, and closes it when none is. SprigCast sends changes as they happen, so nothing polls. When SprigCast
-isn't running, the plugin looks again after 2, 5, 10, then every 30 seconds.
+isn't running, or closes or restarts, the plugin looks again after 1, 2, 5, then every 10 seconds, and its keys go
+dark until it's back. A quiet connection is checked every 15 seconds, so a PC waking from sleep finds SprigCast again.
 
 ## Set up
 
 1. In SprigCast: Settings → Connections → turn on the API and set a password. Note the port (4455, or e.g. 4456
-   next to OBS).
+   next to OBS). Leave the plugin's port blank and it looks on 4455 and 4456 itself, stepping past OBS.
 2. Double-click `com.sprigcast.sprigcast.streamDeckPlugin` to install it (Stream Deck 7.1 or newer).
 3. Drag any SprigCast key onto your Stream Deck. Under **Connection** enter the port and password once (every
-   SprigCast key shares them). Names (blooms, sounds...) fill in from SprigCast while it runs.
+   SprigCast key shares them). The Connection box says whether SprigCast is found, and on which port. Names
+   (blooms, sounds...) fill in from SprigCast while it runs.
 
 ## Build
 

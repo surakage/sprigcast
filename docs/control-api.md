@@ -85,7 +85,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Group | Events |
 | --- | --- |
 | `bloom` | `bloom.shown` (bloom, bloomId, shape), `blooms.changed` |
-| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible) |
+| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible; inside a sprig also `blooms`: the blooms whose own sprig it is) |
 | `sprig` | `sprig.state` (sprig, sprigId, state) |
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
 | `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed` |
@@ -98,6 +98,9 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
 | `plugin` | events sent by added plugins (`<plugin>.<what>`, see below) |
 | `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
+
+Every app also gets `app.closing` just before SprigCast closes (or turns its API off), whatever groups it asked
+for. The connection closes next. Look again in a second or two: it's often a restart.
 
 ## Examples
 
@@ -188,8 +191,11 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `item.order` | Bring something forward or send it back. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `to`: top, bottom, up (one step) or down (one step) |
 | `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
 | `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `item.status` | Whether something inside a bloom or sprig is shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `items.list` | What's inside a bloom or sprig, per shape. | `bloom` (optional): name or id, `sprig` (optional): name or id |
+
+Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam inside Chatting's own sprig.
 
 ### media
 
