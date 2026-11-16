@@ -24,3 +24,18 @@ def reformat(frame, threads: int = 1, **options):
 
         converter = _local.converter = VideoReformatter()
     return converter.reformat(frame, threads=threads, **options)
+
+
+def owned(array):
+    """`array` as memory of its own. PyAV's to_ndarray() hands back a view into FFmpeg's frame, which keeps the
+    frame (and its decoder's buffer pool) alive until whichever thread drops the array last, often the render
+    thread long after the decoder thread closed its file. A copy lets FFmpeg's memory go on the thread that
+    made it."""
+    import numpy as np
+
+    return array if array.flags.owndata else np.array(array, copy=True)
+
+
+def picture_array(frame, **options):
+    """reformat(frame, **options).to_ndarray(), as memory of its own (see owned)."""
+    return owned(reformat(frame, **options).to_ndarray())

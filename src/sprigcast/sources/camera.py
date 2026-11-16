@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.core.frames import reformat
+from sprigcast.core.frames import picture_array, reformat
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.source import Source, register
 
@@ -314,8 +314,8 @@ def camera_picture(frame, target: tuple[int, int] | None) -> tuple[np.ndarray, s
             if full and order.endswith("/tv"):
                 order = order[:-3] + "/pc"
             return array, order, (w, h)
-    picture = reformat(frame, format="bgr24", **({"width": w, "height": h, "interpolation": "BILINEAR"}
-                                                 if target else {})).to_ndarray()
+    picture = picture_array(frame, format="bgr24", **({"width": w, "height": h, "interpolation": "BILINEAR"}
+                                                      if target else {}))
     return picture, "BGR", (picture.shape[1], picture.shape[0])
 
 

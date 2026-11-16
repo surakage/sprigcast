@@ -444,3 +444,98 @@ def test_waking_and_sleeping_a_looping_alpha_video_leaves_no_threads_behind(tmp_
     assert len(deciding) == 1  # one decoder thread, never two decoding the same file
     assert process.num_threads() <= before + 3
     source.stop()
+
+
+def _gif(path, frames=6):
+    from PIL import Image
+
+    pictures = [Image.new("RGB", (64, 36), (n * 40, n * 40, n * 40)) for n in range(frames)]
+    pictures[0].save(str(path), save_all=True, append_images=pictures[1:], duration=100, loop=0)
+    return str(path)
+
+
+def test_pictures_handed_over_own_their_memory(tmp_path):
+    """A picture the render thread holds never points into FFmpeg's frame (and so its decoder)."""
+    source = MediaSource("g", {"path": _gif(tmp_path / "a.gif"), "loop": True})
+    source.start()
+    try:
+        frames = []
+        _play(source, 0.4, frames)
+        assert frames
+        for picture in frames:
+            assert picture.flags.owndata or picture.base is None or isinstance(picture.base, np.ndarray)
+    finally:
+        source.stop()
+
+
+def test_rapid_wake_sleep_loop_and_controls_from_many_threads(tmp_path):
+    """Stress: a GIF and a see-through webm looping fast while sleep/wake, seek, restart, hide and speed come
+    from other threads and the render and mixer threads keep taking frames. No errors, one decoder thread
+    each at the end, and the thread count back where it started."""
+    import random
+    import threading
+
+    import psutil
+
+    sources = [MediaSource("gif", {"path": _gif(tmp_path / "loop.gif", frames=3), "loop": True}),
+               MediaSource("brb", {"path": _webm(tmp_path / "brb.webm", seconds=0.2), "loop": True})]
+    for source in sources:
+        source.start()
+    time.sleep(0.3)
+    process = psutil.Process()
+    before = process.num_threads()
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def guarded(job):
+        def run():
+            try:
+                job()
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+        return threading.Thread(target=run, daemon=True)
+
+    def render():  # the render and mixer threads
+        while not stop.is_set():
+            for source in sources:
+                picture = source.video_frame()
+                if picture is not None:
+                    picture.sum()  # read every byte: a freed buffer would show up here
+                source.read_block(480)
+            time.sleep(0.002)
+
+    def flip(source, seed):  # the engine: blooms on and off screen, eyes on and off
+        rng = random.Random(seed)
+        while not stop.is_set():
+            action = rng.choice(("sleep", "wake", "wake", "hide", "show", "seek", "restart", "speed"))
+            if action == "sleep":
+                source.sleep()
+            elif action == "wake":
+                source.wake()
+            elif action in ("hide", "show"):
+                source.set_hidden(action == "hide")
+            elif action == "seek":
+                source.seek(rng.random() * 0.2)
+            elif action == "restart":
+                source.restart()
+            else:
+                source.update({**source.settings, "speed": rng.choice((0.5, 1.0, 2.0))})
+            time.sleep(rng.random() * 0.01)
+
+    workers = [guarded(render)] + [guarded(lambda s=s, i=i: flip(s, i)) for i, s in enumerate(sources)]
+    for worker in workers:
+        worker.start()
+    time.sleep(4.0)
+    stop.set()
+    for worker in workers:
+        worker.join(timeout=5)
+    assert not errors, errors
+    for source in sources:
+        source.wake()
+    assert _until(lambda: all(s.status == "ok" for s in sources))
+    time.sleep(0.5)
+    for source in sources:
+        assert len([t for t in threading.enumerate() if t.name == f"media-{source.id}" and t.is_alive()]) == 1
+    assert _until(lambda: process.num_threads() <= before + 3, timeout=5.0)
+    for source in sources:
+        source.stop()
