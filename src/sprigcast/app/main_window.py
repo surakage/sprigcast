@@ -2550,6 +2550,7 @@ class MainWindow(QMainWindow):
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
         help_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
+        help_menu.addAction("Report a problem…").triggered.connect(lambda: self.report_problem())
         help_menu.addSeparator()
         help_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
@@ -2585,6 +2586,12 @@ class MainWindow(QMainWindow):
         if reveal:
             self._reveal(target)
         return target
+
+    def report_problem(self):
+        """Help → Report a problem: what happened, then send it with the log (app/problem_report.py)."""
+        from sprigcast.app import problem_report
+
+        return problem_report.ask(self)
 
     def _ask_repot(self) -> None:
         """File → Repot as MP4: pick recordings (MKV, FLV, MOV, TS) and copy each into an MP4 beside it."""

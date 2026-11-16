@@ -1,0 +1,22 @@
+# Deploy steps: README.md in this folder.
+name = "sprigcast-reports"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# Where reports are kept (made once with: npx wrangler r2 bucket create sprigcast-reports).
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "sprigcast-reports"
+
+# At most 5 reports a minute from one address.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "4456"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60
+
+# slothbloom.com's DNS is on Cloudflare: this makes https://reports.slothbloom.com (SprigCast sends there).
+routes = [{ pattern = "reports.slothbloom.com", custom_domain = true }]
