@@ -458,6 +458,16 @@ class SettingsWindow(QDialog):
         dform.addRow("", _hint("Viewers see everything this many seconds late, so nobody can use your stream to "
                                "find you in a game. Recordings and clips aren't delayed. Starts with your next stream."))
 
+        from sprigcast.app import logbook
+
+        logs = QGroupBox("Logs")
+        lform = QFormLayout(logs)
+        self.keep_logs = QComboBox()
+        for days in logbook.KEEP_CHOICES:
+            self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
+        self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
+        lform.addRow("Keep logs for", self.keep_logs)
+
         colour = QGroupBox("Colour")
         cform = QFormLayout(colour)
         for name, value in (("Colour format", "NV12 (4:2:0)"), ("Colour space", "Rec. 709 (HD)"),
@@ -467,7 +477,7 @@ class SettingsWindow(QDialog):
             cform.addRow(name, chip)
         cform.addRow("", _hint("What Twitch, YouTube, TikTok and every player expect, so colours look the same "
                                "everywhere."))
-        return _page(process, files, delay, colour)
+        return _page(process, files, delay, logs, colour)
 
     def _plugins_page(self, plugin_report, open_plugins_folder) -> QWidget:
         from sprigcast.app.plugin_store_page import PluginStorePage
@@ -654,6 +664,9 @@ class SettingsWindow(QDialog):
         settings.setValue(ADV_FILENAME, self.filename.text().strip() or naming.RECORDING_PATTERN)
         settings.setValue(ADV_REPLAY_PREFIX, self.replay_prefix.text().strip() or naming.REPLAY_PREFIX)
         settings.setValue(ADV_STREAM_DELAY, self.stream_delay.value())
+        from sprigcast.app import logbook
+
+        settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())
         apply_naming()
         level = self.priority.currentData()
         if level != priority.chosen():

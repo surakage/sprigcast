@@ -29,6 +29,25 @@ def test_setup_logs_to_todays_file_and_prunes_old_ones(tmp_path, monkeypatch):
         logbook._handler = None
 
 
+def test_prune_keeps_the_chosen_days_and_only_logs_and_reports(tmp_path):
+    now = datetime(2026, 11, 16, 9, 0)
+    def made(name, days_ago):
+        path = tmp_path / name
+        path.write_text("x")
+        stamp = now.timestamp() - days_ago * 86400
+        os.utime(path, (stamp, stamp))
+        return path
+    old_log, old_report = made("sprigcast 2026-10-01.log", 46), made("stream 2026-10-01 20-00-00.txt", 46)
+    week_log = made("sprigcast 2026-11-06.log", 10)
+    crash, notes = made("crash.log", 46), made("my notes.txt", 46)
+    assert logbook._prune(tmp_path, now, days=0) == 0  # Forever
+    assert logbook._prune(tmp_path, now, days=14) == 2
+    assert not old_log.exists() and not old_report.exists()
+    assert week_log.exists() and crash.exists() and notes.exists()
+    assert logbook._prune(tmp_path, now, days=7) == 1
+    assert not week_log.exists()
+
+
 class _Pilot:
     current_kbps = 5400
 
