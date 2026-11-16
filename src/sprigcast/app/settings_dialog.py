@@ -2,6 +2,12 @@
 
 str → text box (with a colour picker for keys ending in "color", Browse… for "file"/"path"),
 int / float → number box, bool → checkbox.
+
+A source class can also give:
+    choices = {"language": (("en", "English"), ("es", "Spanish"))}  # a drop-down instead of a text box
+              (or a function returning that list, read each time the form opens: devices plugged in now)
+    secrets = {"google_key": "captions/google_key"}  # a hidden box whose value is kept DPAPI-encrypted in
+              SprigCast's settings under that name, never in the garden file (so it isn't shared or exported)
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -50,6 +57,10 @@ LABELS = {
     "clear_on_end": "Show nothing when it ends",
     "play_on_start": "Play when SprigCast opens",
     "save_polaroid_copy": "Save a polaroid copy",
+    "listen_to": "Mic",
+    "engine": "Captions by",
+    "google_key": "Google key",
+    "lines": "Lines",
 }
 
 
@@ -58,8 +69,11 @@ def _label(key: str) -> str:
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, title: str, defaults: dict[str, Any], settings: dict[str, Any], parent: QWidget | None = None):
+    def __init__(self, title: str, defaults: dict[str, Any], settings: dict[str, Any], parent: QWidget | None = None,
+                 cls: type | None = None):
         super().__init__(parent)
+        self.choices: dict[str, Any] = dict(getattr(cls, "choices", None) or {})
+        self.secrets: dict[str, str] = dict(getattr(cls, "secrets", None) or {})
         self.setWindowTitle(title)
         self.setMinimumWidth(460)
         self.defaults = defaults
@@ -69,6 +83,12 @@ class SettingsDialog(QDialog):
             value = settings.get(key, default)
             widget = self._field(key, default, value)
             form.addRow(_label(key), widget)
+        self.secret_fields: dict[str, QLineEdit] = {}
+        for key in self.secrets:
+            edit = QLineEdit(read_secret(self.secrets[key]))
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.secret_fields[key] = edit
+            form.addRow(_label(key), edit)
         if "text" in defaults:
             tip = QLabel("{time}, {time12} and {date} show a live clock. A file's text replaces Text when set.")
             tip.setWordWrap(True)
@@ -93,6 +113,22 @@ class SettingsDialog(QDialog):
         form.addRow(buttons)
 
     def _field(self, key: str, default: Any, value: Any) -> QWidget:
+        if key in self.choices:
+            options = self.choices[key]
+            try:
+                options = list(options() if callable(options) else options)
+            except Exception:
+                options = []
+            box = QComboBox()
+            for data, label in options:
+                box.addItem(str(label), data)
+            index = box.findData(value)
+            if index < 0 and value not in (None, ""):  # a device that isn't plugged in now stays picked
+                box.addItem(str(value), value)
+                index = box.count() - 1
+            box.setCurrentIndex(max(0, index))
+            self.fields[key] = box
+            return box
         if isinstance(default, bool):
             box = QCheckBox()
             box.setChecked(bool(value))
@@ -155,10 +191,17 @@ class SettingsDialog(QDialog):
         if path:
             edit.setText(path)
 
+    def accept(self) -> None:
+        for key, edit in self.secret_fields.items():
+            save_secret(self.secrets[key], edit.text().strip())
+        super().accept()
+
     def values(self) -> dict[str, Any]:
         out = {}
         for key, widget in self.fields.items():
-            if isinstance(widget, QCheckBox):
+            if isinstance(widget, QComboBox):
+                out[key] = widget.currentData()
+            elif isinstance(widget, QCheckBox):
                 out[key] = widget.isChecked()
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 out[key] = widget.value()
@@ -167,3 +210,24 @@ class SettingsDialog(QDialog):
             else:
                 out[key] = widget.text()
         return out
+
+
+def read_secret(name: str) -> str:
+    """A secret a plugin keeps in SprigCast's settings (see `secrets` above), decrypted; "" if none."""
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.control import secret_store
+
+    saved = QSettings().value(name, "")
+    return secret_store.unprotect(saved) if isinstance(saved, str) and saved else ""
+
+
+def save_secret(name: str, value: str) -> None:
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.control import secret_store
+
+    if value:
+        QSettings().setValue(name, secret_store.protect(value))
+    else:
+        QSettings().remove(name)

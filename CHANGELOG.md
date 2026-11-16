@@ -158,6 +158,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   off) and the polaroid stays inside the canvas the whole time. The saved file is the
   plain screenshot and a screenshot taken while a polaroid is up leaves it out. "Save a polaroid copy" also saves the
   framed polaroid; it's off by default, also for Snaps that had it on before.
+- Live captions store plugin: what you say, as captions in a band along the bottom of the bloom. Runs on your PC with a
+  small Whisper model (free and offline; it downloads the first time captions go on air, 75 to 480 MB), or with your
+  own Google Speech-to-Text key for slower PCs (kept encrypted, never in the garden file). Pick the mic, language,
+  Light / Balanced / Sharper, 1 to 3 lines and colours. It listens only while it's on air and lets the model go a
+  minute after.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat
