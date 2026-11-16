@@ -198,7 +198,8 @@ def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     job.started -= 100
     assert not snap.video_frame()[..., 3].any() and not snap.busy  # gone again
 
-    # The polaroid is only for show: the one file is the screenshot SprigCast saved, nothing framed.
+    # Save a polaroid copy is off by default (the old save_polaroid setting doesn't turn it on): the one file is
+    # the screenshot SprigCast saved, nothing framed.
     time.sleep(0.3)
     assert [p.name for p in (tmp_path / "Screenshots").iterdir()] == ["screenshot horizontal 2026-11-14 20-12-43.png"]
     assert type(snap).in_screenshots is False  # and a screenshot taken while it's up leaves it out
@@ -211,13 +212,39 @@ def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     assert not snap.busy
 
 
+def test_a_polaroid_copy_is_saved_only_when_turned_on(added, tmp_path):
+    import sys
+    import time
+
+    from PySide6.QtGui import QImage
+
+    added("snap")
+    col = _collection()
+    col.sources.append(SourceConfig(id="snap-1", kind="snap", name="Snap", settings={"save_polaroid_copy": True}))
+    host = Host(col, tmp_path)
+    snap = host.instances["snap-1"] = create_source("snap", "snap-1", {"seconds": 1.0})
+    plugin_hooks.screenshot_taken(NativeApi(host), _shot(tmp_path))
+    assert _next_frame(snap) is not None  # the card is made, then the copy is saved off the render thread
+    folder = tmp_path / "Screenshots"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not list(folder.glob("snap *.png")):
+        time.sleep(0.05)
+    copies = list(folder.glob("snap *.png"))
+    assert len(copies) == 1 and (folder / "screenshot horizontal 2026-11-14 20-12-43.png").exists()  # both kept
+    copy = QImage(str(copies[0]))
+    assert copy.width() > 1000 and copy.height() > 1000 * 9 / 16  # full size, the whole polaroid
+    assert not list(folder.glob("*.part"))
+    snap.clear()
+    assert sys.modules["sprigcast_plugin_snap"].snap_name(folder).name.startswith("snap ")
+
+
 def test_snap_reads_nothing_but_the_screenshot(added):
     added("snap")
     import sys
 
     module = sys.modules["sprigcast_plugin_snap"]
     assert not any(name.startswith("snap.") for name in NativeApi(FakeHost(_collection())).all_actions())
-    assert set(module.SnapSource.defaults) == {"seconds", "flash"}
+    assert module.SnapSource.defaults == {"seconds": 6.0, "flash": True, "save_polaroid_copy": False}
 
 
 def test_apps_can_list_plugins_and_hear_their_events(added):

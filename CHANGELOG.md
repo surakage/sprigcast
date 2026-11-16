@@ -155,8 +155,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Virtual camera opened at two sizes at once (TikTok LIVE Studio, or two apps) keeps feeding the first size instead of
   flipping every few seconds.
 - Snap shows the whole screenshot in the polaroid (the card takes the screenshot's shape instead of cutting its edges
-  off) and the polaroid stays inside the canvas the whole time. The polaroid is only for show: the saved file is the
-  plain screenshot, a screenshot taken while a polaroid is up leaves it out, and "Save a polaroid copy" is gone.
+  off) and the polaroid stays inside the canvas the whole time. The saved file is the
+  plain screenshot and a screenshot taken while a polaroid is up leaves it out. "Save a polaroid copy" also saves the
+  framed polaroid; it's off by default, also for Snaps that had it on before.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat
