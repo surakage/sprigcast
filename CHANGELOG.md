@@ -143,6 +143,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 
 - Transitions: slide, swipe, wipe, leaf, bloom and stinger clips (#145), a transition for particular bloom switches (#151),
   and a Transitions card with a pop-up for the details (#149, #162, #164, #166).
+- Move transition: what both blooms show (matched by source, then by name, even inside sprigs) glides to its new
+  spot, size, turn and crop; the rest fades, scales or slides. Five easings, both canvases, and usable in Between
+  blooms rules. It draws straight onto the canvas, so it costs less than a fade. OBS Move transitions import as it.
 - Browser source on Chromium 140 (#139), and right-click Interact to click around in the page (#153).
 - Color looks (LUTs) and shapes for any source (#168).
 - Media source: video and sound files, with play and pause from menus, hotkeys and the API (#198).
@@ -170,6 +173,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- Auto clip store plugin: while clips are ready, a shout, a loud game moment or chat going wild (optional) saves the
+  last seconds as a suggested clip. Nothing is posted: Tools → Suggested clips… lists them to play, keep (moves to
+  Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
+  clips are yours to set. It reads the levels the meters already have and does nothing while clips are off.
+  `autoclip.*` API actions (`autoclip.mark` for Streamer.bot raids) and an `autoclip.suggested` event.
 - Audio visualizer store plugin: bars, a wave, a circle or a line spectrum that move with a sound, in your colours
   (Night Canopy greens by default), with bar count, smoothing, mirror and sensitivity. It hears what SprigCast
   already mixes (everything viewers hear, or one mic, desktop, music or app sound), so no device is opened again,

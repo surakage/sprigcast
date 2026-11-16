@@ -39,7 +39,7 @@ def test_other_edits_and_cuts_do_not_transition():
     assert engine._transitions == {}
 
 
-@pytest.mark.parametrize("kind", ["slide", "swipe", "wipe", "leaf", "bloom"])
+@pytest.mark.parametrize("kind", ["move", "slide", "swipe", "wipe", "leaf", "bloom"])
 def test_every_kind_runs_for_its_duration(kind):
     engine = Engine(collection("a"))
     engine._start_transitions(collection("a"), collection("b", Transition(kind=kind, duration_ms=500)))
@@ -261,10 +261,10 @@ def test_panel_fits_narrow_cards_and_live_chip_picks_a_transition(tmp_path):
     panel.resize(220, 400)
     panel.show()
     app.processEvents()
-    assert panel._columns == 2 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapAllRows
+    assert panel._columns == 3 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapAllRows
     panel.resize(400, 400)
     app.processEvents()
-    assert panel._columns == 4 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.DontWrapRows
+    assert panel._columns == 3 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.DontWrapRows
     panel.close()
     assert summary(Transition(kind="leaf", duration_ms=500)) == "Leaf · 0.5 s"
     assert summary(Transition(kind="stinger")) == "Stinger"
