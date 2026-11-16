@@ -416,6 +416,17 @@ class ControlServer(QObject):
         self.pairing = Pairing(load_devices(), on_change=lambda: save_secret(DEVICES, self.pairing.to_json()))
         self.local_key = ""  # set by start() while a password is in use
 
+    def keep_devices(self) -> None:
+        """SprigCast's own list of paired devices is the true one: if what's saved differs (PC test 2026-11-16:
+        pair, then Save in Settings, and after a restart the new device's key was refused), save it again."""
+        live = self.pairing.to_json()
+        saved = secret_store.unprotect(str(QSettings().value(DEVICES, "") or ""))
+        if Pairing.devices_from_json(saved) == self.pairing.devices:
+            return
+        log.warning("control: the saved paired devices (%d) didn't match SprigCast's (%d); saved again",
+                    len(Pairing.devices_from_json(saved)), len(self.pairing.devices))
+        save_secret(DEVICES, live)
+
     def drop_key(self, key: str) -> None:
         """A paired device was removed: close its open connections too."""
         for socket, session in self._natives():
@@ -494,6 +505,7 @@ class ControlServer(QObject):
                     pass
 
     def stop(self) -> None:
+        self.keep_devices()  # closing or restarting: what's paired now is what the next start finds
         if self.server is None:
             return
         self._remove_info()
@@ -701,6 +713,7 @@ def start_for(window: MainWindow) -> ControlServer:
 
 def apply_settings(server: ControlServer, window: MainWindow | None = None) -> None:
     """Start, restart or stop the server to match the saved settings."""
+    server.keep_devices()  # Settings → Save: the devices paired while it was open stay paired
     settings = saved_settings()
     if server.info_path is None:
         from sprigcast.app.main import config_dir

@@ -121,6 +121,20 @@ def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional
     return value
 
 
+def _checked_settings(col, kind: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Settings an app sends, checked by the source's kind when it can (a plugin's check_settings(col, settings)
+    returns them tidied, e.g. a name matched to an id, or raises ValueError saying what's wrong)."""
+    from sprigcast.core.source import source_class
+
+    check = getattr(source_class(kind), "check_settings", None)
+    if check is None:
+        return settings
+    try:
+        return dict(check(col, dict(settings)))
+    except ValueError as exc:
+        raise _bad(str(exc)) from None
+
+
 _PLUGIN_ACTIONS: dict[str, Action] = {}
 ALWAYS_SENT = "app.closing"  # sent just before SprigCast closes (or its server stops): look again soon
 _PLUGIN_EVENTS: set[str] = set()  # the first word of events plugins send ("snap" for snap.taken): group "plugin"
@@ -834,7 +848,7 @@ class NativeApi:
             source="name or id", settings="{key: value}")
     def source_set(self, data):
         source = self._source(data, "source")
-        settings = _get(data, "settings", dict)
+        settings = _checked_settings(self.col, source.kind, _get(data, "settings", dict))
         source.settings = {**source.settings, **settings}
         self.host.commit("sources")
         return {"id": source.id, "settings": dict(source.settings)}
@@ -855,6 +869,7 @@ class NativeApi:
         if any(s.name == name for s in self.col.sources if s.kind != PART_KIND):
             raise ApiError("busy", f"There's already a source called {name!r}.")
         defaults = dict(getattr(source_class(kind), "defaults", None) or {})
+        settings = _checked_settings(self.col, kind, settings)
         source = SourceConfig(id=self.col.new_id(kind), kind=kind, name=name, settings={**defaults, **settings})
         self.col.sources.append(source)
         self.host.commit("sources")

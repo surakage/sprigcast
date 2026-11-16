@@ -135,3 +135,16 @@ def test_started_minimized_the_window_is_drawn_once_first(window, caplog):
             time.sleep(0.01)
     assert "started minimized: drawn once first" in caplog.text
     assert window.windowOpacity() == 1.0
+
+
+def test_a_plugin_installed_before_the_add_menu_opened_logs_no_error(window, caplog):
+    """PC test 2026-11-16: every plugin install logged "no attribute 'more_menu'" (the + menu isn't built yet)."""
+    w, _col = window
+    if hasattr(w, "more_menu"):
+        del w.more_menu
+    w._fill_more_menu()  # what an install or update calls
+    w.selected_scene_id = "p"  # editing a sprig
+    w._fill_add_source_menu()  # opening + later builds the Plugins menu, filled
+    assert any(a.text() == "Slide show" for a in w.more_menu.actions())
+    w._fill_more_menu()
+    assert "more_menu" not in caplog.text
