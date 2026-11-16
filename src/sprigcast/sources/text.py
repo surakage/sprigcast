@@ -53,6 +53,15 @@ def fill_tokens(text: str, now: datetime) -> str:
     )
 
 
+def text_size(text: str, font: ImageFont.ImageFont, outline_width: int) -> tuple[int, int]:
+    """The size render_text's picture has for this text (at least 1x1)."""
+    from PIL import Image, ImageDraw
+
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    left, top, right, bottom = probe.multiline_textbbox((0, 0), text or " ", font=font, stroke_width=outline_width)
+    return max(1, right - left), max(1, bottom - top)
+
+
 def render_text(text: str, font: ImageFont.ImageFont, color, outline_color, outline_width: int) -> np.ndarray:
     """RGBA image just big enough for the text (at least 1x1), transparent elsewhere."""
     from PIL import Image, ImageDraw
@@ -71,6 +80,7 @@ def render_text(text: str, font: ImageFont.ImageFont, color, outline_color, outl
 class TextSource(Source):
     defaults = DEFAULTS  # tells the settings dialog which fields to show
     sleeps = True  # a hidden clock isn't redrawn every second
+    sharp = True  # drawn with the font at the size it's shown, so it stays crisp made big
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
@@ -78,6 +88,9 @@ class TextSource(Source):
         self._shown: tuple | None = None
         self._font_key: tuple | None = None
         self._font = None
+        self._drawn_font_key: tuple | None = None  # the font at the size it's drawn (size x detail)
+        self._drawn_font = None
+        self._layout: tuple[int, int] | None = None  # the text's box at its own size: what `size` says
         self._next_check = 0.0
         self._pending = False  # a rendered frame the compositor hasn't received yet
 
@@ -89,15 +102,18 @@ class TextSource(Source):
         self._shown = None  # the texture was dropped: render and send it again
         self._next_check = 0.0
 
+    def set_detail(self, detail: float) -> None:
+        super().set_detail(detail)
+        self._next_check = 0.0  # drawn again at the new size on the next frame
+
     def _get(self, key: str):
         return self.settings.get(key, DEFAULTS[key])
 
     @property
     def size(self) -> tuple[int, int]:
-        if self._frame is None:
+        if self._frame is None or self._layout is None:
             self._render()
-        h, w = self._frame.shape[:2]
-        return w, h
+        return self._layout
 
     def _current_text(self) -> str:
         path = str(self._get("file") or "")
@@ -120,13 +136,22 @@ class TextSource(Source):
             color, outline = (255, 255, 255, 255), (0, 0, 0, 255)
         size = max(4, int(self._get("size")))
         width = max(0, int(self._get("outline_width")))
-        key = (text, str(self._get("font")), size, color, outline, width)
+        detail = self.detail if self.detail > 0 else 1.0
+        key = (text, str(self._get("font")), size, color, outline, width, detail)
         if key == self._shown and self._frame is not None:
             return False
         font_key = (str(self._get("font")), size)
         if font_key != self._font_key:
             self._font, self._font_key = load_font(*font_key), font_key
-        self._frame = render_text(text, self._font, color, outline, width)
+        self._layout = text_size(text, self._font, width)
+        if detail == 1.0:
+            drawn_font, drawn_width = self._font, width
+        else:  # the same text with the font made bigger (or smaller): sharp at the size it's shown
+            drawn_key = (font_key[0], max(1, round(size * detail)))
+            if drawn_key != self._drawn_font_key:
+                self._drawn_font, self._drawn_font_key = load_font(*drawn_key), drawn_key
+            drawn_font, drawn_width = self._drawn_font, round(width * detail)
+        self._frame = render_text(text, drawn_font, color, outline, drawn_width)
         self._shown = key
         self._pending = True
         if not self._get("file") or self.status != "file not found":

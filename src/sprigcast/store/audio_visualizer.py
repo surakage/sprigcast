@@ -31,8 +31,9 @@ from sprigcast.control.native import ApiError, register_action
 from sprigcast.core import workers
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "audio_visualizer", "name": "Audio visualizer", "version": 1, "adds": "Source",
-          "about": "Bars, a wave, a circle or a line that move with your mic, music or the whole stream."}
+PLUGIN = {"id": "audio_visualizer", "name": "Audio visualizer", "version": 2, "adds": "Source",
+          "about": "Bars, a wave, a circle or a line that move with your mic, music or the whole stream.",
+          "new": "Starts at a better size on wide canvases."}
 
 KIND = "audio_visualizer"
 W, H = 1280, 400  # the box; scale it on the canvas like anything else
@@ -412,6 +413,7 @@ class AudioVisualizerSource(Source):
     sleeps = True  # off air it stops listening and draws nothing
     own_sprig = (W, H)
     own_sprig_corner = "bottom_center"
+    own_sprig_band = 0.5  # half the width of a landscape canvas: lively, not a wall of bars
     channel_order = "pBGRA"  # premultiplied B, G, R, A, drawn by Painter
 
     def __init__(self, source_id: str, settings: dict[str, Any]):

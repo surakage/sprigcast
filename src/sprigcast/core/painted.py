@@ -66,6 +66,26 @@ def draw(p, path: Path, rect, sharp_at: float = 1.0) -> None:
     p.drawImage(rect, image, QRectF(0, 0, image.width(), image.height()))
 
 
+def canvas(width: int, height: int, detail: float = 1.0):
+    """A see-through picture for a card of width x height box units, drawn `detail` pixels per unit (a sharp
+    source's Source.detail), and a QPainter on it scaled so the card is drawn in box units at any detail:
+    text and shapes are drawn as outlines at the real size, so they stay crisp. Returns (image, painter);
+    end the painter before handing the image on."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
+
+    k = detail if detail > 0 else 1.0
+    image = QImage(max(1, round(width * k)), max(1, round(height * k)), QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    p = QPainter(image)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    if k != 1.0:
+        p.scale(image.width() / width, image.height() / height)
+    return image, p
+
+
 class Frame:
     """Turns painted QImages into frames for the GPU, keeping each one alive until the next."""
 
