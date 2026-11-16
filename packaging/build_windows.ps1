@@ -43,14 +43,22 @@ New-Item -ItemType Directory -Force $camDir | Out-Null
 Copy-Item (Join-Path $build "camera\Release\sprigcast_camera.dll") $camDir
 Copy-Item (Join-Path $build "camera32\Release\sprigcast_camera32.dll") $camDir
 
+# 2c. SprigCast.exe next to python312.dll: the app runs as SprigCast.exe, so other tools can recognise it.
+#     Built against the bundled Python's headers, before step 3 removes them.
+& $python (Join-Path $PSScriptRoot "make_icon.py") (Join-Path $build "sprigcast.ico")
+cmake -S (Join-Path $root "native\launcher") -B (Join-Path $build "launcher") -A x64 `
+    "-DPY_HOME=$((Join-Path $build 'python') -replace '\\', '/')" `
+    "-DSPRIGCAST_ICON=$((Join-Path $build 'sprigcast.ico') -replace '\\', '/')"
+cmake --build (Join-Path $build "launcher") --config Release
+Copy-Item (Join-Path $build "launcher\Release\SprigCast.exe") (Join-Path $build "python")
+
 # 3. Leave out what never runs on a user's PC (tests, caches, headers, pip itself).
 $py = Join-Path $build "python"
 Get-ChildItem $py -Recurse -Directory -Include "__pycache__", "tests", "test" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch "sprigcast" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force (Join-Path $py "include") -ErrorAction SilentlyContinue
 
-# 4. Icon and the wizard's brand art, then the installer.
-& $python (Join-Path $PSScriptRoot "make_icon.py") (Join-Path $build "sprigcast.ico")
+# 4. The wizard's brand art, then the installer.
 & $python (Join-Path $PSScriptRoot "make_wizard_images.py") (Join-Path $build "wizard")
 $version = (& $python -c "import importlib.metadata as m; print(m.version('sprigcast'))").Trim()
 iscc "/DAppVersion=$version" "/DBuildDir=$build" "/O$out" (Join-Path $PSScriptRoot "sprigcast.iss")

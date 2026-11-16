@@ -67,14 +67,14 @@ Source: "{#BuildDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs c
 Source: "{#BuildDir}\sprigcast.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\SprigCast"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; IconFilename: "{app}\sprigcast.ico"; WorkingDir: "{app}"
-Name: "{autodesktop}\SprigCast"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; IconFilename: "{app}\sprigcast.ico"; WorkingDir: "{app}"; Check: WantsDesktopShortcut
+Name: "{autoprograms}\SprigCast"; Filename: "{app}\python\SprigCast.exe"; IconFilename: "{app}\sprigcast.ico"; WorkingDir: "{app}"
+Name: "{autodesktop}\SprigCast"; Filename: "{app}\python\SprigCast.exe"; IconFilename: "{app}\sprigcast.ico"; WorkingDir: "{app}"; Check: WantsDesktopShortcut
 
 [Run]
-Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; Description: "Start SprigCast now"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\python\SprigCast.exe"; Description: "Start SprigCast now"; Flags: nowait postinstall skipifsilent
 ; An update from inside SprigCast (app/updates.py) runs Setup silently with /restartapp=1: start it again
 ; once everything, the camera step included, is done.
-Filename: "{app}\python\pythonw.exe"; Parameters: "-m sprigcast.app.main"; WorkingDir: "{app}"; Flags: nowait postinstall skipifnotsilent; Check: RestartAfterUpdate
+Filename: "{app}\python\SprigCast.exe"; WorkingDir: "{app}"; Flags: nowait postinstall skipifnotsilent; Check: RestartAfterUpdate
 
 [UninstallRun]
 ; Remove the "Start with Windows" entry, if it was switched on, so nothing points at a removed program.

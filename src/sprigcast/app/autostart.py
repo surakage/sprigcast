@@ -1,9 +1,10 @@
 """Start SprigCast when Windows starts, and start it minimised.
 
 "Start with Windows" is a value under HKEY_CURRENT_USER\\...\\Run, the same place Task Manager's
-Startup apps tab lists and can switch off, so the registry is the only record of it. It runs
-pythonw.exe from SprigCast's own environment (no console window) with ``-m sprigcast.app.main
---minimized``, so a Windows start never puts a window in front of you.
+Startup apps tab lists and can switch off, so the registry is the only record of it. An installed copy
+runs SprigCast.exe (the launcher next to the bundled Python, no console window) with ``--minimized``;
+a copy run from source uses pythonw.exe with ``-m sprigcast.app.main --minimized``. Either way a Windows
+start never puts a window in front of you.
 
 "Start minimised" is a setting for every start, picked in Settings → General.
 """
@@ -26,6 +27,9 @@ def supported() -> bool:
 def command() -> str:
     """The command line Windows runs at sign-in."""
     exe = Path(sys.executable)
+    launcher = exe.with_name("SprigCast.exe")
+    if launcher.exists():
+        return f'"{launcher}" {MINIMIZED_FLAG}'
     windowless = exe.with_name("pythonw.exe")
     if windowless.exists():
         exe = windowless
