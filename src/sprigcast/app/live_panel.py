@@ -419,8 +419,9 @@ class LivePanel(QWidget):
             self.rows.addWidget(row_box)
 
     def _add_list(self, column: QVBoxLayout, scenes, colour: str | None = None) -> None:
-        """The blooms as a list, one full-width row each."""
-        for button in self._tiles(scenes, colour):
+        """The blooms as a list, one full-width row each. The column's heading names the canvas, so a
+        "(vertical)" on the end of a name and the ⇄ link mark are left off (the tooltip says it's linked)."""
+        for button in self._tiles(scenes, colour, plain=True):
             column.addWidget(button)
 
     def _add_grid(self, scenes, colour: str | None = None) -> None:
@@ -430,11 +431,18 @@ class LivePanel(QWidget):
             flow.addWidget(button)
         self.rows.addWidget(flow_box)
 
-    def _tiles(self, scenes, colour: str | None = None) -> list:
+    def _tiles(self, scenes, colour: str | None = None, plain: bool = False) -> list:
         tiles = []
         tint = QColor(colour).darker(260).name() if colour else None
         for scene in scenes:
-            button = BloomTile(scene.name + ("  ⇄" if scene.linked_to else ""), tint)
+            if plain:
+                name = scene.name
+                for shape in ("vertical", "horizontal"):
+                    if name.lower().endswith(f" ({shape})"):
+                        name = name[: -len(shape) - 3].rstrip()
+                button = BloomTile(name or scene.name, tint)
+            else:
+                button = BloomTile(scene.name + ("  ⇄" if scene.linked_to else ""), tint)
             if scene.linked_to:
                 button.setToolTip("Linked: switches together with its partner on the other canvas")
             else:
