@@ -148,3 +148,45 @@ def test_secrets_are_encrypted_and_old_plain_ones_moved_over(monkeypatch):
         assert made == "fresh" and q.value(key) == "dpapi:hserf"
     finally:
         q.remove(key)
+
+
+def test_paired_devices_survive_a_restart(monkeypatch):
+    """Pair, close SprigCast, open it again: the same key still gets in, and the device is still listed
+    (PC test 2026-11-16: the key got "Wrong password" after a restart)."""
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import control_server
+    from test_control_api import _api as _obs_api, _qt
+
+    _qt()
+    monkeypatch.setattr(secret_store, "available", lambda: True)  # as on Windows: saved encrypted
+    monkeypatch.setattr(secret_store, "protect", lambda v: "dpapi:" + v[::-1] if v else v)
+    monkeypatch.setattr(secret_store, "unprotect", lambda v: v[6:][::-1] if v.startswith("dpapi:") else v)
+    q = QSettings()
+    before = {k: q.value(k) for k in (control_server.DEVICES, control_server.DEVICES + "_unreadable")}
+    q.remove(control_server.DEVICES)
+    try:
+        first = control_server.ControlServer(_obs_api()[0])
+        code = first.pairing.start()
+        session = NativeSession(api=first.native, password="leafy", keys=first.keys(), pairing=first.pairing)
+        key = json.loads(list(session.receive(json.dumps({"pair": code, "name": "Stream Deck"})))[0])["paired"]["key"]
+        assert str(QSettings().value(control_server.DEVICES)).startswith("dpapi:")  # on disk now, encrypted
+        first.deleteLater()
+        again = control_server.ControlServer(_obs_api()[0])  # SprigCast opened again
+        assert [d.name for d in again.pairing.devices] == ["Stream Deck"] and key in again.keys()
+        later = NativeSession(api=again.native, password="leafy", keys=again.keys(), pairing=again.pairing)
+        out = list(later.receive(json.dumps({"auth": auth_string(key, later.salt, later.challenge)})))
+        assert "welcome" in json.loads(out[0]) and later.key == key
+        # A saved list this PC can't read is kept aside, never written over by the next pairing.
+        QSettings().setValue(control_server.DEVICES, "dpapi-unreadable")
+        monkeypatch.setattr(secret_store, "unprotect", lambda v: "" if v == "dpapi-unreadable" else v)
+        monkeypatch.setattr(secret_store, "is_protected", lambda v: v.startswith("dpapi"))
+        third = control_server.ControlServer(_obs_api()[0])
+        assert third.pairing.devices == []
+        assert QSettings().value(control_server.DEVICES + "_unreadable") == "dpapi-unreadable"
+    finally:
+        for k, v in before.items():
+            if v is None:
+                q.remove(k)
+            else:
+                q.setValue(k, v)

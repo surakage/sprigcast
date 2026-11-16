@@ -63,13 +63,46 @@ def _secret(key: str, make=None) -> str:
     if value and not secret_store.is_protected(saved) and secret_store.available():
         q.setValue(key, secret_store.protect(value))  # plain text from an older SprigCast: encrypt it now
     if not value and make is not None:
+        if saved:  # there was one, but it can't be read here: keep it aside instead of losing it for good
+            log.warning("control: the saved %s couldn't be read (encrypted for another Windows user or PC); "
+                        "made a new one and kept the old aside", key)
+            q.setValue(key + "_unreadable", saved)
         value = make()
         q.setValue(key, secret_store.protect(value))
+        q.sync()
     return value
 
 
-def save_secret(key: str, value: str) -> None:
-    QSettings().setValue(key, secret_store.protect(value))
+def save_secret(key: str, value: str) -> bool:
+    """Save a secret encrypted, written to disk now (not when Qt gets round to it, which a closed or updated
+    SprigCast may never reach) and read back to be sure. False, logged, if it didn't stick."""
+    q = QSettings()
+    q.setValue(key, secret_store.protect(value))
+    q.sync()
+    back = secret_store.unprotect(str(QSettings().value(key, "") or ""))
+    if q.status() != QSettings.Status.NoError or back != value:
+        log.warning("control: %s didn't save (settings status %s, read back %s)", key, q.status().name,
+                    "nothing" if not back else "something else")
+        return False
+    return True
+
+
+def load_devices() -> list:
+    """Paired devices from the last run. A saved list that can't be read is kept aside (control/devices_unreadable)
+    rather than written over by the next pairing, and logged, so it can still be recovered."""
+    from sprigcast.control.pairing import Pairing
+
+    q = QSettings()
+    saved = str(q.value(DEVICES, "") or "")
+    text = _secret(DEVICES)
+    devices = Pairing.devices_from_json(text)
+    if saved and not devices and text.strip() not in ("[]",):
+        log.warning("control: the saved paired devices couldn't be read (%s); kept aside",
+                    "encrypted for another Windows user or PC" if not text else "not a device list")
+        q.setValue(DEVICES + "_unreadable", saved)
+        q.sync()
+    log.info("control: %d paired device%s", len(devices), "" if len(devices) == 1 else "s")
+    return devices
 
 
 def load_password() -> str:
@@ -347,8 +380,7 @@ class ControlServer(QObject):
         self.info_path: Path | None = None  # where apps on this PC find the port and password (api.json)
         self.connection_path: Path | None = None  # %APPDATA%\SprigCast\connection.json: port and doors, no secrets
         self.on_clients_changed = lambda count: None
-        self.pairing = Pairing(Pairing.devices_from_json(_secret(DEVICES)),
-                               on_change=lambda: save_secret(DEVICES, self.pairing.to_json()))
+        self.pairing = Pairing(load_devices(), on_change=lambda: save_secret(DEVICES, self.pairing.to_json()))
         self.local_key = ""  # set by start() while a password is in use
 
     def drop_key(self, key: str) -> None:
