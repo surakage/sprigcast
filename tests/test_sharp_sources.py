@@ -163,3 +163,61 @@ def test_the_engine_tells_sharp_sources_their_detail_only_when_it_steps():
     col.scene("p").items[0].scale = 1.0
     engine._sync_detail()
     assert told == [step, 1.0]
+
+
+STARTS = {  # kind: (box, corner, height share, band share), as the plugins say
+    "stream_timer": ((640, 220), "top_left", 0.14, None), "local_time": ((640, 220), "top_right", 0.14, None),
+    "now_playing": ((760, 200), "bottom_left", 0.14, None), "live_captions": ((1600, 260), "bottom_center", None, None),
+    "audio_visualizer": ((1280, 400), "bottom_center", None, 0.5), "pngtuber": ((640, 640), "bottom_left", None, None),
+    "snap": ((800, 1000), None, None, None), "death_count": ((800, 1000), None, None, None), "instant_replay": ((1920, 1080), None, None, None)}
+
+
+def _starts(cw, ch):
+    """Each plugin's starting box as (left, top, right, bottom) shares of a cw x ch canvas, in pixels too."""
+    shares, pixels = {}, {}
+    for kind, (box, corner, share, band) in STARTS.items():
+        col = SceneCollection(canvases=[Canvas(id="c", width=cw, height=ch)],
+                              scenes=[Scene(id="b", name="B", canvas="c")], active_scenes={"c": "b"})
+        col.sources.append(SourceConfig(id=kind, kind=kind, name=kind))
+        item = col.own_sprig(col.scene("b"), kind, box, kind, corner, share, band).items[0]
+        x0, y0, w, h = item.x, item.y, box[0] * item.scale, box[1] * item.scale
+        pixels[kind] = (x0, y0, w, h)
+        shares[kind] = (x0 / cw, y0 / ch, (x0 + w) / cw, (y0 + h) / ch)
+    return shares, pixels
+
+
+def test_plugins_match_what_their_classes_say(qt, tmp_path):
+    for kind, (box, corner, share, band) in STARTS.items():
+        plugin = next(p for p in plugin_store.catalog() if p.id == kind)
+        assert plugin_store.install(tmp_path / "plugins", plugin) is None
+        try:
+            from sprigcast.core.source import source_class
+
+            cls = source_class(kind)
+            assert (tuple(cls.own_sprig), getattr(cls, "own_sprig_corner", None), getattr(cls, "own_sprig_height", None),
+                    getattr(cls, "own_sprig_band", None)) == (box, corner, share, band), kind
+        finally:
+            plugin_store.remove(tmp_path / "plugins", kind)
+
+
+@pytest.mark.parametrize("size", [(1920, 1080), (1280, 720), (1080, 1920), (720, 1280)])
+def test_every_plugin_starts_on_the_canvas_readable_and_clear_of_the_others(size):
+    """Corner cards, bands and overlays scale with the canvas, stay on it, and the bottom band sits above
+    the bottom corner card. Portrait keeps out of TikTok's tabs and captions."""
+    cw, ch = size
+    boxes, pixels = _starts(cw, ch)
+    for kind, (x0, y0, w, h) in pixels.items():
+        assert x0 >= -0.5 and y0 >= -0.5 and x0 + w <= cw + 0.5 and y0 + h <= ch + 0.5, kind
+        if ch > cw and STARTS[kind][1]:
+            assert y0 >= 0.12 * ch - 0.5 and y0 + h <= 0.775 * ch + 0.5, kind  # clear of TikTok's own bars
+    for card in ("stream_timer", "local_time", "now_playing"):
+        assert pixels[card][3] == pytest.approx(0.14 * min(cw, ch))  # readable, not huge
+    assert boxes["live_captions"][3] <= boxes["now_playing"][1] + 1e-6  # captions above now playing, not on it
+    if cw > ch:
+        assert boxes["audio_visualizer"][0] >= boxes["pngtuber"][2]  # the band beside the avatar
+
+
+def test_720p_and_1080p_start_alike():
+    small, big = _starts(1280, 720)[0], _starts(1920, 1080)[0]
+    for kind in STARTS:
+        assert small[kind] == pytest.approx(big[kind]), kind

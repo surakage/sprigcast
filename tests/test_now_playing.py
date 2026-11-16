@@ -166,7 +166,8 @@ def test_adding_it_puts_a_small_card_in_the_bottom_left_of_both_shapes():
         item = shape.items[0]
         margin = min(canvas.width, canvas.height) * 0.035
         assert item.x == pytest.approx(margin)
-        assert item.y + 200 * item.scale == pytest.approx(canvas.height - margin)
+        bottom = 0.225 * canvas.height if canvas.height > canvas.width else margin  # over TikTok's captions
+        assert item.y + 200 * item.scale == pytest.approx(canvas.height - bottom)
 
 
 # The watcher against a stand-in for Windows' media sessions ------------------------------------------

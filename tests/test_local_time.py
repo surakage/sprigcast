@@ -58,5 +58,6 @@ def test_adding_it_puts_a_small_clock_in_the_corner_of_both_shapes():
         canvas = col.canvas(shape.canvas)
         item = shape.items[0]
         w = 640 * item.scale
-        assert w < canvas.width / 2 and item.y < canvas.height / 10  # small, at the top
+        top = 0.12 * canvas.height if canvas.height > canvas.width else min(canvas.width, canvas.height) * 0.035
+        assert w < canvas.width / 2 and item.y == pytest.approx(top)  # small, at the top (under TikTok's tabs)
         assert item.x + w == pytest.approx(canvas.width - min(canvas.width, canvas.height) * 0.035)  # right edge

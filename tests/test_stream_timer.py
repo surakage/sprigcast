@@ -241,7 +241,8 @@ def test_adding_it_puts_a_small_card_in_the_top_left_of_both_shapes():
     for shape in col.shapes(part):
         canvas = col.canvas(shape.canvas)
         item = shape.items[0]
-        assert 640 * item.scale < canvas.width / 2 and item.y < canvas.height / 10
+        top = 0.12 * canvas.height if canvas.height > canvas.width else min(canvas.width, canvas.height) * 0.035
+        assert 640 * item.scale < canvas.width / 2 and item.y == pytest.approx(top)
         assert item.x == pytest.approx(min(canvas.width, canvas.height) * 0.035)
 
 

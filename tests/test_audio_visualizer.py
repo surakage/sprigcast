@@ -217,7 +217,7 @@ def test_adding_it_puts_a_band_along_the_bottom(viz):
     for shape in col.shapes(part):
         canvas = col.canvas(shape.canvas)
         item = shape.items[0]
-        assert item.y + 400 * item.scale <= canvas.height and item.y > canvas.height / 2
+        assert item.y + 400 * item.scale <= canvas.height and item.y > canvas.height / 3
 
 
 def test_the_render_thread_never_waits_on_the_drawing(viz):
