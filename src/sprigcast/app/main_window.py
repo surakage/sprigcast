@@ -5497,7 +5497,7 @@ class MainWindow(QMainWindow):
             self.engine.set_sound_out(None)
             return
         self.camera.poll()
-        self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched() else None)
+        self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched else None)
 
     def _camera_sound_device(self) -> str | None:
         """Settings → Output → Virtual camera → Sound to, unless SprigCast also captures that device (an echo)."""
