@@ -2699,7 +2699,7 @@ class MainWindow(QMainWindow):
         self.meter_label.setToolTip(warning or self._meter_tip)
         if warning and not self._warned_ram:
             log.warning(warning)
-            self.statusBar().showMessage(warning, 15000)
+            self._warn_note(warning, 12000)
         self._warned_ram = bool(warning)
         self._check_busy_pc()
 
@@ -2711,7 +2711,7 @@ class MainWindow(QMainWindow):
         if note:
             self._busy_note = None
             log.warning(note)
-            self.statusBar().showMessage(note, 30000)
+            self._warn_note(note, 12000)
         try:
             import psutil
 
@@ -5129,6 +5129,13 @@ class MainWindow(QMainWindow):
 
             note = self.saved_note = SavedNote(self)
         note.say(title, folder, **more)
+
+    def _warn_note(self, text: str, ms: int) -> None:
+        """A heads-up as a note over the window (the status bar cut long ones off): its first part as the
+        title ("Your PC is busy (CPU 92%)"), the rest under it."""
+        cut = max(text.find("): "), text.find("). "))
+        title, detail = (text[:cut + 1], text[cut + 3:]) if cut > 0 else (text, "")
+        self._saved_note(title, detail=detail, kind="warn", ms=ms)
 
     def _plugin_updates(self) -> None:
         """Say which store plugins updated ("Death count updated" + what's new), and put in updates held while

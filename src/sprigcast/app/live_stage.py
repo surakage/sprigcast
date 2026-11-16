@@ -836,16 +836,21 @@ class StageCard(QFrame):
         self.notice.setText(("⟳  " if level == "bad" else "↓  ") + text)
         self.notice.setStyleSheet(f"QLabel {{ background: {theme.CHROME}; color: {colour}; border: 1px solid {colour};"
                                   " border-radius: 16px; padding: 0 18px; font-weight: 600; }")
-        self.notice.setFixedHeight(32)  # radius 16: Qt squares the corners when it's over half the height
-        self.notice.adjustSize()
+        self.notice.setWordWrap(True)
+        self.notice.ensurePolished()  # measured with its padding and bold font, not the plain ones
         self._place_notice()
         self.notice.show()
         self.notice.raise_()
 
     def _place_notice(self) -> None:
-        width = min(self.notice.sizeHint().width(), self.width() - 80)
-        self.notice.resize(width, 32)
-        self.notice.move((self.width() - width) // 2, 56)  # just inside the top of the canvases
+        """One line when it fits; a long one wraps onto more lines instead of being cut off."""
+        label = self.notice
+        room = max(160, self.width() - 80)
+        natural = label.fontMetrics().horizontalAdvance(label.text()) + 36 + 4  # padding 18 each side, border
+        width = min(natural, room)
+        height = max(32, label.heightForWidth(width) + 12) if natural > room else 32
+        label.setFixedSize(width, height)  # 32 high with radius 16; taller wraps keep the same round ends
+        label.move((self.width() - width) // 2, 56)  # just inside the top of the canvases
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

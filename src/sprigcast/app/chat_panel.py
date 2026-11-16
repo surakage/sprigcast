@@ -179,7 +179,15 @@ class ChatView(QTextBrowser):
         self._place_notice()
 
     def _place_notice(self) -> None:
+        self.notice.ensurePolished()  # measured with its padding, not the plain look
+        self.notice.setWordWrap(False)
+        self.notice.setMinimumSize(0, 0)
+        self.notice.setMaximumSize(16777215, 16777215)
         self.notice.adjustSize()
+        if self.notice.width() > self.width() - 24:  # a narrow chat: wrap instead of cutting it off
+            self.notice.setWordWrap(True)
+            self.notice.setFixedWidth(max(80, self.width() - 24))
+            self.notice.setFixedHeight(self.notice.heightForWidth(self.notice.width()))
         self.notice.move((self.width() - self.notice.width()) // 2, 10)
         self.notice.raise_()
 
