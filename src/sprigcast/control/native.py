@@ -95,6 +95,7 @@ def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional
 
 
 _PLUGIN_ACTIONS: dict[str, Action] = {}
+ALWAYS_SENT = "app.closing"  # sent just before SprigCast closes (or its server stops): look again soon
 _PLUGIN_EVENTS: set[str] = set()  # the first word of events plugins send ("snap" for snap.taken): group "plugin"
 
 
@@ -267,6 +268,24 @@ class NativeApi:
                 if wanted in (self._item_key(item.source), item.source, self._item_name(item.source)):
                     out.append(item)
         return out
+
+    def _items(self, data: dict[str, Any]) -> tuple[Scene, list[SceneItem]]:
+        """The holder and the items named by "item". Blooms hold sprigs only, so an item that isn't in the bloom
+        itself is looked for in the bloom's own sprig: {"bloom": "Chatting", "item": "Cam"} finds the Cam."""
+        holder, layouts = self._holder(data)
+        wanted = _get(data, "item", str)
+        items = self._matching_items(layouts, wanted)
+        if not items and data.get("sprig") is None:
+            inner = []
+            for layout in layouts:
+                sprig = self.col.bloom_sprig(layout)
+                shape = None if sprig is None else self.col.shape_for(sprig, layout.canvas)
+                if shape is not None and all(shape.id != s.id for s in inner):
+                    inner.append(shape)
+            items = self._matching_items(inner, wanted)
+        if not items:
+            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+        return holder, items
 
     def _filter(self, source: SourceConfig, data: dict[str, Any]) -> Filter:
         wanted = _get(data, "filter", str)
@@ -453,11 +472,7 @@ class NativeApi:
             for i in reversed(layout.items)] for layout in layouts}}  # top of the list first, as in Build
 
     def _set_items(self, data, visible: bool | None):
-        holder, layouts = self._holder(data)
-        wanted = _get(data, "item", str)
-        items = self._matching_items(layouts, wanted)
-        if not items:
-            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+        _, items = self._items(data)
         on = (not items[0].visible) if visible is None else visible
         for item in items:
             item.visible = on
@@ -479,17 +494,19 @@ class NativeApi:
     def item_toggle(self, data):
         return self._set_items(data, None)
 
+    @action("item.status", "Whether something inside a bloom or sprig is shown.", item="name or id",
+            bloom="?bloom it's in", sprig="?sprig it's in", shape="?both (default), horizontal or vertical")
+    def item_status(self, data):
+        _, items = self._items(data)
+        return {"visible": items[0].visible}
+
     @action("item.place", "Move, size or turn something inside a bloom or sprig (only the fields you give change).",
             item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",
             shape="?both (default), horizontal or vertical", x="?left edge, canvas pixels", y="?top edge",
             scale="?size, 1 = as big as the source", rotation="?degrees clockwise",
             dx="?pixels to move right (negative: left)", dy="?pixels to move down (negative: up)")
     def item_place(self, data):
-        holder, layouts = self._holder(data)
-        wanted = _get(data, "item", str)
-        items = self._matching_items(layouts, wanted)
-        if not items:
-            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+        _, items = self._items(data)
         values = {key: _get(data, key, float, optional=True) for key in ("x", "y", "scale", "rotation", "dx", "dy")}
         if all(v is None for v in values.values()):
             raise _bad("Give x, y, scale, rotation, dx or dy.")
@@ -974,6 +991,15 @@ class NativeApi:
             "shelf": self._shelf(),
         }
 
+    def _blooms_showing(self, part: Scene) -> list[str]:
+        """The blooms whose own sprig this is (blooms hold sprigs only), so an item.changed inside it can say."""
+        out = []
+        for bloom in self._blooms():
+            sprig = self.col.bloom_sprig(bloom)
+            if sprig is not None and sprig.id == part.id:
+                out.append(bloom.name)
+        return out
+
     def changes(self) -> list[tuple[str, dict[str, Any]]]:
         """(event name, data) for what changed since the last call."""
         now = self.snapshot()
@@ -1000,11 +1026,15 @@ class NativeApi:
         for shape, scene_id in now["onAir"].items():
             if last["onAir"].get(shape) != scene_id:
                 out.append(("bloom.shown", {**bloom_ref(scene_id), "shape": shape}))
+        owners: dict[str, list[str]] = {}
         for key, visible in now["items"].items():
             if key in last["items"] and last["items"][key] != visible:
                 scene = scenes.get(key[0])
-                where = {"sprig": self.col.main_part(scene).name} if scene is not None and scene.kind == "part" \
-                    else bloom_ref(key[0])
+                if scene is not None and scene.kind == "part":
+                    part = self.col.main_part(scene)
+                    where = {"sprig": part.name, "blooms": owners.setdefault(part.id, self._blooms_showing(part))}
+                else:
+                    where = bloom_ref(key[0])
                 out.append(("item.changed", {**where, "shape": scene.canvas if scene else None,
                                              "item": self._item_name(key[2]), "itemId": self._item_key(key[2]),
                                              "visible": visible}))
@@ -1073,7 +1103,9 @@ class NativeSession:
         return self.welcomed and group in self.events
 
     def event(self, name: str, data: dict[str, Any]) -> str | None:
-        if not self.wants(event_group(name)):
+        if name == ALWAYS_SENT and self.welcomed:
+            pass  # every app hears that SprigCast is closing, whatever groups it asked for
+        elif not self.wants(event_group(name)):
             return None
         return json.dumps({"event": name, **data}, default=str)
 

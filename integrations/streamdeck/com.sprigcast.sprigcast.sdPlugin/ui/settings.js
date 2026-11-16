@@ -89,12 +89,15 @@ function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionI
 	socket.onopen = () => {
 		socket.send(JSON.stringify({ event: registerEvent, uuid }));
 		send("getGlobalSettings");
+		send("sendToPlugin", { event: "getStatus" });
 	};
 	socket.onmessage = (message) => {
 		const data = JSON.parse(message.data);
 		if (data.event === "didReceiveGlobalSettings") {
 			globals = data.payload?.settings ?? {};
 			showGlobals();
+		} else if (data.event === "sendToPropertyInspector" && data.payload?.event === "status") {
+			document.getElementById("status").textContent = data.payload.text ?? "";
 		} else if (data.event === "sendToPropertyInspector" && data.payload?.items) {
 			fillList(data.payload.event, data.payload.items);
 		}
