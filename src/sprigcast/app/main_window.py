@@ -2541,6 +2541,8 @@ class MainWindow(QMainWindow):
         help_menu.addSeparator()
         help_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
+        help_menu.addSeparator()
+        help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
 
     def _ask_repot(self) -> None:
         """File → Repot as MP4: pick recordings (MKV, FLV, MOV, TS) and copy each into an MP4 beside it."""
@@ -2570,6 +2572,12 @@ class MainWindow(QMainWindow):
         else:
             text = f"Couldn't repot {missed} of {len(files)} (details in the log)"
         self.statusBar().showMessage(text, 10000)
+
+    def _open_tip_page(self) -> None:
+        """Help → Support SprigCast: what the project is and why a tip helps, then Close or the tip page."""
+        from sprigcast.app.support import support_dialog
+
+        support_dialog(self).exec()
 
     def _show_garden_file(self) -> None:
         """Explorer, open on this garden's file and with it selected."""

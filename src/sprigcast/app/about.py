@@ -1,4 +1,4 @@
-"""Help → About SprigCast: the welcome sloth, the S logo, the version and where the code lives.
+"""Help → About SprigCast: the welcome sloth, the S logo, the version, where the code lives and a tip link.
 
 A rounded pop-up like the rest of the app (transitions_panel.PopUp), instead of a plain system box.
 """
@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from sprigcast.app import theme
+from sprigcast.app.support import TIP_URL
 
 REPO_URL = "https://github.com/surakage/sprigcast"
 
@@ -56,6 +57,11 @@ def about_page() -> QWidget:
     link.setOpenExternalLinks(True)
     link.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(link)
+    tip = QLabel(f"<a href='{TIP_URL}' style='color: {theme.ACCENT}; text-decoration: none;'>Support SprigCast</a>")
+    tip.setObjectName("aboutTip")
+    tip.setOpenExternalLinks(True)
+    tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(tip)
     page.setMinimumWidth(380)
     return page
 
