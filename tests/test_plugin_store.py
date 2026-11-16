@@ -238,3 +238,24 @@ def test_the_window_says_so_and_puts_held_updates_in_once_off_air(tmp_path, app,
         plugin_store.waiting.clear()
         plugin_store.updated_at_start.clear()
         plugin_store.remove(plugins, "barrel_roll")
+
+
+def test_headers_are_read_from_the_plugin_lines_and_kept_until_the_file_changes(tmp_path, monkeypatch):
+    import ast
+    import os
+
+    path = tmp_path / "big.py"
+    body = "\n".join(f"def f{i}(x):\n    return x + {i}\n" for i in range(3000))
+    path.write_text('"""A big plugin."""\nPLUGIN = {"id": "big", "name": "Big",\n          "version": 2}\n' + body)
+    parsed = []
+    real = ast.parse
+    monkeypatch.setattr(ast, "parse", lambda text, *a, **k: parsed.append(len(text)) or real(text, *a, **k))
+    assert plugin_store.read_header(path) == {"id": "big", "name": "Big", "version": 2}
+    assert parsed and max(parsed) < 200  # only the PLUGIN lines, not the 3000 functions
+    parsed.clear()
+    assert plugin_store.read_header(path)["version"] == 2 and parsed == []  # kept
+    path.write_text('PLUGIN = {"id": "big", "version": 3}\n' + body)
+    os.utime(path, ns=(1, 10**18))  # a new modified time, whatever the clock's resolution
+    assert plugin_store.read_header(path)["version"] == 3
+    for plugin in plugin_store.catalog():  # every store plugin still reads
+        assert plugin.id and plugin.version >= 1

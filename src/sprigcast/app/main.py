@@ -143,6 +143,30 @@ def _announce_running() -> None:
     _mutex = kernel32.CreateMutexW(None, False, APP_MUTEX)  # released by Windows when the process ends
 
 
+def inside_package() -> str:
+    """The Windows app package this process runs inside, or "" (the normal case).
+
+    A program started by a Microsoft Store app (Store Python, for one) can inherit that app's package: Windows then
+    keeps its registry and AppData writes in the package's private copy, so this SprigCast reads your settings but
+    whatever it saves (paired devices, settings) is gone for SprigCast started any other way."""
+    if sys.platform != "win32":
+        return ""
+    import ctypes
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        length = ctypes.c_uint32(0)
+        result = kernel32.GetCurrentPackageFullName(ctypes.byref(length), None)
+        if result == 15700:  # APPMODEL_ERROR_NO_PACKAGE
+            return ""
+        buffer = ctypes.create_unicode_buffer(max(1, length.value))
+        if kernel32.GetCurrentPackageFullName(ctypes.byref(length), buffer) == 0:
+            return buffer.value or "a package"
+    except (AttributeError, OSError):
+        return ""
+    return ""
+
+
 def run() -> None:
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
@@ -158,6 +182,10 @@ def run() -> None:
 
     logbook.setup()  # Documents\SprigCast\Logs: today's log, one report per stream, crashes
     logbook.catch_unhandled()  # errors nobody caught reach the log, not a console that isn't there
+    package = inside_package()
+    if package:
+        logging.warning("started inside the Windows app package %s (by a Microsoft Store app): settings and "
+                        "pairings saved now are kept in that package's own copy, not SprigCast's", package)
     # Web docks (app/custom_docks.py) need these set before the app exists. Qt WebEngine is only
     # loaded when you have custom docks, so without any it costs no memory.
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
