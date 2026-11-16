@@ -44,12 +44,48 @@ updated_at_start: list[str] = []
 waiting: dict[str, StorePlugin] = {}
 
 
+_headers: dict[str, tuple[tuple[int, int], dict | None]] = {}  # path -> ((mtime, size), header), see read_header
+
+
 def read_header(path: Path) -> dict | None:
-    """The PLUGIN dict at the top of a plugin file, or None. Never runs the file."""
+    """The PLUGIN dict at the top of a plugin file, or None. Never runs the file.
+
+    Only the PLUGIN lines are parsed, and the answer is kept until the file changes: parsing whole store
+    plugins every time the list was read froze the window 336 ms at start on the PC (2026-11-16)."""
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError, ValueError):
+        stat = path.stat()
+    except OSError:
         return None
+    key, stamp = str(path), (stat.st_mtime_ns, stat.st_size)
+    known = _headers.get(key)
+    if known is not None and known[0] == stamp:
+        return dict(known[1]) if known[1] is not None else None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    head = _parse_header(text, str(path))
+    _headers[key] = (stamp, head)
+    return dict(head) if head is not None else None
+
+
+def _parse_header(text: str, filename: str) -> dict | None:
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith("PLUGIN") and "=" in line), None)
+    if start is not None:  # the assignment alone: a few lines, however big the plugin
+        for end in range(start + 1, min(len(lines), start + 200) + 1):
+            try:
+                tree = ast.parse("\n".join(lines[start:end]), filename=filename)
+            except SyntaxError:
+                continue
+            return _header_in(tree)
+    try:
+        return _header_in(ast.parse(text, filename=filename))  # written some other way: the whole file
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _header_in(tree) -> dict | None:
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "PLUGIN" for t in node.targets):
             try:
