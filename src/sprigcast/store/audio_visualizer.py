@@ -28,6 +28,7 @@ import numpy as np
 
 from sprigcast.audio import listen
 from sprigcast.control.native import ApiError, register_action
+from sprigcast.core import workers
 from sprigcast.core.source import Source, register
 
 PLUGIN = {"id": "audio_visualizer", "name": "Audio visualizer", "version": 1, "adds": "Source",
@@ -71,9 +72,10 @@ class Analyser:
         self.wave = np.zeros(0, np.float32)
 
     def feed(self, block: np.ndarray) -> None:
-        """On the mixer thread: keep the newest block as mono. Swapping a tuple is safe without a lock."""
-        mono = block.mean(axis=1, dtype=np.float32) if block.ndim == 2 else np.asarray(block, np.float32)
-        self._chunks = (self._chunks[1], mono[-(N // 2):])
+        """On the mixer thread: keep a copy of the newest block, nothing more. A copy keeps Python's lock (a
+        NumPy sum lets it go and then queues for it again, holding up the sound). Swapping a tuple is safe
+        without a lock; it's made mono on the drawing thread."""
+        self._chunks = (self._chunks[1], block.copy())
         self._fed += 1
 
     def reset(self) -> None:
@@ -93,7 +95,7 @@ class Analyser:
     def step(self, count: int, smoothing: float, sensitivity: float, dt: float) -> tuple[np.ndarray, np.ndarray]:
         """New band heights and wave, eased from the last ones. dt: seconds since the last step."""
         a, b = self._chunks
-        samples = np.concatenate((a, b))
+        samples = np.concatenate([c.mean(axis=1) if c.ndim == 2 else c for c in (a, b)])[-N:].astype(np.float32)
         if len(samples) < N:
             samples = np.pad(samples, (N - len(samples), 0))
         if self._fed != self._used:
@@ -178,7 +180,7 @@ class Painter:
     each column (a bar, a wave's stroke, a line and the fill under it), so a frame is a picture made once
     for the colours (the "sprite") copied in where each column's span is, plus a soft first and last
     pixel. That's whole 32-bit pixels and NumPy, which lets the lock go, at about a millisecond.
-    Two frames are reused in turn (one can still be on its way to the GPU while the next is drawn)."""
+    Three frames are reused in turn (one on the GPU, one waiting to go, one being drawn on a worker)."""
 
     PAD = 12.0
 
@@ -197,8 +199,8 @@ class Painter:
 
     def _frame(self) -> np.ndarray:
         if not self._frames:
-            self._frames = [np.zeros((H, W, 4), np.uint8) for _ in range(2)]
-        self._turn ^= 1
+            self._frames = [np.zeros((H, W, 4), np.uint8) for _ in range(3)]
+        self._turn = (self._turn + 1) % 3
         frame = self._frames[self._turn]
         frame.fill(0)
         return frame
@@ -312,8 +314,38 @@ class Painter:
         _words(frame)[y0:y0 + size, x0:x0 + size] = out
 
 
+def look(settings: dict[str, Any]) -> tuple[str, int, float, float, bool]:
+    """(style, bars, smoothing, sensitivity, mirror) from the settings, anything odd back to its default."""
+    s = settings
+    style = str(s.get("style") or "bars")
+    if style not in dict(STYLES):
+        style = "bars"
+    try:
+        count = int(s.get("bars", 48))
+    except (TypeError, ValueError):
+        count = 48
+    count = max(8, min(128, count))
+    try:
+        smoothing = float(s.get("smoothing", 0.6))
+    except (TypeError, ValueError):
+        smoothing = 0.6
+    try:
+        sensitivity = float(s.get("sensitivity", 1.0))
+    except (TypeError, ValueError):
+        sensitivity = 1.0
+    return style, count, max(0.0, min(0.95, smoothing)), max(0.05, min(10.0, sensitivity)), bool(s.get("mirror"))
+
+
 @register(KIND)
 class AudioVisualizerSource(Source):
+    """The FFT and the drawing run on a shared worker, never on the render thread.
+
+    On the PC (2026-11-16 heavy run) drawing on the render thread took 25-105 ms a frame, though it's about
+    1 ms on its own: every NumPy step lets Python's lock go and then has to queue for it again behind the
+    encoders, sound and window threads, up to 5 ms each time, and a frame has dozens of steps. So
+    video_frame only hands over the last finished frame and, at most 30 times a second, asks a worker for
+    the next one. The render thread spends microseconds here; a busy PC just gets a frame a little later."""
+
     label = "Audio visualizer"
     defaults = {"sound": listen.MIX, "style": "bars", "color": "#4fd88f", "peak_color": "#bff3d6",
                 "bars": 48, "smoothing": 0.6, "mirror": False, "sensitivity": 1.0}
@@ -329,8 +361,11 @@ class AudioVisualizerSource(Source):
         self._painter = Painter()
         self._heard: str | None = None  # the sound we're listening to now
         self._hidden = False
-        self._last = 0.0
+        self._last = 0.0  # when the last drawing was asked for
         self._still = False  # the last drawing was of silence: don't draw it again
+        self._turn = 0  # goes up whenever it stops listening: drawings asked for before then are dropped
+        self._busy = False  # a drawing is being made
+        self._ready: np.ndarray | None = None  # a finished drawing, for the next video_frame
         self.status = "ok"
 
     @property
@@ -356,7 +391,11 @@ class AudioVisualizerSource(Source):
         if self._heard is not None:
             listen.remove(self._heard, self.analyser.feed)
             self._heard = None
-        self.analyser.reset()
+        self._turn += 1
+        self.analyser = Analyser()  # a drawing still being made keeps the old ones; nothing is shared
+        self._painter = Painter()  # (and the frames go with them)
+        self._busy = False
+        self._ready = None
         self._still = False
 
     def start(self) -> None:
@@ -370,7 +409,6 @@ class AudioVisualizerSource(Source):
 
     def sleep(self) -> None:
         self._quiet()
-        self._painter.release()
 
     def set_hidden(self, hidden: bool) -> None:
         self._hidden = hidden
@@ -380,8 +418,7 @@ class AudioVisualizerSource(Source):
             self._listen()
 
     def stop(self) -> None:
-        self._quiet()
-        self._painter.release()
+        self.sleep()
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
@@ -392,42 +429,42 @@ class AudioVisualizerSource(Source):
     # Drawing ---------------------------------------------------------------------------------
 
     def look(self) -> tuple[str, int, float, float, bool]:
-        s = self.settings
-        style = str(s.get("style") or "bars")
-        if style not in dict(STYLES):
-            style = "bars"
-        try:
-            count = int(s.get("bars", 48))
-        except (TypeError, ValueError):
-            count = 48
-        count = max(8, min(128, count))
-        try:
-            smoothing = float(s.get("smoothing", 0.6))
-        except (TypeError, ValueError):
-            smoothing = 0.6
-        try:
-            sensitivity = float(s.get("sensitivity", 1.0))
-        except (TypeError, ValueError):
-            sensitivity = 1.0
-        return style, count, max(0.0, min(0.95, smoothing)), max(0.05, min(10.0, sensitivity)), bool(s.get("mirror"))
+        return look(self.settings)
 
     def video_frame(self, now: float | None = None) -> np.ndarray | None:
+        """The last finished drawing (once), and maybe ask for the next. Never draws here."""
         if self._heard is None:
             return None
+        ready, self._ready = self._ready, None
         now = time.monotonic() if now is None else now
         dt = now - self._last
-        if dt < 1.0 / FPS - 0.002:
-            return None  # 30 drawings a second is plenty for this
-        self._last = now
-        style, count, smoothing, sensitivity, mirror = self.look()
-        bands, wave = self.analyser.step(count, smoothing, sensitivity, min(dt, 0.5))
-        still = float(bands.max(initial=0.0)) < STILL and float(np.abs(wave).max(initial=0.0)) < STILL
-        if still and self._still:
-            return None  # silence, already drawn: nothing painted, nothing uploaded
-        self._still = still
-        if mirror:
-            bands, wave = mirrored(bands), mirrored(wave)
-        return self._painter.paint(style, bands, wave, self.settings)
+        if not self._busy and dt >= 1.0 / FPS - 0.002:  # 30 drawings a second is plenty for this
+            self._last = now
+            self._busy = True
+            try:
+                workers.run(self.draw, self._turn, self.analyser, self._painter, dict(self.settings),
+                            min(dt, 0.5), name="visualizer")
+            except RuntimeError:  # the pool is shutting down (SprigCast closing)
+                self._busy = False
+        return ready
+
+    def draw(self, turn: int, analyser: Analyser, painter: Painter, settings: dict[str, Any], dt: float) -> None:
+        """On a worker: the next bands and their drawing, left for video_frame."""
+        try:
+            style, count, smoothing, sensitivity, mirror = look(settings)
+            bands, wave = analyser.step(count, smoothing, sensitivity, dt)
+            still = float(bands.max(initial=0.0)) < STILL and float(np.abs(wave).max(initial=0.0)) < STILL
+            if still and self._still:
+                return  # silence, already drawn: nothing painted, nothing uploaded
+            if mirror:
+                bands, wave = mirrored(bands), mirrored(wave)
+            frame = painter.paint(style, bands, wave, settings)
+            if turn == self._turn:
+                self._still = still
+                self._ready = frame
+        finally:
+            if turn == self._turn:
+                self._busy = False
 
 
 # For apps (Streamer.bot): change the look --------------------------------------------------------
