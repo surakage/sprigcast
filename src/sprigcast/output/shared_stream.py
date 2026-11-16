@@ -28,6 +28,7 @@ from sprigcast.output.stream import (
     RETRY_FIRST,
     RETRY_MAX,
     SEVERITY,
+    log_live,
     stream_url,
 )
 
@@ -372,6 +373,7 @@ class StreamLink:
             self.frames += 1
         if not self.connected:
             self.connected, self._connected_at, self.status = True, time.monotonic(), "live"
+            log_live(self)
 
     def _session(self) -> None:
         out = None

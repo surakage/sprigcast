@@ -19,7 +19,7 @@ from fractions import Fraction
 
 from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock
 from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE, encoder_hwaccel
-from sprigcast.output.stream import MAX_BACKLOG, RESUME_BACKLOG, Streamer
+from sprigcast.output.stream import MAX_BACKLOG, RESUME_BACKLOG, Streamer, log_live
 
 log = logging.getLogger(__name__)
 
@@ -207,6 +207,7 @@ class EnhancedStreamer(Streamer):
                 self.connected = True
                 self._connected_at = time.monotonic()
                 self.status = "live"
+                log_live(self)
 
     def _session(self) -> None:
         container, finished = None, False

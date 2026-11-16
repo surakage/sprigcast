@@ -157,6 +157,7 @@ def run() -> None:
     from sprigcast.app import logbook
 
     logbook.setup()  # Documents\SprigCast\Logs: today's log, one report per stream, crashes
+    logbook.catch_unhandled()  # errors nobody caught reach the log, not a console that isn't there
     # Web docks (app/custom_docks.py) need these set before the app exists. Qt WebEngine is only
     # loaded when you have custom docks, so without any it costs no memory.
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)

@@ -90,8 +90,9 @@ def setup(now: datetime | None = None) -> Path | None:
     except OSError as exc:
         log.warning("no log file (%s)", exc)
         return None
-    handler.setFormatter(logging.Formatter(FORMAT))
+    handler.setFormatter(_Formatter(FORMAT))
     handler.setLevel(logging.INFO)
+    handler.addFilter(Floods())
     root = logging.getLogger()
     if _handler is not None:
         root.removeHandler(_handler)
@@ -115,6 +116,95 @@ def setup(now: datetime | None = None) -> Path | None:
     logging.getLogger("sprigcast").info("SprigCast %s started; logs in %s%s", _version(), folder,
                                         f" ({removed} older than {keep_days()} days removed)" if removed else "")
     return path
+
+
+class Floods(logging.Filter):
+    """The same message more than LIMIT times a minute (an error raised every frame, say) is held back;
+    the next one written after that says how many were held. Each kind of problem still shows up, early,
+    without one of them filling the log."""
+
+    LIMIT = 10
+    WINDOW_S = 60.0
+
+    def __init__(self, clock=time.monotonic):
+        super().__init__()
+        self._clock = clock
+        self._seen: dict[tuple, list] = {}  # (logger, level, message template) -> [window start, count, held]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key = (record.name, record.levelno, str(record.msg)[:200])
+        now = self._clock()
+        seen = self._seen.get(key)
+        if seen is None or now - seen[0] >= self.WINDOW_S:
+            held = seen[2] if seen else 0
+            self._seen[key] = [now, 1, 0]
+            if held:
+                record.sprig_held = held
+            if len(self._seen) > 2000:  # a long run: forget the quiet ones
+                self._seen = {k: v for k, v in self._seen.items() if now - v[0] < self.WINDOW_S}
+            return True
+        seen[1] += 1
+        if seen[1] <= self.LIMIT:
+            return True
+        seen[2] += 1
+        return False
+
+
+class _Formatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record)
+        held = getattr(record, "sprig_held", 0)
+        return f"{text} (and {held} more like it held back)" if held else text
+
+
+def catch_unhandled() -> None:
+    """Errors nobody caught (in a button's code, a background thread, Qt itself) go to the log too.
+    Without this a windowed app loses them: there is no console to print them to."""
+    import sys
+    import threading
+
+    errors = logging.getLogger("sprigcast.errors")
+    previous = sys.excepthook
+
+    def on_error(kind, value, tb):
+        if issubclass(kind, KeyboardInterrupt):
+            return previous(kind, value, tb)
+        errors.error("unhandled error", exc_info=(kind, value, tb))
+        if sys.stderr is not None and previous is not sys.__excepthook__:
+            previous(kind, value, tb)
+
+    def on_thread_error(args):
+        if args.exc_type is SystemExit:
+            return
+        name = args.thread.name if args.thread is not None else "?"
+        errors.error("unhandled error in thread %s", name,
+                     exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    def on_unraisable(unraisable):
+        errors.warning("ignored error %s: %s", unraisable.err_msg or "in", unraisable.exc_value or unraisable.exc_type)
+
+    sys.excepthook = on_error
+    threading.excepthook = on_thread_error
+    sys.unraisablehook = on_unraisable
+    try:
+        from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+    except Exception:
+        return
+    qt = logging.getLogger("sprigcast.qt")
+    said: set[str] = set()
+
+    def on_qt(kind, _context, message):
+        if kind in (QtMsgType.QtDebugMsg, QtMsgType.QtInfoMsg):
+            return
+        if kind == QtMsgType.QtWarningMsg:  # each Qt warning once a run: some repeat every repaint
+            if message in said or len(said) > 300:
+                return
+            said.add(message)
+            qt.warning("%s", message)
+        else:
+            qt.error("%s", message)
+
+    qInstallMessageHandler(on_qt)
 
 
 def _version() -> str:
