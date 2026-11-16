@@ -5,7 +5,8 @@ int / float → number box, bool → checkbox.
 
 A source class can also give:
     choices = {"language": (("en", "English"), ("es", "Spanish"))}  # a drop-down instead of a text box
-              (or a function returning that list, read each time the form opens: devices plugged in now)
+              (or a function returning that list, read each time the form opens: devices plugged in now;
+              a function taking one argument gets the garden, to list its sounds)
     secrets = {"google_key": "captions/google_key"}  # a hidden box whose value is kept DPAPI-encrypted in
               SprigCast's settings under that name, never in the garden file (so it isn't shared or exported);
     secrets_after = "engine"  # where those boxes go in the form (at the end without it)
@@ -65,6 +66,9 @@ LABELS = {
     "lines": "Lines",
     "color": "Colour",
     "peak_color": "Peak colour",
+    "talk_at": "Talks above (dB)",
+    "yell_at": "Yells above (dB)",
+    "hold": "Hold (seconds)",
     "look": "Style",
     "text_size": "Size",
     "all_caps": "All caps",
@@ -85,8 +89,9 @@ def _label(key: str) -> str:
 
 class SettingsDialog(QDialog):
     def __init__(self, title: str, defaults: dict[str, Any], settings: dict[str, Any], parent: QWidget | None = None,
-                 cls: type | None = None):
+                 cls: type | None = None, collection: Any = None):
         super().__init__(parent)
+        self.collection = collection
         self.choices: dict[str, Any] = dict(getattr(cls, "choices", None) or {})
         self.secrets: dict[str, str] = dict(getattr(cls, "secrets", None) or {})
         self.secret_fields: dict[str, QLineEdit] = {}
@@ -138,7 +143,7 @@ class SettingsDialog(QDialog):
         if key in self.choices:
             options = self.choices[key]
             try:
-                options = list(options() if callable(options) else options)
+                options = list(_list_of(options, self.collection) if callable(options) else options)
             except Exception:
                 options = []
             box = QComboBox()
@@ -232,6 +237,17 @@ class SettingsDialog(QDialog):
             else:
                 out[key] = widget.text()
         return out
+
+
+def _list_of(fn, collection) -> Any:
+    """A choices function's list: given the garden when it takes an argument."""
+    import inspect
+
+    try:
+        takes = bool(inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        takes = False
+    return fn(collection) if takes else fn()
 
 
 def read_secret(name: str) -> str:

@@ -22,6 +22,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Transition | picks the transition and/or its length | while it's in use | Transition |
 | Sprig state | switches a sprig to one of its Live states | ✓ on success | |
 | Death count | add, remove, reset or show (Death count plugin) | the count as its title | |
+| PNGtuber | shows an expression (for some seconds, or until changed), the next one, or default (PNGtuber plugin) | ✓ and the expression's name | |
 | Run action | any SprigCast action with JSON fields | ✓ on success | |
 
 Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air), Record Pause and Chapter

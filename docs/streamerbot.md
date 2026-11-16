@@ -36,6 +36,8 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 | `Pixelate`, `Blackout` | `source`, optional `seconds` (Hide it plugin) |
 | `BarrelRoll` | `sprig`, optional `seconds` (Barrel Roll plugin) |
 | `Freeze`, `Unfreeze` | `sprig` or `source`, optional `seconds` (Freeze plugin) |
+| `PngtuberExpression` | `expression`, optional `seconds` (PNGtuber plugin) |
+| `PngtuberNext`, `PngtuberReset` | none (PNGtuber plugin) |
 | `Execute` | `sprigcastAction` (any action, e.g. `item.place`) and `sprigcastJson` (its fields as JSON) |
 
 Every method leaves SprigCast's answer in `%sprigcastResult%` and `%sprigcastOk%`, so the next sub-action can post it in chat (Death count answers `{"ok": true, "result": {"count": 7}}`).
@@ -67,6 +69,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Undo a death counted by mistake | `http://127.0.0.1:4455/api/deaths.remove?password=…` |
 | New game: death count back to 0 | `http://127.0.0.1:4455/api/deaths.reset?password=…` |
 | Chat command `!deaths`: show the count on stream | `http://127.0.0.1:4455/api/deaths.show?password=…` |
+| Redeem: your PNGtuber looks happy for 30 s | `http://127.0.0.1:4455/api/pngtuber.expression?expression=happy&seconds=30&password=…` |
 | Stream Deck or redeem: start or pause the stream timer | `http://127.0.0.1:4455/api/timer.toggle?password=…` |
 | Redeem: one more minute on the countdown | `http://127.0.0.1:4455/api/timer.add?seconds=60&password=…` |
 | Start a fresh 10-minute "Starting soon" countdown | `http://127.0.0.1:4455/api/timer.start?minutes=10&password=…` |
@@ -79,7 +82,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
 | Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
-Store plugins (Audio visualizer, Auto clip, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing) must be added first in Settings → Plugins.
+Store plugins (Audio visualizer, Auto clip, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing, PNGtuber) must be added first in Settings → Plugins.
 
 `!song` answers `{"ok": true, "result": {"playing": true, "title": "…", "artist": "…", …}}`: save `title` and `artist` to variables and post them in chat. To switch blooms when the countdown ends, listen for the `timer.done` event (below).
 

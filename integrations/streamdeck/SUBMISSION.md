@@ -17,7 +17,7 @@ Nothing has been sent to Elgato. These are the steps and the listing, ready for 
 - [ ] Show bloom: switches, and the key lights for the bloom on air; switching in SprigCast moves the light.
 - [ ] Mute sound: toggles; muting in SprigCast changes the key.
 - [ ] Show or hide, Garden, Path, Go live, Record, Clips, Save clip, Virtual camera, Screenshot, Media, Filter,
-      Transition, Sprig state, Death count, Run action.
+      Transition, Sprig state, Death count, PNGtuber, Run action.
 - [ ] Sound volume on a key, and on a Stream Deck + dial (turn, press to mute, the level shows on the screen).
 - [ ] Close SprigCast: keys go dark and show "Not connected" when pressed; open it again: they work again within a few seconds.
 - [ ] A wrong password typed under Connection: the Connection line says "Wrong password"; clear it and it connects by itself.
@@ -33,7 +33,7 @@ Nothing has been sent to Elgato. These are the steps and the listing, ready for 
 Switch blooms and gardens, mute and turn sounds (with dials on Stream Deck +), go live, record, keep clips, save
 clips, turn the virtual camera on, play media, flip filters, pick transitions and take screenshots in SprigCast,
 right from your Stream Deck. Keys light up to match SprigCast: the bloom on air, muted sounds, and pink while you're live or recording.
-SprigCast plugins work too: add to the Death count, change a sprig's Live state, or run any SprigCast action.
+SprigCast plugins work too: add to the Death count, change your PNGtuber's expression, change a sprig's Live state, or run any SprigCast action.
 The plugin connects only while a SprigCast key is on screen, so it adds nothing to your PC while idle.
 No setup: with SprigCast open on the same PC, the keys connect by themselves.
 

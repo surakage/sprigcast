@@ -87,6 +87,10 @@ public class CPHInline
     // %sprig% (or %source%), optional %seconds%
     public bool Freeze() { return Call("freeze.start", Fields("sprig", "source", "seconds")); }
     public bool Unfreeze() { return Call("freeze.stop", Fields("sprig", "source")); }
+    // %expression%, optional %seconds% (then back to the one before)
+    public bool PngtuberExpression() { return Call("pngtuber.expression", Fields("expression", "seconds")); }
+    public bool PngtuberNext() { return Call("pngtuber.next", "{}"); }
+    public bool PngtuberReset() { return Call("pngtuber.reset", "{}"); }
 
     // ------------------------------------------------------------------------------------------
 

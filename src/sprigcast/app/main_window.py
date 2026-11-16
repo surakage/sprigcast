@@ -4437,7 +4437,7 @@ class MainWindow(QMainWindow):
 
             dialog = WebPageDialog("New web page", defaults, self, primary="Add")
         else:
-            dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls)
+            dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls, collection=self.collection)
         if not dialog.exec():
             return
         settings = dialog.values()
@@ -5111,7 +5111,8 @@ class MainWindow(QMainWindow):
 
                 dialog = MediaDialog(config.name, config.settings, self)
             else:
-                dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls)
+                dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls,
+                                        collection=self.collection)
             if not dialog.exec():
                 return
             old_auto = _name_from(config.settings, config.name)
