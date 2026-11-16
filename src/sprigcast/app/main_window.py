@@ -4475,7 +4475,18 @@ class MainWindow(QMainWindow):
         self._refresh_properties()
 
     def _fill_more_menu(self) -> None:
-        """List source kinds from plugins (any registered class with a `label` that has no button of its own)."""
+        """List source kinds from plugins (any registered class with a `label` that has no button of its own).
+
+        The + menu (and its Plugins menu) is only built the first time it opens, and fills itself then: until
+        that, a plugin installed or updated has no menu to refresh (PC test 2026-11-16: "no attribute
+        'more_menu'" on every install)."""
+        menu = getattr(self, "more_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.actions()
+        except RuntimeError:  # the + menu was rebuilt: the new Plugins menu fills itself when it opens
+            return
         entries = sorted(
             (getattr(source_class(kind), "label", None), kind)
             for kind in known_kinds()
