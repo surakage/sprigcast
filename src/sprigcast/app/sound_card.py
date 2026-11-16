@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.app.live_stage import Switch, ThinMeter, heading
+from sprigcast.app.live_stage import Elided, Switch, ThinMeter, heading
 
 GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
 GROUP_COLOURS = {"Voice": theme.ACCENT, "Game": theme.INFO, "Alerts": theme.WARN, "Music": "#c79bff",
@@ -251,8 +251,9 @@ class SoundCard(QWidget):
         first.setSpacing(10)
         label = QLabel("Mic first")
         label.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
-        hint = _muted_label("others dip when you talk")
-        hint.setStyleSheet(hint.styleSheet() + " font-size: 12px;")
+        hint = Elided("others dip when you talk")  # a narrow card shortens it rather than cutting the switch off
+        hint.setMinimumWidth(0)
+        hint.setStyleSheet(f"color: {theme.MUTED}; background: transparent; font-size: 12px;")
         self.mic_first = Switch()
         self.mic_first.setToolTip("Ducking: while your mic is talking, every other sound glides down, "
                                   "then back up when you stop")
@@ -277,7 +278,7 @@ class SoundCard(QWidget):
         """The card is as tall as the page showing, not the tallest page, so panels below get the rest."""
         for i in range(self.pages.count()):
             policy = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
-            self.pages.widget(i).setSizePolicy(QSizePolicy.Policy.Preferred, policy)
+            self.pages.widget(i).setSizePolicy(policy, policy)  # a hidden page doesn't widen the card either
         self.pages.updateGeometry()
 
     def set_mic_first(self, on: bool) -> None:
@@ -369,7 +370,8 @@ class SoundCard(QWidget):
         font = name.font()
         font.setWeight(font.Weight.DemiBold)
         name.setFont(font)
-        sub = QLabel("")
+        sub = Elided("")
+        sub.setMinimumWidth(0)
         sub.setStyleSheet(f"color: {theme.MUTED}; background: transparent; font-size: 12px;")
         for label in (dot, name, sub):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -638,6 +640,8 @@ class TunePage(QWidget):
         self.mono = _chip("Mono", checkable=True)
         self.mono.setToolTip("Both ears hear the same: for a mic that only comes out of one side")
         self.mono.toggled.connect(lambda on: self._send({"mono": on}))
+        self.mono.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # shares a narrow card
+        self.mono.setMinimumWidth(56)
         pair.addWidget(self.mono, 1)
         pair.addWidget(_muted_label("Delay"))
         self.delay = QSpinBox()
@@ -652,6 +656,8 @@ class TunePage(QWidget):
             "QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px;"
             " border: none; }")
         self.delay.valueChanged.connect(lambda v: self._send({"delay_ms": v}))
+        self.delay.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.delay.setMinimumWidth(76)
         pair.addWidget(self.delay, 1)
         box.addLayout(pair)
 

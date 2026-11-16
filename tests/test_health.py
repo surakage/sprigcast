@@ -172,7 +172,9 @@ def test_header_shows_one_clock_and_the_details_beside_it(app, tmp_path, monkeyp
         assert "0:38:19" in w.mode_clock.text()
         w._side_status("live", 2400, "2 of 2 sending")
         text = w.mode_clock.text()
-        assert "0:40:00" in text and "2 of 2 sending" in text and "1473 frames dropped" in text
+        assert "0:40:00" in text and "2 of 2 sending" in text
+        # The recording's warning turns the Garden check amber instead of making the header longer.
+        assert "1473 frames dropped" not in text and "1473 frames dropped" in w._rec_warning
         w._side_status("live", None)
         w._side_status("rec", None)
         assert w.mode_clock.text().startswith("Offline")
