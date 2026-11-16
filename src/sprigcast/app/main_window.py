@@ -4437,7 +4437,7 @@ class MainWindow(QMainWindow):
 
             dialog = WebPageDialog("New web page", defaults, self, primary="Add")
         else:
-            dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls)
+            dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls, collection=self.collection)
         if not dialog.exec():
             return
         settings = dialog.values()
@@ -5111,7 +5111,8 @@ class MainWindow(QMainWindow):
 
                 dialog = MediaDialog(config.name, config.settings, self)
             else:
-                dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls)
+                dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls,
+                                        collection=self.collection)
             if not dialog.exec():
                 return
             old_auto = _name_from(config.settings, config.name)
@@ -5162,16 +5163,24 @@ class MainWindow(QMainWindow):
         the plugins' screenshot hook follow when the files are written."""
         from sprigcast.app import screenshot
 
+        from sprigcast import plugin_hooks
+
         ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
         folder = self._recordings_folder() / "Screenshots" if save else None
+        # Plugins get ready first (Snap freezes the screen, so the picture is the moment it holds on stream).
+        afters = plugin_hooks.screenshot_starting(self.api, ids) if save else []
         if background and save and not as_data:
             screenshot.take_in_background(self.engine, ids, folder, width,
-                                          lambda shots, images: self._screenshot_saved(shots, images, folder))
+                                          lambda shots, images: self._screenshot_saved(shots, images, folder, afters))
             return []
         images: dict = {}
-        shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
+        try:
+            shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
+        except Exception:
+            plugin_hooks.screenshot_done(afters, [])
+            raise
         if save:
-            self._screenshot_saved(shots, images, folder)
+            self._screenshot_saved(shots, images, folder, afters)
         return shots
 
     def _source_screenshot(self, source_id: str, name: str, width: int | None = None, save: bool = True,
@@ -5186,15 +5195,18 @@ class MainWindow(QMainWindow):
             self._tidy_saves()
         return shot
 
-    def _screenshot_saved(self, shots: list[dict], images: dict, folder) -> None:
-        self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
-        if shots:
-            self._saved_note("Screenshot saved", self._shot_folder(shots, folder))
-        self._tidy_saves()
-        if shots:  # plugins such as Snap show it off
-            from sprigcast import plugin_hooks
+    def _screenshot_saved(self, shots: list[dict], images: dict, folder, afters=()) -> None:
+        from sprigcast import plugin_hooks
 
-            plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
+        try:
+            self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+            if shots:
+                self._saved_note("Screenshot saved", self._shot_folder(shots, folder))
+            self._tidy_saves()
+            if shots:  # plugins such as Snap show it off
+                plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
+        finally:
+            plugin_hooks.screenshot_done(afters, shots)  # Snap lets the screen go if nothing prints
 
     def _saved_note(self, title: str, folder=None, **more) -> None:
         """A clear "saved" note over the window for a few seconds (a click opens the folder)."""

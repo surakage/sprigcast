@@ -179,6 +179,12 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- PNGtuber store plugin: your own avatar pictures (PNG, GIF, WebP) talk when you talk, with a little bounce, random
+  blinks, a quick fade between pictures, a yell picture for loud moments, and expressions you switch with hotkeys,
+  a right-click, the Stream Deck PNGtuber key or `pngtuber.*` API actions (for some seconds, or until changed). It
+  follows a sound you already have in SprigCast (Auto: your mic, so muting quiets it too) or a mic straight from
+  Windows, sends nothing while nothing moves, stops listening off air and lets the pictures go a minute after. A
+  sample sloth comes with it.
 - Stream timer store plugin: how long you've been live (or recording), a countdown (minutes, or to a time of day such
   as 8:30 PM) or a stopwatch, in a small card like Local time's. Start, pause, reset and add time with hotkeys,
   right-click, the Stream Deck (Run action) or `timer.*` API actions; apps hear `timer.done` when a countdown ends. A
@@ -193,6 +199,14 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
   clips are yours to set. It reads the levels the meters already have and does nothing while clips are off.
   `autoclip.*` API actions (`autoclip.mark` for Streamer.bot raids) and an `autoclip.suggested` event.
+- Freeze store plugin: freeze a sprig, game or camera on the frame showing now for a set time (a redeem that
+  freezes your game for 10 seconds), then it's live again by itself. Right-click, hotkeys, and `freeze.start`,
+  `freeze.stop` and `freeze.toggle` for Streamer.bot and other apps, with an `effect.ended` event when it ends.
+  Things that only redraw when they change (text, Death count) show their newest picture as it ends.
+- Snap freezes the screen on the snapped moment while the polaroid prints, so viewers see exactly the frame in the
+  polaroid; the Snap keeps moving and the screen goes live again as the polaroid slides away. On by default
+  ("Freeze the screen while it prints" in the Snap's settings).
+- A store plugin added again or updated no longer runs its old hooks too (Snap would have printed twice).
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

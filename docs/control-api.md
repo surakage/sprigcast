@@ -121,7 +121,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible; inside a sprig also `blooms`: the blooms whose own sprig it is), `items.changed` (bloom or sprig, shape, items: [{item, itemId}], top first) when something is added to or taken out of a bloom or sprig |
 | `sprig` | `sprig.state` (sprig, sprigId, state) |
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
-| `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed`, `effect.ended` (source, sourceId, effect: hide.pixelate, hide.blackout or roll.spin, reason: ended or replaced) |
+| `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed`, `effect.ended` (source, sourceId, effect: hide.pixelate, hide.blackout, roll.spin or freeze.start, reason: ended or replaced) |
 | `source` | `source.changed` (source, sourceId, settings), `sources.changed` (sources: [{id, name, kind}], added, removed, renamed: [{from, to}]) |
 | `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `clip.saved` (files) |
 | `transition` | `transition.changed` (kind, ms) |
@@ -329,7 +329,7 @@ Pages shown by a Web page source get `window.sprigcast` (the same object as `win
 
 ## Store plugins
 
-Plugins added from **Settings → Plugins** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
+Plugins added from **Settings → Plugins** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `freeze.start`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
 
 | Action | Plugin | What it does | Fields |
 | --- | --- | --- | --- |
@@ -338,12 +338,19 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `hide.toggle` | Hide it | Hide it until toggled back, or show it. | `source`, `how` (optional): pixelate or blackout |
 | `hide.show` | Hide it | Show it again now. | `source` |
 | `roll.spin` | Barrel Roll | Spin a sprig (everywhere it's shown) or one thing, then it lands where it was. | `sprig` or `source`, `seconds`, `turns`, `direction` (all optional) |
+| `freeze.start` | Freeze | Hold a sprig (everywhere it's shown) or one thing still on the frame showing now, then it's live again. Called again while frozen, it keeps the picture and restarts the time. | `sprig` or `source`, `seconds` (optional; 0 = until `freeze.stop`) |
+| `freeze.stop` | Freeze | Let it move again now. | `sprig` or `source` |
+| `freeze.toggle` | Freeze | Freeze until toggled back, or let it go. | `sprig` or `source` |
 | `deaths.add` | Death count | One more death (or `amount` more). The gravestone pops up with the new count. | `amount` (optional, default 1), `source` (optional) |
 | `deaths.remove` | Death count | One less death (or `amount` less), never below 0. | `amount` (optional, default 1), `source` (optional) |
 | `deaths.set` | Death count | Set the count to a number. | `count`, `source` (optional) |
 | `deaths.reset` | Death count | Back to 0. | `source` (optional) |
 | `deaths.show` | Death count | Pop the gravestone up with the count as it is. | `source` (optional) |
 | `deaths.get` | Death count | The count, without showing it. | `source` (optional) |
+| `pngtuber.expression` | PNGtuber | Show one of the model's expressions (case doesn't matter). | `expression`, `seconds` (optional; then back to the one before), `source` (optional) |
+| `pngtuber.next` | PNGtuber | The next expression (default first, then A-Z). | `seconds` (optional), `source` (optional) |
+| `pngtuber.reset` | PNGtuber | Back to the default expression. | `source` (optional) |
+| `pngtuber.expressions` | PNGtuber | The model's expressions and the one showing. | `source` (optional) |
 | `timer.start` | Stream timer | Start a stopwatch or countdown, or carry on after a pause. `minutes` starts a fresh countdown of that length. | `minutes` (optional), `source` (optional) |
 | `timer.pause` | Stream timer | Pause it. | `source` (optional) |
 | `timer.toggle` | Stream timer | Start, or pause if it's going (one button for both). | `source` (optional) |
@@ -362,6 +369,9 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
 
+**PNGtuber** answers with `{"expression": "happy", "expressions": ["default", "happy", ...]}` and sends a `pngtuber.expression` event (`{"expression": ...}`, `plugin` group) after each change. An expression set without `seconds` is saved with your blooms; one with `seconds` isn't. Its model is a folder of pictures named idle, talk, blink, talk_blink, yell and yell_blink (only idle and talk are needed); an expression is a folder inside it with its own set, or files named `happy_idle.png`. It moves with a sound you have in SprigCast (Auto: your mic), so muting the mic quiets it, or a mic straight from Windows.
+
+
 **Auto clip** listens while clips are ready (the Clip button) and saves big moments as suggestions: your mic or game sound jumping well over its own usual level, or chat moving much faster than usual (with Chat ticked). Each one sends an `autoclip.suggested` event (`plugin` group) with the same fields as `autoclip.list`; `reason` is `mic`, `game`, `chat` or `mark`. Nothing is posted anywhere: suggestions wait in Tools → Suggested clips… (in the recordings folder's "Suggested clips") until you keep or delete them, and unkept ones are deleted after `days`.
 
 **Instant replay** keeps the last Seconds (default 20) of what you picked in its settings: one sprig or source, plus an optional one in a corner (a camera). It keeps nothing while its bloom is off air or its eye is off, so `replay.play` then answers `not_allowed` ("Instant replay isn't on air."), as it does while one is already playing. It answers `{"playing": [names]}` and sends `replay.started` (`source`, `sourceId`, `seconds`, `speed`) and `replay.ended` (`source`, `sourceId`, `reason`: ended, stopped or failed) in the `plugin` group. Adding it (+ → Plugins → Instant replay) makes a sprig of its own that fills the canvas, on top of the bloom; it's see-through except while a replay plays.
@@ -370,7 +380,7 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 
 **Now playing** shows the song Windows says is playing (Spotify, YouTube Music, browsers and most players; no keys or sign-in), with its cover, in the bottom left corner. It fades away when the music pauses or stops. It listens to Windows only while the card is on screen, and only when told something changed. `nowplaying.get` answers `{"playing", "title", "artist", "album", "app"}`, and `nowplaying.changed` (same fields) comes when the song changes while the card is on screen.
 
-**Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing.
+**Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing. With **Freeze the screen while it prints** on (the default), the bloom on air holds still from the snapped frame until the polaroid slides away, so viewers see exactly the moment that was snapped; the Snap itself keeps moving.
 
 Using Streamer.bot? See [Streamer.bot](streamerbot.md). Building an integration? See [Building on SprigCast](integrating.md). Stream Deck: see [the SprigCast plugin](../integrations/streamdeck/README.md).
 

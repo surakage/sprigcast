@@ -274,13 +274,15 @@ def test_the_ui_thread_starts_it_over_and_tells_apps_it_ended(timer, app, monkey
 
 
 def test_the_stream_deck_timer_keys_requests_answer_what_they_read(timer, added):
-    """integrations/streamdeck: the timer keys send these and read mode, seconds, running, done and text."""
+    """integrations/streamdeck: the timer keys send these and read mode, seconds, running, done and text
+    (and its Instant replay and Freeze keys' requests are there once those plugins are added)."""
     added("instant_replay")
+    added("freeze")
     from sprigcast.control.native import _PLUGIN_ACTIONS
 
     from test_streamdeck_contract import PLUGIN_ACTIONS
 
-    assert {a for a in PLUGIN_ACTIONS if a.split(".")[0] in ("timer", "replay")} <= set(_PLUGIN_ACTIONS)
+    assert {a for a in PLUGIN_ACTIONS if a.split(".")[0] in ("timer", "replay", "freeze")} <= set(_PLUGIN_ACTIONS)
     _, _, api = _api({"mode": "stopwatch"})
     for name, data in (("timer.get", {}), ("timer.toggle", {}), ("timer.add", {"seconds": 60}), ("timer.reset", {})):
         out = api.run(name, data)

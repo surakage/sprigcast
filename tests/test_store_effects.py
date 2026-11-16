@@ -244,7 +244,8 @@ def test_snap_reads_nothing_but_the_screenshot(added):
 
     module = sys.modules["sprigcast_plugin_snap"]
     assert not any(name.startswith("snap.") for name in NativeApi(FakeHost(_collection())).all_actions())
-    assert module.SnapSource.defaults == {"seconds": 6.0, "flash": True, "save_polaroid_copy": False}
+    assert module.SnapSource.defaults == {"seconds": 6.0, "flash": True, "freeze_screen": True,
+                                          "save_polaroid_copy": False}
 
 
 def test_apps_can_list_plugins_and_hear_their_events(added):

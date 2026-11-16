@@ -53,6 +53,9 @@ async function listFor(event, payload = {}) {
 		getSprigs: async () => (await sprigcast.run("sprigs.list")).sprigs.map((s) => s.name),
 		getSources: async () => (await sprigcast.run("sources.list")).sources.map((s) => s.name),
 		getActions: async () => (await sprigcast.run("app.actions")).actions.map((a) => a.do),
+		getExpressions: async () => (await sprigcast.run("pngtuber.expressions")).expressions,
+		getFreezable: async () => [...await sprigNames(), // sprigs, then the things in blooms that aren't sprigs
+			...(await sprigcast.run("sources.list")).sources.filter((s) => s.kind !== "scene").map((s) => s.name)],
 	};
 	const fill = lists[event];
 	if (!fill) return null;
@@ -63,6 +66,10 @@ async function listFor(event, payload = {}) {
 	} catch {
 		return [{ label: "Open SprigCast first", value: "", disabled: true }];
 	}
+}
+
+async function sprigNames() {
+	return (await sprigcast.run("sprigs.list")).sprigs.map((s) => s.name);
 }
 
 /** The Connection box in the key settings says whether SprigCast is found (and on which port). */
@@ -381,6 +388,30 @@ class ReplayKey extends SprigCastAction {
 	said() { return "Replay"; }
 }
 
+class Pngtuber extends SprigCastAction {
+	constructor() { super("pngtuber", 1); this.okAfterPress = true; }
+	press(s) {
+		const seconds = Number(s.seconds) > 0 ? { seconds: Number(s.seconds) } : {};
+		if (s.mode === "next") return sprigcast.run("pngtuber.next", seconds);
+		if (s.mode === "reset") return sprigcast.run("pngtuber.reset");
+		return sprigcast.run("pngtuber.expression", { expression: s.expression ?? "", ...seconds });
+	}
+	said(result) { return result?.expression ? String(result.expression) : "Done"; }
+}
+
+class FreezeKey extends SprigCastAction {
+	constructor() { super("freeze", 1); this.okAfterPress = true; }
+	async press(s) {
+		const name = s.what ?? "";
+		const which = (await sprigNames()).includes(name) ? { sprig: name } : { source: name }; // a sprig: everywhere it's shown
+		if (s.mode === "toggle") return sprigcast.run("freeze.toggle", which);
+		if (s.mode === "stop") return sprigcast.run("freeze.stop", which);
+		const seconds = String(s.seconds ?? "").trim() === "" ? NaN : Number(s.seconds);
+		return sprigcast.run("freeze.start", { ...which, ...(Number.isFinite(seconds) ? { seconds } : {}) }); // none: its usual time
+	}
+	said(result) { return result?.frozen?.length ? "Frozen" : "Moving"; }
+}
+
 class RunAction extends SprigCastAction {
 	constructor() { super("run", 1); this.okAfterPress = true; }
 	press(s) {
@@ -392,7 +423,8 @@ class RunAction extends SprigCastAction {
 
 const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
-	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(),
+	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new Pngtuber(),
+	new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(), new FreezeKey(),
 	new RunAction()];
 for (const action of actions) streamDeck.actions.registerAction(action);
 

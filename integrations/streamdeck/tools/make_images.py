@@ -95,6 +95,13 @@ GLYPHS = {
     # Instant replay: a frame with rewind marks (the last seconds again).
     "replay": f'<rect x="10" y="18" width="80" height="64" rx="14" {SW}/>'
               '<path d="M50 36L30 50l20 14zM72 36L52 50l20 14z" fill="{c}"/>',
+    # PNGtuber: an avatar's face, talking, with a sprout (switches its expression).
+    "pngtuber": f'<circle cx="50" cy="58" r="34" {SW}/><circle cx="38" cy="53" r="6" fill="{{c}}"/>'
+                f'<circle cx="62" cy="53" r="6" fill="{{c}}"/><path d="M35 67q15 17 30 0z" fill="{{c}}"/>'
+                '<path d="M50 22q-3-15-19-17q0 16 19 17zM50 22q3-13 17-15q0 14-17 15z" fill="{c}"/>',
+    # Freeze: a snowflake (holds the picture still).
+    "freeze": f'<path d="M50 10v80M15.4 30l69.2 40M15.4 70l69.2-40" {SW}/>'
+              f'<path d="M40 16l10 10 10-10M40 84l10-10 10 10M17 42l14-4-4-14M83 58l-14 4 4 14M17 58l14 4-4 14M83 42l-14-4 4-14" {SW}/>',
     # Run action: braces round a play mark (runs any SprigCast action).
     "run": f'<path d="M30 16q-12 0-12 12v10q0 12-10 12q10 0 10 12v10q0 12 12 12M70 16q12 0 12 12v10q0 12 10 12q-10 0-10 12v10q0 12-12 12" {SW}/>'
            '<path d="M42 36l22 14-22 14z" fill="{c}"/>',
@@ -123,6 +130,8 @@ KEYS = {
     "timer-reset": (("timer-reset", MINT), None),
     "timer-add": (("timer-add", MINT), None),
     "replay": (("replay", MINT), None),
+    "freeze": (("freeze", MINT), None),
+    "pngtuber": (("pngtuber", MINT), None),
     "run": (("run", MINT), None),
 }
 
@@ -132,8 +141,8 @@ GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", 
          "mute": "sound", "volume": "sound", "media": "sound",
          "live": "live", "record": "live",
          "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
-         "filter": "fx", "deaths": "fx", "run": "fx",
-         "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture"}
+         "filter": "fx", "deaths": "fx", "pngtuber": "fx", "run": "fx",
+         "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture", "freeze": "fx"}
 GROUP_TILE = {"scene": ("#1f7a4d", "#0b3322"), "sound": ("#1f6f86", "#0a2b38"), "capture": ("#8a6a1e", "#3a2a08"),
               "fx": ("#5b4a9a", "#221a45"), "live": ("#b4305f", "#4a0f26")}
 

@@ -26,6 +26,8 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Reset timer | puts the Stream timer back to the start, stopped | ✓ on success | |
 | Add time | adds a minute to the Stream timer (or the seconds you set; below 0 takes time off) | its amount as its title | |
 | Instant replay | plays the last seconds back on stream (Instant replay plugin) | ✓ on success | |
+| Freeze | freezes a sprig or source (for its usual time or the seconds you set), toggles, or lets it go (Freeze plugin) | ✓ and Frozen or Moving | |
+| PNGtuber | shows an expression (for some seconds, or until changed), the next one, or default (PNGtuber plugin) | ✓ and the expression's name | |
 | Run action | any SprigCast action with JSON fields | ✓ on success | |
 
 Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air), Record Pause and Chapter
