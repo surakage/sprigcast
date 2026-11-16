@@ -33,3 +33,29 @@ def run(job: Callable, *args, name: str = "") -> Future:
             log.exception("background job %s failed", name or getattr(job, "__name__", "?"))
             raise
     return pool().submit(logged)
+
+
+def wait_answering(job: Callable, *args, poll_ms: int = 10):
+    """job(*args) on a shared worker, the window still drawing and answering while it runs; then its result
+    (or its error, raised here). For the few steps that must finish before the next one, like asking Twitch
+    for the stream key while going live: a web request on the window's thread froze it 461 ms on the PC
+    (2026-11-16). Clicks and keys wait until it's done, so nothing starts twice. Off the window's thread, or
+    without Qt, it simply runs job here."""
+    import threading
+
+    try:
+        from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+    except ImportError:
+        return job(*args)
+    app = QCoreApplication.instance()
+    if app is None or threading.current_thread() is not threading.main_thread():
+        return job(*args)
+    future = pool().submit(job, *args)
+    loop = QEventLoop()
+    check = QTimer()
+    check.timeout.connect(lambda: future.done() and loop.quit())
+    check.start(poll_ms)
+    if not future.done():
+        loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+    check.stop()
+    return future.result()
