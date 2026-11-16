@@ -62,11 +62,13 @@ def test_header_holds_go_live_record_and_the_garden_check(app, tmp_path, monkeyp
     try:
         w.show()
         side = w.live_side
-        assert side.live.text() == "Go live" and side.header_box.isVisible()  # in Build too
+        assert side.live.text() == "Go live" and not side.header_box.isVisible()  # Live only: Build's top bar is for building
         side.set_live(True)
         assert side.live.text() == "End stream"
         side.set_live(False)
         w._set_mode("live")
+        app.processEvents()  # the top bar lays its widgets out on the next pass
+        assert side.header_box.isVisible()
         assert not w.screenshot_button.isVisible()  # Live has Screenshot under the canvases
         shots = []
         monkeypatch.setattr(w, "_screenshot", lambda *a, **k: shots.append(1))

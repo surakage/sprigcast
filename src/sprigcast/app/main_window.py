@@ -289,6 +289,8 @@ class MainWindow(QMainWindow):
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
             preview.output_size = lambda c=canvas.id: self.collection.canvas(c).output_size()
             preview.zoom_locked = QSettings().value("build/zoom_locked", False, type=bool)
+            preview.show_zoom_bar = False  # Build's zoom is in the top bar
+            preview.zoom_changed.connect(self._zoom_moved)
             preview.selected.connect(self._on_preview_selected)
             preview.edited.connect(self._on_preview_edited)
             preview.opened.connect(self._on_preview_opened)
@@ -304,6 +306,8 @@ class MainWindow(QMainWindow):
         # While a part is open in Build mode, the canvases make way for the part, edited in place.
         self.part_preview = Preview("part:", "Part", (16, 9))
         self.part_preview.zoom_locked = QSettings().value("build/zoom_locked", False, type=bool)
+        self.part_preview.show_zoom_bar = False
+        self.part_preview.zoom_changed.connect(self._zoom_moved)
         self.part_preview.selected.connect(self._on_preview_selected)
         self.part_preview.edited.connect(self._on_preview_edited)
         self.part_preview.sprig_dropped.connect(self._sprig_dropped)
@@ -355,18 +359,18 @@ class MainWindow(QMainWindow):
         self.canvas_tabs = QTabBar()
         self.canvas_tabs.setObjectName("shapeTabs")
         self.canvas_tabs.setDrawBase(False)
-        self.canvas_tabs.setExpanding(True)
+        self.canvas_tabs.setExpanding(False)
         self.canvas_tabs.setCursor(Qt.CursorShape.PointingHandCursor)
         self.canvas_tabs.setStyleSheet(
-            f"#shapeTabs {{ background: {theme.PANEL}; border-radius: 19px; }}"
-            f"#shapeTabs::tab {{ padding: 8px 12px; margin: 3px; border: none; border-radius: 16px;"
+            "#shapeTabs { background: transparent; }"
+            f"#shapeTabs::tab {{ padding: 8px 16px; margin: 3px; border: none; border-radius: 16px;"
             f" background: transparent; color: {theme.MUTED}; font-weight: 600; }}"
             f"#shapeTabs::tab:hover {{ color: {theme.TEXT}; }}"
-            f"#shapeTabs::tab:selected {{ background: {theme.RAISED_HOVER}; color: {theme.TEXT_BRIGHT}; }}"
+            f"#shapeTabs::tab:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
         )
         for canvas in collection.canvases:
             mark = "▯" if canvas.height > canvas.width else "▭"
-            self.canvas_tabs.addTab(f"{mark}  {canvas.id.capitalize()}")
+            self.canvas_tabs.addTab(f"{mark}  {canvas.id.capitalize()}   {canvas.width} × {canvas.height}")
             self.canvas_tabs.setTabToolTip(self.canvas_tabs.count() - 1,
                                            f"Build the {canvas.id} {SHOWS} ({canvas.width}×{canvas.height}). "
                                            f"Sound and {PARTS} are shared by both shapes.")
@@ -409,6 +413,7 @@ class MainWindow(QMainWindow):
         self.center = QStackedWidget()
         self.center.addWidget(canvas_page)
         self.center.addWidget(part_panel)
+        self.center.currentChanged.connect(lambda _i: self._zoom_moved())
         # Build's screen (build_stage.py) holds the canvases; Live's screen is added by _build_live_stage.
         self.new_menu = QMenu(self)
         self.new_menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
@@ -419,7 +424,6 @@ class MainWindow(QMainWindow):
         self.library = Library(self.scene_tree)
         self.build_bar = BuildBar()
         self.build_stage = BuildStage(self.library, self.build_bar)
-        self.build_stage.rail.insertWidget(0, self.canvas_tabs)
         self.build_stage.card_slot.addWidget(self.center)
         from sprigcast.app.sound_strips import SoundStrips
 
@@ -1532,13 +1536,18 @@ class MainWindow(QMainWindow):
 
         from sprigcast.app.inspector_fields import Card, NumberField, link_button
 
+        from sprigcast.app.inspector_fields import InspectorTabs
+
+        self.inspector_tabs = InspectorTabs(("Place", "Look", "Shapes", "Device"))
+        self.prop_sections.append(self.inspector_tabs)
+        tab_of = {"Bounds": "Place", "Crop": "Place"}
+
         def section(title: str) -> QVBoxLayout:
-            """A foldable rounded card (remembered open or closed). Only Place starts open."""
-            card = Card(title, open_by_default=title == "Place")
-            col.addWidget(card)
-            self.prop_sections.append(card)
-            self.prop_section_toggles[title] = (card.header, card.body)
-            return card.box
+            """A group on one of the inspector's tabs: Place holds Place, Bounds and Crop."""
+            body = self.inspector_tabs.group(tab_of.get(title, title), None if title in self.inspector_tabs.names
+                                             else title)
+            self.prop_section_toggles[title] = (self.inspector_tabs.buttons[tab_of.get(title, title)], body)
+            return body.layout()
 
         top = QVBoxLayout()
         top.setSpacing(2)
@@ -1623,6 +1632,7 @@ class MainWindow(QMainWindow):
                                      "or see which shapes show it.", scale=0.8)
         top.addWidget(self.prop_empty)
         col.addLayout(top)
+        col.addWidget(self.inspector_tabs)
 
         place = section("Place")
         from sprigcast.app.pin_grid import PinGrid
@@ -1709,9 +1719,15 @@ class MainWindow(QMainWindow):
         for chip in (self.prop_extra, self.prop_filters, self.prop_fit, self.prop_uncrop):
             chip.setStyleSheet(chip_style)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        for chip in (self.prop_filters, self.prop_fit, self.prop_uncrop):
             chips.addWidget(chip)
         chips.addStretch(1)
         look.addLayout(chips)
+        device = section("Device")
+        device_row = QHBoxLayout()
+        device_row.addWidget(self.prop_extra)
+        device_row.addStretch(1)
+        device.addLayout(device_row)
 
         shapes = section("Shapes")
         self.prop_shapes: dict[str, QLabel] = {}
@@ -2121,13 +2137,32 @@ class MainWindow(QMainWindow):
         self.mode_actions["build"].setChecked(True)
         bar.addWidget(pills)
         bar.addWidget(self.gardens.make_chip())  # the garden and path in use; click to switch
+        # Build only: the shape you're editing, its tools, and the zoom. Live only: the clock, Garden check,
+        # Record and Go live (Build is for making things; the show runs in Live).
+        shapes = QFrame()
+        shapes.setObjectName("shapePill")
+        shapes.setStyleSheet(f"#shapePill {{ background: {theme.PANEL}; border-radius: 19px; }}")
+        shapes_row = QHBoxLayout(shapes)
+        shapes_row.setContentsMargins(2, 0, 2, 0)
+        shapes_row.addWidget(self.canvas_tabs)
+        self._build_only = [bar.addWidget(shapes)]
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
+        tools = QWidget()
+        tools_row = QHBoxLayout(tools)
+        tools_row.setContentsMargins(0, 0, 0, 0)
+        tools_row.setSpacing(8)
+        for button in (self.link_button, self.safe_zone_button):
+            tools_row.addWidget(button)
+        from sprigcast.app.zoom_control import ZoomControl
+
+        self.zoom_control = ZoomControl(self._build_preview)
+        tools_row.addWidget(self.zoom_control)
+        self._build_only.append(bar.addWidget(tools))
         self.mode_clock = QLabel("")
-        bar.addWidget(self.mode_clock)
-        # Garden check, Record and Go live: always at hand, in Live and in Build.
-        bar.addWidget(self.live_side.header_box)
+        self._live_only = [bar.addWidget(self.mode_clock)]
+        self._live_only.append(bar.addWidget(self.live_side.header_box))
         divider = QFrame()
         divider.setFixedSize(1, 24)
         divider.setStyleSheet(f"background: {theme.EDGE_STRONG};")
@@ -2139,7 +2174,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.setToolTip("Screenshot every canvas, to your Screenshots folder")
         self.screenshot_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.screenshot_button.clicked.connect(lambda: self._screenshot())
-        bar.addWidget(self.screenshot_button)
+        self._build_only.append(bar.addWidget(self.screenshot_button))  # Live has Screenshot under its canvases
         self.palette_button = QToolButton()
         self.palette_button.setIcon(icons.icon("search", theme.MUTED, 18))
         self.palette_button.setIconSize(QSize(18, 18))
@@ -2163,6 +2198,24 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.settings_button)
         self._set_header_clock("Offline", False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+        self._show_mode_bar(self.mode)
+
+    def _show_mode_bar(self, mode: str) -> None:
+        for action in getattr(self, "_build_only", []):
+            action.setVisible(mode == "build")
+        for action in getattr(self, "_live_only", []):
+            action.setVisible(mode == "live")
+
+    def _zoom_moved(self) -> None:
+        control = getattr(self, "zoom_control", None)
+        if control is not None:
+            control.refresh()
+
+    def _build_preview(self):
+        """The canvas Build is showing now: the open sprig's, or the shape's."""
+        if self.center.currentIndex() == 1:
+            return self.part_preview
+        return self.previews.get(self.build_canvas)
 
     def _set_header_clock(self, text: str, live: bool) -> None:
         if not live:
@@ -2193,7 +2246,7 @@ class MainWindow(QMainWindow):
             preview.editable = editable
             preview.update()
         self._apply_canvas_view()
-        self.screenshot_button.setVisible(mode == "build")  # Live has Screenshot under its canvases
+        self._show_mode_bar(mode)
         QSettings().setValue("window/mode", mode)
 
     # Build mode's canvas tabs ---------------------------------------------------------
@@ -2249,6 +2302,7 @@ class MainWindow(QMainWindow):
         self.link_button.setVisible(self.build_canvas != primary)
         canvas = self.collection.canvas(self.build_canvas)
         self.safe_zone_button.setVisible(canvas.height > canvas.width)  # only vertical canvases get zones
+        self._zoom_moved()
 
     # One canvas or both ----------------------------------------------------------------
 
@@ -3012,6 +3066,7 @@ class MainWindow(QMainWindow):
         self.selected_scene_id = scene_id
         self.selected_folder_id = self.collection.scene(scene_id).folder
         self.last_bloom_id = scene_id
+        self._show_sound_where()
         if self.in_place is not None:
             self._exit_in_place()
         self._refresh_scenes()
@@ -3178,7 +3233,7 @@ class MainWindow(QMainWindow):
                     "text": "Text",
                     "browser": "Page",
                     "chat": "Chat box",
-                }.get(config.kind, "Settings")
+                }.get(config.kind, "Source") + " settings"
             )
             self.prop_status.setText(self._status_text(item.source))
             problem = plain_problem(self.source_statuses.get(item.source, ""), config.kind)
@@ -3230,12 +3285,20 @@ class MainWindow(QMainWindow):
             ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
             self.sound_strips.show_sound([self._sound_item(s) for s in ordered], {s.id: s.kind for s in ordered},
                                          {s.id: self._plays_in_tag(s) for s in ordered})
+            self._show_sound_where()
         self.live_side.sound.set_mic_first(self.collection.audio.ducking)
 
     def _set_mic_first(self, on: bool) -> None:
         """Live's "Mic first" switch: ducking on or off (amounts stay as set in the Ducking window)."""
         self.collection.audio.ducking = on
         self._changed()
+
+    def _show_sound_where(self) -> None:
+        """The Sound card's "Plays in <bloom>": the bloom you last picked in Build."""
+        if not hasattr(self, "sound_strips"):
+            return
+        bloom = next((s for s in self.collection.scenes if s.id == getattr(self, "last_bloom_id", None)), None)
+        self.sound_strips.set_where(bloom.name if bloom else "")
 
     def _sound_item(self, config) -> Sound:
         st = config.settings
@@ -3552,6 +3615,7 @@ class MainWindow(QMainWindow):
             self.selected_folder_id = self.collection.main_part(scene).folder if scene.kind == "part" else scene.folder
             if scene.kind == "show":
                 self.last_bloom_id = scene.id
+                self._show_sound_where()
             if self.in_place is not None:
                 self.in_place = None
                 self.engine.editing_part = None

@@ -51,6 +51,7 @@ class Preview(QWidget):
     swap_requested = Signal(str)
     # A sprig dragged in from the library: canvas id, part id.
     sprig_dropped = Signal(str, str)
+    zoom_changed = Signal()  # the zoom or the widget's size changed (Build's top-bar % follows it)
 
     def __init__(self, canvas_id: str, title: str, aspect: tuple[int, int], parent: QWidget | None = None):
         super().__init__(parent)
@@ -68,6 +69,7 @@ class Preview(QWidget):
         self.align = "center"  # Live's stage: "right"/"left" so two canvases sit together, evenly spaced
         self.ring: str | None = None
         self.zoom = 1.0  # 1 = the whole canvas fits; the wheel zooms at the mouse (Build only), Ctrl+0 fits again
+        self.show_zoom_bar = True  # off where the window has its own zoom (Build's top bar)
         self.zoom_locked = False  # Build's "Fit to window, locked": the wheel and drags leave the view alone
         self.output_size = None  # Build: a callable giving the canvas's output size, for the scaling menu
         self.pan = QPointF(0, 0)  # widget pixels the zoomed canvas is shifted by (middle-drag or Space+drag)
@@ -178,6 +180,7 @@ class Preview(QWidget):
         self.zoom = min(ZOOM_MAX, max(ZOOM_MIN, k / self._fit_scale()))
         self.pan = QPointF(0, 0)
         self.update()
+        self.zoom_changed.emit()
 
     def zoom_at(self, factor: float, at: QPointF | None = None) -> None:
         """Zoom by `factor` keeping the canvas point under `at` (widget pixels) where it is."""
@@ -199,10 +202,16 @@ class Preview(QWidget):
             after = self.canvas_rect()
             self.pan += QPointF(at.x() - (after.x() + fx * after.width()), at.y() - (after.y() + fy * after.height()))
         self.update()
+        self.zoom_changed.emit()
 
     def fit_view(self) -> None:
         self.zoom, self.pan = 1.0, QPointF(0, 0)
         self.update()
+        self.zoom_changed.emit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.zoom_changed.emit()
 
     def _space(self) -> tuple[float, float, float]:
         """Widget x, y of the editing space's origin and widget pixels per space pixel.
@@ -308,7 +317,7 @@ class Preview(QWidget):
         p.end()
 
     def _zoom_bar_shown(self) -> bool:
-        return self.editable and not self.twin and not self.live_look and self.width() > 260
+        return self.show_zoom_bar and self.editable and not self.twin and not self.live_look and self.width() > 260
 
     def _zoom_bar(self) -> dict[str, QRectF]:
         """The little zoom pill in the bottom-right corner: −, the zoom (click: fit), +."""
@@ -339,7 +348,7 @@ class Preview(QWidget):
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         p.restore()
 
-    def _scaling_menu(self, at) -> None:
+    def _scaling_menu(self, at, above: bool = True) -> None:
         """Like OBS's Preview Scaling: fit (or fit and locked), the canvas's real size, its output size, zoom."""
         from PySide6.QtWidgets import QMenu
 
@@ -363,7 +372,8 @@ class Preview(QWidget):
         menu.addSeparator()
         menu.addAction("Zoom in\tCtrl+=").triggered.connect(lambda: (self.set_zoom_locked(False), self.zoom_at(1.25)))
         menu.addAction("Zoom out\tCtrl+-").triggered.connect(lambda: (self.set_zoom_locked(False), self.zoom_at(0.8)))
-        menu.exec(at - QPoint(0, menu.sizeHint().height() + 6))
+        menu.exec(at - QPoint(0, menu.sizeHint().height() + 6) if above else at)
+        self.zoom_changed.emit()
 
     def set_zoom_locked(self, on: bool) -> None:
         self.zoom_locked = bool(on)

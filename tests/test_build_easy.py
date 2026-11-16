@@ -136,11 +136,12 @@ def test_build_tabs_sound_sections_add_undo(tmp_path, monkeypatch):
         assert col.source("mic").settings["muted"] is True
         w._close_build_sound()
         assert w.build_stage.right_stack.currentIndex() == 0
-        # The inspector folds: only Place starts open, and it remembers.
+        # The inspector has tabs: one shows at a time, and the open tab is remembered.
         header, body = w.prop_section_toggles["Look"]
-        assert not body.isVisibleTo(w) and w.prop_section_toggles["Place"][1].isVisibleTo(w) is not None
+        w.inspector_tabs.show_tab("Place")
+        assert not body.isVisibleTo(w.inspector_tabs)
         header.click()
-        assert QSettings().value("inspector/open/Look", type=bool)
+        assert body.isVisibleTo(w.inspector_tabs) and QSettings().value("inspector/tab") == "Look"
         # + Add lists real devices (here: none found, so it says so).
         monkeypatch.setattr(mw, "list_cameras", lambda: [])
         w._fill_add_source_menu()
