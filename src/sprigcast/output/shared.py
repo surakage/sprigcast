@@ -191,6 +191,7 @@ class SharedRecording:
         self._paths = paths
         self.started_at = time.monotonic()
         self._dropped_before = {cid: enc.dropped for cid, enc in encoders}
+        self._eased_before = {cid: enc.eased for cid, enc in encoders}
 
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, bitrate_kbps: int, container: str = "mkv",
@@ -220,6 +221,11 @@ class SharedRecording:
     @property
     def dropped(self) -> int:
         return sum(enc.dropped - self._dropped_before[cid] for cid, enc in self.recorders)
+
+    @property
+    def eased(self) -> int:
+        """Frames left out on purpose while the encoder caught up (half frame rate for a while)."""
+        return sum(getattr(enc, "eased", 0) - self._eased_before.get(cid, 0) for cid, enc in self.recorders)
 
     @property
     def errors(self) -> list[str]:

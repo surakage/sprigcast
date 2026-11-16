@@ -18,10 +18,8 @@ import tempfile
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
 from datetime import datetime
 from fractions import Fraction
-from functools import cached_property
 from pathlib import Path
 
 from sprigcast.output.recorder import CONTAINERS, Recorder, pick_codec, resolve_codec
@@ -29,21 +27,35 @@ from sprigcast.output.recorder import CONTAINERS, Recorder, pick_codec, resolve_
 log = logging.getLogger(__name__)
 
 
-@dataclass
-class _Packet:
-    kind: str  # "video", "audio" (the first track) or "audio1", "audio2"... (the encoder's other tracks)
-    data: bytes | None  # None once the bytes are in `spool`
-    pts: int | None
-    dts: int | None
-    time_base: Fraction
-    keyframe: bool
-    spool: Spool | None = None
-    at: int = 0  # position in the spool (always growing; see Spool)
-    size: int = 0
+_TIME_BASES: dict[tuple[int, int], Fraction] = {}
 
-    @cached_property
-    def seconds(self) -> float:  # cached: Fraction maths is slow and the buffer asks often
-        return float((self.pts if self.pts is not None else self.dts or 0) * self.time_base)
+
+def _time_base(tb) -> Fraction:
+    """One shared Fraction per time base: PyAV hands out a new one with every packet."""
+    key = (tb.numerator, tb.denominator)
+    shared = _TIME_BASES.get(key)
+    if shared is None:
+        shared = _TIME_BASES[key] = Fraction(*key)
+    return shared
+
+
+class _Packet:
+    """One encoded packet in the buffer. Slotted, with its time worked out once: a clips buffer holds
+    thousands (6,254 at the end of the 2026-11-15 stream): 241 bytes each against 425 as a dataclass."""
+
+    __slots__ = ("kind", "data", "pts", "dts", "time_base", "keyframe", "spool", "at", "size", "seconds")
+
+    def __init__(self, kind: str, data: bytes | None, pts: int | None, dts: int | None, time_base,
+                 keyframe: bool, spool: Spool | None = None, at: int = 0, size: int = 0):
+        self.kind = kind  # "video", "audio" (the first track) or "audio1", "audio2"... (other tracks)
+        self.data = data  # None once the bytes are in `spool`
+        self.pts, self.dts = pts, dts
+        self.time_base = _time_base(time_base)
+        self.keyframe = keyframe
+        self.spool = spool
+        self.at = at  # position in the spool (always growing; see Spool)
+        self.size = size
+        self.seconds = float((pts if pts is not None else dts or 0) * self.time_base)
 
     def payload(self) -> bytes:
         return self.data if self.data is not None else self.spool.read(self.at, self.size)

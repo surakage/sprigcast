@@ -364,3 +364,58 @@ def test_hevc_on_our_own_encoder_never_opens_ffmpegs(monkeypatch):
     monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: False)
     monkeypatch.setattr(recorder, "_try_encoder", lambda codec, hwaccel=None, options=None: tried.append(codec) or True)
     assert recorder.encoder_works("hevc_nvenc") and tried == ["hevc_nvenc"]
+
+
+def _feed(rec, start: int, count: int, fps: int = 60, drain: bool = False):
+    for i in range(start, start + count):
+        rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), i / fps))
+        if drain:
+            while not rec._video.empty():
+                rec._video.get_nowait()
+
+
+def test_a_recording_that_falls_behind_eases_to_half_rate_instead_of_dropping():
+    rec = Recorder(Path("eased.mkv"), 16, 16, 60, 500, "libx264", 0.0)  # never started: nothing drains the queue
+    _feed(rec, 0, 60)  # a second behind: not long enough to ease
+    assert rec._easing_since is None and rec.eased == 0
+    _feed(rec, 60, 120)  # still full two seconds on: every other frame is left out on purpose
+    assert rec._easing_since is not None and rec.eased > 0
+    dropped = rec.dropped
+    _feed(rec, 180, 60)
+    assert rec.dropped - dropped == 30  # only the frames that were kept still had no room
+    _feed(rec, 240, 120, drain=True)  # caught up, but not for long enough yet
+    assert rec._easing_since is not None
+    _feed(rec, 360, 300, drain=True)  # caught up for five seconds: back to every frame
+    assert rec._easing_since is None and rec.eased_seconds > 5
+
+
+def test_streams_and_slow_canvases_never_ease():
+    from sprigcast.output.stream import Streamer
+
+    assert Streamer.eases is False
+    rec = Recorder(Path("thirty.mkv"), 16, 16, 30, 500, "libx264", 0.0)
+    _feed(rec, 0, 300, fps=30)
+    assert rec.eased == 0 and rec._easing_since is None
+
+
+def test_an_eased_recording_plays_at_the_right_length(tmp_path):
+    w, h, fps = 64, 36, 60
+    rec = Recorder(tmp_path / "e.mkv", w, h, fps, 500, "libx264", 0.0)
+    rec.start()
+    rec.wait_open()
+    for i in range(120):
+        rec._easing_since = 0.0 if 30 <= i < 90 else None  # the middle second eased off
+        if rec._easing_since is not None and i % 2:
+            rec._last_queued = i  # what push_frame's numbering does for a frame left out
+            continue
+        rec.push_frame(Frame("h", w, h, bytes(w * h * 4), i / fps))
+        while rec._video.qsize() > 4:
+            time.sleep(0.001)
+    rec._easing_since = None
+    rec.stop()
+    with av.open(str(tmp_path / "e.mkv")) as f:
+        stream = f.streams.video[0]
+        frames = list(f.decode(stream))
+        last = float(frames[-1].pts * stream.time_base)
+    assert len(frames) == 90
+    assert abs(last - 119 / 60) < 0.03

@@ -246,8 +246,6 @@ class SpaceBox(QGroupBox):
         return Path(text) if text else None
 
     def count(self) -> None:
-        import threading
-
         from sprigcast.output import storage
 
         folder = self.folder()
@@ -262,7 +260,9 @@ class SpaceBox(QGroupBox):
             used = storage.folder_size(folder) if folder.is_dir() else 0
             result.append((used, storage.free_bytes(folder)))
 
-        threading.Thread(target=work, name="sprigcast-folder-size", daemon=True).start()
+        from sprigcast.core import workers
+
+        workers.run(work, name="folder-size")
         self._poll.start()
 
     def _show(self) -> None:

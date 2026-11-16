@@ -29,6 +29,16 @@ from sprigcast.sources.audio import SAMPLE_RATE
 log = logging.getLogger(__name__)
 
 OPENING_QUEUE = 2  # frames kept while the encoder is still opening
+# Recording eases off instead of dropping: when the encoder's queue stays this full for EASE_AFTER_S,
+# only every other frame is encoded (60 -> 30 fps, each shown twice as long; MKV and MP4 carry that
+# fine) until the queue has been back under EASE_CLEAR for EASE_CLEAR_S. A busy PC (a game, other
+# streaming apps) gave 3,489 dropped frames in bursts on 2026-11-15; half the frames for a few
+# seconds looks smooth where bursts of drops stutter.
+EASE_FULL = 2 / 3
+EASE_AFTER_S = 2.0
+EASE_CLEAR = 1 / 3
+EASE_CLEAR_S = 5.0
+EASE_MIN_FPS = 48  # only from 50/60 fps: 30 -> 15 would look worse than a few drops
 VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
@@ -562,6 +572,11 @@ class Recorder:
         self.frames = 0  # frames written
         self.dropped = 0  # frames the encoder could not keep up with
         self.peak_queue = 0  # most frames ever waiting at once (each one is a full frame in RAM)
+        self.eased = 0  # frames left out on purpose while easing off (not drops)
+        self.eased_seconds = 0.0  # time spent eased off, in all
+        self._full_since: float | None = None  # when the queue went over EASE_FULL
+        self._easing_since: float | None = None  # when easing started; None when not easing
+        self._clear_since: float | None = None  # when the queue went back under EASE_CLEAR while easing
         self.skipped_opening = 0  # frames let go while the encoder was still opening (not drops)
         self._opening = False  # True from start() until the encoder is open
         self._opened = threading.Event()
@@ -645,12 +660,46 @@ class Recorder:
                     self.skipped_opening += 1
                 except queue.Empty:
                     break
+        elif self.eases and self.fps >= EASE_MIN_FPS and self._ease(frame.time) and pts % 2:
+            self.eased += 1  # easing off: every other frame only, the encoder catches up
+            return
         try:
             self._video.put_nowait((pts, frame))
             self.peak_queue = max(self.peak_queue, self._video.qsize())
         except queue.Full:
             if self._counts_drops():
                 self.dropped += 1
+
+    eases = True  # recordings and clips ease off when the encoder falls behind; streams have their own steering
+
+    def _ease(self, now: float) -> bool:
+        """Whether to encode only every other frame now, from how full the encoder's queue is."""
+        fill = self._video.qsize() / VIDEO_QUEUE
+        if self._easing_since is None:
+            if fill < EASE_FULL:
+                self._full_since = None
+                return False
+            if self._full_since is None:
+                self._full_since = now
+            if now - self._full_since < EASE_AFTER_S:
+                return False
+            self._easing_since, self._clear_since = now, None
+            log.info("%s: encoder behind (%d of %d frames waiting), easing to %d fps", self.path.stem,
+                     self._video.qsize(), VIDEO_QUEUE, self.fps // 2)
+            return True
+        if fill > EASE_CLEAR:
+            self._clear_since = None
+            return True
+        if self._clear_since is None:
+            self._clear_since = now
+        if now - self._clear_since < EASE_CLEAR_S:
+            return True
+        spent = now - self._easing_since
+        self.eased_seconds += spent
+        self._easing_since = self._full_since = None
+        log.info("%s: recording eased to %d fps for %.0f s, back to %d fps", self.path.stem, self.fps // 2,
+                 spent, self.fps)
+        return False
 
     def _counts_drops(self) -> bool:
         return True
@@ -681,6 +730,7 @@ class Recorder:
             "frames": self.frames,
             "dropped": self.dropped,
             "dropped_pct": 100 * self.dropped / total if total else 0.0,
+            "eased": self.eased,
             "encode_ms": 1000 * self.encode_seconds / max(1, self.frames),
             "budget_ms": 1000 / self.fps,
             "network_pct": 100 * self.mux_seconds / running,
@@ -774,6 +824,11 @@ class Recorder:
 
     def _session(self) -> None:
         """Open the output, encode until stop() is called, then flush and close. Raises on failure."""
+        from sprigcast.core.pacing import ABOVE_NORMAL, raise_thread_priority
+
+        # Above the app's other threads (below the render thread): on a PC busy with a game and other
+        # streaming apps the encoder was starved for whole bursts and frames dropped.
+        raise_thread_priority(ABOVE_NORMAL)
         container, finished = None, False
         try:
             self._opening = True

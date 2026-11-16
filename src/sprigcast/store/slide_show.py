@@ -196,4 +196,6 @@ class SlideShowSource(Source):
                 self._making.discard(want)
                 self._ready[want] = picture
 
-        threading.Thread(target=run, name="slide-show-next", daemon=True).start()
+        from sprigcast.core import workers
+
+        workers.run(run, name="slide-show-next")

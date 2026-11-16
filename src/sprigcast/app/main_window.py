@@ -7,7 +7,6 @@ import logging
 import os
 import queue
 import re
-import threading
 import time
 import uuid
 import sys
@@ -1868,7 +1867,7 @@ class MainWindow(QMainWindow):
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_side.on_health = lambda: self._open_health()
         self._show_last_stream()
-        self.live_side.on_screenshot = lambda: self._screenshot()
+        self.live_side.on_screenshot = lambda: self._screenshot(background=True)
         self.live_side.on_view = self._set_live_view
         self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
         self.live_stage = LiveStage(self.live_side)
@@ -2192,7 +2191,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.setFixedSize(38, 38)
         self.screenshot_button.setToolTip("Screenshot every canvas, to your Screenshots folder")
         self.screenshot_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.screenshot_button.clicked.connect(lambda: self._screenshot())
+        self.screenshot_button.clicked.connect(lambda: self._screenshot(background=True))
         self._build_only.append(bar.addWidget(self.screenshot_button))  # Live has Screenshot under its canvases
         self.palette_button = QToolButton()
         self.palette_button.setIcon(icons.icon("search", theme.MUTED, 18))
@@ -2693,7 +2692,9 @@ class MainWindow(QMainWindow):
             def look() -> None:
                 self._busy_note = busy_pc.busy_message(busy_pc.heavy_apps(), cpu, gpu)
 
-            threading.Thread(target=look, name="sprigcast-busy-pc", daemon=True).start()
+            from sprigcast.core import workers
+
+            workers.run(look, name="busy-pc")
 
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
@@ -5057,24 +5058,34 @@ class MainWindow(QMainWindow):
         return Path(self.collection.recording.folder or self._default_recordings_folder())
 
     def _screenshot(self, shapes: list[str] | None = None, width: int | None = None, save: bool = True,
-                    as_data: bool = False) -> list[dict]:
-        """A PNG of what's on air in each shape (or just shapes), in the recordings folder's Screenshots."""
+                    as_data: bool = False, background: bool = False) -> list[dict]:
+        """A PNG of what's on air in each shape (or just shapes), in the recordings folder's Screenshots.
+
+        background (the buttons and hotkey): grab and save on a worker and return [] at once; the note and
+        the plugins' screenshot hook follow when the files are written."""
         from sprigcast.app import screenshot
 
         ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
         folder = self._recordings_folder() / "Screenshots" if save else None
+        if background and save and not as_data:
+            screenshot.take_in_background(self.engine, ids, folder, width,
+                                          lambda shots, images: self._screenshot_saved(shots, images, folder))
+            return []
         images: dict = {}
         shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
         if save:
-            self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
-            if shots:
-                self._saved_note("Screenshot saved", self._shot_folder(shots, folder))
-            self._tidy_saves()
-            if shots:  # plugins such as Snap show it off
-                from sprigcast import plugin_hooks
-
-                plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
+            self._screenshot_saved(shots, images, folder)
         return shots
+
+    def _screenshot_saved(self, shots: list[dict], images: dict, folder) -> None:
+        self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+        if shots:
+            self._saved_note("Screenshot saved", self._shot_folder(shots, folder))
+        self._tidy_saves()
+        if shots:  # plugins such as Snap show it off
+            from sprigcast import plugin_hooks
+
+            plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
 
     def _saved_note(self, title: str, folder=None, **more) -> None:
         """A clear "saved" note over the window for a few seconds (a click opens the folder)."""
@@ -5315,8 +5326,10 @@ class MainWindow(QMainWindow):
         names = ", ".join(p.name for p in session.paths)
         from sprigcast.core.pacing import memory_line
 
-        log.info("recording stopped after %.0f s: %s; %d frames dropped%s; memory: %s", session.elapsed,
-                 names or "no files", session.dropped, f"; errors: {errors}" if errors else "", memory_line())
+        eased = int(getattr(session, "eased", 0))
+        log.info("recording stopped after %.0f s: %s; %d frames dropped%s%s; memory: %s", session.elapsed,
+                 names or "no files", session.dropped, f", {eased} eased" if eased else "",
+                 f"; errors: {errors}" if errors else "", memory_line())
         self._rest_soon()
         if errors:
             self.live_panel.set_recording("")
@@ -6479,7 +6492,7 @@ class MainWindow(QMainWindow):
         elif action == SAVE_REPLAY:
             self._save_replay()
         elif action == SCREENSHOT:
-            self._screenshot()
+            self._screenshot(background=True)
         elif action.startswith("plugin:"):
             from sprigcast import plugin_hooks
 

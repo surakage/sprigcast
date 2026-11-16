@@ -99,6 +99,7 @@ class StreamTarget:
 
 
 class Streamer(Recorder):
+    eases = False  # a stream steers its bitrate instead (auto-pilot, backlog)
 
     def __init__(
         self,
@@ -343,6 +344,9 @@ class Streamer(Recorder):
             self._send_q.put(packet)
 
     def _send_loop(self, container) -> None:
+        from sprigcast.core.pacing import ABOVE_NORMAL, raise_thread_priority
+
+        raise_thread_priority(ABOVE_NORMAL)  # a starved sender looks like a slow network
         while True:
             packet = self._send_q.get()
             if packet is None:

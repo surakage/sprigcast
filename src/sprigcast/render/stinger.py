@@ -156,7 +156,11 @@ class StingerPlayer:
             if name in LIBVPX and LIBVPX[name] in av.codecs_available:
                 decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps the alpha channel
             else:
+                from sprigcast.sources.media import decode_threads
+
                 video.thread_type = "AUTO"
+                video.codec_context.thread_count = decode_threads(video.codec_context.width,
+                                                                  video.codec_context.height)
             resampler = av.AudioResampler(format="flt", layout="stereo", rate=SAMPLE_RATE) if audio else None
             size = fit_size((video.codec_context.width, video.codec_context.height), self.limit)
             first = None

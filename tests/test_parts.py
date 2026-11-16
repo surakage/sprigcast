@@ -478,6 +478,31 @@ def test_screenshot_pictures_the_program(compositor, app, tmp_path):
     assert all(Path(s["path"]).stat().st_size > 0 for s in shots)
 
 
+def test_screenshot_in_the_background_reports_on_the_ui_thread(compositor, app, tmp_path):
+    import threading
+
+    from sprigcast.app import screenshot
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    engine = Engine(col)
+    engine._sync_sources(compositor)
+    heard = []
+    screenshot.take_in_background(engine, ["h"], tmp_path, 32,
+                                  lambda shots, images: heard.append((threading.current_thread(), shots, images)))
+    for n in range(40):  # draw (the render thread's job) and let queued signals through, until it's reported
+        engine._tick(compositor, 1.0 + n / 30)
+        app.processEvents()
+        if heard:
+            break
+        threading.Event().wait(0.02)
+    assert heard, "never reported"
+    thread, shots, images = heard[0]
+    assert thread is threading.main_thread()
+    assert [s["shape"] for s in shots] == ["h"] and Path(shots[0]["path"]).stat().st_size > 0
+    assert images["h"].width() == 64  # the full-size picture, for plugins
+
+
 def test_window_screenshot_through_the_api(app, tmp_path, monkeypatch):
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings

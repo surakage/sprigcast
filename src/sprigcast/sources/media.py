@@ -42,6 +42,13 @@ SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 HW_DEVICES = ("d3d11va", "cuda", "dxva2", "videotoolbox", "vaapi")  # tried in this order, where FFmpeg has them
 
 
+
+def decode_threads(width: int, height: int) -> int:
+    """Decoder threads for a video this size. FFmpeg's own choice is one per CPU thread (17 on an 8-core
+    Ryzen), started again each time a looping file comes round: the thread count swung by a hundred
+    minute to minute in the 2026-11-15 soak. Two decode up to 1080p far faster than real time."""
+    return 2 if width * height <= 1920 * 1088 else 4
+
 def clamp_speed(value: Any) -> float:
     try:
         return min(4.0, max(0.1, float(value)))
@@ -501,6 +508,8 @@ class MediaSource(Source):
                         decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps see-through parts
                     else:
                         video.thread_type = "AUTO"
+                        video.codec_context.thread_count = decode_threads(video.codec_context.width,
+                                                                          video.codec_context.height)
                     size = fit_size((video.codec_context.width, video.codec_context.height), MAX_SIZE)
                     self._size = size
                 # Faster or slower: the sound is resampled to fit, so it plays in step (higher or lower).

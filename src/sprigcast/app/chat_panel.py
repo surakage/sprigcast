@@ -446,9 +446,9 @@ class ChatPanel(QWidget):
             except Exception as exc:  # worded for you by twitch_auth, or a surprise
                 self.sent.emit(str(exc) or "Couldn't send")
 
-        import threading
+        from sprigcast.core import workers
 
-        threading.Thread(target=work, name="chat-send", daemon=True).start()
+        workers.run(work, name="chat-send")
 
     def _sent(self, problem: str) -> None:
         self._sending = False

@@ -46,6 +46,8 @@ def share_key(target) -> tuple | None:
 class SharedStreamEncoder(ReplayBuffer):
     """Encodes a canvas once for several StreamLinks. Keeps no replay (seconds=0)."""
 
+    eases = False  # a stream steers its bitrate instead (auto-pilot, backlog)
+
     def __init__(self, canvas, fps: int, bitrate_kbps: int, codec: str, start_time: float, out_size=None,
                  encoder=None, auto_bitrate: bool = False):
         from sprigcast.core.scene import EncoderSettings
@@ -414,6 +416,9 @@ class StreamLink:
                 self._backlog_bytes -= item[1]
 
     def _run(self) -> None:
+        from sprigcast.core.pacing import ABOVE_NORMAL, raise_thread_priority
+
+        raise_thread_priority(ABOVE_NORMAL)  # a starved sender looks like a slow network
         delay = RETRY_FIRST
         while not self._stop.is_set():
             self.status = "connecting" if not self.reconnects else f"reconnecting (try {self.reconnects})"
