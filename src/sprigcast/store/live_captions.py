@@ -36,8 +36,9 @@ import numpy as np
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "live_captions", "name": "Live captions", "version": 1, "adds": "Source",
-          "about": "What you say, as captions on stream. Runs on your PC, or with your own Google key."}
+PLUGIN = {"id": "live_captions", "name": "Live captions", "version": 2, "adds": "Source",
+          "about": "What you say, as captions on stream. Runs on your PC, or with your own Google key.",
+          "new": "Change how captions look: style, font, size, bold, all caps, alignment and outline colour."}
 
 log = logging.getLogger(__name__)
 
@@ -400,60 +401,127 @@ def _colour(text: str, fallback: str):
     return c if c.isValid() else QColor(fallback)
 
 
+LOOKS = (("card", "Card"), ("outline", "Outline"), ("shadow", "Shadow"), ("plain", "Plain"))
+SIZES = (("small", "Small"), ("medium", "Medium"), ("large", "Large"))
+ALIGNS = (("left", "Left"), ("center", "Centre"), ("right", "Right"))
+DEFAULT_FONTS = ["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"]
+
+
+def _fonts() -> list[tuple[str, str]]:
+    """The fonts on this PC, A-Z, after SprigCast's own."""
+    from PySide6.QtGui import QFontDatabase
+
+    names = sorted({f for f in QFontDatabase.families() if not f.startswith("@")}, key=str.lower)
+    return [("", "SprigCast (Nunito)")] + [(f, f) for f in names]
+
+
+def _font(settings: dict[str, Any], pixels: float):
+    from PySide6.QtGui import QFont
+
+    font = QFont()
+    chosen = str(settings.get("font", "") or "").strip()
+    font.setFamilies([chosen, *DEFAULT_FONTS] if chosen else DEFAULT_FONTS)
+    font.setWeight(QFont.Weight.Bold if settings.get("bold", True) else QFont.Weight.Normal)
+    font.setPixelSize(max(12, round(pixels)))
+    return font
+
+
 def paint(words: str, settings: dict[str, Any]):
-    """The card as a QImage (premultiplied), W x H: the newest lines, centred, on a rounded card that
-    hugs them and sits at the bottom of the box. Nothing said: an empty, see-through box."""
-    from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QFont, QFontMetricsF, QImage, QPainter
+    """The captions as a QImage (premultiplied), W x H: the newest lines at the bottom of the box, in the
+    chosen style (on a rounded card that hugs them, outlined, with a shadow, or plain), font, size and
+    alignment. Nothing said: an empty, see-through box."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
 
     image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
+    if settings.get("all_caps", False):
+        words = words.upper()
     if not words:
         return image
+    look = str(settings.get("look", "card"))
+    align = str(settings.get("align", "center"))
     lines_wanted = max(1, min(3, int(settings.get("lines", 2) or 2)))
-    font = QFont()
-    font.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
-    font.setWeight(QFont.Weight.Bold)
-    font.setPixelSize({1: 92, 2: 76, 3: 60}[lines_wanted])
-    metrics = QFontMetricsF(font)
-    pad_x, pad_y, margin = 44, 22, 12
+    scale = {"small": 0.8, "medium": 1.0, "large": 1.2}.get(str(settings.get("text_size", "medium")), 1.0)
+    pixels = {1: 92, 2: 76, 3: 60}[lines_wanted] * scale
+    card_on = look == "card"
+    pad_x, pad_y, margin = (44, 22, 12) if card_on else (16, 8, 12)
+    while True:  # shrink until the lines fit the box's height
+        font = _font(settings, pixels)
+        metrics = QFontMetricsF(font)
+        line_h = metrics.height()
+        if line_h * lines_wanted + 2 * pad_y <= H - 2 * margin or pixels <= 20:
+            break
+        pixels *= 0.92
     room = W - 2 * margin - 2 * pad_x
-    lines = wrap(words, lambda s: metrics.horizontalAdvance(s) <= room, lines_wanted)
-    line_h = metrics.height()
+    lines = wrap(words, lambda t: metrics.horizontalAdvance(t) <= room, lines_wanted)
     text_w = max(metrics.horizontalAdvance(line) for line in lines)
     card_w = min(W - 2 * margin, text_w + 2 * pad_x)
     card_h = min(H - 2 * margin, line_h * len(lines) + 2 * pad_y)
-    x0, y0 = (W - card_w) / 2, H - margin - card_h
+    x0 = margin if align == "left" else W - margin - card_w if align == "right" else (W - card_w) / 2
+    y0 = H - margin - card_h
     p = QPainter(image)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-    card = _colour(settings.get("card_color"), "#151c19d9")
-    if card.alpha():
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(card)
-        p.drawRoundedRect(QRectF(x0, y0, card_w, card_h), 32, 32)
-    p.setFont(font)
-    p.setPen(_colour(settings.get("text_color"), "#f2f7f3"))
+    if card_on:
+        card = _colour(settings.get("card_color"), "#151c19d9")
+        if card.alpha():
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(card)
+            p.drawRoundedRect(QRectF(x0, y0, card_w, card_h), 32, 32)
+    text = _colour(settings.get("text_color"), "#f2f7f3")
+    edge = _colour(settings.get("outline_color"), "#000000ff")
     for i, line in enumerate(lines):
-        p.drawText(QRectF(margin, y0 + pad_y + i * line_h, W - 2 * margin, line_h),
-                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter), line)
+        width = metrics.horizontalAdvance(line)
+        left = x0 + pad_x + {"left": 0.0, "right": text_w - width}.get(align, (text_w - width) / 2)
+        base = QPointF(left, y0 + pad_y + i * line_h + metrics.ascent())
+        if look in ("outline", "shadow"):
+            path = QPainterPath()
+            path.addText(base, font, line)
+            if look == "outline":
+                p.strokePath(path, QPen(edge, max(3.0, pixels * 0.14), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                        Qt.PenJoinStyle.RoundJoin))
+            else:
+                p.setPen(Qt.PenStyle.NoPen)
+                for step, alpha in ((0.07, 0.35), (0.045, 0.55)):  # a soft shadow below and right
+                    shade = QColor(edge)
+                    shade.setAlphaF(edge.alphaF() * alpha)
+                    p.setBrush(shade)
+                    p.drawPath(path.translated(pixels * step, pixels * step))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(text)
+            p.drawPath(path)
+        else:
+            p.setFont(font)
+            p.setPen(text)
+            p.drawText(base, line)
     p.end()
     return image
+
+
+LOOK_KEYS = ("lines", "look", "font", "text_size", "bold", "all_caps", "align", "text_color", "card_color",
+             "outline_color")  # a change to any of these draws the card again
 
 
 @register(KIND)
 class LiveCaptionsSource(Source):
     label = "Live captions"
     defaults = {"listen_to": "default", "engine": "pc", "model": "auto", "language": "en", "lines": 2,
-                "hide_after": 4.0, "text_color": "#f2f7f3", "card_color": "#151c19d9"}
+                "hide_after": 4.0, "look": "card", "font": "", "text_size": "medium", "bold": True, "all_caps": False,
+                "align": "center", "text_color": "#f2f7f3", "card_color": "#151c19d9", "outline_color": "#000000ff"}
     choices = {
         "listen_to": _mics,
         "engine": (("pc", "On this PC"), ("google", "Google (your own key)")),
         "model": (("auto", "Auto"), ("tiny", "Light"), ("base", "Balanced"), ("small", "Sharper")),
         "language": tuple((w, name) for w, _, name in LANGUAGES),
         "lines": ((1, "1"), (2, "2"), (3, "3")),
+        "look": LOOKS,
+        "font": _fonts,
+        "text_size": SIZES,
+        "align": ALIGNS,
     }
     secrets = {"google_key": SECRET}
+    secrets_after = "engine"  # the key box sits under Captions by
     sleeps = True  # off air it stops listening; a minute later the model goes too
     own_sprig = (W, H)
     own_sprig_corner = "bottom_center"
@@ -632,7 +700,7 @@ class LiveCaptionsSource(Source):
     def video_frame(self) -> np.ndarray | None:
         hide_after = float(self.settings.get("hide_after", 4.0) or 0.0)
         words = self.board.text(time.monotonic(), hide_after)
-        key = (words, self.settings.get("text_color"), self.settings.get("card_color"), self.settings.get("lines"))
+        key = (words, *(self.settings.get(k) for k in LOOK_KEYS))
         if key == self._shown:
             return None  # nothing new said: nothing drawn, nothing uploaded
         self._shown = key

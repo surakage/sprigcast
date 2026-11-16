@@ -320,8 +320,8 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `transition.get` | The usual transition and its length. | none |
-| `transition.set` | Change the usual transition and/or its length. | `kind` (optional): cut, fade, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000 |
+| `transition.get` | The usual transition, its length and (Move) how it moves. | none |
+| `transition.set` | Change the usual transition, its length and (Move) how it moves. | `kind` (optional): cut, fade, move, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000, `easing` (optional): Move only: smooth, ease_out, ease_in, linear, spring, `unmatched` (optional): Move only, what only one bloom shows: fade, scale, slide |
 
 ## Web page sources
 
@@ -351,8 +351,20 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `timer.add` | Stream timer | More time on a countdown (or a stopwatch); negative takes some off. | `seconds`, `source` (optional) |
 | `timer.get` | Stream timer | Where it is, without changing it. | `source` (optional) |
 | `nowplaying.get` | Now playing | The song on the Now playing card. | |
+| `autoclip.status` | Auto clip | Its settings, whether it's listening now (`watching`: on and clips ready) and how many suggestions wait. | |
+| `autoclip.set` | Auto clip | Change its settings. | `on`, `mic`, `game`, `chat`, `sensitivity` (low, medium, high), `gap` (seconds between suggestions, 10 to 600), `days` (delete unkept after, 0 = never) (all optional) |
+| `autoclip.list` | Auto clip | The suggested clips, newest first: `{"clips": [{"id", "at", "reason", "label", "files"}]}`. | |
+| `autoclip.keep` | Auto clip | Keep a suggestion: its files move to your Clips folder. Answers the new `files`. | `id` |
+| `autoclip.delete` | Auto clip | Delete a suggestion and its files. | `id` |
+| `autoclip.mark` | Auto clip | Suggest a clip now. It's saved a few seconds later (`in`), so what follows is in it. | |
+| `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
+| `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
+
+**Auto clip** listens while clips are ready (the Clip button) and saves big moments as suggestions: your mic or game sound jumping well over its own usual level, or chat moving much faster than usual (with Chat ticked). Each one sends an `autoclip.suggested` event (`plugin` group) with the same fields as `autoclip.list`; `reason` is `mic`, `game`, `chat` or `mark`. Nothing is posted anywhere: suggestions wait in Tools → Suggested clips… (in the recordings folder's "Suggested clips") until you keep or delete them, and unkept ones are deleted after `days`.
+
+**Instant replay** keeps the last Seconds (default 20) of what you picked in its settings: one sprig or source, plus an optional one in a corner (a camera). It keeps nothing while its bloom is off air or its eye is off, so `replay.play` then answers `not_allowed` ("Instant replay isn't on air."), as it does while one is already playing. It answers `{"playing": [names]}` and sends `replay.started` (`source`, `sourceId`, `seconds`, `speed`) and `replay.ended` (`source`, `sourceId`, `reason`: ended, stopped or failed) in the `plugin` group. Adding it (+ → Plugins → Instant replay) makes a sprig of its own that fills the canvas, on top of the bloom; it's see-through except while a replay plays.
 
 **Stream timer** has three modes: Time live (counts up from going live, or from recording with Count from; it runs by itself, so the `timer.*` controls answer `bad_request` for it), Countdown (Minutes, or Until a time of day such as `8:30 PM`) and Stopwatch. Every `timer.*` action answers `{"source", "mode", "seconds", "running", "done", "text"}` and sends `timer.changed` with the same fields; `timer.done` (`{"source": name}`) comes when a countdown reaches 0 on screen. Without `source` they work on every stopwatch and countdown you've added. Where a stopwatch or countdown is is saved with your blooms, so it carries on after a restart. With Restart when shown on (the default), a countdown starts over each time it comes on screen, for a "Starting soon" bloom. The card sits in the top left corner of the bloom in every shape.
 

@@ -258,3 +258,44 @@ def test_a_slow_source_is_drawn_less_often(monkeypatch):
             engine._tick(fake, 5.0 + i / 60)
     assert engine._source_every["game"] == 1
     assert any("back to every frame" in line for line in lines)
+
+
+def test_a_camera_needed_again_soon_stays_open_longer_each_time():
+    from sprigcast.render.engine import CAMERA_BACK_SOON_S, CAMERA_SLEEP_MAX
+
+    engine, col = _engine()
+    fake = FakeCompositor()
+    engine.sleep_policy = "all"
+    t = 1.0
+
+    def away_until_closed():
+        nonlocal t
+        col.active_scenes["h"] = "b"  # a bloom without the camera
+        engine._tick(fake, t)
+        wait = engine._camera_wait.get("cam", CAMERA_SLEEP_AFTER)
+        engine._tick(fake, t + wait - 1)
+        assert not engine._sources["cam"].asleep
+        t += wait + 0.1
+        engine._tick(fake, t)
+        assert engine._sources["cam"].asleep
+        return wait
+
+    def back():
+        nonlocal t
+        t += 20
+        col.active_scenes["h"] = "a"
+        engine._tick(fake, t)
+        assert not engine._sources["cam"].asleep
+
+    col.active_scenes["h"] = "a"
+    engine._tick(fake, t)
+    waits = []
+    for _ in range(6):
+        waits.append(away_until_closed())
+        back()
+    assert waits == [30.0, 60.0, 120.0, 240.0, CAMERA_SLEEP_MAX, CAMERA_SLEEP_MAX]
+    away_until_closed()
+    t += CAMERA_BACK_SOON_S + 1  # left closed a long while: back to the short wait
+    col.active_scenes["h"] = "a"
+    engine._tick(fake, t)
+    assert "cam" not in engine._camera_wait
