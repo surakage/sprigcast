@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Any
 
 import numpy as np
 
@@ -149,9 +150,10 @@ class Engine:
         # frame taps on that id get. Replaced whole by the UI (see set_clean).
         self.clean_hidden: dict[str, frozenset[str]] = {}
         # Extra pictures for taps on "view:<name>" (the virtual camera): name -> (canvas id, kind, ref),
-        # kind "bloom" (a bloom drawn whether or not it's on air) or "source" (one source, fitted).
+        # kind "bloom" (a bloom drawn whether or not it's on air), "source" (one source, fitted) or
+        # "scene" (ref is a Scene a plugin made, e.g. Instant replay's game with the camera in a corner).
         # Replaced whole by the UI (see set_view); drawn only while something taps them.
-        self.views: dict[str, tuple[str, str, str]] = {}
+        self.views: dict[str, tuple[str, str, Any]] = {}
         self._view_at: dict[str, float] = {}  # view name -> when a screen-only view was last drawn
 
     # Called from the UI thread ----------------------------------------------
@@ -217,8 +219,9 @@ class Engine:
             clean[canvas_id] = frozenset(hidden)
         self.clean_hidden = clean
 
-    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref: str = "") -> None:
-        """Draw a bloom or a single source on a canvas's size for taps on "view:<name>" (None: stop)."""
+    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref=None) -> None:
+        """Draw a bloom, a single source or a plugin's own Scene on a canvas's size for taps on "view:<name>"
+        (None: stop)."""
         views = dict(self.views)
         if canvas_id is None:
             views.pop(name, None)
@@ -237,6 +240,8 @@ class Engine:
             return None, None
         if kind == "bloom":
             return canvas, next((sc for sc in collection.scenes if sc.id == ref), None)
+        if kind == "scene":
+            return canvas, ref if isinstance(ref, Scene) else None
         if kind == "source" and any(src.id == ref for src in collection.sources):
             w, h = (sizes or {}).get(ref) or (canvas.width, canvas.height)
             k = min(canvas.width / max(1, w), canvas.height / max(1, h))
@@ -706,6 +711,8 @@ class Engine:
             if existing is None:
                 try:
                     source = create_source(config.kind, config.id, config.settings)
+                    if getattr(source, "wants_engine", False):  # plugins that tap frames or sound (Instant replay)
+                        source.engine = self
                     if self._may_sleep(source) and source_id not in self._shown_sources():
                         source.asleep = True  # not on screen: don't even start it until it is
                         source.sleep()
