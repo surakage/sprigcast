@@ -1,0 +1,103 @@
+"""Live's layout: the Both / Horizontal / Vertical switch, the bloom lists, the header and the short Transitions card."""
+
+import os
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+pytest.importorskip("PySide6.QtWidgets")
+from PySide6.QtCore import QCoreApplication, QSettings  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+
+@pytest.fixture
+def app():
+    app = QApplication.instance() or QApplication([])
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("LiveLayoutTest")
+    QSettings().clear()
+    yield app
+    QSettings().clear()
+
+
+def _window(tmp_path, monkeypatch):
+    import keyring
+
+    from sprigcast.app.main import load_collection
+    from sprigcast.app.main_window import MainWindow
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    return MainWindow(load_collection(tmp_path / "scenes.json"), tmp_path / "scenes.json")
+
+
+def test_view_switch_shows_one_canvas_bigger_and_the_blooms_follow(app, tmp_path, monkeypatch):
+    w = _window(tmp_path, monkeypatch)
+    try:
+        w.show()
+        w._set_mode("live")
+        side = w.live_side
+        assert side.view_buttons["both"].isChecked() and side.view_group.isVisibleTo(side.stage_bar)
+        assert all(w.canvas_columns[c].isVisibleTo(w.splitter) for c in ("horizontal", "vertical"))
+        canvases = {w.collection.scene(sid).canvas for sid in w.live_panel.buttons}
+        assert canvases == {"horizontal", "vertical"}  # a list per canvas, side by side
+        side.view_buttons["vertical"].click()
+        assert QSettings().value("live/canvas_view") == "vertical"
+        assert not w.canvas_columns["horizontal"].isVisibleTo(w.splitter)
+        assert w.canvas_columns["vertical"].isVisibleTo(w.splitter)
+        assert {w.collection.scene(sid).canvas for sid in w.live_panel.buttons} == {"vertical"}
+        assert side.view_buttons["vertical"].isChecked() and not side.view_buttons["both"].isChecked()
+        w._set_mode("build")  # Build keeps its own tab: the Live view doesn't hide what you edit
+        assert w.canvas_columns[w.build_canvas].isVisibleTo(w.splitter)
+        w._set_mode("live")
+        w.collection.canvas("vertical").enabled = False  # one canvas streaming: no choice to make
+        w._apply_canvas_view()
+        assert not side.view_group.isVisibleTo(side.stage_bar)
+        assert w.canvas_columns["horizontal"].isVisibleTo(w.splitter)
+    finally:
+        w.close()
+
+
+def test_header_holds_go_live_record_and_the_garden_check(app, tmp_path, monkeypatch):
+    w = _window(tmp_path, monkeypatch)
+    try:
+        w.show()
+        side = w.live_side
+        assert side.live.text() == "Go live" and side.header_box.isVisible()  # in Build too
+        side.set_live(True)
+        assert side.live.text() == "End stream"
+        side.set_live(False)
+        w._set_mode("live")
+        assert not w.screenshot_button.isVisible()  # Live has Screenshot under the canvases
+        shots = []
+        monkeypatch.setattr(w, "_screenshot", lambda *a, **k: shots.append(1))
+        side.screenshot.click()
+        assert shots == [1]
+    finally:
+        w.close()
+
+
+def test_transitions_card_is_short_and_says_how_many_rules(app):
+    from sprigcast.app.transitions_panel import TransitionsPanel
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, Transition, TransitionRule
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          scenes=[Scene(id="a", name="A", canvas="horizontal")])
+    panel = TransitionsPanel(col.transition, lambda: None, collection=col, compact=True)
+    panel.resize(300, 300)
+    panel.show()
+    assert panel.rules_count.text() == "None"
+    assert panel.form.labelForField(panel.length).text() == "Duration"
+    assert panel.kind_pick.text() == "Fade"  # no "Type" label, no ▾ text: a drawn chevron
+    col.transition_rules = [TransitionRule(to_scene="a"), TransitionRule(from_scene="a", transition=Transition())]
+    panel.show_rule_count()
+    assert panel.rules_count.text() == "2 active"
+    before = panel.length.value()
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    top = QPointF(panel.length.width() - 10, 4)
+    panel.length.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, top, panel.length.mapToGlobal(QPoint(0, 0)),
+                                             Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                             Qt.KeyboardModifier.NoModifier))
+    assert panel.length.value() == before + panel.length.singleStep()  # the up chevron
+    panel.close()

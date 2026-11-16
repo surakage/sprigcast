@@ -254,6 +254,21 @@ def _draw(p: QPainter, name: str) -> None:
     elif name == "dual":  # a wide and a tall canvas side by side
         p.drawRoundedRect(QRectF(2.5, 8, 12, 8), 1.6, 1.6)
         p.drawRoundedRect(QRectF(16, 4.5, 6, 15), 1.6, 1.6)
+    elif name == "clip":  # a clapperboard: save the last few seconds
+        p.drawRoundedRect(QRectF(4, 9.5, 16, 10.5), 2, 2)
+        p.drawLine(P(4, 9.5), P(19, 5.5))
+        p.drawLine(P(9, 8.2), P(11, 10))
+        p.drawLine(P(14, 6.9), P(16, 8.6))
+    elif name == "chevron-down":
+        path = QPainterPath(P(7, 10))
+        path.lineTo(P(12, 15))
+        path.lineTo(P(17, 10))
+        p.drawPath(path)
+    elif name == "chevron-up":
+        path = QPainterPath(P(7, 14))
+        path.lineTo(P(12, 9))
+        path.lineTo(P(17, 14))
+        p.drawPath(path)
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
@@ -261,7 +276,7 @@ def _draw(p: QPainter, name: str) -> None:
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual")
+         "portrait", "dual", "clip", "chevron-down", "chevron-up")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:

@@ -125,3 +125,39 @@ def health_popup(records: list[HealthRecord], parent: QWidget | None = None,
     pop.add_tab("health", "Health", pop.page)
     pop.show_tab("health")
     return pop
+
+
+def garden_check_popup(records: list[HealthRecord], refresh: Callable[[QWidget], None], parent: QWidget | None = None,
+                       open_logs: Callable[[], None] | None = None, tab: str = "now"):
+    """The header's Garden check: "Right now" (every number, refreshed each second) and "Stream health"
+    (how the last few streams went). refresh(panel) fills a StatsPanel with the current numbers."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QFrame, QScrollArea
+
+    from sprigcast.app.stats_panel import StatsPanel
+    from sprigcast.app.transitions_panel import PopUp
+
+    pop = PopUp("Garden check", parent)
+    pop.now = StatsPanel()
+    pop.now.setMinimumSize(580, 360)
+    scroll = pop.now.findChild(QScrollArea)
+    if scroll is not None:  # the pop-up card is the background, no well inside it
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        pop.now.label.setStyleSheet("background: transparent;")
+    pop.add_tab("now", "Right now", pop.now)
+    pop.page = HealthPage(records, open_logs)
+    pop.add_tab("health", "Stream health", pop.page)
+    pop.show_tab(tab)
+
+    def tick() -> None:
+        try:
+            refresh(pop.now)
+        except Exception:  # a number that can't be read this second shows next second
+            pass
+
+    tick()
+    pop.timer = QTimer(pop)
+    pop.timer.timeout.connect(tick)
+    pop.timer.start(1000)
+    return pop

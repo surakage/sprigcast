@@ -94,7 +94,7 @@ def test_health_page_shows_tiles_per_place_lines_and_an_empty_state(app):
     assert "Smooth" in page.verdict.text()
 
 
-def test_live_shows_the_banner_and_a_link_to_the_last_stream(app, tmp_path, monkeypatch):
+def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, tmp_path, monkeypatch):
     import keyring
 
     from sprigcast.app import health
@@ -107,19 +107,21 @@ def test_live_shows_the_banner_and_a_link_to_the_last_stream(app, tmp_path, monk
         w.show()
         w._set_mode("live")
         card, side = w.live_stage.card, w.live_side
-        assert not side.health_link.isVisible()  # no stream yet
         card.set_notice("Reconnecting to Twitch… try 2", "bad")
         assert card.notice.isVisible() and "try 2" in card.notice.text()
         card.set_notice("")
         assert not card.notice.isVisible()
+        w.last_resources = {"cpu": 4.6, "ram_mb": 209}
+        w._refresh_garden()
+        assert side.garden.numbers.text() == "CPU 4.6%  ·  209 MB  ·  0 dropped" and side.garden.level == "good"
         health.save(QSettings(), health.HealthRecord(started="2026-11-15 20:10", seconds=600))
-        side.set_health_link(True)
-        assert side.health_link.isVisible()
-        side.set_live(True)
-        assert not side.health_link.isVisible()  # not while live
-        side.set_live(False)
-        pop = w._open_health()
-        assert pop.page.records[0].seconds == 600
+        pop = w._open_health()  # Tools → Stream health: the Garden check, on its Stream health tab
+        assert pop.page.records[0].seconds == 600 and pop.tabs["health"].isChecked()
+        assert set(pop.tabs) == {"now", "health"}
+        pop.close()
+        side.garden.click()
+        pop = w.findChildren(type(pop))[-1]
+        assert pop.tabs["now"].isChecked() and pop.now.label.text()
         pop.close()
     finally:
         w.close()
@@ -145,8 +147,8 @@ def test_live_canvases_have_no_caption_above_them(app, tmp_path, monkeypatch):
         w.close()
 
 
-def test_go_live_card_shows_one_clock_and_the_details_under_it(app, tmp_path, monkeypatch):
-    """Streaming and recording at once: one unlabelled clock (the longer one), both sets of details below."""
+def test_header_shows_one_clock_and_the_details_beside_it(app, tmp_path, monkeypatch):
+    """Streaming and recording at once: one unlabelled clock (the longer one), then both sets of details."""
     import keyring
 
     from sprigcast.app.main import load_collection
@@ -157,15 +159,15 @@ def test_go_live_card_shows_one_clock_and_the_details_under_it(app, tmp_path, mo
     try:
         w.show()
         w._set_mode("live")
-        side = w.live_side
-        w._side_status("rec", 2299, "NVENC HEVC  ·  1473 frames dropped: encoder busy", True)
-        assert side.clock.text() == "0:38:19" and "REC" not in side.clock.text()
-        w._side_status("live", 2400)
-        assert side.clock.text() == "0:40:00"
-        assert side.rec_note.text() == "NVENC HEVC  ·  1473 frames dropped: encoder busy"
-        assert side.rec_note.wordWrap()
+        w._side_status("rec", 2299, "1473 frames dropped: encoder busy", True)
+        assert "0:38:19" in w.mode_clock.text() and "REC" not in w.mode_clock.text()
+        w._live_destinations()  # an offline refresh doesn't replace the clock while recording
+        assert "0:38:19" in w.mode_clock.text()
+        w._side_status("live", 2400, "2 of 2 sending")
+        text = w.mode_clock.text()
+        assert "0:40:00" in text and "2 of 2 sending" in text and "1473 frames dropped" in text
         w._side_status("live", None)
         w._side_status("rec", None)
-        assert not side.clock.isVisible() and not side.rec_note.isVisible()
+        assert w.mode_clock.text().startswith("Offline")
     finally:
         w.close()

@@ -69,22 +69,25 @@ def test_picker_opens_on_the_choice_made_in_settings(app):
 
 
 def test_button_shows_on_and_a_short_reason_when_it_cant_start(app):
-    from sprigcast.app.live_stage import CAM_ON_STYLE, CAM_STYLE, LiveSide
+    from sprigcast.app.live_stage import LiveSide
 
     clicks = []
     side = LiveSide(lambda: None, lambda: None, lambda: None, lambda _id: None,
                     on_camera=lambda: clicks.append("cam"), on_camera_settings=lambda: clicks.append("gear"))
     side.show()
+    side.stage_bar.show()  # Clip and Virtual Cam sit under the canvases; Record in the header
+    side.header_box.show()
     for button in (side.record, side.clip, side.camera, side.camera_settings):  # round, never squared off
-        assert button.height() >= 2 * 16
+        radius = int(button.styleSheet().split("border-radius: ")[1].split("px")[0])
+        assert button.height() >= 2 * radius
     side.camera.click()
     side.camera_settings.click()
     assert clicks == ["cam", "gear"]
     side.set_camera(True)
-    assert side.camera.text() == "Virtual Cam" and side.camera.styleSheet() == CAM_ON_STYLE
+    assert side.camera.text() == "Virtual Cam" and side.camera.isChecked()
     assert not side.camera_note.isVisible()
     side.set_camera(False, "Windows refused the camera (0x80070005).")
-    assert side.camera.text() == "Virtual Cam" and side.camera.styleSheet() == CAM_STYLE
+    assert side.camera.text() == "Virtual Cam" and not side.camera.isChecked()
     assert side.camera_note.isVisible() and "refused" in side.camera_note.text()
 
 
