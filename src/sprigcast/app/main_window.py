@@ -7,7 +7,6 @@ import logging
 import os
 import queue
 import re
-import threading
 import time
 import uuid
 import sys
@@ -2693,7 +2692,9 @@ class MainWindow(QMainWindow):
             def look() -> None:
                 self._busy_note = busy_pc.busy_message(busy_pc.heavy_apps(), cpu, gpu)
 
-            threading.Thread(target=look, name="sprigcast-busy-pc", daemon=True).start()
+            from sprigcast.core import workers
+
+            workers.run(look, name="busy-pc")
 
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""

@@ -13,6 +13,7 @@ thread and hands each message to the UI thread through a Qt signal.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -102,6 +103,35 @@ def message_from_tikfinity(frame: dict) -> ChatMessage | None:
 
 
 # The reader -------------------------------------------------------------------------------------
+
+
+class _LoopThread(threading.Thread):
+    """One event loop for every direct TikTok connection, started on first use and kept.
+
+    Each try used to start its own thread and loop (and the loop its own helper threads for name
+    lookups), then throw them away: while waiting for a channel to go live that was a new set every
+    check."""
+
+    def __init__(self) -> None:
+        super().__init__(name="tiktok-chat", daemon=True)
+        self.loop = asyncio.new_event_loop()
+
+    def run(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+
+_loop_thread: _LoopThread | None = None
+_loop_lock = threading.Lock()
+
+
+def _shared_loop() -> _LoopThread:
+    global _loop_thread
+    with _loop_lock:
+        if _loop_thread is None or not _loop_thread.is_alive():
+            _loop_thread = _LoopThread()
+            _loop_thread.start()
+        return _loop_thread
 
 class _Bridge(QObject):
     """Carries messages from the helper thread to the UI thread."""
@@ -230,14 +260,11 @@ class TikTokChat(QObject):
             logging.getLogger(name).setLevel(max(logging.WARNING, logging.getLogger(name).level))
         key = str(QSettings().value(KEY_SETTING, "") or "")
         self._run += 1
-        self._thread = threading.Thread(target=self._run_direct, args=(self._run, self.channel, key),
-                                        name="tiktok-chat", daemon=True)
-        self._thread.start()
+        self._thread = _shared_loop()
+        asyncio.run_coroutine_threadsafe(self._run_direct(self._run, self.channel, key), self._thread.loop)
 
-    def _run_direct(self, run: int, handle: str, key: str) -> None:
-        """Runs on the helper thread until the stream ends, fails or stop() asks it to."""
-        import asyncio
-
+    async def _run_direct(self, run: int, handle: str, key: str) -> None:
+        """Runs on the shared TikTok loop until the stream ends, fails or stop() asks it to."""
         from TikTokLive import TikTokLiveClient
         from TikTokLive.client.errors import UserNotFoundError, UserOfflineError
         from TikTokLive.client.web.web_settings import WebDefaults
@@ -245,8 +272,7 @@ class TikTokChat(QObject):
 
         if key:
             WebDefaults.tiktok_sign_api_key = key
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        loop = asyncio.get_running_loop()
         client = TikTokLiveClient(unique_id=f"@{handle}")
         self._loop, self._client = loop, client
         bridge = self._bridge
@@ -285,7 +311,7 @@ class TikTokChat(QObject):
             client.add_listener(kind, handler)
         why, offline = "stream ended", True
         try:
-            loop.run_until_complete(client.connect())
+            await client.connect()
         except UserOfflineError:
             why = "not live yet"
         except UserNotFoundError:
@@ -295,11 +321,11 @@ class TikTokChat(QObject):
             log.info("tiktok chat %s: %s", handle, exc)
         finally:
             try:
-                loop.run_until_complete(client.disconnect(close_client=True))
+                await client.disconnect(close_client=True)
             except Exception:
                 pass
-            loop.close()
-            self._loop = self._client = None
+            if self._client is client:
+                self._loop = self._client = None
         bridge.ended.emit(run, why, offline)
 
     def _stop_direct(self) -> None:

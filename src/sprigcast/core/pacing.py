@@ -92,6 +92,50 @@ def tidy() -> tuple[int, float]:
     return gc.get_freeze_count(), 1000 * (time.perf_counter() - began)
 
 
+THREADS_MOVED = 20  # log the thread count when it moved this much since the last line
+THREADS_EVERY_S = 600.0  # and every 10 minutes anyway
+_threads_logged: tuple[float, int] | None = None
+
+
+def thread_census() -> tuple[int, dict[str, int]]:
+    """(threads in the whole process, Python threads by kind). Kinds drop the numbers and ids at the end of
+    a name ("sprigcast-work_2" and "camera-cam1" count as "sprigcast-work" and "camera"). The rest of the
+    process's threads are native: Qt, FFmpeg's codec threads, drivers, Windows' audio."""
+    import re
+    import threading
+
+    kinds: dict[str, int] = {}
+    for thread in threading.enumerate():
+        kind = re.sub(r"([-_ ][^-_ ]*\d[^-_ ]*)+$", "", thread.name) or thread.name
+        kind = re.sub(r"-[a-z0-9]{6,}$", "", kind)
+        kinds[kind] = kinds.get(kind, 0) + 1
+    total = sum(kinds.values())
+    try:
+        import psutil
+
+        total = psutil.Process().num_threads()
+    except Exception:
+        pass
+    return total, kinds
+
+
+def watch_threads(now: float | None = None) -> str | None:
+    """Once a minute: log the threads when their number moved a lot (or every 10 minutes). Returns the line."""
+    global _threads_logged
+    now = time.monotonic() if now is None else now
+    total, kinds = thread_census()
+    if _threads_logged is not None:
+        at, logged = _threads_logged
+        if abs(total - logged) < THREADS_MOVED and now - at < THREADS_EVERY_S:
+            return None
+    _threads_logged = (now, total)
+    python = sum(kinds.values())
+    top = ", ".join(f"{k} {n}" for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))[:8])
+    line = f"threads {total} (python {python}: {top}; native {max(0, total - python)})"
+    log.info(line)
+    return line
+
+
 def settle() -> float:
     """At rest (nothing recorded or streamed): look through everything once, frozen included, so cycles
     from the show (a stopped encoder, a closed window) are freed; then freeze again. Returns ms."""

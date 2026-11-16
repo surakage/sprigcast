@@ -270,6 +270,7 @@ def run() -> None:
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
     tidy.timeout.connect(pacing.tidy)
+    tidy.timeout.connect(pacing.watch_threads)  # which threads come and go, for the next long test
     tidy.start(pacing.TIDY_EVERY_MS)
     QTimer.singleShot(20_000, pacing.trim_working_set)  # start-up's one-time pages (imports, shaders) go back
     if plugins.failed:

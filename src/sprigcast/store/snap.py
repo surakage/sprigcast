@@ -268,7 +268,9 @@ class SnapSource(Source):
                 job.saved = True
                 self.last_saved = job.path
 
-        threading.Thread(target=run, name="snap-save", daemon=True).start()
+        from sprigcast.core import workers
+
+        workers.run(run, name="snap-save")
 
     def video_frame(self) -> np.ndarray | None:
         with self._lock:
