@@ -1,6 +1,6 @@
 {
   "Name": "SprigCast",
-  "Version": "0.1.0.0",
+  "Version": "0.2.0.0",
   "Author": "SprigCast",
   "Actions": [
     {
@@ -392,7 +392,7 @@
   "Category": "SprigCast",
   "CategoryIcon": "imgs/plugin/category-icon",
   "CodePath": "bin/plugin.js",
-  "Description": "Run SprigCast from your Stream Deck: switch blooms and gardens, mute and turn sounds (dials on Stream Deck +), go live, record, clips, virtual camera, media, filters, transitions and SprigCast plugins. Keys light up to match SprigCast.",
+  "Description": "Run SprigCast from your Stream Deck: switch blooms and gardens, mute and turn sounds (dials on Stream Deck +), go live, record, clips, virtual camera, media, filters, transitions and SprigCast plugins. Keys light up to match SprigCast, and connect by themselves when SprigCast opens.",
   "Icon": "imgs/plugin/marketplace",
   "SDKVersion": 3,
   "Software": {

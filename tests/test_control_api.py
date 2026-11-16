@@ -451,10 +451,9 @@ def test_connections_settings_page():
     from sprigcast.app.connections_page import ConnectionsPage
 
     page = ConnectionsPage()
-    assert not page.enabled.isChecked() and page.port.value() == 4455
+    assert page.enabled.isChecked() and page.port.value() == 4455  # on by default: the Stream Deck connects by itself
     assert len(page.password.text()) == 16  # made on first look
     assert "Port: 4455" in page.connect_text()
-    page.enabled.setChecked(True)
     page.port.setValue(4460)
     page.apply()
     settings = control_server.saved_settings()
