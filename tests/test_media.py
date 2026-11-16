@@ -539,3 +539,79 @@ def test_rapid_wake_sleep_loop_and_controls_from_many_threads(tmp_path):
     assert _until(lambda: process.num_threads() <= before + 3, timeout=5.0)
     for source in sources:
         source.stop()
+
+
+def test_a_bloom_of_seven_media_waking_and_sleeping_reuses_files_and_decoders(tmp_path, monkeypatch):
+    """The PC's Heavy test bloom: 4 GIFs and 3 see-through webms on and off screen 10 times, with Python's cycle
+    collector off. Each file is opened once and its decoder kept (no new FFmpeg threads per wake), and the
+    thread count ends where it started."""
+    import gc
+    import threading
+
+    import psutil
+
+    opened = []
+    real_open = MediaSource._open
+    monkeypatch.setattr(MediaSource, "_open", lambda self, path: opened.append(path) or real_open(self, path))
+    files = [_gif(tmp_path / f"g{i}.gif", frames=3) for i in range(4)] + \
+        [_webm(tmp_path / f"w{i}.webm", seconds=0.2) for i in range(3)]
+    sources = [MediaSource(f"m{i}", {"path": f, "loop": True}) for i, f in enumerate(files)]
+    stop = threading.Event()
+
+    def render():
+        while not stop.is_set():
+            for source in sources:
+                source.video_frame()
+                source.read_block(480)
+            time.sleep(0.005)
+
+    drawer = threading.Thread(target=render, daemon=True)
+    drawer.start()
+    for source in sources:
+        source.start()
+    process = psutil.Process()
+    gc.disable()
+    try:
+        assert _until(lambda: all(s.status == "ok" for s in sources))
+        time.sleep(0.3)
+        before = process.num_threads()
+        for _ in range(10):
+            for source in sources:
+                source.sleep()
+            time.sleep(0.1)
+            for source in sources:
+                source.wake()
+            time.sleep(0.2)
+        assert abs(process.num_threads() - before) <= 10
+        assert sorted(opened) == sorted(files)  # once each, never again on a wake
+    finally:
+        gc.enable()
+        stop.set()
+        drawer.join(timeout=2)
+        for source in sources:
+            source.stop()
+
+
+def test_asleep_long_enough_the_thread_closes_its_file_and_ends(tmp_path, monkeypatch):
+    import threading
+
+    from sprigcast.sources import media
+
+    monkeypatch.setattr(media, "PARK_S", 0.3)
+    released = []
+    real_release = media._Held.release
+    monkeypatch.setattr(media._Held, "release",
+                        lambda self: released.append(self.container is not None) or real_release(self))
+    source = MediaSource("brb", {"path": _webm(tmp_path / "brb.webm", seconds=0.3), "loop": True})
+    source.start()
+    assert _until(lambda: source.status == "ok")
+    source.sleep()
+    time.sleep(0.15)
+    assert [t for t in threading.enumerate() if t.name == "media-brb"]  # still parked with the file open
+    assert _until(lambda: not [t for t in threading.enumerate() if t.name == "media-brb"])
+    assert True in released  # it closed its open file on its own thread
+    source.wake()  # and a later wake starts again
+    frames = []
+    _play(source, 0.4, frames)
+    assert frames
+    source.stop()

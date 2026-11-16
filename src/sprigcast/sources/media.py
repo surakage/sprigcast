@@ -5,7 +5,8 @@ goes to the mixer. A sound file has no picture, so it lives in Sound like a mic 
 
 A small thread decodes a little ahead (a few frames, about a second of sound) and the render and mixer
 threads take what's due on the media's own clock, so picture and sound stay together. Paused, the
-thread waits; asleep (its bloom off screen) the file is closed and every frame let go.
+thread waits; asleep (its bloom off screen) every frame is let go and the thread waits with its file and
+decoder open, so a bloom that comes back reuses them; after PARK_S asleep it closes them and ends.
 
 Controls (play, pause, restart, stop, seek) are safe to call from any thread: the control API, hotkeys
 and the right-click menu call them directly.
@@ -17,6 +18,7 @@ Hidden with its eye (still in a bloom on screen), a video pauses; shown again it
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections import deque
@@ -40,6 +42,7 @@ SYNC_S = 0.08  # sound further off the clock than this is skipped or waited for
 MAX_SIZE = (1920, 1920)  # bigger videos are shrunk while decoding: no canvas needs more
 STATES = ("playing", "paused", "stopped", "ended")
 SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+PARK_S = 60.0  # asleep this long, the decoder thread closes its file and decoder and ends (until then a wake reuses them)
 HW_DEVICES = ("d3d11va", "cuda", "dxva2", "videotoolbox", "vaapi")  # tried in this order, where FFmpeg has them
 
 
@@ -120,6 +123,38 @@ def _rewind(container) -> bool:
         return False
 
 
+class _Held:
+    """The open file and libvpx decoder of one decoder thread, kept from one play to the next: a wake, seek or
+    restart reuses them instead of opening the file and starting FFmpeg's decoder threads again. Only that
+    thread touches them, and it lets them go itself (release)."""
+
+    __slots__ = ("key", "container", "decoder")
+
+    def __init__(self):
+        self.key = None
+        self.container = None
+        self.decoder = None
+
+    def release(self) -> None:
+        container, self.container, self.decoder, self.key = self.container, None, None, None
+        if container is None:
+            return
+        container.close()
+        # Here (the decoder thread) the file's last reference should be the local above. Anything else holding it
+        # keeps FFmpeg's decoder threads alive until Python's cycle collector finds it: say what, once.
+        extra = sys.getrefcount(container) - 2
+        global _held_logged
+        if extra > 0 and not _held_logged:
+            _held_logged = True
+            import gc
+
+            kinds = sorted({type(r).__name__ for r in gc.get_referrers(container)})
+            log.info("media: a closed file is still held %d more time(s), by %s", extra, ", ".join(kinds))
+
+
+_held_logged = False
+
+
 def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:
     packed = pack_i420(frame, size)
     if packed is not None:
@@ -174,6 +209,7 @@ class MediaSource(Source):
         self.has_video = not is_sound_file(settings.get("path", ""))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._parked = False  # asleep: the decoder thread waits with its file open (PARK_S), decoding nothing
         self.status = "starting" if settings.get("path") else "no file"
         if not self.has_video and not settings.get("play_on_start"):
             self._state = "stopped"
@@ -213,6 +249,7 @@ class MediaSource(Source):
         return self._thread is threading.current_thread()
 
     def stop(self) -> None:
+        self._parked = False
         self._stop.set()
         with self._wake:
             self._wake.notify_all()
@@ -225,26 +262,28 @@ class MediaSource(Source):
             self._audio_s = 0.0
 
     def sleep(self) -> None:
+        """Let every frame go. The decoder thread keeps its file and decoder open for PARK_S (a bloom that
+        comes back soon reuses them: no new FFmpeg threads each time), then closes them and ends by itself.
+        Nothing waits for it here."""
         with self._lock:
             position = self._position()
             self._pause_clock()
             self._base = position
-        self._stop.set()
-        self._thread = None  # it closes its file and decoder and ends by itself; nothing waits for it
-        with self._wake:
-            self._wake.notify_all()
-        with self._lock:
+            self._parked = True
+            self._generation += 1  # the decoder stops where it is
             self._frames.clear()
             self._audio.clear()
             self._audio_s = 0.0
             self._shown = None
+            self._wake.notify_all()
 
     def wake(self) -> None:
         self._hidden = self._paused_by_hide = False  # the renderer says again if its eye is off
-        if self.settings.get("restart_on_show", True):
-            self._jump(0.0, "playing")
-        else:
-            with self._lock:
+        with self._lock:
+            self._parked = False
+            if self.settings.get("restart_on_show", True):
+                self._jump_locked(0.0, "playing")
+            else:
                 self._jump_locked(self._base % self.duration if self.duration else self._base, self._state)
         self.start()
 
@@ -457,32 +496,55 @@ class MediaSource(Source):
     # Decoder thread -------------------------------------------------------------------------------------
 
     def _run(self) -> None:
-        while not self._stop.is_set() and self._mine():
-            path = str(self.settings.get("path", ""))
-            with self._lock:
-                generation, start_at, speed = self._generation, self._start_at, self._speed
-            if not path:
-                self.status = "no file"
+        held = _Held()
+        try:
+            while not self._stop.is_set() and self._mine():
+                if self._parked and not self._park(held):
+                    return
+                self._play_once(held)
+        finally:
+            held.release()  # on this thread, after its last frame: nothing else ever touches them
+
+    def _park(self, held: _Held) -> bool:
+        """Asleep: wait with the file open. False once PARK_S passed (this thread is done; wake starts another)."""
+        with self._wake:
+            woke = self._wake.wait_for(lambda: not self._parked or self._stop.is_set() or not self._mine(), PARK_S)
+            if woke:
+                return True
+            if self._mine():
+                self._thread = None  # a wake from now on starts a new thread
+            return False
+
+    def _play_once(self, held: _Held) -> None:
+        path = str(self.settings.get("path", ""))
+        with self._lock:
+            generation, start_at, speed = self._generation, self._start_at, self._speed
+        if self._parked:
+            return
+        if not path:
+            self.status = "no file"
+            held.release()
+            self._wait_for_change(generation)
+            return
+        try:
+            self._decode(path, generation, start_at, speed, held)
+        except Exception as exc:
+            held.release()  # broken partway: open it fresh next time
+            log.warning("media %s could not be played: %s", path, exc)
+            started = self.status == "ok"
+            self.status = f"can't play: {exc}"[:80]
+            if started:  # it broke partway: end there, never start over by itself (only play or loop do)
+                with self._lock:
+                    if self._generation == generation:
+                        self._finished_at = self._position()
                 self._wait_for_change(generation)
-                continue
-            try:
-                self._decode(path, generation, start_at, speed)
-            except Exception as exc:
-                log.warning("media %s could not be played: %s", path, exc)
-                started = self.status == "ok"
-                self.status = f"can't play: {exc}"[:80]
-                if started:  # it broke partway: end there, never start over by itself (only play or loop do)
-                    with self._lock:
-                        if self._generation == generation:
-                            self._finished_at = self._position()
-                    self._wait_for_change(generation)
-                else:  # couldn't open it: try again in a bit (a file still copying, a drive waking up)
-                    self._wait_for_change(generation, timeout=5.0)
+            else:  # couldn't open it: try again in a bit (a file still copying, a drive waking up)
+                self._wait_for_change(generation, timeout=5.0)
 
     def _wait_for_change(self, generation: int, timeout: float | None = None) -> None:
         with self._wake:
-            self._wake.wait_for(lambda: self._stop.is_set() or self._generation != generation or not self._mine(),
-                                timeout)
+            self._wake.wait_for(lambda: self._stop.is_set() or self._generation != generation or not self._mine()
+                                or self._parked, timeout)
 
     def _current(self, generation: int) -> bool:
         return not self._stop.is_set() and self._generation == generation and self._mine()
@@ -499,14 +561,21 @@ class MediaSource(Source):
                 log.info("media %s: hardware decoding unavailable (%s)", path, exc)
         return av.open(path)
 
-    def _decode(self, path: str, generation: int, start_at: float, speed: float = 1.0) -> None:
+    def _decode(self, path: str, generation: int, start_at: float, speed: float = 1.0,
+                held: _Held | None = None) -> None:
         import av
 
         if not Path(path).exists():
             raise FileNotFoundError("file not found")
+        own = held is None
+        held = held or _Held()
+        key = (path, bool(self.settings.get("hw_decode")))
+        if held.key != key:
+            held.release()
+        held.key = key
         offset = 0.0  # added to each pass's times when looping, so the timeline keeps running
-        container = None  # kept open from one pass to the next: looping seeks back to the start
-        decoder = None  # libvpx (see-through webm): made once, flushed for each new pass
+        # The file stays open from one pass (and one play) to the next: it seeks back to the start instead.
+        container, decoder = held.container, held.decoder  # decoder: libvpx (see-through webm), flushed each pass
         try:
             while self._current(generation):
                 if self.state == "stopped":  # waiting for play: just learn what the file is
@@ -519,10 +588,12 @@ class MediaSource(Source):
                     self._wait_for_change(generation)
                     return
                 if container is None:
-                    container = self._open(path)
+                    container = held.container = self._open(path)
                 elif not _rewind(container):  # the next pass: from the top of the open file
-                    container.close()
-                    container = self._open(path)
+                    held.decoder = decoder = None
+                    held.release()
+                    held.key = key
+                    container = held.container = self._open(path)
                 video = container.streams.video[0] if container.streams.video else None
                 audio = container.streams.audio[0] if container.streams.audio else None
                 if video is None and audio is None:
@@ -536,9 +607,10 @@ class MediaSource(Source):
                 if video is not None:
                     name = video.codec_context.name
                     if decoder is not None:
-                        decoder.flush_buffers()  # the next pass: same decoder and threads, nothing left over
+                        if decoder.is_open:
+                            decoder.flush_buffers()  # the next pass: same decoder and threads, nothing left over
                     elif name in LIBVPX and LIBVPX[name] in av.codecs_available:
-                        decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps see-through parts
+                        decoder = held.decoder = av.CodecContext.create(LIBVPX[name], "r")  # keeps see-through
                         # FFmpeg's default is a thread per CPU thread (17 on the user's Ryzen), every loop
                         decoder.thread_count = decode_threads(video.codec_context.width,
                                                               video.codec_context.height)
@@ -603,12 +675,12 @@ class MediaSource(Source):
                     return
                 offset += length
         finally:
-            # Only this thread ever touches its decoder and file, and it lets them go here, decoder first, after
-            # its last frame is decoded: nothing frees them while FFmpeg is still working on them. Pictures it
-            # handed over are copies of their own (core/frames.owned), so none points back into the decoder.
-            decoder = None
-            if container is not None:
-                container.close()
+            # Only this thread ever touches its decoder and file. They stay in `held` for the next play; the
+            # thread lets them go itself when it ends (_run). Pictures it handed over are copies of their own
+            # (core/frames.owned), so none points back into the decoder.
+            container = decoder = None
+            if own:
+                held.release()
 
     def _push_frame(self, t: float, picture: tuple[np.ndarray, str], generation: int) -> bool:
         pixels, order = picture
