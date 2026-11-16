@@ -39,7 +39,7 @@ and its keys go dark until SprigCast is back. A quiet connection is checked ever
 1. Double-click `com.sprigcast.sprigcast.streamDeckPlugin` to install it (Stream Deck 7.1 or newer).
 2. Drag any SprigCast key onto your Stream Deck. That's it: with SprigCast open, the keys connect by themselves.
 
-While its API runs (on by default: Settings → Connections), SprigCast keeps its port and password in
+While its API runs (on by default: Settings → Connections), SprigCast keeps its port and a key for this PC (not the password) in
 `%LOCALAPPDATA%\Slothbloom\SprigCast\api.json`, and the plugin reads them there, the way Elgato's OBS plugin
 reads obs-websocket's settings. If OBS holds port 4455, SprigCast takes the next free port and the file says so.
 The plugin looks for the file every 2 seconds, so keys come alive as soon as SprigCast opens.
@@ -47,8 +47,10 @@ The plugin looks for the file every 2 seconds, so keys come alive as soon as Spr
 **Key style** in any key's settings switches every key's look: Canopy (dark green with a mint glow), Colour (each kind of key
 its own colour) or Graphite (dark and plain, mint when on).
 
-To connect to a SprigCast elsewhere, type a port and password under **Connection** in any key's settings (every
-key shares them); they win over the file. The line there says whether SprigCast is found.
+Not connecting by itself? In SprigCast press **Settings → Connections → Pair a device** and type the 6-digit code
+under **Pair code** in any key's settings: the plugin trades it for its own key and keeps it (every key shares it).
+A port and password typed under **Connection** still work and win over the file. The line there says whether
+SprigCast is found.
 
 ## Build
 

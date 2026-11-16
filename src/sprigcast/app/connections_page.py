@@ -25,12 +25,14 @@ from sprigcast.app.live_stage import heading
 from sprigcast.app.control_server import (
     ENABLED,
     LAN,
+    LOCAL_KEY,
     NATIVE_PATH,
     OBS_DOOR,
     PASSWORD,
     PORT,
     USE_PASSWORD,
     WEB_DOOR,
+    save_secret,
     saved_settings,
 )
 from sprigcast.control.protocol import new_password
@@ -204,6 +206,8 @@ class ConnectionsPage(QWidget):
         self.enabled.toggled.connect(block.setEnabled)
         block.setEnabled(self.enabled.isChecked())
 
+        pair_card = self._pair_card()
+
         devices, dbox = _card("Who can connect")
         self.lan = QCheckBox("Let phones and other computers on my network connect")
         self.lan.setChecked(s["lan"])
@@ -233,9 +237,114 @@ class ConnectionsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(20)
-        for card in (main, devices):
+        for card in (main, pair_card, devices):
             layout.addWidget(card)
+        self._saved_password = s["password"]
         self._refresh()
+
+    # Pair a device ---------------------------------------------------------------------
+
+    def _pair_card(self) -> QFrame:
+        """Pair a device: a 6-digit code for 2 minutes instead of the password, and the devices paired so far."""
+        card, box = _card("Paired devices")
+        line = QHBoxLayout()
+        line.setSpacing(16)
+        self.pair_button = _pill("Pair a device")
+        self.pair_button.clicked.connect(self._pair)
+        line.addWidget(self.pair_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.pair_code = QLabel()
+        self.pair_code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.pair_code.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-family: Consolas, 'Cascadia Mono', monospace;"
+                                     " font-size: 26px; font-weight: 700; letter-spacing: 4px;")
+        self.pair_code.hide()
+        line.addWidget(self.pair_code, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.pair_note = QLabel()
+        self.pair_note.setStyleSheet(theme.MUTED_STYLE)
+        line.addWidget(self.pair_note, 1, Qt.AlignmentFlag.AlignVCenter)
+        box.addLayout(line)
+        self.device_rows = QVBoxLayout()
+        self.device_rows.setSpacing(8)
+        box.addLayout(self.device_rows)
+        self._pair_timer = QTimer(self, interval=1000)
+        self._pair_timer.timeout.connect(self._pair_tick)
+        self._paired_count = len(self._pairing.devices) if self._pairing else 0
+        self._fill_devices()
+        return card
+
+    @property
+    def _pairing(self):
+        return getattr(self.server, "pairing", None)
+
+    def _pair(self) -> None:
+        if self._pairing is None:
+            return
+        code = self._pairing.start()
+        self._paired_count = len(self._pairing.devices)
+        self.pair_code.setText(f"{code[:3]} {code[3:]}")
+        self.pair_code.show()
+        self.pair_button.setText("New code")
+        self._pair_timer.start()
+        self._pair_tick()
+
+    def _pair_tick(self) -> None:
+        pairing = self._pairing
+        if pairing is None:
+            return
+        if len(pairing.devices) > self._paired_count:  # an app used the code
+            self._paired_count = len(pairing.devices)
+            self._fill_devices()
+            self._pair_done(f"Paired with {pairing.devices[-1].name}")
+            return
+        left = pairing.seconds_left()
+        if not left:
+            self._pair_done("Code ran out")
+            return
+        self.pair_note.setText(f"Type it in the app · {left // 60}:{left % 60:02d}")
+
+    def _pair_done(self, note: str) -> None:
+        self._pair_timer.stop()
+        self.pair_code.hide()
+        self.pair_button.setText("Pair a device")
+        self.pair_note.setText(note)
+
+    def _fill_devices(self) -> None:
+        while self.device_rows.count():
+            item = self.device_rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        pairing = self._pairing
+        self.pair_button.setEnabled(pairing is not None)
+        devices = sorted(pairing.devices, key=lambda d: d.name.lower()) if pairing else []
+        if not devices:
+            none = QLabel("None yet")
+            none.setStyleSheet(theme.MUTED_STYLE)
+            self.device_rows.addWidget(none)
+        for device in devices:
+            row = QFrame()
+            row.setObjectName("deviceRow")
+            row.setStyleSheet(f"#deviceRow {{ background: {theme.PANEL}; border-radius: 14px; }}")
+            line = QHBoxLayout(row)
+            line.setContentsMargins(18, 8, 10, 8)
+            line.setSpacing(12)
+            name = QLabel(device.name)
+            name.setStyleSheet(f"color: {theme.TEXT_BRIGHT};")
+            line.addWidget(name, 1)
+            added = QLabel(device.added)
+            added.setStyleSheet(theme.MUTED_STYLE)
+            line.addWidget(added)
+            remove = _pill("Remove")
+            remove.setToolTip("It can't connect any more (pair it again to bring it back)")
+            remove.clicked.connect(lambda _=False, d=device.id: self._remove_device(d))
+            line.addWidget(remove)
+            self.device_rows.addWidget(row)
+
+    def _remove_device(self, device_id: str) -> None:
+        pairing = self._pairing
+        key = next((d.key for d in pairing.devices if d.id == device_id), "") if pairing else ""
+        if pairing is not None and pairing.remove(device_id):
+            self.server.drop_key(key)
+            self._paired_count = len(self._pairing.devices)
+            self._fill_devices()
 
     def _reveal(self, on: bool) -> None:
         self.password.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password)
@@ -274,7 +383,11 @@ class ConnectionsPage(QWidget):
         q.setValue(ENABLED, self.enabled.isChecked())
         q.setValue(PORT, self.port.value())
         q.setValue(USE_PASSWORD, self.use_password.isChecked())
-        q.setValue(PASSWORD, self.password.text().strip() or new_password())
+        password = self.password.text().strip() or new_password()
+        save_secret(PASSWORD, password)  # encrypted for this Windows user
+        if password != self._saved_password:  # apps on this PC get a new key with the new password
+            q.remove(LOCAL_KEY)
+            self._saved_password = password
         q.setValue(LAN, self.lan.isChecked())
         q.setValue(OBS_DOOR, self.obs_door.isChecked())
         q.setValue(WEB_DOOR, self.web_door.isChecked())

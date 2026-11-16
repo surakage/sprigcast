@@ -14,10 +14,11 @@
 		</select></label>
 		<details id="connection">
 			<summary>Connection</summary>
+			<label class="row"><span>Pair code</span><input id="pair" inputmode="numeric" maxlength="7" placeholder="From Pair a device" /></label>
 			<label class="row"><span>Port</span><input id="port" type="number" min="1" max="65535" placeholder="Automatic" /></label>
 			<label class="row"><span>Password</span><input id="password" type="password" placeholder="Automatic" /></label>
 			<p class="note" id="status"></p>
-			<p class="note">Leave both empty: the plugin finds SprigCast on this PC by itself and connects when it opens.</p>
+			<p class="note">Leave these empty on this PC: it connects by itself. Elsewhere, type a code from SprigCast → Settings → Connections → Pair a device.</p>
 		</details>
 		<script src="settings.js"></script>
 	</body>

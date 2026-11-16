@@ -93,9 +93,10 @@ function showGlobals() {
 	document.getElementById("port").value = globals.port ?? "";
 	document.getElementById("password").value = globals.password ?? "";
 	document.getElementById("style").value = globals.style ?? "canopy";
+	document.getElementById("pair").value = globals.pair ?? "";
 }
 
-for (const id of ["port", "password", "style"]) {
+for (const id of ["port", "password", "style", "pair"]) {
 	const save = (ev) => {
 		if (globals[id] === ev.target.value) return;
 		globals[id] = ev.target.value;

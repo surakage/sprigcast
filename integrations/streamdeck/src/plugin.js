@@ -18,8 +18,11 @@ function refreshConnection() {
 	sprigcast.want(settingsLoaded && visible.size > 0);
 }
 
+let globals = {};
+
 function useGlobalSettings(settings = {}) {
-	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
+	globals = settings;
+	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "", pair: settings.pair ?? "" });
 	settingsLoaded = true;
 	refreshConnection();
 	const style = STYLES.has(settings.style) ? settings.style : "canopy";
@@ -346,6 +349,15 @@ sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {}))
 sprigcast.on("connection", () => all.forEach((a) => a.repaintAll().catch(() => {})));
 sprigcast.on("refused", (why) => streamDeck.logger.warn(`SprigCast refused the connection: ${why}`));
 sprigcast.on("status", () => sendStatus());
+// Paired with a code: keep this device's own key as the password (the code only works once).
+sprigcast.on("paired", (key) => {
+	globals = { ...globals, password: key, pair: "" };
+	streamDeck.settings.setGlobalSettings(globals).catch(() => {});
+});
+sprigcast.on("pairFailed", () => {
+	globals = { ...globals, pair: "" };
+	streamDeck.settings.setGlobalSettings(globals).catch(() => {});
+});
 
 await streamDeck.connect();
 await loadGlobalSettings();

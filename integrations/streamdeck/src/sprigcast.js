@@ -54,7 +54,8 @@ export class SprigCast extends EventEmitter {
 		super();
 		this.setPort = Number(port) || 0; // 0: look on AUTO_PORTS
 		this.port = this.setPort || AUTO_PORTS[0];
-		this.password = password; // typed in the key settings ("" = from api.json)
+		this.password = password; // typed in the key settings ("" = from api.json), or the key pairing gave
+		this.pairCode = ""; // a code from SprigCast → Settings → Connections → Pair a device, used once
 		this.info = info; // api.json's path ("" = don't look)
 		this.host = host;
 		this.WebSocketClass = WebSocketClass;
@@ -86,12 +87,14 @@ export class SprigCast extends EventEmitter {
 	}
 
 	/** port 0 or blank: look on AUTO_PORTS. */
-	configure({ port, password }) {
+	configure({ port, password, pair }) {
 		const wanted = Number(port) || 0;
-		const changed = wanted !== this.setPort || (password ?? "") !== this.password;
+		const code = String(pair ?? "").replace(/\D/g, "");
+		const changed = wanted !== this.setPort || (password ?? "") !== this.password || (code && code !== this.pairCode);
 		this.setPort = wanted;
 		if (wanted) this.port = wanted;
 		this.password = password ?? "";
+		this.pairCode = code;
 		if (changed && this.wanted) {
 			this.close();
 			this._tries = 0;
@@ -173,7 +176,11 @@ export class SprigCast extends EventEmitter {
 		clearTimeout(this._watch);
 		this._watch = null;
 		let wait = null;
-		if (code === 4009) {
+		if (code === 4011) {
+			this.pairCode = ""; // used up or ran out: a new one is needed
+			this.emit("pairFailed");
+			this._say("That pairing code didn't work: press Pair a device in SprigCast for a new one");
+		} else if (code === 4009) {
 			this.emit("refused", reason || "Wrong password.");
 			this._say("Wrong password: check it in SprigCast → Settings → Connections");
 			this._tries = RETRY_MS.length - 1; // wait long: it won't work until the password changes
@@ -230,6 +237,12 @@ export class SprigCast extends EventEmitter {
 			socket.removeAllListeners();
 			socket.on("error", () => {});
 			socket.close();
+		} else if (message.hello && this.pairCode) {
+			this.socket.send(JSON.stringify({ pair: this.pairCode, name: "Stream Deck", events: EVENTS }));
+		} else if (message.paired) {
+			this.password = String(message.paired.key ?? ""); // this device's own key from now on
+			this.pairCode = "";
+			this.emit("paired", this.password);
 		} else if (message.hello) {
 			const auth = message.hello.auth;
 			const password = this.password || this._found?.password || "";

@@ -6,7 +6,8 @@ only open a link (a Stream Deck "Website" button, a phone shortcut, curl).
     POST http://127.0.0.1:4455/api/filter.set              fields as a JSON body (query fields too)
 
 The password goes in an "Authorization: Bearer <password>" header, or ?password=… for buttons that
-can't send headers. It shares the WebSocket's port: app/control_server.py looks at each new
+can't send headers. A paired device's key (Pair a device) works the same way, and
+GET /api/pair?code=123456&name=Streamer.bot trades the code shown in SprigCast for that key. It shares the WebSocket's port: app/control_server.py looks at each new
 connection and hands WebSocket upgrades to the WebSocket server and plain requests here.
 
 Safety: off unless switched on in Settings → Connections, always needs the password, and refuses
@@ -17,12 +18,12 @@ visit can't drive SprigCast behind your back.
 from __future__ import annotations
 
 import json
-import secrets
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from sprigcast.control.native import NativeApi, answer
+from sprigcast.control.pairing import matches
 
 MAX_REQUEST = 64 * 1024
 LOCAL_ORIGINS = ("null", "http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost")
@@ -86,21 +87,41 @@ def _value(text: str) -> Any:
         return text
 
 
+def _pair(request: Request, pairing) -> tuple[int, dict[str, Any]]:
+    """/api/pair?code=123456&name=Streamer.bot: the code from Pair a device, once, for this device's own key."""
+    fields = dict(request.query)
+    if request.body:
+        try:
+            body = json.loads(request.body.decode("utf-8"))
+            if isinstance(body, dict):
+                fields.update({k: str(v) for k, v in body.items()})
+        except ValueError:
+            return _error("bad_request", "The body must be JSON.")
+    device = pairing.redeem(fields.get("code", ""), fields.get("name", "")) if pairing is not None else None
+    if device is None:
+        return _error("auth", "Wrong or expired pairing code. Press Pair a device in SprigCast → Settings → "
+                              "Connections for a new one.")
+    return 200, {"ok": True, "result": {"key": device.key, "name": device.name}}
+
+
 def _error(code: str, message: str) -> tuple[int, dict[str, Any]]:
     return ERROR_STATUS.get(code, 400), {"ok": False, "error": {"code": code, "message": message}}
 
 
-def handle(api: NativeApi, request: Request, *, enabled: bool, password: str) -> tuple[int, dict[str, Any]]:
-    """(HTTP status, JSON answer) for one request."""
+def handle(api: NativeApi, request: Request, *, enabled: bool, password: str, keys: list[str] | None = None,
+           pairing=None) -> tuple[int, dict[str, Any]]:
+    """(HTTP status, JSON answer) for one request. A paired device's key works wherever the password does."""
     if request.method == "OPTIONS":
         return _error("off", "Web pages on other sites can't use SprigCast's web links.")
     if not request.path.rstrip("/").startswith("/api"):
         return _error("not_found", "Use /api/<action>, like /api/bloom.show?bloom=BRB.")
-    if not enabled:
-        return _error("off", "Web links are off: turn them on in SprigCast → Settings → Connections.")
     origin = request.headers.get("origin")
     if origin is not None and not origin.startswith(LOCAL_ORIGINS):
         return _error("off", "Requests from web pages on other sites are refused.")
+    if request.path.rstrip("/") == "/api/pair":  # works with web links off too: the key also opens the WebSocket
+        return _pair(request, pairing)
+    if not enabled:
+        return _error("off", "Web links are off: turn them on in SprigCast → Settings → Connections.")
     if not password:
         return _error("off", "Web links need a password: turn on \"Ask for a password\" in Settings → Connections.")
     given = request.query.pop("password", None)
@@ -108,7 +129,7 @@ def handle(api: NativeApi, request: Request, *, enabled: bool, password: str) ->
     if auth.lower().startswith("bearer "):
         given = auth[7:].strip()
     given = given or request.headers.get("x-sprigcast-password")
-    if not given or not secrets.compare_digest(given.encode(), password.encode()):
+    if not given or not matches(given, [password, *(keys or [])]):
         return _error("auth", "Wrong or missing password.")
     if request.method not in ("GET", "POST"):
         return 405, {"ok": False, "error": {"code": "bad_request", "message": "Use GET or POST."}}

@@ -24,7 +24,9 @@ from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServe
 
 from sprigcast.control import web
 from sprigcast.control.api import ControlApi
+from sprigcast.control import secret_store
 from sprigcast.control.native import NativeApi, NativeSession
+from sprigcast.control.pairing import Pairing
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
 from sprigcast.core.quiet import Every
 
@@ -41,6 +43,8 @@ PASSWORD = "control/password"
 USE_PASSWORD = "control/use_password"
 WEB_DOOR = "control/web_door"  # plain web links /api/<action> (needs the password)
 OBS_DOOR = "control/obs_door"  # also accept apps made for OBS (the frozen compatibility door)
+DEVICES = "control/devices"  # paired devices and their keys (Pair a device), encrypted like the password
+LOCAL_KEY = "control/local_key"  # the key api.json hands to apps on this PC (not the password), encrypted
 LAN = "control/lan"  # let phones and other PCs connect, not just apps on this PC
 DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use another if OBS runs too)
 NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
@@ -48,12 +52,38 @@ WEB_TIMEOUT_MS = 5000  # a connection that hasn't said what it is by then is dro
 WATCH_MS = 500  # how often stream and record states are compared while an app is connected
 
 
+def _secret(key: str, make=None) -> str:
+    """A secret saved encrypted for this Windows user (secret_store). A plain one from before is
+    encrypted now; a missing or unreadable one is made anew when `make` is given."""
+    q = QSettings()
+    saved = str(q.value(key, "") or "")
+    value = secret_store.unprotect(saved)
+    if value and not secret_store.is_protected(saved) and secret_store.available():
+        q.setValue(key, secret_store.protect(value))  # plain text from an older SprigCast: encrypt it now
+    if not value and make is not None:
+        value = make()
+        q.setValue(key, secret_store.protect(value))
+    return value
+
+
+def save_secret(key: str, value: str) -> None:
+    QSettings().setValue(key, secret_store.protect(value))
+
+
+def load_password() -> str:
+    return _secret(PASSWORD, new_password)
+
+
+def local_key() -> str:
+    """What api.json hands to apps on this PC: its own key, so the file never holds the password."""
+    import secrets
+
+    return _secret(LOCAL_KEY, lambda: "sc_local_" + secrets.token_urlsafe(24))
+
+
 def saved_settings() -> dict[str, Any]:
     q = QSettings()
-    password = str(q.value(PASSWORD, "") or "")
-    if not password:
-        password = new_password()
-        q.setValue(PASSWORD, password)
+    password = load_password()
     return {
         "enabled": q.value(ENABLED, True, type=bool),  # on: this PC's apps (Stream Deck) connect by themselves
         "port": q.value(PORT, DEFAULT_PORT, type=int),
@@ -251,6 +281,19 @@ class ControlServer(QObject):
         self._running: tuple | None = None  # (port, password, lan, obs door) it listens with
         self.info_path: Path | None = None  # where apps on this PC find the port and password (api.json)
         self.on_clients_changed = lambda count: None
+        self.pairing = Pairing(Pairing.devices_from_json(_secret(DEVICES)),
+                               on_change=lambda: save_secret(DEVICES, self.pairing.to_json()))
+        self.local_key = ""  # set by start() while a password is in use
+
+    def drop_key(self, key: str) -> None:
+        """A paired device was removed: close its open connections too."""
+        for socket, session in self._natives():
+            if key and session.key == key:
+                socket.close(QWebSocketProtocol.CloseCode(4009), "This device was removed in SprigCast.")
+
+    def keys(self) -> list[str]:
+        """Everything that works like the password: paired devices' keys and this PC's api.json key."""
+        return [*self.pairing.keys(), *([self.local_key] if self.local_key else [])]
 
     def _obs(self) -> list[tuple[QWebSocket, Session]]:
         return [(k, s) for k, s in self.sessions.items() if isinstance(s, Session)]
@@ -263,6 +306,7 @@ class ControlServer(QObject):
     def start(self, port: int, password: str = "", lan: bool = False) -> bool:
         self.stop()
         self.password = password
+        self.local_key = local_key() if password else ""
         # One port for both: a plain TCP server looks at each new connection's first lines and hands
         # WebSocket upgrades to the WebSocket server (which never listens itself) and web links to web.py.
         self.tcp = QTcpServer(self)
@@ -278,15 +322,16 @@ class ControlServer(QObject):
         self.tcp.newConnection.connect(self._incoming)
         log.info("control: listening on %s:%d%s", "all addresses" if lan else "localhost", port,
                  " with a password" if password else " without a password")
-        self._write_info(password)
+        self._write_info(self.local_key)
         return True
 
-    def _write_info(self, password: str) -> None:
-        """api.json next to SprigCast's settings: the port and password, so an app on this PC (the Stream Deck
-        plugin) connects without anyone typing them, like Wave Link's ws-info.json. Gone again when the API stops."""
+    def _write_info(self, key: str) -> None:
+        """api.json next to SprigCast's settings (this Windows user's own folder): the port and a key, so an app on
+        this PC (the Stream Deck plugin) connects without anyone typing them, like Wave Link's ws-info.json. The key
+        is this PC's own, not the password, and changes with the password. Gone again when the API stops."""
         if self.info_path is None:
             return
-        info = {"app": "SprigCast", "port": self.port, "path": NATIVE_PATH, "password": password}
+        info = {"app": "SprigCast", "port": self.port, "path": NATIVE_PATH, "password": key}
         try:
             self.info_path.parent.mkdir(parents=True, exist_ok=True)
             self.info_path.write_text(json.dumps(info, indent=2), encoding="utf-8")
@@ -367,7 +412,8 @@ class ControlServer(QObject):
             return  # the body is still arriving
         sock.setProperty("sprigcast_door", "web")
         sock.readAll()
-        status, body = web.handle(self.native, request, enabled=self.web_door, password=self.password)
+        status, body = web.handle(self.native, request, enabled=self.web_door, password=self.password,
+                                  keys=self.keys() if self.password else [], pairing=self.pairing)
         log.info("control: web link %s %s -> %d", request.method, request.path, status)
         sock.write(web.response(status, body))
         sock.disconnectFromHost()
@@ -383,10 +429,12 @@ class ControlServer(QObject):
                 socket.deleteLater()
                 continue
             if native:
-                session: Session | NativeSession = NativeSession(api=self.native, password=self.password)
+                session: Session | NativeSession = NativeSession(api=self.native, password=self.password,
+                                                                 keys=self.keys(), pairing=self.pairing)
                 first = not self._natives()
             else:
-                session = Session(handler=self.api.handle, password=self.password, frame_seconds=self.frame_seconds)
+                session = Session(handler=self.api.handle, password=self.password, keys=self.keys(),
+                                  frame_seconds=self.frame_seconds)
                 first = not self._obs()
             self.sessions[socket] = session
             socket.textMessageReceived.connect(lambda text, s=socket: self._received(s, text))

@@ -158,6 +158,7 @@ class Session:
 
     handler: Handler
     password: str = ""
+    keys: list[str] = field(default_factory=list)  # paired devices' keys (Pair a device) work like the password
     frame_seconds: float = 1 / 60
     identified: bool = False
     subscriptions: int = Sub.ALL
@@ -223,8 +224,12 @@ class Session:
             return
         if self.password:
             given = d.get("authentication")
-            expected = auth_string(self.password, self.salt, self.challenge)
-            if not isinstance(given, str) or not secrets.compare_digest(given, expected):
+            right = False
+            for secret in [self.password, *self.keys]:
+                if isinstance(given, str) and secret and secrets.compare_digest(
+                        given, auth_string(secret, self.salt, self.challenge)):
+                    right = True
+            if not right:
                 yield Close(CloseCode.AUTHENTICATION_FAILED, "Wrong password.")
                 return
         self._set_subscriptions(d)

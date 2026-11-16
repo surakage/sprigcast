@@ -119,7 +119,7 @@ def test_every_app_hears_sprigcast_closing():
 
 
 def test_api_json_lets_apps_on_this_pc_connect_by_themselves(tmp_path):
-    """While the API runs, api.json holds its port and password (the Stream Deck plugin reads it); gone when it stops."""
+    """While the API runs, api.json holds its port and a key (the Stream Deck plugin reads it); gone when it stops."""
     import json as _json
 
     from test_control_api import _qt
@@ -134,7 +134,9 @@ def test_api_json_lets_apps_on_this_pc_connect_by_themselves(tmp_path):
     assert server.start(0, "leafy")
     try:
         info = _json.loads(server.info_path.read_text(encoding="utf-8"))
-        assert info == {"app": "SprigCast", "port": server.port, "path": "/sprigcast", "password": "leafy"}
+        # This PC's own key, never the password (PC test 2026-11-15: the password sat in plain text).
+        assert info == {"app": "SprigCast", "port": server.port, "path": "/sprigcast", "password": server.local_key}
+        assert server.local_key.startswith("sc_local_") and server.local_key in server.keys()
     finally:
         server.stop()
     assert not server.info_path.exists()
