@@ -706,19 +706,20 @@ class SceneCollection(BaseModel):
         """Part layouts in the order to render them: each after the layouts it draws. Cycles are skipped."""
         order: list[Scene] = []
         state: dict[str, str] = {}
-
-        def visit(part: Scene) -> None:
-            if state.get(part.id) in ("done", "busy"):
-                return
-            state[part.id] = "busy"
-            for inner in self.inner_shapes(part):
-                visit(inner)
-            state[part.id] = "done"
-            order.append(part)
-
         for part in self.part_scenes():
-            visit(part)
+            self._visit_parts(part, state, order)
         return order
+
+    def _visit_parts(self, part: Scene, state: dict[str, str], order: list[Scene]) -> None:
+        """part_order's walk. A method, not a nested function: one that calls itself is a reference cycle
+        that Python's cleanup has to find, and part_order runs every frame."""
+        if state.get(part.id) in ("done", "busy"):
+            return
+        state[part.id] = "busy"
+        for inner in self.inner_shapes(part):
+            self._visit_parts(inner, state, order)
+        state[part.id] = "done"
+        order.append(part)
 
     def add_shape(self, part: Scene, canvas_id: str, new_id: str,
                   sizes: dict[str, tuple[int, int]] | None = None) -> Scene:

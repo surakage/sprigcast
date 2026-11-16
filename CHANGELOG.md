@@ -115,6 +115,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   every 10 minutes in the 2-hour soak (and made a late frame, often on a bloom change) walks only what is new. When the
   show ends, everything is looked at once so nothing from it is kept. Start-up's one-time pages go back to Windows
   20 s after SprigCast opens.
+- After a show: the at-rest clean-up runs once when several outputs stop together (it ran three times), and the full
+  look through Python's objects (191 ms, 22 late preview frames after the soak) waits until SprigCast is minimized.
+  Two walks that ran every frame no longer leave reference cycles behind, so Python's cleanups have less to find.
+- Death count's number flip moves pictures of the numbers instead of cutting text every frame (15-24 ms a frame on a
+  busy PC in the soak).
 - Turning the virtual camera on sets it up the first time (one Windows prompt, no trip to Repair), checks Windows'
   camera privacy first and, when it blocks desktop apps, says so and offers to open the right Settings page.
 - A sprig nothing has shown for a few seconds lets go of its full-canvas texture (they stayed until SprigCast closed),

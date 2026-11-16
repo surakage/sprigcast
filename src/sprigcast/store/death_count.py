@@ -38,7 +38,7 @@ from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 4, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 5, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down."}
 
 KIND = "death_count"
@@ -50,6 +50,7 @@ MOST = 999_999
 ASSETS = Path(__file__).resolve().parent / "assets" / "death_count"
 STONE = (400, 520)  # stone.svg
 PLAQUE = (84, 150, 232, 252)  # the sunken panel the words are engraved in
+NUMERAL_BOX = (44, 200, 312, 220)  # around the number's spot, with room for its pop and edge
 MOUND = (600, 170)  # mound.svg
 MOUND_LIP = 44  # where the stone comes out of the mound, in mound.svg's units
 
@@ -246,7 +247,7 @@ class DeathCountSource(Source):
     def paint(self, job: _Job, t: float):
         """The death count at t seconds into this trip, as a QImage."""
         from PySide6.QtCore import QPointF, QRectF, Qt
-        from PySide6.QtGui import QColor, QFont, QImage, QPainter
+        from PySide6.QtGui import QColor, QImage, QPainter
 
         image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(Qt.GlobalColor.transparent)
@@ -288,10 +289,10 @@ class DeathCountSource(Source):
             p.rotate(shake * 0.4)
             p.translate(-STONE_W / 2, -stone_h)
             flipping = job.flip_at >= 0 and job.flip_at <= t < job.flip_at + FLIP
-            if flipping:  # the number is moving: engrave it live
+            if flipping:  # the number is moving: the blank stone, then the numbers as pictures
+                p.drawImage(QRectF(0, 0, STONE_W, stone_h), self._plate(k))
                 p.scale(k, k)
-                draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
-                self._engrave(p, job, t, QFont, QColor, QRectF, Qt)
+                self._flip_numbers(p, job, t, k, QRectF)
             else:  # the stone as it stands, engraved once: text is the slowest thing QPainter draws
                 stone = self._stone(job, t, k)
                 p.drawImage(QRectF(0, 0, STONE_W, stone_h), stone)
@@ -313,71 +314,108 @@ class DeathCountSource(Source):
         return image
 
     def _stone(self, job: _Job, t: float, k: float):
-        """The stone with its label and number engraved, drawn once per (label, number) and reused."""
-        from PySide6.QtCore import QRectF, Qt
-        from PySide6.QtGui import QColor, QFont, QImage, QPainter
+        """The stone with its label and number engraved, put together once per (label, number) and reused."""
+        from PySide6.QtCore import QRectF
 
         shown = self._showing(job, t)
-        label = str(self.settings.get("label", "Deaths") or "")
-        key = (label, shown)
+        key = (self._label(), shown)
         cached = getattr(self, "_stone_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        image = QImage(round(STONE[0] * k), round(STONE[1] * k), QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)
-        p = QPainter(image)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        image = self._plate(k).copy()
+        p = _painter(image)
         p.scale(k, k)
-        draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
-        still = _Job(shown, shown)  # no flip: just this number, engraved
-        self._engrave(p, still, 0.0, QFont, QColor, QRectF, Qt)
+        self._flip_numbers(p, _Job(shown, shown), 0.0, k, QRectF)
         p.end()
         self._stone_cache = (key, image)
         return image
 
-    def _engrave(self, p, job: _Job, t: float, QFont, QColor, QRectF, Qt) -> None:
-        """The label and the number, cut into the plaque (in stone.svg's units)."""
-        x, y, w, h = PLAQUE
-        label = str(self.settings.get("label", "Deaths") or "").strip().upper()
+    def _label(self) -> str:
+        return str(self.settings.get("label", "Deaths") or "").strip().upper()
+
+    def _plate(self, k: float):
+        """The stone with only its label cut in: drawn once per label."""
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QColor, QFont, QImage
+
+        label = self._label()
+        cached = getattr(self, "_plate_cache", None)
+        if cached is not None and cached[0] == label:
+            return cached[1]
+        image = QImage(round(STONE[0] * k), round(STONE[1] * k), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        p = _painter(image)
+        p.scale(k, k)
+        draw_art(p, "stone.svg", QRectF(0, 0, *STONE), k)
         if label:
+            x, y, w, _h = PLAQUE
             font = QFont("Segoe UI")
             font.setPixelSize(30)
             font.setWeight(QFont.Weight.Bold)
             font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 5)
             p.setFont(font)
-            box = QRectF(x, y + 20, w, 44)
-            _cut(p, box, label, QColor, Qt, 30)
+            _cut(p, QRectF(x, y + 20, w, 44), label, QColor, Qt, 30)
             p.setPen(QColor(111, 106, 93, 140))
             p.drawLine(int(x + 46), int(y + 76), int(x + w - 46), int(y + 76))
+        p.end()
+        self._plate_cache = (label, image)
+        self._stone_cache = None
+        return image
 
-        def number(value: int, size: float, alpha: float, dy: float) -> None:
-            text = f"{value:,}"
-            font = QFont("Segoe UI")
-            fit = min(size, size * 4 / max(4, len(text)))  # long numbers shrink to fit the plaque
-            font.setPixelSize(max(10, round(fit)))
-            font.setWeight(QFont.Weight.Black)
-            p.setFont(font)
+    def _numeral(self, value: int, k: float):
+        """A number cut in stone, as a picture of NUMERAL_BOX (stone units) at k pixels per unit.
+
+        The flip used to cut its two numbers as text every frame: 2-4 ms a frame here, and 15-24 ms on a
+        PC busy with games and other apps. Now each number is cut once and the flip moves pictures."""
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QColor, QFont, QImage
+
+        cache = self.__dict__.setdefault("_numerals", {})
+        if value in cache:
+            return cache[value]
+        bx, by, bw, bh = NUMERAL_BOX
+        image = QImage(round(bw * k), round(bh * k), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        p = _painter(image)
+        p.scale(k, k)
+        x, y, w, h = PLAQUE
+        text = f"{value:,}"
+        fit = min(140, 140 * 4 / max(4, len(text)))  # long numbers shrink to fit the plaque
+        font = QFont("Segoe UI")
+        font.setPixelSize(max(10, round(fit)))
+        font.setWeight(QFont.Weight.Black)
+        p.setFont(font)
+        _cut(p, QRectF(x - bx, y + 84 - by, w, h - 100), text, QColor, Qt, fit)
+        p.end()
+        if len(cache) >= 4:
+            cache.clear()
+        cache[value] = image
+        return image
+
+    def _flip_numbers(self, p, job: _Job, t: float, k: float, QRectF) -> None:
+        """The number on the plaque (in stone units): the old one lifting away as the new one pops in."""
+        bx, by, bw, bh = NUMERAL_BOX
+        x, y, w, h = PLAQUE
+        cx, cy = x + w / 2, y + 84 + (h - 100) / 2
+
+        def number(value: int, scale: float, alpha: float, dy: float) -> None:
+            if alpha <= 0.001:
+                return
             p.save()
-            p.setOpacity(p.opacity() * max(0.0, min(1.0, alpha)))
-            _cut(p, QRectF(x, y + 84 + dy, w, h - 100), text, QColor, Qt, fit)
+            p.setOpacity(p.opacity() * min(1.0, alpha))
+            p.translate(cx, cy + dy)
+            p.scale(scale, scale)
+            p.translate(-cx, -cy)
+            p.drawImage(QRectF(bx, by, bw, bh), self._numeral(value, k))
             p.restore()
 
         if job.flip_at < 0 or t < job.flip_at:
-            number(job.old, 140, 1.0, 0)
+            number(job.old, 1.0, 1.0, 0)
             return
         f = _phase(t, (job.flip_at, job.flip_at + FLIP))
         if f < 1:
-            number(job.old, 140 * (1 - 0.3 * f), 1 - f, -40 * f)  # the old one lifts away
-        pop = _back(f) if f < 1 else 1.0
-        p.save()
-        cy = y + 84 + (h - 100) / 2
-        p.translate(x + w / 2, cy)
-        p.scale(pop, pop)
-        p.translate(-(x + w / 2), -cy)
-        number(job.new, 140, min(1.0, f * 2.5), 0)
-        p.restore()
+            number(job.old, 1 - 0.3 * f, 1 - f, -40 * f)  # the old one lifts away
+        number(job.new, _back(f) if f < 1 else 1.0, min(1.0, f * 2.5), 0)
 
     def _dirt(self, p, job: _Job, t: float, lip: float, sink_at: float, QColor, QPointF) -> None:
         bursts = [(RISE[0], 1.0), (sink_at + SINK * 0.55, 0.6)]
@@ -404,6 +442,16 @@ class DeathCountSource(Source):
                 p.setBrush(colour)
                 p.drawEllipse(QPointF(px, py), r, r)
         p.restore()
+
+
+def _painter(image):
+    from PySide6.QtGui import QPainter
+
+    p = QPainter(image)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    return p
 
 
 def _cut(p, box, text: str, QColor, Qt, size: float) -> None:

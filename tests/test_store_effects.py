@@ -486,6 +486,22 @@ def test_the_engraved_stone_is_drawn_once_per_number(added, tmp_path):
     assert dc._stone_cache is not first and dc._stone_cache[0][1] == 2  # the new number, engraved once
 
 
+def test_the_flip_moves_pictures_of_the_numbers_instead_of_cutting_text(added, tmp_path, monkeypatch):
+    """The flip cut its numbers as text every frame: 15-24 ms a frame on a busy PC (soak 2026-11-15)."""
+    from PySide6.QtGui import QPainter
+
+    _col, _host, dc, _api = _dc_setup(added, tmp_path, 1)
+    job = __import__("sprigcast.store.death_count", fromlist=["_Job"])._Job(1, 2)
+    dc.paint(job, job.flip_at + 0.05)  # cuts 1 and 2 once
+    texts = []
+    real = QPainter.drawText
+    monkeypatch.setattr(QPainter, "drawText", lambda self, *a: texts.append(a) or real(self, *a))
+    for i in range(10):
+        image = dc.paint(job, job.flip_at + 0.03 * i)
+    assert texts == []  # every flip frame is pictures only
+    assert image.pixelColor(400, 600).alpha() == 255
+
+
 def test_plugin_hotkeys_explain_themselves(added):
     """A hotkey for something not in the bloom on air says so, instead of doing nothing silently."""
     added("hide_it")
