@@ -614,3 +614,73 @@ def test_the_key_box_sits_under_captions_by_and_no_chat_tip(cap):
               and form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget()]
     assert labels[labels.index("Captions by") + 1] == "Google key"
     assert not any("Chat panel" in w.text() for w in dialog.findChildren(QLabel))
+
+
+def test_wake_and_sleep_many_times_keeps_memory_objects_and_threads_flat(cap, monkeypatch):
+    """The per-plugin memory test before #403: about 10 MB more on every wake, never freed, and more
+    threads each time. Each cycle here listens, hears speech, draws captions and goes off air."""
+    import gc
+    import time
+    import tracemalloc
+    import weakref
+
+    from sprigcast.sources import audio
+
+    speech = np.concatenate([_quiet(0.3), _tone(1.0), _quiet(0.9)])
+    stereo48 = np.repeat(np.repeat(speech, 3)[:, None], 2, axis=1).astype(np.float32)
+    mics = []
+
+    class FakeMic:
+        def __init__(self, source_id, settings):
+            self.ring = None
+            mics.append(weakref.ref(self))
+
+        def start(self):
+            for i in range(0, len(stereo48), 4800):
+                self.ring.write(stereo48[i:i + 4800])
+
+        def stop(self):
+            pass
+
+    class Engine:
+        def transcribe(self, clip):
+            return "Hello chat."
+
+    loads = []
+    monkeypatch.setattr(audio, "MicSource", FakeMic)
+    monkeypatch.setattr(cap, "PARK_SECONDS", 30.0)
+    source = create_source("live_captions", "c", {})
+
+    def make(stop):
+        if source._engine is None:
+            loads.append(1)
+            source._engine = Engine()
+        return source._engine
+
+    monkeypatch.setattr(source, "_make_engine", make)
+
+    def cycle():
+        source.wake()
+        source.set_hidden(False)
+        assert _until(lambda: "Hello chat." in source.board.text(time.monotonic(), 4.0))
+        source.video_frame()
+        source.sleep()
+        assert _until(lambda: source.status == "paused")
+
+    for _ in range(3):  # warm up: first frames, caches
+        cycle()
+    gc.collect()
+    threads = threading.active_count()
+    tracemalloc.start()
+    before = tracemalloc.take_snapshot()
+    for _ in range(15):
+        cycle()
+    gc.collect()
+    grown = sum(s.size_diff for s in tracemalloc.take_snapshot().compare_to(before, "filename"))
+    tracemalloc.stop()
+    assert grown < 300_000, f"{grown} bytes more after 15 wakes"  # one mic ring is about 4.6 MB
+    assert threading.active_count() == threads and len(_captions_threads()) == 1
+    assert sum(1 for m in mics if m() is not None) == 0  # every mic (and its 12 s ring) was let go
+    assert len(loads) == 1
+    source.stop()
+    assert _until(lambda: not _captions_threads()) and source._engine is None
