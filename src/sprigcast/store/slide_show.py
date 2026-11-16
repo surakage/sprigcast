@@ -27,7 +27,8 @@ from sprigcast.core.source import Source, register
 from sprigcast.sources.image import load_rgba
 
 PLUGIN = {"id": "slide_show", "name": "Slide show", "version": 3, "adds": "Source",
-          "about": "Plays every picture in a folder, one after another: seconds per picture, shuffle and loop."}
+          "about": "Plays every picture in a folder, one after another: seconds per picture, shuffle and loop.",
+          "new": "Skips SprigCast's own screenshots and Snap polaroids."}
 
 log = logging.getLogger(__name__)
 

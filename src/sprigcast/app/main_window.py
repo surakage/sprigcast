@@ -515,6 +515,7 @@ class MainWindow(QMainWindow):
         # New versions from GitHub Releases (app/updates.py); never shown or installed while live or recording.
         self.updater = Updater(self, busy=lambda: self.streaming is not None or self.recording is not None)
         self.updater.start()
+        QTimer.singleShot(2500, self._plugin_updates)  # say which store plugins updated at this start
         if self.collection.recording.clips_on_start:  # once the renderer has its first frames
             QTimer.singleShot(1500, lambda: self.replay is None and self._toggle_replay(True))
         self._clips_used_at = time.monotonic()
@@ -5074,14 +5075,47 @@ class MainWindow(QMainWindow):
                 plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
         return shots
 
-    def _saved_note(self, title: str, folder=None) -> None:
+    def _saved_note(self, title: str, folder=None, **more) -> None:
         """A clear "saved" note over the window for a few seconds (a click opens the folder)."""
         note = getattr(self, "saved_note", None)
         if note is None:
             from sprigcast.app.empty import SavedNote
 
             note = self.saved_note = SavedNote(self)
-        note.say(title, folder)
+        note.say(title, folder, **more)
+
+    def _plugin_updates(self) -> None:
+        """Say which store plugins updated ("Death count updated" + what's new), and put in updates held while
+        live or recording (Settings → Plugins). Waits while on air, checking every few seconds."""
+        from sprigcast import plugin_store
+
+        if not plugin_store.updated_at_start and not plugin_store.waiting:
+            return
+        if self.streaming is not None or self.recording is not None:
+            QTimer.singleShot(5000, self._plugin_updates)
+            return
+        done = list(plugin_store.updated_at_start)
+        plugin_store.updated_at_start.clear()
+        held = list(plugin_store.waiting.values())
+        plugin_store.waiting.clear()
+        for plugin in held:
+            if self.plugins_dir is None:
+                break
+            try:
+                error = plugin_store.install(self.plugins_dir, plugin, self.plugin_report)
+            except OSError as exc:
+                error = str(exc)
+            if error is None:
+                done.append(plugin.id)
+            else:
+                log.warning("plugin store: held update of %s failed: %s", plugin.id, error)
+        if held:
+            self._fill_more_menu()
+            self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        note = plugin_store.update_note(done)
+        if note is not None:
+            self._saved_note(note[0], detail=note[1], link="Plugins", on_click=lambda: self._open_settings("Plugins"),
+                             ms=8000)
 
     @staticmethod
     def _shot_folder(shots: list[dict], folder):
@@ -5683,6 +5717,7 @@ class MainWindow(QMainWindow):
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
         window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
         window.exec()
+        self._plugin_updates()  # an Update pressed while on air waits until the stream and recording stop
 
     def _poll_camera(self) -> None:
         """Once a second while SprigCast Camera is on: feed it, and send the sound along while an app watches."""

@@ -32,7 +32,8 @@ from sprigcast.plugin_hooks import register_item_menu, register_on_screenshot
 log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "snap", "name": "Snap", "version": 2, "adds": "Source",
-          "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot."}
+          "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot.",
+          "new": "Lighter on your PC while the polaroid shows."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down

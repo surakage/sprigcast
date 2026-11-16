@@ -20,7 +20,8 @@ from sprigcast.core.filters import Field, register_filter
 from sprigcast.plugin_hooks import filter_off, filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
 
 PLUGIN = {"id": "hide_it", "name": "Hide it", "version": 2, "adds": "Effect",
-          "about": "Pixelate a camera, game or screen, or black it out, for a set time. Great for redeems."}
+          "about": "Pixelate a camera, game or screen, or black it out, for a set time. Great for redeems.",
+          "new": "Its hotkeys now say what they do."}
 
 KINDS = {"pixelate": "Pixelate", "blackout": "Blackout"}
 VIDEO = ("camera", "display_capture", "window_capture", "game_capture", "media", "browser", "image", "scene")

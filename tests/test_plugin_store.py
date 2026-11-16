@@ -148,3 +148,89 @@ def test_slide_show_leaves_out_sprigcasts_own_screenshots(tmp_path):
                  "snap 2026-11-15 09-18-00.png", "holiday.png", "screenshot of my game.png"):
         (tmp_path / name).write_bytes(b"x")
     assert [p.name for p in pictures_in(str(tmp_path))] == ["holiday.png", "screenshot of my game.png"]
+
+
+def test_an_update_says_whats_new():
+    """PC test 2026-11-15: Death count went from v4 to v5 at start without a word."""
+    for plugin in plugin_store.catalog():
+        assert plugin.version == 1 or plugin.new, f"{plugin.id} v{plugin.version} needs a 'new' line"
+    title, new = plugin_store.update_note(["death_count"])
+    assert title == "Death count updated" and new
+    assert plugin_store.update_note(["snap", "death_count", "hide_it"]) == ("3 plugins updated",
+                                                                          "Death count, Hide it and Snap")
+    assert plugin_store.update_note([]) is None and plugin_store.update_note(["not_a_plugin"]) is None
+
+
+def test_start_up_updates_are_kept_for_the_note(tmp_path):
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    dc = next(p for p in plugin_store.catalog() if p.id == "death_count")
+    plugin_store.installed_path(folder, "death_count").write_text(
+        dc.file.read_text(encoding="utf-8").replace(f'"version": {dc.version}', '"version": 4'), encoding="utf-8")
+    plugin_store.refresh_installed(folder)
+    assert plugin_store.updated_at_start == ["death_count"]
+    plugin_store.updated_at_start.clear()
+
+
+def test_an_update_pressed_on_air_waits_until_you_stop(tmp_path, app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app.plugin_store_page import HOLD_ON_AIR, PluginStorePage
+
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    snap = next(p for p in plugin_store.catalog() if p.id == "barrel_roll")
+    old = snap.file.read_text(encoding="utf-8").replace(f'"version": {snap.version}', '"version": 1')
+    plugin_store.installed_path(plugins, "barrel_roll").write_text(old, encoding="utf-8")
+    QSettings().setValue(HOLD_ON_AIR, True)
+    try:
+        page = PluginStorePage(plugins, PluginReport(), on_air=True)
+        assert page.hold.isChecked()
+        row = page.rows["barrel_roll"]
+        assert not row.update_button.isHidden()
+        row.update_button.click()
+        assert plugin_store.waiting == {"barrel_roll": snap} and plugin_store.installed_version(plugins, "barrel_roll") == 1
+        assert row.update_button.isHidden() and "once you stop" in row.note.text()
+        plugin_store.waiting.clear()
+
+        page.hold.setChecked(False)  # switched off: it updates at once, even on air
+        page = PluginStorePage(plugins, PluginReport(), on_air=True)
+        page.rows["barrel_roll"].update_button.click()
+        assert plugin_store.installed_version(plugins, "barrel_roll") == snap.version and not plugin_store.waiting
+        assert snap.new in page.rows["barrel_roll"].note.text()
+    finally:
+        plugin_store.waiting.clear()
+        QSettings().remove(HOLD_ON_AIR)
+        plugin_store.remove(plugins, "barrel_roll")
+
+
+def test_the_window_says_so_and_puts_held_updates_in_once_off_air(tmp_path, app, monkeypatch):
+    from types import SimpleNamespace
+
+    from sprigcast.app.main_window import MainWindow
+
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    snap = next(p for p in plugin_store.catalog() if p.id == "barrel_roll")
+    plugin_store.installed_path(plugins, "barrel_roll").write_text(
+        snap.file.read_text(encoding="utf-8").replace(f'"version": {snap.version}', '"version": 1'), encoding="utf-8")
+    said, later = [], []
+    monkeypatch.setattr("sprigcast.app.main_window.QTimer.singleShot", lambda ms, fn: later.append(ms))
+    win = SimpleNamespace(streaming=object(), recording=None, plugins_dir=plugins, plugin_report=PluginReport(),
+                          _fill_more_menu=lambda: None, engine=SimpleNamespace(send=lambda _m: None),
+                          collection=SimpleNamespace(model_copy=lambda deep: None),
+                          _saved_note=lambda title, **k: said.append((title, k["detail"])), _open_settings=None)
+    win._plugin_updates = lambda: MainWindow._plugin_updates(win)
+    plugin_store.updated_at_start[:] = ["death_count"]
+    plugin_store.waiting["barrel_roll"] = snap
+    try:
+        MainWindow._plugin_updates(win)
+        assert said == [] and later == [5000]  # live: waits
+        win.streaming = None
+        MainWindow._plugin_updates(win)
+        assert said == [("2 plugins updated", "Barrel Roll and Death count")]
+        assert plugin_store.installed_version(plugins, "barrel_roll") == snap.version and not plugin_store.waiting
+    finally:
+        plugin_store.waiting.clear()
+        plugin_store.updated_at_start.clear()
+        plugin_store.remove(plugins, "barrel_roll")

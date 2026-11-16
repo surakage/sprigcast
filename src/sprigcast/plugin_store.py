@@ -8,7 +8,8 @@ start).
 Each store plugin starts with a PLUGIN dict, read without running the file:
 
     PLUGIN = {"id": "slide_show", "name": "Slide show", "version": 1,
-              "about": "Plays every picture in a folder, one after another.", "adds": "Source"}
+              "about": "Plays every picture in a folder, one after another.", "adds": "Source",
+              "new": "What changed in this version, in a line (shown when it updates)."}
 """
 
 from __future__ import annotations
@@ -34,6 +35,13 @@ class StorePlugin:
     about: str
     adds: str
     file: Path
+    new: str = ""  # what changed in this version, said when it updates
+
+
+# Store plugins brought up to date at this start (refresh_installed), for the "updated" note once the window is up.
+updated_at_start: list[str] = []
+# Updates asked for while live or recording, held until both stop (Settings → Plugins).
+waiting: dict[str, StorePlugin] = {}
 
 
 def read_header(path: Path) -> dict | None:
@@ -62,7 +70,7 @@ def catalog(store_dir: Path = STORE_DIR) -> list[StorePlugin]:
             continue
         out.append(StorePlugin(id=str(head["id"]), name=str(head.get("name", head["id"])),
                                version=int(head.get("version", 1)), about=str(head.get("about", "")),
-                               adds=str(head.get("adds", "")), file=path))
+                               adds=str(head.get("adds", "")), file=path, new=str(head.get("new", ""))))
     return sorted(out, key=lambda p: p.name.lower())
 
 
@@ -116,7 +124,20 @@ def refresh_installed(plugins_dir: Path | None) -> list[str]:
             shutil.copyfile(plugin.file, installed_path(plugins_dir, plugin.id))
             log.info("plugin store: updated %s v%d -> v%d", plugin.id, have, plugin.version)
             updated.append(plugin.id)
+    updated_at_start[:] = updated
     return updated
+
+
+def update_note(plugin_ids: list[str]) -> tuple[str, str] | None:
+    """The note after store plugins updated: ("Death count updated", what's new), or a count with the names."""
+    plugins = {p.id: p for p in catalog()}
+    found = [plugins[i] for i in plugin_ids if i in plugins]
+    if not found:
+        return None
+    if len(found) == 1:
+        return f"{found[0].name} updated", found[0].new
+    names = sorted(p.name for p in found)
+    return f"{len(found)} plugins updated", ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def remove(plugins_dir: Path, plugin_id: str, report: PluginReport | None = None) -> None:
