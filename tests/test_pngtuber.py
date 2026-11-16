@@ -104,28 +104,40 @@ def test_missing_pictures_borrow_the_nearest_one(tuber):
     assert pick({"idle": 1, "blink": 1, "talk": 1, "talk_blink": 1}, "yell_blink") == "talk_blink"
 
 
-def test_talking_starts_above_the_level_and_holds_between_words(tuber):
+def test_the_mouth_opens_and_shuts_with_each_syllable(tuber):
     voice = tuber.Voice()
-    loud, quiet, edge = 10 ** (-20 / 20), 10 ** (-60 / 20), 10 ** (-40 / 20)  # -20, -60 and -40 dB
+    dB = lambda d: 10 ** (d / 20)  # noqa: E731
+    feed = lambda d, t: voice.feed(dB(d), t, talk_at=-38.0, yell_at=-6.0, hold=0.08)  # noqa: E731
+    assert feed(-60, 0.0) == "idle"
+    assert feed(-40, 0.05) == "idle"  # under Talks above: still quiet
+    assert feed(-20, 0.1) == "talk" and voice.speaking
+    assert feed(-24, 0.15) == "talk"  # a little softer: same syllable
+    assert feed(-32, 0.2) == "idle"  # the dip between syllables, though still above Talks above
+    assert feed(-31, 0.22) == "idle"  # not the next syllable yet
+    assert feed(-22, 0.25) == "talk"  # the next syllable
+    assert feed(-60, 0.4) == "idle" and voice.speaking  # a short gap: same sentence (no new bounce)
+    assert feed(-60, 0.7) == "idle" and not voice.speaking  # the sentence is over
+
+
+def test_hold_keeps_the_mouth_open_at_least_that_long(tuber):
+    voice = tuber.Voice()
     feed = lambda level, t: voice.feed(level, t, talk_at=-38.0, yell_at=-6.0, hold=0.25)  # noqa: E731
-    assert feed(quiet, 0.0) == "idle"
-    assert feed(edge, 0.05) == "idle"  # under Talks above: still quiet
-    assert feed(loud, 0.1) == "talk"
-    assert feed(edge, 0.2) == "talk"  # a little under: keeps talking (no flapping)
-    assert feed(quiet, 0.3) == "talk"  # a short gap between words
-    assert feed(quiet, 0.5) == "idle"  # quiet for longer than Hold
+    assert feed(0.1, 0.0) == "talk"
+    assert feed(0.0, 0.1) == "talk"
+    assert feed(0.0, 0.3) == "idle"
 
 
 def test_yelling_needs_a_moment_of_loud_not_a_clap(tuber):
     voice = tuber.Voice()
     shout = 0.8  # about -2 dB
-    feed = lambda level, t: voice.feed(level, t, talk_at=-38.0, yell_at=-6.0, hold=0.25)  # noqa: E731
+    feed = lambda level, t: voice.feed(level, t, talk_at=-38.0, yell_at=-6.0, hold=0.08)  # noqa: E731
     assert feed(shout, 0.0) == "talk"  # a clap: not yet
     assert feed(0.1, 0.02) == "talk"
     assert feed(shout, 0.1) == "talk"
     assert feed(shout, 0.2) == "yell"
-    assert feed(0.1, 0.25) == "yell"  # stays a moment
-    assert feed(0.1, 0.6) == "talk"
+    assert feed(shout, 0.3) == "yell"
+    assert feed(0.3, 0.35) == "yell"  # stays a moment
+    assert feed(0.3, 0.45) == "talk"
     assert feed(0.0, 1.0) == "idle"
 
 
