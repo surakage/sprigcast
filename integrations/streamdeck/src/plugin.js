@@ -53,6 +53,7 @@ async function listFor(event, payload = {}) {
 		getSprigs: async () => (await sprigcast.run("sprigs.list")).sprigs.map((s) => s.name),
 		getSources: async () => (await sprigcast.run("sources.list")).sources.map((s) => s.name),
 		getActions: async () => (await sprigcast.run("app.actions")).actions.map((a) => a.do),
+		getExpressions: async () => (await sprigcast.run("pngtuber.expressions")).expressions,
 	};
 	const fill = lists[event];
 	if (!fill) return null;
@@ -333,6 +334,17 @@ class DeathCount extends SprigCastAction {
 	}
 }
 
+class Pngtuber extends SprigCastAction {
+	constructor() { super("pngtuber", 1); this.okAfterPress = true; }
+	press(s) {
+		const seconds = Number(s.seconds) > 0 ? { seconds: Number(s.seconds) } : {};
+		if (s.mode === "next") return sprigcast.run("pngtuber.next", seconds);
+		if (s.mode === "reset") return sprigcast.run("pngtuber.reset");
+		return sprigcast.run("pngtuber.expression", { expression: s.expression ?? "", ...seconds });
+	}
+	said(result) { return result?.expression ? String(result.expression) : "Done"; }
+}
+
 class RunAction extends SprigCastAction {
 	constructor() { super("run", 1); this.okAfterPress = true; }
 	press(s) {
@@ -344,7 +356,7 @@ class RunAction extends SprigCastAction {
 
 const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
-	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new RunAction()];
+	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new Pngtuber(), new RunAction()];
 for (const action of actions) streamDeck.actions.registerAction(action);
 
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));

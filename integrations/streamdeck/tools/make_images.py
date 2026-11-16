@@ -82,6 +82,10 @@ GLYPHS = {
     # Death count: a gravestone on its mound.
     "deaths": f'<path d="M28 80V40q0-22 22-22t22 22v40" {SW}/><path d="M50 32v24M40 42h20" {SW}/>'
               '<path d="M12 86q38-14 76 0z" fill="{c}"/>',
+    # PNGtuber: an avatar's face, talking, with a sprout (switches its expression).
+    "pngtuber": f'<circle cx="50" cy="58" r="34" {SW}/><circle cx="38" cy="53" r="6" fill="{{c}}"/>'
+                f'<circle cx="62" cy="53" r="6" fill="{{c}}"/><path d="M35 67q15 17 30 0z" fill="{{c}}"/>'
+                '<path d="M50 22q-3-15-19-17q0 16 19 17zM50 22q3-13 17-15q0 14-17 15z" fill="{c}"/>',
     # Run action: braces round a play mark (runs any SprigCast action).
     "run": f'<path d="M30 16q-12 0-12 12v10q0 12-10 12q10 0 10 12v10q0 12 12 12M70 16q12 0 12 12v10q0 12 10 12q-10 0-10 12v10q0 12-12 12" {SW}/>'
            '<path d="M42 36l22 14-22 14z" fill="{c}"/>',
@@ -106,6 +110,7 @@ KEYS = {
     "screenshot": (("screenshot", MINT), None),
     "sprig-state": (("sprig", MINT), None),
     "deaths": (("deaths", MINT), None),
+    "pngtuber": (("pngtuber", MINT), None),
     "run": (("run", MINT), None),
 }
 
@@ -115,7 +120,7 @@ GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", 
          "mute": "sound", "volume": "sound", "media": "sound",
          "live": "live", "record": "live",
          "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
-         "filter": "fx", "deaths": "fx", "run": "fx"}
+         "filter": "fx", "deaths": "fx", "pngtuber": "fx", "run": "fx"}
 GROUP_TILE = {"scene": ("#1f7a4d", "#0b3322"), "sound": ("#1f6f86", "#0a2b38"), "capture": ("#8a6a1e", "#3a2a08"),
               "fx": ("#5b4a9a", "#221a45"), "live": ("#b4305f", "#4a0f26")}
 

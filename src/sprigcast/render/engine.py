@@ -25,7 +25,7 @@ from sprigcast.core.events import (
     SourceInfo,
     Stats,
 )
-from sprigcast.core.filters import AudioChain, video_effects
+from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
@@ -763,9 +763,23 @@ class Engine:
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
         self.mixer.bloom_out = self._collection.sounds_off_here()  # sound per bloom, as blooms switch
-        self.mixer.followed = frozenset(  # sounds a Ducking filter listens to
+        followed = {  # sounds a Ducking filter listens to
             str(f.settings.get("sound_id")) for s in self._collection.sources for f in s.filters
-            if f.kind == "ducking" and f.enabled and f.settings.get("sound_id"))
+            if f.kind == "ducking" and f.enabled and f.settings.get("sound_id")}
+        for source_id, source in self._sources.items():  # and sources that move with a sound (a PNGtuber)
+            follow = getattr(source, "sound_to_follow", None)
+            if follow is None:
+                continue
+            try:
+                sound = follow(self._collection)
+            except Exception as exc:
+                log.warning("source %s couldn't pick a sound to follow: %s", source_id, exc)
+                continue
+            if sound:
+                followed.add(str(sound))
+        for gone in set(SOUND_LEVELS) - followed:  # a sound no longer followed mustn't keep its last level
+            SOUND_LEVELS.pop(gone, None)
+        self.mixer.followed = frozenset(followed)
         self._sync_audio_options()
 
     def set_sound_out(self, device: str | None) -> None:
