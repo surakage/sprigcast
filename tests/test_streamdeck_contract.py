@@ -36,7 +36,8 @@ def test_every_action_the_plugin_sends_exists():
     known = {a["do"] for a in _ok(api, "app.actions")["actions"]} | PLUGIN_ACTIONS
     code = "".join(p.read_text(encoding="utf-8") for p in DECK.glob("*.js"))
     events = set(re.findall(r'event === "([a-z]+\.[a-zA-Z]+)"', code))
-    sent = set(re.findall(r'"([a-z]+\.[a-zA-Z]+)"', code)) - events
+    files = {"api.json"}  # file names in the code, not actions
+    sent = set(re.findall(r'"([a-z]+\.[a-zA-Z]+)"', code)) - events - files
     assert len(sent) > 30 and sent <= known, sorted(sent - known)
 
 
@@ -115,3 +116,25 @@ def test_every_app_hears_sprigcast_closing():
     session.welcomed = True
     assert session.event("app.closing", {}) == '{"event": "app.closing"}'
     assert session.event("bloom.shown", {}) is None
+
+
+def test_api_json_lets_apps_on_this_pc_connect_by_themselves(tmp_path):
+    """While the API runs, api.json holds its port and password (the Stream Deck plugin reads it); gone when it stops."""
+    import json as _json
+
+    from test_control_api import _qt
+
+    _qt()
+    from sprigcast.app.control_server import ControlServer
+    from sprigcast.control.api import ControlApi
+
+    api, host = _api()
+    server = ControlServer(ControlApi(host), native=api)
+    server.info_path = tmp_path / "SprigCast" / "api.json"
+    assert server.start(0, "leafy")
+    try:
+        info = _json.loads(server.info_path.read_text(encoding="utf-8"))
+        assert info == {"app": "SprigCast", "port": server.port, "path": "/sprigcast", "password": "leafy"}
+    finally:
+        server.stop()
+    assert not server.info_path.exists()

@@ -12,8 +12,10 @@ all over the app. Volume meters are only sent to apps that ask for them.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, QSettings, QTimer
@@ -50,7 +52,7 @@ def saved_settings() -> dict[str, Any]:
         password = new_password()
         q.setValue(PASSWORD, password)
     return {
-        "enabled": q.value(ENABLED, False, type=bool),
+        "enabled": q.value(ENABLED, True, type=bool),  # on: this PC's apps (Stream Deck) connect by themselves
         "port": q.value(PORT, DEFAULT_PORT, type=int),
         "password": password,
         "use_password": q.value(USE_PASSWORD, True, type=bool),
@@ -244,6 +246,7 @@ class ControlServer(QObject):
         self.watch.timeout.connect(self.notify)
         self._notify_queued = False
         self._running: tuple | None = None  # (port, password, lan, obs door) it listens with
+        self.info_path: Path | None = None  # where apps on this PC find the port and password (api.json)
         self.on_clients_changed = lambda count: None
 
     def _obs(self) -> list[tuple[QWebSocket, Session]]:
@@ -272,11 +275,32 @@ class ControlServer(QObject):
         self.tcp.newConnection.connect(self._incoming)
         log.info("control: listening on %s:%d%s", "all addresses" if lan else "localhost", port,
                  " with a password" if password else " without a password")
+        self._write_info(password)
         return True
+
+    def _write_info(self, password: str) -> None:
+        """api.json next to SprigCast's settings: the port and password, so an app on this PC (the Stream Deck
+        plugin) connects without anyone typing them, like Wave Link's ws-info.json. Gone again when the API stops."""
+        if self.info_path is None:
+            return
+        info = {"app": "SprigCast", "port": self.port, "path": NATIVE_PATH, "password": password}
+        try:
+            self.info_path.parent.mkdir(parents=True, exist_ok=True)
+            self.info_path.write_text(json.dumps(info, indent=2), encoding="utf-8")
+        except OSError as exc:
+            log.warning("control: couldn't write %s: %s", self.info_path, exc)
+
+    def _remove_info(self) -> None:
+        if self.info_path is not None:
+            try:
+                self.info_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def stop(self) -> None:
         if self.server is None:
             return
+        self._remove_info()
         self.broadcast("ExitStarted", Sub.GENERAL, None)
         self.native_broadcast("app.closing", {})
         for socket in list(self.sessions):
@@ -467,6 +491,10 @@ def start_for(window: MainWindow) -> ControlServer:
 def apply_settings(server: ControlServer, window: MainWindow | None = None) -> None:
     """Start, restart or stop the server to match the saved settings."""
     settings = saved_settings()
+    if server.info_path is None:
+        from sprigcast.app.main import config_dir
+
+        server.info_path = config_dir() / "api.json"
     if window is not None and window.collection.canvases:
         server.frame_seconds = 1 / max(1, window.collection.canvases[0].fps)
     password = settings["password"] if settings["use_password"] else ""
@@ -482,4 +510,14 @@ def apply_settings(server: ControlServer, window: MainWindow | None = None) -> N
             socket.close(QWebSocketProtocol.CloseCode(4000), "Apps made for OBS are switched off in SprigCast")
     if server.listening and server._running == wanted:
         return
-    server._running = wanted if server.start(*wanted) else None
+    if server.start(*wanted):
+        server._running = wanted
+    elif settings["port"] == DEFAULT_PORT:  # OBS holds 4455: take the next free port (api.json tells apps)
+        for port in range(DEFAULT_PORT + 1, DEFAULT_PORT + 6):
+            if server.start(port, password, settings["lan"]):
+                server._running = wanted
+                break
+        else:
+            server._running = None
+    else:
+        server._running = None

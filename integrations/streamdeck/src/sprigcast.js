@@ -2,18 +2,39 @@
 //
 // It connects only while some Stream Deck key needs SprigCast (want(true)), and lets go when none does,
 // so an idle Stream Deck costs SprigCast nothing. Events arrive as SprigCast sends them: no polling.
-// With no port set it looks on 4455 and 4456 (SprigCast's usual port, and the one people pick next to OBS),
-// and steps past OBS if OBS answers. When SprigCast closes or restarts it looks again within a few seconds.
+// Nothing to type: while SprigCast's API runs, SprigCast keeps its port and password in api.json next to its
+// settings (%LOCALAPPDATA%\Slothbloom\SprigCast), and the plugin reads them there, like OBS's plugin reads
+// obs-websocket's config. It looks for that file every 2 seconds, so it connects as soon as SprigCast opens.
+// A port or password typed in the key settings wins; with a password and no port it looks on 4455 and 4456 and
+// steps past OBS if OBS answers.
 
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import WebSocket from "ws";
 
 const RETRY_MS = [1000, 2000, 5000, 10000]; // then every 10 s: a refused local connection costs nothing
 export const AUTO_PORTS = [4455, 4456];
 export const EVENTS = ["bloom", "sound", "output", "item", "plugin", "media", "filter", "transition", "garden", "path", "sprig"];
 const HELLO_MS = 5000; // SprigCast says hello at once; anything slower isn't SprigCast
-const PING_MS = 15000; // a quiet connection is checked this often (a sleeping PC drops it without a close)
+const PING_MS = 15000;
+const WATCH_FILE_MS = 2000; // how often to look for api.json while SprigCast is closed (a file check: nothing)
+
+export function infoFile(env = process.env) {
+	const base = env.LOCALAPPDATA || (env.HOME ? join(env.HOME, "AppData", "Local") : "");
+	return base ? join(base, "Slothbloom", "SprigCast", "api.json") : "";
+}
+
+/** SprigCast's api.json: {port, password} while its API runs, else null. */
+export function readInfo(path) {
+	try {
+		const info = JSON.parse(readFileSync(path, "utf8"));
+		return Number(info.port) > 0 ? { port: Number(info.port), password: String(info.password ?? "") } : null;
+	} catch {
+		return null;
+	}
+} // a quiet connection is checked this often (a sleeping PC drops it without a close)
 
 function freshState() {
 	return {
@@ -29,11 +50,12 @@ export function authAnswer(password, salt, challenge) {
 }
 
 export class SprigCast extends EventEmitter {
-	constructor({ port = 0, password = "", host = "127.0.0.1", WebSocketClass = WebSocket } = {}) {
+	constructor({ port = 0, password = "", host = "127.0.0.1", WebSocketClass = WebSocket, info = infoFile() } = {}) {
 		super();
 		this.setPort = Number(port) || 0; // 0: look on AUTO_PORTS
 		this.port = this.setPort || AUTO_PORTS[0];
-		this.password = password;
+		this.password = password; // typed in the key settings ("" = from api.json)
+		this.info = info; // api.json's path ("" = don't look)
 		this.host = host;
 		this.WebSocketClass = WebSocketClass;
 		this.socket = null;
@@ -116,6 +138,13 @@ export class SprigCast extends EventEmitter {
 	_open() {
 		this._timer = null;
 		if (!this.wanted) return;
+		this._found = this.setPort || this.password || !this.info ? null : readInfo(this.info);
+		if (this._found && !this.setPort) this.port = this._found.port;
+		if (this.info && !this.setPort && !this.password && !this._found) {
+			this._say("Waiting for SprigCast to open");
+			this._timer = setTimeout(() => this._open(), WATCH_FILE_MS);
+			return;
+		}
 		if (this._roundStart === null) this._roundStart = this.port;
 		const socket = (this.socket = new this.WebSocketClass(`ws://${this.host}:${this.port}/sprigcast`));
 		socket.on("message", (data) => this._received(String(data)));
@@ -151,7 +180,7 @@ export class SprigCast extends EventEmitter {
 		} else if (code === 4900) {
 			wait = 200; // OBS answered on this port: try the next one now
 		} else {
-			if (!was && !this.setPort) {
+			if (!was && !this.setPort && !this._found) {
 				this._nextPort();
 				if (this.port !== this._roundStart) wait = 100; // the other port at once; a full round, then wait
 			}
@@ -203,7 +232,8 @@ export class SprigCast extends EventEmitter {
 			socket.close();
 		} else if (message.hello) {
 			const auth = message.hello.auth;
-			const answer = auth ? authAnswer(this.password, auth.salt, auth.challenge) : null;
+			const password = this.password || this._found?.password || "";
+			const answer = auth ? authAnswer(password, auth.salt, auth.challenge) : null;
 			this.socket.send(JSON.stringify({ auth: answer, events: EVENTS }));
 		} else if (message.welcome) {
 			this.ready = true;
