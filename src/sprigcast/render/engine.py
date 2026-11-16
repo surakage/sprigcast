@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast.audio import listen
 from sprigcast.audio.mixer import Ducking, Mixer
 from sprigcast.audio.monitor import Monitor
 from sprigcast.core.events import (
@@ -762,6 +763,9 @@ class Engine:
         compositor.downscale = {c.id: c.downscale for c in self._collection.canvases}
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
+        names = {c.id: c.name for c in self._collection.sources}
+        listen.set_sounds([(sid, names.get(sid, sid)) for sid, s in self._sources.items()
+                           if hasattr(s, "read_block") and sid in names])  # what plugins can listen to
         self.mixer.bloom_out = self._collection.sounds_off_here()  # sound per bloom, as blooms switch
         followed = {  # sounds a Ducking filter listens to
             str(f.settings.get("sound_id")) for s in self._collection.sources for f in s.filters

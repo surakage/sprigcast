@@ -207,6 +207,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   polaroid; the Snap keeps moving and the screen goes live again as the polaroid slides away. On by default
   ("Freeze the screen while it prints" in the Snap's settings).
 - A store plugin added again or updated no longer runs its old hooks too (Snap would have printed twice).
+- Audio visualizer store plugin: bars, a wave, a circle or a line spectrum that move with a sound, in your colours
+  (Night Canopy greens by default), with bar count, smoothing, mirror and sensitivity. It hears what SprigCast
+  already mixes (everything viewers hear, or one mic, desktop, music or app sound), so no device is opened again,
+  draws with NumPy in about a millisecond, at most 30 times a second, and only while it's on air; during silence
+  nothing is drawn. `visualizer.set` changes the look from Streamer.bot.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat
