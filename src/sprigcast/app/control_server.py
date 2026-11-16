@@ -274,6 +274,13 @@ class WindowHost:
         """The running source (from the engine), for plugins; None until it's loaded."""
         return self.w.engine._sources.get(source_id)
 
+    def hold(self, source_ids, seconds: float, token: object | None = None) -> object:
+        """Freeze sources and sprig placements on the next frame drawn (for plugins: Snap). See Engine.hold."""
+        return self.w.engine.hold(source_ids, seconds, token)
+
+    def let_go(self, token: object) -> None:
+        self.w.engine.let_go(token)
+
     def grab_picture(self, source_id: str | None, callback) -> None:
         """The next picture of a source, or of what's on air (None), handed to callback on the render thread."""
         self.w.engine.grab_source(source_id, callback)

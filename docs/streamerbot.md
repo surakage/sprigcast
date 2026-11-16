@@ -35,6 +35,7 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 | `DeathAdd`, `DeathRemove`, `DeathReset`, `DeathShow` | none (Death count plugin) |
 | `Pixelate`, `Blackout` | `source`, optional `seconds` (Hide it plugin) |
 | `BarrelRoll` | `sprig`, optional `seconds` (Barrel Roll plugin) |
+| `Freeze`, `Unfreeze` | `sprig` or `source`, optional `seconds` (Freeze plugin) |
 | `Execute` | `sprigcastAction` (any action, e.g. `item.place`) and `sprigcastJson` (its fields as JSON) |
 
 Every method leaves SprigCast's answer in `%sprigcastResult%` and `%sprigcastOk%`, so the next sub-action can post it in chat (Death count answers `{"ok": true, "result": {"count": 7}}`).
@@ -61,6 +62,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Redeem: pixelate the camera for 15 s | `http://127.0.0.1:4455/api/hide.pixelate?source=Facecam&seconds=15&password=…` |
 | Redeem: black out the game for 10 s | `http://127.0.0.1:4455/api/hide.blackout?source=Game%20capture&seconds=10&password=…` |
 | Redeem: barrel roll the camera frame | `http://127.0.0.1:4455/api/roll.spin?sprig=Cam%20frame&seconds=15&password=…` |
+| Redeem: freeze the game for 10 s | `http://127.0.0.1:4455/api/freeze.start?sprig=Gameplay&seconds=10&password=…` |
 | Death: one more on the death count (the gravestone pops up) | `http://127.0.0.1:4455/api/deaths.add?password=…` |
 | Undo a death counted by mistake | `http://127.0.0.1:4455/api/deaths.remove?password=…` |
 | New game: death count back to 0 | `http://127.0.0.1:4455/api/deaths.reset?password=…` |
@@ -71,7 +73,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
 | Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
-Store plugins (Hide it, Barrel Roll, Snap, Death count) must be added first in Settings → Plugins.
+Store plugins (Hide it, Barrel Roll, Freeze, Snap, Death count) must be added first in Settings → Plugins.
 
 ### Death count with Streamer.bot
 

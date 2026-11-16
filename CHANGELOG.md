@@ -168,6 +168,14 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- Freeze store plugin: freeze a sprig, game or camera on the frame showing now for a set time (a redeem that
+  freezes your game for 10 seconds), then it's live again by itself. Right-click, hotkeys, and `freeze.start`,
+  `freeze.stop` and `freeze.toggle` for Streamer.bot and other apps, with an `effect.ended` event when it ends.
+  Things that only redraw when they change (text, Death count) show their newest picture as it ends.
+- Snap freezes the screen on the snapped moment while the polaroid prints, so viewers see exactly the frame in the
+  polaroid; the Snap keeps moving and the screen goes live again as the polaroid slides away. On by default
+  ("Freeze the screen while it prints" in the Snap's settings).
+- A store plugin added again or updated no longer runs its old hooks too (Snap would have printed twice).
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

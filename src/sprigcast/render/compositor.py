@@ -786,6 +786,9 @@ class Compositor:
         self.transition_vao = self.ctx.vertex_array(self.transition_program, [])
         # (nested-part source id, canvas id of the scene being drawn) -> that part's layout for the canvas
         self.parts: dict[tuple[str, str], moderngl.Texture] = {}
+        # Frozen sprigs (the Freeze plugin, Snap's freeze): (placement source id, canvas id) -> (which freeze,
+        # a copy of the sprig's picture when it froze). The sprig itself keeps drawing for anything else showing it.
+        self.held: dict[tuple[str, str], tuple[object, moderngl.Texture]] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
         self._spins: dict[tuple[str, int], float] = {}  # (source id, run) -> when its barrel roll started
         self.downscale: dict[str, str] = {}  # canvas id -> how outputs smaller than it are scaled (Canvas.downscale)
@@ -926,6 +929,28 @@ class Compositor:
         self._used[("canvas", f"part:{part_id}")] = time.monotonic()
         self._draw_scene(target.fbo, size, scene, source_sizes, fades)
         return target.color
+
+    def hold_copy(self, key: tuple[str, str], token: object, texture: moderngl.Texture) -> moderngl.Texture:
+        """Copy a sprig's picture as it is now, kept as key's frozen picture (for token's freeze)."""
+        old = self.held.get(key)
+        copy = old[1] if old is not None and old[1].size == texture.size else None
+        if copy is None:
+            if old is not None:
+                old[1].release()
+            copy = self.ctx.texture(texture.size, 4)
+            copy.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        source = self.ctx.framebuffer(color_attachments=[texture])
+        try:
+            self.ctx.copy_framebuffer(copy, source)
+        finally:
+            source.release()
+        self.held[key] = (token, copy)
+        return copy
+
+    def let_go_held(self, frozen: dict) -> None:
+        """Free the frozen copies of placements no longer frozen (frozen: placement source id -> its freeze)."""
+        for key in [k for k, (token, _) in self.held.items() if frozen.get(k[0]) != token]:
+            self.held.pop(key)[1].release()
 
     def forget_part(self, part_id: str) -> None:
         target = self.targets.pop(f"part:{part_id}", None)
@@ -1338,6 +1363,8 @@ class Compositor:
 
     def release(self) -> None:
         for tex in self.textures.values():
+            tex.release()
+        for _token, tex in self.held.values():
             tex.release()
         for target in self.targets.values():
             target.release()

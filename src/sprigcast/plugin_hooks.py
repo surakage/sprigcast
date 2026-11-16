@@ -8,6 +8,8 @@
 
     # After each saved screenshot: shots is [{"shape", "path", "image"}, ...].
     register_on_screenshot(lambda api, shots: ...)
+    # Just before one is taken (shapes: canvas ids); may return after(shots), called once it's saved or failed ([]).
+    register_before_screenshot(lambda api, shapes: ...)
 
     # Right-click on something in a bloom: add(menu_label, callback) for each entry you want there.
     register_item_menu(lambda api, source, add: add("Barrel roll", lambda: ...))
@@ -80,6 +82,39 @@ def register_on_screenshot(fn: Callable[[Any, list[dict]], None]) -> None:
     _ON_SCREENSHOT.append(fn)
 
 
+_BEFORE_SCREENSHOT: list[Callable[[Any, list[str]], Any]] = []
+
+
+def register_before_screenshot(fn: Callable[[Any, list[str]], Any]) -> None:
+    """fn(api, shapes) on the UI thread just before a screenshot of these canvases is grabbed (Snap freezes the
+    screen here). It may return after(shots): called once the screenshot is saved (after the screenshot
+    hooks), or with [] if it failed. Keep it quick."""
+    _BEFORE_SCREENSHOT.append(fn)
+
+
+def screenshot_starting(api, shapes: list[str]) -> list[Callable[[list[dict]], None]]:
+    afters = []
+    for fn in _BEFORE_SCREENSHOT:
+        if not _alive(fn):
+            continue
+        try:
+            after = fn(api, list(shapes))
+        except Exception:
+            log.exception("a plugin's before-screenshot hook failed")
+            continue
+        if callable(after):
+            afters.append(after)
+    return afters
+
+
+def screenshot_done(afters, shots: list[dict]) -> None:
+    for after in afters:
+        try:
+            after(shots)
+        except Exception:
+            log.exception("a plugin's after-screenshot hook failed")
+
+
 def screenshot_taken(api, shots: list[dict]) -> None:
     for fn in _ON_SCREENSHOT:
         if not _alive(fn):
@@ -91,11 +126,19 @@ def screenshot_taken(api, shots: list[dict]) -> None:
 
 
 def _alive(fn) -> bool:
-    """A removed plugin's hooks stay registered until restart; skip them once its module is gone."""
+    """A removed plugin's hooks stay registered until restart; skip them once its module is gone. A plugin added
+    again (or updated) loads as a new module under the same name: only the new one's hooks count, or Snap
+    would print every screenshot twice."""
     import sys
 
     module = getattr(fn, "__module__", "") or ""
-    return not module.startswith("sprigcast_plugin_") or module in sys.modules
+    if not module.startswith("sprigcast_plugin_"):
+        return True
+    loaded = sys.modules.get(module)
+    if loaded is None:
+        return False
+    fn_globals = getattr(getattr(fn, "__func__", fn), "__globals__", None)
+    return fn_globals is None or fn_globals is vars(loaded)
 
 
 def hotkey_actions(collection) -> list[tuple[str, str]]:

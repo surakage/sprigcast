@@ -46,7 +46,7 @@ FEATURES = (
     "screenshot.source",   # screenshot.take with source or bloom
     "plugins.enabled",     # plugins.list: id, enabled, store plugins not added
     "plugin.missing",      # plugin_missing error
-    "effects.autoend",     # hide.*, roll.spin end by themselves after seconds (1-600); a new call restarts the time
+    "effects.autoend",     # hide.*, roll.spin, freeze.* end by themselves after seconds (1-600); a new call restarts the time
     "source.rotate",
     "start.warnings",      # stream.start / record.start answer doctor_warnings, force: true goes ahead
     "canvas.size",         # app.info canvases: id, width, height, fps, enabled
@@ -56,6 +56,7 @@ FEATURES = (
     "events.lists",        # sources.changed, items.changed
     "notfound.what",       # not_found errors carry what and name
     "page.api",            # Web page sources: window.sprigcast (app, version, visible, bloom...) and its events
+    "effects.freeze",      # freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start"
 )
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
@@ -1378,10 +1379,11 @@ class NativeApi:
                 out.append(("media.changed", self._media_info(sources[sid])))
         return out
 
-    EFFECTS = {"pixelate": "hide.pixelate", "blackout": "hide.blackout", "barrel_roll": "roll.spin"}
+    EFFECTS = {"pixelate": "hide.pixelate", "blackout": "hide.blackout", "barrel_roll": "roll.spin",
+               "freeze": "freeze.start"}
 
     def _effects_ended(self, last: dict, now: dict, sources: dict) -> list[tuple[str, dict[str, Any]]]:
-        """effect.ended: a Hide it or Barrel Roll effect finished (its time was up, or hide.show), or was replaced
+        """effect.ended: a Hide it, Barrel Roll or Freeze effect finished (its time was up, or hide.show), or was replaced
         (pixelate swapped for blackout, a new spin started over a running one)."""
         out = []
         turned_on = {sid for (sid, fid), (on, _) in now.items() if on and not (last.get((sid, fid)) or (False,))[0]}
