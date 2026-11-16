@@ -185,7 +185,15 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   follows a sound you already have in SprigCast (Auto: your mic, so muting quiets it too) or a mic straight from
   Windows, sends nothing while nothing moves, stops listening off air and lets the pictures go a minute after. A
   sample sloth comes with it.
-- A store plugin removed and added again without restarting no longer shows its hotkeys and right-click entries twice.
+- Stream timer store plugin: how long you've been live (or recording), a countdown (minutes, or to a time of day such
+  as 8:30 PM) or a stopwatch, in a small card like Local time's. Start, pause, reset and add time with hotkeys,
+  right-click, the Stream Deck (Run action) or `timer.*` API actions; apps hear `timer.done` when a countdown ends. A
+  countdown can start over each time it comes on screen (for a "Starting soon" bloom), and a stopwatch carries on
+  after a restart. Off screen it does nothing; on screen it's drawn once a second.
+- Now playing store plugin: the song Windows says is playing (Spotify, YouTube Music, browsers and most players) with
+  its cover, in a small card that fades away when the music stops. No keys or sign-in. It listens only while the card
+  is on screen and only when Windows says the song changed; Only from limits it to some apps.
+- Re-adding a store plugin in the same session no longer doubles its right-click entries.
 - Auto clip store plugin: while clips are ready, a shout, a loud game moment or chat going wild (optional) saves the
   last seconds as a suggested clip. Nothing is posted: Tools → Suggested clips… lists them to play, keep (moves to
   Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between

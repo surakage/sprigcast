@@ -279,6 +279,9 @@ def run() -> None:
     tidy.timeout.connect(pacing.tidy)
     tidy.timeout.connect(pacing.watch_threads)  # which threads come and go, for the next long test
     tidy.start(pacing.TIDY_EVERY_MS)
+    from sprigcast.core import warm, workers
+
+    QTimer.singleShot(warm.WARM_AFTER_MS, lambda: workers.run(warm.warm, name="warm-up"))  # see core/warm.py
     QTimer.singleShot(20_000, pacing.trim_working_set)  # start-up's one-time pages (imports, shaders) go back
     if plugins.failed:
         names = ", ".join(plugins.failed)
