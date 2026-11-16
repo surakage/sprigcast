@@ -124,7 +124,7 @@ def pending_video() -> dict[str, dict[str, Any]]:
 
 SLEEP_SETTING = "general/sleep_sources"
 SLEEP_CHOICES = {
-    "not_cameras": "Pause, but keep cameras ready",
+    "not_cameras": "Pause (cameras after 30 s, unless set to stay ready)",
     "all": "Pause everything (lowest memory)",
     "off": "Keep running",
 }

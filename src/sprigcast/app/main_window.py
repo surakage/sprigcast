@@ -6,6 +6,7 @@ import html
 import logging
 import os
 import queue
+import threading
 import time
 import uuid
 import sys
@@ -516,6 +517,11 @@ class MainWindow(QMainWindow):
         self.updater.start()
         if self.collection.recording.clips_on_start:  # once the renderer has its first frames
             QTimer.singleShot(1500, lambda: self.replay is None and self._toggle_replay(True))
+        self._clips_used_at = time.monotonic()
+        self._clips_idle_paused = False  # clips paused for being unused: back when a stream or recording starts
+        self._clips_timer = QTimer(self)
+        self._clips_timer.timeout.connect(self._check_clips_idle)
+        self._clips_timer.start(10_000)
 
     # Building the UI ------------------------------------------------------
 
@@ -2656,6 +2662,32 @@ class MainWindow(QMainWindow):
             log.warning(warning)
             self.statusBar().showMessage(warning, 15000)
         self._warned_ram = bool(warning)
+        self._check_busy_pc()
+
+    def _check_busy_pc(self) -> None:
+        """When the whole PC stays busy, name the other apps using it (looked up off the UI thread)."""
+        from sprigcast.app import busy_pc
+
+        note = getattr(self, "_busy_note", None)
+        if note:
+            self._busy_note = None
+            log.warning(note)
+            self.statusBar().showMessage(note, 30000)
+        try:
+            import psutil
+
+            cpu = psutil.cpu_percent(None)  # whole PC since the last call (every couple of seconds)
+        except Exception:
+            cpu = None
+        gpu = self.meter.gpu_pct
+        watch = getattr(self, "_busy_watch", None)
+        if watch is None:
+            watch = self._busy_watch = busy_pc.BusyWatch()
+        if watch.feed(cpu, gpu):
+            def look() -> None:
+                self._busy_note = busy_pc.busy_message(busy_pc.heavy_apps(), cpu, gpu)
+
+            threading.Thread(target=look, name="sprigcast-busy-pc", daemon=True).start()
 
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
@@ -5190,11 +5222,32 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "SprigCast", f"Could not get clips ready:\n{exc}")
                 return
             self.statusBar().showMessage(f"Clips ready: Save clip keeps the last {settings.replay_seconds} s.", 4000)
+            self._clips_used_at, self._clips_idle_paused = time.monotonic(), False
         elif not on and self.replay is not None:
             self.replay.stop()
             self.replay = None
             self._rest_soon()
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
+
+    def _check_clips_idle(self) -> None:
+        """Clips kept ready with nothing live or recording pause after a while without a clip saved; they
+        come back by themselves when a stream or recording starts."""
+        busy = self.streaming is not None or self.recording is not None
+        now = time.monotonic()
+        if busy:
+            self._clips_used_at = now
+            if self._clips_idle_paused and self.replay is None:
+                self._clips_idle_paused = False
+                self._toggle_replay(True)
+            return
+        minutes = self.collection.recording.clips_idle_minutes
+        if self.replay is None or minutes <= 0 or now - self._clips_used_at < minutes * 60:
+            return
+        log.info("clips: paused after %d minutes unused (nothing live or recording)", minutes)
+        self._toggle_replay(False)
+        self._clips_idle_paused = True
+        self.statusBar().showMessage(f"Clips paused to save memory: unused for {minutes} minutes. "
+                                     "Press Clip, go live or record to get them ready again.", 15000)
 
     def _save_replay(self) -> list:
         """Save a clip of the last seconds; returns the files (none when clips are off or it failed)."""
@@ -5206,6 +5259,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.statusBar().showMessage(f"Couldn't save the replay: {exc}", 6000)
             return []
+        self._clips_used_at = time.monotonic()
         names = ", ".join(p.name for p in paths)
         self.statusBar().showMessage(f"Saved clip: {names}", 8000)
         self._saved_note("Clip saved", paths[0].parent if paths else None)

@@ -72,7 +72,9 @@ def tame_gc() -> None:
              1000 * (time.perf_counter() - began))
 
 
-TIDY_EVERY_MS = 5 * 60_000
+# Each tidy walks what was made since the last one. Every 5 minutes that was 15-73 ms on the user's PC
+# (2026-11-15), long enough to make a frame late now and then; every minute it is a fifth of that.
+TIDY_EVERY_MS = 60_000
 
 
 def tidy() -> tuple[int, float]:
