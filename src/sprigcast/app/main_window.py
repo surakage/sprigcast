@@ -5028,12 +5028,29 @@ class MainWindow(QMainWindow):
         shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
         if save:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
+            if shots:
+                self._saved_note("Screenshot saved", self._shot_folder(shots, folder))
             self._tidy_saves()
             if shots:  # plugins such as Snap show it off
                 from sprigcast import plugin_hooks
 
                 plugin_hooks.screenshot_taken(self.api, [{**s, "image": images.get(s["shape"])} for s in shots])
         return shots
+
+    def _saved_note(self, title: str, folder=None) -> None:
+        """A clear "saved" note over the window for a few seconds (a click opens the folder)."""
+        note = getattr(self, "saved_note", None)
+        if note is None:
+            from sprigcast.app.empty import SavedNote
+
+            note = self.saved_note = SavedNote(self)
+        note.say(title, folder)
+
+    @staticmethod
+    def _shot_folder(shots: list[dict], folder):
+        """The folder the first screenshot landed in (a dated one under Screenshots)."""
+        path = shots[0].get("path")
+        return Path(path).parent if path else folder
 
     def _tidy_saves(self) -> None:
         """Settings → Recording → Space: keep only the newest screenshots and clips, if asked."""
@@ -5186,6 +5203,7 @@ class MainWindow(QMainWindow):
             return []
         names = ", ".join(p.name for p in paths)
         self.statusBar().showMessage(f"Saved clip: {names}", 8000)
+        self._saved_note("Clip saved", paths[0].parent if paths else None)
         self._tidy_saves()
         self.live_side.clip_saved(len(paths))
         self.control.replay_saved(paths)

@@ -255,3 +255,71 @@ class _PulsingLive(ArtPicture):
         p.setBrush(QColor(theme.LIVE))
         p.drawEllipse(centre, r, r)
         p.end()
+
+
+class SavedNote(QWidget):
+    """"Screenshot saved" / "Clip saved": a clear note over the bottom of the window for a few seconds, so a save
+    from a hotkey, the Stream Deck or a bot is easy to see. A click opens the folder."""
+
+    SHOW_MS = 3000
+
+    def __init__(self, parent: QWidget):
+        from PySide6.QtCore import QPropertyAnimation, QTimer
+        from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout
+
+        super().__init__(parent)
+        self.setObjectName("savedNote")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(f"#savedNote {{ background: {theme.PANEL}; border-radius: 20px; }}")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(18, 10, 22, 10)
+        row.setSpacing(12)
+        tick = QLabel("\u2713")
+        tick.setFixedSize(28, 28)
+        tick.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tick.setStyleSheet(f"background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border-radius: 14px;"
+                           " font-size: 16px; font-weight: 800;")
+        row.addWidget(tick)
+        self.title = QLabel("")
+        self.title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 16px; font-weight: 700; background: transparent;")
+        row.addWidget(self.title)
+        self.open = QLabel("Open folder")
+        self.open.setStyleSheet(f"color: {theme.ACCENT}; background: transparent;")
+        row.addWidget(self.open)
+        self.folder = None
+        self.fade = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.fade)
+        self._anim = QPropertyAnimation(self.fade, b"opacity", self)
+        self._anim.finished.connect(lambda: self.fade.opacity() <= 0.01 and self.hide())
+        self._timer = QTimer(self, singleShot=True, interval=self.SHOW_MS)
+        self._timer.timeout.connect(lambda: self._fade_to(0.0, 500))
+        self.hide()
+
+    def say(self, title: str, folder=None) -> None:
+        self.title.setText(title)
+        self.folder = folder
+        self.open.setVisible(folder is not None)
+        self.adjustSize()
+        parent = self.parentWidget()
+        self.move(max(0, (parent.width() - self.width()) // 2), max(0, parent.height() - self.height() - 48))
+        self.raise_()
+        self.show()
+        self._fade_to(1.0, 200, start=0.0 if self.fade.opacity() <= 0.01 or not self.isVisible() else None)
+        self._timer.start()
+
+    def mousePressEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
+        if self.folder is not None:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.folder)))
+        self._timer.stop()
+        self._fade_to(0.0, 200)
+
+    def _fade_to(self, value: float, ms: int, start: float | None = None) -> None:
+        self._anim.stop()
+        self._anim.setDuration(ms)
+        self._anim.setStartValue(self.fade.opacity() if start is None else start)
+        self._anim.setEndValue(value)
+        self._anim.start()
