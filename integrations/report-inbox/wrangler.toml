@@ -4,6 +4,10 @@ main = "worker.js"
 compatibility_date = "2026-11-01"
 workers_dev = true
 
+# slothbloom.com's DNS is on Cloudflare: this makes https://reports.slothbloom.com (SprigCast sends there).
+routes = [{ pattern = "reports.slothbloom.com", custom_domain = true }]
+# (Top-level keys must stay above the [[...]] tables below, or TOML files them under the last table.)
+
 # Where reports are kept (made once with: npx wrangler r2 bucket create sprigcast-reports).
 [[r2_buckets]]
 binding = "REPORTS"
@@ -17,6 +21,3 @@ namespace_id = "4456"
   [ratelimits.simple]
   limit = 5
   period = 60
-
-# slothbloom.com's DNS is on Cloudflare: this makes https://reports.slothbloom.com (SprigCast sends there).
-routes = [{ pattern = "reports.slothbloom.com", custom_domain = true }]

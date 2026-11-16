@@ -137,3 +137,14 @@ def test_send_report_from_the_help_menu_and_fall_back_to_the_desktop(app, logs, 
         assert len(saved) == 1 and "summary.txt" in zipfile.ZipFile(saved[0]).namelist()
     finally:
         w.close()
+
+
+def test_the_inbox_config_serves_the_address_the_app_sends_to():
+    import tomllib
+    from pathlib import Path
+    from urllib.parse import urlparse
+
+    config = tomllib.loads((Path(__file__).parents[1] / "integrations/report-inbox/wrangler.toml").read_text())
+    hosts = [r["pattern"] for r in config.get("routes", []) if r.get("custom_domain")]
+    assert urlparse(problem_report.REPORT_URL).hostname in hosts  # top level, not filed under a table
+    assert config["ratelimits"][0]["simple"] == {"limit": 5, "period": 60}
