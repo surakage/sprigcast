@@ -19,9 +19,9 @@ from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
 from sprigcast.plugin_hooks import filter_off, filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "hide_it", "name": "Hide it", "version": 2, "adds": "Effect",
+PLUGIN = {"id": "hide_it", "name": "Hide it", "version": 3, "adds": "Effect",
           "about": "Pixelate a camera, game or screen, or black it out, for a set time. Great for redeems.",
-          "new": "Its hotkeys now say what they do."}
+          "new": "Apps can't ask for more than 10 minutes."}
 
 KINDS = {"pixelate": "Pixelate", "blackout": "Blackout"}
 VIDEO = ("camera", "display_capture", "window_capture", "game_capture", "media", "browser", "image", "scene")
@@ -69,6 +69,8 @@ def _seconds(data) -> float | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ApiError("bad_request", "seconds must be a number.")
+    if not 0 <= value <= 600:
+        raise ApiError("bad_request", "seconds must be 0 to 600.")
     return float(value)
 
 

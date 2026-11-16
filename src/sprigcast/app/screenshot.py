@@ -64,6 +64,41 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
             for canvas_id, f in frames.items()}
 
 
+def grab_one(engine, source_id: str, timeout: float = WAIT_S * 2) -> QImage | None:
+    """The next picture of one source (with its filters) on its own, or None if it isn't drawing."""
+    got: list = []
+    done = threading.Event()
+
+    def take(picture):
+        got.append(picture)
+        done.set()
+
+    engine.grab_source(source_id, take)
+    done.wait(timeout)
+    picture = got[0] if got else None
+    if picture is None or getattr(picture, "ndim", 0) != 3 or not picture.shape[0] or not picture.shape[1]:
+        return None
+    h, w = picture.shape[:2]
+    data = picture.tobytes()
+    return QImage(data, w, h, w * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+
+
+def take_one(engine, source_id: str, name: str, folder: Path | None, width: int | None = None,
+             as_data: bool = False) -> dict | None:
+    """Like take, for one source: saved as "screenshot <name> <time>.png" and/or returned as base64 PNG."""
+    image = grab_one(engine, source_id)
+    if image is None:
+        return None
+    image = shrink(image, width)
+    shot: dict = {"width": image.width(), "height": image.height()}
+    if folder is not None:
+        safe = "".join(c if c.isalnum() or c in " -_()" else "_" for c in name).strip() or "source"
+        shot["path"] = str(save(image, folder, safe))
+    if as_data:
+        shot["png"] = png_base64(image)
+    return shot
+
+
 def shrink(image: QImage, width: int | None) -> QImage:
     if width and 0 < width < image.width():
         return image.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)

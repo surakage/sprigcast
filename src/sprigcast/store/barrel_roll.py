@@ -16,9 +16,9 @@ from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
 from sprigcast.plugin_hooks import filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 2, "adds": "Effect",
+PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 3, "adds": "Effect",
           "about": "Spin a sprig round and round for a few seconds, then it lands back exactly where it was.",
-          "new": "Its hotkeys now say what they do."}
+          "new": "Apps can't ask for more than 10 minutes."}
 
 TURNS_PER_SECOND = 1.0  # when a trigger gives seconds but no turns
 
@@ -54,8 +54,8 @@ def spin(api, sources, seconds: float | None = None, turns: int | None = None, d
         flt = find_filter(source, "barrel_roll")
         usual = flt.settings if flt else {}
         secs = float(seconds if seconds is not None else usual.get("seconds", 3.0))
-        if secs <= 0:
-            raise ApiError("bad_request", "seconds must be more than 0.")
+        if not 0 < secs <= 600:
+            raise ApiError("bad_request", "seconds must be more than 0 and at most 600.")
         if turns is None:
             n = int(usual.get("turns", 3)) if seconds is None else max(1, round(secs * TURNS_PER_SECOND))
         else:

@@ -127,6 +127,30 @@ def register_action(name: str, about: str, fields: dict[str, str], run: Callable
     _PLUGIN_ACTIONS[name] = Action(name, dict(fields), about, run, module)
 
 
+_STORE_ACTIONS: dict[str, str] | None = None
+
+
+def _store_action_plugins() -> dict[str, str]:
+    """Action name -> the store plugin that brings it ("roll.spin" -> "Barrel Roll"), read from the store's files
+    without running them, so an app asking for one that isn't added hears which plugin to add."""
+    global _STORE_ACTIONS
+    if _STORE_ACTIONS is None:
+        import re
+
+        from sprigcast.plugin_store import catalog
+
+        found: dict[str, str] = {}
+        for plugin in catalog():
+            try:
+                text = plugin.file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for name in re.findall(r'register_action\(\s*"([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)"', text):
+                found[name] = plugin.name
+        _STORE_ACTIONS = found
+    return _STORE_ACTIONS
+
+
 def unregister_actions(module: str) -> list[str]:
     """Forget the actions a plugin module added (when it's removed)."""
     gone = [n for n, a in _PLUGIN_ACTIONS.items() if module and a.module == module]
@@ -167,6 +191,9 @@ class NativeApi:
         if found is None and name in _PLUGIN_ACTIONS:
             return _PLUGIN_ACTIONS[name].run(self, data)
         if found is None:
+            plugin = _store_action_plugins().get(name)
+            if plugin is not None:  # a store plugin's action, but that plugin isn't added
+                raise ApiError("plugin_missing", f"Add the {plugin} plugin in SprigCast (Settings → Plugins).")
             raise ApiError("unknown_action", f"No action {name!r}. app.actions lists them all.")
         return found.run(data)
 
@@ -367,20 +394,28 @@ class NativeApi:
         return {"actions": [{"do": a.name, "about": a.about, "fields": a.fields}
                             for a in sorted(self.all_actions().values(), key=lambda a: a.name)]}
 
-    @action("plugins.list", "The plugins that are added, each with the actions it brings.")
+    @action("plugins.list", "The plugins that are added (enabled) and the store's others (not enabled), each with "
+            "the actions it brings.")
     def plugins_list(self, data):
         import sys
+
+        from sprigcast.plugin_store import catalog
 
         found: dict[str, dict[str, Any]] = {}
         for extra in sorted(_PLUGIN_ACTIONS.values(), key=lambda a: a.name):
             if extra.module.startswith("sprigcast_plugin_") and extra.module not in sys.modules:
                 continue  # removed
-            pid = extra.module.removeprefix("sprigcast_plugin_") or extra.name.split(".", 1)[0]
             head = getattr(sys.modules.get(extra.module), "PLUGIN", None) or {}
-            entry = found.setdefault(pid, {"plugin": pid, "name": head.get("name", pid),
-                                           "version": head.get("version"), "actions": []})
+            pid = head.get("id") or extra.module.removeprefix("sprigcast_plugin_") or extra.name.split(".", 1)[0]
+            entry = found.setdefault(pid, {"id": pid, "plugin": pid, "name": head.get("name", pid),
+                                           "version": head.get("version"), "enabled": True, "actions": []})
             entry["actions"].append(extra.name)
-        return {"plugins": list(found.values())}
+        store = _store_action_plugins()
+        for plugin in catalog():
+            if plugin.id not in found:
+                found[plugin.id] = {"id": plugin.id, "plugin": plugin.id, "name": plugin.name, "version": plugin.version,
+                                    "enabled": False, "actions": sorted(a for a, n in store.items() if n == plugin.name)}
+        return {"plugins": sorted(found.values(), key=lambda p: (not p["enabled"], str(p["name"]).lower()))}
 
     @action("app.stats", "Frames per second, render time and memory.")
     def app_stats(self, data):
@@ -789,6 +824,21 @@ class NativeApi:
         self.host.commit("sources")
         return {"id": source.id, "name": source.name, "kind": kind, "settings": dict(source.settings)}
 
+    @action("source.rotate", "Turn a source to an angle wherever it's shown (0: upright again).",
+            source="name or id", degrees="clockwise, -3600 to 3600")
+    def source_rotate(self, data):
+        source = self._source(data, "source")
+        degrees = _get(data, "degrees", float)
+        if not -3600 <= degrees <= 3600:
+            raise _bad("degrees must be between -3600 and 3600.")
+        items = [i for scene in self.col.scenes for i in scene.items if i.source == source.id]
+        if not items:
+            raise ApiError("not_allowed", f"{source.name!r} isn't in any bloom or sprig yet.")
+        for item in items:
+            item.rotation = degrees % 360
+        self.host.commit("items")
+        return {"source": source.name, "degrees": degrees % 360, "items": len(items)}
+
     @action("source.rename", "Give a source a new name.", source="name or id", name="new name")
     def source_rename(self, data):
         source = self._source(data, "source")
@@ -875,6 +925,7 @@ class NativeApi:
         if self.host.stream_status() is None:
             raise ApiError("not_allowed", "Not live.")
         self.host.stop_stream()
+        return {"on": False}  # it ends a moment later (stream.changed follows); nothing more goes out
 
     @action("stream.toggle", "Go live, or end the stream.")
     def stream_toggle(self, data):
@@ -1044,8 +1095,9 @@ class NativeApi:
 
     # Screenshots ---------------------------------------------------------------------------------
 
-    @action("screenshot.take", "A picture of what's on air in each shape.",
+    @action("screenshot.take", "A picture of what's on air in each shape, or of one source or bloom.",
             shape="?both (default), horizontal or vertical",
+            source="?just this source (a camera...), name or id", bloom="?just this bloom, name or id",
             width="?shrink to this width in pixels (keeps the shape)",
             save="?true (default): save PNGs in the recordings folder, under Screenshots",
             data="?true: send the picture back as base64 PNG (for bots and pages; large)")
@@ -1058,6 +1110,8 @@ class NativeApi:
         as_data = _get(data, "data", bool, optional=True, default=False)
         if not save and not as_data:
             raise _bad("Nothing to do: give save or data.")
+        if data.get("source") is not None or data.get("bloom") is not None:
+            return self._one_shot(data, shape, width, save, as_data)
         shapes = self._shapes() if shape == "both" else [shape]
         try:
             shots = self.host.screenshot(shapes, width, save, as_data)
@@ -1066,6 +1120,42 @@ class NativeApi:
         if not shots:
             raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
         return {"shots": shots}
+
+    def _one_shot(self, data, shape: str, width: int | None, save: bool, as_data: bool):
+        """screenshot.take of one source or bloom. A bloom on air is pictured as its canvas; one off air, as
+        its sprig drawn on its own."""
+        if data.get("source") is not None:
+            source = self._source(data, "source")
+            target, name = source.id, source.name
+        else:
+            bloom = self._bloom(data)
+            family = self.col.linked_with(bloom.id)
+            if shape != "both":
+                family = [s for s in family if s.canvas == shape] or family
+            on_air = [s.canvas for s in family if self.col.active_scenes.get(s.canvas) == s.id]
+            if on_air:
+                try:
+                    shots = self.host.screenshot(on_air[:1], width, save, as_data)
+                except OSError as exc:
+                    raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
+                if not shots:
+                    raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
+                return {"shots": [{**shot, "bloom": bloom.name} for shot in shots]}
+            placed = [i.source for i in family[0].items]
+            if len(placed) != 1:
+                raise ApiError("not_allowed", f"{bloom.name!r} isn't on air, so there's nothing to picture.")
+            target, name = placed[0], bloom.name
+        shoot = getattr(self.host, "source_screenshot", None)
+        if shoot is None:
+            raise ApiError("not_allowed", "Pictures of one source aren't possible here.")
+        try:
+            shot = shoot(target, name, width, save, as_data)
+        except OSError as exc:
+            raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
+        if shot is None:
+            raise ApiError("not_allowed", f"{name!r} isn't drawing right now, so there's nothing to picture.")
+        key = "source" if data.get("source") is not None else "bloom"
+        return {"shots": [{**shot, key: name}]}
 
     # Transitions ---------------------------------------------------------------------------------
 

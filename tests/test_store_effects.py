@@ -557,3 +557,41 @@ def test_hotkey_run_tells_apps_why_it_did_nothing():
     assert api.run("hotkey.run", {"hotkey": "plugin:hide:pixelate:fc"}) == {
         "hotkey": "plugin:hide:pixelate:fc", "note": "Not in this bloom: Facecam"}
     assert api.run("hotkey.run", {"hotkey": "toggle_stream"}) == {"hotkey": "toggle_stream", "note": None}
+
+
+def test_apps_hear_which_plugin_to_add_and_which_are_on(added):
+    """THSV StreamBridge: an effect whose plugin isn't added says which plugin; plugins.list says what's on."""
+    api = NativeApi(FakeHost(_collection()))
+    with pytest.raises(ApiError) as info:
+        api.run("roll.spin", {"source": "Cam", "seconds": 5})
+    assert info.value.code == "plugin_missing" and "Barrel Roll" in info.value.message
+    with pytest.raises(ApiError) as info:
+        api.run("hide.blackout", {"source": "Cam"})
+    assert info.value.code == "plugin_missing" and "Hide it" in info.value.message
+    with pytest.raises(ApiError) as info:
+        api.run("nope.never", {})
+    assert info.value.code == "unknown_action"
+    listed = {p["id"]: p for p in api.run("plugins.list", {})["plugins"]}
+    assert listed["barrel_roll"]["enabled"] is False and listed["barrel_roll"]["actions"] == ["roll.spin"]
+    added("barrel_roll")
+    listed = {p["id"]: p for p in api.run("plugins.list", {})["plugins"]}
+    assert listed["barrel_roll"]["enabled"] is True and listed["barrel_roll"]["version"] >= 3
+    assert {"id", "name", "version", "enabled"} <= set(listed["barrel_roll"])
+    assert listed["hide_it"]["enabled"] is False
+
+
+def test_effects_take_up_to_ten_minutes_and_name_what_is_missing(added):
+    added("hide_it")
+    added("barrel_roll")
+    api = NativeApi(FakeHost(_collection()))
+    for action in ("hide.blackout", "hide.pixelate", "roll.spin"):
+        with pytest.raises(ApiError) as info:
+            api.run(action, {"source": "Cam", "seconds": 601})
+        assert info.value.code == "bad_request"
+        with pytest.raises(ApiError) as info:
+            api.run(action, {"source": "Nobody", "seconds": 5})
+        assert info.value.code == "not_found" and "Nobody" in info.value.message
+    with pytest.raises(ApiError) as info:
+        api.run("roll.spin", {"sprig": "Nobody", "seconds": 5})
+    assert info.value.code == "not_found" and "Nobody" in info.value.message
+    assert api.run("hide.blackout", {"source": "Cam", "seconds": 600})["seconds"] == 600.0
