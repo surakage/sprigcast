@@ -280,7 +280,9 @@ class GettingStartedDialog(QDialog):
     def __init__(self, parent: QWidget | None = None,
                  twitch_account: Callable[[], str | None] | None = None,
                  connect_twitch: Callable[[QWidget], tuple[str, str | None] | None] | None = None,
-                 list_gear: Callable[[], Gear] | None = None):
+                 list_gear: Callable[[], Gear] | None = None,
+                 can_sign_in: Callable[[str], bool] | None = None,
+                 sign_in: Callable[[str, QWidget], object] | None = None):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Get started")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -290,6 +292,9 @@ class GettingStartedDialog(QDialog):
         self._list_gear = list_gear or Gear
         self.found: Gear | None = None
         self.twitch: tuple[str, str | None] | None = None
+        self._can_sign_in = can_sign_in or (lambda _service: False)
+        self._sign_in = sign_in
+        self.fetched: dict[str, object] = {}  # YouTube / Kick: service -> Fetched (account, key, server)
         self._drag = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 14, 20, 26)  # room for the shadow
@@ -548,7 +553,12 @@ class GettingStartedDialog(QDialog):
     def _place_toggled(self, key: str, on: bool) -> None:
         place = self.places[key]
         if key != "twitch":
-            place.set_note("Key next" if on else "")
+            if on and key not in self.fetched and self._sign_in is not None and self._can_sign_in(key):
+                fetched = self._sign_in(key, self)
+                if fetched is not None:
+                    self.fetched[key] = fetched
+            got = self.fetched.get(key) if on else None
+            place.set_note(getattr(got, "account", "") if got is not None else "Key next" if on else "")
             return
         if not on:
             place.set_note("")

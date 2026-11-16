@@ -6521,8 +6521,12 @@ class MainWindow(QMainWindow):
             return gs.Gear(cameras=list_cameras(), mics=[d.name for d in list_audio_devices(loopback=False)],
                            speakers=[d.name for d in list_audio_devices(loopback=True, rescan=False)])
 
+        from sprigcast.app.signin_dialog import sign_in
+        from sprigcast.output import service_signin
+
         dialog = gs.GettingStartedDialog(self, twitch_account=twitch_account, connect_twitch=connect_twitch,
-                                         list_gear=list_gear)
+                                         list_gear=list_gear, can_sign_in=service_signin.available,
+                                         sign_in=sign_in)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             log.info("get started: closed")
             return None
@@ -6578,6 +6582,18 @@ class MainWindow(QMainWindow):
             for output in places:
                 if output.service == "twitch":
                     output.twitch_account = True
+        for output in places:  # YouTube / Kick signed in: their key (and Kick's server) is already here
+            fetched = dialog.fetched.get(output.service)
+            if fetched is None:
+                continue
+            if fetched.server:
+                output.server = fetched.server
+            try:
+                from sprigcast.output.keys import set_key
+
+                set_key(output.key_ref, fetched.key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("get started: couldn't save the %s key: %s", output.service, exc)
         self.show_canvases(answers.shape)
         shelf.sync_path(self.collection)
         self._changed()
