@@ -46,6 +46,14 @@ SIGNATURES = {  # name: (result, arguments)
     "glGetBufferSubData": (None, [_u, _z, _z, _p]),
     "glGetIntegerv": (None, [_u, ctypes.POINTER(_i)]),
 }
+FENCES = {  # OpenGL 3.2 sync objects: without them read-backs are fetched without asking first, as before
+    "glFenceSync": (_p, [_u, _u]),
+    "glClientWaitSync": (_u, [_p, _u, ctypes.c_uint64]),
+    "glDeleteSync": (None, [_p]),
+}
+GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117
+GL_SYNC_FLUSH_COMMANDS_BIT = 0x00000001
+GL_TIMEOUT_EXPIRED = 0x911B
 
 
 def _resolvers():
@@ -75,23 +83,50 @@ class UnlockedGL:
     def __init__(self, ctx, resolvers=None):
         self.ctx = ctx
         self.ok = False
+        self.fences_ok = False  # fence()/done() work: a read-back is fetched only once the card has made it
         try:
             resolvers = resolvers if resolvers is not None else _resolvers()
             for name, (result, arguments) in SIGNATURES.items():
-                address = None
-                for resolve in resolvers:
-                    try:
-                        address = resolve(name.encode())
-                    except (AttributeError, OSError):
-                        address = None
-                    if address:
-                        break
+                address = self._find(name, resolvers)
                 if not address:
                     raise LookupError(f"{name} not found")
                 setattr(self, name, _FUNCTYPE(result, *arguments)(address))
             self.ok = True
+            found = {name: self._find(name, resolvers) for name in FENCES}
+            if all(found.values()):
+                for name, (result, arguments) in FENCES.items():
+                    setattr(self, name, _FUNCTYPE(result, *arguments)(found[name]))
+                self.fences_ok = True
         except Exception as exc:  # noqa: BLE001 (no OpenGL library to call directly: moderngl as before)
             log.info("graphics: direct OpenGL calls unavailable (%s); using moderngl's", exc)
+
+    @staticmethod
+    def _find(name: str, resolvers):
+        for resolve in resolvers:
+            try:
+                address = resolve(name.encode())
+            except (AttributeError, OSError):
+                address = None
+            if address:
+                return address
+        return None
+
+    def fence(self):
+        """A marker after everything asked of the card so far (None without sync objects)."""
+        if not self.fences_ok:
+            return None
+        return self.glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0) or None
+
+    def done(self, sync) -> bool:
+        """Has the card got past this marker? Never waits."""
+        if sync is None:
+            return True
+        result = self.glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0)
+        return result != GL_TIMEOUT_EXPIRED  # signalled, or the wait failed (then read it as before)
+
+    def forget(self, sync) -> None:
+        if sync is not None:
+            self.glDeleteSync(sync)
 
     def write_texture(self, texture, data) -> None:
         """texture.write(data) for a whole 8-bit texture, data a C-contiguous numpy array (alignment 1)."""

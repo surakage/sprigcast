@@ -125,3 +125,80 @@ def test_wait_free_reads_hand_back_the_previous_frame(compositor):
     assert tag == "first" and data == want_small
     data, tag = compositor.read_nv12_later("c", (32, 18), "third", 5.0)
     assert (data, tag) == (None, None)  # "second" waited too long (a hidden preview): thrown away
+
+
+def test_a_full_size_copy_also_comes_back_a_tick_late(compositor):
+    _picture(compositor)
+    want = compositor.read("c")
+    assert compositor.read_full_later("c", "first", 1.0) == (None, None)
+    data, tag = compositor.read_full_later("c", "second", 1.03)
+    assert tag == "first" and bytes(data) == want
+    compositor.read_scaled_later("c", (32, 18), "small", 1.03)  # a small preview beside it keeps the full copy
+    assert compositor.read_full_later("c", "third", 1.06)[1] == "second"
+
+
+class _Buffer:
+    def __init__(self):
+        self.data = b""
+
+    def read(self):
+        return self.data
+
+    def release(self):
+        pass
+
+
+class _Ctx:
+    def buffer(self, reserve):
+        return _Buffer()
+
+
+class _Fences:
+    fences_ok = True
+
+    def __init__(self):
+        self.made, self.finished, self.forgotten = 0, set(), []
+
+    def fence(self):
+        self.made += 1
+        return self.made
+
+    def done(self, sync):
+        return sync in self.finished
+
+    def forget(self, sync):
+        self.forgotten.append(sync)
+
+
+def test_a_copy_the_card_hasnt_finished_is_left_for_a_later_tick_instead_of_waited_for():
+    from sprigcast.render.compositor import _Pbos
+
+    fences = _Fences()
+    pbos = _Pbos(_Ctx(), 16, fences)
+
+    def fill(tag, now):
+        pbos.fill(tag, now, lambda buffer: setattr(buffer, "data", tag.encode()))
+
+    fill("a", 1.0)
+    assert pbos.take(1.0) == (None, None)  # only this tick's
+    fill("b", 1.016)
+    assert pbos.take(1.016) == (None, None) and pbos.late == 1  # "a" isn't copied yet: no waiting for it
+    fences.finished.add(1)
+    fill("c", 1.033)
+    assert pbos.take(1.033) == (b"a", "a") and fences.forgotten == [1]  # a tick later, nothing lost
+    fill("d", 1.05)  # the card is behind on all three ("b", "c", "d"): the next fill makes room
+    fill("e", 1.066)
+    assert 2 in fences.forgotten  # "b" gave way
+    fences.finished.update({3, 4})
+    assert pbos.take(1.066) == (b"c", "c")
+    pbos.release()
+    assert sorted(fences.forgotten) == [1, 2, 3, 4, 5]
+
+
+def test_without_fences_the_previous_frame_is_fetched_as_before():
+    from sprigcast.render.compositor import _Pbos
+
+    pbos = _Pbos(_Ctx(), 16, None)
+    pbos.fill("a", 1.0, lambda buffer: setattr(buffer, "data", b"a"))
+    pbos.fill("b", 1.016, lambda buffer: setattr(buffer, "data", b"b"))
+    assert pbos.take(1.016) == (b"a", "a") and pbos.late == 0

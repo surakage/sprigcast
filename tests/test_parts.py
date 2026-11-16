@@ -111,6 +111,7 @@ def test_engine_renders_parts_once_and_feeds_the_part_editor(compositor):
 
     col = _collection()
     engine = Engine(col)
+    engine.wait_free = False  # read what was just drawn (the tick-late reads: test_nv12)
     engine._sync_sources(compositor)
     assert engine._sources["cam"].size == (64, 36)  # the part's canvas size
     calls = []
@@ -172,6 +173,7 @@ def test_each_canvas_gets_its_own_layout(compositor):
     col.scene("p-cam-v").items = [SceneItem(source="red", x=28, y=56)]  # bottom-right in the vertical layout
     col.scene("show-v").items = [SceneItem(source="cam2", scale=0.5)]
     engine = Engine(col)
+    engine.wait_free = False  # read what was just drawn (the tick-late reads: test_nv12)
     engine._sync_sources(compositor)
     assert engine._sources["cam"].size == (64, 36) and engine._sources["cam2"].size == (36, 64)
     calls = []
@@ -577,6 +579,7 @@ def test_screenshots_leave_out_what_is_only_for_show_however_deep(compositor):
     col.scene("p-badge").items = [SceneItem(source="show-off", x=40, y=20)]  # inside the badge, inside the cam frame
     col.scene("show-h").items.append(SceneItem(source="show-off", x=20, y=20))  # and straight in the bloom
     engine = Engine(col)
+    engine.wait_free = False  # read what was just drawn (the tick-late reads: test_nv12)
     engine._sync_sources(compositor)
     got = {}
 

@@ -163,6 +163,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   own Google Speech-to-Text key for slower PCs (kept encrypted, never in the garden file). Pick the mic, language,
   Light / Balanced / Sharper, 1 to 3 lines and colours. It listens only while it's on air and lets the model go a
   minute after.
+  How captions look on stream: Card, Outline, Shadow or Plain; any font on the PC; Small / Medium / Large; Bold;
+  All caps; left, centre or right; text, card and outline colours.
 - Instant replay store plugin: plays the last few seconds back on stream. Pick one sprig or source to replay (your game
   or Elgato capture), and optionally a second one in a corner (your camera). Its hotkey, right-click, Stream Deck or
   an app (`replay.play`) starts it: canopy bands sweep in, REPLAY shows, the replay plays with a badge and a progress
