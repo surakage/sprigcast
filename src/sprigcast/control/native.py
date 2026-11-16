@@ -35,7 +35,7 @@ from typing import Any
 
 from sprigcast import __version__
 from sprigcast.control.protocol import Close, Sleep, auth_string
-from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
+from sprigcast.core.scene import MOVE_EASINGS, MOVE_UNMATCHED, PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 # What this SprigCast can do, for apps to check (app.info "features") instead of guessing from answers' shapes.
@@ -1208,27 +1208,45 @@ class NativeApi:
 
     # Transitions ---------------------------------------------------------------------------------
 
-    @action("transition.set", "Change the usual transition and/or its length.", kind="?" + ", ".join(TRANSITION_KINDS),
-            ms="?length in milliseconds, 50 to 20000")
+    @action("transition.set", "Change the usual transition, its length and (Move) how it moves.",
+            kind="?" + ", ".join(TRANSITION_KINDS), ms="?length in milliseconds, 50 to 20000",
+            easing="?Move only: " + ", ".join(MOVE_EASINGS),
+            unmatched="?Move only, what only one bloom shows: " + ", ".join(MOVE_UNMATCHED))
     def transition_set(self, data):
         kind = _get(data, "kind", str, optional=True)
         ms = _get(data, "ms", float, optional=True)
-        if kind is None and ms is None:
-            raise _bad("Give kind, ms or both.")
+        easing = _get(data, "easing", str, optional=True)
+        unmatched = _get(data, "unmatched", str, optional=True)
+        if kind is None and ms is None and easing is None and unmatched is None:
+            raise _bad("Give kind, ms, easing or unmatched.")
+        if kind is not None and kind not in TRANSITION_KINDS:
+            raise _bad(f"kind must be one of {', '.join(TRANSITION_KINDS)}.")
+        if ms is not None and not 50 <= ms <= 20000:
+            raise _bad("ms must be 50 to 20000.")
+        if easing is not None and easing not in MOVE_EASINGS:
+            raise _bad(f"easing must be one of {', '.join(MOVE_EASINGS)}.")
+        if unmatched is not None and unmatched not in MOVE_UNMATCHED:
+            raise _bad(f"unmatched must be one of {', '.join(MOVE_UNMATCHED)}.")
+        t = self.col.transition
         if kind is not None:
-            if kind not in TRANSITION_KINDS:
-                raise _bad(f"kind must be one of {', '.join(TRANSITION_KINDS)}.")
-            self.col.transition.kind = kind  # type: ignore[assignment]
+            t.kind = kind  # type: ignore[assignment]
         if ms is not None:
-            if not 50 <= ms <= 20000:
-                raise _bad("ms must be 50 to 20000.")
-            self.col.transition.duration_ms = int(ms)
+            t.duration_ms = int(ms)
+        if easing is not None:
+            t.easing = easing  # type: ignore[assignment]
+        if unmatched is not None:
+            t.unmatched = unmatched  # type: ignore[assignment]
         self.host.commit("transition")
-        return {"kind": self.col.transition.kind, "ms": self.col.transition.duration_ms}
+        return self._transition_info()
 
-    @action("transition.get", "The usual transition and its length.")
+    def _transition_info(self) -> dict[str, Any]:
+        t = self.col.transition
+        return {"kind": t.kind, "ms": t.duration_ms, "easing": t.easing, "unmatched": t.unmatched}
+
+    @action("transition.get", "The usual transition, its length and (Move) how it moves.")
     def transition_get(self, data):
-        return {"kind": self.col.transition.kind, "ms": self.col.transition.duration_ms, "kinds": list(TRANSITION_KINDS)}
+        return {**self._transition_info(), "kinds": list(TRANSITION_KINDS), "easings": list(MOVE_EASINGS),
+                "unmatched_choices": list(MOVE_UNMATCHED)}
 
     # Events ---------------------------------------------------------------------------------------
 

@@ -17,6 +17,12 @@
     # Look at a source's frames while it has your filter on and shows (the background remover).
     register_frame_watcher("background", lambda source_id: MyWatcher())
 
+    # Sound levels, about 15 times a second: {source id: (peak dBFS, RMS dBFS)}, plus "master".
+    register_level_watcher(lambda api, levels: ...)
+
+    # An entry of your own in the Tools menu (Auto clip's "Suggested clips…").
+    register_tool("Suggested clips…", lambda api: ...)
+
 `api` is the SprigCast API (control/native.py NativeApi): api.run("filter.set", {...}), api.col (the
 scenes and sources), api.host (the app). Plugin actions for apps go through control.native.register_action.
 Hotkey ids are stored as "plugin:<id>", so keep them stable.
@@ -74,6 +80,42 @@ def register_frame_watcher(kind: str, factory: Callable[[str], FrameWatcher]) ->
 def frame_watchers() -> dict[str, Callable[[str], FrameWatcher]]:
     """Filter kind -> factory, for plugins still added."""
     return {kind: fn for kind, fn in _FRAME_WATCHERS.items() if _alive(fn)}
+
+
+_LEVEL_WATCHERS: list[Callable[[Any, dict], None]] = []
+_TOOLS: list[tuple[str, Callable[[Any], None]]] = []
+
+
+def register_level_watcher(fn: Callable[[Any, dict], None]) -> None:
+    """fn(api, levels) about 15 times a second, on the UI thread, with the levels the meters show:
+    {source id: (peak dBFS, RMS dBFS)} after volume, plus "master". Keep it very quick.
+    A plugin loaded again (an update) replaces its own watcher rather than adding a second."""
+    key = (getattr(fn, "__module__", ""), getattr(fn, "__qualname__", ""))
+    _LEVEL_WATCHERS[:] = [f for f in _LEVEL_WATCHERS
+                          if (getattr(f, "__module__", ""), getattr(f, "__qualname__", "")) != key] + [fn]
+
+
+def levels_heard(api, levels: dict) -> None:
+    for fn in list(_LEVEL_WATCHERS):
+        if not _alive(fn):
+            continue
+        try:
+            fn(api, levels)
+        except Exception:
+            log.exception("a plugin's level watcher failed; it won't be asked again")
+            _LEVEL_WATCHERS.remove(fn)  # 15 times a second: one failure would fill the log
+            return
+
+
+def register_tool(label: str, fn: Callable[[Any], None]) -> None:
+    """An entry in the Tools menu; fn(api) when it's picked."""
+    global _TOOLS
+    _TOOLS = [(lab, f) for lab, f in _TOOLS if lab != label] + [(label, fn)]  # a plugin loaded again replaces its own
+
+
+def tools() -> list[tuple[str, Callable[[Any], None]]]:
+    """(label, fn) for plugins still added, A-Z."""
+    return sorted(((lab, fn) for lab, fn in _TOOLS if _alive(fn)), key=lambda t: t[0].lower())
 
 
 def register_on_screenshot(fn: Callable[[Any, list[dict]], None]) -> None:

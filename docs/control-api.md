@@ -320,8 +320,8 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `transition.get` | The usual transition and its length. | none |
-| `transition.set` | Change the usual transition and/or its length. | `kind` (optional): cut, fade, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000 |
+| `transition.get` | The usual transition, its length and (Move) how it moves. | none |
+| `transition.set` | Change the usual transition, its length and (Move) how it moves. | `kind` (optional): cut, fade, move, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000, `easing` (optional): Move only: smooth, ease_out, ease_in, linear, spring, `unmatched` (optional): Move only, what only one bloom shows: fade, scale, slide |
 
 ## Web page sources
 
@@ -347,8 +347,20 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `deaths.reset` | Death count | Back to 0. | `source` (optional) |
 | `deaths.show` | Death count | Pop the gravestone up with the count as it is. | `source` (optional) |
 | `deaths.get` | Death count | The count, without showing it. | `source` (optional) |
+| `autoclip.status` | Auto clip | Its settings, whether it's listening now (`watching`: on and clips ready) and how many suggestions wait. | |
+| `autoclip.set` | Auto clip | Change its settings. | `on`, `mic`, `game`, `chat`, `sensitivity` (low, medium, high), `gap` (seconds between suggestions, 10 to 600), `days` (delete unkept after, 0 = never) (all optional) |
+| `autoclip.list` | Auto clip | The suggested clips, newest first: `{"clips": [{"id", "at", "reason", "label", "files"}]}`. | |
+| `autoclip.keep` | Auto clip | Keep a suggestion: its files move to your Clips folder. Answers the new `files`. | `id` |
+| `autoclip.delete` | Auto clip | Delete a suggestion and its files. | `id` |
+| `autoclip.mark` | Auto clip | Suggest a clip now. It's saved a few seconds later (`in`), so what follows is in it. | |
+| `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
+| `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
+
+**Auto clip** listens while clips are ready (the Clip button) and saves big moments as suggestions: your mic or game sound jumping well over its own usual level, or chat moving much faster than usual (with Chat ticked). Each one sends an `autoclip.suggested` event (`plugin` group) with the same fields as `autoclip.list`; `reason` is `mic`, `game`, `chat` or `mark`. Nothing is posted anywhere: suggestions wait in Tools → Suggested clips… (in the recordings folder's "Suggested clips") until you keep or delete them, and unkept ones are deleted after `days`.
+
+**Instant replay** keeps the last Seconds (default 20) of what you picked in its settings: one sprig or source, plus an optional one in a corner (a camera). It keeps nothing while its bloom is off air or its eye is off, so `replay.play` then answers `not_allowed` ("Instant replay isn't on air."), as it does while one is already playing. It answers `{"playing": [names]}` and sends `replay.started` (`source`, `sourceId`, `seconds`, `speed`) and `replay.ended` (`source`, `sourceId`, `reason`: ended, stopped or failed) in the `plugin` group. Adding it (+ → Plugins → Instant replay) makes a sprig of its own that fills the canvas, on top of the bloom; it's see-through except while a replay plays.
 
 **Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing. With **Freeze the screen while it prints** on (the default), the bloom on air holds still from the snapped frame until the polaroid slides away, so viewers see exactly the moment that was snapped; the Snap itself keeps moving.
 
