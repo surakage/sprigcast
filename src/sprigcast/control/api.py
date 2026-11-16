@@ -44,6 +44,8 @@ INPUT_KINDS = {
     "text": "text_gdiplus_v3",
     "browser": "browser_source",
 }
+STREAM_FLAGS = {"OBS_OUTPUT_AUDIO": True, "OBS_OUTPUT_VIDEO": True, "OBS_OUTPUT_ENCODED": True,
+                "OBS_OUTPUT_SERVICE": True}
 TRANSITION_NAMES = {kind: kind.capitalize() for kind in TRANSITION_KINDS}  # "fade" -> "Fade"
 OBS_TRANSITION_KINDS = {"cut": "cut_transition", "fade": "fade_transition", "slide": "slide_transition",
                         "swipe": "swipe_transition", "wipe": "wipe_transition", "stinger": "obs_stinger_transition"}
@@ -78,7 +80,17 @@ def settings_from_obs(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
             continue
         if kind == "media" and ours == "speed" and isinstance(value, (int, float)):
             value = value / 100
+        if kind == "browser" and key == "shutdown":  # OBS: shut down when hidden; ours: keep running when hidden
+            ours, value = "keep_running", not bool(value)
         out[ours] = value
+    return out
+
+
+def settings_for_obs(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
+    """Our settings as an OBS app reads them (adds OBS's own names where they differ in meaning)."""
+    out = dict(settings)
+    if kind == "browser":
+        out["shutdown"] = not bool(settings.get("keep_running", False))
     return out
 
 
@@ -230,6 +242,19 @@ class ControlApi:
         if scene is None:
             raise RequestError(Status.RESOURCE_NOT_FOUND, f"No bloom or sprig called {uuid or name!r}.")
         return self.col.main_part(scene)
+
+    def _layout(self, data: dict[str, Any]) -> Scene:
+        """The layout whose items a request means. Blooms hold one sprig named after them (an OBS scene imported
+        becomes a bloom and its sprig), so a bloom holding just one sprig shows that sprig's items, in the bloom's
+        shape: what was in the OBS scene answers to the scene's name, as apps made for OBS expect."""
+        scene = self._scene(data)
+        if scene.kind == "show" and scene.items:
+            sources = {c.id: c for c in self.col.sources}
+            parts = {getattr(self.col.part_of(sources[i.source]), "id", None) if i.source in sources else None
+                     for i in scene.items}
+            if len(parts) == 1 and None not in parts:  # just its one sprig (anything else: the bloom's own items)
+                return self.col.shape_for(self.col.scene(parts.pop()), scene.canvas)
+        return scene
 
     def _inputs(self) -> list[SourceConfig]:
         return [s for s in self.col.sources if s.kind != PART_KIND]
@@ -460,6 +485,27 @@ class ControlApi:
     def req_GetGroupList(self, data):
         return {"groups": []}
 
+    def req_CreateScene(self, data):
+        """A new bloom, in every shape that's on (with its own sprig, where new inputs go)."""
+        name = _require(data, "sceneName", str).strip()
+        if not name:
+            raise RequestError(Status.REQUEST_FIELD_EMPTY, "sceneName is empty.")
+        if any(s.kind == "show" and s.name == name for s in self.col.scenes):
+            raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"A bloom called {name!r} already exists.")
+        first = self.col.canvases[0].id
+        bloom = self.col.new_bloom(name, [c.id for c in self.col.canvases if c.enabled or c.id == first])
+        self.host.commit("scenes")
+        return {"sceneUuid": bloom.id}
+
+    def req_RemoveScene(self, data):
+        scene = self._scene(data)
+        if scene.kind != "show":
+            raise RequestError(Status.INVALID_RESOURCE_TYPE, f"{scene.name!r} is a sprig, not a bloom.")
+        if all(len(self.col.scenes_for(s.canvas)) <= 1 for s in self.col.linked_with(scene.id)):
+            raise RequestError(Status.NOT_ENOUGH_RESOURCES, "Each canvas needs at least one bloom.")
+        self.col.remove_bloom(scene)
+        self.host.commit("scenes")
+
     def req_GetCurrentProgramScene(self, data):
         scene = self.col.active_scene(self.col.canvases[0].id)
         if scene is None:  # only the vertical canvas has a bloom on air
@@ -557,7 +603,7 @@ class ControlApi:
 
     def req_GetInputSettings(self, data):
         source = self._input(data)
-        return {"inputSettings": dict(source.settings), "inputKind": self._input_kind(source)}
+        return {"inputSettings": settings_for_obs(source.kind, source.settings), "inputKind": self._input_kind(source)}
 
     def req_GetInputMute(self, data):
         return {"inputMuted": bool(self._sound(data).settings.get("muted", False))}
@@ -633,15 +679,90 @@ class ControlApi:
 
     # Scene items ---------------------------------------------------------------------
 
-    def req_GetSceneItemList(self, data):
+    def _add_item(self, data: dict[str, Any], source: SourceConfig, visible: bool) -> int:
+        """Put a source on top of a scene; answers its sceneItemId. A bloom's goes in its sprig, in every shape
+        (blooms hold sprigs only), so it answers to the bloom's name like everything imported from OBS."""
         scene = self._scene(data)
+        layout = self._layout(data)
+        if scene.kind == "show" and layout is scene and scene.items:
+            targets = list(self.col.linked_with(scene.id))  # an older bloom with its own items: add it there
+        elif scene.kind == "show":
+            targets = []
+            for bloom in self.col.linked_with(scene.id):
+                sprig = self.col.give_sprig(bloom)
+                shape = self.col.shape_for(sprig, bloom.canvas)
+                if shape.canvas != bloom.canvas:
+                    shape = self.col.add_shape(sprig, bloom.canvas, self.col.new_id(f"{sprig.id}-{bloom.canvas}"))
+                if all(shape.id != t.id for t in targets):
+                    targets.append(shape)
+        else:
+            targets = [scene] + self._twins(scene)
+        for target in targets:
+            target.items.append(SceneItem(source=source.id, visible=visible))  # last is on top
+        self.host.commit("items")
+        layout = self._layout(data)
+        index = max(i for i, item in enumerate(layout.items) if item.source == source.id)
+        return self._item_id(layout, index)
+
+    def req_CreateInput(self, data):
+        name = _require(data, "inputName", str).strip()
+        obs_kind = _require(data, "inputKind", str)
+        settings = data.get("inputSettings") or {}
+        if not isinstance(settings, dict):
+            raise RequestError(Status.INVALID_REQUEST_FIELD_TYPE, "inputSettings must be an object.")
+        visible = data.get("sceneItemEnabled", True)
+        if not isinstance(visible, bool):
+            raise RequestError(Status.INVALID_REQUEST_FIELD_TYPE, "sceneItemEnabled must be true or false.")
+        if not name:
+            raise RequestError(Status.REQUEST_FIELD_EMPTY, "inputName is empty.")
+        if any(s.name == name for s in self._inputs()):
+            raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"A source called {name!r} already exists.")
+        import sprigcast.sources  # noqa: F401  (registers the built-in kinds)
+        from sprigcast.core.source import known_kinds, source_class
+
+        kind = next((k for k, obs in INPUT_KINDS.items() if obs == obs_kind), obs_kind)
+        if kind == PART_KIND or kind not in known_kinds():
+            raise RequestError(Status.INVALID_INPUT_KIND, f"Unknown inputKind {obs_kind!r}.")
+        if data.get("sceneName") is None and data.get("sceneUuid") is None:
+            raise RequestError(Status.MISSING_REQUEST_FIELD, "sceneName or sceneUuid is missing.")
+        self._scene(data)  # the scene exists before anything is made
+        defaults = dict(getattr(source_class(kind), "defaults", None) or {})
+        source = SourceConfig(id=self.col.new_id(kind), kind=kind, name=name,
+                              settings={**defaults, **settings_from_obs(kind, settings)})
+        self.col.sources.append(source)
+        self.host.commit("sources")
+        return {"inputUuid": source.id, "sceneItemId": self._add_item(data, source, visible)}
+
+    def req_CreateSceneItem(self, data):
+        uuid, name = data.get("sourceUuid"), data.get("sourceName")
+        if uuid is None and name is None:
+            raise RequestError(Status.MISSING_REQUEST_FIELD, "sourceName or sourceUuid is missing.")
+        source = self._input({"inputUuid": uuid} if uuid is not None else {"inputName": name})
+        visible = data.get("sceneItemEnabled", True)
+        if not isinstance(visible, bool):
+            raise RequestError(Status.INVALID_REQUEST_FIELD_TYPE, "sceneItemEnabled must be true or false.")
+        return {"sceneItemId": self._add_item(data, source, visible)}
+
+    def req_RemoveSceneItem(self, data):
+        scene = self._layout(data)
+        index, item = self._item(scene, data)
+        nth = sum(1 for other in scene.items[:index] if other.source == item.source)
+        del scene.items[index]
+        for twin in self._twins(scene):
+            same = [i for i, other in enumerate(twin.items) if self._same_thing(other.source, item.source)]
+            if nth < len(same):
+                del twin.items[same[nth]]
+        self.host.commit("items")
+
+    def req_GetSceneItemList(self, data):
+        scene = self._layout(data)
         return {"sceneItems": [self._item_info(scene, i) for i in range(len(scene.items))]}
 
     def req_GetGroupSceneItemList(self, data):
         return self.req_GetSceneItemList(data)
 
     def req_GetSceneItemId(self, data):
-        scene = self._scene(data)
+        scene = self._layout(data)
         name = _require(data, "sourceName", str)
         offset = int(data.get("searchOffset", 0))
         found = [i for i in range(len(scene.items)) if self._source_name(scene.items[i].source) == name]
@@ -652,16 +773,16 @@ class ControlApi:
         return {"sceneItemId": self._item_id(scene, found[offset])}
 
     def req_GetSceneItemSource(self, data):
-        scene = self._scene(data)
+        scene = self._layout(data)
         index, item = self._item(scene, data)
         info = self._item_info(scene, index)
         return {"sourceName": info["sourceName"], "sourceUuid": info["sourceUuid"]}
 
     def req_GetSceneItemEnabled(self, data):
-        return {"sceneItemEnabled": self._item(self._scene(data), data)[1].visible}
+        return {"sceneItemEnabled": self._item(self._layout(data), data)[1].visible}
 
     def req_SetSceneItemEnabled(self, data):
-        scene = self._scene(data)
+        scene = self._layout(data)
         _, item = self._item(scene, data)
         on = bool(_require(data, "sceneItemEnabled", bool))
         item.visible = on
@@ -672,21 +793,21 @@ class ControlApi:
         self.host.commit("items")
 
     def req_GetSceneItemLocked(self, data):
-        return {"sceneItemLocked": self._item(self._scene(data), data)[1].locked}
+        return {"sceneItemLocked": self._item(self._layout(data), data)[1].locked}
 
     def req_SetSceneItemLocked(self, data):
-        _, item = self._item(self._scene(data), data)
+        _, item = self._item(self._layout(data), data)
         item.locked = bool(_require(data, "sceneItemLocked", bool))
         self.host.commit("items")
 
     def req_GetSceneItemIndex(self, data):
-        return {"sceneItemIndex": self._item(self._scene(data), data)[0]}
+        return {"sceneItemIndex": self._item(self._layout(data), data)[0]}
 
     def req_GetSceneItemTransform(self, data):
-        return {"sceneItemTransform": self._transform(self._item(self._scene(data), data)[1])}
+        return {"sceneItemTransform": self._transform(self._item(self._layout(data), data)[1])}
 
     def req_SetSceneItemTransform(self, data):
-        _, item = self._item(self._scene(data), data)
+        _, item = self._item(self._layout(data), data)
         transform = _require(data, "sceneItemTransform", dict)
         size = self.host.source_sizes().get(item.source, (0, 0))
         known = bool(size[0] and size[1])
@@ -860,13 +981,80 @@ class ControlApi:
         outputs = [{"outputName": "simple_stream", "outputKind": "rtmp_output", "outputActive": self.host.stream_status() is not None},
                    {"outputName": "simple_file_output", "outputKind": "ffmpeg_muxer", "outputActive": self.host.record_status() is not None},
                    {"outputName": "Replay Buffer", "outputKind": "replay_buffer", "outputActive": self.host.clips_ready()}]
+        outputs[0]["outputFlags"] = dict(STREAM_FLAGS)
+        places = self._places()
         for output in self.col.outputs:
             if output.type == "stream":
                 outputs.append({"outputName": f"sprigcast:{output.id}", "outputKind": "rtmp_output",
-                                "outputActive": self.host.stream_status() is not None and output.enabled,
+                                "outputActive": output.id in places,
                                 "outputWidth": (output.size or (0, 0))[0], "outputHeight": (output.size or (0, 0))[1],
-                                "outputFlags": {}})
+                                "outputFlags": dict(STREAM_FLAGS)})
         return {"outputs": outputs}
+
+    def _places(self) -> dict[str, dict[str, Any]]:
+        """Places being sent to now, by output id (hosts without per-place status: every switched-on place)."""
+        places = getattr(self.host, "stream_places", None)
+        if places is not None:
+            return places() or {}
+        status = self.host.stream_status()
+        return {} if status is None else {o.id: status for o in self.col.outputs if o.type == "stream" and o.enabled}
+
+    def _output(self, data: dict[str, Any]) -> str:
+        name = _require(data, "outputName", str)
+        if name in ("simple_stream", "simple_file_output", "Replay Buffer"):
+            return name
+        if name.startswith("sprigcast:") and any(o.type == "stream" and o.id == name[10:] for o in self.col.outputs):
+            return name
+        raise RequestError(Status.RESOURCE_NOT_FOUND, f"No output called {name!r}.")
+
+    def req_GetOutputStatus(self, data):
+        name = self._output(data)
+        if name == "simple_stream":
+            return self.req_GetStreamStatus(data)
+        if name == "simple_file_output":
+            return self._output_status(self.host.record_status())
+        if name == "Replay Buffer":
+            return self._output_status({"seconds": 0.0} if self.host.clips_ready() else None)
+        return self._output_status(self._places().get(name[10:]))
+
+    def req_StartOutput(self, data):
+        name = self._output(data)
+        if name == "simple_stream":
+            return self.req_StartStream(data)
+        if name == "simple_file_output":
+            return self.req_StartRecord(data)
+        if name == "Replay Buffer":
+            return self.req_StartReplayBuffer(data)
+        if self.host.stream_status() is None:
+            raise RequestError(Status.OUTPUT_NOT_RUNNING, "Not live: start the stream first.")
+        if name[10:] in self._places():
+            raise RequestError(Status.OUTPUT_RUNNING, "Already sending there.")
+        problem = self.host.start_place(name[10:])
+        if problem:
+            raise RequestError(Status.OUTPUT_DISABLED, problem)
+
+    def req_StopOutput(self, data):
+        name = self._output(data)
+        if name == "simple_stream":
+            return self.req_StopStream(data)
+        if name == "simple_file_output":
+            self.req_StopRecord(data)
+            return None
+        if name == "Replay Buffer":
+            return self.req_StopReplayBuffer(data)
+        if name[10:] not in self._places():
+            raise RequestError(Status.OUTPUT_NOT_RUNNING, "Not sending there.")
+        problem = self.host.stop_place(name[10:])
+        if problem:
+            raise RequestError(Status.OUTPUT_DISABLED, problem)
+
+    def req_ToggleOutput(self, data):
+        name = self._output(data)
+        on = (self.host.stream_status() is not None if name == "simple_stream" else
+              self.host.record_status() is not None if name == "simple_file_output" else
+              self.host.clips_ready() if name == "Replay Buffer" else name[10:] in self._places())
+        (self.req_StopOutput if on else self.req_StartOutput)(data)
+        return {"outputActive": not on}
 
     # Input settings, filters, media and source pictures: what TikFinity, Streamer.bot and Stream
     # Deck's OBS actions send most (change a text, turn a filter on, play a sound, grab a picture).

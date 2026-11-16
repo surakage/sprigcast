@@ -179,3 +179,48 @@ def test_session_shares_one_encoder_between_two_servers(tmp_path):
     for out in outs:
         with av.open(str(out)) as f:
             assert sum(1 for _ in f.decode(video=0)) > 10
+
+
+class _Fake:
+    def __init__(self, output_id, shared=None):
+        self.output_id, self.shared, self.stopped = output_id, shared, False
+        self.links = []
+
+    def push_frame(self, frame):
+        pass
+
+    def push_audio(self, chunk):
+        pass
+
+    def stop(self, timeout=5):
+        self.stopped = True
+
+
+def test_session_drops_and_adds_one_place_while_live(monkeypatch):
+    """place.stop / place.start: one place ends or joins, the rest keep going, a shared encoder goes with its last link."""
+    engine = _Engine()
+    enc = _Fake("enc")
+    a, b, alone = _Fake("a", enc), _Fake("b", enc), _Fake("alone")
+    enc.links = [a, b]
+    taps = [("horizontal", enc.push_frame), ("vertical", alone.push_frame)]
+    session = StreamSession(engine, [("horizontal", a), ("horizontal", b), ("vertical", alone)])
+    session.taps, session.shared = list(taps), [enc]
+    session.owned = {id(enc): [taps[0]], id(alone): [taps[1]]}
+    for cid, cb in taps:
+        engine.add_frame_tap(cid, cb)
+    for st in (a, b, alone, enc):
+        engine.mixer.add_tap(st.push_audio)
+    assert session.drop("a") and enc.links == [b]
+    assert ("horizontal", enc.push_frame) in engine.frame_taps  # b still needs the encoder
+    assert session.drop("b")
+    assert wait_for(lambda: a.stopped and b.stopped and enc.stopped)
+    assert engine.frame_taps == [("vertical", alone.push_frame)] and session.shared == []
+    assert engine.mixer.taps == [alone.push_audio]
+    assert not session.drop("a")
+    late = _Fake("late")
+    monkeypatch.setattr(StreamSession, "_one", staticmethod(lambda t, *rest: (late, [("horizontal", late.push_frame)])))
+    c = _Canvas()
+    assert session.add(StreamTarget("Late", c, "rtmp://x/app", "k", 800, output_id="late"), "libx264") is late
+    assert session.find("late") is late and ("horizontal", late.push_frame) in engine.frame_taps
+    session.stop()
+    assert engine.frame_taps == [] and engine.mixer.taps == []

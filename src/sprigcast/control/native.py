@@ -172,6 +172,31 @@ class NativeApi:
 
     # Lookups ---------------------------------------------------------------------------
 
+    @action("bloom.new", "Make an empty bloom (with its own sprig, where what you add goes).", name="name",
+            shape="?both (default: every canvas), horizontal or vertical")
+    def bloom_new(self, data):
+        name = _get(data, "name", str).strip()
+        if not name:
+            raise _bad("name is empty.")
+        if any(s.kind == "show" and s.name == name for s in self.col.scenes):
+            raise ApiError("busy", f"There's already a bloom called {name!r}.")
+        shape = self._shape(data)
+        canvases = [c.id for c in self.col.canvases if c.enabled or c.id == self.col.canvases[0].id]
+        canvases = canvases if shape == "both" else [shape]
+        bloom = self.col.new_bloom(name, canvases)
+        self.host.commit("scenes")
+        return self._bloom_info(bloom)
+
+    @action("bloom.remove", "Remove a bloom (in every shape). Its sources stay while other blooms use them.",
+            bloom="name or id")
+    def bloom_remove(self, data):
+        bloom = self._bloom(data)
+        if all(len(self.col.scenes_for(s.canvas)) <= 1 for s in self.col.linked_with(bloom.id)):
+            raise ApiError("not_allowed", "Each canvas needs at least one bloom.")
+        self.col.remove_bloom(bloom)
+        self.host.commit("scenes")
+        return {"removed": bloom.name}
+
     def _shapes(self) -> list[str]:
         return [c.id for c in self.col.canvases]
 
@@ -473,6 +498,33 @@ class NativeApi:
              "locked": i.locked, "sprig": self._item_key(i.source) != i.source}
             for i in reversed(layout.items)] for layout in layouts}}  # top of the list first, as in Build
 
+    def _add_to(self, data) -> tuple[Scene, list[Scene]]:
+        """Where item.add puts things: a sprig's layouts, or a bloom's own sprig (blooms hold sprigs only)."""
+        holder, layouts = self._holder(data)
+        if holder.kind == "part":
+            return holder, layouts
+        inner: list[Scene] = []
+        for layout in layouts:
+            sprig = self.col.give_sprig(layout)  # an empty bloom made in Build gets its sprig now
+            shape = self.col.shape_for(sprig, layout.canvas)
+            if shape.canvas != layout.canvas:
+                shape = self.col.add_shape(sprig, layout.canvas, self.col.new_id(f"{sprig.id}-{layout.canvas}"))
+            if all(shape.id != s.id for s in inner):
+                inner.append(shape)
+        return holder, inner
+
+    @action("item.add", "Put a source in a bloom (in its sprig) or a sprig, on top. Answers the item's id.",
+            source="name or id", bloom="?bloom to add to", sprig="?sprig to add to",
+            shape="?both (default), horizontal or vertical", visible="?true (default) or false")
+    def item_add(self, data):
+        source = self._source(data, "source")
+        visible = _get(data, "visible", bool, optional=True, default=True)
+        holder, layouts = self._add_to(data)
+        for layout in layouts:
+            layout.items.append(SceneItem(source=source.id, visible=visible))  # last is on top
+        self.host.commit("items")
+        return {"item": source.id, "name": source.name, "shapes": [layout.canvas for layout in layouts]}
+
     def _set_items(self, data, visible: bool | None):
         _, items = self._items(data)
         on = (not items[0].visible) if visible is None else visible
@@ -716,6 +768,27 @@ class NativeApi:
         self.host.commit("sources")
         return {"id": source.id, "settings": dict(source.settings)}
 
+    @action("source.new", "Make a source (a browser page, text, image...). Put it in a bloom with item.add.",
+            name="name", kind="browser, text, image, color, media...", settings="?{key: value}, e.g. url, width, height")
+    def source_new(self, data):
+        import sprigcast.sources  # noqa: F401  (registers the built-in kinds)
+        from sprigcast.core.source import known_kinds, source_class
+
+        name = _get(data, "name", str).strip()
+        kind = _get(data, "kind", str)
+        settings = _get(data, "settings", dict, optional=True, default={})
+        if not name:
+            raise _bad("name is empty.")
+        if kind == PART_KIND or kind not in known_kinds():
+            raise _bad(f"kind must be one of {', '.join(sorted(k for k in known_kinds() if k != PART_KIND))}.")
+        if any(s.name == name for s in self.col.sources if s.kind != PART_KIND):
+            raise ApiError("busy", f"There's already a source called {name!r}.")
+        defaults = dict(getattr(source_class(kind), "defaults", None) or {})
+        source = SourceConfig(id=self.col.new_id(kind), kind=kind, name=name, settings={**defaults, **settings})
+        self.col.sources.append(source)
+        self.host.commit("sources")
+        return {"id": source.id, "name": source.name, "kind": kind, "settings": dict(source.settings)}
+
     @action("source.rename", "Give a source a new name.", source="name or id", name="new name")
     def source_rename(self, data):
         source = self._source(data, "source")
@@ -733,9 +806,61 @@ class NativeApi:
         return {"on": True, "seconds": round(float(status.get("seconds", 0.0)), 1),
                 **{k: v for k, v in status.items() if k != "seconds"}}
 
-    @action("stream.status", "Live or not, for how long, and dropped frames.")
+    @action("stream.status", "Live or not, for how long, dropped frames, and each place on its own.")
     def stream_status(self, data):
-        return self._status(self.host.stream_status())
+        out = self._status(self.host.stream_status())
+        out["places"] = self._places_now()
+        return out
+
+    def _places_now(self) -> list[dict[str, Any]]:
+        """Each place: id, name, on (sending now), reconnecting, seconds, skipped and frames."""
+        from sprigcast.output.stream import SERVICES
+
+        running = getattr(self.host, "stream_places", dict)() or {}
+        out = []
+        for o in self.col.outputs:
+            if o.type != "stream":
+                continue
+            service = SERVICES.get(o.service or "custom", SERVICES["custom"])
+            now = running.get(o.id)
+            out.append({"id": o.id, "name": f"{service.label} ({o.canvas})", "service": o.service, "shape": o.canvas,
+                        "on": now is not None, "reconnecting": bool(now and now.get("reconnecting")),
+                        "seconds": round(float(now.get("seconds", 0.0)), 1) if now else 0.0,
+                        "skipped": int(now.get("skipped", 0)) if now else 0,
+                        "frames": int(now.get("frames", 0)) if now else 0})
+        return out
+
+    def _place(self, data) -> Any:
+        wanted = _get(data, "place", str)
+        output = next((o for o in self.col.outputs if o.type == "stream" and wanted in (o.id, o.service)), None)
+        if output is None:
+            raise _missing(f"No place {wanted!r}.")
+        return output
+
+    @action("place.stop", "While live: stop sending to one place (the others keep going; the last one ends the "
+            "stream).", place="id from places.list")
+    def place_stop(self, data):
+        output = self._place(data)
+        if self.host.stream_status() is None:
+            raise ApiError("not_allowed", "Not live.")
+        problem = self.host.stop_place(output.id)
+        if problem:
+            raise ApiError("not_allowed", problem)
+        return {"places": self._places_now()}
+
+    @action("place.start", "While live: start sending to one more place (switched on for next time too).",
+            place="id from places.list")
+    def place_start(self, data):
+        output = self._place(data)
+        if self.host.stream_status() is None:
+            raise ApiError("not_allowed", "Not live: use stream.start.")
+        problem = self.host.start_place(output.id)
+        if problem:
+            raise ApiError("not_allowed", problem)
+        if not output.enabled:
+            output.enabled = True
+            self.host.commit("places")
+        return {"places": self._places_now()}
 
     @action("stream.start", "Go live to every place that's switched on.")
     def stream_start(self, data):

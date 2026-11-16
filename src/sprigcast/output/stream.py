@@ -451,11 +451,11 @@ class StreamSession:
     @classmethod
     def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None,
               delay_s: float = 0.0) -> "StreamSession":
-        from sprigcast.output.enhanced_stream import EnhancedStreamer
         from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
 
         start_time = time.perf_counter()
         streamers, taps, shared = [], [], []
+        owned: dict[int, list[tuple]] = {}  # id(streamer or shared encoder) -> its frame taps (drop() takes them off)
         for t in targets:  # no size of its own: the canvas's output (scaled) size
             if t.size is None and hasattr(t.canvas, "output_size"):
                 size = t.canvas.output_size()
@@ -485,26 +485,19 @@ class StreamSession:
             for link in enc.links:
                 link.start()
             taps.append((c.id, enc.push_frame, enc.gpu_size))
+            owned[id(enc)] = [taps[-1]]
             shared.append(enc)
         for t in targets:
             if id(t) in done:
                 continue
-            c = t.canvas
-            if t.enhanced is not None:
-                st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
-                taps += [(canvas_id, st.push_for(canvas_id)) for canvas_id in st.canvas_ids()]
-            else:
-                fps = min(t.fps or c.fps, c.fps)
-                st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
-                              t.size, t.bandwidth_test, encoder, auto_bitrate=t.auto_bitrate)
-                taps.append((c.id, st.push_frame, st.gpu_size))
-            st.output_id = t.output_id or t.name
-            st.delay_s = delay_s
-            st.start()
-            streamers.append((c.id, st))
+            st, mine = cls._one(t, codec, encoder, delay_s, start_time)
+            taps += mine
+            owned[id(st)] = mine
+            streamers.append((t.canvas.id, st))
         session = cls(engine, streamers)
         session.taps = taps
         session.shared = shared
+        session.owned = owned
         for canvas_id, callback, *size in taps:
             engine.add_frame_tap(canvas_id, callback, *size)
         for _, st in streamers:
@@ -513,9 +506,80 @@ class StreamSession:
             engine.mixer.add_tap(enc.push_audio, ("stream",))
         return session
 
+    @staticmethod
+    def _one(t: StreamTarget, codec: str, encoder, delay_s: float, start_time: float):
+        """Start one destination with its own encoder. Returns it and its frame taps (not added yet)."""
+        from sprigcast.output.enhanced_stream import EnhancedStreamer
+
+        c = t.canvas
+        if t.enhanced is not None:
+            st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
+            taps = [(canvas_id, st.push_for(canvas_id)) for canvas_id in st.canvas_ids()]
+        else:
+            fps = min(t.fps or c.fps, c.fps)
+            st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
+                          t.size, t.bandwidth_test, encoder, auto_bitrate=t.auto_bitrate)
+            taps = [(c.id, st.push_frame, st.gpu_size)]
+        st.output_id = t.output_id or t.name
+        st.delay_s = delay_s
+        st.start()
+        return st, taps
+
     @property
     def elapsed(self) -> float:
         return time.monotonic() - self.started_at
+
+    def find(self, output_id: str):
+        return next((st for _, st in self.streamers if getattr(st, "output_id", None) == output_id), None)
+
+    def add(self, target: StreamTarget, codec: str, encoder=None, delay_s: float = 0.0):
+        """Start one more destination while live (an app's place.start), with its own encoder."""
+        if target.size is None and hasattr(target.canvas, "output_size"):
+            size = target.canvas.output_size()
+            if size != (target.canvas.width, target.canvas.height):
+                target.size = size
+        st, mine = self._one(target, codec, encoder, delay_s, time.perf_counter())
+        self.streamers.append((target.canvas.id, st))
+        if not hasattr(self, "taps"):
+            self.taps = []
+        self.taps += mine
+        self.__dict__.setdefault("owned", {})[id(st)] = mine
+        for canvas_id, callback, *size in mine:
+            self.engine.add_frame_tap(canvas_id, callback, *size)
+        self.engine.mixer.add_tap(st.push_audio, ("stream",))
+        return st
+
+    def drop(self, output_id: str) -> bool:
+        """Stop one destination while the rest stay live (an app's place.stop). False if it isn't streaming."""
+        st = self.find(output_id)
+        if st is None:
+            return False
+        self.streamers = [(c, s) for c, s in self.streamers if s is not st]
+        owned = self.__dict__.setdefault("owned", {})
+        gone = list(owned.pop(id(st), []))
+        enc = getattr(st, "shared", None)
+        if enc is not None and hasattr(enc, "links"):
+            enc.links[:] = [link for link in enc.links if link is not st]
+            if not enc.links:  # the last place on this encoder: the encoder goes too
+                gone += owned.pop(id(enc), [])
+                self.shared = [e for e in getattr(self, "shared", []) if e is not enc]
+                self.engine.mixer.remove_tap(enc.push_audio)
+            else:
+                enc = None
+        else:
+            enc = None
+        for canvas_id, callback, *_ in gone:
+            self.engine.remove_frame_tap(canvas_id, callback)
+        self.taps = [t for t in getattr(self, "taps", []) if all(t is not g for g in gone)]
+        self.engine.mixer.remove_tap(st.push_audio)
+
+        def finish():
+            st.stop(timeout=5)
+            if enc is not None:
+                enc.stop(timeout=5)
+
+        threading.Thread(target=finish, name=f"sprigcast-drop-{output_id}", daemon=True).start()
+        return True
 
     def stop(self) -> None:
         taps = getattr(self, "taps", None) or [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
