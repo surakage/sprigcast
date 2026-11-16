@@ -155,6 +155,15 @@ class _Held:
 _held_logged = False
 
 
+def sound_resampler(rate: int = SAMPLE_RATE):
+    """PyAV's AudioResampler to stereo float at `rate`, on this thread alone. Left to choose, FFmpeg's filter
+    graph inside it starts a pool of threads (15 on the user's PC) that only goes when Python's cycle collector
+    frees the resampler: every loop, wake or seek of a video with sound added 15 threads (2026-11-16)."""
+    import av
+
+    return av.AudioResampler(format="flt", layout="stereo", rate=rate, threads=1)
+
+
 def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:
     packed = pack_i420(frame, size)
     if packed is not None:
@@ -576,6 +585,7 @@ class MediaSource(Source):
         offset = 0.0  # added to each pass's times when looping, so the timeline keeps running
         # The file stays open from one pass (and one play) to the next: it seeks back to the start instead.
         container, decoder = held.container, held.decoder  # decoder: libvpx (see-through webm), flushed each pass
+        resampler = None  # faster or slower: the sound is resampled to fit, so it plays in step (higher or lower)
         try:
             while self._current(generation):
                 if self.state == "stopped":  # waiting for play: just learn what the file is
@@ -621,8 +631,8 @@ class MediaSource(Source):
                     size = fit_size((video.codec_context.width, video.codec_context.height), MAX_SIZE)
                     self._size = size
                 # Faster or slower: the sound is resampled to fit, so it plays in step (higher or lower).
-                rate = max(8000, round(SAMPLE_RATE / speed))
-                resampler = av.AudioResampler(format="flt", layout="stereo", rate=rate) if audio else None
+                if audio is not None and resampler is None:  # one per play: a loop's next pass carries on with it
+                    resampler = sound_resampler(max(8000, round(SAMPLE_RATE / speed)))
                 skip_to = start_at if offset == 0.0 else 0.0
                 if skip_to > 0.5:
                     target = video or audio

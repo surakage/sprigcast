@@ -165,7 +165,9 @@ class StingerPlayer:
                 video.thread_type = "AUTO"
                 video.codec_context.thread_count = decode_threads(video.codec_context.width,
                                                                   video.codec_context.height)
-            resampler = av.AudioResampler(format="flt", layout="stereo", rate=SAMPLE_RATE) if audio else None
+            from sprigcast.sources.media import sound_resampler
+
+            resampler = sound_resampler() if audio else None  # one thread: see sound_resampler
             size = fit_size((video.codec_context.width, video.codec_context.height), self.limit)
             first = None
             streams = [video] + ([audio] if audio else [])

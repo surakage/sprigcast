@@ -577,7 +577,11 @@ class FFmpegAudioFilter(AudioFilter):
     def _build(self, spec: list[tuple[str, str]]) -> None:
         import av
 
+        self._graph = None  # the old one goes now, not whenever Python's cycle collector gets to it
         graph = av.filter.Graph()
+        # One thread: left to choose, FFmpeg starts a pool per graph (15 on the user's PC), kept until the graph
+        # is collected; every settings change made a new graph. A block of sound is far too small to share out.
+        graph.threads = 1
         last = graph.add_abuffer(format="fltp", sample_rate=SAMPLE_RATE, layout="stereo")
         for name, args in [*spec, ("aformat", "sample_fmts=fltp:channel_layouts=stereo")]:  # same shape out
             node = graph.add(name, args)
