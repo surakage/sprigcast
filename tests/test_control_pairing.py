@@ -190,3 +190,79 @@ def test_paired_devices_survive_a_restart(monkeypatch):
                 q.remove(k)
             else:
                 q.setValue(k, v)
+
+
+def _talk(port: int, first: dict | None, answer, app) -> list[dict]:
+    """Connect to SprigCast's API over a real socket, answer its hello with answer(hello), and collect what it
+    says (and how it closed) until it closes or 3 seconds pass."""
+    from PySide6.QtCore import QEventLoop, QTimer, QUrl
+    from PySide6.QtWebSockets import QWebSocket
+
+    said: list[dict] = []
+    loop = QEventLoop()
+    ws = QWebSocket()
+
+    def got(text):
+        message = json.loads(text)
+        said.append(message)
+        if "hello" in message:
+            ws.sendTextMessage(json.dumps(first if first is not None else answer(message["hello"])))
+        elif "welcome" in message:
+            loop.quit()
+
+    ws.textMessageReceived.connect(got)
+    ws.disconnected.connect(lambda: (said.append({"closed": ws.closeCode().value}), loop.quit()))
+    ws.open(QUrl(f"ws://127.0.0.1:{port}/sprigcast"))
+    QTimer.singleShot(3000, loop.quit)
+    loop.exec()
+    ws.close()
+    return said
+
+
+def test_a_paired_key_gets_in_over_the_network_after_a_restart(monkeypatch):
+    """The whole way, as on the PC: pair over a real socket, stop SprigCast's API and make a new one from what was
+    saved (a restart), then connect with the key. Closing those connections leaves no Qt warning (PC log: "wildcard
+    call disconnects from destroyed signal of QTcpSocket" a minute after each start)."""
+    from PySide6.QtCore import QEventLoop, QSettings, QTimer, qInstallMessageHandler
+    from PySide6.QtNetwork import QHostAddress, QTcpServer
+
+    from sprigcast.app import control_server
+    from test_control_api import _api as _obs_api, _qt
+
+    app = _qt()
+    monkeypatch.setattr(secret_store, "available", lambda: True)
+    monkeypatch.setattr(secret_store, "protect", lambda v: "dpapi:" + v[::-1] if v else v)
+    monkeypatch.setattr(secret_store, "unprotect", lambda v: v[6:][::-1] if v.startswith("dpapi:") else v)
+    q = QSettings()
+    before = q.value(control_server.DEVICES)
+    q.remove(control_server.DEVICES)
+    qt_said: list[str] = []
+    qInstallMessageHandler(lambda _kind, _where, text: qt_said.append(text))
+    probe = QTcpServer()
+    probe.listen(QHostAddress.SpecialAddress.LocalHost, 0)
+    port = probe.serverPort()
+    probe.close()
+    try:
+        first = control_server.ControlServer(_obs_api()[0])
+        assert first.start(port, "leafy")
+        said = _talk(port, {"pair": first.pairing.start(), "name": "Stream Deck"}, None, app)
+        key = next(m["paired"]["key"] for m in said if "paired" in m)
+        first.stop()
+        first.deleteLater()
+        again = control_server.ControlServer(_obs_api()[0])  # SprigCast opened again
+        assert again.start(port, "leafy")
+        said = _talk(port, None, lambda h: {"auth": auth_string(key, h["auth"]["salt"], h["auth"]["challenge"])}, app)
+        assert any("welcome" in m for m in said), said
+        wrong = _talk(port, None, lambda h: {"auth": auth_string("nope", h["auth"]["salt"], h["auth"]["challenge"])}, app)
+        assert {"closed": 4009} in wrong
+        wait = QEventLoop()
+        QTimer.singleShot(300, wait.quit)  # the closed connections let go of their sockets
+        wait.exec()
+        again.stop()
+        assert not [m for m in qt_said if "wildcard" in m], qt_said
+    finally:
+        qInstallMessageHandler(None)
+        if before is None:
+            q.remove(control_server.DEVICES)
+        else:
+            q.setValue(control_server.DEVICES, before)
