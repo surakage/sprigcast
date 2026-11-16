@@ -168,7 +168,7 @@ def test_the_engine_tells_sharp_sources_their_detail_only_when_it_steps():
 STARTS = {  # kind: (box, corner, height share, band share), as the plugins say
     "stream_timer": ((640, 220), "top_left", 0.14, None), "local_time": ((640, 220), "top_right", 0.14, None),
     "now_playing": ((760, 200), "bottom_left", 0.14, None), "live_captions": ((1600, 260), "bottom_center", None, None),
-    "audio_visualizer": ((1280, 400), "bottom_center", None, 0.5), "pngtuber": ((640, 640), "bottom_left", None, None),
+    "audio_visualizer": ((1280, 400), "bottom_center", None, 0.5), "pngtuber": ((640, 640), "bottom_right", None, None),
     "snap": ((800, 1000), None, None, None), "death_count": ((800, 1000), None, None, None), "instant_replay": ((1920, 1080), None, None, None)}
 
 
@@ -214,10 +214,71 @@ def test_every_plugin_starts_on_the_canvas_readable_and_clear_of_the_others(size
         assert pixels[card][3] == pytest.approx(0.14 * min(cw, ch))  # readable, not huge
     assert boxes["live_captions"][3] <= boxes["now_playing"][1] + 1e-6  # captions above now playing, not on it
     if cw > ch:
-        assert boxes["audio_visualizer"][0] >= boxes["pngtuber"][2]  # the band beside the avatar
+        assert boxes["audio_visualizer"][2] <= boxes["pngtuber"][0]  # the band beside the avatar
 
 
 def test_720p_and_1080p_start_alike():
     small, big = _starts(1280, 720)[0], _starts(1920, 1080)[0]
     for kind in STARTS:
         assert small[kind] == pytest.approx(big[kind]), kind
+
+
+@pytest.fixture
+def all_plugins(qt, tmp_path):
+    for kind in STARTS:
+        assert plugin_store.install(tmp_path / "plugins", next(p for p in plugin_store.catalog() if p.id == kind)) is None
+    yield
+    for kind in STARTS:
+        plugin_store.remove(tmp_path / "plugins", kind)
+
+
+def _add_all(col, bloom_id, kinds):
+    from sprigcast.core.source import source_class
+
+    for kind in kinds:
+        cls = source_class(kind)
+        col.sources.append(SourceConfig(id=kind, kind=kind, name=kind))
+        col.own_sprig(col.scene(bloom_id), kind, tuple(cls.own_sprig), kind, getattr(cls, "own_sprig_corner", None),
+                      getattr(cls, "own_sprig_height", None), getattr(cls, "own_sprig_band", None))
+    return col
+
+
+@pytest.mark.parametrize("size", [(1920, 1080), (1280, 720), (1080, 1920)])
+def test_plugins_added_together_never_start_on_top_of_each_other(all_plugins, size):
+    cw, ch = size
+    kinds = ["stream_timer", "local_time", "now_playing", "pngtuber", "live_captions", "audio_visualizer"]
+    if ch > cw:  # a phone screen has room for five of them; with all six the last one may sit on another
+        kinds.remove("audio_visualizer")
+    for order in (kinds, kinds[::-1]):
+        col = _add_all(SceneCollection(canvases=[Canvas(id="c", width=cw, height=ch)],
+                                       scenes=[Scene(id="b", name="B", canvas="c")], active_scenes={"c": "b"}),
+                       "b", order)
+        boxes = col.overlay_boxes(col.scene("b"), "c")
+        assert len(boxes) == len(kinds)
+        for i, a in enumerate(boxes):
+            assert a[0] >= -0.5 and a[1] >= -0.5 and a[2] <= cw + 0.5 and a[3] <= ch + 0.5
+            if ch > cw:
+                assert a[1] >= 0.12 * ch - 0.5 and a[3] <= 0.775 * ch + 0.5  # clear of TikTok's own bars
+            for b in boxes[i + 1:]:
+                overlap = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+                assert overlap[0] <= 0.5 or overlap[1] <= 0.5, (order, a, b)
+
+
+def test_a_second_clock_takes_the_next_free_corner(all_plugins):
+    col = _add_all(SceneCollection(canvases=[Canvas(id="c", width=1920, height=1080)],
+                                   scenes=[Scene(id="b", name="B", canvas="c")], active_scenes={"c": "b"}),
+                   "b", ["local_time", "now_playing"])
+    col.sources.append(SourceConfig(id="t2", kind="local_time", name="Second clock"))
+    item = col.own_sprig(col.scene("b"), "t2", (640, 220), "Second clock", "top_right", 0.14).items[0]
+    assert item.x < 100 and item.y < 100  # top right is taken: top left
+    col.sources.append(SourceConfig(id="t3", kind="local_time", name="Third clock"))
+    item = col.own_sprig(col.scene("b"), "t3", (640, 220), "Third clock", "top_right", 0.14).items[0]
+    assert item.x > 960 and item.y > 540  # then bottom right; bottom left is Now playing's
+
+
+def test_the_pngtuber_keeps_clear_of_the_side_buttons_on_vertical(all_plugins):
+    col = _add_all(SceneCollection(canvases=[Canvas(id="c", width=1080, height=1920)],
+                                   scenes=[Scene(id="b", name="B", canvas="c")], active_scenes={"c": "b"}),
+                   "b", ["pngtuber"])
+    (box,) = col.overlay_boxes(col.scene("b"), "c")
+    assert box[2] <= 1080 * 0.85 + 0.5  # left of TikTok's like / comment / share column

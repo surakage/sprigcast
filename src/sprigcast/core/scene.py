@@ -849,44 +849,61 @@ class SceneCollection(BaseModel):
         tall (a card, so its words start readable), instead of a third of it wide. band_share: a band's
         share of a landscape canvas's width (else 0.72). Sizes follow the canvas, so 720p and 1080p look
         the same. On a portrait canvas, corners and bands keep out of where TikTok, Shorts and Reels draw
-        their tabs and captions (app/safe_zones.py). Returns the sprig."""
-        def fitted(canvas_id: str) -> SceneItem:
+        their tabs and captions (app/safe_zones.py). It starts in a free spot: if another plugin's sprig is
+        already in that corner it takes the next free one, and a band narrows, then rises, to clear what's
+        there (see _free_spot). Returns the sprig."""
+        def fitted(canvas_id: str, there: Scene | None) -> SceneItem:
             canvas = self.canvas(canvas_id)
             if corner:
-                margin = min(canvas.width, canvas.height) * 0.035
-                portrait = canvas.height > canvas.width
-                top = max(margin, canvas.height * PORTRAIT_TOP) if portrait else margin
-                bottom = max(margin, canvas.height * PORTRAIT_BOTTOM) if portrait else margin
-                if "center" in corner:  # a wide band across the middle (captions): most of the width
-                    scale = canvas.width * (0.9 if portrait else band_share or 0.72) / size[0]
-                elif height_share:
-                    scale = min(canvas.width, canvas.height) * height_share / size[1]
-                else:
-                    scale = min(canvas.width, canvas.height) * 0.36 / size[0]  # about a third of the short side
-                w, h = size[0] * scale, size[1] * scale
-                if "center" in corner:
-                    x = (canvas.width - w) / 2
-                    if "bottom" in corner:  # a band sits above the bottom corners' cards (now playing), not on them
-                        bottom += min(canvas.width, canvas.height) * CARD_ROW + margin
-                else:
-                    x = margin if "left" in corner else canvas.width - w - margin
-                y = top if "top" in corner else canvas.height - h - bottom
-                return SceneItem(source=source_id, scale=scale, x=x, y=y)
+                return _free_spot(canvas, size, corner, height_share, band_share,
+                                  self.overlay_boxes(there, canvas_id) if there is not None else [], source_id)
             scale = min(canvas.width / size[0], canvas.height / size[1])
             return SceneItem(source=source_id, scale=scale, x=(canvas.width - size[0] * scale) / 2,
                              y=(canvas.height - size[1] * scale) / 2)
 
         blooms = self.linked_with(scene.id) if scene.kind == "show" else [scene]
-        part = Scene(id=self.new_id("part"), name=name, canvas=scene.canvas, kind="part", items=[fitted(scene.canvas)])
+        part = Scene(id=self.new_id("part"), name=name, canvas=scene.canvas, kind="part",
+                     items=[fitted(scene.canvas, blooms[0] if blooms else scene)])
         self.scenes.append(part)
         for bloom in blooms[1:]:
             shape = self.add_shape(part, bloom.canvas, self.new_id("part"))
-            shape.items = [fitted(bloom.canvas)]
+            shape.items = [fitted(bloom.canvas, bloom)]
         for bloom in blooms:
             placement = SourceConfig(id=self.new_id("part-src"), kind=PART_KIND, name=name, settings={"scene": part.id})
             self.sources.append(placement)
             bloom.items.append(SceneItem(source=placement.id))  # last is on top
         return part
+
+    def overlay_boxes(self, scene: Scene, canvas_id: str) -> list[tuple[float, float, float, float]]:
+        """Where the plugin sprigs on top of this bloom (a clock, now playing: a sprig holding one smaller
+        thing) sit on its canvas, as (left, top, right, bottom). What fills the canvas doesn't count: the
+        bloom's own sprig, a camera, Snap. Used to start a new one in a free spot."""
+        from sprigcast.core.source import source_class  # plugin kinds register at run time
+
+        canvas = self.canvas(canvas_id)
+        configs = {s.id: s for s in self.sources}
+        boxes = []
+        for placed in scene.items:
+            config = configs.get(placed.source)
+            part = self.part_of(config) if config is not None else None
+            if part is None:
+                continue
+            shape = self.shape_for(part, canvas_id)
+            if len(shape.items) != 1:
+                continue
+            inner = shape.items[0]
+            inner_config = configs.get(inner.source)
+            cls = source_class(inner_config.kind) if inner_config is not None else None
+            size = getattr(cls, "own_sprig", None)
+            if not size:
+                continue
+            w, h = inner.drawn_size(tuple(size))
+            if w * h >= 0.6 * canvas.width * canvas.height:
+                continue
+            k = placed.scale  # the placement is normally 1:1 at 0, 0
+            left, top = placed.x + inner.x * k, placed.y + inner.y * k
+            boxes.append((left, top, left + w * k, top + h * placed.sy))
+        return boxes
 
     def new_bloom(self, name: str, canvas_ids: list[str]) -> Scene:
         """A new empty bloom (what the API's bloom.new and OBS's CreateScene make): one bloom per canvas, switching
@@ -1066,3 +1083,94 @@ class SceneCollection(BaseModel):
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(self.model_dump(mode="json"), indent=2), encoding="utf-8")
         tmp.replace(path)  # atomic on the same drive, so a crash never leaves half a file
+
+
+CORNERS = ("top_left", "top_right", "bottom_left", "bottom_right")
+SIDE_BUTTONS = 0.15  # share of a portrait canvas's width TikTok, Shorts and Reels use for buttons down the right
+SIDE_BUTTONS_FROM = 0.36  # ...from this share of its height down
+
+
+def _overlaps(a, b, gap: float = 0.0) -> bool:
+    return a[0] < b[2] + gap and b[0] < a[2] + gap and a[1] < b[3] + gap and b[1] < a[3] + gap
+
+
+def _free_spot(canvas: Canvas, size: tuple[int, int], corner: str, height_share: float | None,
+               band_share: float | None, taken: list, source_id: str) -> SceneItem:
+    """A plugin's starting place (SceneCollection.own_sprig): its corner, or the next free corner when another
+    plugin is there, and with every corner taken it stacks above (or below) what's in its own; a band along the
+    bottom narrows (to 60% of its width at most), then rises (up to under the top corners' cards) to clear
+    them. If nothing is free it takes its own spot anyway."""
+    short = min(canvas.width, canvas.height)
+    margin = short * 0.035
+    portrait = canvas.height > canvas.width
+    top = max(margin, canvas.height * PORTRAIT_TOP) if portrait else margin
+    bottom = max(margin, canvas.height * PORTRAIT_BOTTOM) if portrait else margin
+
+    def placed(scale: float, x: float, y: float) -> SceneItem:
+        return SceneItem(source=source_id, scale=scale, x=x, y=y)
+
+    if "center" in corner:  # a wide band across the middle (captions): most of the width
+        scale = canvas.width * (0.9 if portrait else band_share or 0.72) / size[0]
+        if "bottom" in corner:  # above the bottom corners' cards (now playing), not on them
+            bottom += short * CARD_ROW + margin
+        floor = canvas.height - bottom
+
+        def band(k: float, y_bottom: float):
+            w, h = size[0] * k, size[1] * k
+            return ((canvas.width - w) / 2, y_bottom - h, (canvas.width + w) / 2, y_bottom)
+
+        first = band(scale, floor)
+        hit = [b for b in taken if _overlaps(first, b)]
+        if not hit:
+            return placed(scale, first[0], first[1])
+        middle = canvas.width / 2  # narrower, still centred, between what's at the sides
+        room = min(min(abs(b[0] - middle), abs(b[2] - middle)) for b in hit if b[0] > middle or b[2] < middle) \
+            if any(b[0] > middle or b[2] < middle for b in hit) else 0.0
+        narrow = 2 * (room - margin) / size[0]
+        if narrow >= scale * 0.6:
+            box = band(min(scale, narrow), floor)
+            if not any(_overlaps(box, b) for b in taken):
+                return placed(min(scale, narrow), box[0], box[1])
+        y_bottom = floor  # rise above them
+        for _ in range(len(taken) + 1):
+            box = band(scale, y_bottom)
+            hit = [b for b in taken if _overlaps(box, b)]
+            if not hit:
+                if box[1] >= top + short * CARD_ROW + margin - 0.5:  # still under the top corners' cards
+                    return placed(scale, box[0], box[1])
+                break
+            y_bottom = min(b[1] for b in hit) - margin
+        return placed(scale, first[0], first[1])
+
+    if height_share:
+        scale = short * height_share / size[1]
+    else:
+        scale = short * 0.36 / size[0]  # about a third of the short side
+    w, h = size[0] * scale, size[1] * scale
+
+    def at(spot: str):
+        x = margin if "left" in spot else canvas.width - w - margin
+        y = top if "top" in spot else canvas.height - h - bottom
+        if portrait and "right" in spot and y + h > canvas.height * SIDE_BUTTONS_FROM:
+            x -= canvas.width * SIDE_BUTTONS  # clear of the like / comment / share buttons
+        return (x, y, x + w, y + h)
+
+    vertical, side = corner.split("_", 1) if "_" in corner else ("bottom", "left")
+    other_side = "right" if side == "left" else "left"
+    other_vertical = "top" if vertical == "bottom" else "bottom"
+    order = [corner, f"{vertical}_{other_side}", f"{other_vertical}_{side}", f"{other_vertical}_{other_side}"]
+    for spot in [c for c in order if c in CORNERS] or [corner]:
+        box = at(spot)
+        if not any(_overlaps(box, b) for b in taken):
+            return placed(scale, box[0], box[1])
+    box = at(corner if corner in CORNERS else "bottom_left")  # every corner taken: stack on its own corner's
+    for _ in range(len(taken) + 1):  # neighbour, above it (or below it, at the top)
+        hit = [b for b in taken if _overlaps(box, b)]
+        if not hit:
+            return placed(scale, box[0], box[1])
+        y = min(b[1] for b in hit) - margin - h if "bottom" in corner else max(b[3] for b in hit) + margin
+        if y < top - 0.5 or y + h > canvas.height - bottom + 0.5:
+            break
+        box = (box[0], y, box[2], y + h)
+    box = at(corner if corner in CORNERS else "bottom_left")
+    return placed(scale, box[0], box[1])
