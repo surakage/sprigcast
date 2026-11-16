@@ -256,3 +256,38 @@ def test_the_render_thread_never_waits_on_the_drawing(viz):
     times.sort()
     assert times[len(times) // 2] < 0.002, f"median {times[len(times) // 2] * 1000:.1f} ms on the render thread"
 
+
+def test_drawing_stays_small_and_sleep_lets_it_all_go(viz):
+    """On the PC the first drawing grew memory by about 40 MB, and it stayed: the sprites were built as
+    whole-picture float arrays, and every frame made frame-sized temporary arrays. Now a first drawing
+    peaks at about what it keeps (three frames and the look's sprites), a frame makes almost nothing new,
+    and going to sleep drops all of it."""
+    import tracemalloc
+
+    analyser, rng = viz.Analyser(), np.random.default_rng(2)
+    for style in ("bars", "wave", "circle", "line"):
+        painter = viz.Painter()
+        analyser.feed(rng.normal(0, 0.2, (BLOCK, 2)).astype(np.float32))
+        bands, wave = analyser.step(48, 0.6, 1.0, 1 / 30)
+        tracemalloc.start()
+        try:
+            painter.paint(style, bands, wave, {})
+            first = tracemalloc.get_traced_memory()[1]
+            tracemalloc.reset_peak()
+            before = tracemalloc.get_traced_memory()[0]
+            painter.paint(style, bands, wave, {})
+            again = tracemalloc.get_traced_memory()[1] - before
+        finally:
+            tracemalloc.stop()
+        assert first < 14 * 2**20, f"{style}: first drawing peaked at {first / 2**20:.1f} MB"
+        assert again < 1 * 2**20, f"{style}: a frame made {again / 2**10:.0f} KB of temporary arrays"
+        assert painter.held_bytes() < 13 * 2**20
+    source = create_source("audio_visualizer", "v", {"style": "line"})
+    source.start()
+    _feed(source, 300)
+    assert _drawn(source, 1.0) is not None
+    assert source._painter.held_bytes() > 0
+    source.sleep()
+    assert source._painter.held_bytes() == 0 and source._ready is None
+    source.stop()
+
