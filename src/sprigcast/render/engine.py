@@ -1305,7 +1305,7 @@ class Engine:
             data, drawn = self._read_full(compositor, target_id, now)
             return None if data is None else Frame(target_id, *canvas_size, data, drawn)
         if self.wait_free:
-            data, drawn = compositor.read_scaled_later(target_id, size, now, now)
+            data, drawn = compositor.read_scaled_later(target_id, size, now, now, optional=True)
             return None if data is None else Frame(target_id, size[0], size[1], data, drawn, canvas_size=canvas_size)
         return Frame(target_id, size[0], size[1], compositor.read_scaled(target_id, size), now, canvas_size=canvas_size)
 

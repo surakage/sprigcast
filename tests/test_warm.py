@@ -39,3 +39,22 @@ def test_the_window_watch_names_a_module_being_loaded(tmp_path, monkeypatch):
         sys.modules.pop("slow_thing_for_watch", None)
     assert where.startswith("loading slow_thing_for_watch: ") and "slow_thing_for_watch.py:3 <module>" in where
     assert "<frozen" not in where and "test_warm.py" in where
+
+
+def test_encoders_are_checked_in_the_background_before_recording(monkeypatch):
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.output import recorder
+
+    calls = []
+    monkeypatch.setattr(recorder, "pick_codec", lambda: calls.append("pick") or "h264_nvenc")
+    monkeypatch.setattr(recorder, "resolve_codec",
+                        lambda enc, streaming=False: calls.append(("resolve", streaming)) or
+                        ("h264_nvenc" if streaming else enc.encoder))
+    monkeypatch.setattr(recorder, "direct_hevc_ok", lambda: calls.append("hevc") or True)
+    warm.warm_encoders(EncoderSettings(encoder="hevc_nvenc"), EncoderSettings())
+    assert calls == ["pick", ("resolve", False), ("resolve", True), "hevc"]
+    calls.clear()
+    warm.warm_encoders(EncoderSettings(encoder="h264_nvenc"), None)
+    assert calls == ["pick", ("resolve", False)]  # no HEVC check when nothing uses it
+    monkeypatch.setattr(recorder, "pick_codec", lambda: 1 / 0)
+    warm.warm_encoders(None, None)  # never raises
