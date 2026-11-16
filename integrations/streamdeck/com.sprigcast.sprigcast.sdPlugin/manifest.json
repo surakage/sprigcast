@@ -372,6 +372,23 @@
       ]
     },
     {
+      "Name": "PNGtuber",
+      "UUID": "com.sprigcast.sprigcast.pngtuber",
+      "Icon": "imgs/actions/pngtuber/icon",
+      "Tooltip": "Change the PNGtuber plugin's expression: one you pick, the next one, or back to default.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/pngtuber/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
       "Name": "Run action",
       "UUID": "com.sprigcast.sprigcast.run",
       "Icon": "imgs/actions/run/icon",
@@ -392,7 +409,7 @@
   "Category": "SprigCast",
   "CategoryIcon": "imgs/plugin/category-icon",
   "CodePath": "bin/plugin.js",
-  "Description": "Run SprigCast from your Stream Deck: switch blooms and gardens, mute and turn sounds (dials on Stream Deck +), go live, record, clips, virtual camera, media, filters, transitions and SprigCast plugins. Keys light up to match SprigCast, and connect by themselves when SprigCast opens.",
+  "Description": "Run SprigCast from your Stream Deck: switch blooms and gardens, mute and turn sounds (dials on Stream Deck +), go live, record, clips, virtual camera, media, filters, transitions and SprigCast plugins (Death count, PNGtuber expressions). Keys light up to match SprigCast, and connect by themselves when SprigCast opens.",
   "Icon": "imgs/plugin/marketplace",
   "SDKVersion": 3,
   "Software": {

@@ -91,11 +91,18 @@ def screenshot_taken(api, shots: list[dict]) -> None:
 
 
 def _alive(fn) -> bool:
-    """A removed plugin's hooks stay registered until restart; skip them once its module is gone."""
+    """A removed plugin's hooks stay registered until restart; skip them once its module is gone, and
+    once it's been added again (the new copy registers its own, so the old ones would show twice)."""
     import sys
 
     module = getattr(fn, "__module__", "") or ""
-    return not module.startswith("sprigcast_plugin_") or module in sys.modules
+    if not module.startswith("sprigcast_plugin_"):
+        return True
+    loaded = sys.modules.get(module)
+    if loaded is None:
+        return False
+    home = getattr(fn, "__globals__", None)
+    return home is None or home is vars(loaded)
 
 
 def hotkey_actions(collection) -> list[tuple[str, str]]:

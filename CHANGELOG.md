@@ -168,6 +168,13 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- PNGtuber store plugin: your own avatar pictures (PNG, GIF, WebP) talk when you talk, with a little bounce, random
+  blinks, a quick fade between pictures, a yell picture for loud moments, and expressions you switch with hotkeys,
+  a right-click, the Stream Deck PNGtuber key or `pngtuber.*` API actions (for some seconds, or until changed). It
+  follows a sound you already have in SprigCast (Auto: your mic, so muting quiets it too) or a mic straight from
+  Windows, sends nothing while nothing moves, stops listening off air and lets the pictures go a minute after. A
+  sample sloth comes with it.
+- A store plugin removed and added again without restarting no longer shows its hotkeys and right-click entries twice.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

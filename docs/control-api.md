@@ -344,8 +344,14 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `deaths.reset` | Death count | Back to 0. | `source` (optional) |
 | `deaths.show` | Death count | Pop the gravestone up with the count as it is. | `source` (optional) |
 | `deaths.get` | Death count | The count, without showing it. | `source` (optional) |
+| `pngtuber.expression` | PNGtuber | Show one of the model's expressions (case doesn't matter). | `expression`, `seconds` (optional; then back to the one before), `source` (optional) |
+| `pngtuber.next` | PNGtuber | The next expression (default first, then A-Z). | `seconds` (optional), `source` (optional) |
+| `pngtuber.reset` | PNGtuber | Back to the default expression. | `source` (optional) |
+| `pngtuber.expressions` | PNGtuber | The model's expressions and the one showing. | `source` (optional) |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
+
+**PNGtuber** answers with `{"expression": "happy", "expressions": ["default", "happy", ...]}` and sends a `pngtuber.expression` event (`{"expression": ...}`, `plugin` group) after each change. An expression set without `seconds` is saved with your blooms; one with `seconds` isn't. Its model is a folder of pictures named idle, talk, blink, talk_blink, yell and yell_blink (only idle and talk are needed); an expression is a folder inside it with its own set, or files named `happy_idle.png`. It moves with a sound you have in SprigCast (Auto: your mic), so muting the mic quiets it, or a mic straight from Windows.
 
 **Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing.
 
