@@ -3370,7 +3370,21 @@ class MainWindow(QMainWindow):
             return sound_to_mixer(config.settings)
         return False
 
+    def _refresh_audio_soon(self) -> None:
+        """A sound changed: refresh the Sound card and strips once things settle (100 ms). Muting a group, a
+        fader drag or a filter edit used to redo both for every change, holding the window up to 2 s."""
+        timer = getattr(self, "_audio_refresh", None)
+        if timer is None:
+            timer = self._audio_refresh = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(100)
+            timer.timeout.connect(self._refresh_audio)
+        timer.start()
+
     def _refresh_audio(self) -> None:
+        timer = getattr(self, "_audio_refresh", None)
+        if timer is not None:
+            timer.stop()  # this refresh covers any that were waiting
         sounds = [s for s in self.collection.sources if self._has_sound(s)]
         self.live_side.show_sound([self._sound_item(s) for s in sounds])
         if hasattr(self, "sound_strips"):
@@ -3506,7 +3520,7 @@ class MainWindow(QMainWindow):
         config.settings = {**config.settings, **changes}
         self._changed()
         if set(changes) & {"muted", "group", "pinned", "monitor", "duck_voice"}:
-            self._refresh_audio()
+            self._refresh_audio_soon()
 
     def _on_audio_changed(self, source_id: str, changes: dict) -> None:
         """A mixer control changed: volume_db, muted, monitor, hidden or duck_voice."""
@@ -3514,7 +3528,7 @@ class MainWindow(QMainWindow):
         config.settings = {**config.settings, **changes}
         self._changed()
         if "hidden" in changes or "duck_voice" in changes or "muted" in changes:
-            self._refresh_audio()
+            self._refresh_audio_soon()
         if changes.get("hidden"):
             self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
 
@@ -3623,7 +3637,7 @@ class MainWindow(QMainWindow):
                         key=lambda pair: pair[1].lower())
         FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds).exec()
         if self._has_sound(self.collection.source(source_id)):
-            self._refresh_audio()  # the Sound card lists filter names
+            self._refresh_audio_soon()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
 
     # Preview editing -------------------------------------------------------------
@@ -3937,7 +3951,7 @@ class MainWindow(QMainWindow):
 
     def _build_tune_changed(self, source_id: str, changes: dict) -> None:
         self._on_sound_changed(source_id, changes)
-        self._refresh_audio()  # Live's Sound card shows the same sound
+        self._refresh_audio_soon()  # Live's Sound card shows the same sound
         if "muted" in changes:
             self._refresh_scenes()
 
