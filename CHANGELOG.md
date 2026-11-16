@@ -193,6 +193,14 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
   clips are yours to set. It reads the levels the meters already have and does nothing while clips are off.
   `autoclip.*` API actions (`autoclip.mark` for Streamer.bot raids) and an `autoclip.suggested` event.
+- Freeze store plugin: freeze a sprig, game or camera on the frame showing now for a set time (a redeem that
+  freezes your game for 10 seconds), then it's live again by itself. Right-click, hotkeys, and `freeze.start`,
+  `freeze.stop` and `freeze.toggle` for Streamer.bot and other apps, with an `effect.ended` event when it ends.
+  Things that only redraw when they change (text, Death count) show their newest picture as it ends.
+- Snap freezes the screen on the snapped moment while the polaroid prints, so viewers see exactly the frame in the
+  polaroid; the Snap keeps moving and the screen goes live again as the polaroid slides away. On by default
+  ("Freeze the screen while it prints" in the Snap's settings).
+- A store plugin added again or updated no longer runs its old hooks too (Snap would have printed twice).
 - Audio visualizer store plugin: bars, a wave, a circle or a line spectrum that move with a sound, in your colours
   (Night Canopy greens by default), with bar count, smoothing, mirror and sensitivity. It hears what SprigCast
   already mixes (everything viewers hear, or one mic, desktop, music or app sound), so no device is opened again,

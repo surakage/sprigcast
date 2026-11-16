@@ -84,6 +84,9 @@ public class CPHInline
     public bool Blackout() { return Call("hide.blackout", Fields("source", "seconds")); }
     // %sprig%, optional %seconds%
     public bool BarrelRoll() { return Call("roll.spin", Fields("sprig", "seconds")); }
+    // %sprig% (or %source%), optional %seconds%
+    public bool Freeze() { return Call("freeze.start", Fields("sprig", "source", "seconds")); }
+    public bool Unfreeze() { return Call("freeze.stop", Fields("sprig", "source")); }
 
     // ------------------------------------------------------------------------------------------
 
