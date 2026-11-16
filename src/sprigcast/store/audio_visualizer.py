@@ -151,11 +151,16 @@ def premul(rgba: tuple[float, float, float, float], alpha: float = 1.0) -> np.nd
 
 
 def gradient(stops: list[tuple[float, np.ndarray]]) -> np.ndarray:
-    """A W x H picture whose colour changes from row to row through the stops: [(y, premul colour)]."""
+    """A W x H picture whose colour changes from row to row through the stops: [(y, premul colour)].
+
+    Made row colours first and copied across, so it costs the picture (2 MB) and no more. Built as a
+    whole-picture float array it peaked near 40 MB the first time a look was drawn, and the PC kept it."""
     ys = np.arange(H, dtype=np.float32) + 0.5
     at = [y for y, _ in stops]
     rows = np.stack([np.interp(ys, at, [c[k] for _, c in stops]) for k in range(4)], axis=1)
-    return np.ascontiguousarray(np.broadcast_to(rows[:, None, :], (H, W, 4))).round().astype(np.uint8)
+    picture = np.empty((H, W, 4), np.uint8)
+    picture[...] = np.round(rows).astype(np.uint8)[:, None, :]
+    return picture
 
 
 def smooth_line(values: np.ndarray, xs: np.ndarray, pad: float) -> np.ndarray:
@@ -180,7 +185,12 @@ class Painter:
     each column (a bar, a wave's stroke, a line and the fill under it), so a frame is a picture made once
     for the colours (the "sprite") copied in where each column's span is, plus a soft first and last
     pixel. That's whole 32-bit pixels and NumPy, which lets the lock go, at about a millisecond.
-    Three frames are reused in turn (one on the GPU, one waiting to go, one being drawn on a worker)."""
+    Three frames are reused in turn (one on the GPU, one waiting to go, one being drawn on a worker).
+
+    Memory: nothing frame-sized is made per frame. The masks and the circle's working arrays are made once
+    and written into (out=), and only the current look's sprites are kept. Made per frame, those temporary
+    arrays grew the heap by about 40 MB on the PC, and it stayed after the visualizer went to sleep. All of
+    it belongs to this Painter, which the source drops when it stops listening."""
 
     PAD = 12.0
 
@@ -192,10 +202,22 @@ class Painter:
         self._cols = np.arange(W, dtype=np.float32) + 0.5
         self._index = np.arange(W)
         self._outside = (self._cols < self.PAD) | (self._cols > W - self.PAD)
+        self._masks: np.ndarray | None = None  # two H x W working masks
+        self._polar_work: tuple | None = None  # the circle's working arrays
 
     def release(self) -> None:
         self._frames = []
         self._sprites = {}
+        self._masks = None
+        self._polar_work = None
+
+    def held_bytes(self) -> int:
+        """How much this painter holds now (frames, sprites, working arrays)."""
+        arrays = [*self._frames, *(self._masks if self._masks is not None else ())]
+        for found in self._sprites.values():
+            arrays += list(found) if isinstance(found, tuple) else [found]
+        arrays += list(self._polar_work or ())
+        return sum(a.nbytes for a in arrays if isinstance(a, np.ndarray))
 
     def _frame(self) -> np.ndarray:
         if not self._frames:
@@ -208,8 +230,9 @@ class Painter:
     def _sprite(self, key: tuple, make):
         found = self._sprites.get(key)
         if found is None:
-            if len(self._sprites) >= 4:
-                self._sprites.pop(next(iter(self._sprites)))
+            if len(self._sprites) >= 2:  # a look has at most two (the line and its fill): drop the old look's
+                self._sprites.clear()
+                self._polar_work = None
             found = self._sprites[key] = make()
         return found
 
@@ -222,7 +245,13 @@ class Painter:
         if r1 <= r0:
             return
         rows = self._rows[r0:r1, None]
-        np.copyto(_words(frame)[r0:r1], _words(sprite)[r0:r1], where=(rows >= top) & (rows < bottom))
+        if self._masks is None:
+            self._masks = np.empty((2, H + 16, W), np.bool_)  # over 1 MB: Windows gives it back when freed
+        inside, below = self._masks[0, : r1 - r0], self._masks[1, : r1 - r0]
+        np.greater_equal(rows, top, out=inside)
+        np.less(rows, bottom, out=below)
+        np.logical_and(inside, below, out=inside)
+        np.copyto(_words(frame)[r0:r1], _words(sprite)[r0:r1], where=inside)
         first = np.ceil(top - 0.5).astype(int)  # the first row whose middle is inside
         last = np.ceil(bottom - 0.5).astype(int) - 1
         thick = last >= first
@@ -273,7 +302,10 @@ class Painter:
             def make() -> np.ndarray:
                 picture = gradient([(pad, premul(peak)), (floor, premul(base))])
                 sides = np.clip(r + 0.5 - dx, 0.0, 1.0)  # soft left and right edges
-                return (picture * sides[None, :, None] + 0.5).astype(np.uint8)
+                picture[:, sides <= 0.0] = 0  # the gaps between bars
+                soft = np.flatnonzero((sides > 0.0) & (sides < 1.0))  # only these columns need working out
+                picture[:, soft] = (picture[:, soft] * sides[soft].astype(np.float32)[None, :, None] + 0.5).astype(np.uint8)
+                return picture
 
             sprite = self._sprite(("bars", count, base, peak), make)
             heights = np.maximum(2 * r, bands * (floor - pad))[index]
@@ -289,29 +321,56 @@ class Painter:
         size = int(2 * (r0 + most) + 4)
         x0, y0 = (W - size) // 2, (H - size) // 2
 
-        def make():
-            ys, xs = np.mgrid[0:size, 0:size].astype(np.float32) + 0.5
-            dx, dy = xs - size / 2, ys - size / 2
+        def make():  # in float32 and one colour channel at a time, so building it stays small (a few MB)
+            line = np.arange(size, dtype=np.float32) + (0.5 - size / 2)
+            dx, dy = line[None, :], line[:, None]
             radius = np.hypot(dx, dy)
-            turn = (np.arctan2(dx, -dy) / (2 * math.pi)) % 1.0  # 0 at the top, clockwise
-            index = np.round(turn * count).astype(int) % count
-            off = (turn * count - np.round(turn * count)) * (2 * math.pi * radius / count)  # from the bar's middle
+            turn = np.arctan2(dx, -dy)
+            turn /= np.float32(2 * math.pi)
+            turn %= 1.0  # 0 at the top, clockwise
+            turn *= count
+            nearest = np.round(turn)
+            index = nearest.astype(np.intp) % count  # take() wants intp: any other kind is copied every frame
+            turn -= nearest
+            del nearest
+            turn *= radius
+            turn *= np.float32(2 * math.pi / count)  # now: pixels from the bar's middle
             half = max(1.5, min(7.0, math.pi * r0 / count * 0.55))
-            cover = np.clip(half + 0.5 - np.abs(off), 0.0, 1.0) * np.clip(radius - r0 + 0.5, 0.0, 1.0)
-            shade = np.clip((radius - r0) / most, 0.0, 1.0)[..., None]
-            colours = premul(base) * (1 - shade) + premul(peak) * shade
-            bars = (colours * cover[..., None] + 0.5).astype(np.uint8)
-            soft = (colours * cover[..., None] * 0.5 + 0.5).astype(np.uint8)
-            ring = (premul(base) * np.clip(2.0 - np.abs(radius - (r0 - 10)), 0.0, 1.0)[..., None] + 0.5).astype(np.uint8)
-            return radius, index, _words(bars).copy(), _words(soft).copy(), _words(ring).copy()
+            cover = np.clip(np.float32(half + 0.5) - np.abs(turn), 0.0, 1.0)
+            del turn
+            cover *= np.clip(radius - np.float32(r0 - 0.5), 0.0, 1.0)
+            shade = np.clip((radius - np.float32(r0)) / np.float32(most), 0.0, 1.0)
+            ringed = np.clip(2.0 - np.abs(radius - np.float32(r0 - 10)), 0.0, 1.0)
+            low, high = premul(base), premul(peak)
+            bars, soft, ring = (np.empty((size, size, 4), np.uint8) for _ in range(3))
+            for k in range(4):
+                channel = shade * np.float32(high[k] - low[k])
+                channel += low[k]
+                channel *= cover
+                bars[..., k] = channel + 0.5
+                soft[..., k] = channel * 0.5 + 0.5
+                ring[..., k] = ringed * low[k] + 0.5
+            inside = radius >= r0 - 0.5
+            return radius.astype(np.float32), index, inside, _words(bars).copy(), _words(soft).copy(), \
+                _words(ring).copy()
 
-        radius, index, bars, soft, ring = self._sprite(("circle", count, base, peak), make)
-        end = (r0 + 3.0 + bands * most).astype(np.float32)[index]
-        inside = radius >= r0 - 0.5
-        out = ring.copy()
-        np.copyto(out, bars, where=inside & (radius < end - 0.25))
-        np.copyto(out, soft, where=inside & (radius >= end - 0.25) & (radius < end + 0.25))
-        _words(frame)[y0:y0 + size, x0:x0 + size] = out
+        radius, index, inside, bars, soft, ring = self._sprite(("circle", count, base, peak), make)
+        if self._polar_work is None or self._polar_work[0].shape != radius.shape:
+            self._polar_work = (np.empty(radius.shape, np.float32), np.empty(radius.shape, np.bool_),
+                                np.empty(radius.shape, np.bool_))
+        end, full, edge = self._polar_work
+        np.take((r0 + 3.0 + bands * most).astype(np.float32), index, out=end)  # each pixel's bar end
+        np.subtract(end, 0.25, out=end)
+        np.less(radius, end, out=full)  # inside the bar
+        np.logical_and(full, inside, out=full)
+        np.add(end, 0.5, out=end)
+        np.less(radius, end, out=edge)  # within the soft last half pixel
+        np.logical_and(edge, inside, out=edge)
+        np.logical_xor(edge, full, out=edge)
+        out = _words(frame)[y0:y0 + size, x0:x0 + size]
+        np.copyto(out, ring)
+        np.copyto(out, bars, where=full)
+        np.copyto(out, soft, where=edge)
 
 
 def look(settings: dict[str, Any]) -> tuple[str, int, float, float, bool]:
