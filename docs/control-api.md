@@ -350,11 +350,15 @@ Plugins added from **Settings → Plugins** bring their own actions. They're in 
 | `autoclip.keep` | Auto clip | Keep a suggestion: its files move to your Clips folder. Answers the new `files`. | `id` |
 | `autoclip.delete` | Auto clip | Delete a suggestion and its files. | `id` |
 | `autoclip.mark` | Auto clip | Suggest a clip now. It's saved a few seconds later (`in`), so what follows is in it. | |
+| `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
+| `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
 | `visualizer.set` | Audio visualizer | Change the look: style, colours, sensitivity. | `style` (bars, wave, circle or line), `color`, `peak_color` (#rrggbb), `sensitivity` (0.05 to 10), `source` (optional; default every visualizer), all optional |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
 
 **Auto clip** listens while clips are ready (the Clip button) and saves big moments as suggestions: your mic or game sound jumping well over its own usual level, or chat moving much faster than usual (with Chat ticked). Each one sends an `autoclip.suggested` event (`plugin` group) with the same fields as `autoclip.list`; `reason` is `mic`, `game`, `chat` or `mark`. Nothing is posted anywhere: suggestions wait in Tools → Suggested clips… (in the recordings folder's "Suggested clips") until you keep or delete them, and unkept ones are deleted after `days`.
+
+**Instant replay** keeps the last Seconds (default 20) of what you picked in its settings: one sprig or source, plus an optional one in a corner (a camera). It keeps nothing while its bloom is off air or its eye is off, so `replay.play` then answers `not_allowed` ("Instant replay isn't on air."), as it does while one is already playing. It answers `{"playing": [names]}` and sends `replay.started` (`source`, `sourceId`, `seconds`, `speed`) and `replay.ended` (`source`, `sourceId`, `reason`: ended, stopped or failed) in the `plugin` group. Adding it (+ → Plugins → Instant replay) makes a sprig of its own that fills the canvas, on top of the bloom; it's see-through except while a replay plays.
 
 **Audio visualizer** draws bars, a wave, a circle or a line that move with a sound SprigCast already mixes (everything viewers hear, or one sound: a mic, desktop, music, an app). It listens only while it's on air. `visualizer.set` answers with the names it changed and the style and colours now. Adding one (+ → Plugins → Audio visualizer) makes a sprig of its own along the bottom of the bloom.
 

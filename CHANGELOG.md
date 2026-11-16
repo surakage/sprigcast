@@ -168,6 +168,12 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   minute after.
   How captions look on stream: Card, Outline, Shadow or Plain; any font on the PC; Small / Medium / Large; Bold;
   All caps; left, centre or right; text, card and outline colours.
+- Instant replay store plugin: plays the last few seconds back on stream. Pick one sprig or source to replay (your game
+  or Elgato capture), and optionally a second one in a corner (your camera). Its hotkey, right-click, Stream Deck or
+  an app (`replay.play`) starts it: canopy bands sweep in, REPLAY shows, the replay plays with a badge and a progress
+  line (normal speed or slow motion, sound slowed with it), then the bands sweep back and it hides. Apps hear
+  `replay.started` and `replay.ended`. It keeps nothing while its bloom is off air, encodes only what you picked (720p,
+  or 1080p with Sharp) and deletes each replay file when it ends.
 - Background remover store plugin: a camera filter that removes the room behind you, blurs it, or puts a picture
   there, no green screen needed. A small model (Google's MediaPipe selfie segmentation, Apache 2.0) runs on the
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
