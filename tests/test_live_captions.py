@@ -370,3 +370,76 @@ def test_what_the_mic_hears_ends_up_on_the_card(cap, monkeypatch):
     worker.join(2)
     assert source.board.done == ["Good evening, chat."] and source.status == "Listening"
     assert opened == ["Wave Mic", "stopped"] and heard and 1.4 <= heard[-1] <= 2.5
+
+
+def _ink(image):
+    """Columns and rows that have anything drawn, and the darkest drawn pixel."""
+    from PySide6.QtGui import QImage
+
+    image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    a = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.width(), 4).copy()
+    drawn = a[..., 3] > 0
+    cols, rows = np.where(drawn.any(axis=0))[0], np.where(drawn.any(axis=1))[0]
+    return cols, rows, a
+
+
+def test_each_style_draws_its_own_look(cap):
+    words = "Welcome in everyone, we're finally beating the last boss"
+    base = cap.LiveCaptionsSource.defaults
+    for look, _ in cap.LOOKS:
+        cols, rows, _a = _ink(cap.paint(words, {**base, "look": look}))
+        assert len(cols) and rows.max() > 200, look  # something drawn, near the bottom of the box
+    _c, _r, card = _ink(cap.paint(words, {**base, "look": "card"}))
+    _c, _r, outline = _ink(cap.paint(words, {**base, "look": "outline"}))
+    _c, _r, plain = _ink(cap.paint(words, {**base, "look": "plain"}))
+    assert (outline[..., :3].max(axis=2)[outline[..., 3] == 255] < 40).any()  # black edges round the letters
+    assert not (plain[..., :3].max(axis=2)[plain[..., 3] == 255] < 40).any()  # plain: no edges
+    assert (card[..., 3] > 0).sum() > (plain[..., 3] > 0).sum() * 2  # the card fills behind the words
+
+
+def test_alignment_size_and_caps(cap):
+    base = {**cap.LiveCaptionsSource.defaults, "look": "plain", "lines": 1}
+    left, _, _ = _ink(cap.paint("hi chat", {**base, "align": "left"}))
+    right, _, _ = _ink(cap.paint("hi chat", {**base, "align": "right"}))
+    centre, _, _ = _ink(cap.paint("hi chat", base))
+    assert left.min() < 60 and right.max() > 1540 and abs((centre.min() + centre.max()) / 2 - 800) < 20
+    small, srows, _ = _ink(cap.paint("hi chat", {**base, "text_size": "small"}))
+    large, lrows, _ = _ink(cap.paint("hi chat", {**base, "text_size": "large"}))
+    assert len(large) > len(small) and len(lrows) > len(srows)
+    lower, _, _ = _ink(cap.paint("hi chat", base))
+    upper, _, _ = _ink(cap.paint("hi chat", {**base, "all_caps": True}))
+    assert len(upper) > len(lower)
+    for lines in (1, 2, 3):  # big text never spills out of the box
+        _c, rows, _a = _ink(cap.paint("word " * 60, {**base, "look": "card", "text_size": "large", "lines": lines}))
+        assert rows.min() > 0 and rows.max() < 260 - 1
+
+
+def test_a_new_look_is_drawn_straight_away_and_old_captions_keep_theirs(cap):
+    import time
+
+    source = create_source("live_captions", "c", {"text_color": "#ffffff", "card_color": "#000000cc"})  # version 1
+    source.board.say("Hello there.", final=True, now=time.monotonic())
+    assert source.video_frame() is not None and source.video_frame() is None
+    for key, value in (("look", "outline"), ("font", "DejaVu Serif"), ("bold", False), ("align", "left"),
+                       ("outline_color", "#ff0000ff"), ("all_caps", True), ("text_size", "large")):
+        source.update({**source.settings, key: value})
+        assert source.video_frame() is not None, key
+    fonts = cap._fonts()
+    assert fonts[0] == ("", "SprigCast (Nunito)")
+    names = [n for n, _ in fonts[1:]]
+    assert names == sorted(names, key=str.lower)
+
+
+def test_the_key_box_sits_under_captions_by_and_no_chat_tip(cap):
+    from PySide6.QtWidgets import QFormLayout, QLabel
+
+    from sprigcast.app.settings_dialog import SettingsDialog
+
+    cls = source_class("live_captions")
+    dialog = SettingsDialog("Live captions", cls.defaults, cls.defaults, cls=cls)
+    form = dialog.layout()
+    labels = [form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget().text()
+              for i in range(form.rowCount()) if form.itemAt(i, QFormLayout.ItemRole.LabelRole)
+              and form.itemAt(i, QFormLayout.ItemRole.LabelRole).widget()]
+    assert labels[labels.index("Captions by") + 1] == "Google key"
+    assert not any("Chat panel" in w.text() for w in dialog.findChildren(QLabel))

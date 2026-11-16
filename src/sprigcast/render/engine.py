@@ -36,6 +36,11 @@ SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing i
 # Cameras and capture cards take a second or two to open, so they wait longer before closing; closing
 # them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
 CAMERA_SLEEP_AFTER = 30.0
+# A camera that's needed again soon after it closed waits longer next time: twice as long each time it comes
+# back within CAMERA_BACK_SOON_S, up to CAMERA_SLEEP_MAX. On the PC (2026-11-16) one closed and opened 14 times
+# an hour as blooms switched, each time starting Camera Hub again. Left closed that long, it's back to 30 s.
+CAMERA_SLEEP_MAX = 300.0
+CAMERA_BACK_SOON_S = 600.0
 WATCHER_PARK_S = 60.0  # a frame watcher (background remover) nothing fed for this long lets go of everything
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
@@ -129,6 +134,8 @@ class Engine:
         # to open), "all", or "off". Set by the UI from Settings → General.
         self.sleep_policy = "not_cameras"
         self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
+        self._camera_wait: dict[str, float] = {}  # camera id -> how long it stays open off screen (see above)
+        self._slept_at: dict[str, float] = {}  # camera id -> when it last closed
         self._told_hidden: dict[str, bool] = {}  # source id -> what set_hidden() last said (see _show_hidden)
         self._visible: set[str] = set()  # sources showing in what's drawn, this tick (see _show_hidden)
         # Plugins' frame watchers (plugin_hooks.register_frame_watcher): source id -> (filter kind, its settings)
@@ -682,6 +689,8 @@ class Engine:
                     self._stopped_unknown.add(source_id)
                 self._sources.pop(source_id).stop()
                 self._last_shown.pop(source_id, None)
+                self._camera_wait.pop(source_id, None)
+                self._slept_at.pop(source_id, None)
                 compositor.forget(source_id)
         for source_id, config in wanted.items():
             existing = self._sources.get(source_id)
@@ -929,12 +938,28 @@ class Engine:
                 self._last_shown[source_id] = now
                 if source.asleep:
                     source.asleep = False
+                    if source.kind == "camera":
+                        self._camera_back(source_id, now)
                     source.wake()
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
-                    CAMERA_SLEEP_AFTER if source.kind == "camera" else SLEEP_AFTER):
+                    self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera" else SLEEP_AFTER):
                 source.asleep = True
+                if source.kind == "camera":
+                    self._slept_at[source_id] = now
                 source.sleep()
                 compositor.forget(source_id)
+
+    def _camera_back(self, source_id: str, now: float) -> None:
+        """A closed camera is on screen again: back soon, it stays open longer next time; else 30 s again."""
+        slept = self._slept_at.pop(source_id, None)
+        if slept is None or now - slept > CAMERA_BACK_SOON_S:
+            self._camera_wait.pop(source_id, None)
+            return
+        wait = min(CAMERA_SLEEP_MAX, 2 * self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER))
+        if wait != self._camera_wait.get(source_id):
+            log.info("camera %s needed again %.0f s after it closed: now stays open %.0f s off screen",
+                     source_id, now - slept, wait)
+        self._camera_wait[source_id] = wait
 
     def _drawn_scenes(self, collection: SceneCollection) -> list:
         drawn = []
@@ -991,8 +1016,9 @@ class Engine:
             textures[part.id] = compositor.render_part(part.id, size, view, sizes, fades)
             if part.id == self.editing_part and self._preview_due("part", now):
                 self.readbacks += 1
-                data = compositor.read(f"part:{part.id}")
-                self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, now))
+                data, drawn = self._read_full(compositor, f"part:{part.id}", now)
+                if data is not None:
+                    self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, drawn))
             # Placements of this layout with their own tweaks (hidden items) get their own copy.
             main = collection.main_part(part)
             for source in collection.sources:
@@ -1090,7 +1116,7 @@ class Engine:
             if more.get("previous") is not None:
                 more["previous"] = collection.hide_items(more["previous"], set(hidden))
             compositor.render(target, collection.hide_items(scene, set(hidden)) if scene else scene, sizes, **more)
-            frame = self._frame(compositor, target, None, now, {})
+            frame = Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now)  # now, not later
         except Exception:
             log.exception("drawing a screenshot without %s failed", sorted(hidden))
             return False
@@ -1112,7 +1138,8 @@ class Engine:
             return made[nv12_size]
         self.readbacks += 1
         if nv12_size is None:
-            frame = Frame(canvas.id, canvas.width, canvas.height, compositor.read(canvas.id), now)
+            data, drawn = self._read_full(compositor, canvas.id, now)
+            frame = None if data is None else Frame(canvas.id, canvas.width, canvas.height, data, drawn)
         elif self.wait_free:
             data, drawn = compositor.read_nv12_later(canvas.id, nv12_size, now, now)
             frame = None if data is None else Frame(canvas.id, nv12_size[0], nv12_size[1], data, drawn, "nv12")
@@ -1121,6 +1148,15 @@ class Engine:
             frame = Frame(canvas.id, nv12_size[0], nv12_size[1], data, now, "nv12")
         made[nv12_size] = frame
         return frame
+
+    def _read_full(self, compositor, target_id: str, now: float) -> tuple[bytes | None, float]:
+        """A whole canvas as RGBA: with wait_free a tick late without waiting on the GPU (it waited 100-140 ms
+        about ten times an hour on the PC, 2026-11-16), else now. (None, 0) while nothing is ready yet."""
+        later = getattr(compositor, "read_full_later", None) if self.wait_free else None
+        if later is None:  # waiting reads, or a compositor without it
+            return compositor.read(target_id), now
+        data, drawn = later(target_id, now, now)
+        return data, (drawn if data is not None else 0.0)
 
     def _preview_size(self, key: str, canvas_size: tuple[int, int]) -> tuple[int, int] | None:
         """The size to copy a preview at, or None for full size (shown big, or size unknown)."""
@@ -1137,8 +1173,9 @@ class Engine:
     def _preview_frame(self, compositor, target_id: str, canvas_size: tuple[int, int], now: float) -> Frame | None:
         self.readbacks += 1
         size = self._preview_size(target_id, canvas_size)
-        if size is None:
-            return Frame(target_id, *canvas_size, compositor.read(target_id), now)
+        if size is None:  # shown big: a full-size copy
+            data, drawn = self._read_full(compositor, target_id, now)
+            return None if data is None else Frame(target_id, *canvas_size, data, drawn)
         if self.wait_free:
             data, drawn = compositor.read_scaled_later(target_id, size, now, now)
             return None if data is None else Frame(target_id, size[0], size[1], data, drawn, canvas_size=canvas_size)

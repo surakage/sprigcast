@@ -370,11 +370,9 @@ class AudioPage(QWidget):
             audio.global_sources = collection.global_device_ids()
         audio.global_devices = self.global_on.isChecked()
         if self.wavelink is not None:
-            from PySide6.QtCore import QSettings
+            from sprigcast.audio.wavelink import set_enabled
 
-            from sprigcast.audio.wavelink import SETTING
-
-            QSettings().setValue(SETTING, self.wavelink.isChecked())
+            set_enabled(self.wavelink.isChecked())
         audio.track_names = [e.text().strip() or TRACK_NAMES[i] for i, e in enumerate(self.track_names)]
         if not self.streaming:
             collection.stream_encoder = collection.stream_encoder.model_copy(
