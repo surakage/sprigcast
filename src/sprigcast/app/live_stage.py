@@ -541,7 +541,17 @@ class LiveSide(QWidget):
         self.all_settings.setVisible(False)
         where.addWidget(self.all_settings, 0, Qt.AlignmentFlag.AlignLeft)
         self.on_health: Callable[[], None] = lambda: None  # the Garden check opens the last stream's health
-        where.addStretch(1)  # a short list sits at the top, its title level with Blooms, Sound and Transitions
+        where.addStretch(1)
+        # How the last stream went, under the places: a click opens Stream health.
+        self.last_stream = QPushButton("")
+        self.last_stream.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {theme.MUTED}; text-align: left;"
+            f" padding: 2px 0; }} QPushButton:hover {{ color: {theme.TEXT}; }}")
+        self.last_stream.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.last_stream.setToolTip("Stream health: how your last streams went")
+        self.last_stream.clicked.connect(lambda: self.on_health())
+        self.last_stream.setVisible(False)
+        where.addWidget(self.last_stream, 0, Qt.AlignmentFlag.AlignLeft)  # a short list sits at the top, its title level with Blooms, Sound and Transitions
         self.where_card = where_card  # LiveStage puts it at the end of the row under the canvas
         self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
         self.place_tools: dict[str, dict[str, QPushButton]] = {}
@@ -570,6 +580,20 @@ class LiveSide(QWidget):
     def set_health_link(self, shown: bool) -> None:
         """Kept for older callers: the last stream's health is in the Garden check now."""
         self._has_health = shown
+
+    def set_last_stream(self, record) -> None:
+        """ "Last stream: smooth", or "bumpy · 12 drops" (app/health.HealthRecord; None hides it)."""
+        if record is None:
+            self.last_stream.setVisible(False)
+            return
+        level, _line = record.verdict()
+        text = "Last stream: smooth" if level == "good" else "Last stream: bumpy"
+        if record.dropped:
+            text += f"  ·  {record.dropped} drop" + ("" if record.dropped == 1 else "s")
+        dot = {"good": theme.ACCENT, "warning": theme.WARN}.get(level, theme.BAD)
+        self.last_stream.setIcon(_dot_icon(dot, 8))
+        self.last_stream.setText(" " + text)
+        self.last_stream.setVisible(True)
 
     def set_live(self, live: bool) -> None:
         self.is_live = live

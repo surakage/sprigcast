@@ -173,6 +173,14 @@ def run() -> None:
     app.setOrganizationName("Slothbloom")
     app.setApplicationVersion(__version__)
     app.setWindowIcon(app_icon())
+    from sprigcast.app import crash_report, single_instance
+
+    if single_instance.ask_running_copy():  # already open: that window comes forward instead
+        sys.exit(0)
+    shown: list = []  # the window, once it exists (a second launch before then just waits)
+    server = single_instance.listen(lambda: shown and single_instance.bring_forward(shown[0]), app)
+    crashed = crash_report.check(config_dir(), logbook.crash_log())  # did the last run close cleanly?
+    app.aboutToQuit.connect(lambda: crash_report.closed_cleanly(config_dir()))
 
     from sprigcast.app import priority
     from sprigcast.app.theme import apply_theme
@@ -181,6 +189,9 @@ def run() -> None:
     from sprigcast.plugins import ensure_example, load_plugins
 
     apply_theme(app)
+    from sprigcast.app import wheel_guard
+
+    wheel_guard.install(app)  # the wheel scrolls the page, not a drop-down you didn't click
     plugins_dir = config_dir() / "plugins"
     try:
         ensure_example(plugins_dir)
@@ -227,6 +238,8 @@ def run() -> None:
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    shown.append(window)
+    window._single_copy = server  # kept alive with the window
     if broken:  # its file couldn't be read: say so once, and where the old one is kept
         from PySide6.QtCore import QTimer
 
@@ -244,6 +257,8 @@ def run() -> None:
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(1500, window.first_run_optimizer)  # once: Optimize for this PC
+        if crashed is not None:
+            QTimer.singleShot(1200, lambda: crash_report.show_note(window, crashed, logbook.log_dir()))
     from PySide6.QtCore import QTimer
 
     from sprigcast.core import pacing

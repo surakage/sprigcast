@@ -5,7 +5,8 @@
 * ``stream YYYY-MM-DD HH-MM-SS.txt``: one per stream. What went live and how (destinations, sizes,
   bitrates, encoder path, shared encoders, the PC), then every 5 seconds a line per destination
   (bitrate actually sent, frames, drops, upload backlog, auto-pilot), then the end-of-stream summary.
-* ``crash.log``: where a native library crashed, if one ever does.
+* ``crash.log``: where a native library crashed, if one ever does (a section per run, by process id),
+  and on the next start what Windows recorded about it (app/crash_report.py).
 
 SPRIGCAST_LOG_DIR puts the folder somewhere else. Stream keys never reach these files.
 """
@@ -25,6 +26,10 @@ EVERY_S = 5.0
 FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _handler: logging.Handler | None = None
 _crash_file = None
+
+
+def crash_log() -> Path | None:
+    return Path(_crash_file.name) if _crash_file is not None else None
 
 
 def log_dir() -> Path:
@@ -79,6 +84,10 @@ def setup(now: datetime | None = None) -> Path | None:
 
         if _crash_file is None:
             _crash_file = open(folder / "crash.log", "a", encoding="utf-8")  # noqa: SIM115 (open for the run)
+            from sprigcast.app.crash_report import section_header
+
+            _crash_file.write(section_header(now=now, version=_version()))  # whose crash it is, if one comes
+            _crash_file.flush()
             faulthandler.enable(file=_crash_file)
     except (OSError, RuntimeError):
         pass

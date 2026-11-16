@@ -6,6 +6,7 @@ import html
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -732,7 +733,9 @@ class MainWindow(QMainWindow):
         self.source_list.itemDoubleClicked.connect(lambda *_: self._edit_source_settings())
         self.source_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.source_list.customContextMenuRequested.connect(self._source_context_menu)
-        self.add_source_menu = QMenu(self)
+        from sprigcast.app.click_menu import ClickMenu
+
+        self.add_source_menu = ClickMenu(self)  # Plugins and the other submenus open on a click too
         self.add_source_menu.aboutToShow.connect(self._fill_add_source_menu)
         # Build's left column: "Inside" with + Add, the list, then a quiet row of tools.
         self.source_list.setObjectName("insideList")
@@ -1863,6 +1866,7 @@ class MainWindow(QMainWindow):
                                   self._toggle_camera, self._camera_settings)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_side.on_health = lambda: self._open_health()
+        self._show_last_stream()
         self.live_side.on_screenshot = lambda: self._screenshot()
         self.live_side.on_view = self._set_live_view
         self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
@@ -2174,6 +2178,7 @@ class MainWindow(QMainWindow):
         tools_row.addWidget(self.zoom_control)
         self._build_only.append(bar.addWidget(tools))
         self.mode_clock = QLabel("")
+        self.mode_clock.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._live_only = [bar.addWidget(self.mode_clock)]
         self._live_only.append(bar.addWidget(self.live_side.header_box))
         divider = QFrame()
@@ -4341,11 +4346,7 @@ class MainWindow(QMainWindow):
         config = SourceConfig(id=self.collection.new_id(kind), kind=kind, name=_name_from(settings, name),
                               settings=settings)
         size = getattr(cls, "own_sprig", None)  # overlays like Snap: a sprig of their own, filling the canvas
-        if size:
-            if scene.kind != "show":  # editing a sprig: it goes on top of the bloom you came from
-                bloom = next((s for s in self.collection.scenes
-                              if s.id == getattr(self, "last_bloom_id", None) and s.kind == "show"), None)
-                scene = bloom or scene
+        if size:  # on top of what you're editing: the bloom, or the sprig you have open
             self.collection.sources.append(config)
             self.collection.own_sprig(scene, config.id, tuple(size), config.name,
                                       getattr(cls, "own_sprig_corner", None))
@@ -5362,10 +5363,19 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._fit_header)
 
     def _hold_clock_width(self) -> None:
-        """The clock as wide as its text, so the toolbar never squeezes it (measured fresh each time)."""
-        self.mode_clock.setMinimumWidth(0)
-        self.mode_clock.adjustSize()
-        self.mode_clock.setMinimumWidth(self.mode_clock.sizeHint().width())
+        """Room for the clock measured with every digit as an 8 (the widest), so the buttons beside it
+        don't shift as the seconds tick (1:11:11 is narrower than 1:08:08 in this font)."""
+        label = self.mode_clock
+        text = label.text()
+        widest = re.sub(r"\d(?![^<]*>)", "8", text)  # digits in the words, not in the tags' colours
+        label.setMinimumWidth(0)
+        if widest != text:
+            label.setText(widest)
+        label.adjustSize()
+        width = label.sizeHint().width()
+        if widest != text:
+            label.setText(text)
+        label.setMinimumWidth(width)
 
     def _fit_header(self) -> None:
         """Keep Garden check, Record and Go live on screen: on a narrow window the header drops, in turn,
@@ -5598,6 +5608,7 @@ class MainWindow(QMainWindow):
         self.live_stage.card.set_notice("", "")
         if health is not None and seconds >= 10:  # not for a start that never got going
             health.finish(QSettings())
+        self._show_last_stream()
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()
@@ -6095,6 +6106,11 @@ class MainWindow(QMainWindow):
         from sprigcast.app import health
 
         return health.load(QSettings())
+
+    def _show_last_stream(self) -> None:
+        """Live's Destinations card: how the last stream went (opens Stream health)."""
+        records = self._health_records()
+        self.live_side.set_last_stream(records[0] if records else None)
 
     def _open_health(self):
         """How the last few streams went: the Garden check, on its Stream health tab."""
