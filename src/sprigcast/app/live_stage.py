@@ -224,10 +224,15 @@ class _Bars(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(self.colour))
-        values = ([0.0] * 5 + self.values)[-5:]
-        top = max(20.0, *values)  # a quiet PC still shows small bars, a busy one fills them
+        if not self.values:
+            values = [0.45, 0.7, 0.55, 0.9, 0.65]  # before the first reading: a calm, even look
+            top = 1.0
+        else:
+            values = ([self.values[0]] * 5 + self.values)[-5:]
+            # Against the recent highest (at least 5 %), so a small change still shows as bars, not dots.
+            top = max(5.0, *values) * 1.1
         for i, v in enumerate(values):
-            h = max(3.0, 14 * v / top)
+            h = max(4.0, 14 * v / top)
             p.drawRoundedRect(QRectF(i * 6.5, 14 - h, 3.5, h), 1.5, 1.5)
         p.end()
 
@@ -312,7 +317,7 @@ def side_card() -> QFrame:
     return card
 
 
-PLACES_HEIGHT = 200  # four destinations; more scroll inside the card
+PLACES_HEIGHT = 4 * 44 + 3 * 8  # four destinations; more scroll inside the card
 
 
 class FitScroll(QScrollArea):
@@ -339,6 +344,13 @@ class FitScroll(QScrollArea):
             height = min(height, self.cap)
         self.setMaximumHeight(max(1, height))  # never taller than the content
         self.updateGeometry()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        # The bar only when the rows really don't fit, so it never sits over them for a moment.
+        fits = self.height() >= self.widget().sizeHint().height()
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits
+                                        else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        super().resizeEvent(event)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
         if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
@@ -633,7 +645,7 @@ class LiveSide(QWidget):
             box = QPushButton()
             # The row's height in the style sheet too: the app's QPushButton min-height would win at polish.
             box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
-                              " min-height: 40px; max-height: 40px; }")
+                              " min-height: 44px; max-height: 44px; }")
             box.setCursor(Qt.CursorShape.PointingHandCursor)
             box.setToolTip("Open this place's settings")
             box.clicked.connect(lambda _=False, pid=place.id: self.on_destination(pid))
@@ -668,7 +680,7 @@ class LiveSide(QWidget):
         line.addWidget(switch)
         outer.addLayout(line)
         if not self.editing:
-            box.setFixedHeight(40)  # a QPushButton sizes to its text, not its layout: give it the row's height
+            box.setFixedHeight(44)  # a QPushButton sizes to its text, not its layout: give it the row's height
         self.place_rows[place.id] = (tile, name, note, switch)
         if self.editing:
             tools_row = QHBoxLayout()
