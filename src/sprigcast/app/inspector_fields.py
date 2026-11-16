@@ -145,3 +145,79 @@ class Card(QFrame):
         if event.position().y() < 40:  # anywhere on the title row
             self.toggle()
         super().mousePressEvent(event)
+
+
+class InspectorTabs(QWidget):
+    """The inspector's tabs (Place, Look, Shapes, Device) as one rounded segmented row, then the open tab's
+    groups. The open tab is remembered."""
+
+    KEY = "inspector/tab"
+
+    def __init__(self, names: tuple[str, ...]):
+        super().__init__()
+        self.names = names
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 4, 0, 0)
+        col.setSpacing(16)
+        bar = QFrame()
+        bar.setObjectName("inspTabs")
+        bar.setStyleSheet(
+            f"#inspTabs {{ background: {theme.CARD}; border-radius: 18px; }}"
+            f"#inspTabs QPushButton {{ background: transparent; border: none; border-radius: 14px; padding: 7px 0;"
+            f" color: {theme.MUTED}; font-weight: 600; }}"
+            f"#inspTabs QPushButton:hover {{ color: {theme.TEXT}; }}"
+            f"#inspTabs QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(4, 4, 4, 4)
+        row.setSpacing(2)
+        self.buttons: dict[str, QPushButton] = {}
+        self.pages: dict[str, QWidget] = {}
+        self.stack = QVBoxLayout()
+        self.stack.setContentsMargins(0, 0, 0, 0)
+        for name in names:
+            button = QPushButton(name)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _=False, n=name: self.show_tab(n))
+            row.addWidget(button, 1)
+            self.buttons[name] = button
+            page = QWidget()
+            page.setObjectName("inspPage")
+            page.setStyleSheet("#inspPage { background: transparent; }")
+            box = QVBoxLayout(page)
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(18)
+            self.pages[name] = page
+            self.stack.addWidget(page)
+        col.addWidget(bar)
+        col.addLayout(self.stack)
+        saved = str(QSettings().value(self.KEY, names[0]) or names[0])
+        self.show_tab(saved if saved in names else names[0], remember=False)
+
+    def group(self, tab: str, title: str | None) -> QWidget:
+        """A group of rows on `tab`, under a small quiet title (none for the tab's first group)."""
+        holder = QWidget()
+        holder.setObjectName("inspGroup")
+        holder.setStyleSheet("#inspGroup { background: transparent; }")
+        box = QVBoxLayout(holder)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(10)
+        if title:
+            label = QLabel(title.upper())
+            label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+                                " background: transparent;")
+            box.addWidget(label)
+        self.pages[tab].layout().addWidget(holder)
+        return holder
+
+    def show_tab(self, name: str, remember: bool = True) -> None:
+        for key, button in self.buttons.items():
+            button.setChecked(key == name)
+            self.pages[key].setVisible(key == name)
+        if remember:
+            QSettings().setValue(self.KEY, name)
+
+    def set_tab_visible(self, name: str, on: bool) -> None:
+        self.buttons[name].setVisible(on)
+        if not on and self.buttons[name].isChecked():
+            self.show_tab(self.names[0], remember=False)

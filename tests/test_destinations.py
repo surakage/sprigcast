@@ -315,7 +315,7 @@ def test_build_edits_a_bloom_without_putting_it_on_air(app, tmp_path, monkeypatc
         w._pick_bloom("h2")  # a pill: open BRB for editing
         assert col.active_scenes["horizontal"] == "h1"  # Main stays on air
         assert w.engine.staged == {"horizontal": "h2"} and w.previews["horizontal"].scene.id == "h2"
-        assert "not on air" in w.previews["horizontal"].subtitle and w.on_air_button.isVisibleTo(w)
+        assert "not on air" in w.previews["horizontal"].subtitle  # Put on air: bloom right-click
         # Inside lists top-most first; dragging Moss above Facecam puts it in front.
         assert [w.source_list.item(i).data(ROLE_NAME) for i in range(2)] == ["Facecam", "Moss"]
         assert w.source_list.item(0).data(ROLE_CHILDREN) == []
@@ -496,8 +496,10 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         assert "Safe zones" not in wide  # only tall canvases get the apps' overlays
         shots = []
         w._screenshot = lambda *a, **k: shots.append(a)  # the header's round button takes it instead
+        w._set_mode("build")  # Build's top bar has the round button; Live has Screenshot under its canvases
         w.screenshot_button.click()
         assert shots == [()]
+        w._set_mode("live")
         assert w.screenshot_button.size() == w.palette_button.size() == w.settings_button.size()
         projector = w.open_projector("vertical", None)
         assert w.projectors == [projector] and "vertical" in w._watched_previews()

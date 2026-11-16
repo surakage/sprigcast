@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import icons, theme
 
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
-STRIP_W, STRIP_H = 96, 220
+STRIP_W, STRIP_H = 104, 220
 FOLD_KEY = "build/sound_strips_open"
 
 
@@ -231,20 +231,40 @@ def _kind_icon(kind: str) -> str:
     return {"audio_input": "mic", "browser": "monitor", "media": "disk"}.get(kind, "speaker")
 
 
-class SoundStrips(QWidget):
-    """The row of strips, with a heading that folds it away (remembered)."""
+class _Fade(QWidget):
+    """The right edge of the strips melts into the card, so it's clear there are more to scroll to."""
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        from PySide6.QtGui import QLinearGradient, QPainter
+
+        p = QPainter(self)
+        grad = QLinearGradient(0, 0, self.width(), 0)
+        edge = QColor(theme.PANEL)
+        clear = QColor(edge)
+        clear.setAlpha(0)
+        grad.setColorAt(0, clear)
+        grad.setColorAt(1, edge)
+        p.fillRect(self.rect(), grad)
+        p.end()
+
+
+class SoundStrips(QFrame):
+    """The Sound card under the canvas: a row of strips that scrolls sideways, with a heading that folds it
+    away (remembered), where they play, and +."""
 
     def __init__(self, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
                  on_menu: Callable[[str | None, object], None] | None = None):
         super().__init__()
+        self.setObjectName("soundCard")
+        self.setStyleSheet(f"#soundCard {{ background: {theme.PANEL}; border-radius: 24px; }}")
         self.on_change, self.on_open = on_change, on_open
         self.on_menu = on_menu or (lambda _sid, _at: None)  # (sound id, or None for + Add; where)
         self.selected: str | None = None
         self.strips: dict[str, Strip] = {}
         self._shape: tuple = ()
         col = QVBoxLayout(self)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(8)
+        col.setContentsMargins(18, 12, 14, 14)
+        col.setSpacing(10)
         self.toggle = QPushButton()
         self.toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT_BRIGHT};"
@@ -254,6 +274,10 @@ class SoundStrips(QWidget):
         head.setContentsMargins(0, 0, 0, 0)
         head.addWidget(self.toggle)
         head.addStretch(1)
+        self.where = QLabel("")
+        self.where.setStyleSheet(f"color: {theme.MUTED}; font-size: 12px; background: transparent;")
+        head.addWidget(self.where)
+        head.addSpacing(8)
         self.add = QPushButton()
         self.add.setIcon(icons.icon("plus", theme.TEXT, 14))
         self.add.setFixedSize(26, 26)
@@ -277,16 +301,35 @@ class SoundStrips(QWidget):
         self.row.addStretch(1)
         self.scroll.setWidget(holder)
         col.addWidget(self.scroll)
+        self.fade = _Fade(self.scroll)
+        self.fade.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.scroll.horizontalScrollBar().rangeChanged.connect(lambda *_: self._place_fade())
+        self.scroll.horizontalScrollBar().valueChanged.connect(lambda *_: self._place_fade())
         self.empty = QLabel("No sounds yet: + adds a mic, desktop sound or app sound.")
         self.empty.setStyleSheet(f"color: {theme.MUTED}; padding: 4px;")
         col.addWidget(self.empty)
         self.is_open = QSettings().value(FOLD_KEY, True, type=bool)
         self.set_open(self.is_open)
 
+    def set_where(self, bloom: str) -> None:
+        """"Plays in <bloom>": whose sound you're hearing while you build."""
+        self.where.setText(f"Plays in {bloom}" if bloom else "")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._place_fade()
+
+    def _place_fade(self) -> None:
+        bar = self.scroll.horizontalScrollBar()
+        more = bar.maximum() > 0 and bar.value() < bar.maximum()
+        self.fade.setGeometry(self.scroll.width() - 56, 0, 56, self.scroll.height())
+        self.fade.setVisible(more)
+        self.fade.raise_()
+
     def set_open(self, on: bool) -> None:
         self.is_open = on
         QSettings().setValue(FOLD_KEY, on)
-        self.toggle.setText(("▾  " if on else "▸  ") + "Sound")
+        self.toggle.setText("Sound" + ("" if on else "  ▸"))
         self.scroll.setVisible(on and bool(self.strips))
         self.empty.setVisible(on and not self.strips)
 

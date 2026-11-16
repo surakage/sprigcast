@@ -76,6 +76,14 @@ class BuildBar(QWidget):
         self.note.setText(note)
 
 
+def _card(name: str) -> QFrame:
+    """A rounded panel card, like the canvas's."""
+    card = QFrame()
+    card.setObjectName(name)
+    card.setStyleSheet(f"#{name} {{ background: {theme.PANEL}; border: none; border-radius: 24px; }}")
+    return card
+
+
 def column(width: int) -> tuple[QWidget, QVBoxLayout]:
     panel = QWidget()
     panel.setFixedWidth(width)
@@ -95,7 +103,7 @@ class BuildStage(QWidget):
         self.setStyleSheet(f"#buildStage {{ background: {theme.CHROME}; }}")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         body = QHBoxLayout(self)
-        body.setContentsMargins(20, 8, 20, 16)
+        body.setContentsMargins(20, 6, 20, 16)
         body.setSpacing(22)
         self.bar = bar
         # Left: every bloom and sprig.
@@ -104,15 +112,16 @@ class BuildStage(QWidget):
         body.addWidget(self.rail_panel)
         # Middle: what you're editing, then the canvas.
         middle = QVBoxLayout()
-        middle.setSpacing(10)
+        middle.setSpacing(16)
         middle.addWidget(bar)
+        bar.hide()  # Build's top bar says where you are now (the shape tabs); the list shows the bloom
         self.card = QFrame()
         self.card.setObjectName("buildCard")
         self.card.setStyleSheet(f"#buildCard {{ background: {theme.PANEL}; border: none; border-radius: 28px; }}"
                                 "#buildCard QSplitter::handle { background: transparent; }")
         self.card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(10, 6, 10, 10)
+        card_layout.setContentsMargins(14, 14, 14, 14)
         self.card_slot = card_layout
         middle.addWidget(self.card, 1)
         self.below_card = middle  # Sound's strips go under the canvas
@@ -121,13 +130,12 @@ class BuildStage(QWidget):
         self.right_panel = QSplitter(Qt.Orientation.Vertical)
         self.right_panel.setFixedWidth(RIGHT_WIDTH)
         self.right_panel.setChildrenCollapsible(False)
-        self.right_panel.setHandleWidth(18)
+        self.right_panel.setHandleWidth(16)
         self.right_panel.setStyleSheet(
-            f"QSplitter::handle {{ background: transparent; border-top: 1px solid {theme.EDGE};"
-            " margin: 8px 12px; }")
-        inside = QWidget()
+            "QSplitter::handle { background: transparent; }")
+        inside = _card("leavesCard")
         self.left = QVBoxLayout(inside)  # "left" for history: Inside used to be the left column
-        self.left.setContentsMargins(0, 0, 0, 0)
+        self.left.setContentsMargins(16, 14, 14, 14)
         self.left.setSpacing(10)
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -140,14 +148,14 @@ class BuildStage(QWidget):
         self.add_slot = QHBoxLayout()
         top.addLayout(self.add_slot)
         self.left.addLayout(top)
-        inspector = QWidget()
+        inspector = _card("inspectorCard")
         self.right = QVBoxLayout(inspector)
-        self.right.setContentsMargins(0, 0, 0, 0)
+        self.right.setContentsMargins(16, 14, 8, 8)
         self.right.setSpacing(10)
-        self.right_panel.addWidget(inspector)  # the picked leaf's settings on top, the list of leaves below
-        self.right_panel.addWidget(inside)
-        self.right_panel.setStretchFactor(0, 3)
-        self.right_panel.setStretchFactor(1, 2)
+        self.right_panel.addWidget(inside)  # the leaves on top, the picked leaf's settings below
+        self.right_panel.addWidget(inspector)
+        self.right_panel.setStretchFactor(0, 2)
+        self.right_panel.setStretchFactor(1, 3)
         # A sound picked in the library swaps the right column for its controls (sound has no place on a canvas).
         self.right_stack = QStackedWidget()
         self.right_stack.setFixedWidth(RIGHT_WIDTH)
@@ -155,11 +163,11 @@ class BuildStage(QWidget):
         self.sound_slot = QVBoxLayout(self.sound_page)
         self.sound_slot.setContentsMargins(0, 0, 0, 0)
         self.sound_slot.setSpacing(12)
-        saved = QSettings().value("build/leaves_split")
+        saved = QSettings().value("build/leaves_split2")
         if saved is not None:
             self.right_panel.restoreState(saved)  # where you last left the gap
         self.right_panel.splitterMoved.connect(
-            lambda *_: QSettings().setValue("build/leaves_split", self.right_panel.saveState()))
+            lambda *_: QSettings().setValue("build/leaves_split2", self.right_panel.saveState()))
         self.right_stack.addWidget(self.right_panel)
         self.right_stack.addWidget(self.sound_page)
         body.addWidget(self.right_stack)

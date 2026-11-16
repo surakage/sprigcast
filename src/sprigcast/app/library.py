@@ -54,7 +54,9 @@ PART_ROOT = "~sprigs"
 SOUND_ROOT = "~sound"  # the Sound heading: mics, desktop sound and pages with sound, shared by both shapes
 SPRIG_MIME = "application/x-sprigcast-sprig"  # a sprig dragged out of the library: its part id
 
-HEADING_H, FOLDER_H, ROW_H = 44, 34, 34
+HEAD_GAP = 20  # room above each heading: the gap between the Blooms and Sprigs cards
+HEADING_H, FOLDER_H, ROW_H = 44 + HEAD_GAP, 34, 34
+CARD_PAD = 12  # rows sit this far inside their card
 SWATCH = (34, 20)
 PLUS = 26  # the round + on a heading
 INDENT = 14
@@ -73,6 +75,12 @@ def heading_item(title: str, note: str, folder_key: str) -> QTreeWidgetItem:
 def plus_rect(rect) -> QRectF:
     r = QRectF(rect)
     return QRectF(r.right() - PLUS - 6, r.center().y() - PLUS / 2, PLUS, PLUS)
+
+
+def _row_rect(option) -> QRectF:
+    """A row from its card's left padding to its right (the tree indents nothing itself)."""
+    width = option.widget.viewport().width() if option.widget else option.rect.right()
+    return QRectF(CARD_PAD, option.rect.y(), max(0, width - 2 * CARD_PAD), option.rect.height())
 
 
 class LibraryDelegate(QStyledItemDelegate):
@@ -96,8 +104,7 @@ class LibraryDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         # The tree indents children itself; draw from the viewport's left edge so rows line up.
-        full = QRectF(0, option.rect.y(), option.widget.viewport().width() if option.widget else option.rect.right(),
-                      option.rect.height())
+        full = _row_rect(option)
         row = index.data(ROLE_ROW)
         name = index.data(ROLE_NAME) or index.data(Qt.ItemDataRole.DisplayRole) or ""
         tag = index.data(ROLE_TAG) or ""
@@ -105,7 +112,7 @@ class LibraryDelegate(QStyledItemDelegate):
         hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
         font = QFont(option.font)
         if row == "heading":
-            self._paint_heading(p, full, name, index.data(ROLE_NOTE) or "", index.data(ROLE_FOLDER) == PART_ROOT,
+            self._paint_heading(p, full.adjusted(0, HEAD_GAP + 4, 0, 0), name, index.data(ROLE_NOTE) or "", index.data(ROLE_FOLDER) == PART_ROOT,
                                 font, hover)
             p.restore()
             return
@@ -222,8 +229,7 @@ class LibraryDelegate(QStyledItemDelegate):
         """The round + on a heading adds a bloom or a sprig."""
         if (event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton
                 and index.data(ROLE_ROW) == "heading"):
-            full = QRectF(0, option.rect.y(), option.widget.viewport().width() if option.widget else
-                          option.rect.right(), option.rect.height())
+            full = _row_rect(option).adjusted(0, HEAD_GAP + 4, 0, 0)
             if plus_rect(full).adjusted(-4, -4, 4, 4).contains(event.position()):
                 self.plus_clicked.emit(index.data(ROLE_FOLDER) or "")
                 return True
@@ -265,13 +271,37 @@ class LibraryTree(QTreeWidget):
         if item.data(0, ROLE_ROW) == "folder":
             item.setExpanded(not item.isExpanded())
 
+    def paintEvent(self, event) -> None:  # noqa: N802
+        """Each heading and what's under it sit on their own rounded card (Blooms, then Sprigs)."""
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(theme.PANEL))
+        root = self.invisibleRootItem()
+        for i in range(root.childCount()):
+            head = root.child(i)
+            if head.isHidden():
+                continue
+            top = self.visualItemRect(head)
+            last = head
+            while True:  # the last row showing under this heading
+                kids = [last.child(j) for j in range(last.childCount()) if not last.child(j).isHidden()]
+                if not kids or not last.isExpanded():
+                    break
+                last = kids[-1]
+            bottom = self.visualItemRect(last).bottom()
+            card = QRectF(0, top.y() + HEAD_GAP, self.viewport().width(), bottom - top.y() - HEAD_GAP + 8)
+            p.drawRoundedRect(card, 22, 22)
+        p.end()
+        super().paintEvent(event)
+
     def dot_rect(self, item: QTreeWidgetItem) -> QRectF:
         """Where a folder's colour dot is drawn (a little larger, so it's easy to hit)."""
         depth, parent = 0, item.parent()
         while parent is not None:
             depth, parent = depth + 1, parent.parent()
         rect = self.visualItemRect(item)
-        x = 4 + max(0, depth - 1) * INDENT + 10 + 16
+        x = CARD_PAD + 4 + max(0, depth - 1) * INDENT + 10 + 16
         return QRectF(x - 5, rect.center().y() - 9.5, 19, 19)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
