@@ -47,8 +47,7 @@ def test_the_loopback_catches_the_code_once_and_checks_the_state():
 
 @pytest.fixture
 def ids(monkeypatch):
-    monkeypatch.setattr(service_signin, "DEFAULTS", {"youtube/client_id": "yt-id", "youtube/client_secret": "",
-                                                     "kick/client_id": "k-id", "kick/client_secret": "k-secret"})
+    monkeypatch.setattr(service_signin, "DEFAULTS", {"youtube/client_id": "yt-id", "kick/client_id": "k-id"})
     monkeypatch.setattr(service_signin, "setting", lambda name: service_signin.DEFAULTS.get(name, ""))
 
 
@@ -70,8 +69,10 @@ def test_youtube_reads_the_channel_and_a_reusable_key(ids, monkeypatch):
     got = service_signin.youtube(open_url=open_url)
     assert (got.account, got.key, got.server) == ("Sloth Bloom", "k-1", "")
     assert seen["code_challenge_method"] == "S256" and seen["redirect_uri"].startswith("http://127.0.0.1:")
-    token_call = posts[0][1]
-    assert token_call["code"] == "abc" and token_call["code_verifier"] and "client_secret" not in token_call
+    url, token_call = posts[0]
+    assert url == service_signin.HELPER_URL  # the helper adds the secret: none in the app
+    assert token_call["service"] == "youtube" and token_call["code"] == "abc" and token_call["code_verifier"]
+    assert "client_secret" not in token_call and token_call["redirect_uri"] == seen["redirect_uri"]
     assert posts[-1][0].endswith("/revoke")  # only the key is kept
 
 
@@ -85,7 +86,7 @@ def test_kick_reads_server_and_key_on_its_fixed_redirect(ids, monkeypatch):
     got = service_signin.kick(open_url=open_url)
     assert (got.account, got.key, got.server) == ("slothbloom", "sk_1", "rtmps://ingest.kick/app")
     assert seen["redirect_uri"] == service_signin.KICK_REDIRECT and "streamkey:read" in seen["scope"]
-    assert posts[0][1]["client_secret"] == "k-secret"
+    assert posts[0][1]["service"] == "kick" and "client_secret" not in posts[0][1]
 
 
 def test_sign_in_is_only_offered_once_registered(monkeypatch):
@@ -117,3 +118,10 @@ def test_get_started_signs_in_when_a_place_is_picked():
     d.places["youtube"].click()  # off and on again: no second sign-in
     assert asked == ["youtube"]
     assert d.places["youtube"].note == "Sloth Bloom" and d.places["kick"].note == "Key next"
+
+
+def test_no_secret_ships_in_the_app():
+    import inspect
+
+    text = inspect.getsource(service_signin)
+    assert "GOCSPX" not in text and "client_secret" not in text

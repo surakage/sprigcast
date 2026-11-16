@@ -1,0 +1,24 @@
+# Deploy steps: README.md in this folder.
+name = "sprigcast-signin"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# slothbloom.com's DNS is on Cloudflare: this makes https://signin.slothbloom.com (SprigCast signs in there).
+routes = [{ pattern = "signin.slothbloom.com", custom_domain = true }]
+
+# Client IDs are public (they're in the app too). The secrets are NOT here: set them with
+#   npx wrangler secret put YOUTUBE_CLIENT_SECRET
+#   npx wrangler secret put KICK_CLIENT_SECRET
+[vars]
+YOUTUBE_CLIENT_ID = "497399863565-mmjhhrvqkdqvhvucg38orn04sa0cnobp.apps.googleusercontent.com"
+KICK_CLIENT_ID = "01M7JQPKVG11WQPN9YZDNZV8KW"
+
+# At most 10 sign-ins a minute from one address.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "4457"
+
+  [ratelimits.simple]
+  limit = 10
+  period = 60

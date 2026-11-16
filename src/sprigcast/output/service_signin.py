@@ -4,9 +4,10 @@ Both use a browser sign-in (output/oauth_loopback.py). SprigCast only reads the 
 pasted key and the sign-in tokens are thrown away, so there's nothing to refresh or expire later. Sign in
 again to fetch a new key.
 
-Each service needs SprigCast registered with it once (a Client ID, and for Kick a Client Secret, which a
-desktop app can't truly keep secret). They're set below or in QSettings ("youtube/client_id",
-"kick/client_id", "kick/client_secret", ...). Until then the sign-in isn't offered and the key is pasted.
+SprigCast is registered with each service (the public Client IDs below; QSettings "youtube/client_id" and
+"kick/client_id" override them). The client secrets are NOT in the app: the last step of sign-in (code ->
+token) goes through SprigCast's sign-in helper at signin.slothbloom.com (integrations/signin-helper), which
+adds the secret. With no Client ID the sign-in isn't offered and the key is pasted.
 
 YouTube: Google Cloud project, YouTube Data API v3 on, OAuth client of type "Desktop app"; scope
 `youtube` (listing and, when there is none, making a reusable stream key). Kick: kick.com → Settings →
@@ -26,21 +27,18 @@ from sprigcast.output.oauth_loopback import SignInError, Waiter, free_port, get_
 
 WAIT_SECONDS = 300
 
-# Filled in once SprigCast is registered (see the module notes); QSettings overrides them.
+# SprigCast's public Client IDs (see the module notes); QSettings overrides them. No secrets here.
 DEFAULTS = {
-    "youtube/client_id": "",
-    "youtube/client_secret": "",  # Google "Desktop app" clients: not confidential, sent when set
-    "kick/client_id": "",
-    "kick/client_secret": "",  # Kick's token endpoint needs it even with PKCE
+    "youtube/client_id": "497399863565-mmjhhrvqkdqvhvucg38orn04sa0cnobp.apps.googleusercontent.com",
+    "kick/client_id": "01M7JQPKVG11WQPN9YZDNZV8KW",
 }
+HELPER_URL = "https://signin.slothbloom.com/v1/token"  # SPRIGCAST_SIGNIN_URL overrides it for testing
 
 YOUTUBE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
-YOUTUBE_TOKEN = "https://oauth2.googleapis.com/token"
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube"
 
 KICK_AUTH = "https://id.kick.com/oauth/authorize"
-KICK_TOKEN = "https://id.kick.com/oauth/token"
 KICK_API = "https://api.kick.com/public/v1"
 KICK_SCOPES = "user:read channel:read streamkey:read"
 KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this one
@@ -66,11 +64,22 @@ def setting(name: str) -> str:
 
 def available(service: str) -> bool:
     """Is sign-in offered for this service (SprigCast registered with it)?"""
-    if service == "youtube":
-        return bool(setting("youtube/client_id"))
-    if service == "kick":
-        return bool(setting("kick/client_id") and setting("kick/client_secret"))
-    return False
+    return service in ("youtube", "kick") and bool(setting(f"{service}/client_id"))
+
+
+def helper_url() -> str:
+    import os
+
+    return os.environ.get("SPRIGCAST_SIGNIN_URL", "").strip() or HELPER_URL
+
+
+def _swap(service: str, code: str, verifier: str, redirect: str, who: str) -> str:
+    """The sign-in code for a token, through the helper (it holds the secret)."""
+    reply = post_form(helper_url(), {"service": service, "code": code, "code_verifier": verifier,
+                                     "redirect_uri": redirect}, "SprigCast's sign-in helper")
+    if "error" in reply or not reply.get("access_token"):
+        raise SignInError(f"{who} sign-in failed: {reply.get('error_description') or reply.get('error')}")
+    return reply["access_token"]
 
 
 def _browser_code(auth_url: str, params: dict, waiter: Waiter, cancelled: threading.Event | None,
@@ -82,7 +91,7 @@ def _browser_code(auth_url: str, params: dict, waiter: Waiter, cancelled: thread
 
 def youtube(cancelled: threading.Event | None = None, open_url: Callable[[str], object] = webbrowser.open) -> Fetched:
     """Sign in with Google: your channel name and a reusable stream key (one is made if there's none)."""
-    cid, secret = setting("youtube/client_id"), setting("youtube/client_secret")
+    cid = setting("youtube/client_id")
     if not cid:
         raise SignInError("YouTube sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
     verifier, challenge = pkce_pair()
@@ -91,14 +100,7 @@ def youtube(cancelled: threading.Event | None = None, open_url: Callable[[str], 
         "client_id": cid, "redirect_uri": waiter.url, "response_type": "code", "scope": YOUTUBE_SCOPE,
         "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state,
         "prompt": "select_account"}, waiter, cancelled, open_url)
-    fields = {"client_id": cid, "code": code, "code_verifier": verifier, "grant_type": "authorization_code",
-              "redirect_uri": waiter.url}
-    if secret:
-        fields["client_secret"] = secret
-    reply = post_form(YOUTUBE_TOKEN, fields, "Google")
-    if "error" in reply or not reply.get("access_token"):
-        raise SignInError(f"Google sign-in failed: {reply.get('error_description') or reply.get('error')}")
-    token = reply["access_token"]
+    token = _swap("youtube", code, verifier, waiter.url, "Google")
     channels = get_json(f"{YOUTUBE_API}/channels?part=snippet&mine=true", token, "YouTube").get("items") or []
     if not channels:
         raise SignInError("That Google account has no YouTube channel yet.")
@@ -141,8 +143,8 @@ def _youtube_key(token: str) -> str:
 
 def kick(cancelled: threading.Event | None = None, open_url: Callable[[str], object] = webbrowser.open) -> Fetched:
     """Sign in with Kick: your username, stream URL and stream key."""
-    cid, secret = setting("kick/client_id"), setting("kick/client_secret")
-    if not (cid and secret):
+    cid = setting("kick/client_id")
+    if not cid:
         raise SignInError("Kick sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
     verifier, challenge = pkce_pair()
     waiter = Waiter(KICK_PORT, host="localhost")
@@ -154,11 +156,7 @@ def kick(cancelled: threading.Event | None = None, open_url: Callable[[str], obj
     except OSError as exc:  # the port is taken
         raise SignInError(f"Port {KICK_PORT} is busy, so Kick sign-in can't finish. Close what uses it and "
                           "try again.") from exc
-    reply = post_form(KICK_TOKEN, {"grant_type": "authorization_code", "client_id": cid, "client_secret": secret,
-                                   "redirect_uri": waiter.url, "code_verifier": verifier, "code": code}, "Kick")
-    if "error" in reply or not reply.get("access_token"):
-        raise SignInError(f"Kick sign-in failed: {reply.get('error_description') or reply.get('error')}")
-    token = reply["access_token"]
+    token = _swap("kick", code, verifier, waiter.url, "Kick")
     channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
     if not channels:
         raise SignInError("Kick didn't return your channel.")
