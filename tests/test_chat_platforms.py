@@ -215,6 +215,12 @@ def test_tiktok_direct_never_imports_the_heavy_library_on_the_ui_thread(monkeypa
     class Loop:
         loop = object()
 
+    import importlib.machinery
+    import importlib.util
+
+    real_find = importlib.util.find_spec  # the add-on may not be installed here: say it is, without importing it
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: importlib.machinery.ModuleSpec(name, None)
+                        if name == "TikTokLive" else real_find(name, *a))
     monkeypatch.setattr(tiktok, "_shared_loop", lambda: Loop())
     monkeypatch.setattr(tiktok.asyncio, "run_coroutine_threadsafe", lambda coro, loop: (scheduled.append(coro), coro.close()))
     reader = tiktok.TikTokChat()
