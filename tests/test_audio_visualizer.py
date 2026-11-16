@@ -2,6 +2,8 @@
 drawing the four looks cheaply (and nothing at all while off air or silent)."""
 
 import sys
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -87,6 +89,17 @@ def test_a_failing_listener_is_dropped_never_the_mixer():
     mixer.tick()
 
 
+def _drawn(source, now):
+    """Ask for a drawing at now, wait for the worker to finish it, and take it (None: nothing new)."""
+    first = source.video_frame(now=now)
+    end = time.monotonic() + 5
+    while source._busy and time.monotonic() < end:
+        time.sleep(0.002)
+    assert not source._busy, "the drawing never finished"
+    later = source.video_frame(now=now)  # no new drawing asked for at the same moment
+    return later if later is not None else first
+
+
 def test_bands_follow_the_pitch(viz):
     low, high = viz.Analyser(), viz.Analyser()
     for i in range(3):
@@ -127,7 +140,7 @@ def test_each_look_draws_and_stays_inside_the_box(viz):
             source = create_source("audio_visualizer", "v", {"style": style, "mirror": mirror, "bars": 40})
             source.start()
             _feed(source, 220, blocks=3)
-            frame = source.video_frame(now=100.0)
+            frame = _drawn(source, 100.0)
             source.stop()
             assert frame.shape == (400, 1280, 4) and frame.dtype == np.uint8 and frame.flags.c_contiguous
             assert frame[..., 3].any(), style
@@ -142,8 +155,8 @@ def test_it_listens_only_while_shown_and_draws_nothing_in_silence(viz):
     source.start()
     assert set(listen.LISTENERS) == {"mic-1"}
     _feed(source, 300)
-    assert source.video_frame(now=1.0) is not None
-    assert source.video_frame(now=1.01) is None  # 30 a second at most
+    assert _drawn(source, 1.0) is not None
+    assert _drawn(source, 1.01) is None  # 30 a second at most
     source.set_hidden(True)
     assert not listen.LISTENERS and source.video_frame(now=2.0) is None
     source.set_hidden(False)
@@ -152,7 +165,7 @@ def test_it_listens_only_while_shown_and_draws_nothing_in_silence(viz):
     for _ in range(60):  # silence: it settles, draws the resting look once, then nothing
         now += 1 / 30
         listen.hand(listen.LISTENERS["mic-1"], np.zeros((BLOCK, 2), np.float32))
-        drawn += source.video_frame(now=now) is not None
+        drawn += _drawn(source, now) is not None
     assert 1 <= drawn <= 2
     source.update({**source.settings, "sound": listen.MIX})  # a new sound: listen to that instead
     assert set(listen.LISTENERS) == {listen.MIX}
@@ -169,7 +182,7 @@ def test_bad_settings_fall_back(viz):
     assert source.look() == ("bars", 48, 0.95, 1.0, False)
     source.start()
     _feed(source, 300)
-    assert source.video_frame(now=5.0) is not None
+    assert _drawn(source, 5.0) is not None
     source.stop()
     assert viz.colour("#ff000080", "#000000") == pytest.approx((1.0, 0.0, 0.0, 128 / 255))
 
@@ -205,3 +218,41 @@ def test_adding_it_puts_a_band_along_the_bottom(viz):
         canvas = col.canvas(shape.canvas)
         item = shape.items[0]
         assert item.y + 400 * item.scale <= canvas.height and item.y > canvas.height / 2
+
+
+def test_the_render_thread_never_waits_on_the_drawing(viz):
+    """On the PC the drawing took 25-105 ms a frame on the render thread: each NumPy step let Python's lock go
+    and queued behind busy threads to get it back. With threads keeping the lock busy, asking for a frame
+    must still take well under a millisecond or two; the worker does the drawing."""
+    stop = threading.Event()
+
+    def busy():  # pure Python: holds the lock until it's made to switch, like the encoders and sound
+        while not stop.is_set():
+            sum(range(20_000))
+
+    burners = [threading.Thread(target=busy, daemon=True) for _ in range(2)]
+    for t in burners:
+        t.start()
+    source = create_source("audio_visualizer", "v", {"style": "line", "bars": 128})
+    source.start()
+    times, frames = [], 0
+    try:
+        now = 50.0
+        end = time.monotonic() + 4.0
+        while time.monotonic() < end and frames < 6:
+            now += 1 / 30
+            _feed(source, 440)
+            start = time.perf_counter()
+            frame = source.video_frame(now=now)
+            times.append(time.perf_counter() - start)
+            frames += frame is not None
+            time.sleep(1 / 60)
+    finally:
+        stop.set()
+        for t in burners:
+            t.join()
+        source.stop()
+    assert frames >= 1  # the worker still delivers
+    times.sort()
+    assert times[len(times) // 2] < 0.002, f"median {times[len(times) // 2] * 1000:.1f} ms on the render thread"
+
