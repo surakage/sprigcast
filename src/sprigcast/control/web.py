@@ -18,12 +18,15 @@ visit can't drive SprigCast behind your back.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from sprigcast.control.native import NativeApi, answer
 from sprigcast.control.pairing import matches
+
+log = logging.getLogger(__name__)
 
 MAX_REQUEST = 64 * 1024
 LOCAL_ORIGINS = ("null", "http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost")
@@ -104,6 +107,7 @@ def _pair(request: Request, pairing) -> tuple[int, dict[str, Any]]:
     if device is None:
         return _error("auth", "Wrong or expired pairing code. Press Pair a device in SprigCast → Settings → "
                               "Connections for a new one.")
+    log.info("control: paired %s (%s) with a code (web link)", device.name, device.id)
     return 200, {"ok": True, "result": {"key": device.key, "name": device.name}}
 
 

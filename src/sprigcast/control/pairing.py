@@ -36,6 +36,7 @@ class Pairing:
     def __init__(self, devices: list[Device] | None = None, clock: Callable[[], float] = time.monotonic,
                  on_change: Callable[[], None] = lambda: None):
         self.devices: list[Device] = list(devices or [])
+        self.removed: set[str] = set()  # ids removed here (so a merge with the saved list doesn't bring them back)
         self._clock = clock
         self.on_change = on_change
         self.code = ""
@@ -104,9 +105,19 @@ class Pairing:
         before = len(self.devices)
         self.devices = [d for d in self.devices if d.id != device_id]
         if len(self.devices) != before:
+            self.removed.add(device_id)
             self.on_change()
             return True
         return False
+
+    def merged(self, stored: list[Device], seen: set[str]) -> list[Device]:
+        """This list joined with the saved one, which another SprigCast (a second copy, a test tool) may have
+        changed since: theirs are added, ones removed here stay removed, and ones this copy saw saved before but
+        that are gone now were removed elsewhere. Devices paired here and not saved yet are kept."""
+        there = {d.id for d in stored}
+        mine = [d for d in self.devices if d.id in there or d.id not in seen]
+        have = {d.id for d in mine}
+        return mine + [d for d in stored if d.id not in have and d.id not in self.removed]
 
     def to_json(self) -> str:
         return json.dumps([asdict(d) for d in self.devices])

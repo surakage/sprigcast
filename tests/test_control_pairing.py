@@ -268,51 +268,58 @@ def test_a_paired_key_gets_in_over_the_network_after_a_restart(monkeypatch):
             q.setValue(control_server.DEVICES, before)
 
 
-def test_pair_then_save_in_settings_then_restart(monkeypatch):
-    """PC test 2026-11-16 on 88905e9: pair in Settings → Connections, press Save, restart SprigCast: the key was
-    refused with 1 device loaded (Cancel instead of Save kept it). Whatever wrote the old list while Settings was
-    open, Save (and closing SprigCast) saves SprigCast's own list again, so the key still gets in."""
+def _key_works(server, key) -> bool:
+    session = NativeSession(api=server.native, password="leafy", keys=server.keys(), pairing=server.pairing)
+    out = list(session.receive(json.dumps({"auth": auth_string(key, session.salt, session.challenge)})))
+    return "welcome" in json.loads(out[0]) if isinstance(out[0], str) else False
+
+
+def _pair(server, name) -> str:
+    code = server.pairing.start()
+    session = NativeSession(api=server.native, password="leafy", keys=server.keys(), pairing=server.pairing)
+    return json.loads(list(session.receive(json.dumps({"pair": code, "name": name})))[0])["paired"]["key"]
+
+
+def test_two_copies_with_the_same_settings_keep_each_others_pairings(monkeypatch):
+    """PC test 2026-11-16: StreamBridge showed as paired, yet after the update only the test harness's device loaded,
+    and its key was refused. Two SprigCasts on the same settings (the app and a test tool) each saved their whole
+    own list on every change, so the last one to save wiped the other's devices. Now each merges with the saved
+    list: devices paired in either survive a restart, and a removal in one reaches the other."""
     import base64
 
-    import keyring
     from PySide6.QtCore import QCoreApplication, QSettings
 
     from sprigcast.app import control_server
-    from sprigcast.app.settings_window import SettingsWindow
     from test_control_api import _api as _obs_api, _qt
-    from test_settings_window import _collection as _settings_collection
 
     _qt()
-    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
     QCoreApplication.setOrganizationName("SprigCastTests")
-    QCoreApplication.setApplicationName("PairSaveRestart")
+    QCoreApplication.setApplicationName("TwoCopies")
     QSettings().clear()
     monkeypatch.setattr(secret_store, "available", lambda: True)  # as on Windows: "dpapi:<base64>"
     monkeypatch.setattr(secret_store, "protect", lambda v: "dpapi:" + base64.b64encode(v.encode()).decode() if v else v)
     monkeypatch.setattr(secret_store, "unprotect",
                         lambda v: base64.b64decode(v[6:]).decode() if v.startswith("dpapi:") else v)
-    QSettings().setValue(control_server.PORT, 0)  # any free port
     try:
-        first = control_server.ControlServer(_obs_api()[0])
-        control_server.apply_settings(first)
-        QSettings().setValue(control_server.DEVICES, secret_store.protect(json.dumps(
-            [{"id": "a1", "name": "Old phone", "key": "sc_old", "added": "2026-11-01"}])))
-        first.pairing.devices = Pairing.devices_from_json(secret_store.unprotect(str(QSettings().value(control_server.DEVICES))))
-        stale = QSettings().value(control_server.DEVICES)  # what was saved when Settings opened
-        window = SettingsWindow(_settings_collection(), default_recordings_folder="x", encoder="NVENC",
-                                audio_devices={}, control=first, tab="Connections")
-        code = first.pairing.start()
-        session = NativeSession(api=first.native, password=first.password, keys=first.keys(), pairing=first.pairing)
-        key = json.loads(list(session.receive(json.dumps({"pair": code, "name": "Stream Deck"})))[0])["paired"]["key"]
-        QSettings().setValue(control_server.DEVICES, stale)  # the old list written back, as on the PC
-        assert window.apply()  # Save
-        control_server.apply_settings(first)  # what the main window does once Settings is applied
-        first.stop()  # SprigCast closes
-        again = control_server.ControlServer(_obs_api()[0])  # and opens again
-        assert sorted(d.name for d in again.pairing.devices) == ["Old phone", "Stream Deck"]
-        later = NativeSession(api=again.native, password="leafy", keys=again.keys(), pairing=again.pairing)
-        out = list(later.receive(json.dumps({"auth": auth_string(key, later.salt, later.challenge)})))
-        assert "welcome" in json.loads(out[0])
-        window.deleteLater()
+        app_copy = control_server.ControlServer(_obs_api()[0])
+        tool_copy = control_server.ControlServer(_obs_api()[0])  # started at the same time, same settings
+        harness = _pair(tool_copy, "Soak test harness")
+        bridge = _pair(app_copy, "THSV StreamBridge")  # this save used to drop the harness
+        deck = _pair(app_copy, "Stream Deck")
+        assert _key_works(tool_copy, bridge) and _key_works(app_copy, harness)  # each picks up the other's
+        app_copy.keep_devices()  # Settings → Save
+        tool_copy.stop()
+        app_copy.stop()  # closing (the update): neither writes the other's devices away
+        again = control_server.ControlServer(_obs_api()[0])
+        assert sorted(d.name for d in again.pairing.devices) == ["Soak test harness", "Stream Deck", "THSV StreamBridge"]
+        assert all(_key_works(again, key) for key in (harness, bridge, deck))
+        # Removed in one copy: the other copy lets it go too, and doesn't save it back.
+        other = control_server.ControlServer(_obs_api()[0])
+        gone = next(d.id for d in again.pairing.devices if d.name == "Stream Deck")
+        assert again.pairing.remove(gone)
+        assert not _key_works(other, deck)
+        other.keep_devices()
+        assert sorted(d.name for d in control_server.ControlServer(_obs_api()[0]).pairing.devices) == [
+            "Soak test harness", "THSV StreamBridge"]
     finally:
         QSettings().clear()

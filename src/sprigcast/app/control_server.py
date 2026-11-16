@@ -101,8 +101,16 @@ def load_devices() -> list:
                     "encrypted for another Windows user or PC" if not text else "not a device list")
         q.setValue(DEVICES + "_unreadable", saved)
         q.sync()
-    log.info("control: %d paired device%s", len(devices), "" if len(devices) == 1 else "s")
+    log.info("control: %d paired device%s%s", len(devices), "" if len(devices) == 1 else "s",
+             "".join(f"; {d.name} ({d.id}, key {fingerprint(d.key)})" for d in devices))
     return devices
+
+
+def fingerprint(key: str) -> str:
+    """A short, one-way tag for a key in the log (which key is which, never the key itself)."""
+    import hashlib
+
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:8] if key else "none"
 
 
 def load_password() -> str:
@@ -413,19 +421,58 @@ class ControlServer(QObject):
         self.info_path: Path | None = None  # where apps on this PC find the port and password (api.json)
         self.connection_path: Path | None = None  # %APPDATA%\SprigCast\connection.json: port and doors, no secrets
         self.on_clients_changed = lambda count: None
-        self.pairing = Pairing(load_devices(), on_change=lambda: save_secret(DEVICES, self.pairing.to_json()))
+        self.pairing = Pairing(load_devices(), on_change=self._devices_changed)
+        self._devices_raw = str(QSettings().value(DEVICES, "") or "")  # the saved value this copy last matched
+        self._devices_seen = {d.id for d in self.pairing.devices}
         self.local_key = ""  # set by start() while a password is in use
 
-    def keep_devices(self) -> None:
-        """SprigCast's own list of paired devices is the true one: if what's saved differs (PC test 2026-11-16:
-        pair, then Save in Settings, and after a restart the new device's key was refused), save it again."""
-        live = self.pairing.to_json()
-        saved = secret_store.unprotect(str(QSettings().value(DEVICES, "") or ""))
-        if Pairing.devices_from_json(saved) == self.pairing.devices:
+    def _stored_devices(self) -> tuple[str, list | None]:
+        """The saved value as it is now, and its devices (None if it can't be read here)."""
+        raw = str(QSettings().value(DEVICES, "") or "")
+        if not raw:
+            return raw, []
+        text = secret_store.unprotect(raw)
+        if not text:
+            return raw, None
+        return raw, Pairing.devices_from_json(text)
+
+    def sync_devices(self, save: bool = False) -> None:
+        """Bring this copy's paired devices and the saved list together, and save the result when it differs.
+
+        Each change used to save this copy's whole list, so a second SprigCast with the same settings (a test tool,
+        or two copies at once) wrote its own list over the first one's: a device paired in one was lost, or came
+        back with the other's key (PC test 2026-11-16: StreamBridge paired but gone after the update, the harness
+        listed but its key refused). Now the saved list is read first and merged."""
+        raw, stored = self._stored_devices()
+        if raw == self._devices_raw and not save:
             return
-        log.warning("control: the saved paired devices (%d) didn't match SprigCast's (%d); saved again",
-                    len(Pairing.devices_from_json(saved)), len(self.pairing.devices))
-        save_secret(DEVICES, live)
+        if stored is None:  # can't be decrypted here: only a change made here writes over it (kept aside at start)
+            if not save:
+                return
+            log.warning("control: the saved paired devices couldn't be read; saving this copy's list")
+            stored = []
+        merged = self.pairing.merged(stored, self._devices_seen)
+        self.pairing.devices = merged
+        if merged != stored:
+            names = ", ".join(f"{d.name} ({d.id}, key {fingerprint(d.key)})" for d in merged) or "none"
+            try:
+                saved = save_secret(DEVICES, self.pairing.to_json())
+            except Exception:
+                log.exception("control: the paired devices couldn't be saved: %s", names)
+                return
+            if saved:
+                log.info("control: paired devices saved: %s", names)
+            raw, stored = self._stored_devices()
+        self._devices_raw = raw
+        self._devices_seen = {d.id for d in stored or []}
+
+    def _devices_changed(self) -> None:
+        """A device was paired or removed here: saved at once, merged with the saved list."""
+        self.sync_devices(save=True)
+
+    def keep_devices(self) -> None:
+        """Settings → Save and closing: what's paired is saved (and anything another copy saved is kept)."""
+        self.sync_devices(save=True)
 
     def drop_key(self, key: str) -> None:
         """A paired device was removed: close its open connections too."""
@@ -434,7 +481,9 @@ class ControlServer(QObject):
                 socket.close(QWebSocketProtocol.CloseCode(4009), "This device was removed in SprigCast.")
 
     def keys(self) -> list[str]:
-        """Everything that works like the password: paired devices' keys and this PC's api.json key."""
+        """Everything that works like the password: paired devices' keys and this PC's api.json key. Devices another
+        SprigCast paired since are picked up first (a registry read; decrypted only when it changed)."""
+        self.sync_devices()
         return [*self.pairing.keys(), *([self.local_key] if self.local_key else [])]
 
     def _obs(self) -> list[tuple[QWebSocket, Session]]:
