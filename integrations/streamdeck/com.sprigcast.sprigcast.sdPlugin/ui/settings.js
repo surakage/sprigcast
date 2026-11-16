@@ -16,6 +16,8 @@ const FIELDS = {
 	garden: [["garden", "Garden", "getGardens"]],
 	path: [["path", "Path", "getPaths"]],
 	deaths: [["mode", "Press", ["add", "remove", "reset", "show"]]],
+	"timer-add": [["seconds", "Seconds", null]],
+	freeze: [["what", "Sprig or source", "getFreezable"], ["mode", "Press", ["freeze", "toggle", "stop"]], ["seconds", "Seconds", null]],
 	pngtuber: [["mode", "Press", ["expression", "next", "reset"]], ["expression", "Expression", "getExpressions"],
 		["seconds", "For seconds", null]],
 	run: [["action", "Action", "getActions"], ["fields", "Fields (JSON)", "json"]],

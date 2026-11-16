@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AUTO_PORTS, EVENTS, SprigCast, authAnswer, infoFile } from "../src/sprigcast.js";
+import { AUTO_PORTS, EVENTS, SprigCast, addSeconds, authAnswer, clockText, infoFile, timerText } from "../src/sprigcast.js";
 
 test("password answer matches SprigCast's (obs-websocket 5 scheme)", () => {
 	assert.equal(authAnswer("leafy", "salt1", "chal2"), "0CjBF+kyqOBOjAwldo0zscggufE/eEKk/jy6hl6VImM=" /* sprigcast.control.protocol.auth_string */);
@@ -259,4 +259,69 @@ test("every key has a dark offline picture for when SprigCast is closed", async 
 		const suffix = action.UUID.split(".").pop();
 		assert.ok(existsSync(new URL(`imgs/offline/${suffix}.png`, root)), suffix);
 	}
+});
+
+test("the timer key's time: as SprigCast writes it, counted on between its words", () => {
+	assert.equal(clockText(0), "0:00");
+	assert.equal(clockText(65.9), "1:05");
+	assert.equal(clockText(3723), "1:02:03");
+	assert.equal(timerText(null), "");
+	const at = 1_000_000;
+	const down = { mode: "countdown", seconds: 300, running: true, done: false, text: "5:00", at };
+	assert.equal(timerText(down, at), "5:00");
+	assert.equal(timerText(down, at + 400), "5:00"); // 4:59.6 still shows 5:00, as SprigCast's own
+	assert.equal(timerText(down, at + 1000), "4:59");
+	assert.equal(timerText(down, at + 400_000), "0:00"); // never below 0 while timer.done is on its way
+	const up = { mode: "stopwatch", seconds: 59.5, running: true, done: false, text: "0:59", at };
+	assert.equal(timerText(up, at + 600), "1:00");
+	assert.equal(timerText({ ...up, mode: "uptime" }, at + 3_600_000), "1:00:59");
+	assert.equal(timerText({ ...down, running: false, done: true, text: "Starting!" }, at + 99_000), "Starting!"); // Done text
+	assert.equal(timerText({ ...down, running: false, text: "" }, at + 99_000), "5:00");
+});
+
+test("the add-time key adds a minute unless set", () => {
+	assert.equal(addSeconds({}), 60);
+	assert.equal(addSeconds({ seconds: "" }), 60);
+	assert.equal(addSeconds({ seconds: "30" }), 30);
+	assert.equal(addSeconds({ seconds: " -15 " }), -15);
+	assert.equal(addSeconds({ seconds: "lots" }), 60);
+	assert.equal(addSeconds({ seconds: "0" }), 60);
+});
+
+test("tracks the stream timer: catch-up, timer.changed, and asks again when a countdown ends", async () => {
+	FakeSocket.all = [];
+	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
+	sc.want(true);
+	const socket = FakeSocket.last;
+	ANSWERS["timer.get"] = { source: "Timer", mode: "countdown", seconds: 300, running: false, done: false, text: "5:00" };
+	try {
+		await welcome(socket);
+	} finally {
+		delete ANSWERS["timer.get"];
+	}
+	assert.equal(sc.state.timer.text, "5:00");
+	assert.equal(sc.state.timer.running, false);
+	socket.say({ event: "timer.changed", source: "Timer", mode: "countdown", seconds: 240, running: true, done: false, text: "4:00" });
+	assert.equal(sc.state.timer.seconds, 240);
+	assert.equal(sc.state.timer.running, true);
+	assert.ok(Math.abs(sc.state.timer.at - Date.now()) < 1000);
+	const before = socket.sent.length;
+	socket.say({ event: "timer.done", source: "Timer" });
+	const ask = socket.sent.slice(before).find((m) => m.do === "timer.get");
+	assert.ok(ask, "asked where the timer is");
+	socket.say({ id: ask.id, ok: true, result: { source: "Timer", mode: "countdown", seconds: 0, running: false, done: true, text: "Live!" } });
+	await tick();
+	assert.equal(sc.state.timer.done, true);
+	assert.equal(timerText(sc.state.timer), "Live!");
+	sc.want(false);
+});
+
+test("no Stream timer added: the timer is unknown, and the rest still caught up", async () => {
+	FakeSocket.all = [];
+	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
+	sc.want(true);
+	await welcome(FakeSocket.last);
+	assert.equal(sc.state.timer, null);
+	assert.equal(sc.state.stream, true);
+	sc.want(false);
 });

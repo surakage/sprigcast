@@ -40,8 +40,31 @@ function freshState() {
 	return {
 		onAir: {}, sounds: {}, volumes: {}, items: {}, media: {}, filters: {}, sprigs: {},
 		stream: false, record: false, clips: false, camera: false,
-		garden: null, path: null, transition: null, deaths: null,
+		garden: null, path: null, transition: null, deaths: null, timer: null,
 	};
+}
+
+/** m:ss, or h:mm:ss from an hour on (as SprigCast writes it). */
+export function clockText(seconds) {
+	const s = Math.max(0, Math.floor(seconds));
+	const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+	const two = (n) => String(n).padStart(2, "0");
+	return h ? `${h}:${two(m)}:${two(r)}` : `${m}:${two(r)}`;
+}
+
+/** The time a timer key shows now: counted on from SprigCast's last word (a countdown down, the rest up). */
+export function timerText(timer, now = Date.now()) {
+	if (!timer) return "";
+	if (!timer.running) return timer.text || clockText(timer.seconds);
+	const gone = Math.max(0, (now - timer.at) / 1000);
+	if (timer.mode === "countdown") return clockText(Math.ceil(timer.seconds - gone - 1e-6));
+	return clockText(timer.seconds + gone);
+}
+
+/** Seconds a +time key adds (60 unless set; below 0 takes time off). */
+export function addSeconds(settings) {
+	const seconds = Number(String(settings?.seconds ?? "").trim() || 60);
+	return Number.isFinite(seconds) && seconds !== 0 ? seconds : 60;
 }
 
 export function authAnswer(password, salt, challenge) {
@@ -269,9 +292,9 @@ export class SprigCast extends EventEmitter {
 		// Each step on its own: one that fails (an older SprigCast, a plugin not added) leaves the rest.
 		const st = this.state;
 		const ask = (action) => this.run(action).catch(() => null);
-		const [current, sounds, stream, record, clips, camera, gardens, paths, transition, media, sprigs, deaths] =
+		const [current, sounds, stream, record, clips, camera, gardens, paths, transition, media, sprigs, deaths, timer] =
 			await Promise.all(["bloom.current", "sounds.list", "stream.status", "record.status", "clips.status",
-				"camera.status", "gardens.list", "paths.list", "transition.get", "media.list", "sprigs.list", "deaths.get"].map(ask));
+				"camera.status", "gardens.list", "paths.list", "transition.get", "media.list", "sprigs.list", "deaths.get", "timer.get"].map(ask));
 		for (const [shape, bloom] of Object.entries(current?.onAir ?? {})) st.onAir[shape] = bloom?.name ?? null;
 		for (const s of sounds?.sounds ?? []) {
 			st.sounds[s.name] = s.muted;
@@ -287,6 +310,21 @@ export class SprigCast extends EventEmitter {
 		for (const m of media?.media ?? []) st.media[m.media] = m.state;
 		for (const p of sprigs?.sprigs ?? []) st.sprigs[p.name] = p.state ?? null;
 		st.deaths = typeof deaths?.count === "number" ? deaths.count : null;
+		this.setTimer(timer);
+	}
+
+	/** The Stream timer as SprigCast last said (timer.* answer or timer.changed), stamped so keys count on from it. */
+	setTimer(answer) {
+		this.state.timer = typeof answer?.seconds === "number"
+			? { mode: answer.mode, seconds: answer.seconds, running: Boolean(answer.running), done: Boolean(answer.done),
+				text: String(answer.text ?? ""), at: Date.now() }
+			: null;
+	}
+
+	/** Ask where the timer is again (a countdown ended, or going live started or stopped the uptime). */
+	_askTimer() {
+		this.run("timer.get").then((answer) => this.setTimer(answer), () => { this.state.timer = null; })
+			.finally(() => this.emit("changed"));
 	}
 
 	_event(message) {
@@ -296,7 +334,10 @@ export class SprigCast extends EventEmitter {
 		else if (event === "sound.changed") {
 			st.sounds[message.name] = message.muted;
 			st.volumes[message.name] = message.volumeDb;
-		} else if (event === "stream.changed") st.stream = Boolean(message.on);
+		} else if (event === "stream.changed") {
+			st.stream = Boolean(message.on);
+			if (st.timer?.mode === "uptime") this._askTimer();
+		}
 		else if (event === "record.changed") st.record = Boolean(message.on);
 		else if (event === "clips.changed") st.clips = Boolean(message.on);
 		else if (event === "camera.changed") st.camera = Boolean(message.on);
@@ -306,6 +347,8 @@ export class SprigCast extends EventEmitter {
 		else if (event === "media.changed") st.media[message.media] = message.state;
 		else if (event === "filter.changed") st.filters[`${message.source}/${message.name}`] = message.on;
 		else if (event === "deaths.changed") st.deaths = message.count;
+		else if (event === "timer.changed") this.setTimer(message);
+		else if (event === "timer.done") this._askTimer();
 		else if (event === "item.changed") {
 			// In a bloom, or in a sprig (and the blooms whose own sprig it is): a key names either
 			for (const holder of [message.bloom, message.sprig, ...(message.blooms ?? [])]) {

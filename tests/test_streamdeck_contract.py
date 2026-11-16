@@ -11,6 +11,9 @@ from test_control_api import FakeHost, _collection
 
 DECK = Path(__file__).resolve().parents[1] / "integrations" / "streamdeck" / "src"
 PLUGIN_ACTIONS = {"deaths.add", "deaths.remove", "deaths.reset", "deaths.show", "deaths.get",  # Death count plugin
+                  "timer.toggle", "timer.reset", "timer.add", "timer.get",  # Stream timer plugin
+                  "replay.play",  # Instant replay plugin
+                  "freeze.start", "freeze.stop", "freeze.toggle",  # Freeze plugin
                   "pngtuber.expression", "pngtuber.expressions", "pngtuber.next", "pngtuber.reset"}  # PNGtuber
 
 
