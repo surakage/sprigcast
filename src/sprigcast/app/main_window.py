@@ -126,6 +126,7 @@ from sprigcast.app.states_dialog import StatesDialog
 from sprigcast.app.panels import Panel, Panels
 from sprigcast.app.stats_panel import StatsPanel, StatsStrip
 from sprigcast.app.terms import COLLECTION, PART, PARTS, SHOW, SHOWS, a, cap
+from sprigcast import plugin_hooks
 from sprigcast.audio.mixer import source_tracks
 from sprigcast.core.events import (
     AudioLevels,
@@ -5313,6 +5314,7 @@ class MainWindow(QMainWindow):
             if not remote:
                 QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
             return {"problem": f"Could not start recording: {exc}"}
+        plugin_hooks.output_changed("record", getattr(self.recording, "started_at", time.monotonic()))
         if settings.source_record:
             self._start_source_record(canvases)
         log.info("recording started: %s, %d kbps, %s, size %s, encoder %s preset %s",
@@ -5444,6 +5446,7 @@ class MainWindow(QMainWindow):
         session, self.recording = self.recording, None
         if session is None:
             return
+        plugin_hooks.output_changed("record", None)
         self._say("Finishing files…")
         session.stop()
         self.live_side.set_recording(False)
@@ -5684,6 +5687,7 @@ class MainWindow(QMainWindow):
                 self._say(f"Could not go live: {exc}")
             return {"problem": f"Could not go live: {exc}"}
         self.live_side.set_live(True)
+        plugin_hooks.output_changed("stream", getattr(self.streaming, "started_at", time.monotonic()))
         from sprigcast.app import transitions_panel
 
         transitions_panel.set_quiet(True)  # its picture plays only when pointed at while live
@@ -5840,6 +5844,7 @@ class MainWindow(QMainWindow):
         session, self.streaming = self.streaming, None
         if session is None:
             return
+        plugin_hooks.output_changed("stream", None)
         self._say("Ending stream…")
         session.stop()
         delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)

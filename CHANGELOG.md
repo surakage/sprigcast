@@ -179,6 +179,15 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- Stream timer store plugin: how long you've been live (or recording), a countdown (minutes, or to a time of day such
+  as 8:30 PM) or a stopwatch, in a small card like Local time's. Start, pause, reset and add time with hotkeys,
+  right-click, the Stream Deck (Run action) or `timer.*` API actions; apps hear `timer.done` when a countdown ends. A
+  countdown can start over each time it comes on screen (for a "Starting soon" bloom), and a stopwatch carries on
+  after a restart. Off screen it does nothing; on screen it's drawn once a second.
+- Now playing store plugin: the song Windows says is playing (Spotify, YouTube Music, browsers and most players) with
+  its cover, in a small card that fades away when the music stops. No keys or sign-in. It listens only while the card
+  is on screen and only when Windows says the song changed; Only from limits it to some apps.
+- Re-adding a store plugin in the same session no longer doubles its right-click entries.
 - Auto clip store plugin: while clips are ready, a shout, a loud game moment or chat going wild (optional) saves the
   last seconds as a suggested clip. Nothing is posted: Tools → Suggested clips… lists them to play, keep (moves to
   Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
