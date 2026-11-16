@@ -180,3 +180,23 @@ def test_header_shows_one_clock_and_the_details_beside_it(app, tmp_path, monkeyp
         assert w.mode_clock.text().startswith("Offline")
     finally:
         w.close()
+
+
+def test_stream_health_rows_keep_name_and_detail_apart(app):
+    from PySide6.QtWidgets import QFrame
+
+    from sprigcast.app.garden_check import GardenSnapshot, garden_check_popup
+    from sprigcast.app.live_stage import Elided
+
+    long = "6000 kbps · 0 dropped · reconnected 3 times in the last hour, bitrate lowered by auto-pilot"
+    snap = GardenSnapshot(rows=[("Twitch · horizontal", long, "warning", "bumpy"), ("Kick", "6000 kbps", "good", "steady")])
+    pop = garden_check_popup(lambda: snap, [], None)
+    pop.show()
+    app.processEvents()
+    rows = pop.findChildren(QFrame, "healthRow")
+    assert len(rows) == 2
+    for row in rows:
+        name, detail = row.findChildren(Elided)
+        assert name.width() == 110 and name.geometry().right() < detail.x()  # the name never sits over its detail
+    assert rows[0].findChildren(Elided)[1].toolTip() == long  # cut short on screen, whole on hover
+    pop.close()

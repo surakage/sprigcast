@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -273,9 +274,12 @@ class GardenCheckPage(QWidget):
 
         title = Elided(name)
         title.setFixedWidth(110)
+        # Fixed, not Elided's usual Ignored: a layout gives an Ignored label no room at all, which drew the
+        # name over its detail.
+        title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
-        info = QLabel(detail)
-        info.setWordWrap(True)  # a long line (reconnects, auto-pilot) wraps instead of pushing the word off
+        info = Elided(detail)  # one line: a long one (reconnects, auto-pilot) ends in "…", the whole of it on hover
+        info.setMinimumWidth(0)
         info.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         state = QLabel(word)
         state.setStyleSheet(f"color: {colour}; font-weight: 600; background: transparent;")
