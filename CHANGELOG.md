@@ -188,7 +188,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   shutting with each syllable, with a little bounce as each sentence starts, random blinks, a quick fade between pictures, a yell picture for loud moments, and expressions you switch with hotkeys,
   a right-click, the Stream Deck PNGtuber key or `pngtuber.*` API actions (for some seconds, or until changed). It
   follows a sound you already have in SprigCast (Auto: your mic, so muting quiets it too) or a mic straight from
-  Windows, sends nothing while nothing moves, stops listening off air and lets the pictures go a minute after. A
+  Windows, sends nothing while nothing moves, keeps pictures only at the size they show (big animated emotes keep
+  fewer frames), and off air stops listening and lets the pictures go. A
   sample sloth (your own Picsart frames) comes with it.
 - Stream timer store plugin: how long you've been live (or recording), a countdown (minutes, or to a time of day such
   as 8:30 PM) or a stopwatch, in a small card like Local time's. Start, pause, reset and add time with hotkeys,

@@ -63,7 +63,7 @@ HOP = 36  # room above the model for its bounce, in box pixels
 DEFAULT = "default"
 PICTURES = {".png", ".gif", ".webp", ".apng"}
 MOST_FRAMES = 90  # frames kept from one animated picture (longer ones skip frames evenly)
-PARK_SECONDS = 60.0  # off air this long, the pictures are let go
+MOST_BYTES = 32 * 1024 * 1024  # all fitted frames together; past it animated pictures keep fewer frames
 
 FADE = 0.04  # seconds to cross-fade between pictures (mouth open/closed): short, so it keeps up with syllables
 EXPRESSION_FADE = 0.18
@@ -255,20 +255,29 @@ class ModelError(Exception):
     pass
 
 
-def _open_frames(path: Path) -> tuple[list, list[float]]:
-    """The picture's frames as Pillow RGBA images, and how long each shows (seconds)."""
+def _measure(path: Path) -> tuple[int, int, int]:
+    """(width, height, frames) without decoding the picture."""
+    from PIL import Image
+
+    with Image.open(path) as img:
+        return img.width, img.height, max(1, getattr(img, "n_frames", 1))
+
+
+def _open_frames(path: Path, most: int, fit) -> tuple[list, list[float]]:
+    """At most `most` of the picture's frames, each fitted by fit(Pillow RGBA frame) as soon as it's decoded
+    (so a big picture is never held whole), and how long each shows (seconds)."""
     from PIL import Image, ImageSequence
 
     frames, durations = [], []
     with Image.open(path) as img:
         count = getattr(img, "n_frames", 1)
-        step = max(1, math.ceil(count / MOST_FRAMES))
+        step = max(1, math.ceil(count / max(1, most)))
         for i, frame in enumerate(ImageSequence.Iterator(img)):
             if i % step:
                 if durations:
                     durations[-1] += max(0.02, (frame.info.get("duration") or 100) / 1000)
                 continue
-            frames.append(frame.convert("RGBA"))
+            frames.append(fit(frame.convert("RGBA")))
             durations.append(max(0.02, (frame.info.get("duration") or img.info.get("duration") or 100) / 1000))
     return frames, durations
 
@@ -299,30 +308,39 @@ def load_model(folder: Path, box: tuple[int, int] = (W, H)) -> Model:
     found = scan(folder)
     if not found:
         raise ModelError("Pick a folder with idle and talk pictures")
-    opened: dict[str, dict[str, tuple[list, list[float]]]] = {}
-    widest = tallest = 1
+    sizes: dict[tuple[str, str], tuple[int, int, int]] = {}
     for expression, states in found.items():
         for state, path in states.items():
             try:
-                frames, durations = _open_frames(path)
+                sizes[expression, state] = _measure(path)
             except Exception as exc:
                 log.warning("pngtuber: couldn't open %s: %s", path.name, exc)
-                continue
-            if not frames:
-                continue
-            opened.setdefault(expression, {})[state] = (frames, durations)
-            widest = max([widest] + [f.width for f in frames])
-            tallest = max([tallest] + [f.height for f in frames])
-    opened = {e: s for e, s in opened.items() if "idle" in s or "talk" in s}
-    if not opened:
+    if not any(state in ("idle", "talk") for _e, state in sizes):
         raise ModelError("Couldn't open the pictures in that folder")
     w, h = box
+    widest = max(1, max(sw for sw, _sh, _n in sizes.values()))
+    tallest = max(1, max(sh for _sw, sh, _n in sizes.values()))
     scale = min(w / widest, (h - HOP) / tallest)  # one scale for all, so every picture lines up
+    # Frames are kept at the size they're shown, never the file's own; too many of them and animated
+    # pictures keep fewer (evenly spaced, same length), so a folder of big animated emotes stays small.
+    frame_bytes = {k: (sw * scale) * (sh * scale) * 4 for k, (sw, sh, _n) in sizes.items()}
+    total = sum(frame_bytes[k] * min(n, MOST_FRAMES) for k, (_sw, _sh, n) in sizes.items())
+    still = sum(frame_bytes[k] for k, (_sw, _sh, n) in sizes.items() if n == 1)
+    thin = 1.0 if total <= MOST_BYTES else max(0.0, (MOST_BYTES - still) / max(1.0, total - still))
     pictures: dict[str, dict[str, Picture]] = {}
-    for expression, states in opened.items():
-        for state, (frames, durations) in states.items():
-            fitted = [_fit(f, scale, (w, h, HOP)) for f in frames]
+    for (expression, state), (_sw, _sh, n) in sizes.items():
+        most = min(n, MOST_FRAMES) if n == 1 or thin >= 1.0 else max(2, int(min(n, MOST_FRAMES) * thin))
+        try:
+            fitted, durations = _open_frames(found[expression][state], most,
+                                             lambda f: _fit(f, scale, (w, h, HOP)))
+        except Exception as exc:
+            log.warning("pngtuber: couldn't open %s: %s", found[expression][state].name, exc)
+            continue
+        if fitted:
             pictures.setdefault(expression, {})[state] = Picture(fitted, list(np.cumsum(durations)))
+    pictures = {e: st for e, st in pictures.items() if "idle" in st or "talk" in st}
+    if not pictures:
+        raise ModelError("Couldn't open the pictures in that folder")
     model = Model(folder, pictures)
     stills = [p for states in pictures.values() for p in states.values() if len(p.frames) == 1]
     for i, a in enumerate(stills):
@@ -475,7 +493,8 @@ class PngtuberSource(Source):
     defaults = {"folder": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.08,
                 "bounce": True, "blink": True}
     choices = {"listen_to": _listen_choices}
-    sleeps = True  # off air it stops listening; a minute later the pictures go too
+    sleeps = True  # off air it stops listening and lets the pictures go
+    slow_wake = True  # a switch to a bloom showing it waits (briefly) for its pictures to load again
     own_sprig = (W, H)
     own_sprig_corner = "bottom_left"
     channel_order = "pBGRA"
@@ -487,7 +506,6 @@ class PngtuberSource(Source):
         self._loading: Path | None = None
         self._failed: Path | None = None
         self._failed_at = 0.0
-        self._park: threading.Timer | None = None
         self._buf = np.zeros((H + HOP, W, 4), np.uint8)
         self._shown: tuple | None = None  # (picture key, fade step, hop) last sent
         self._key: tuple | None = None  # picture showing now
@@ -520,13 +538,13 @@ class PngtuberSource(Source):
 
     def wake(self) -> None:
         self._shown = None
-        self._cancel_park()
         self._get_model()
 
     def sleep(self) -> None:
+        """Off air: stop listening and let the pictures go (they load again, quickly, on the way back)."""
         self._close_mic()
         self._shown = None
-        self._park_later()
+        self._let_go()
 
     def set_hidden(self, hidden: bool) -> None:
         self._hidden = hidden
@@ -536,7 +554,6 @@ class PngtuberSource(Source):
 
     def stop(self) -> None:
         self._close_mic()
-        self._cancel_park()
         self._model = None
 
     def update(self, settings: dict[str, Any]) -> None:
@@ -553,22 +570,8 @@ class PngtuberSource(Source):
             self._close_mic()  # opened again for the new mic, if it still needs one
         self._shown = None
 
-    def _park_later(self) -> None:
-        with self._lock:
-            if self._park is None and self._model is not None:
-                self._park = threading.Timer(PARK_SECONDS, self._let_go)
-                self._park.daemon = True
-                self._park.start()
-
-    def _cancel_park(self) -> None:
-        with self._lock:
-            if self._park is not None:
-                self._park.cancel()
-                self._park = None
-
     def _let_go(self) -> None:
         with self._lock:
-            self._park = None
             if self.asleep:
                 self._model = None
                 self._diffs.clear()
@@ -601,7 +604,7 @@ class PngtuberSource(Source):
             model = None
         with self._lock:
             self._loading = None
-            if model is not None and model_folder(self.settings) == folder:
+            if model is not None and model_folder(self.settings) == folder and not self.asleep:
                 self._model = model
                 self._diffs.clear()
                 self._key = self._from = None
@@ -673,6 +676,8 @@ class PngtuberSource(Source):
         model = self._model
         if model is None:
             self._get_model()
+            if self._loading is not None:
+                return None  # on its way (back from sleep): a bloom switch waits for it, see slow_wake
             if self._shown != ("empty",):
                 self._shown = ("empty",)
                 self._buf.fill(0)

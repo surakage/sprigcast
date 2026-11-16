@@ -563,7 +563,8 @@ class Engine:
                                                    wipe_map=wipe_map)
 
     def _wait_for_waking(self, canvas_id: str, outgoing, collection: SceneCollection, scene_id: str) -> None:
-        """Switching to a bloom with a closed camera: keep showing the old bloom until it has a picture
+        """Switching to a bloom with a closed camera (or a slow_wake source, like a PNGtuber loading its pictures
+        again): keep showing the old bloom until it has a picture
         (at most WAKE_WAIT_S), so the cut or transition lands on the camera, not on an empty spot."""
         self._waking.pop(canvas_id, None)
         scene = next((s for s in collection.scenes if s.id == scene_id), None)
@@ -578,7 +579,7 @@ class Engine:
                     seen.add(inner.id)
                     stack.append(inner)
         asleep = {sid for sid in ids if (src := self._sources.get(sid)) is not None and src.asleep
-                  and src.kind == "camera"}
+                  and (src.kind == "camera" or getattr(src, "slow_wake", False))}
         if asleep:
             self._waking[canvas_id] = (outgoing, time.perf_counter() + WAKE_WAIT_S, asleep)
 
