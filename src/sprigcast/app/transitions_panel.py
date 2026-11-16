@@ -872,7 +872,8 @@ TAB_STYLE = CHOICE_STYLE.replace("padding: 6px 8px", "padding: 7px 16px")
 class PopUp(QDialog):
     """A rounded, raised pop-up card with pill tabs along the top. Drag it by any empty spot."""
 
-    def __init__(self, title: str, parent: QWidget | None = None):
+    def __init__(self, title: str, parent: QWidget | None = None, bare: bool = False):
+        """bare: no title row and no Done button (the page brings its own)."""
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(title)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -907,13 +908,21 @@ class PopUp(QDialog):
         close.setToolTip("Close")
         close.clicked.connect(self.accept)
         head.addWidget(close)
-        layout.addLayout(head)
+        if not bare:
+            layout.addLayout(head)
+        else:
+            self._head = head  # kept (unused), so the tab row it holds stays alive
+            name.setParent(None)
+            close.setParent(None)
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
         self.done_button = done = QPushButton("Done")
         done.setStyleSheet(theme.PRIMARY_STYLE)
         done.clicked.connect(self.accept)
-        layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        if not bare:
+            layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
+        else:
+            done.hide()
         self.tabs: dict[str, QPushButton] = {}
         self._group = QButtonGroup(self)
         self._drag = None
