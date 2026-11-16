@@ -11,9 +11,11 @@ The polaroid is for show: the file saved is the screenshot itself (recordings fo
 named by date and time), without the polaroid frame and without a polaroid that's still on screen
 from an earlier snap.
 
-Settings: Seconds (how long the polaroid stays up), Flash, and Save a polaroid copy (off unless you
-turn it on: also saves the framed polaroid next to the screenshot). It's only an animation: nothing
-about your viewers is read or kept.
+Settings: Seconds (how long the polaroid stays up), Flash, Freeze the screen while it prints (on unless
+you turn it off: the bloom on air holds still on the snapped frame until the polaroid slides away, so
+viewers see exactly the moment in the polaroid; the Snap itself keeps moving), and Save a polaroid copy
+(off unless you turn it on: also saves the framed polaroid next to the screenshot). It's only an
+animation: nothing about your viewers is read or kept.
 
 A SprigCast store plugin: add it from Settings → Plugins.
 """
@@ -32,17 +34,21 @@ import numpy as np
 
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
-from sprigcast.plugin_hooks import register_item_menu, register_on_screenshot
+from sprigcast.plugin_hooks import on_air, register_before_screenshot, register_item_menu, register_on_screenshot
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "snap", "name": "Snap", "version": 4, "adds": "Source",
+PLUGIN = {"id": "snap", "name": "Snap", "version": 5, "adds": "Source",
           "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot.",
-          "new": "The polaroid shows the whole screenshot and stays inside the canvas; a polaroid copy is saved only if you turn it on."}
+          "new": "The screen freezes on the snapped moment while the polaroid prints (turn it off in the Snap's settings)."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down
 MOST_WAITING = 3  # screenshots taken while one is up wait their turn; more than this are let go
+# Freeze the screen: held from just before the grab for at most this long until the screenshot is saved (a failed
+# one lets go at once), then until its polaroid starts to leave. LONGEST: a stuck show can't hold it longer.
+FREEZE_FIRST_S = 5.0
+FREEZE_LONGEST_S = 120.0
 
 # The art: vectors, drawn at whatever size they're shown. Where things are, in each SVG's own units.
 ASSETS = Path(__file__).resolve().parent / "assets" / "snap"
@@ -274,12 +280,21 @@ class _Job:
         self.card = None  # (QImage, window), made on a worker thread; the animation starts once it's ready
         self.composing = False
         self.started = 0.0
+        self.release = None  # lets the frozen screen go (Freeze the screen while it prints), once
+
+    def let_go(self) -> None:
+        release, self.release = self.release, None
+        if release is not None:
+            try:
+                release()
+            except Exception:
+                log.exception("snap: letting the frozen screen go failed")
 
 
 @register("snap")
 class SnapSource(Source):
     label = "Snap"
-    defaults = {"seconds": 6.0, "flash": True, "save_polaroid_copy": False}
+    defaults = {"seconds": 6.0, "flash": True, "freeze_screen": True, "save_polaroid_copy": False}
     sleeps = False  # a screenshot can come while it's hidden; it costs nothing until then
     in_screenshots = False  # only for show: a screenshot taken while a polaroid is up doesn't have it in
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
@@ -310,21 +325,33 @@ class SnapSource(Source):
 
     # Triggers (UI thread) ------------------------------------------------------------------------
 
-    def show(self, picture: np.ndarray | None, path: Path | None = None) -> int:
+    def show(self, picture: np.ndarray | None, path: Path | None = None, release=None) -> int:
         """Print this picture as a polaroid on stream (and save a polaroid copy to path, when given: only with
-        Save a polaroid copy on). Returns how many are ahead of it, or -1 if too many are waiting already."""
+        Save a polaroid copy on). release() is called once as the polaroid starts to leave (or is dropped): the
+        frozen screen goes back to live. Returns how many are ahead of it, or -1 if too many are waiting already."""
         with self._lock:
             ahead = len(self._queue) + (self._job is not None)
-            if ahead >= MOST_WAITING:
-                return -1
-            self._queue.append(_Job(picture, path))
-            return ahead
+            if ahead < MOST_WAITING:
+                job = _Job(picture, path)
+                job.release = release
+                self._queue.append(job)
+                return ahead
+        if release is not None:
+            release()
+        return -1
 
     def clear(self) -> None:
         with self._lock:
+            dropped = list(self._queue) + ([self._job] if self._job is not None else [])
             self._queue.clear()
             self._job = None
             self._clear = True
+        for job in dropped:
+            job.let_go()
+
+    def stop(self) -> None:
+        self.clear()  # removed or SprigCast closing: nothing stays frozen
+        super().stop()
 
     @property
     def busy(self) -> bool:
@@ -392,8 +419,11 @@ class SnapSource(Source):
             with self._lock:
                 if self._job is job:
                     self._job = None
+            job.let_go()
             return None
         t = time.monotonic() - job.started
+        if t >= GROW[1] + self._hold():
+            job.let_go()  # the polaroid starts to leave: the screen moves again under it
         if t >= self._length():
             with self._lock:
                 if self._job is job:
@@ -507,9 +537,13 @@ def _picture(image) -> np.ndarray | None:
     return to_array(image)
 
 
+_SHOWN: list = []  # (Snap instance, ahead, its _Hold) that on_screenshot just queued, for the freeze's after() (same UI call)
+
+
 def on_screenshot(api, shots: list[dict]) -> None:
     """Every Snap prints the first shape's screenshot (its "image"). The screenshot itself is saved by
     SprigCast before this; a Snap with Save a polaroid copy on (off by default) also saves the polaroid."""
+    _SHOWN.clear()
     shot = next((s for s in shots if s.get("image") is not None), None)
     if shot is None:
         return
@@ -523,10 +557,128 @@ def on_screenshot(api, shots: list[dict]) -> None:
         path = None  # save_polaroid (older Snaps) is ignored: everyone starts with the copy off
         if snap.settings.get("save_polaroid_copy") is True and shot.get("path"):
             path = snap_name(Path(shot["path"]).parent)
-        instance.show(picture, path)
+        held = _Hold()
+        ahead = instance.show(picture, path, held.done)
+        if ahead >= 0:
+            _SHOWN.append((instance, ahead, held))
 
 
 register_on_screenshot(on_screenshot)
+
+
+# Freeze the screen while it prints ----------------------------------------------------------------
+
+
+class _Hold:
+    """One Snap's share of a frozen screen: the screen moves again once every Snap printing it is done."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.release = None
+        self.ended = False
+
+    def done(self) -> None:
+        with self.lock:
+            if self.ended:
+                return
+            self.ended = True
+            release = self.release
+        if release is not None:
+            release()
+
+
+def _shows_kept(col, scene, keep: set[str], canvas: str, seen: frozenset = frozenset()) -> bool:
+    """Does this bloom or sprig show one of keep (Snap), however deep in sprigs?"""
+    if scene is None or scene.id in seen:
+        return False
+    for item in scene.items:
+        if item.source in keep:
+            return True
+        source = next((s for s in col.sources if s.id == item.source), None)
+        part = col.part_of(source) if source is not None else None
+        if part is not None and _shows_kept(col, col.shape_for(part, canvas), keep, canvas, seen | {scene.id}):
+            return True
+    return False
+
+
+def still_items(col, scene, keep: set[str], canvas: str, seen: frozenset = frozenset()) -> list[str]:
+    """What to freeze so a bloom holds still but keep (Snap) doesn't: each thing shown in it, and for a sprig
+    that holds a Snap, what's in that sprig instead (the Snap keeps moving)."""
+    if scene is None or scene.id in seen:
+        return []
+    out = []
+    for item in scene.items:
+        if not item.visible or item.source in keep:
+            continue
+        source = next((s for s in col.sources if s.id == item.source), None)
+        part = col.part_of(source) if source is not None else None
+        shape = col.shape_for(part, canvas) if part is not None else None
+        if shape is not None and _shows_kept(col, shape, keep, canvas, seen | {scene.id}):
+            out += still_items(col, shape, keep, canvas, seen | {scene.id})
+        else:
+            out.append(item.source)
+    return out
+
+
+def _not_shown_in_screenshots(col) -> set[str]:
+    from sprigcast.core.source import source_class
+
+    out = set()
+    for source in col.sources:
+        cls = source_class(source.kind)
+        if source.kind == "snap" or (cls is not None and not getattr(cls, "in_screenshots", True)):
+            out.add(source.id)
+    return out
+
+
+def before_screenshot(api, shapes: list[str]):
+    """Freeze the bloom on air in each shape being pictured, so the screenshot is the very frame that holds on
+    stream while the polaroid prints. Only with a Snap on air that has Freeze the screen on."""
+    col = api.col
+    snaps = [s for s in col.sources if s.kind == "snap" and s.settings.get("freeze_screen", True) is not False
+             and on_air(col, s.id)]
+    hold, let_go = getattr(api.host, "hold", None), getattr(api.host, "let_go", None)
+    if not snaps or hold is None or let_go is None:
+        return None
+    keep = _not_shown_in_screenshots(col)
+    ids: list[str] = []
+    for canvas_id in shapes:
+        scene = col.active_scene(canvas_id)
+        if scene is not None and any(_shows_kept(col, scene, {s.id}, canvas_id) for s in snaps):
+            ids += [i for i in still_items(col, scene, keep, canvas_id) if i not in ids]
+    if not ids:
+        return None
+    token = hold(ids, FREEZE_FIRST_S)
+    def after(shots: list[dict]) -> None:
+        shown = list(_SHOWN)
+        _SHOWN.clear()
+        if not shots or not shown:
+            let_go(token)  # nothing prints: the screen moves again now
+            return
+        # Until its polaroid starts to leave; one waiting behind others holds longer (but never forever).
+        longest = max((ahead + 1) * (GROW[1] + instance._hold() + LEAVE) + 3.0 for instance, ahead, _ in shown)
+        hold(ids, min(FREEZE_LONGEST_S, longest), token)  # same token: keeps the frozen picture, longer
+        lock = threading.Lock()
+        left = [len(shown)]
+
+        def one_done() -> None:
+            with lock:
+                left[0] -= 1
+                last = left[0] == 0
+            if last:
+                let_go(token)
+
+        for _instance, _ahead, held in shown:
+            with held.lock:
+                ended = held.ended
+                held.release = one_done
+            if ended:  # already dropped (or let go) before we got here
+                one_done()
+
+    return after
+
+
+register_before_screenshot(before_screenshot)
 
 
 def _menu(api, source, add):

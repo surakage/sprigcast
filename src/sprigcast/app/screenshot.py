@@ -34,15 +34,19 @@ PNG_QUALITY = 50
 
 def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QImage]:
     """The next frame of each canvas as a QImage. A canvas that isn't drawing is left out. Sources that are
-    only for show (Snap's polaroid) are left out of it."""
+    only for show (Snap's polaroid) are left out of it.
+
+    Only a frame from a tick that started after this call counts: one already being drawn may have begun
+    before a freeze asked for just now (Snap's), and the picture must be the frozen one exactly."""
     got: dict = {}
+    since = getattr(engine, "_ticks", None)  # taps run inside a tick: frames from ticks after this one count
     done = threading.Event()
     lock = threading.Lock()
     taps = {}
 
     for canvas_id in canvas_ids:
         def tap(frame, canvas_id=canvas_id):
-            if frame.fmt != "rgba":
+            if frame.fmt != "rgba" or (since is not None and engine._ticks <= since):
                 return
             with lock:  # the frame's bytes are its own (a fresh read each frame): kept, not copied, here
                 if canvas_id in got:

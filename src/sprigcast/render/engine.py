@@ -155,6 +155,17 @@ class Engine:
         # Replaced whole by the UI (see set_view); drawn only while something taps them.
         self.views: dict[str, tuple[str, str, Any]] = {}
         self._view_at: dict[str, float] = {}  # view name -> when a screen-only view was last drawn
+        self._ticks = 0  # ticks drawn (each counts itself up early on): what a hold or a screenshot waits for
+        # Freezes. Snap's (see hold): source id -> (token, first tick, until perf_counter), replaced whole under
+        # _holds_lock. Freeze filters (the Freeze plugin): source id -> ("filter", run) and its time.time() end
+        # (0: none), from _sync_filters. Each tick: _frozen (source id -> which freeze, for the ones frozen now)
+        # and _caught (source id -> the freeze whose picture its texture holds: uploads stop once caught).
+        self._holds: dict[str, tuple[object, float, float]] = {}
+        self._holds_lock = threading.Lock()
+        self._freeze_filters: dict[str, tuple[tuple, float]] = {}
+        self._frozen: dict[str, object] = {}
+        self._caught: dict[str, object] = {}
+        self._missed: dict[str, np.ndarray] = {}  # a frozen source's newest picture, shown when it's let go
 
     # Called from the UI thread ----------------------------------------------
 
@@ -204,6 +215,28 @@ class Engine:
                 callback(picture)
             except Exception:
                 log.exception("grab callback for %s failed", source_id or "the stream")
+
+    def hold(self, source_ids, seconds: float, token: object | None = None) -> object:
+        """Freeze these sources and sprig placements on the next frame drawn, for seconds (Snap: the screen holds
+        still while the polaroid prints). Returns a token for let_go. With the token of a hold already on,
+        only its time changes: it keeps the picture it caught. A frame drawn by a tick that started after this
+        call already shows the frozen picture (screenshots wait for one, so they match it exactly)."""
+        now = time.perf_counter()
+        first = self._ticks + 1  # not the tick being drawn now (its sources are uploaded already): the next
+        token = object() if token is None else token
+        with self._holds_lock:
+            holds = {k: v for k, v in self._holds.items() if v[2] > now}  # ended ones go
+            for source_id in source_ids:
+                old = holds.get(source_id)
+                start = old[1] if old is not None and old[0] is token else first
+                holds[source_id] = (token, start, now + max(0.0, float(seconds)))
+            self._holds = holds
+        return token
+
+    def let_go(self, token: object) -> None:
+        """End a hold (the sources move again from the next frame)."""
+        with self._holds_lock:
+            self._holds = {k: v for k, v in self._holds.items() if v[0] is not token}
 
     def remove_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
         with self._taps_lock:
@@ -778,10 +811,11 @@ class Engine:
 
     def _sync_filters(self, compositor, wanted: dict) -> None:
         """Hand each source's video filters to the compositor and keep its audio filter chain current."""
-        from sprigcast.core.filters import settings_for
+        from sprigcast.core.filters import freeze_of, settings_for
         from sprigcast.plugin_hooks import frame_watchers
 
         effects = {}
+        freezes = {}
         kinds = frame_watchers()
         watched = {}
         for source_id, source in self._sources.items():
@@ -792,12 +826,16 @@ class Engine:
             fx = video_effects(filters)
             if fx.active:
                 effects[source_id] = fx
+            freeze = freeze_of(filters)
+            if freeze is not None:
+                freezes[source_id] = (("filter", freeze[0]), freeze[1])
             chain = getattr(source, "audio_chain", None)
             if chain is not None and (chain.matches(filters) or chain.update(filters)):
                 continue
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
         compositor.effects = effects
+        self._freeze_filters = freezes
         self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
         self._watched = watched
         for source_id in [s for s, w in self._watchers.items() if watched.get(s, ("",))[0] != w[1]]:
@@ -1017,8 +1055,9 @@ class Engine:
                 layout = collection.placement_view(source, layout)
             return layout, fades
 
-        filtered = self._filtered
-        return move.flatten(scene, collection, sizes, part_size, view, lambda sid: sid not in filtered,
+        filtered, frozen = self._filtered, self._frozen  # a frozen sprig is drawn whole too: its held picture
+        return move.flatten(scene, collection, sizes, part_size, view,
+                            lambda sid: sid not in filtered and sid not in frozen,
                             canvases.get(scene.canvas, (0, 0)), hidden)
 
     def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
@@ -1076,7 +1115,7 @@ class Engine:
             canvas = next((c for c in collection.canvases if c.id == part.canvas), None)
             if canvas is None:
                 continue
-            compositor.parts = self._part_sources(textures)
+            compositor.parts = self._part_sources(textures, compositor)
             size = (canvas.width, canvas.height)
             if part.id == self.editing_part:
                 view, fades = part, None  # being edited: show every item, whatever its Live state
@@ -1095,7 +1134,7 @@ class Engine:
                     tweaked = collection.placement_view(source, view)
                     textures[(source.id, part.id)] = compositor.render_part(
                         f"{part.id}~{source.id}", size, tweaked, sizes, fades)
-        compositor.parts = self._part_sources(textures)
+        compositor.parts = self._part_sources(textures, compositor)
         self._part_textures, self._parts_used = textures, used  # for screenshots (see _render_shot)
 
     def _render_staged(self, compositor, canvas, sizes, now: float) -> None:
@@ -1164,7 +1203,7 @@ class Engine:
                     if canvas_of is None:
                         continue
                     changed.add(part.id)
-                    compositor.parts = self._part_sources(textures)
+                    compositor.parts = self._part_sources(textures, compositor)
                     size = (canvas_of.width, canvas_of.height)
                     if part.id == self.editing_part:
                         view, fades = part, None
@@ -1178,7 +1217,7 @@ class Engine:
                             tweaked = collection.hide_items(collection.placement_view(source, view), set(hidden))
                             textures[(source.id, part.id)] = compositor.render_part(
                                 f"shot~{part.id}~{source.id}", size, tweaked, sizes, fades)
-            compositor.parts = self._part_sources(textures)
+            compositor.parts = self._part_sources(textures, compositor)
             target = canvas.model_copy(update={"id": f"shot:{canvas.id}"})
             scene = held or collection.active_scene(canvas.id)
             more = dict(extra)
@@ -1262,20 +1301,61 @@ class Engine:
         self._preview_at[key] = now
         return True
 
-    def _part_sources(self, textures: dict) -> dict:
-        """(placement source id, canvas id) -> texture of the part's layout for that canvas."""
+    def _part_sources(self, textures: dict, compositor=None) -> dict:
+        """(placement source id, canvas id) -> texture of the part's layout for that canvas. A frozen placement
+        gets the copy made the first time this tick's picture of it was ready (see _freezes)."""
         collection = self._collection
         out = {}
+        frozen = self._frozen
         for source in collection.sources:
             part = collection.part_of(source)
             if part is None:
                 continue
+            freeze = frozen.get(source.id) if frozen and getattr(compositor, "held", None) is not None else None
             for canvas in collection.canvases:
                 shape = collection.shape_for(part, canvas.id)
                 texture = textures.get((source.id, shape.id), textures.get(shape.id))
-                if texture is not None:
-                    out[(source.id, canvas.id)] = texture
+                if texture is None:
+                    continue
+                if freeze is not None:
+                    held = compositor.held.get((source.id, canvas.id))
+                    if held is not None and held[0] == freeze:
+                        texture = held[1]
+                    else:
+                        texture = compositor.hold_copy((source.id, canvas.id), freeze, texture)
+                out[(source.id, canvas.id)] = texture
         return out
+
+    def _freezes(self, compositor) -> dict[str, object]:
+        """Which sources and sprig placements are frozen this tick (source id -> which freeze), and let go of
+        what the ones that ended held. A hold counts from the first tick that counts itself after it was asked for."""
+        holds, filters = self._holds, self._freeze_filters
+        if not holds and not filters:
+            if self._frozen or self._caught:
+                self._frozen, self._caught = {}, {}
+            if getattr(compositor, "held", None):
+                compositor.let_go_held({})
+            return self._frozen
+        frozen: dict[str, object] = {}
+        wall, clock, tick = time.time(), time.perf_counter(), self._ticks
+        for source_id, (key, until) in filters.items():
+            if not until or wall < until:
+                frozen[source_id] = key
+        ended = False
+        for source_id, (token, start, until) in holds.items():
+            if clock >= until:
+                ended = True
+            elif start <= tick:
+                frozen[source_id] = token
+        if ended:  # forget holds whose time is up
+            with self._holds_lock:
+                self._holds = {k: v for k, v in self._holds.items() if v[2] > clock}
+        self._frozen = frozen
+        if self._caught:
+            self._caught = {k: v for k, v in self._caught.items() if frozen.get(k) == v}
+        if getattr(compositor, "held", None):
+            compositor.let_go_held(frozen)
+        return frozen
 
     def _warm_up(self, compositor) -> None:
         """Draw one frame before the clock starts. The graphics driver finishes its shaders and makes the
@@ -1341,11 +1421,27 @@ class Engine:
         self._mark("waking and pausing")
         slowest = ("", 0.0)
         self._ticks = getattr(self, "_ticks", 0) + 1
+        frozen = self._freezes(compositor)
+        textures = getattr(compositor, "textures", {})
         for source_id, source in self._sources.items():
+            freeze = frozen.get(source_id) if frozen else None
             if source.asleep or not self._budget_allows(source_id):
+                if freeze is not None and source_id in textures:
+                    self._caught.setdefault(source_id, freeze)  # its picture now is the frozen one, as on screen
+                elif source.asleep and self._missed:
+                    self._missed.pop(source_id, None)
                 continue
             began = time.perf_counter()
+            missed = self._missed.pop(source_id, None) if self._missed and freeze is None else None
             frame = source.video_frame()
+            if freeze is not None and self._caught.get(source_id) == freeze and source_id in textures:
+                if frame is not None:  # frozen: it keeps the picture it had (the source runs on, unseen)...
+                    self._missed[source_id] = frame  # ...and shows its newest once it's let go: a text or
+                frame = None  # Death count only sends a picture when it changes
+            elif freeze is not None:
+                self._caught[source_id] = freeze  # this frame (or the one it has, if none came) is the frozen one
+            if frame is None and missed is not None:
+                frame = missed
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)
                 if source_id in self._watched and source_id in self._visible:

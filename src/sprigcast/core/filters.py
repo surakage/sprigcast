@@ -89,7 +89,7 @@ def register_filter(kind: str, label: str, media: Literal["video", "audio"], fie
     """Register an audio filter class (used as a decorator).
 
     Video filters are drawn by the GPU, so a plugin can only switch on one the drawing already knows:
-    "pixelate", "blackout", "barrel_roll" and "background" (see PLUGIN_VIDEO_KINDS). Register them with
+    "pixelate", "blackout", "barrel_roll", "background" and "freeze" (see PLUGIN_VIDEO_KINDS). Register them with
     `register_filter(kind, label, "video", fields)(None)`; until a plugin does, they do nothing.
     status(source_id) can return a short note shown beside the filter's name ("Downloading 40%").
     """
@@ -206,7 +206,7 @@ _video("shape", "Shape", [
 ])
 
 
-PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "background")  # drawn by the GPU, offered by plugins
+PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "background", "freeze")  # drawn by the GPU, offered by plugins
 # The background filter: its "mode" setting -> VideoEffects.cutout. The plugin sends the person mask
 # (and, for blur, the blurred background) through a frame watcher (plugin_hooks.register_frame_watcher).
 CUTOUT_MODES = {"remove": 1, "blur": 2, "replace": 3}
@@ -272,6 +272,17 @@ class VideoEffects:
     active: bool = field(default=False, compare=False)
 
 
+def freeze_of(filters) -> tuple[int, float] | None:
+    """A source's Freeze filter while it's on and its plugin is added: (run, until). run goes up each time it's
+    switched on (a new freeze catches a new picture); until is the time.time() it ends by, 0 for no end. A
+    freeze saved on and found long after (SprigCast closed mid-freeze) has run out, so it never sticks."""
+    flt = next((f for f in filters if f.kind == "freeze" and f.enabled), None)
+    if flt is None or "freeze" not in _KINDS:
+        return None
+    until = float(flt.settings.get("until", 0) or 0)
+    return int(flt.settings.get("run", 0) or 0), until
+
+
 def video_effects(filters) -> VideoEffects:
     """Fold a source's enabled video filters into shader uniforms."""
     fx = VideoEffects()
@@ -327,6 +338,8 @@ def video_effects(filters) -> VideoEffects:
             fx.lut, fx.lut_amount = source, max(0.0, min(1.0, float(s["amount"]) / 100))
         elif flt.kind in PLUGIN_VIDEO_KINDS:
             if flt.kind not in _KINDS:  # its plugin isn't added (any more): leave the picture alone
+                continue
+            if flt.kind == "freeze":  # nothing for the shader: the engine holds the picture (freeze_of)
                 continue
             if flt.kind == "pixelate":
                 fx.pixelate = max(1.0, float(s.get("size", 24)))
