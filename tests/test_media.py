@@ -615,3 +615,58 @@ def test_asleep_long_enough_the_thread_closes_its_file_and_ends(tmp_path, monkey
     _play(source, 0.4, frames)
     assert frames
     source.stop()
+
+
+def _webm_with_sound(path, seconds=0.4, fps=30):
+    with av.open(str(path), "w") as out:
+        v = out.add_stream("libvpx-vp9", rate=fps)
+        v.width, v.height, v.pix_fmt = 64, 36, "yuv420p"
+        a = out.add_stream("libopus", rate=48000)
+        a.layout = "stereo"
+        for n in range(int(seconds * fps)):
+            frame = av.VideoFrame.from_ndarray(np.full((36, 64, 3), n * 8, dtype=np.uint8), format="rgb24")
+            frame.pts, frame.time_base = n, Fraction(1, fps)
+            for packet in v.encode(frame):
+                out.mux(packet)
+        for packet in v.encode():
+            out.mux(packet)
+        _tone(out, a, seconds)
+    return str(path)
+
+
+def test_sound_resamplers_and_audio_filters_start_no_thread_pools(tmp_path):
+    """FFmpeg's filter graphs (inside every AudioResampler, and each audio filter) start a pool of threads that
+    only goes when Python's cycle collector runs. 10 restarts of a webm with sound and 10 Equalizers added and
+    changed, with the collector off: the thread count barely moves."""
+    import gc
+    import threading
+
+    import psutil
+
+    from sprigcast.core.filters import AudioChain
+    from sprigcast.core.scene import Filter
+
+    process = psutil.Process()
+    source = MediaSource("clip", {"path": _webm_with_sound(tmp_path / "clip.webm"), "loop": True})
+    source.start()
+    gc.disable()
+    try:
+        assert _until(lambda: source.status == "ok")
+        _play(source, 0.3)
+        before = process.num_threads()
+        for _ in range(10):
+            source.restart()
+            assert _play(source, 0.15) > 0  # sound plays each time
+        block = (np.random.default_rng(1).standard_normal((480, 2)) * 0.1).astype(np.float32)
+        for n in range(10):
+            chain = AudioChain([Filter(id=f"eq{n}", kind="eq3", name="eq", settings={"low_db": 3.0})])
+            chain.process(block)
+            chain = AudioChain([Filter(id=f"eq{n}", kind="eq3", name="eq", settings={"low_db": 6.0})])
+            chain.process(block)
+            del chain
+        time.sleep(0.3)
+        assert abs(process.num_threads() - before) < 5
+        assert len([t for t in threading.enumerate() if t.name == "media-clip"]) == 1
+    finally:
+        gc.enable()
+        source.stop()
