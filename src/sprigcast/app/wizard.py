@@ -81,13 +81,9 @@ class LeafChoice(QPushButton):
         p.setBrush(QColor(theme.SELECT_BG if on and enabled else theme.RAISED_HOVER if self.underMouse()
                           else theme.CARD))
         p.drawRoundedRect(r, 14, 14)
-        # The leaf (theme.paint_leaf): filled green when on, an outline when off
+        # The tick box, the same leaf-cut box as every QCheckBox
         cx, cy, size = r.left() + 32, r.center().y(), 22
-        leaf = QRectF(cx - size * 0.6, cy - size * 0.6, size * 1.2, size * 1.2)
-        if on:
-            theme.paint_leaf(p, leaf, True, theme.ACCENT if enabled else theme.MUTED)
-        else:
-            theme.paint_leaf(p, leaf, False, theme.LEAF_OFF)
+        theme.paint_tick_box(p, QRectF(cx - size / 2, cy - size / 2, size, size), on, enabled)
         # Title and explanation
         text_left = r.left() + 62
         font = p.font()

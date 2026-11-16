@@ -32,6 +32,20 @@ def test_paint_leaf_draws_green(tmp_path):
     assert green > 300  # a filled leaf, not just an outline
 
 
+def test_tick_box_is_the_leaf_cut_box(tmp_path):
+    pictures = theme.nature_pictures(str(tmp_path))
+    on = open(pictures["leaf_on"], encoding="utf-8").read()
+    assert theme.LEAFCUT_D in on and theme.TICK_D in on  # the box, ticked
+    assert theme.TICK_D not in open(pictures["leaf_off"], encoding="utf-8").read()
+    image = QImage(48, 48, QImage.Format.Format_ARGB32)
+    image.fill(0)
+    p = QPainter(image)
+    theme.paint_tick_box(p, QRectF(0, 0, 48, 48), True)
+    p.end()
+    # Round top-left corner, nearly square top-right one: the leaf cut
+    assert image.pixelColor(7, 7).alpha() == 0 and image.pixelColor(41, 7).alpha() > 0
+
+
 def test_style_sheet_uses_leaf_and_seed_pictures(tmp_path):
     rules = theme.nature_rules(str(tmp_path))
     pictures = theme.nature_pictures(str(tmp_path))

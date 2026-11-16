@@ -259,6 +259,23 @@ def _draw(p: QPainter, name: str) -> None:
         p.drawLine(P(4, 9.5), P(19, 5.5))
         p.drawLine(P(9, 8.2), P(11, 10))
         p.drawLine(P(14, 6.9), P(16, 8.6))
+    elif name == "heart":
+        path = QPainterPath(P(12, 19.5))
+        path.cubicTo(P(6, 15.5), P(3.5, 12), P(3.5, 9))
+        path.cubicTo(P(3.5, 6), P(5.8, 4.5), P(8, 4.5))
+        path.cubicTo(P(9.8, 4.5), P(11.2, 5.6), P(12, 7.2))
+        path.cubicTo(P(12.8, 5.6), P(14.2, 4.5), P(16, 4.5))
+        path.cubicTo(P(18.2, 4.5), P(20.5, 6), P(20.5, 9))
+        path.cubicTo(P(20.5, 12), P(18, 15.5), P(12, 19.5))
+        p.drawPath(path)
+    elif name == "tree":  # a round crown on a trunk
+        p.drawLine(P(12, 21), P(12, 13.5))
+        p.drawLine(P(12, 16.5), P(14.5, 14))
+        p.drawEllipse(P(12, 9), 6.5, 6)
+    elif name == "paw":  # a pad and four toes
+        p.drawEllipse(P(12, 15.5), 4.2, 3.6)
+        for x, y in ((6.2, 10.5), (9.6, 6.8), (14.4, 6.8), (17.8, 10.5)):
+            p.drawEllipse(P(x, y), 1.8, 2.1)
     elif name == "chevron-down":
         path = QPainterPath(P(7, 10))
         path.lineTo(P(12, 15))
@@ -276,7 +293,7 @@ def _draw(p: QPainter, name: str) -> None:
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual", "clip", "chevron-down", "chevron-up")
+         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:
