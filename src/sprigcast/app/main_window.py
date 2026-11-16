@@ -5753,7 +5753,10 @@ class MainWindow(QMainWindow):
                 max_tracks=output.enhanced_max_tracks or None,
                 max_bitrate_kbps=output.enhanced_max_kbps or None,
             )
-            config = enhanced.parse_config(enhanced.fetch_config(request), target.key, pick_codec(),
+            from sprigcast.core.workers import wait_answering
+
+            answer = wait_answering(enhanced.fetch_config, request)  # a web request: off the window's thread
+            config = enhanced.parse_config(answer, target.key, pick_codec(),
                                            bandwidth_test=target.bandwidth_test)
         except Exception as exc:
             log.warning("Enhanced Broadcasting unavailable: %s", exc)
@@ -5784,7 +5787,9 @@ class MainWindow(QMainWindow):
 
         self._say("Getting your stream key from Twitch…")
         try:
-            key = twitch_auth.fetch_stream_key()
+            from sprigcast.core.workers import wait_answering
+
+            key = wait_answering(twitch_auth.fetch_stream_key)  # a web request: off the window's thread
         except Exception as exc:
             log.warning("could not fetch the Twitch stream key: %s", exc)
             self.statusBar().showMessage(f"{exc} Using the saved stream key.", 15000)

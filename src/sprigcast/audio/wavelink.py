@@ -154,8 +154,18 @@ class WaveLinkState:
         return changes
 
 
+_enabled: list[bool] = []  # the setting, read once: every sound edit asks (it once took 846 ms on the PC)
+
+
 def enabled() -> bool:
-    return QSettings().value(SETTING, False, type=bool)
+    if not _enabled:
+        _enabled.append(QSettings().value(SETTING, False, type=bool))
+    return _enabled[0]
+
+
+def set_enabled(on: bool) -> None:
+    QSettings().setValue(SETTING, bool(on))
+    _enabled[:] = [bool(on)]
 
 
 class WaveLinkSync(QObject):

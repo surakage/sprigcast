@@ -602,47 +602,75 @@ def cover_rect(picture: tuple[float, float], canvas: tuple[int, int]) -> tuple[f
 
 
 class _Pbos:
-    """Two pixel buffers, used in turn, so reading a frame back from the GPU never waits for it.
+    """Three pixel buffers, used in turn, so reading a frame back from the GPU never waits for it.
 
-    Each tick the GPU copies the new frame into one buffer by itself while the CPU takes the frame copied
-    the tick before from the other, long finished by then. The cost is one tick of delay: a frame
-    reaches its preview or encoder a tick (16-33 ms) after it was drawn, with its own timestamp.
+    Each tick the GPU copies the new frame into a free buffer by itself, with a fence after it, while the CPU
+    takes the oldest earlier frame the GPU has finished copying. The cost is a tick of delay: a frame reaches
+    its preview or encoder a tick (16-33 ms) after it was drawn, with its own timestamp. When the card hasn't
+    finished that copy yet (the 2026-11-16 PC retest: 100-140 ms about ten times an hour, 3-7 frames lost to
+    the wait) nothing is taken that tick instead of waiting for it: the frame comes a tick later, and if the
+    card is behind on all three the oldest gives way. Without fences (moderngl's own calls) the frame of the
+    tick before is fetched as it is, as before.
     """
 
     STALE_S = 0.5  # a frame waiting longer than this (a preview hidden for a while) is thrown away
+    COUNT = 3
 
-    def __init__(self, ctx: moderngl.Context, nbytes: int):
-        self.buffers = [ctx.buffer(reserve=nbytes), ctx.buffer(reserve=nbytes)]
-        self.tags: list[object] = [None, None]
-        self.when = [0.0, 0.0]
-        self.turn = 0
+    def __init__(self, ctx: moderngl.Context, nbytes: int, fences=None):
+        self.buffers = [ctx.buffer(reserve=nbytes) for _ in range(self.COUNT)]
+        self.fences = fences if getattr(fences, "fences_ok", False) else None
+        self.pending: list[list] = []  # [buffer index, tag, when, fence], oldest first
+        self.free = list(range(self.COUNT))
+        self.late = 0  # ticks the card hadn't finished the copy (nothing taken instead of waiting)
+        self.size: tuple[int, int] | None = None  # what it was made for, where the owner needs to know
 
     def fill(self, tag: object, now: float, read_into) -> None:
-        """Start copying this tick's frame into the free buffer (read_into(buffer) queues the copy)."""
-        read_into(self.buffers[self.turn])
-        self.tags[self.turn], self.when[self.turn] = tag, now
+        """Start copying this tick's frame into a free buffer (read_into(buffer) queues the copy)."""
+        if not self.free:  # the card is behind on every buffer: the oldest frame gives way
+            self._drop()
+        index = self.free.pop(0)
+        read_into(self.buffers[index])
+        self.pending.append([index, tag, now, self.fences.fence() if self.fences is not None else None])
 
     def take(self, now: float, read=None) -> tuple[bytes | None, object]:
-        """The frame queued the tick before, with its tag, or (None, None); then swap buffers.
-        read(buffer) fetches it (UnlockedGL.read_buffer), else moderngl's buffer.read()."""
-        other = 1 - self.turn
-        data, tag = None, self.tags[other]
-        if tag is not None and now - self.when[other] <= self.STALE_S:
-            data = read(self.buffers[other]) if read is not None else self.buffers[other].read()
-        self.tags[other] = None
-        self.turn = other
-        return data, (tag if data is not None else None)
+        """The oldest frame queued before this tick's, with its tag, or (None, None) when there is none or the
+        card hasn't finished copying it. read(buffer) fetches it (UnlockedGL.read_buffer), else moderngl's
+        buffer.read()."""
+        while len(self.pending) > 1 and now - self.pending[0][2] > self.STALE_S:
+            self._drop()
+        if len(self.pending) < 2:  # never the frame queued this tick
+            return None, None
+        index, tag, _when, sync = self.pending[0]
+        if self.fences is not None and not self.fences.done(sync):
+            self.late += 1
+            return None, None
+        self.pending.pop(0)
+        self.free.append(index)
+        if self.fences is not None:
+            self.fences.forget(sync)
+        if tag is None:
+            return None, None
+        data = read(self.buffers[index]) if read is not None else self.buffers[index].read()
+        return data, tag
+
+    def _drop(self) -> None:
+        index, _tag, _when, sync = self.pending.pop(0)
+        self.free.append(index)
+        if self.fences is not None:
+            self.fences.forget(sync)
 
     def release(self) -> None:
+        while self.pending:
+            self._drop()
         for buffer in self.buffers:
             buffer.release()
 
 
 class _ScaledTarget:
-    def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
+    def __init__(self, ctx: moderngl.Context, size: tuple[int, int], fences=None):
         self.color = ctx.texture(size, 4)
         self.fbo = ctx.framebuffer(color_attachments=[self.color])
-        self.pbos = _Pbos(ctx, size[0] * size[1] * 4)
+        self.pbos = _Pbos(ctx, size[0] * size[1] * 4, fences)
 
     def release(self) -> None:
         self.fbo.release()
@@ -651,14 +679,14 @@ class _ScaledTarget:
 
 
 class _Nv12Target:
-    def __init__(self, ctx: moderngl.Context, size: tuple[int, int]):
+    def __init__(self, ctx: moderngl.Context, size: tuple[int, int], fences=None):
         w, h = size
         self.size = size
         self.y = ctx.texture((w, h), 1)
         self.uv = ctx.texture((w // 2, h // 2), 2)
         self.y_fbo = ctx.framebuffer(color_attachments=[self.y])
         self.uv_fbo = ctx.framebuffer(color_attachments=[self.uv])
-        self.pbos = _Pbos(ctx, w * h * 3 // 2)
+        self.pbos = _Pbos(ctx, w * h * 3 // 2, fences)
 
     def release(self) -> None:
         for obj in (self.y_fbo, self.uv_fbo, self.y, self.uv):
@@ -741,6 +769,7 @@ class Compositor:
         self.vbo = self.ctx.buffer(reserve=4 * 4 * 4, dynamic=True)  # 4 vertices x (x, y, u, v) float32
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
         self.textures: dict[str, moderngl.Texture] = {}
+        self.full_pbos: dict[str, _Pbos] = {}  # canvas id -> read-back buffers for read_full_later
         # Planar YUV sources: id -> (mode, (Kr, Kb, full), picture size); see planar_layout.
         self.planar: dict[str, tuple[int, tuple[float, float, float], tuple[int, int]]] = {}
         self.premultiplied: set[str] = set()  # sources uploading "pBGRA": drawn like a part's texture
@@ -844,6 +873,9 @@ class Compositor:
 
     def forget_part(self, part_id: str) -> None:
         target = self.targets.pop(f"part:{part_id}", None)
+        pbos = self.full_pbos.pop(f"part:{part_id}", None)
+        if pbos is not None:
+            pbos.release()
         if target is not None:
             target.release()
 
@@ -1137,8 +1169,14 @@ class Compositor:
         self.load_errors.clear()
 
     def read(self, canvas_id: str) -> bytes:
-        """Return the canvas as tightly packed RGBA rows, top row first."""
-        return self.targets[canvas_id].fbo.read(components=4, alignment=1)
+        """Return the canvas as tightly packed RGBA rows, top row first. Waits for the card (screenshots and
+        the like); previews and outputs use the *_later reads."""
+        fbo = self.targets[canvas_id].fbo
+        if self.gl is not None:  # waiting without Python's lock
+            data = bytearray(fbo.size[0] * fbo.size[1] * 4)
+            self.gl.read_into(fbo, data, 4)
+            return bytes(data)
+        return fbo.read(components=4, alignment=1)
 
     def _draw_scaled(self, canvas_id: str, size: tuple[int, int]) -> _ScaledTarget:
         source = self.targets[canvas_id]
@@ -1146,7 +1184,7 @@ class Compositor:
         if target is None:
             for key in [k for k in self.scaled_targets if k[0] == canvas_id]:  # the preview was resized
                 self.scaled_targets.pop(key).release()
-            target = self.scaled_targets[(canvas_id, size)] = _ScaledTarget(self.ctx, size)
+            target = self.scaled_targets[(canvas_id, size)] = _ScaledTarget(self.ctx, size, self.gl)
         self._used[("scaled", (canvas_id, size))] = time.monotonic()
         self.ctx.disable(moderngl.BLEND)
         source.color.use(0)
@@ -1172,11 +1210,28 @@ class Compositor:
         pbos.fill(tag, now, lambda buf: target.fbo.read_into(buf, components=4, alignment=1))
         return pbos.take(now)
 
+    def read_full_later(self, canvas_id: str, tag: object, now: float) -> tuple[bytes | None, object]:
+        """read() without waiting for the GPU: the canvas as it is, a tick late (see _Pbos)."""
+        fbo = self.targets[canvas_id].fbo
+        w, h = fbo.size
+        pbos = self.full_pbos.get(canvas_id)
+        if pbos is None or pbos.size != (w, h):  # first time, or the canvas was resized
+            if pbos is not None:
+                pbos.release()
+            pbos = self.full_pbos[canvas_id] = _Pbos(self.ctx, w * h * 4, self.gl)
+            pbos.size = (w, h)
+        self._used[("full", canvas_id)] = time.monotonic()
+        if self.gl is not None:
+            pbos.fill(tag, now, lambda buf: self.gl.read_into(fbo, buf, 4))
+            return pbos.take(now, self.gl.read_buffer)
+        pbos.fill(tag, now, lambda buf: fbo.read_into(buf, components=4, alignment=1))
+        return pbos.take(now)
+
     def _draw_nv12(self, canvas_id: str, size: tuple[int, int]) -> _Nv12Target:
         source = self.targets[canvas_id]
         target = self.nv12_targets.get((canvas_id, size))
         if target is None:
-            target = self.nv12_targets[(canvas_id, size)] = _Nv12Target(self.ctx, size)
+            target = self.nv12_targets[(canvas_id, size)] = _Nv12Target(self.ctx, size, self.gl)
         self._used[("nv12", (canvas_id, size))] = time.monotonic()
         w, h = size
         self.ctx.disable(moderngl.BLEND)
@@ -1237,7 +1292,8 @@ class Compositor:
                 if key in self.targets:
                     self.targets[key].release_transition()
                 continue
-            pool = {"nv12": self.nv12_targets, "scaled": self.scaled_targets, "canvas": self.targets}[kind]
+            pool = {"nv12": self.nv12_targets, "scaled": self.scaled_targets, "canvas": self.targets,
+                    "full": self.full_pbos}[kind]
             target = pool.pop(key, None)
             if target is not None:
                 target.release()
@@ -1252,6 +1308,8 @@ class Compositor:
             nv12.release()
         for scaled in self.scaled_targets.values():
             scaled.release()
+        for pbos in self.full_pbos.values():
+            pbos.release()
         self.forget_looks()
         self.vao.release()
         self.vbo.release()
