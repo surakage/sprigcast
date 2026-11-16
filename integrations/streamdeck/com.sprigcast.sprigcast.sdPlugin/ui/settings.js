@@ -49,11 +49,14 @@ function build(kind) {
 		}
 		input.id = `f-${key}`;
 		if (input.tagName !== "SELECT" || Array.isArray(source)) input.value = settings[key] ?? (Array.isArray(source) ? source[0] : "");
-		input.addEventListener("change", () => {
+		const save = () => {
+			if (settings[key] === input.value) return;
 			settings[key] = input.value;
 			send("setSettings", settings);
 			if (key === "source") askLists("getFilters"); // a source's own filters
-		});
+		};
+		input.addEventListener("change", save);
+		if (input.tagName !== "SELECT") input.addEventListener("input", save); // saved as you type: a press works at once
 		row.appendChild(input);
 		form.appendChild(row);
 	}
@@ -92,10 +95,12 @@ function showGlobals() {
 }
 
 for (const id of ["port", "password"]) {
-	document.getElementById(id).addEventListener("change", (ev) => {
+	const save = (ev) => {
+		if (globals[id] === ev.target.value) return;
 		globals[id] = ev.target.value;
 		send("setGlobalSettings", globals);
-	});
+	};
+	document.getElementById(id).addEventListener("change", save);
 }
 
 // eslint-disable-next-line no-unused-vars
