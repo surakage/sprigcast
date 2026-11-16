@@ -1,6 +1,6 @@
 """PNGtuber: your avatar pictures, talking when you talk.
 
-Add PNGtuber (+ → Plugins → PNGtuber): it gets a sprig of its own in the bottom-left corner of your
+Add PNGtuber (+ → Plugins → PNGtuber): it gets a sprig of its own in the bottom-right corner of your
 bloom, in every shape. Move or resize it like anything else. With no folder picked it shows the
 sample sloth.
 
@@ -52,8 +52,9 @@ from sprigcast.control.native import ApiError, register_action, send_event
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 1, "adds": "Source",
-          "about": "Your avatar pictures talk when you do: blinks, a little bounce and expressions."}
+PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 2, "adds": "Source",
+          "about": "Your avatar pictures talk when you do: blinks, a little bounce and expressions.",
+          "new": "Starts in the bottom right corner, clear of Now playing."}
 
 log = logging.getLogger(__name__)
 
@@ -496,7 +497,7 @@ class PngtuberSource(Source):
     sleeps = True  # off air it stops listening and lets the pictures go
     slow_wake = True  # a switch to a bloom showing it waits (briefly) for its pictures to load again
     own_sprig = (W, H)
-    own_sprig_corner = "bottom_left"
+    own_sprig_corner = "bottom_right"  # bottom left is Now playing's
     channel_order = "pBGRA"
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
