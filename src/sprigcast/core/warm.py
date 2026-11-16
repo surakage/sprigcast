@@ -47,3 +47,23 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
     if loaded:
         log.info("warm-up: loaded %d modules in %.0f ms", len(loaded), 1000 * (time.perf_counter() - began))
     return loaded
+
+
+def warm_encoders(recording=None, stream=None) -> None:
+    """Find out, in the background, which video encoder recording and streaming will use (each check opens an
+    encoder and encodes a test frame; the answers are kept for the run). Done at record start instead, the
+    HEVC check froze the window 507 ms on the PC (2026-11-16). Never raises."""
+    try:
+        from sprigcast.output import recorder
+
+        began = time.perf_counter()
+        picked = recorder.pick_codec()
+        chosen = [recorder.resolve_codec(recording)] if recording is not None else []
+        if stream is not None:
+            chosen.append(recorder.resolve_codec(stream, streaming=True))
+        if "hevc_nvenc" in chosen:
+            recorder.direct_hevc_ok()
+        log.info("warm-up: encoders checked in %.0f ms (best %s; using %s)", 1000 * (time.perf_counter() - began),
+                 picked, ", ".join(chosen) or picked)
+    except Exception as exc:  # noqa: BLE001 (checked again when used)
+        log.info("warm-up: encoder check failed: %s", exc)

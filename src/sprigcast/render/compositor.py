@@ -682,6 +682,10 @@ class _Pbos:
         data = read(self.buffers[index]) if read is not None else self.buffers[index].read()
         return data, tag
 
+    def behind(self) -> bool:
+        """The card hasn't finished a copy older than the last one asked for: it's busy with something."""
+        return self.fences is not None and any(not self.fences.done(p[3]) for p in self.pending[:-1])
+
     def _drop(self) -> None:
         index, _tag, _when, sync = self.pending.pop(0)
         self.free.append(index)
@@ -1359,8 +1363,16 @@ class Compositor:
         return self._draw_scaled(canvas_id, size).fbo.read(components=4, alignment=1)
 
     def read_scaled_later(self, canvas_id: str, size: tuple[int, int], tag: object,
-                          now: float) -> tuple[bytes | None, object]:
-        """Like read_scaled without waiting for the GPU: returns the previous call's frame and tag (see _Pbos)."""
+                          now: float, optional: bool = False) -> tuple[bytes | None, object]:
+        """Like read_scaled without waiting for the GPU: returns the previous call's frame and tag (see _Pbos).
+
+        optional (a preview): while the card is behind on earlier copies, ask it for no new one. On the PC
+        (2026-11-16) queuing a preview copy while the card was stuck held the renderer 332 ms."""
+        known = self.scaled_targets.get((canvas_id, size))
+        if optional and known is not None and known.pbos.behind():
+            known.pbos.late += 1
+            self._used[("scaled", (canvas_id, size))] = time.monotonic()
+            return known.pbos.take(now, self.gl.read_buffer if self.gl is not None else None)
         target = self._draw_scaled(canvas_id, size)
         pbos = target.pbos
         if self.gl is not None:

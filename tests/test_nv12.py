@@ -202,3 +202,30 @@ def test_without_fences_the_previous_frame_is_fetched_as_before():
     pbos.fill("a", 1.0, lambda buffer: setattr(buffer, "data", b"a"))
     pbos.fill("b", 1.016, lambda buffer: setattr(buffer, "data", b"b"))
     assert pbos.take(1.016) == (b"a", "a") and pbos.late == 0
+
+
+def test_behind_means_an_older_copy_than_the_last_isnt_done():
+    from sprigcast.render.compositor import _Pbos
+
+    fences = _Fences()
+    pbos = _Pbos(_Ctx(), 16, fences)
+    pbos.fill("a", 1.0, lambda buffer: None)
+    assert not pbos.behind()  # the last copy still going is normal (one tick in flight)
+    pbos.fill("b", 1.016, lambda buffer: None)
+    assert pbos.behind()  # "a" isn't done a tick later: the card is busy
+    fences.finished.add(1)
+    assert not pbos.behind()
+
+
+def test_an_optional_preview_copy_isnt_asked_for_while_the_card_is_behind(compositor, monkeypatch):
+    _picture(compositor)
+    compositor.read_scaled_later("c", (32, 18), "a", 1.0, optional=True)
+    target = compositor.scaled_targets[("c", (32, 18))]
+    monkeypatch.setattr(target.pbos, "behind", lambda: True)
+    draws = []
+    real = compositor._draw_scaled
+    monkeypatch.setattr(compositor, "_draw_scaled", lambda *a: draws.append(a) or real(*a))
+    compositor.read_scaled_later("c", (32, 18), "b", 1.016, optional=True)
+    assert draws == [] and target.pbos.late == 1  # nothing new drawn or queued
+    compositor.read_scaled_later("c", (32, 18), "c", 1.033)  # an output's copy is always made
+    assert len(draws) == 1

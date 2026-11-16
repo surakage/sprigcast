@@ -281,7 +281,11 @@ def run() -> None:
     tidy.start(pacing.TIDY_EVERY_MS)
     from sprigcast.core import warm, workers
 
-    QTimer.singleShot(warm.WARM_AFTER_MS, lambda: workers.run(warm.warm, name="warm-up"))  # see core/warm.py
+    def warm_up():  # see core/warm.py
+        encoders = (window.collection.recording.encoder.model_copy(), window.collection.stream_encoder.model_copy())
+        workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders)), name="warm-up")
+
+    QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
     QTimer.singleShot(20_000, pacing.trim_working_set)  # start-up's one-time pages (imports, shaders) go back
     if plugins.failed:
         names = ", ".join(plugins.failed)
