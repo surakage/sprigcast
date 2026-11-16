@@ -74,3 +74,26 @@ def test_obs_alignment_bits_round_trip():
     assert _obs_align("top_left") == 5 and _obs_align("center") == 0
     assert all(_from_obs_align(_obs_align(a)) == a for a in ALIGNS)
     assert all(BOUNDS_FROM_OBS[BOUNDS_TO_OBS[b]] == b for b in BOUNDS_TO_OBS)
+
+
+def test_build_canvas_zooms_out_past_fit_and_snaps_back(qapp=None):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPointF
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.preview import ZOOM_MIN, Preview
+
+    QApplication.instance() or QApplication([])
+    preview = Preview("horizontal", "Build", (16, 9))
+    preview.resize(800, 500)
+    preview.zoom_at(0.5, QPointF(100, 100))
+    assert preview.zoom == 0.5 and preview.canvas_rect().width() < 800 * 0.6
+    preview.zoom_at(0.01)
+    assert preview.zoom == ZOOM_MIN
+    preview.zoom_at(1 / ZOOM_MIN * 1.02)  # lands near 100%: snaps to fit
+    assert preview.zoom == 1.0 and preview.pan.isNull()
+    assert preview._zoom_bar_at(preview._zoom_bar()["in"].center()) == "in"
+    preview.editable = False  # Live: no zoom bar
+    assert preview._zoom_bar_at(preview._zoom_bar()["in"].center()) is None

@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -19,6 +19,7 @@ from sprigcast.core import edit
 from sprigcast.core.scene import Scene, SceneItem
 
 HANDLE_PX = 8  # handle size on screen
+ZOOM_MIN, ZOOM_MAX = 0.25, 8.0  # Build canvas zoom, 1 = fits
 SNAP_PX = 10  # default snap distance on screen
 
 
@@ -66,7 +67,7 @@ class Preview(QWidget):
         self.live_look = False  # Live's stage: no checkerboard frame, room for the on-air ring
         self.align = "center"  # Live's stage: "right"/"left" so two canvases sit together, evenly spaced
         self.ring: str | None = None
-        self.zoom = 1.0  # 1 = the whole canvas fits; Ctrl+wheel zooms at the mouse, Ctrl+0 fits again
+        self.zoom = 1.0  # 1 = the whole canvas fits; the wheel zooms at the mouse (Build only), Ctrl+0 fits again
         self.pan = QPointF(0, 0)  # widget pixels the zoomed canvas is shifted by (middle-drag or Space+drag)
         self._panning: QPointF | None = None
         self._space_down = False
@@ -162,7 +163,9 @@ class Preview(QWidget):
         """Zoom by `factor` keeping the canvas point under `at` (widget pixels) where it is."""
         at = at or QPointF(self.width() / 2, self.height() / 2)
         before = self.canvas_rect()
-        new = min(8.0, max(1.0, self.zoom * factor))
+        new = min(ZOOM_MAX, max(ZOOM_MIN, self.zoom * factor))
+        if abs(new - 1.0) < 0.04:  # passing through "fits" snaps to it, so it's easy to land on
+            new = 1.0
         if new == self.zoom:
             return
         fx = (at.x() - before.x()) / before.width()
@@ -248,10 +251,10 @@ class Preview(QWidget):
         p.restore()
         p.setPen(QColor(theme.MUTED))
         label = f"{self.title}  ·  {self.subtitle}" if self.subtitle else self.title
-        if self.zoom > 1.0:
+        if self.zoom != 1.0 and not self._zoom_bar_shown():
             label += f"   ·   {self.zoom * 100:.0f}%  (Ctrl+0 to fit)"
         if not self.show_title:
-            if self.zoom > 1.0:  # only the zoom, in a small chip in the corner
+            if self.zoom != 1.0 and not self._zoom_bar_shown():  # only the zoom, in a small chip in the corner
                 text = f"{self.zoom * 100:.0f}%  ·  Ctrl+0 to fit"
                 chip = QRectF(0, 0, p.fontMetrics().horizontalAdvance(text) + 20, 22)
                 chip.moveTopRight(QPointF(rect.right() - 8 if rect.right() < self.width() else self.width() - 8, 8))
@@ -279,7 +282,45 @@ class Preview(QWidget):
         self._paint_inner(p)
         self._paint_safe_zones(p)
         self._paint_selection(p)
+        self._paint_zoom_bar(p)
         p.end()
+
+    def _zoom_bar_shown(self) -> bool:
+        return self.editable and not self.twin and not self.live_look and self.width() > 260
+
+    def _zoom_bar(self) -> dict[str, QRectF]:
+        """The little zoom pill in the bottom-right corner: −, the zoom (click: fit), +."""
+        h, button, label = 28.0, 28.0, 56.0
+        right, bottom = self.width() - 12.0, self.height() - 12.0
+        left = right - (button * 2 + label)
+        return {"out": QRectF(left, bottom - h, button, h), "fit": QRectF(left + button, bottom - h, label, h),
+                "in": QRectF(left + button + label, bottom - h, button, h)}
+
+    def _paint_zoom_bar(self, p: QPainter) -> None:
+        if not self._zoom_bar_shown():
+            return
+        parts = self._zoom_bar()
+        whole = parts["out"].united(parts["in"])
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(theme.EDGE_STRONG), 1))
+        p.setBrush(QColor(theme.PANEL))
+        p.drawRoundedRect(whole, whole.height() / 2, whole.height() / 2)
+        hover = getattr(self, "_zoom_hover", None)
+        for key, rect in parts.items():
+            if key == hover:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(theme.RAISED))
+                p.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 12, 12)
+            text = {"out": "−", "in": "+"}.get(key, f"{self.zoom * 100:.0f}%")
+            p.setPen(QColor(theme.TEXT if key != "fit" or self.zoom != 1.0 else theme.MUTED))
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        p.restore()
+
+    def _zoom_bar_at(self, pos: QPointF) -> str | None:
+        if not self._zoom_bar_shown():
+            return None
+        return next((key for key, rect in self._zoom_bar().items() if rect.contains(pos)), None)
 
     _mark = None  # the SprigCast S (data/mark.svg), loaded once
 
@@ -511,8 +552,16 @@ class Preview(QWidget):
             if event.button() == Qt.MouseButton.LeftButton:
                 self.swap_requested.emit(self.canvas_id)
             return
+        bar = self._zoom_bar_at(event.position()) if event.button() == Qt.MouseButton.LeftButton else None
+        if bar is not None:
+            if bar == "fit":
+                self.fit_view()
+            else:
+                self.zoom_at(1.25 if bar == "in" else 1 / 1.25)
+            return
         middle = event.button() == Qt.MouseButton.MiddleButton
-        if (middle or (self._space_down and event.button() == Qt.MouseButton.LeftButton)) and self.zoom > 1.0:
+        can_pan = self.editable and (self.zoom != 1.0 or not self.pan.isNull())
+        if (middle or (self._space_down and event.button() == Qt.MouseButton.LeftButton)) and can_pan:
             self._panning = event.position() - self.pan  # pan the zoomed canvas
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
@@ -555,6 +604,13 @@ class Preview(QWidget):
             self.update()
             return
         if self._drag is None:
+            bar = self._zoom_bar_at(event.position())
+            if bar != getattr(self, "_zoom_hover", None):
+                self._zoom_hover = bar
+                self.update()
+            if bar is not None:
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+                return
             self._update_cursor(event.position())
             return
         selected = self._selected_item()
@@ -603,19 +659,24 @@ class Preview(QWidget):
         self.opened.emit(self.canvas_id, -1 if index is None else index)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        """Ctrl+wheel zooms at the mouse; the wheel alone pans while zoomed in."""
-        if self.twin:
+        """Build: the wheel zooms at the mouse (in past fit and out below it); Shift+wheel moves sideways.
+        Middle-drag or Space+drag moves around. Live never zooms."""
+        if self.twin or not self.editable:
+            super().wheelEvent(event)
             return
-        steps = event.angleDelta().y() / 120
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            self.zoom_at(1.15 ** steps, event.position())
-        elif self.zoom > 1.0:
-            horizontal = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
-            shift = QPointF(steps * 60, 0) if horizontal else QPointF(0, steps * 60)
-            self.pan += shift
+        steps = event.angleDelta().y() / 120 or event.angleDelta().x() / 120
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.pan += QPointF(steps * 80, 0)
             self.update()
         else:
-            super().wheelEvent(event)
+            self.zoom_at(1.15 ** steps, event.position())
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Type.NativeGesture and self.editable and not self.twin:
+            if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:  # touchpad pinch
+                self.zoom_at(1 + event.value(), event.position())
+                return True
+        return super().event(event)
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
@@ -630,10 +691,10 @@ class Preview(QWidget):
         if ctrl and event.key() == Qt.Key.Key_0:
             self.fit_view()
             return
-        if ctrl and event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+        if ctrl and event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal) and self.editable:
             self.zoom_at(1.25)
             return
-        if ctrl and event.key() == Qt.Key.Key_Minus:
+        if ctrl and event.key() == Qt.Key.Key_Minus and self.editable:
             self.zoom_at(1 / 1.25)
             return
         if event.key() == Qt.Key.Key_Escape and self.inner is not None:
