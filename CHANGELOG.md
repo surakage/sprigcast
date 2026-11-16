@@ -168,6 +168,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- Auto clip store plugin: while clips are ready, a shout, a loud game moment or chat going wild (optional) saves the
+  last seconds as a suggested clip. Nothing is posted: Tools → Suggested clips… lists them to play, keep (moves to
+  Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
+  clips are yours to set. It reads the levels the meters already have and does nothing while clips are off.
+  `autoclip.*` API actions (`autoclip.mark` for Streamer.bot raids) and an `autoclip.suggested` event.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

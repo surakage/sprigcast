@@ -65,13 +65,14 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Undo a death counted by mistake | `http://127.0.0.1:4455/api/deaths.remove?password=…` |
 | New game: death count back to 0 | `http://127.0.0.1:4455/api/deaths.reset?password=…` |
 | Chat command `!deaths`: show the count on stream | `http://127.0.0.1:4455/api/deaths.show?password=…` |
+| Raid or big sub train: mark it as a suggested clip (Auto clip) | `http://127.0.0.1:4455/api/autoclip.mark?password=…` |
 | Change some text on screen | `http://127.0.0.1:4455/api/source.set?source=Goal%20text&settings=…&password=…` (or POST JSON, below) |
 | Switch bloom | `http://127.0.0.1:4455/api/bloom.show?bloom=Just%20Chatting&password=…` |
 | Mute the mic | `http://127.0.0.1:4455/api/sound.mute?sound=Mic&password=…` |
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
 | Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
-Store plugins (Hide it, Barrel Roll, Snap, Death count) must be added first in Settings → Plugins.
+Store plugins (Auto clip, Hide it, Barrel Roll, Snap, Death count) must be added first in Settings → Plugins.
 
 ### Death count with Streamer.bot
 
