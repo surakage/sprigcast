@@ -47,8 +47,9 @@ from sprigcast.plugin_hooks import output_since, register_hotkeys, register_item
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 1, "adds": "Source",
-          "about": "How long you've been live, a countdown or a stopwatch, in a small card on stream."}
+PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 2, "adds": "Source",
+          "about": "How long you've been live, a countdown or a stopwatch, in a small card on stream.",
+          "new": "Stays crisp at any size, and starts bigger."}
 
 KIND = "stream_timer"
 W, H = 640, 220  # the card's box, like Local time's; scale it on the canvas like anything else
@@ -238,17 +239,14 @@ def _colour(text: str, fallback: str):
     return c if c.isValid() else QColor(fallback)
 
 
-def paint(text: str, label: str, settings: dict[str, Any], counting: bool = True):
+def paint(text: str, label: str, settings: dict[str, Any], counting: bool = True, detail: float = 1.0):
     """The card as a QImage (premultiplied), W x H: the label small above the time. The card hugs the words
-    and sits at the left of the box, so it grows to the right and stays tucked in the corner."""
+    and sits at the left of the box, so it grows to the right and stays tucked in the corner. detail: pixels
+    drawn per box unit."""
     from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter
+    from PySide6.QtGui import QColor, QFont, QFontMetricsF
 
-    image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent)
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    image, p = painted.canvas(W, H, detail)
     big = QFont()
     big.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
     big.setWeight(QFont.Weight.Bold)
@@ -378,8 +376,10 @@ class StreamTimerSource(Source):
                 "text_color": "#f2f7f3", "card_color": "#151c19e0"}
     choices = {"mode": MODES, "count_from": COUNT_FROM}
     sleeps = True  # off screen it does nothing; back on screen it draws the time as it is then
+    sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "top_left"
+    own_sprig_height = 0.14  # starts readable: the card about a seventh of the canvas tall
     channel_order = painted.Frame.channel_order
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -430,14 +430,15 @@ class StreamTimerSource(Source):
             self._was_done = read["done"]
         label = str(settings.get("label", "") or "").strip()
         gone = hidden(settings, read)
-        key = (gone, read["text"], label, read["counting"], settings.get("text_color"), settings.get("card_color"))
+        key = (gone, read["text"], label, read["counting"], settings.get("text_color"), settings.get("card_color"),
+               self.detail)
         if key == self._shown:
             return None  # nothing changed: nothing drawn, nothing uploaded
         self._shown = key
         if gone:
             self._frame.release()
             return painted.clear_frame(W, H)
-        return self._frame(paint(read["text"], label, settings, read["counting"]))
+        return self._frame(paint(read["text"], label, settings, read["counting"], self.detail))
 
 
 # The API, hotkeys and right-click ----------------------------------------------------------------

@@ -4448,7 +4448,7 @@ class MainWindow(QMainWindow):
         if size:  # on top of what you're editing: the bloom, or the sprig you have open
             self.collection.sources.append(config)
             self.collection.own_sprig(scene, config.id, tuple(size), config.name,
-                                      getattr(cls, "own_sprig_corner", None))
+                                      getattr(cls, "own_sprig_corner", None), getattr(cls, "own_sprig_height", None))
             self._changed()
             self._refresh_all()
             return

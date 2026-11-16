@@ -248,3 +248,29 @@ def test_a_sprig_nothing_shows_lets_go_of_its_texture(compositor):
     assert "part:gone" not in compositor.targets
     compositor.render_part("gone", (64, 36), Scene(id="gone", name="Gone", canvas="pr", kind="part"), {})
     assert "part:gone" in compositor.targets  # back as soon as it's shown again
+
+
+def test_a_sharp_source_with_more_pixels_fills_the_same_box(compositor):
+    canvas = Canvas(id="d", width=40, height=20)
+    big = np.zeros((40, 80, 4), dtype=np.uint8)  # drawn at 2x its 40 x 20 box: left half red, right half green
+    big[:, :40] = (255, 0, 0, 255)
+    big[:, 40:] = (0, 255, 0, 255)
+    compositor.upload("sharp", big, "RGBA", (40, 20))
+    assert compositor.detail["sharp"] == (2.0, (40, 20))
+    scene = Scene(id="s", name="s", canvas="d", items=[SceneItem(source="sharp")])
+    compositor.render(canvas, scene, {"sharp": (40, 20)})
+    img = pixels(compositor, canvas)
+    assert tuple(img[10, 5]) == (255, 0, 0, 255) and tuple(img[10, 35]) == (0, 255, 0, 255)
+    compositor.upload("sharp", big[::2, ::2].copy(), "RGBA", (40, 20))  # back to its own size
+    assert "sharp" not in compositor.detail
+
+
+def test_filters_in_source_pixels_look_the_same_at_any_detail(compositor):
+    from sprigcast.core.filters import VideoEffects
+
+    fx = VideoEffects(blur=3.0, pixelate=4.0, cutout_blur=2.0)
+    doubled = compositor._in_detail(fx, 2.0)
+    assert (doubled.blur, doubled.pixelate, doubled.cutout_blur) == (6.0, 8.0, 4.0)
+    assert compositor._in_detail(fx, 2.0) is doubled  # made once, not every frame
+    plain = VideoEffects()
+    assert compositor._in_detail(plain, 2.0) is plain

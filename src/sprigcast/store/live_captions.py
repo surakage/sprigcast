@@ -39,9 +39,9 @@ import numpy as np
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "live_captions", "name": "Live captions", "version": 3, "adds": "Source",
+PLUGIN = {"id": "live_captions", "name": "Live captions", "version": 4, "adds": "Source",
           "about": "What you say, as captions on stream. Runs on your PC, or with your own Google key.",
-          "new": "Runs on your graphics card (any NVIDIA, AMD or Intel Arc card), with nothing more to install."}
+          "new": "Stays crisp at any size."}
 
 log = logging.getLogger(__name__)
 
@@ -589,18 +589,18 @@ def _font(settings: dict[str, Any], pixels: float):
     return font
 
 
-def paint(words: str, settings: dict[str, Any]):
+def paint(words: str, settings: dict[str, Any], detail: float = 1.0):
     """The captions as a QImage (premultiplied), W x H: the newest lines at the bottom of the box, in the
     chosen style (on a rounded card that hugs them, outlined, with a shadow, or plain), font, size and
-    alignment. Nothing said: an empty, see-through box."""
+    alignment. Nothing said: an empty, see-through box. detail: pixels drawn per box unit."""
     from PySide6.QtCore import QPointF, QRectF, Qt
-    from PySide6.QtGui import QColor, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
+    from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath, QPen
 
-    image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent)
     if settings.get("all_caps", False):
         words = words.upper()
     if not words:
+        image, p = painted.canvas(W, H)  # nothing to show: a see-through box, at its own size
+        p.end()
         return image
     look = str(settings.get("look", "card"))
     align = str(settings.get("align", "center"))
@@ -623,9 +623,7 @@ def paint(words: str, settings: dict[str, Any]):
     card_h = min(H - 2 * margin, line_h * len(lines) + 2 * pad_y)
     x0 = margin if align == "left" else W - margin - card_w if align == "right" else (W - card_w) / 2
     y0 = H - margin - card_h
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    image, p = painted.canvas(W, H, detail)
     if card_on:
         card = _colour(settings.get("card_color"), "#151c19d9")
         if card.alpha():
@@ -687,6 +685,7 @@ class LiveCaptionsSource(Source):
     secrets = {"google_key": SECRET}
     secrets_after = "engine"  # the key box sits under Captions by
     sleeps = True  # off air it stops listening; a minute later the model goes too
+    sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "bottom_center"
     channel_order = painted.Frame.channel_order
@@ -899,8 +898,8 @@ class LiveCaptionsSource(Source):
     def video_frame(self) -> np.ndarray | None:
         hide_after = float(self.settings.get("hide_after", 4.0) or 0.0)
         words = self.board.text(time.monotonic(), hide_after)
-        key = (words, *(self.settings.get(k) for k in LOOK_KEYS))
+        key = (words, self.detail, *(self.settings.get(k) for k in LOOK_KEYS))
         if key == self._shown:
             return None  # nothing new said: nothing drawn, nothing uploaded
         self._shown = key
-        return self._frame(paint(words, self.settings))
+        return self._frame(paint(words, self.settings, self.detail))

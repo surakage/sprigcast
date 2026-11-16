@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import math
 import os
@@ -806,6 +807,10 @@ class Compositor:
         # Planar YUV sources: id -> (mode, (Kr, Kb, full), picture size); see planar_layout.
         self.planar: dict[str, tuple[int, tuple[float, float, float], tuple[int, int]]] = {}
         self.premultiplied: set[str] = set()  # sources uploading "pBGRA": drawn like a part's texture
+        # Sharp sources drawn with more (or fewer) pixels than their layout size: id -> (picture pixels per
+        # layout pixel, layout size). Filters measured in source pixels (blur, pixelate) keep their look.
+        self.detail: dict[str, tuple[float, tuple[int, int]]] = {}
+        self._detailed: dict[tuple[int, float], tuple[VideoEffects, VideoEffects]] = {}
         self.targets: dict[str, _CanvasTarget] = {}
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
@@ -844,8 +849,11 @@ class Compositor:
 
     # Sources -------------------------------------------------------------
 
-    def upload(self, source_id: str, frame: np.ndarray, channel_order: str = "RGBA") -> None:
+    def upload(self, source_id: str, frame: np.ndarray, channel_order: str = "RGBA",
+               size: tuple[int, int] | None = None) -> None:
         """Copy a new frame for a source to the GPU, resizing its texture if needed.
+
+        size: a sharp source's layout size, when its picture may have more or fewer pixels than that.
 
         Frames are uploaded in whatever byte order the source produces (RGBA, BGRA from screen capture,
         3-channel BGR from cameras) and swizzled when sampled, so there is no colour conversion on the CPU.
@@ -859,6 +867,10 @@ class Compositor:
             self.planar[source_id] = (mode, layout[1], (w, pic_h))
         else:
             self.planar.pop(source_id, None)
+        if size and size[0] > 0 and size[1] > 0 and layout is None and abs(w / size[0] - 1.0) > 1e-3:
+            self.detail[source_id] = (w / size[0], (int(size[0]), int(size[1])))
+        else:
+            self.detail.pop(source_id, None)
         tex = self.textures.get(source_id)
         if tex is None or tex.size != (w, h) or tex.components != components:
             if tex is not None:
@@ -931,6 +943,7 @@ class Compositor:
         self.forget_cutout(source_id)
         self.planar.pop(source_id, None)
         self.premultiplied.discard(source_id)
+        self.detail.pop(source_id, None)
         tex = self.textures.pop(source_id, None)
         if tex is not None:
             tex.release()
@@ -1152,9 +1165,15 @@ class Compositor:
                 self.program["planar"].value = 0
                 self._applied = None
             planar_on = planar is not None
-            self._apply_effects(fx, planar[2] if planar is not None else tex.size)
+            detail = None if part is not None or planar is not None else self.detail.get(source_id)
+            if detail is not None:
+                fx = self._in_detail(fx, detail[0])
+                picture = detail[1]
+            else:
+                picture = planar[2] if planar is not None else tex.size
+            self._apply_effects(fx, picture)
             if fx.cutout:
-                self._use_cutout(source_id, fx, planar[2] if planar is not None else tex.size)
+                self._use_cutout(source_id, fx, picture)
                 cutting = True
             elif cutting:
                 self.program["cutout"].value = 0
@@ -1172,6 +1191,22 @@ class Compositor:
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
         if opacity != 1.0:
             self.program["opacity"].value = 1.0
+
+    def _in_detail(self, fx: VideoEffects, detail: float) -> VideoEffects:
+        """The filters of a sharp source drawn with `detail` pixels per layout pixel: blur and pixelate are
+        counted in the picture's pixels, so they grow with it and look the same at any detail."""
+        if not (fx.blur or fx.pixelate or fx.cutout_blur):
+            return fx
+        key = (id(fx), detail)
+        held = self._detailed.get(key)
+        if held is not None and held[0] is fx:
+            return held[1]
+        if len(self._detailed) > 64:
+            self._detailed.clear()
+        out = dataclasses.replace(fx, blur=fx.blur * detail, pixelate=fx.pixelate * detail,
+                                  cutout_blur=fx.cutout_blur * detail)
+        self._detailed[key] = (fx, out)  # holds fx too, so its id isn't reused while the key stands
+        return out
 
     def _draw_halos(self, fx: VideoEffects, quad) -> None:
         """Shadow, glow and stroke: one quad each behind the source, grown by their size, in its shape."""

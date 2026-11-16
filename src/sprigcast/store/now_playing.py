@@ -36,8 +36,9 @@ from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 1, "adds": "Source",
-          "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover. No keys needed."}
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 2, "adds": "Source",
+          "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover. No keys needed.",
+          "new": "Stays crisp at any size, and starts bigger."}
 
 KIND = "now_playing"
 W, H = 760, 200  # the card's box; scale it on the canvas like anything else
@@ -285,18 +286,14 @@ def lines(track: Track, settings: dict[str, Any]) -> tuple[str, str]:
     return track.title, "  ·  ".join(under)
 
 
-def paint(track: Track, settings: dict[str, Any]):
+def paint(track: Track, settings: dict[str, Any], detail: float = 1.0):
     """The card as a QImage (premultiplied), W x H: the cover at the left, the title, the artist under it.
-    The card hugs the words and sits at the left of the box, so it grows to the right."""
+    The card hugs the words and sits at the left of the box, so it grows to the right. detail: pixels drawn
+    per box unit."""
     from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath
+    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainterPath
 
-    image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent)
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    image, p = painted.canvas(W, H, detail)
     title, under = lines(track, settings)
     big = QFont()
     big.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
@@ -372,8 +369,10 @@ class NowPlayingSource(Source):
     defaults = {"show_art": True, "show_album": False, "only_from": "",
                 "text_color": "#f2f7f3", "card_color": "#151c19e0"}
     sleeps = True  # off screen it stops listening to Windows altogether
+    sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "bottom_left"
+    own_sprig_height = 0.14  # starts readable: the card about a seventh of the canvas tall
     channel_order = painted.Frame.channel_order
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -477,9 +476,10 @@ class NowPlayingSource(Source):
             self._paused_at = 0.0
         if track is not None:
             what = (track.title, track.artist, track.album, track.art, self.settings.get("show_art"),
-                    self.settings.get("show_album"), self.settings.get("text_color"), self.settings.get("card_color"))
+                    self.settings.get("show_album"), self.settings.get("text_color"), self.settings.get("card_color"),
+                    self.detail)
             if self._card is None or self._card[0] != what:
-                self._card = (what, paint(track, self.settings))
+                self._card = (what, paint(track, self.settings, self.detail))
         alpha = self._alpha(now)
         target = 1.0 if showing else 0.0
         if self._fade[1] != target:
@@ -503,7 +503,7 @@ def _faded(card, alpha: float):
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
 
-    image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+    image = QImage(card.width(), card.height(), QImage.Format.Format_ARGB32_Premultiplied)  # the card's detail
     image.fill(Qt.GlobalColor.transparent)
     p = QPainter(image)
     p.setOpacity(alpha)

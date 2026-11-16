@@ -836,17 +836,20 @@ class SceneCollection(BaseModel):
         return made
 
     def own_sprig(self, scene: Scene, source_id: str, size: tuple[int, int], name: str,
-                  corner: str | None = None) -> Scene:
+                  corner: str | None = None, height_share: float | None = None) -> Scene:
         """Put a source in a sprig of its own, on top of this bloom and the blooms linked to it (each
         shape gets a layout fitted to it). It fills the canvas (overlays like Snap), or with corner
         ("top_right" ...) it sits small in that corner (a clock); "bottom_center" is a wide band along
-        the bottom (captions). Returns the sprig."""
+        the bottom (captions). height_share: in a corner, its box is this share of the canvas's short side
+        tall (a card, so its words start readable), instead of a third of it wide. Returns the sprig."""
         def fitted(canvas_id: str) -> SceneItem:
             canvas = self.canvas(canvas_id)
             if corner:
                 margin = min(canvas.width, canvas.height) * 0.035
                 if "center" in corner:  # a wide band across the middle (captions): most of the width
                     scale = canvas.width * (0.9 if canvas.height > canvas.width else 0.72) / size[0]
+                elif height_share:
+                    scale = min(canvas.width, canvas.height) * height_share / size[1]
                 else:
                     scale = min(canvas.width, canvas.height) * 0.36 / size[0]  # about a third of the short side
                 w, h = size[0] * scale, size[1] * scale

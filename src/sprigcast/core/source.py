@@ -38,6 +38,19 @@ class Source(ABC):
     def wake(self) -> None:
         """Start again and send a fresh frame. Called on the render thread."""
 
+    # Sources that draw their picture (text, a clock card) stay sharp at any size: the renderer tells them how
+    # big they're shown (set_detail) and they draw that many pixels, while `size` (the layout box) stays the
+    # same, so moving and resizing work as before. Pictures, cameras and videos don't: they have the pixels
+    # they have.
+    sharp = False
+    detail = 1.0  # picture pixels drawn for each pixel of `size` (sharp sources)
+
+    def set_detail(self, detail: float) -> None:
+        """Draw `detail` picture pixels per pixel of `size` from the next frame on (sharp sources only).
+        Called on the render thread when the biggest size it's shown at changes by a step (see
+        render/engine.py shown_detail). A source that only draws when something changed must notice it."""
+        self.detail = detail
+
     def set_hidden(self, hidden: bool) -> None:
         """Its eye in Build went off (True) or on again, while something on screen still places it.
         Called on the render thread when it changes, and again after each wake. A video pauses."""
