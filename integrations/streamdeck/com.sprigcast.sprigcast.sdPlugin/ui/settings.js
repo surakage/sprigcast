@@ -16,6 +16,7 @@ const FIELDS = {
 	garden: [["garden", "Garden", "getGardens"]],
 	path: [["path", "Path", "getPaths"]],
 	deaths: [["mode", "Press", ["add", "remove", "reset", "show"]]],
+	"timer-add": [["seconds", "Seconds", null]],
 	run: [["action", "Action", "getActions"], ["fields", "Fields (JSON)", "json"]],
 };
 

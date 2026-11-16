@@ -22,6 +22,10 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Transition | picks the transition and/or its length | while it's in use | Transition |
 | Sprig state | switches a sprig to one of its Live states | ✓ on success | |
 | Death count | add, remove, reset or show (Death count plugin) | the count as its title | |
+| Stream timer | starts or pauses the countdown or stopwatch (Stream timer plugin) | while going, the time as its title | |
+| Reset timer | puts the Stream timer back to the start, stopped | ✓ on success | |
+| Add time | adds a minute to the Stream timer (or the seconds you set; below 0 takes time off) | its amount as its title | |
+| Instant replay | plays the last seconds back on stream (Instant replay plugin) | ✓ on success | |
 | Run action | any SprigCast action with JSON fields | ✓ on success | |
 
 Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air), Record Pause and Chapter

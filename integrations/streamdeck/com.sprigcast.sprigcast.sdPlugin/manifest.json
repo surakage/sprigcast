@@ -372,6 +372,80 @@
       ]
     },
     {
+      "Name": "Stream timer",
+      "UUID": "com.sprigcast.sprigcast.timer",
+      "Icon": "imgs/actions/timer/icon",
+      "Tooltip": "Start or pause the Stream timer plugin's countdown or stopwatch. Shows the time.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/timer/key0",
+          "Name": "Stopped",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/timer/key1",
+          "Name": "Going",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Reset timer",
+      "UUID": "com.sprigcast.sprigcast.timer-reset",
+      "Icon": "imgs/actions/timer-reset/icon",
+      "Tooltip": "Put the Stream timer back to the start, stopped.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/timer-reset/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Add time",
+      "UUID": "com.sprigcast.sprigcast.timer-add",
+      "Icon": "imgs/actions/timer-add/icon",
+      "Tooltip": "Add a minute (or the seconds you set) to the Stream timer.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/timer-add/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Instant replay",
+      "UUID": "com.sprigcast.sprigcast.replay",
+      "Icon": "imgs/actions/replay/icon",
+      "Tooltip": "Play the last seconds back on stream (Instant replay plugin).",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/replay/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
       "Name": "Run action",
       "UUID": "com.sprigcast.sprigcast.run",
       "Icon": "imgs/actions/run/icon",

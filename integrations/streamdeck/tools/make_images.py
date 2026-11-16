@@ -82,6 +82,19 @@ GLYPHS = {
     # Death count: a gravestone on its mound.
     "deaths": f'<path d="M28 80V40q0-22 22-22t22 22v40" {SW}/><path d="M50 32v24M40 42h20" {SW}/>'
               '<path d="M12 86q38-14 76 0z" fill="{c}"/>',
+    # Stream timer: a stopwatch (its hand at the top), and going (the hand moved on).
+    "timer": f'<circle cx="50" cy="56" r="32" {SW}/><path d="M40 12h20M50 12v12M76 28l6-6" {SW}/><path d="M50 56V36" {SW}/>'
+             '<circle cx="50" cy="56" r="6" fill="{c}"/>',
+    "timer-on": f'<circle cx="50" cy="56" r="32" {SW}/><path d="M40 12h20M50 12v12M76 28l6-6" {SW}/>'
+                '<path d="M50 56V24a32 32 0 0 1 27.7 48z" fill="{c}"/>',
+    # Reset timer: a stopwatch with a back arrow round it (to the start).
+    "timer-reset": f'<path d="M24 56a26 26 0 1 0 10-20.5" {SW}/><path d="M24 26v14h14" {SW}/><path d="M40 12h20M50 12v10" {SW}/>'
+                   f'<path d="M50 56V44" {SW}/><circle cx="50" cy="56" r="6" fill="{{c}}"/>',
+    # Add time: a stopwatch with a plus.
+    "timer-add": f'<circle cx="50" cy="56" r="32" {SW}/><path d="M40 12h20M50 12v12M50 42v28M36 56h28" {SW}/>',
+    # Instant replay: a frame with rewind marks (the last seconds again).
+    "replay": f'<rect x="10" y="18" width="80" height="64" rx="14" {SW}/>'
+              '<path d="M50 36L30 50l20 14zM72 36L52 50l20 14z" fill="{c}"/>',
     # Run action: braces round a play mark (runs any SprigCast action).
     "run": f'<path d="M30 16q-12 0-12 12v10q0 12-10 12q10 0 10 12v10q0 12 12 12M70 16q12 0 12 12v10q0 12 10 12q-10 0-10 12v10q0 12-12 12" {SW}/>'
            '<path d="M42 36l22 14-22 14z" fill="{c}"/>',
@@ -106,6 +119,10 @@ KEYS = {
     "screenshot": (("screenshot", MINT), None),
     "sprig-state": (("sprig", MINT), None),
     "deaths": (("deaths", MINT), None),
+    "timer": (("timer", DIM), ("timer-on", MINT)),
+    "timer-reset": (("timer-reset", MINT), None),
+    "timer-add": (("timer-add", MINT), None),
+    "replay": (("replay", MINT), None),
     "run": (("run", MINT), None),
 }
 
@@ -115,7 +132,8 @@ GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", 
          "mute": "sound", "volume": "sound", "media": "sound",
          "live": "live", "record": "live",
          "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
-         "filter": "fx", "deaths": "fx", "run": "fx"}
+         "filter": "fx", "deaths": "fx", "run": "fx",
+         "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture"}
 GROUP_TILE = {"scene": ("#1f7a4d", "#0b3322"), "sound": ("#1f6f86", "#0a2b38"), "capture": ("#8a6a1e", "#3a2a08"),
               "fx": ("#5b4a9a", "#221a45"), "live": ("#b4305f", "#4a0f26")}
 

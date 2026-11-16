@@ -3,7 +3,7 @@
 
 import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
-import { SprigCast } from "./sprigcast.js";
+import { SprigCast, addSeconds, clockText, timerText } from "./sprigcast.js";
 
 const ID = "com.sprigcast.sprigcast";
 const sprigcast = new SprigCast();
@@ -333,6 +333,54 @@ class DeathCount extends SprigCastAction {
 	}
 }
 
+class TimerKey extends SprigCastAction {
+	constructor() { super("timer"); this.shown = new Map(); } // action id -> the time on it (set only when it changes)
+	async press(_s, action) {
+		sprigcast.setTimer(await sprigcast.run("timer.toggle"));
+		return this.paint(action);
+	}
+	async paint(action) {
+		const timer = sprigcast.state.timer;
+		const title = sprigcast.ready && timer ? timerText(timer) : undefined; // no old time while dark
+		const state = timer?.running ? 1 : 0;
+		const shown = `${state}|${title}`;
+		if (this.shown.get(action.id) === shown) return;
+		this.shown.set(action.id, shown);
+		await action.setState(state);
+		await action.setTitle(title);
+	}
+	onWillDisappear(ev) {
+		this.shown.delete(ev.action.id);
+		return super.onWillDisappear(ev);
+	}
+	/** Each tick while the timer goes: the time on the keys moves on its own (SprigCast only says when it changes). */
+	async tick() {
+		if (!sprigcast.state.timer?.running) return;
+		for (const action of this.actions) await this.paint(action).catch(() => {});
+	}
+}
+
+class TimerReset extends SprigCastAction {
+	constructor() { super("timer-reset", 1); this.okAfterPress = true; }
+	async press() { sprigcast.setTimer(await sprigcast.run("timer.reset")); }
+	said() { return ""; } // the timer key shows it
+}
+
+class TimerAdd extends SprigCastAction {
+	constructor() { super("timer-add", 1); }
+	async press(s) { sprigcast.setTimer(await sprigcast.run("timer.add", { seconds: addSeconds(s) })); }
+	paint(action, s) {
+		const seconds = addSeconds(s);
+		return action.setTitle(`${seconds < 0 ? "-" : "+"}${clockText(Math.abs(seconds))}`);
+	}
+}
+
+class ReplayKey extends SprigCastAction {
+	constructor() { super("replay", 1); this.okAfterPress = true; }
+	press() { return sprigcast.run("replay.play"); }
+	said() { return "Replay"; }
+}
+
 class RunAction extends SprigCastAction {
 	constructor() { super("run", 1); this.okAfterPress = true; }
 	press(s) {
@@ -344,10 +392,13 @@ class RunAction extends SprigCastAction {
 
 const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
-	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new RunAction()];
+	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(),
+	new RunAction()];
 for (const action of actions) streamDeck.actions.registerAction(action);
 
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));
+const timerKeys = actions.find((a) => a instanceof TimerKey);
+setInterval(() => timerKeys.tick().catch(() => {}), 250); // a quarter second: the time turns over close to SprigCast's own
 // Connected or gone: every key swaps between its own picture and the dark offline one, then shows SprigCast's state.
 sprigcast.on("connection", () => all.forEach((kind) => {
 	for (const action of kind.actions) kind.dress(action).catch(() => {});

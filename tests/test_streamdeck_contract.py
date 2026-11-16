@@ -10,7 +10,9 @@ from sprigcast.control.native import EVENT_GROUPS, ApiError, NativeApi, NativeSe
 from test_control_api import FakeHost, _collection
 
 DECK = Path(__file__).resolve().parents[1] / "integrations" / "streamdeck" / "src"
-PLUGIN_ACTIONS = {"deaths.add", "deaths.remove", "deaths.reset", "deaths.show", "deaths.get"}  # Death count plugin
+PLUGIN_ACTIONS = {"deaths.add", "deaths.remove", "deaths.reset", "deaths.show", "deaths.get",  # Death count plugin
+                  "timer.toggle", "timer.reset", "timer.add", "timer.get",  # Stream timer plugin
+                  "replay.play"}  # Instant replay plugin
 
 
 def _api(wrapped=False):
