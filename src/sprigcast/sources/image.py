@@ -93,6 +93,7 @@ def load_rgba(path: Path) -> np.ndarray | None:
 @register("image")
 class ImageSource(Source):
     sleeps = True  # an image no scene on screen shows keeps no texture; it is decoded again when shown
+    slow_wake = True  # a bloom switch waits the tick it takes to decode it again, so it never pops in late
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)

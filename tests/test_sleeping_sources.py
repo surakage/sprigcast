@@ -68,20 +68,29 @@ def test_only_sources_on_screen_work_and_the_rest_sleep_after_a_moment():
     engine, col = _engine()
     fake = FakeCompositor()
     engine._tick(fake, 100.0)
-    assert set(fake.uploaded) == {"game", "soon", "cam"}  # just hidden: still ready
-    engine._tick(fake, 100.0 + SLEEP_AFTER + 0.1)
-    assert engine._sources["soon"].log == ["sleep"] and fake.forgotten == ["soon"]
-    fake.uploaded.clear()
-    engine._tick(fake, 110.0)
-    assert set(fake.uploaded) == {"game", "cam"}  # a sleeping source isn't even asked for frames
+    assert set(fake.uploaded) == {"game", "cam"}  # off air (its bloom isn't on screen): asleep at once
+    assert engine._sources["soon"].asleep and fake.forgotten == ["soon"]
 
-    col.active_scenes["h"] = "b"  # switch: the scene's sources wake at once (hidden items too)
-    engine._tick(fake, 111.0)
+    col.active_scenes["h"] = "b"  # a cut: what's on air now wakes, what left sleeps as the cut lands
+    col.scenes[1].items[0].visible = True
+    fake.uploaded.clear()
+    engine._tick(fake, 101.0)
     assert engine._sources["soon"].log == ["sleep", "wake"] and "soon" in fake.uploaded
-    assert not engine._sources["game"].asleep  # stays ready for a few seconds in case you switch back
-    engine._tick(fake, 111.0 + SLEEP_AFTER + 0.1)
-    assert engine._sources["game"].asleep
+    assert engine._sources["game"].asleep and "game" in fake.forgotten  # no wait in case you switch back
     assert not engine._sources["cam"].asleep  # cameras stay ready by default
+
+
+def test_an_eye_off_source_on_air_sleeps_after_a_moment():
+    engine, col = _engine()
+    fake = FakeCompositor()
+    col.scenes[0].items[0].visible = False  # game's eye off, in the bloom on air
+    engine._tick(fake, 100.0)
+    assert not engine._sources["game"].asleep  # a quick hide and show stays instant
+    engine._tick(fake, 100.0 + SLEEP_AFTER + 0.1)
+    assert engine._sources["game"].asleep  # then it lets everything go
+    col.scenes[0].items[0].visible = True
+    engine._tick(fake, 110.0)
+    assert engine._sources["game"].log == ["sleep", "wake"]
 
 
 def test_policy_all_pauses_cameras_and_off_wakes_everything():

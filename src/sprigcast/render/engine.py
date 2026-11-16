@@ -36,7 +36,9 @@ from sprigcast.render.stinger import StingerPlayer
 log = logging.getLogger(__name__)
 
 
-SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing it left the screen
+SLEEP_AFTER = 5.0  # seconds a source with its eye off (in a bloom still on screen) stays ready, so a quick
+# hide and show is instant. Off air, a source sleeps as soon as nothing draws it: when a cut lands, or when a
+# transition out of its bloom ends (the user's rule, 2026-11-16: the transition is the handover).
 # Cameras and capture cards take a second or two to open, so they wait longer before closing; closing
 # them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
 CAMERA_SLEEP_AFTER = 30.0
@@ -142,6 +144,7 @@ class Engine:
         self._camera_wait: dict[str, float] = {}  # camera id -> how long it stays open off screen (see above)
         self._slept_at: dict[str, float] = {}  # camera id -> when it last closed
         self._told_hidden: dict[str, bool] = {}  # source id -> what set_hidden() last said (see _show_hidden)
+        self._visible_fresh = False
         self._visible: set[str] = set()  # sources showing in what's drawn, this tick (see _show_hidden)
         # Plugins' frame watchers (plugin_hooks.register_frame_watcher): source id -> (filter kind, its settings)
         # for sources that want one, and source id -> [watcher, its kind, when it last got a frame].
@@ -997,9 +1000,11 @@ class Engine:
             _walk_visible(collection, configs, visible, scene, set(), (scene.id,))
         return visible
 
-    def _show_hidden(self) -> None:
+    def _show_hidden(self, visible: set[str] | None = None) -> None:
         """Tell each awake source when its eye goes off or on (a video pauses, then starts over or carries on)."""
-        visible = self._visible = self._visible_sources()
+        if visible is None:  # worked out by _rest_sources this tick, else now
+            visible = self._visible if self._visible_fresh else self._visible_sources()
+        self._visible_fresh = False
         told = self._told_hidden
         for source_id, source in self._sources.items():
             if source.asleep:
@@ -1025,8 +1030,10 @@ class Engine:
         short wait keeps flicking between two scenes from stopping and starting things each time.
         """
         shown = self._shown_sources()
+        visible = self._visible = self._visible_sources()
+        self._visible_fresh = True
         for source_id, source in self._sources.items():
-            if source_id in shown or not self._may_sleep(source):
+            if source_id in visible or not self._may_sleep(source):
                 self._last_shown[source_id] = now
                 if source.asleep:
                     source.asleep = False
@@ -1034,7 +1041,8 @@ class Engine:
                         self._camera_back(source_id, now)
                     source.wake()
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
-                    self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera" else SLEEP_AFTER):
+                    self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera"
+                    else SLEEP_AFTER if source_id in shown else 0.0):
                 source.asleep = True
                 if source.kind == "camera":
                     self._slept_at[source_id] = now
