@@ -36,6 +36,7 @@ SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing i
 # Cameras and capture cards take a second or two to open, so they wait longer before closing; closing
 # them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
 CAMERA_SLEEP_AFTER = 30.0
+WATCHER_PARK_S = 60.0  # a frame watcher (background remover) nothing fed for this long lets go of everything
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
@@ -129,6 +130,11 @@ class Engine:
         self.sleep_policy = "not_cameras"
         self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
         self._told_hidden: dict[str, bool] = {}  # source id -> what set_hidden() last said (see _show_hidden)
+        self._visible: set[str] = set()  # sources showing in what's drawn, this tick (see _show_hidden)
+        # Plugins' frame watchers (plugin_hooks.register_frame_watcher): source id -> (filter kind, its settings)
+        # for sources that want one, and source id -> [watcher, its kind, when it last got a frame].
+        self._watched: dict[str, tuple[str, dict]] = {}
+        self._watchers: dict[str, list] = {}
         # Source record: canvas id -> sources left out of its clean copy ("clean:<canvas id>"), which
         # frame taps on that id get. Replaced whole by the UI (see set_clean).
         self.clean_hidden: dict[str, frozenset[str]] = {}
@@ -402,6 +408,8 @@ class Engine:
                 self._finish_transition(canvas_id, compositor)
             for source in self._sources.values():
                 source.stop()
+            for source_id in list(self._watchers):
+                self._close_watcher(compositor, source_id)
             if gpu is not None:
                 gpu.release()
             compositor.release()
@@ -747,9 +755,17 @@ class Engine:
 
     def _sync_filters(self, compositor, wanted: dict) -> None:
         """Hand each source's video filters to the compositor and keep its audio filter chain current."""
+        from sprigcast.core.filters import settings_for
+        from sprigcast.plugin_hooks import frame_watchers
+
         effects = {}
+        kinds = frame_watchers()
+        watched = {}
         for source_id, source in self._sources.items():
             filters = wanted[source_id].filters
+            flt = next((f for f in filters if f.enabled and f.kind in kinds), None) if kinds else None
+            if flt is not None:
+                watched[source_id] = (flt.kind, settings_for(flt.kind, flt.settings))
             fx = video_effects(filters)
             if fx.active:
                 effects[source_id] = fx
@@ -759,6 +775,59 @@ class Engine:
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
         compositor.effects = effects
+        self._watched = watched
+        for source_id in [s for s, w in self._watchers.items() if watched.get(s, ("",))[0] != w[1]]:
+            self._close_watcher(compositor, source_id)  # its filter went (or the plugin was removed)
+
+    def _feed_watcher(self, source_id: str, frame, channel_order: str, now: float) -> None:
+        """Show a frame to the plugin watching this source (made on the first frame)."""
+        kind, settings = self._watched[source_id]
+        held = self._watchers.get(source_id)
+        if held is None:
+            from sprigcast.plugin_hooks import frame_watchers
+
+            factory = frame_watchers().get(kind)
+            if factory is None:
+                return
+            try:
+                held = self._watchers[source_id] = [factory(source_id), kind, now]
+            except Exception:
+                log.exception("a plugin's frame watcher for %s failed to start", source_id)
+                self._watched.pop(source_id, None)
+                return
+        held[2] = now
+        try:
+            held[0].offer(frame, channel_order, settings)
+        except Exception:
+            log.exception("a plugin's frame watcher for %s failed", source_id)
+            self._close_watcher(None, source_id)
+            self._watched.pop(source_id, None)
+
+    def _serve_watchers(self, compositor, now: float) -> None:
+        """Upload what the watchers finished, and close the ones nothing has fed for WATCHER_PARK_S."""
+        for source_id, held in list(self._watchers.items()):
+            if now - held[2] > WATCHER_PARK_S:
+                self._close_watcher(compositor, source_id)
+                continue
+            try:
+                result = held[0].take()
+                if result is not None and result.get("mask") is not None:
+                    compositor.upload_cutout(source_id, result["mask"], result.get("backdrop"))
+            except Exception:
+                log.exception("a plugin's frame watcher for %s failed", source_id)
+                self._close_watcher(compositor, source_id)
+                self._watched.pop(source_id, None)
+
+    def _close_watcher(self, compositor, source_id: str) -> None:
+        held = self._watchers.pop(source_id, None)
+        if held is not None:
+            try:
+                held[0].close()
+            except Exception:
+                log.exception("a plugin's frame watcher for %s didn't close", source_id)
+        forget = getattr(compositor, "forget_cutout", None)
+        if forget is not None:
+            forget(source_id)
 
     def _sync_parts(self, compositor) -> None:
         """Tell each nested-part source the size of the layout it shows, and drop textures of layouts that are gone.
@@ -829,7 +898,7 @@ class Engine:
 
     def _show_hidden(self) -> None:
         """Tell each awake source when its eye goes off or on (a video pauses, then starts over or carries on)."""
-        visible = self._visible_sources()
+        visible = self._visible = self._visible_sources()
         told = self._told_hidden
         for source_id, source in self._sources.items():
             if source.asleep:
@@ -1171,11 +1240,15 @@ class Engine:
             frame = source.video_frame()
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)
+                if source_id in self._watched and source_id in self._visible:
+                    self._feed_watcher(source_id, frame, source.channel_order, now)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
             if spent > slowest[1]:
                 slowest = (source_id, spent)
         self._slowest_source = slowest
+        if self._watchers:
+            self._serve_watchers(compositor, now)
         self._mark("sources")
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
         if self._collection.parts():
