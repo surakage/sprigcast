@@ -5974,10 +5974,15 @@ class MainWindow(QMainWindow):
     # Settings window -------------------------------------------------------------
 
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
-        devices = {
-            "audio_input": [d.name for d in list_audio_devices(loopback=False)],
-            "audio_output": [d.name for d in list_audio_devices(loopback=True, rescan=False)],  # one rescan
-        }
+        def scan() -> dict[str, list[str]]:  # restarts PortAudio (a few hundred ms on Windows): on a worker
+            return {
+                "audio_input": [d.name for d in list_audio_devices(loopback=False)],
+                "audio_output": [d.name for d in list_audio_devices(loopback=True, rescan=False)],  # one rescan
+            }
+
+        from sprigcast.core import workers
+
+        devices = workers.run(scan, name="sound-devices")
         rec = self.collection.recording
         self._clips_before = self._clip_key()
         window = SettingsWindow(
@@ -6000,7 +6005,7 @@ class MainWindow(QMainWindow):
         elif output_id:
             window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
-        window.audio_page.on_ducking = self._open_ducking
+        window.on_ducking = self._open_ducking  # handed to the Audio page when it's made
         window.plugins_changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
         window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))

@@ -7,9 +7,10 @@ scene collection and QSettings; the main window then refreshes itself (see MainW
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,6 +41,8 @@ from sprigcast.app.recording_dialog import RecordingPage
 from sprigcast.app.stream_dialog import StreamPage
 from sprigcast.app.theme import THEMES, chosen_theme
 from sprigcast.core.scene import SceneCollection
+
+log = logging.getLogger(__name__)
 
 TABS = ["General", "Stream", "Output", "Audio", "Video", "Hotkeys", "Connections", "Advanced", "Plugins"]
 TAB_ALIASES = {"Recording": "Output", "Clips": "Output"}  # older menu entries and Output's own tabs
@@ -179,6 +182,23 @@ def stream_delay() -> float:
 
 
 
+def _scanning(devices) -> bool:
+    return hasattr(devices, "done") and not devices.done()
+
+
+def _devices(devices) -> dict[str, list[str]]:
+    """The audio devices: a dict, or a Future of one (scanned on a worker); waited for with the window drawing."""
+    if hasattr(devices, "result"):
+        from sprigcast.core.workers import wait_answering
+
+        try:
+            return wait_answering(devices.result) if not devices.done() else devices.result()
+        except Exception as exc:  # noqa: BLE001 (no sound system: empty lists)
+            log.warning("settings: couldn't list sound devices: %s", exc)
+            return {}
+    return devices
+
+
 def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
     page = QWidget()
     layout = QVBoxLayout(page)
@@ -200,7 +220,7 @@ class SettingsWindow(QDialog):
         *,
         default_recordings_folder: str,
         encoder: str,
-        audio_devices: dict[str, list[str]],
+        audio_devices,  # {"audio_input": [...], "audio_output": [...]}, or a Future of that
         plugin_report=None,
         open_plugins_folder=None,
         plugins_dir=None,
@@ -231,38 +251,35 @@ class SettingsWindow(QDialog):
         font.setPointSizeF(font.pointSizeF() * 1.1)
         self.tabs.setFont(font)
         self.stack = QStackedWidget()
-        for name, page in (
-            ("General", self._general_page()),
-            ("Stream", self._stream_page()),
-            ("Output", self._output_page(encoder)),
-            ("Audio", self._audio_page(audio_devices)),
-            ("Video", self._video_page()),
-            ("Hotkeys", self._hotkeys_page()),
-            ("Connections", self._connections_page(control)),
-            ("Advanced", self._advanced_page()),
-            ("Plugins", self._plugins_page(plugin_report, open_plugins_folder)),
-        ):
+        # Each page is made when it's first shown, the rest one at a time once the window is up: making all
+        # nine before showing anything kept the window from answering 2.4 s on the PC (2026-11-16).
+        self._makers = {
+            "General": self._general_page,
+            "Stream": self._stream_page,
+            "Output": lambda: self._output_page(encoder),
+            "Audio": lambda: self._audio_page(_devices(audio_devices)),
+            "Video": self._video_page,
+            "Hotkeys": self._hotkeys_page,
+            "Connections": lambda: self._connections_page(control),
+            "Advanced": self._advanced_page,
+            "Plugins": lambda: self._plugins_page(plugin_report, open_plugins_folder),
+        }
+        self._built: set[str] = set()
+        self._audio_devices = audio_devices
+        self._first_tab = tab
+        self.on_ducking = None  # passed on to the Audio page (the main window opens the Ducking window)
+        for name in TABS:
             QListWidgetItem(name, self.tabs)
-            if name != "Stream":  # Stream scrolls its own form; the place list and + Add stay put
-                scroll = QScrollArea()
-                scroll.setWidgetResizable(True)
-                scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-                scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-                inner = QWidget()  # room on the right so the scroll bar never sits on a card
-                pad = QVBoxLayout(inner)
-                pad.setContentsMargins(0, 0, 14, 0)
-                pad.addWidget(page)
-                scroll.setWidget(inner)
-                page = scroll
-            self.stack.addWidget(self._titled(name, page))
-        self.tabs.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.tabs.currentRowChanged.connect(self._tab_changed)
-        self.output_page.show_tab(tab)
+            self.stack.addWidget(QWidget())  # stands in until the page is made
+        self.tabs.currentRowChanged.connect(self._show_row)
         tab = TAB_ALIASES.get(tab, tab)
         tab, _, sub = tab.partition("/")  # "Audio/Sounds": the Audio page on its Sounds tab
         self.tabs.setCurrentRow(TABS.index(tab) if tab in TABS else 0)
+        if self.tabs.currentRow() == 0:
+            self._show_row(0)  # row 0 was already current: no change signalled
         if tab == "Audio" and sub:
             self.audio_page.show_tab(sub)
+        QTimer.singleShot(0, self._make_next)
 
         side = QVBoxLayout()
         side.setSpacing(14)
@@ -307,6 +324,79 @@ class SettingsWindow(QDialog):
         col.addSpacing(12)
         col.addWidget(page, 1)
         return holder
+
+    # Making pages ------------------------------------------------------------------
+
+    _PAGE_OF = {"stream_page": "Stream", "output_page": "Output", "recording_page": "Output", "audio_page": "Audio",
+                "hotkeys_page": "Hotkeys", "connections_page": "Connections", "plugin_store": "Plugins"}
+
+    def __getattr__(self, name: str):
+        """A page's widgets asked for before the page was made: make it (or, not knowing which, all of them)."""
+        makers = self.__dict__.get("_makers")
+        if makers is None or name.startswith("_") or len(self.__dict__.get("_built", ())) == len(TABS):
+            raise AttributeError(name)
+        page = self._PAGE_OF.get(name)
+        if page is not None and page not in self._built:
+            self.ensure(page)
+        else:
+            self.ensure_all()
+        return object.__getattribute__(self, name)
+
+    def ensure(self, name: str) -> None:
+        """Make this page now if it isn't yet."""
+        if name in self._built:
+            return
+        self._built.add(name)
+        import time
+
+        began = time.perf_counter()
+        page = self._makers[name]()
+        if name == "Output":
+            self.output_page.show_tab(self._first_tab)
+        elif name == "Audio":
+            self.audio_page.on_ducking = lambda page: self.on_ducking and self.on_ducking(page)
+        if name != "Stream":  # Stream scrolls its own form; the place list and + Add stay put
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            inner = QWidget()  # room on the right so the scroll bar never sits on a card
+            pad = QVBoxLayout(inner)
+            pad.setContentsMargins(0, 0, 14, 0)
+            pad.addWidget(page)
+            scroll.setWidget(inner)
+            page = scroll
+        index = TABS.index(name)
+        current = self.stack.currentIndex()
+        placeholder = self.stack.widget(index)
+        self.stack.insertWidget(index, self._titled(name, page))
+        self.stack.removeWidget(placeholder)
+        placeholder.deleteLater()
+        self.stack.setCurrentIndex(current)
+        took = 1000 * (time.perf_counter() - began)
+        if took >= 100:
+            log.info("settings: the %s page took %.0f ms to make", name, took)
+
+    def ensure_all(self) -> None:
+        for name in TABS:
+            self.ensure(name)
+
+    def _make_next(self) -> None:
+        """Once the window is up: the next page not made yet, then the one after on the next turn. The Audio
+        page waits for its device scan (on a worker) to be done."""
+        left = [name for name in TABS if name not in self._built]
+        scanning = _scanning(self._audio_devices)
+        ready = [name for name in left if not (name == "Audio" and scanning)]
+        if ready:
+            self.ensure(ready[0])
+        if len(left) > 1 or (left and not ready):
+            QTimer.singleShot(0 if len(ready) > 1 else 50, self._make_next)
+
+    def _show_row(self, row: int) -> None:
+        if 0 <= row < len(TABS):
+            self.ensure(TABS[row])
+            self.stack.setCurrentIndex(row)
+            self._tab_changed(row)
 
     def current_tab(self) -> str:
         return TABS[self.tabs.currentRow()]
@@ -507,7 +597,7 @@ class SettingsWindow(QDialog):
         return _page(self.output_page)
 
     def _tab_changed(self, row: int) -> None:
-        if TABS[row] == "Output":  # the banner follows the Stream tab's unsaved choices too
+        if TABS[row] == "Output" and "Output" in self._built:  # the banner follows the Stream tab's unsaved choices too
             self.output_page.banner.setVisible(any(
                 o.enabled and o.service == "twitch" and o.enhanced for o in self.stream_page.outputs
             ))
@@ -628,6 +718,7 @@ class SettingsWindow(QDialog):
 
     def apply(self) -> bool:
         """Write every tab back. Returns False (and shows why) if something can't be saved."""
+        self.ensure_all()
         problem = self.hotkeys_page.problem()
         if problem:
             self.tabs.setCurrentRow(TABS.index("Hotkeys"))
