@@ -160,3 +160,25 @@ def test_the_window_not_answering_is_logged_with_where_it_was(caplog):
         assert pacing._ui["where"] is None
     finally:
         pacing._ui.update(beat=None, ident=None, where=None, clock=time.perf_counter)
+
+
+def test_a_long_render_tick_says_where_it_was_held_up():
+    """Held up without Python's lock (inside the graphics driver), nothing else stops and "everything waited"
+    never shows; the tick's own late-frame line names where its thread was instead."""
+    from sprigcast.core import pacing
+
+    pacing.busy_begin("render")
+    began = pacing._busy["render"][1]
+    seen = threading.Event()
+
+    def watch():
+        pacing._check_busy(began + 0.1)  # not long yet
+        assert pacing._busy["render"][2] is None
+        pacing._check_busy(began + 0.3)
+        seen.set()
+
+    threading.Thread(target=watch).start()
+    seen.wait(2)
+    where = pacing.busy_end("render")
+    assert "test_a_long_render_tick_says_where_it_was_held_up" in where
+    assert pacing.busy_end("render") is None

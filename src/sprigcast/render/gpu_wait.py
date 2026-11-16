@@ -26,7 +26,7 @@ GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117
 GL_SYNC_FLUSH_COMMANDS_BIT = 0x00000001
 GL_TIMEOUT_EXPIRED = 0x911B
 GL_WAIT_FAILED = 0x911D
-WAIT_LIMIT_S = 1.0  # never wait longer than this for one tick (then carry on as before)
+WAIT_LIMIT_S = 0.04  # wait at most this long in one tick; still behind, the tick skips the card (see behind)
 
 _FUNCTYPE = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE) if sys.platform == "win32" else ctypes.CFUNCTYPE
 
@@ -56,6 +56,7 @@ class GpuWait:
 
     def __init__(self, lookups=None):
         self._syncs: list = []
+        self.behind = False  # the last wait() ran out with the card still behind: give it nothing new this tick
         self.ok = False
         try:
             for lookup in (lookups if lookups is not None else _proc_address()):
@@ -88,10 +89,19 @@ class GpuWait:
 
         began = time.perf_counter()
         result = None
+        self.behind = False
         while len(self._syncs) > self.IN_FLIGHT:
-            sync = self._syncs.pop(0)
+            sync = self._syncs[0]
+            left = limit_s - (time.perf_counter() - began)
             # glClientWaitSync goes through ctypes, which lets go of the GIL for the call.
-            result = self._client_wait(sync, GL_SYNC_FLUSH_COMMANDS_BIT, int(limit_s * 1e9))
+            result = self._client_wait(sync, GL_SYNC_FLUSH_COMMANDS_BIT, max(0, int(left * 1e9)))
+            if result == GL_TIMEOUT_EXPIRED:
+                # The card is stuck on something (2026-11-16: 290-790 ms now and then, inside the driver).
+                # Queuing more would only make the render thread wait in the next OpenGL call: this tick
+                # skips the card, and the next one looks again.
+                self.behind = True
+                break
+            self._syncs.pop(0)
             self._delete(sync)
         waited = time.perf_counter() - began
         if result == GL_WAIT_FAILED:
