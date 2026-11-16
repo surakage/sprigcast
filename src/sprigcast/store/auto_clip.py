@@ -47,7 +47,9 @@ MOST = 50  # unkept suggestions held at most; the oldest go first
 SENSITIVITY = ("low", "medium", "high")
 REASONS = {"mic": "Loud mic", "game": "Loud game", "chat": "Chat burst", "mark": "Marked"}
 DEFAULTS: dict[str, Any] = {"on": True, "mic": True, "game": True, "chat": False, "sensitivity": "medium",
-                            "gap": 45, "days": 3}
+                            "gap": 120, "days": 3}
+MOST_AN_HOUR = 10  # suggestions at most in any hour, whatever the settings: each one is a file on disk
+GAP_RANGE = (60, 600)
 
 
 # Spotting the moments -------------------------------------------------------------------------------
@@ -66,15 +68,21 @@ class SpikeDetector:
     HOLD_S = 0.35  # over the line this long (a plosive or a desk knock is shorter)
     FAST_S, SLOW_S, LEARN_S = 0.25, 40.0, 5.0
     NEW_NORMAL_S = 8.0  # still over the line after this long: louder is the usual now (the game got louder)
+    REPEAT_DB = 4.0  # a new spike must beat the last one by this much while it's remembered...
+    FORGET_DB_PER_MIN = 2.0  # ...and the memory of it fades this fast: a loop's same loud bit never counts again
 
-    def __init__(self, sensitivity: str = "medium"):
+    def __init__(self, sensitivity: str = "medium", repeats: bool = False):
+        """repeats: remember each spike's loudness and let only a louder one count while it's remembered
+        (game sound, where a looping video or the same explosion comes back; a voice doesn't loop)."""
         self.margin = self.MARGIN.get(sensitivity, self.MARGIN["medium"])
+        self.repeats = repeats
         self.fast: float | None = None
         self.usual: float | None = None
         self.heard_s = 0.0
         self.over_s = 0.0
         self.armed = True
         self.disarmed_s = 0.0
+        self.last_peak: float | None = None  # the loudest moment of the last spike, fading
         self._last: float | None = None
 
     def feed(self, db: float, now: float) -> float | None:
@@ -93,12 +101,21 @@ class SpikeDetector:
                 self.usual += (self.fast - self.usual) * (1 - math.exp(-dt / self.LEARN_S))
         if not self.armed:
             self.disarmed_s += dt
+            if self.repeats:
+                self.last_peak = max(self.last_peak if self.last_peak is not None else self.fast, self.fast)
+        elif self.last_peak is not None:
+            self.last_peak -= self.FORGET_DB_PER_MIN * dt / 60
+            if self.usual is not None and self.last_peak < self.usual + self.margin - self.REPEAT_DB:
+                self.last_peak = None  # faded below the line: forgotten
         if self.usual is None or self.heard_s < self.WARMUP_S:
             return None
         line = max(self.usual + self.margin, self.LOUD_DB)
         if self.fast >= line:
             self.over_s += dt
-            if self.armed and self.over_s >= self.HOLD_S:
+            beats = self.last_peak is None or self.fast >= self.last_peak + self.REPEAT_DB
+            if not beats and self.over_s >= self.HOLD_S:
+                self.last_peak = max(self.last_peak, self.fast)  # the same loud bit again: remember it afresh
+            if self.armed and self.over_s >= self.HOLD_S and beats:
                 self.armed = False
                 return self.fast - self.usual
         else:
@@ -310,7 +327,7 @@ def clean_settings(s: dict[str, Any]) -> dict[str, Any]:
     for key in ("on", "mic", "game", "chat"):
         out[key] = bool(s.get(key, DEFAULTS[key]))
     out["sensitivity"] = s.get("sensitivity") if s.get("sensitivity") in SENSITIVITY else DEFAULTS["sensitivity"]
-    for key, low, high in (("gap", 10, 600), ("days", 0, 30)):
+    for key, low, high in (("gap", *GAP_RANGE), ("days", 0, 30)):
         try:
             out[key] = max(low, min(high, int(s.get(key, DEFAULTS[key]))))
         except (TypeError, ValueError):
@@ -338,6 +355,8 @@ def _groups(col) -> dict[str, set[str]]:
         try:
             if is_voice(source):
                 mic.add(source.id)
+            elif source.kind == "media" and (source.settings or {}).get("loop"):
+                continue  # a looping video or sound (BRB, background music) repeats itself: never a moment
             elif not is_music(source):
                 game.add(source.id)
         except Exception:  # noqa: BLE001 - an odd source never stops the rest
@@ -355,6 +374,7 @@ class AutoClip:
         self.settings = load_settings()
         self.detectors: dict[str, Any] = {}
         self.last_at = -1e9  # monotonic time of the last suggestion
+        self.recent: deque[float] = deque()  # when the suggestions of the last hour were made
         self.pending = False
         self._groups: dict[str, set[str]] = {}
         self._groups_of: tuple | None = None
@@ -381,7 +401,7 @@ class AutoClip:
     def reset(self) -> None:
         """Fresh detectors (a new sensitivity, or clips just got ready: learn the usual levels again)."""
         sens = self.settings["sensitivity"]
-        self.detectors = {"mic": SpikeDetector(sens), "game": SpikeDetector(sens), "chat": ChatBurst(sens)}
+        self.detectors = {"mic": SpikeDetector(sens), "game": SpikeDetector(sens, repeats=True), "chat": ChatBurst(sens)}
 
     def clips_ready(self) -> bool:
         try:
@@ -433,8 +453,17 @@ class AutoClip:
             count = self.detectors["chat"].check(now)
             if count is not None and found is None:
                 found = ("chat", None)
-        if found is not None and not self.pending and now - self.last_at >= self.settings["gap"]:
+        if found is not None and self.can_suggest(now):
             self.suggest(found[0], found[1], now)
+
+    def _under_hourly(self, now: float) -> bool:
+        while self.recent and self.recent[0] <= now - 3600:
+            self.recent.popleft()
+        return len(self.recent) < MOST_AN_HOUR
+
+    def can_suggest(self, now: float) -> bool:
+        """No save already running, the gap since the last one has passed, and fewer than MOST_AN_HOUR."""
+        return not self.pending and now - self.last_at >= self.settings["gap"] and self._under_hourly(now)
 
     def _source_groups(self) -> dict[str, set[str]]:
         col = self.api.col
@@ -483,10 +512,12 @@ class AutoClip:
 
     def suggest(self, reason: str, over: float | None = None, now: float | None = None) -> bool:
         """Save a suggestion in a few seconds. False when one is already on its way or clips aren't ready."""
-        if self.pending or not self.clips_ready():
+        now = time.monotonic() if now is None else now
+        if self.pending or not self.clips_ready() or not self._under_hourly(now):
             return False
         self.pending = True
-        self.last_at = time.monotonic() if now is None else now
+        self.last_at = now
+        self.recent.append(now)
         log.info("auto clip: %s%s, saving a suggestion", reason, f" (+{over:.0f} dB)" if over else "")
         self._later(self.after_seconds(), lambda: self._save(reason, over))
         return True
@@ -675,7 +706,7 @@ def _window_class():
             self.sens.setCurrentIndex(SENSITIVITY.index(s["sensitivity"]))
             self.sens.currentIndexChanged.connect(lambda _i: self.auto.set(sensitivity=self.sens.currentData()))
             self.gap = QSpinBox()
-            self.gap.setRange(10, 600)
+            self.gap.setRange(*GAP_RANGE)
             self.gap.setSuffix(" s")
             self.gap.setValue(s["gap"])
             self.gap.valueChanged.connect(lambda v: self.auto.set(gap=v))
@@ -837,7 +868,8 @@ def _mark(api, data):
     if not auto.clips_ready():
         raise ApiError("not_allowed", "Clips aren't ready (press Clip first).")
     if not auto.suggest("mark"):
-        raise ApiError("not_allowed", "A suggested clip is already being saved.")
+        raise ApiError("not_allowed", "A suggested clip is already being saved, or there were "
+                       f"{MOST_AN_HOUR} in the last hour.")
     return {"in": auto.after_seconds()}
 
 

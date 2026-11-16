@@ -205,9 +205,12 @@ def test_a_loud_moment_saves_a_suggestion_and_tells_apps(setup):
     t = _run(auto, 2, start=t, mic=-28)
     t = _run(auto, 2, start=t, mic=-8)
     assert host.saves == 1
-    t = _run(auto, 50, start=t, mic=-28)
+    t = _run(auto, 60, start=t, mic=-28)
+    t = _run(auto, 2, start=t, mic=-8)
+    assert host.saves == 1  # still inside the 2-minute gap
+    t = _run(auto, 70, start=t, mic=-28)
     _run(auto, 2, start=t, mic=-8)
-    assert host.saves == 2
+    assert host.saves == 2  # a voice doesn't loop: the same shout counts again after the gap
 
 
 def test_nothing_happens_while_clips_are_off_or_it_is_switched_off(setup):
@@ -310,7 +313,7 @@ def test_settings_are_kept_and_cleaned(ac):
     assert ac.load_settings() == ac.DEFAULTS
     ac.save_settings({"on": False, "sensitivity": "loud", "gap": 2, "days": 99, "chat": True})
     s = ac.load_settings()
-    assert s["on"] is False and s["chat"] is True and s["sensitivity"] == "medium" and s["gap"] == 10 and s["days"] == 30
+    assert s["on"] is False and s["chat"] is True and s["sensitivity"] == "medium" and s["gap"] == 60 and s["days"] == 30
 
 
 def test_the_api(setup):
@@ -389,3 +392,52 @@ def test_the_window_lists_it_in_tools_and_saves_suggestions_beside_clips(ac, tmp
         assert w.statusBar().currentMessage() == "hi"
     finally:
         w.close()
+
+
+def test_a_loud_loop_suggests_once_not_every_time_it_comes_round(setup):
+    """The PC heavy run: a looping video with a loud bit saved a suggestion every minute."""
+    ac, auto, api, host, events = setup
+    t = 0.0
+    for _ in range(20):  # 20 minutes: 50 s of game, then 10 s of the loud bit, round and round
+        t = _run(auto, 50, start=t, desk=-35)
+        t = _run(auto, 10, start=t, desk=-12)
+    assert host.saves == 1
+    t = _run(auto, 2, start=t, desk=-35)
+    _run(auto, 2, start=t, desk=0)  # something much louder than the loop still counts
+    assert host.saves == 2
+
+
+def test_a_steady_loud_game_is_never_a_spike(ac):
+    det = ac.SpikeDetector("high", repeats=True)
+    _, t = _talk(det, 30, -14)
+    over, _ = _talk(det, 600, -14, start=t)
+    assert over is None
+
+
+def test_looping_media_is_left_out(setup):
+    from sprigcast.core.scene import SourceConfig
+
+    ac, auto, api, host, events = setup
+    api.col.sources.append(SourceConfig(id="brb", kind="media", name="BRB", settings={"loop": True}))
+    api.col.sources.append(SourceConfig(id="vid", kind="media", name="Clip", settings={"loop": False}))
+    auto._groups_of = None
+    groups = auto._source_groups()
+    assert "brb" not in groups["game"] and "vid" in groups["game"]
+
+
+def test_at_most_ten_an_hour_and_never_while_one_is_saving(setup):
+    ac, auto, api, host, events = setup
+    auto.set(gap=60)
+    held = []
+    auto._in_background = lambda work, then: held.append((work, then))
+    assert auto.suggest("mark", now=0.0) is True
+    assert auto.suggest("mark", now=100.0) is False  # the first is still being saved
+    work, then = held.pop()
+    then(work())
+    for n in range(1, ac.MOST_AN_HOUR):
+        assert auto.suggest("mark", now=n * 61.0) is True
+        work, then = held.pop()
+        then(work())
+    assert not auto.can_suggest(ac.MOST_AN_HOUR * 61.0)
+    assert auto.suggest("mark", now=ac.MOST_AN_HOUR * 61.0) is False
+    assert auto.can_suggest(3600.0 + 1)  # the first has dropped out of the hour
