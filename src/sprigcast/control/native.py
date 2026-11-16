@@ -5,6 +5,8 @@ Connect a WebSocket to ws://127.0.0.1:<port>/sprigcast (the port in Settings →
     server → {"hello": {"app": "SprigCast", "version": "0.1.0", "api": 1, "auth": {"salt": "…", "challenge": "…"}}}
     app    → {"auth": "<answer>", "events": ["bloom", "sound"]}       # auth only when a password is set
     server → {"welcome": {"api": 1, "events": ["bloom", "sound"]}}
+    app    → {"pair": "123456", "name": "Stream Deck"}                # instead of auth: the code from Pair a device
+    server → {"paired": {"key": "sc_…", "name": "Stream Deck"}}      # then welcome; use the key as the password
     app    → {"id": "7", "do": "bloom.show", "bloom": "BRB", "shape": "both"}
     server → {"id": "7", "ok": true, "result": {...}}
              {"id": "7", "ok": false, "error": {"code": "not_found", "message": "No bloom called 'BRB'."}}
@@ -1089,6 +1091,9 @@ class NativeSession:
 
     api: NativeApi
     password: str = ""
+    keys: list[str] = field(default_factory=list)  # paired devices' keys: each works like the password
+    pairing: Any = None  # control.pairing.Pairing: a code from Settings → Connections → Pair a device
+    key: str = ""  # the paired key it signed in with (removing that device closes this connection)
     welcomed: bool = False
     events: set[str] = field(default_factory=lambda: set(EVENT_GROUPS))
     salt: str = field(default_factory=lambda: secrets.token_urlsafe(24))
@@ -1127,10 +1132,22 @@ class NativeSession:
             yield Close(4002, "Messages must be JSON objects.")
             return
         if not self.welcomed:
-            if self.password:
+            if "pair" in message:
+                device = self.pairing.redeem(message["pair"], message.get("name", "")) if self.pairing else None
+                if device is None:
+                    yield Close(4011, "Wrong or expired pairing code.")
+                    return
+                self.key = device.key
+                yield json.dumps({"paired": {"key": device.key, "name": device.name}})
+            elif self.password:
                 answer = message.get("auth")
-                if not isinstance(answer, str) or not secrets.compare_digest(
-                        answer, auth_string(self.password, self.salt, self.challenge)):
+                right = False
+                for secret in [self.password, *self.keys]:
+                    if isinstance(answer, str) and secret and secrets.compare_digest(
+                            answer, auth_string(secret, self.salt, self.challenge)):
+                        right = True
+                        self.key = "" if secret == self.password else secret
+                if not right:
                     yield Close(4009, "Wrong password.")
                     return
             self._set_events(message.get("events", "all"))

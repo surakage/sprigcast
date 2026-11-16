@@ -40,6 +40,31 @@ server → {"welcome": {"api": 0, "events": ["bloom", "sound"]}}
 
 The password answer is `base64(sha256(base64(sha256(password + salt)) + challenge))`. This is the same as obs-websocket's, so existing client code can be reused.
 
+### Pair a device (no password to copy)
+
+In SprigCast, **Settings → Connections → Pair a device** shows a 6-digit code for 2 minutes. The app sends it once, instead of `auth`, with a name for itself:
+
+```
+app    → {"pair": "123456", "name": "Stream Deck", "events": "all"}
+server → {"paired": {"key": "sc_…", "name": "Stream Deck"}}
+server → {"welcome": {"api": 0, "events": [...]}}
+```
+
+Keep the `key`: from then on use it exactly where the password goes (the `auth` answer, `Authorization: Bearer`, `?password=`, and the OBS-compatible door). Each device has its own key; **Remove** next to it in Settings → Connections stops it at once without changing the password for anything else. A wrong or expired code closes with `4011`; five wrong tries cancel the code.
+
+Web links can pair too, even while **Allow web links** is off (the key also opens the WebSocket):
+
+```
+GET http://127.0.0.1:4455/api/pair?code=123456&name=Streamer.bot
+→ {"ok": true, "result": {"key": "sc_…", "name": "Streamer.bot"}}
+```
+
+### Apps on this PC
+
+While the API runs, SprigCast writes `%LOCALAPPDATA%\Slothbloom\SprigCast\api.json` (`app`, `port`, `path`, `password`) so apps on the same PC connect with nothing typed, the way Elgato's OBS plugin reads obs-websocket's settings. The `password` there is this PC's own key, not your password, and it changes when the password does. The file is removed when the API stops.
+
+The password and paired keys are stored encrypted for your Windows account (DPAPI), not as plain text.
+
 ## Asking
 
 ```

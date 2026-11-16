@@ -4,7 +4,7 @@
 //
 // Once: in Streamer.bot set two global variables (Variables → Global Variables, Persisted):
 //   sprigcastPort      the port in SprigCast Settings → Connections (4455, or 4456 next to OBS)
-//   sprigcastPassword  the password shown there
+//   sprigcastPassword  the key from Settings → Connections → Pair a device (or the password shown there)
 // and in SprigCast turn on the API and "Allow web links".
 //
 // Every method sets %sprigcastResult% (SprigCast's JSON answer) and %sprigcastOk% (True/False).

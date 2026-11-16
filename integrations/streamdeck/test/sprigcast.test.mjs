@@ -220,3 +220,33 @@ test("every key style has a picture for every key state", async () => {
 		}
 	}
 });
+
+test("a pairing code is sent once and the key it gets becomes the password", async () => {
+	FakeSocket.all = [];
+	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket, info: "" });
+	let paired = null;
+	sc.on("paired", (key) => (paired = key));
+	sc.configure({ port: 4456, pair: "123 456" });
+	sc.want(true);
+	const socket = FakeSocket.last;
+	socket.say({ hello: { auth: { salt: "s", challenge: "c" } } });
+	assert.deepEqual(socket.sent[0], { pair: "123456", name: "Stream Deck", events: EVENTS });
+	socket.say({ paired: { key: "sc_abc", name: "Stream Deck" } });
+	assert.equal(paired, "sc_abc");
+	assert.equal(sc.password, "sc_abc");
+	assert.equal(sc.pairCode, "");
+	sc.want(false);
+
+	// A wrong or old code: dropped, and the line says what to do.
+	FakeSocket.all = [];
+	const again = new SprigCast({ port: 4456, WebSocketClass: FakeSocket, info: "" });
+	let failed = false;
+	again.on("pairFailed", () => (failed = true));
+	again.configure({ port: 4456, pair: "999999" });
+	again.want(true);
+	FakeSocket.last.emit("close", 4011, Buffer.from("Wrong or expired pairing code."));
+	assert.equal(failed, true);
+	assert.equal(again.pairCode, "");
+	assert.match(again.status, /Pair a device/);
+	again.want(false);
+});

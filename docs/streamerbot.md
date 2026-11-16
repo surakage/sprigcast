@@ -6,8 +6,9 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 
 ## Set up (once)
 
-1. In SprigCast, open **Settings → Connections**, turn on the API, set a password and turn on **Allow web links**.
+1. In SprigCast, open **Settings → Connections**, turn on the API and turn on **Allow web links**.
 2. Note the port shown there (4455 unless OBS already uses it; then pick another, e.g. 4456).
+3. Press **Pair a device**. Open `http://127.0.0.1:4455/api/pair?code=CODE&name=Streamer.bot` in a browser (your port, the 6 digits shown, within 2 minutes). Copy the `key` it answers with: that's Streamer.bot's own password from now on (use it wherever this guide says password). You can also copy the password itself, but a key can be removed on its own in Settings → Connections.
 
 ## Two ways in
 
@@ -17,7 +18,7 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 ## The SprigCast pack for Streamer.bot
 
 1. In Streamer.bot add an action named **SprigCast**, add the sub-action Core → C# → **Execute C# Code**, paste all of [SprigCast.cs](streamerbot/SprigCast.cs), press **Compile** (it should say "Compiled successfully") and **Save and Compile**.
-2. Variables → Global Variables → add two persisted globals: `sprigcastPort` (the port, e.g. `4456` next to OBS) and `sprigcastPassword`.
+2. Variables → Global Variables → add two persisted globals: `sprigcastPort` (the port, e.g. `4456` next to OBS) and `sprigcastPassword` (the key from Pair a device, or the password).
 3. In any other action, set the arguments a method needs (Core → Arguments → Set Argument), then add Core → C# → **Execute C# Method**: action **SprigCast**, method one of:
 
 | Method | Arguments |
