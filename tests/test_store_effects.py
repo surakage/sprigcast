@@ -177,6 +177,7 @@ def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     added("snap")
     to_array = sys.modules["sprigcast_plugin_snap"].to_array
     col = _collection()
+    # save_polaroid: a setting older Snaps had (a framed copy next to the screenshot); it's ignored now.
     col.sources.append(SourceConfig(id="snap-1", kind="snap", name="Snap", settings={"save_polaroid": True}))
     host = Host(col, tmp_path)
     snap = host.instances["snap-1"] = create_source("snap", "snap-1", {"seconds": 1.0})
@@ -197,10 +198,10 @@ def test_a_screenshot_prints_as_a_polaroid(added, tmp_path):
     job.started -= 100
     assert not snap.video_frame()[..., 3].any() and not snap.busy  # gone again
 
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not list((tmp_path / "Screenshots").glob("snap *.png")):
-        time.sleep(0.05)
-    assert list((tmp_path / "Screenshots").glob("snap *.png"))  # the polaroid copy, next to the screenshot
+    # The polaroid is only for show: the one file is the screenshot SprigCast saved, nothing framed.
+    time.sleep(0.3)
+    assert [p.name for p in (tmp_path / "Screenshots").iterdir()] == ["screenshot horizontal 2026-11-14 20-12-43.png"]
+    assert type(snap).in_screenshots is False  # and a screenshot taken while it's up leaves it out
 
     # A burst of screenshots: a few wait their turn, the rest are let go.
     for _ in range(6):
@@ -216,7 +217,7 @@ def test_snap_reads_nothing_but_the_screenshot(added):
 
     module = sys.modules["sprigcast_plugin_snap"]
     assert not any(name.startswith("snap.") for name in NativeApi(FakeHost(_collection())).all_actions())
-    assert set(module.SnapSource.defaults) == {"seconds", "flash", "save_polaroid"}
+    assert set(module.SnapSource.defaults) == {"seconds", "flash"}
 
 
 def test_apps_can_list_plugins_and_hear_their_events(added):
@@ -259,9 +260,47 @@ def test_snap_frames_hold_a_big_picture(added):
     added("snap")
     snap = __import__("sys").modules["sprigcast_plugin_snap"]
     picture = np.full((720, 1280, 4), 255, dtype=np.uint8)
-    card, window = snap.compose(picture, "polaroid")
+    card, window = snap.compose(picture)
     assert window.width() >= 999 and card.width() > window.width() and card.height() > window.height()
-    assert snap.snap_name(__import__("pathlib").Path("x")).name.startswith("snap ")
+
+
+@pytest.mark.parametrize("shape", [(1080, 1920), (1920, 1080), (900, 900), (300, 2400), (2400, 300)])
+def test_the_polaroid_shows_the_whole_screenshot(added, shape):
+    """The user's report: the polaroid cut off the screenshot's edges (a 16:9 shot cropped to a 4:3-ish window).
+    The window now has the screenshot's own shape, so every edge of it is in the print."""
+    added("snap")
+    snap = __import__("sys").modules["sprigcast_plugin_snap"]
+    h, w = shape
+    picture = np.zeros((h, w, 4), dtype=np.uint8)
+    picture[..., 3] = 255
+    picture[:, : w // 20, 0] = 255  # a red stripe down the left edge
+    picture[:, -(w // 20):, 1] = 255  # a green one down the right
+    picture[: h // 10, :, 2] = 255  # a blue one along the top
+    card, win = snap.compose(picture, 600)
+    assert win.width() / win.height() == pytest.approx(w / h, rel=0.02)
+    image = snap.to_array(card)
+    x0, y0, x1, y1 = round(win.left()), round(win.top()), round(win.right()) - 1, round(win.bottom()) - 1
+    mid_y = (y0 + y1) // 2
+    assert image[mid_y, x0 + 1, 0] > 200 and image[mid_y, x1 - 1, 1] > 200  # both side edges made it
+    assert image[y0 + 1, (x0 + x1) // 2, 2] > 200  # and the top
+
+
+@pytest.mark.parametrize("shape", [(1080, 1920), (1920, 1080), (900, 900), (300, 2400), (2400, 300)])
+def test_the_polaroid_stays_inside_the_canvas(added, shape):
+    """Nothing Snap draws, at any moment of the show (camera, flash, print, held up tilted, sliding away),
+    reaches the edge of its box (which fills the canvas): it's never cut off."""
+    added("snap")
+    module = __import__("sys").modules["sprigcast_plugin_snap"]
+    source = create_source("snap", "snap-1", {"seconds": 1.0})
+    picture = np.full((*shape, 4), 200, dtype=np.uint8)
+    job = module._Job(picture)
+    source._picture_in(job)
+    t = 0.0
+    while t < source._length():
+        alpha = module.to_array(source.paint(job, t))[..., 3]
+        edge = max(alpha[:2].max(), alpha[-2:].max(), alpha[:, :2].max(), alpha[:, -2:].max())
+        assert edge == 0, f"cut off at {t:.2f} s"
+        t += 0.1
 
 
 # Death count -------------------------------------------------------------------------------------

@@ -768,7 +768,7 @@ class Compositor:
         self.looks: dict[str, moderngl.Texture3D | None] = {}
         self.masks: dict[str, tuple[moderngl.Texture, bool] | None] = {}
         self.load_errors: dict[str, str] = {}  # key -> why it couldn't be loaded (shown in the Filters window)
-        # When each output-only target was last drawn: ("nv12" | "scaled", key) or ("canvas", "clean:<id>").
+        # When each output-only target was last drawn: ("nv12" | "scaled", key) or ("canvas", "clean:<id>" | "shot:<id>").
         # prune() lets go of the ones nobody has drawn for a while (see prune).
         self._used: dict[tuple, float] = {}
 
@@ -870,7 +870,7 @@ class Compositor:
         and `cut` says whether the cut point has passed; `wipe_map` is the texture key of a wipe image.
         """
         target = self._target(canvas)
-        if canvas.id.startswith("clean:"):
+        if canvas.id.startswith(("clean:", "shot:")):  # output-only copies: let go once unused (prune)
             self._used[("canvas", canvas.id)] = time.monotonic()
         size = (canvas.width, canvas.height)
         if previous is None or progress >= 1.0:

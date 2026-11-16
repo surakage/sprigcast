@@ -282,7 +282,7 @@ def test_screenshot_grabs_the_next_frame(tmp_path):
 
         def add_frame_tap(self, canvas_id, callback, nv12_size=None):
             self.taps[canvas_id] = callback
-            if canvas_id == "horizontal":  # only this canvas is drawing
+            if canvas_id == "shot:horizontal":  # only this canvas is drawing (screenshots tap its "shot:" copy)
                 callback(Frame(canvas_id, 4, 2, bytes([0, 200, 0, 255]) * 8))
 
         def remove_frame_tap(self, canvas_id, callback):

@@ -87,6 +87,9 @@ class Engine:
         self.frames: dict[str, Mailbox[Frame]] = {c.id: Mailbox() for c in collection.canvases}
         self.part_frames: Mailbox[Frame] = Mailbox()  # the part open in the Part editor, if any
         self.editing_part: str | None = None  # set by the UI: which part to read back for the Part editor
+        # This tick's sprig textures and which sprigs were drawn (screenshots redraw the ones holding Snap).
+        self._part_textures: dict = {}
+        self._parts_used: set[str] = set()
         self._collection = collection.model_copy(deep=True)
         self._sources: dict[str, Source] = {}
         self._stopped_unknown: set[str] = set()  # sources whose plugin was removed while they ran
@@ -929,6 +932,7 @@ class Engine:
                     textures[(source.id, part.id)] = compositor.render_part(
                         f"{part.id}~{source.id}", size, tweaked, sizes, fades)
         compositor.parts = self._part_sources(textures)
+        self._part_textures, self._parts_used = textures, used  # for screenshots (see _render_shot)
 
     def _render_staged(self, compositor, canvas, sizes, now: float) -> None:
         """Build: draw the bloom being edited on this canvas, for its preview only (not for outputs)."""
@@ -967,6 +971,68 @@ class Engine:
                 callback(frame)
             except Exception:
                 log.exception("frame tap for %s failed", target.id)
+
+    def _not_in_screenshots(self) -> frozenset[str]:
+        """Sources that are only for show on stream and stay out of screenshots (Snap: its polaroid is the
+        screenshot being shown off; a screenshot taken while one is up shouldn't have it in)."""
+        return frozenset(source_id for source_id, source in self._sources.items()
+                         if not getattr(source, "in_screenshots", True))
+
+    def _render_shot(self, compositor, canvas, held, extra: dict, sizes, now: float, outputs, hidden) -> bool:
+        """For taps on "shot:<canvas id>" (screenshots): the canvas as on air, with the hidden sources left out
+        however deep in sprigs they sit. Sprigs that hold one are drawn again without it (only for this
+        frame, into their own textures); everything else reuses this tick's textures. False if it couldn't
+        (the screenshot then gets the canvas as it is)."""
+        collection = self._collection
+        parts_before = compositor.parts
+        try:
+            textures = dict(self._part_textures)
+            used = self._parts_used
+            changed: set[str] = set()
+            if used:
+                for part in collection.part_order():
+                    if part.id not in used:
+                        continue
+                    if not (any(item.source in hidden for item in part.items)
+                            or any(inner.id in changed for inner in collection.inner_shapes(part))):
+                        continue
+                    canvas_of = next((c for c in collection.canvases if c.id == part.canvas), None)
+                    if canvas_of is None:
+                        continue
+                    changed.add(part.id)
+                    compositor.parts = self._part_sources(textures)
+                    size = (canvas_of.width, canvas_of.height)
+                    if part.id == self.editing_part:
+                        view, fades = part, None
+                    else:
+                        view, fades = self._state_view(collection, part)
+                    view = collection.hide_items(view, set(hidden))
+                    textures[part.id] = compositor.render_part(f"shot~{part.id}", size, view, sizes, fades)
+                    main = collection.main_part(part)
+                    for source in collection.sources:
+                        if collection.part_of(source) is main and collection.hidden_here(source):
+                            tweaked = collection.hide_items(collection.placement_view(source, view), set(hidden))
+                            textures[(source.id, part.id)] = compositor.render_part(
+                                f"shot~{part.id}~{source.id}", size, tweaked, sizes, fades)
+            compositor.parts = self._part_sources(textures)
+            target = canvas.model_copy(update={"id": f"shot:{canvas.id}"})
+            scene = held or collection.active_scene(canvas.id)
+            more = dict(extra)
+            if more.get("previous") is not None:
+                more["previous"] = collection.hide_items(more["previous"], set(hidden))
+            compositor.render(target, collection.hide_items(scene, set(hidden)) if scene else scene, sizes, **more)
+            frame = self._frame(compositor, target, None, now, {})
+        except Exception:
+            log.exception("drawing a screenshot without %s failed", sorted(hidden))
+            return False
+        finally:
+            compositor.parts = parts_before
+        for callback, _nv12 in outputs:
+            try:
+                callback(frame)
+            except Exception:
+                log.exception("frame tap for %s failed", target.id)
+        return True
 
     def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame | None:
         """This canvas for an output (NV12 at its size) or a full-size preview (RGBA). None: nothing yet.
@@ -1114,8 +1180,10 @@ class Engine:
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
         if self._collection.parts():
             self._render_parts(compositor, sizes, now)
-        elif compositor.parts:
-            compositor.parts = {}
+        else:
+            self._part_textures, self._parts_used = {}, set()
+            if compositor.parts:
+                compositor.parts = {}
         self._mark("sprigs")
         with self._taps_lock:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
@@ -1125,6 +1193,11 @@ class Engine:
             held = self._still_waking(compositor, canvas.id, now)
             extra = {} if held is not None else self._transition_step(compositor, canvas.id, now) or {}
             outputs = taps.get(canvas.id, ())
+            shots = taps.get(f"shot:{canvas.id}", ())
+            if shots:  # a screenshot: drawn without what's only for show (Snap's polaroid), if anything is
+                hidden = self._not_in_screenshots()
+                if not (hidden and self._render_shot(compositor, canvas, held, extra, sizes, now, shots, hidden)):
+                    outputs = (*outputs, *shots)  # the canvas as it is: shares its copy
             preview = self._preview_due(canvas.id, now)
             self._render_staged(compositor, canvas, sizes, now)
             self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))

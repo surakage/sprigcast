@@ -564,3 +564,47 @@ def test_wrap_blooms_keeps_the_look_and_shares_one_sprig_across_shapes():
     assert col.bloom_sprig(col.scene("ss-v")) is sprig
     assert [i.source for i in col.scene("only").items] == ["pp"]  # already sprigs only
     assert col.wrap_blooms() == []  # once is enough
+
+
+def test_screenshots_leave_out_what_is_only_for_show_however_deep(compositor):
+    """Snap's polaroid is only for show: a screenshot taken while one is up (Snap sits in a sprig, maybe in a
+    sprig) must be the stream without it, while the stream itself keeps showing it."""
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    col.sources.append(SourceConfig(id="show-off", kind="color", name="Polaroid",
+                                    settings={"color": "#0000ffff", "width": 8, "height": 8}))
+    col.scene("p-badge").items = [SceneItem(source="show-off", x=40, y=20)]  # inside the badge, inside the cam frame
+    col.scene("show-h").items.append(SceneItem(source="show-off", x=20, y=20))  # and straight in the bloom
+    engine = Engine(col)
+    engine._sync_sources(compositor)
+    got = {}
+
+    def tap(name):
+        return lambda frame: got.setdefault(name, np.frombuffer(frame.data, dtype=np.uint8).reshape(36, 64, 4).copy())
+
+    stream, plain = tap("stream"), tap("plain")
+    engine.add_frame_tap("h", stream)
+    engine.add_frame_tap("shot:h", plain)
+    engine._tick(compositor, 1.0)
+    assert got["stream"][24, 44][2] > 200 and got["stream"][24, 24][2] > 200  # the stream shows it
+    assert got["plain"][24, 44][2] > 200  # nothing is marked: the screenshot is the stream as it is
+    assert got["plain"][4, 4][0] > 200
+
+    engine._sources["show-off"].in_screenshots = False  # what Snap says
+    got.clear()
+    shot = tap("shot")
+    engine.add_frame_tap("shot:h", shot)
+    engine._tick(compositor, 2.0)
+    assert got["stream"][24, 44][2] > 200 and got["stream"][24, 24][2] > 200  # still on stream
+    assert got["shot"][24, 44][2] < 50 and got["shot"][24, 24][2] < 50  # left out of the screenshot
+    assert got["shot"][4, 4][0] > 200  # the rest of the sprig is there
+    # The stream's own sprig textures are untouched by the screenshot's redraw.
+    got.clear()
+    engine.remove_frame_tap("shot:h", shot)
+    engine.remove_frame_tap("shot:h", plain)
+    engine._tick(compositor, 3.0)
+    assert got["stream"][24, 44][2] > 200
+    for source in engine._sources.values():
+        source.stop()
+    compositor.parts = {}

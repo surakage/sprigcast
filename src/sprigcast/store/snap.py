@@ -4,11 +4,15 @@ Add Snap (+ → Plugins → Snap): it gets a sprig of its own, filling the canva
 bloom. Then whenever you take a screenshot (the Screenshot button, its hotkey, or an app through
 the API), the camera pops in, the button goes down, the flash goes off and the screenshot slides
 out of the slot as a polaroid. It develops, grows to the middle, holds for a few seconds and slides
-away. The screenshot is saved as usual (recordings folder → Screenshots, named by date and time).
+away. The polaroid is shaped to the screenshot, so the whole picture shows, edges and all, and it
+stays inside the canvas the whole way.
 
-Settings: Seconds (how long the polaroid stays up), Flash, and Save a
-polaroid copy (also saves the framed picture next to the screenshot). It's only an animation:
-nothing about your viewers is read or kept.
+The polaroid is only for show: the file saved is the screenshot itself (recordings folder →
+Screenshots, named by date and time), without the polaroid frame and without a polaroid that's
+still on screen from an earlier snap.
+
+Settings: Seconds (how long the polaroid stays up) and Flash. It's only an animation: nothing about
+your viewers is read or kept.
 
 A SprigCast store plugin: add it from Settings → Plugins.
 """
@@ -19,7 +23,6 @@ import logging
 import threading
 import time
 from collections import deque
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +34,9 @@ from sprigcast.plugin_hooks import register_item_menu, register_on_screenshot
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "snap", "name": "Snap", "version": 3, "adds": "Source",
+PLUGIN = {"id": "snap", "name": "Snap", "version": 4, "adds": "Source",
           "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot.",
-          "new": "Smoother: the polaroid is made in the background."}
+          "new": "The polaroid shows the whole screenshot and stays inside the canvas; only the screenshot is saved."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down
@@ -44,10 +47,13 @@ ASSETS = Path(__file__).resolve().parent / "assets" / "snap"
 CAM_SIZE = 256  # camera.svg and button.svg (the shutter button, drawn on its own so it can go down)
 CAM_SLOT_Y, CAM_SLOT_X = 200, (52, 208)
 CAM_FLASH = (213, 77)
-FRAMES = {
-    # file, size, photo window (x, y, w, h)
-    "polaroid": ("frame.svg", (1060, 960), (80, 80, 900, 640)),
-}
+# The polaroid card, in its own units: the photo window fits in WINDOW_MOST (shaped like the screenshot),
+# with a BORDER of card around it, a wider strip under it for the print, and room for the corner leaves.
+WINDOW_MOST = (900, 760)
+BORDER, STRIP, PAD = 50, 160, 30
+CARD_MOST = (W * 0.86, H * 0.80)  # the card held up in the middle fits in this (before it tilts)
+TILT = -2.5  # degrees the held-up card leans
+EDGE = 8  # pixels kept clear inside the Snap's box: nothing it draws reaches the canvas's edge
 
 # The show, in seconds from the trigger.
 POP = (0.0, 0.35)
@@ -90,12 +96,57 @@ def draw_art(p, name: str, rect, sharp_at: float = 1.0) -> None:
     painted.draw(p, _assets_dir() / name, rect, sharp_at)  # drawn once per size, then reused
 
 
-def frame_art(frame: str):
-    """(SVG file, (w, h), window QRect) for a frame ("polaroid")."""
-    from PySide6.QtCore import QRect
+def window_size(picture_size: tuple[int, int] | None) -> tuple[int, int]:
+    """The photo window for a picture this size (w, h): its shape, as big as fits in WINDOW_MOST."""
+    most_w, most_h = WINDOW_MOST
+    if not picture_size or picture_size[0] <= 0 or picture_size[1] <= 0:
+        return 900, 640
+    w, h = picture_size
+    scale = min(most_w / w, most_h / h)
+    return max(1, round(w * scale)), max(1, round(h * scale))
 
-    name, size, window = FRAMES.get(frame, FRAMES["polaroid"])
-    return name, size, QRect(*window)
+
+def card_layout(window: tuple[int, int]):
+    """((art w, art h), window (x, y, w, h)) for a polaroid with this photo window, in card units."""
+    win_w, win_h = window
+    x = y = PAD + BORDER
+    return (win_w + 2 * (PAD + BORDER), win_h + PAD * 2 + BORDER + STRIP), (x, y, win_w, win_h)
+
+
+def frame_svg(window: tuple[int, int]) -> bytes:
+    """Snap's polaroid as an SVG, made to fit a photo window this size: a warm cream card with leaves on two
+    corners and the print along the bottom. The photo shows through the window."""
+    (art_w, art_h), (x, y, ww, wh) = card_layout(window)
+    l, t, r, b = PAD, PAD, art_w - PAD, art_h - PAD  # the card's edges
+    wr, wb = x + ww, y + wh
+    hole = f"M{x} {y} V{wb} H{wr} V{y} Z"
+    card = f"M{l + 12} {t} H{r - 12} Q{r} {t} {r} {t + 12} V{b - 12} Q{r} {b} {r - 12} {b} H{l + 12} Q{l} {b} {l} {b - 12} " \
+           f"V{t + 12} Q{l} {t} {l + 12} {t} Z"
+    shadow = f"M{l + 22} {t + 14} H{r - 6} Q{r + 8} {t + 14} {r + 8} {t + 28} V{b} Q{r + 8} {b + 14} {r - 6} {b + 14} " \
+             f"H{l + 22} Q{l + 8} {b + 14} {l + 8} {b} V{t + 28} Q{l + 8} {t + 14} {l + 22} {t + 14} Z"
+    text_y, mark_x, mark_y = wb + 52, wr - 16, wb + 44
+    words = "S P R I G C A S T   ·   S N A P" if ww >= 420 else ""  # a very narrow card keeps just the mark
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {art_w} {art_h}" width="{art_w}" height="{art_h}">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0.25" y2="1">
+      <stop offset="0" stop-color="#f3e6c4"/><stop offset="1" stop-color="#ddc79a"/>
+    </linearGradient>
+  </defs>
+  <path fill-rule="evenodd" fill="#000000" opacity="0.28" d="{shadow} {hole}"/>
+  <path fill-rule="evenodd" fill="url(#paper)" d="{card} {hole}"/>
+  <path fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" d="M{l + 14} {t + 3} H{r - 14}"/>
+  <rect x="{x - 2}" y="{y - 2}" width="{ww + 4}" height="{wh + 4}" fill="none" stroke="#b49a68" stroke-width="4"/>
+  <text x="{x + 4}" y="{text_y}" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#a88f63">{words}</text>
+  <circle cx="{mark_x}" cy="{mark_y}" r="14" fill="none" stroke="#b49a68" stroke-width="2.5"/>
+  <path d="M{mark_x - 8} {mark_y + 7} C{mark_x - 8} {mark_y - 3} {mark_x - 1} {mark_y - 8} {mark_x + 9} {mark_y - 8} C{mark_x + 9} {mark_y + 2} {mark_x + 2} {mark_y + 7} {mark_x - 8} {mark_y + 7} Z" fill="#b49a68"/>
+  <ellipse cx="{r - 30}" cy="{t + 4}" rx="58" ry="26" transform="rotate(-35 {r - 30} {t + 4})" fill="#6fa53d"/>
+  <ellipse cx="{r - 18}" cy="{t + 28}" rx="44" ry="20" transform="rotate(20 {r - 18} {t + 28})" fill="#8cc152"/>
+  <path d="M{r - 52} {t + 20} L{r - 14} {t + 8}" stroke="#4f8a2c" stroke-width="2.5" stroke-linecap="round"/>
+  <ellipse cx="{l + 38}" cy="{b - 10}" rx="62" ry="27" transform="rotate(25 {l + 38} {b - 10})" fill="#6fa53d"/>
+  <ellipse cx="{l + 70}" cy="{b + 4}" rx="50" ry="22" transform="rotate(-10 {l + 70} {b + 4})" fill="#8cc152"/>
+  <ellipse cx="{l + 14}" cy="{b - 46}" rx="40" ry="18" transform="rotate(70 {l + 14} {b - 46})" fill="#a5d36a"/>
+</svg>
+""".encode()
 
 
 def cover_scaled(picture: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -130,21 +181,24 @@ def to_array(image) -> np.ndarray:
     return rows.reshape(h, w, 4).copy()
 
 
-def compose(picture: np.ndarray | None, frame: str, width: int | None = None):
-    """The polaroid: the picture cover-cropped into the frame's window, the frame on top.
+def compose(picture: np.ndarray | None, width: int | None = None):
+    """The polaroid: the whole picture in a card shaped to it (nothing cut off), the frame on top.
 
     width scales the whole card (None: at least 1000 px across the photo). Returns (QImage, window
     QRectF), the window in the returned image's pixels.
     """
-    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtCore import QByteArray, QRectF, Qt
     from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
 
-    art, (art_w, art_h), window = frame_art(frame)
-    scale = (width / art_w) if width else max(1.0, 1000 / window.width())
+    shape = (picture.shape[1], picture.shape[0]) if picture is not None and picture.size else None
+    window = window_size(shape)
+    (art_w, art_h), (wx, wy, ww, wh) = card_layout(window)
+    scale = (width / art_w) if width else max(1.0, 1000 / ww)
     out_w, out_h = max(1, round(art_w * scale)), max(1, round(art_h * scale))
     card = QImage(out_w, out_h, QImage.Format.Format_ARGB32_Premultiplied)
     card.fill(Qt.GlobalColor.transparent)
-    win = QRectF(window.x() * scale, window.y() * scale, window.width() * scale, window.height() * scale)
+    win = QRectF(wx * scale, wy * scale, ww * scale, wh * scale)
     p = QPainter(card)
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -153,60 +207,45 @@ def compose(picture: np.ndarray | None, frame: str, width: int | None = None):
         tw, th = max(1, round(win.width())), max(1, round(win.height()))
         # Shrunk to the window first by Pillow, which lets go of Python's lock while it works; QPainter then
         # only copies it in. QPainter scaling a whole screenshot took ~30 ms with the lock held (every
-        # other thread waited: the 09:09:27 late frame).
+        # other thread waited: the 09:09:27 late frame). The window has the picture's shape, so this only
+        # scales it (cover_scaled trims at most a pixel of rounding).
         p.drawImage(QRectF(win.x(), win.y(), tw, th), to_qimage(cover_scaled(picture, tw, th)))
-    draw_art(p, art, QRectF(0, 0, out_w, out_h))
+    renderer = QSvgRenderer(QByteArray(frame_svg(window)))
+    renderer.render(p, QRectF(0, 0, out_w, out_h))
     p.end()
+    del renderer
     return card, win
 
 
-_SAVING = threading.Lock()
-_TAKEN: set[Path] = set()  # names given out, so two snaps in the same second get different ones
+def held_rect(card_w: float, card_h: float) -> tuple[float, float, float, float, float]:
+    """Where the card is held up in the middle (x, y, w, h), and how far it can slide down as it leaves,
+    so that, tilted, nothing of it reaches the box's edge."""
+    import math
 
-
-def snap_name(folder: Path, when: datetime | None = None) -> Path:
-    """Where a snap taken now goes: "snap 2026-11-14 20-03-05.png", with (2), (3)... in the same second."""
-    when = when or datetime.now()
-    with _SAVING:
-        path = folder / when.strftime("snap %Y-%m-%d %H-%M-%S.png")
-        n = 2
-        while path.exists() or path in _TAKEN:
-            path = folder / when.strftime(f"snap %Y-%m-%d %H-%M-%S ({n}).png")
-            n += 1
-        _TAKEN.add(path)
-        return path
-
-
-def save(picture: np.ndarray | None, frame: str, path: Path) -> bool:
-    try:
-        card, _win = compose(picture, frame)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with _SAVING:
-            part = path.with_name(path.name + ".part")  # written whole, then named: never a half-saved snap
-            if not card.save(str(part), "PNG"):
-                raise OSError(f"couldn't write {path}")
-            part.replace(path)
-        log.info("snap saved to %s", path)
-        return True
-    except Exception:
-        log.exception("saving a snap failed")
-        return False
+    tilt = math.radians(abs(TILT))
+    # The tilted card's height (its corners swing out).
+    tall = card_w * math.sin(tilt) + card_h * math.cos(tilt)
+    cy = min(H / 2 + 30, H - EDGE - tall / 2)
+    cy = max(cy, EDGE + tall / 2)
+    cx = W / 2
+    room = max(0.0, H - EDGE - (cy + tall / 2))
+    return cx - card_w / 2, cy - card_h / 2, card_w, card_h, room
 
 
 class _Job:
-    def __init__(self, picture: np.ndarray | None, path: Path | None):
-        self.picture, self.path = picture, path
+    def __init__(self, picture: np.ndarray | None):
+        self.picture = picture
         self.card = None  # (QImage, window), made on a worker thread; the animation starts once it's ready
         self.composing = False
         self.started = 0.0
-        self.saved = False
 
 
 @register("snap")
 class SnapSource(Source):
     label = "Snap"
-    defaults = {"seconds": 6.0, "flash": True, "save_polaroid": False}
+    defaults = {"seconds": 6.0, "flash": True}
     sleeps = False  # a screenshot can come while it's hidden; it costs nothing until then
+    in_screenshots = False  # only for show: a screenshot taken while a polaroid is up doesn't have it in
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -218,7 +257,6 @@ class SnapSource(Source):
         self._frame = painted.Frame()
         self._still: int | None = None  # the job whose still frame was sent (the polaroid held up)
         self.status = "ok"
-        self.last_saved: Path | None = None
 
     @property
     def size(self) -> tuple[int, int]:
@@ -236,14 +274,14 @@ class SnapSource(Source):
 
     # Triggers (UI thread) ------------------------------------------------------------------------
 
-    def show(self, picture: np.ndarray | None, path: Path | None = None) -> int:
-        """Print this picture as a polaroid (and save the polaroid to path, if given).
+    def show(self, picture: np.ndarray | None, _path: Any = None) -> int:
+        """Print this picture as a polaroid: only on stream, nothing is saved (the screenshot already is).
         Returns how many are ahead of it, or -1 if too many are waiting already."""
         with self._lock:
             ahead = len(self._queue) + (self._job is not None)
             if ahead >= MOST_WAITING:
                 return -1
-            self._queue.append(_Job(picture, path))
+            self._queue.append(_Job(picture))
             return ahead
 
     def clear(self) -> None:
@@ -268,13 +306,12 @@ class SnapSource(Source):
         job.started = time.monotonic()
 
     def _picture_in(self, job: _Job) -> None:
-        frame = "polaroid"
-        _art, (art_w, art_h), _w = frame_art(frame)
-        width = min(W * 0.86, art_w * (H * 0.80) / art_h)
-        card = compose(job.picture, frame, int(width))
+        shape = (job.picture.shape[1], job.picture.shape[0]) if job.picture is not None and job.picture.size else None
+        (art_w, art_h), _window = card_layout(window_size(shape))
+        width = min(CARD_MOST[0], art_w * CARD_MOST[1] / art_h)
+        card = compose(job.picture, int(width))
         job.started = time.monotonic()  # the animation starts now, from its first frame
         job.card = card
-        self._save(job)
 
     def _compose_later(self, job: _Job) -> None:
         """Make the card off the render thread (it used to take ~36 ms there)."""
@@ -290,20 +327,6 @@ class SnapSource(Source):
         from sprigcast.core import workers
 
         workers.run(run, name="snap-card")
-
-    def _save(self, job: _Job) -> None:
-        if job.path is None:
-            return
-        args = (job.picture, "polaroid", job.path)
-
-        def run():
-            if save(*args):
-                job.saved = True
-                self.last_saved = job.path
-
-        from sprigcast.core import workers
-
-        workers.run(run, name="snap-save")
 
     def video_frame(self) -> np.ndarray | None:
         with self._lock:
@@ -368,24 +391,28 @@ class SnapSource(Source):
             if card is not None:
                 img, win = card
             else:
-                img, win = compose(None, "polaroid", 400)
+                img, win = compose(None, 400)
             small_w = (CAM_SLOT_X[1] - CAM_SLOT_X[0]) * k * 0.92
             small_h = small_w * img.height() / img.width()
+            below = H - EDGE - (CAM_TOP + CAM_SLOT_Y * k)  # a tall print comes out smaller, inside the box
+            if small_h > below:
+                small_w, small_h = small_w * below / small_h, below
             out = _smooth(_phase(t, PRINT))
             small = QRectF(W / 2 - small_w / 2, CAM_TOP + CAM_SLOT_Y * k - small_h + small_h * out, small_w, small_h)
-            final = QRectF(W / 2 - img.width() / 2, H / 2 - img.height() / 2 + 30, img.width(), img.height())
+            *held, room = held_rect(img.width(), img.height())
+            final = QRectF(*held)
             g = _smooth(_phase(t, GROW))
             rect = QRectF(small.x() + (final.x() - small.x()) * g, small.y() + (final.y() - small.y()) * g,
                           small.width() + (final.width() - small.width()) * g,
                           small.height() + (final.height() - small.height()) * g)
-            rect.translate(0, leave * 160)
+            rect.translate(0, leave * min(160.0, room))  # slides down, never past the edge
             p.save()
             p.setOpacity(1 - leave)
             if g <= 0:
                 p.setClipRect(QRectF(0, slot_y, W, H))  # only what's come out of the slot
             centre = rect.center()
             p.translate(centre)
-            p.rotate(-2.5 * g)
+            p.rotate(TILT * g)
             sx, sy = rect.width() / img.width(), rect.height() / img.height()
             p.scale(sx, sy)
             p.translate(-img.width() / 2, -img.height() / 2)
@@ -412,7 +439,7 @@ class SnapSource(Source):
         if self.settings.get("flash", True) and FLASH[0] < t < FLASH[1]:
             f = _phase(t, FLASH)
             fx, fy = cam_x + CAM_FLASH[0] * k, cam_y + CAM_FLASH[1] * k
-            room = 2 * min(fx, W - fx, fy, H - fy)  # a glow cut off by the box's edge looks wrong
+            room = 2 * (min(fx, W - fx, fy, H - fy) - EDGE)  # a glow cut off by the box's edge looks wrong
             size = 40 + (room - 40) * _smooth(min(1.0, f * 2.2))
             alpha = min(1.0, f * 10) * (1 - _smooth(f))
             p.save()
@@ -437,7 +464,8 @@ def _picture(image) -> np.ndarray | None:
 
 
 def on_screenshot(api, shots: list[dict]) -> None:
-    """Every Snap prints the first shape's screenshot (its "image"); a copy goes next to it if asked."""
+    """Every Snap prints the first shape's screenshot (its "image"). Only the screenshot is saved (by
+    SprigCast, before this): the polaroid is just for show."""
     shot = next((s for s in shots if s.get("image") is not None), None)
     if shot is None:
         return
@@ -448,10 +476,7 @@ def on_screenshot(api, shots: list[dict]) -> None:
             continue
         if picture is None:
             picture = _picture(shot["image"])
-        path = None
-        if snap.settings.get("save_polaroid") and shot.get("path"):
-            path = snap_name(Path(shot["path"]).parent)
-        instance.show(picture, path)
+        instance.show(picture)
 
 
 register_on_screenshot(on_screenshot)
