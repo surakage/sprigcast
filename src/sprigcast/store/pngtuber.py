@@ -65,12 +65,15 @@ PICTURES = {".png", ".gif", ".webp", ".apng"}
 MOST_FRAMES = 90  # frames kept from one animated picture (longer ones skip frames evenly)
 PARK_SECONDS = 60.0  # off air this long, the pictures are let go
 
-FADE = 0.08  # seconds to cross-fade between pictures (mouth open/closed)
+FADE = 0.04  # seconds to cross-fade between pictures (mouth open/closed): short, so it keeps up with syllables
 EXPRESSION_FADE = 0.18
 BLINK_FADE = 0.03
 BLINK = 0.13  # seconds the eyes stay shut
 HOP_TIME = 0.22  # one bounce, up and down
 HYSTERESIS_DB = 4.0  # once talking, it keeps talking down to this much under Talks above
+DROP_DB = 9.0  # the mouth shuts when the voice falls this far under the syllable's loudest (between syllables)
+RISE_DB = 6.0  # and opens again once it rises this far above the dip (the next syllable)
+PHRASE_GAP = 0.35  # quiet this long ends a sentence (the next one bounces again)
 YELL_AFTER = 0.06  # seconds above Yells above before it yells (a clap isn't a yell)
 
 ASSETS = Path(__file__).resolve().parent / "assets" / "pngtuber"
@@ -339,23 +342,37 @@ def to_db(level: float) -> float:
 
 
 class Voice:
-    """Talking or not from the sound's loudness: on above Talks above, off only once it has stayed
-    a few dB under it for Hold seconds, so it doesn't flap between words. Yelling likewise."""
+    """The mouth follows the syllables: it opens when the voice rises above Talks above and shuts when the voice
+    dips between syllables (well under that syllable's loudest) or goes quiet, staying open at least Hold seconds.
+    Yelling is a moment above Yells above. `speaking` is the whole sentence, gaps between syllables included."""
 
     def __init__(self):
-        self.talking = False
+        self.speaking = False
         self.yelling = False
-        self._heard = -1e9  # last time it was loud enough to keep talking
+        self.open = False
+        self._heard = -1e9  # last time it was loud enough to count as speaking
+        self._opened = -1e9
+        self._peak = -100.0  # loudest of the syllable the mouth is open for
+        self._dip = 100.0  # quietest since the mouth shut
         self._loud_since: float | None = None
         self._yelled = -1e9
 
     def feed(self, level: float, now: float, talk_at: float, yell_at: float, hold: float) -> str:
         db = to_db(level)
-        if db >= (talk_at - HYSTERESIS_DB if self.talking else talk_at):
-            self.talking = True
+        if db >= talk_at - HYSTERESIS_DB:
             self._heard = now
-        elif self.talking and now - self._heard > hold:
-            self.talking = False
+        if self.open:
+            self._peak = max(self._peak, db)
+            if now - self._opened >= hold and (db < talk_at - HYSTERESIS_DB or db < self._peak - DROP_DB):
+                self.open, self._dip = False, db
+        else:
+            self._dip = min(self._dip, db)
+            if db >= talk_at and (not self.speaking or db >= self._dip + RISE_DB):
+                self.open, self._opened, self._peak = True, now, db
+        if self.open:
+            self.speaking = True
+        elif self.speaking and now - self._heard > PHRASE_GAP:
+            self.speaking = False
         if db >= yell_at:
             if self._loud_since is None:
                 self._loud_since = now
@@ -365,12 +382,14 @@ class Voice:
                 self._yelled = now
         else:
             self._loud_since = None
-            if self.yelling and (db < yell_at - HYSTERESIS_DB or now - self._yelled > max(hold, 0.25)) \
+            if self.yelling and (db < yell_at - HYSTERESIS_DB or now - self._yelled > 0.25) \
                     and now - self._yelled > min(hold, 0.25):
                 self.yelling = False
-        if not self.talking:
+        if not self.speaking:
             self.yelling = False
-        return "yell" if self.yelling else "talk" if self.talking else "idle"
+        if not self.open:
+            return "idle"
+        return "yell" if self.yelling else "talk"
 
 
 class Blinker:
@@ -453,7 +472,7 @@ def _quit_later(mic) -> None:
 @register(KIND)
 class PngtuberSource(Source):
     label = "PNGtuber"
-    defaults = {"folder": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.25,
+    defaults = {"folder": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.08,
                 "bounce": True, "blink": True}
     choices = {"listen_to": _listen_choices}
     sleeps = True  # off air it stops listening; a minute later the pictures go too
@@ -478,7 +497,7 @@ class PngtuberSource(Source):
         self._fade_len = FADE
         self._hop_start = -1.0
         self._hop_size = 0.0
-        self._was = "idle"
+        self._was = (False, False)  # (speaking, yelling) last frame
         self.voice = Voice()
         self.blinker = Blinker()
         self.expression = str(self.settings.get("expression") or DEFAULT).lower()
@@ -664,12 +683,15 @@ class PngtuberSource(Source):
             self.expression, self._revert = self._revert[1], None
         s = self.settings
         state = self.voice.feed(self._level(), now, _num(s.get("talk_at"), -38.0), _num(s.get("yell_at"), -12.0),
-                                max(0.0, _num(s.get("hold"), 0.25)))
-        if state != "idle" and (self._was == "idle" or (state == "yell" and self._was == "talk")) \
+                                max(0.0, _num(s.get("hold"), 0.08)))
+        # one hop as a sentence starts (not every syllable), a bigger one as a yell starts
+        was_speaking, was_yelling = self._was
+        voice = self.voice
+        if ((voice.speaking and not was_speaking) or (voice.yelling and not was_yelling)) \
                 and s.get("bounce", True) and now - self._hop_start > HOP_TIME * 0.6:
             self._hop_start = now
-            self._hop_size = HOP if state == "yell" else HOP * 0.55
-        self._was = state
+            self._hop_size = HOP if voice.yelling else HOP * 0.55
+        self._was = (voice.speaking, voice.yelling)
         if s.get("blink", True) and self.blinker.closed(now):
             state = "blink" if state == "idle" else f"{state}_blink"
         expression = self.expression if self.expression in model.pictures else DEFAULT
