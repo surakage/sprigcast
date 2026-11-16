@@ -1,14 +1,16 @@
 """The logbook: everything worth checking later, in one folder (Documents\\SprigCast\\Logs).
 
 * ``sprigcast YYYY-MM-DD.log``: every message SprigCast logs that day (encoder choices, stream
-  summaries, the Optimize wizard's findings, warnings and errors). Kept for 14 days.
+  summaries, the Optimize wizard's findings, warnings and errors).
 * ``stream YYYY-MM-DD HH-MM-SS.txt``: one per stream. What went live and how (destinations, sizes,
   bitrates, encoder path, shared encoders, the PC), then every 5 seconds a line per destination
   (bitrate actually sent, frames, drops, upload backlog, auto-pilot), then the end-of-stream summary.
 * ``crash.log``: where a native library crashed, if one ever does (a section per run, by process id),
   and on the next start what Windows recorded about it (app/crash_report.py).
 
-SPRIGCAST_LOG_DIR puts the folder somewhere else. Stream keys never reach these files.
+Day logs and stream reports older than 14 days are deleted at start-up (Settings → Advanced → Logs:
+7, 14, 30 or 90 days, or Forever). SPRIGCAST_LOG_DIR puts the folder somewhere else. Stream keys never
+reach these files.
 """
 
 from __future__ import annotations
@@ -22,6 +24,19 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 KEEP_DAYS = 14
+KEEP_SETTING = "logs/keep_days"  # QSettings: 0 = keep forever
+KEEP_CHOICES = (7, 14, 30, 90, 0)
+
+
+def keep_days() -> int:
+    """How many days of logs and stream reports to keep (Settings → Advanced); 0 keeps them all."""
+    try:
+        from PySide6.QtCore import QSettings
+
+        days = int(QSettings().value(KEEP_SETTING, KEEP_DAYS) or 0)
+    except Exception:
+        return KEEP_DAYS
+    return max(0, days)
 EVERY_S = 5.0
 FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _handler: logging.Handler | None = None
@@ -45,15 +60,21 @@ def log_dir() -> Path:
     return Path(docs or Path.home() / "Documents") / "SprigCast" / "Logs"
 
 
-def _prune(folder: Path, now: datetime) -> None:
-    cutoff = (now - timedelta(days=KEEP_DAYS)).timestamp()
-    for path in folder.glob("*"):
-        if path.suffix in (".log", ".txt") and path.name != "crash.log":
-            try:
-                if path.stat().st_mtime < cutoff:
-                    path.unlink()
-            except OSError:
-                pass
+def _prune(folder: Path, now: datetime, days: int | None = None) -> int:
+    """Delete day logs (sprigcast *.log) and stream reports (stream *.txt) older than `days`. Returns how many."""
+    days = keep_days() if days is None else days
+    if days <= 0:
+        return 0
+    cutoff = (now - timedelta(days=days)).timestamp()
+    removed = 0
+    for path in [*folder.glob("sprigcast *.log"), *folder.glob("stream *.txt")]:
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def setup(now: datetime | None = None) -> Path | None:
@@ -63,7 +84,7 @@ def setup(now: datetime | None = None) -> Path | None:
     folder = log_dir()
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        _prune(folder, now)
+        removed = _prune(folder, now)
         path = folder / f"sprigcast {now:%Y-%m-%d}.log"
         handler = logging.FileHandler(path, encoding="utf-8")
     except OSError as exc:
@@ -91,7 +112,8 @@ def setup(now: datetime | None = None) -> Path | None:
             faulthandler.enable(file=_crash_file)
     except (OSError, RuntimeError):
         pass
-    logging.getLogger("sprigcast").info("SprigCast %s started; logs in %s", _version(), folder)
+    logging.getLogger("sprigcast").info("SprigCast %s started; logs in %s%s", _version(), folder,
+                                        f" ({removed} older than {keep_days()} days removed)" if removed else "")
     return path
 
 

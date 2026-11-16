@@ -36,6 +36,8 @@ SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing i
 # Cameras and capture cards take a second or two to open, so they wait longer before closing; closing
 # them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
 CAMERA_SLEEP_AFTER = 30.0
+LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
+SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 
@@ -97,6 +99,9 @@ class Engine:
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
         self._waking: dict[str, tuple] = {}
+        self._source_ms: dict[str, float] = {}  # source id -> average ms per frame it was asked for
+        self._source_every: dict[str, int] = {}  # source id -> asked every Nth tick (over its budget)
+        self._budget_logged: set[str] = set()
         self._wipe_maps: dict[str, np.ndarray] = {}  # wipe image path -> its small grey picture
         self._release_later: list[tuple[str, str]] = []  # ("canvas" | "texture", key) to free on the next tick
         self._pruned_at = 0.0  # when idle output targets were last let go (compositor.prune)
@@ -275,7 +280,7 @@ class Engine:
         last_problem = None
         readbacks_at = 0
 
-        late_logged = 0.0
+        late_logged, late_held = float("-inf"), 0
         try:
             while True:
                 woke = time.perf_counter()
@@ -302,12 +307,17 @@ class Engine:
                     missed = int((now - next_tick) / interval)
                     if missed:
                         dropped += missed
-                        if now - late_logged >= 0.25:  # say where the time went (at most 4 a second)
+                        late_held += 1
+                        # Say where the time went: the first late frame, then at most one every 10 s
+                        # (878 lines on 2026-11-15), with how many were let go since.
+                        if now - late_logged >= LATE_LOG_EVERY_S:
                             late_logged = now
-                            log.info("late frame (%d missed): woke %.1f ms late, commands %.1f ms, frame %.1f ms%s%s",
+                            log.info("late frame (%d missed): woke %.1f ms late, commands %.1f ms, frame %.1f ms%s%s%s",
                                      missed, 1000 * max(0.0, woke - (next_tick - interval)),
                                      1000 * (started - woke), 1000 * (render_times[-1]), self._where(),
-                                     pacing.pause_since(next_tick - 2 * interval))
+                                     pacing.pause_since(next_tick - 2 * interval),
+                                     f"; {late_held - 1} more late since the last line" if late_held > 1 else "")
+                            late_held = 0
                         next_tick += missed * interval
                 else:
                     # Python 3.11+ sleeps with a high-resolution timer on Windows: no need to spin.
@@ -962,6 +972,26 @@ class Engine:
             log.exception("first frame failed")  # the loop reports what keeps failing
         log.info("first frame drawn in %.0f ms", 1000 * (time.perf_counter() - began))
 
+    def _budget_allows(self, source_id: str) -> bool:
+        """A source over its time budget is asked for a frame only every few ticks (see _charge)."""
+        every = self._source_every.get(source_id, 1)
+        return every <= 1 or (self._ticks + hash(source_id)) % every == 0
+
+    def _charge(self, source_id: str, source, spent: float) -> None:
+        """Keep each source's average time per frame. One averaging over SOURCE_BUDGET_MS (a plugin that
+        paints every frame: Death count took 15-24 ms while animating) is drawn every 2nd-4th tick, so the
+        canvas, the encoders and the sound stay on time; its animation just moves in bigger steps."""
+        avg = self._source_ms.get(source_id, 0.0) * 0.9 + 1000 * spent * 0.1
+        self._source_ms[source_id] = avg
+        every = min(4, max(1, math.ceil(avg / SOURCE_BUDGET_MS))) if avg > SOURCE_BUDGET_MS else 1
+        before = self._source_every.get(source_id, 1)
+        if every != before:
+            self._source_every[source_id] = every
+            if every > 1 and source_id not in self._budget_logged:
+                self._budget_logged.add(source_id)
+                log.info("source %s (%s) takes %.1f ms a frame: drawing it every %d frames to keep the canvas "
+                         "on time", source_id, source.kind, avg, every)
+
     def _mark(self, name: str) -> None:
         self._marks.append((name, time.perf_counter()))
 
@@ -991,14 +1021,16 @@ class Engine:
         self._show_hidden()
         self._mark("waking and pausing")
         slowest = ("", 0.0)
+        self._ticks = getattr(self, "_ticks", 0) + 1
         for source_id, source in self._sources.items():
-            if source.asleep:
+            if source.asleep or not self._budget_allows(source_id):
                 continue
             began = time.perf_counter()
             frame = source.video_frame()
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order)
             spent = time.perf_counter() - began
+            self._charge(source_id, source, spent)
             if spent > slowest[1]:
                 slowest = (source_id, spent)
         self._slowest_source = slowest

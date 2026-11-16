@@ -15,14 +15,17 @@ PDH_FMT_DOUBLE = 0x00000200
 PDH_MORE_DATA = 0x800007D2
 
 
-def busiest_engine(samples: list[tuple[str, float]]) -> float:
+def busiest_engine(samples: list[tuple[str, float]], kind: str = "") -> float:
     """Task Manager's figure: add each engine's load over all processes, then take the busiest engine.
 
-    A sample's name looks like "pid_4242_luid_0x0_0x1234_phys_0_eng_0_engtype_3D".
+    A sample's name looks like "pid_4242_luid_0x0_0x1234_phys_0_eng_0_engtype_3D". With `kind`
+    ("VideoEncode") only engines of that type count: the video encoder's own load.
     """
     engines: dict[str, float] = defaultdict(float)
     for name, value in samples:
         engine = name.split("_luid_", 1)[-1]  # without the process id
+        if kind and not engine.endswith("engtype_" + kind):
+            continue
         engines[engine] += value
     return min(100.0, max(engines.values(), default=0.0))
 
@@ -58,6 +61,7 @@ class GpuCounter:
             pdh.PdhCloseQuery(self._query)
             raise OSError("this Windows has no GPU Engine counters")
         pdh.PdhCollectQueryData(self._query)  # a rate needs two samples: this is the first
+        self.encode: float | None = None  # the video encoder's load at the last read
 
     def read(self) -> float:
         """Percent busy since the last read (0 until there are two samples)."""
@@ -77,6 +81,7 @@ class GpuCounter:
             return 0.0
         items = ctypes.cast(buffer, ctypes.POINTER(self._item))
         samples = [(items[i].name or "", items[i].value) for i in range(count.value) if items[i].status in (0, 1)]
+        self.encode = busiest_engine(samples, "VideoEncode")
         return busiest_engine(samples)
 
     def close(self) -> None:
@@ -100,3 +105,8 @@ def windows_gpu_load() -> float | None:
         return _counter.read()
     except (OSError, ValueError):
         return None
+
+
+def windows_encoder_load() -> float | None:
+    """The video encoder's busy % at the GPU meter's last read, or None when unknown."""
+    return getattr(_counter, "encode", None) if _counter else None

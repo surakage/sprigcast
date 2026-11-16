@@ -6222,11 +6222,26 @@ class MainWindow(QMainWindow):
         if snap.disk_gb is not None:
             ok = snap.disk_gb >= 10
             checks.append(("Disk has room", ok, f"{snap.disk_gb:.0f} GB free for recordings"))
+        from sprigcast.app.destinations import room_line
+
+        room = room_line((getattr(self, "last_resources", None) or {}).get("encoder"), self._encode_sessions())
+        if room is not None:
+            checks.append(("Encoder has room", room[0], room[1]))
         codec = codec_short(pick_codec())
         gpu = any(name in codec for name in ("NVENC", "AMF", "Quick Sync"))
         checks.append(("GPU encoder", gpu, f"Recording and streaming use {codec}" if gpu
                        else "No graphics-card encoder: the CPU does the encoding (slower)"))
         return checks
+
+    def _encode_sessions(self) -> int:
+        """Video encodes running now: one per canvas for recording and clips, one per shared stream group,
+        one per other destination."""
+        count = len(getattr(getattr(self, "encoders", None), "encoders", {}) or {})
+        if self.streaming is not None:
+            shared = getattr(self.streaming, "shared", [])
+            linked = {id(link) for enc in shared for link in enc.links}
+            count += len(shared) + sum(1 for _, st in self.streaming.streamers if id(st) not in linked)
+        return count
 
     def _open_logs(self) -> None:
         from PySide6.QtCore import QUrl

@@ -55,3 +55,26 @@ def live_line(st) -> tuple[str, str]:
         text += f" · {st.reconnects} reconnects"
     return level, text
 
+
+
+ENCODER_FULL = 85.0  # % of the video encoder we plan to use at most, leaving room for spikes
+
+
+def encoder_room(load_pct: float | None, sessions: int) -> int | None:
+    """How many more encodes like the running ones fit on the video encoder, or None when unknown.
+
+    Each running encode is taken to cost an equal share of the measured load. Shared encodes count
+    once: destinations that share one add nothing."""
+    if load_pct is None or sessions <= 0:
+        return None
+    each = max(load_pct / sessions, 5.0)  # a reading of 0-2% is noise, not a free encoder
+    return max(0, int((ENCODER_FULL - load_pct) // each))
+
+
+def room_line(load_pct: float | None, sessions: int) -> tuple[bool, str] | None:
+    """(has room, "Encoder 30% busy · room for about 2 more") for the Garden check, or None."""
+    room = encoder_room(load_pct, sessions)
+    if room is None:
+        return None
+    more = "no room for more" if room == 0 else f"room for about {room} more"
+    return room > 0, f"Encoder {load_pct:.0f}% busy · {more}"

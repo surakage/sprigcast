@@ -16,7 +16,12 @@ from pathlib import Path
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PySide6.QtGui import QImage
 
+from sprigcast.core.quiet import Every
+
 log = logging.getLogger(__name__)
+
+SLOW_SHOT_MS = 250.0
+_SHOT_LOG = Every(3600)
 
 WAIT_S = 0.5  # long enough for a frame even at a slow 10 fps
 
@@ -103,6 +108,7 @@ def take(engine, canvas_ids: list[str], folder: Path | None, width: int | None =
         out.append(shot)
     out.sort(key=lambda s: canvas_ids.index(s["shape"]))
     if out:
-        log.info("screenshot %s in %.0f ms", ", ".join(s["shape"] for s in out),
-                 (time.monotonic() - started) * 1000)
+        ms = (time.monotonic() - started) * 1000
+        if ms >= SLOW_SHOT_MS or _SHOT_LOG.allow():  # one a minute was 618 lines a day: now hourly unless slow
+            log.info("screenshot %s in %.0f ms%s", ", ".join(s["shape"] for s in out), ms, _SHOT_LOG.skipped())
     return out

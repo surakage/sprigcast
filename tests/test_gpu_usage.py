@@ -26,3 +26,14 @@ def test_without_windows_counters_the_old_readers_are_used(monkeypatch):
     assert doctor.gpu_load() == 42.0
     monkeypatch.setattr(gpu_usage, "windows_gpu_load", lambda: 7.0)
     assert doctor.gpu_load() == 7.0
+
+
+def test_the_video_encoder_load_counts_only_encode_engines():
+    from sprigcast.app.gpu_usage import busiest_engine
+
+    samples = [("pid_1_luid_0x0_0x1_phys_0_eng_0_engtype_3D", 60.0),
+               ("pid_1_luid_0x0_0x1_phys_0_eng_5_engtype_VideoEncode", 12.0),
+               ("pid_2_luid_0x0_0x1_phys_0_eng_5_engtype_VideoEncode", 18.0)]
+    assert busiest_engine(samples) == 60.0
+    assert busiest_engine(samples, "VideoEncode") == 30.0
+    assert busiest_engine(samples[:1], "VideoEncode") == 0.0

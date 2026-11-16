@@ -26,6 +26,7 @@ from sprigcast.sources import browser
 log = logging.getLogger(__name__)
 
 # Settings that need the page loaded again when they change. Size, fps and mute apply in place.
+HIDDEN_TICK_MS = 1000  # a paused page's frame timer (it grabs nothing while paused anyway)
 RELOAD_KEYS = ("url", "file", "css", "audio_to_mixer")
 
 SHIM = """
@@ -235,6 +236,14 @@ class _Page:
             return
         self.paused = paused
         self.page.runJavaScript(f"window.__sprigcastVisible && window.__sprigcastVisible({'false' if paused else 'true'})")
+        # A hidden page kept running (an alert box that must stay connected) is told it is hidden, as a
+        # background browser tab is: Chromium stops painting it and runs its timers about once a second,
+        # while its connections stay open. Our own frame timer slows down to match.
+        try:
+            self.page.setVisible(not paused)
+        except AttributeError:  # older Qt
+            pass
+        self.timer.start(HIDDEN_TICK_MS if paused else max(4, round(1000 / browser.page_fps(self.settings))))
         if not paused:
             self.dirty = True
 

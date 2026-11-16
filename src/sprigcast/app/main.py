@@ -151,6 +151,9 @@ def run() -> None:
     if sys.stderr is not None:
         faulthandler.enable()  # if a native library crashes, print where instead of closing silently
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from sprigcast.core.quiet import quiet_libraries
+
+    quiet_libraries()
     from sprigcast.app import logbook
 
     logbook.setup()  # Documents\SprigCast\Logs: today's log, one report per stream, crashes
