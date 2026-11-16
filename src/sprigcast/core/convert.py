@@ -824,6 +824,8 @@ def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> 
                           direction=direction if direction in ("left", "right", "up", "down") else "left")
     if kind == "wipe_transition":
         return Transition(kind="wipe", duration_ms=duration)
+    if kind == "move_transition":  # OBS's Move plugin: SprigCast's own Move does the same job
+        return Transition(kind="move", duration_ms=duration)
     if kind == "obs_stinger_transition":
         point = int(_num(s.get("transition_point"), 500))
         matte = "right" if s.get("track_matte_layout", 0) == 0 else "below"

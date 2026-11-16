@@ -1,6 +1,6 @@
 """The Transitions panel: how blooms change on air.
 
-A row of pill choices (Cut, Fade, Slide, Swipe, Wipe, Leaf, Bloom, Stinger), a little moving picture
+A grid of pill choices (Cut, Fade, Move, Slide, Swipe, Wipe, Leaf, Bloom, Stinger), a little moving picture
 of the one picked, and only the settings that one uses. It edits the collection's Transition in place
 and calls `changed` after each edit.
 """
@@ -41,6 +41,7 @@ from sprigcast.core.scene import ANY, SceneCollection, Transition, TransitionRul
 KINDS = [  # (kind, label, tooltip)
     ("cut", "Cut", "Swap at once"),
     ("fade", "Fade", "Melt into the next bloom"),
+    ("move", "Move", "Glide what both blooms show to its new spot"),
     ("slide", "Slide", "Push the old bloom out"),
     ("swipe", "Swipe", "Slide the new bloom over the old"),
     ("wipe", "Wipe", "Sweep a soft edge across, or follow an image"),
@@ -48,13 +49,16 @@ KINDS = [  # (kind, label, tooltip)
     ("bloom", "Bloom", "Open through a flower"),
     ("stinger", "Stinger", "Play a video over the swap"),
 ]
-TIMED = {"fade", "slide", "swipe", "wipe", "leaf", "bloom"}
+TIMED = {"fade", "move", "slide", "swipe", "wipe", "leaf", "bloom"}
 MOVES = {"slide", "swipe", "wipe"}
 SOFT = {"wipe", "leaf", "bloom"}
 ARROWS = [("left", "←"), ("right", "→"), ("up", "↑"), ("down", "↓")]
 VIDEO_FILTER = "Videos (*.webm *.mov *.mp4 *.mkv *.avi *.gif);;All files (*)"
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
 MATTES = [("none", "No matte"), ("right", "Matte on the right"), ("below", "Matte below")]
+EASINGS = [("smooth", "Smooth"), ("ease_out", "Ease out"), ("ease_in", "Ease in"), ("linear", "Linear"),
+           ("spring", "Spring")]
+UNMATCHED = [("fade", "Fade"), ("scale", "Scale"), ("slide", "Slide")]  # what only one bloom shows
 
 # The panel sits on a PANEL card (Live's side column, Build's left column, or its own window), so its
 # pills and boxes are one step lighter (RAISED) to read as things you can press or type in.
@@ -218,6 +222,8 @@ class TransitionPicture(QWidget):
         a, b, x, y = self._pictures(w, h, dpr)
         t = self.transition()
         progress = min(1.0, max(0.0, progress))
+        if t.kind == "move":
+            return self._move_picture(w, h, dpr, progress, t)
         ease = progress * progress * (3 - 2 * progress)
         dx, dy = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}[t.direction]
         if t.kind in ("cut", "stinger"):
@@ -263,6 +269,58 @@ class TransitionPicture(QWidget):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             self._sweep(painter, QRectF(0, 0, w / dpr, h / dpr), progress)
             painter.end()
+        return image
+
+    def _move_picture(self, w: int, h: int, dpr: float, progress: float, t: Transition) -> QImage:
+        """Move: the camera box and name bar glide from A's spots to B's, run by render/move.py itself, so
+        the easing and what the rest does are exactly what goes on air."""
+        from sprigcast.render import move
+
+        lw, lh = w / dpr, h / dpr
+        unit = lh / 9 if self.wide else lh / 4
+
+        def rect_piece(key: str, x: float, y: float, rw: float, rh: float) -> move.Piece:
+            quad = [(x, y, 0.0, 0.0), (x + rw, y, 1.0, 0.0), (x, y + rh, 0.0, 1.0), (x + rw, y + rh, 1.0, 1.0)]
+            return move.Piece(key, key, key, "", quad)
+
+        cam_w, cam_h = (4 * unit, 3 * unit) if self.wide else (1.6 * unit, 1.2 * unit)
+        bar_w, bar_h = 5 * unit, 0.9 * unit
+        pad = 0.6 * unit if self.wide else 0.5 * unit
+        old = [rect_piece("bg_a", 0, 0, lw, lh), rect_piece("label_a", lw * 0.13, 0, lw * 0.5, lh),
+               rect_piece("cam", lw - pad - cam_w, lh - pad - cam_h, cam_w, cam_h)]
+        new = [rect_piece("bg_b", 0, 0, lw, lh), rect_piece("label_b", lw * 0.37, 0, lw * 0.5, lh),
+               rect_piece("cam", pad, pad, cam_w, cam_h)]
+        if self.wide:
+            old.append(rect_piece("bar", pad, lh - 0.7 * unit - bar_h, bar_w, bar_h))
+            new.append(rect_piece("bar", lw - pad - bar_w, lh - 0.7 * unit - bar_h, bar_w, bar_h))
+        image = QImage(w, h, QImage.Format.Format_RGBA8888)
+        image.setDevicePixelRatio(dpr)
+        image.fill(QColor(theme.STAGE_EMPTY))
+        p = QPainter(image)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        font = QFont(self.font())
+        font.setBold(True)
+        font.setPixelSize(max(12, round(lh * 0.24)) if self.wide else max(10, round(min(lh * 0.42, 22))))
+        p.setFont(font)
+        for draw in move.frame(old, new, progress, t.easing, t.unmatched, (lw, lh)):
+            p.setOpacity(draw.opacity)
+            (x0, y0, *_), (x1, y1, *_) = draw.quad[0], draw.quad[3]
+            box = QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized()
+            if draw.source.startswith("bg_"):
+                p.fillRect(box, QColor(theme.STAGE_EMPTY if draw.source == "bg_a" else theme.ACCENT))
+            elif draw.source.startswith("label_"):
+                p.setPen(QColor(theme.SELECT_TEXT if draw.source == "label_a" else theme.ACCENT_TEXT))
+                p.drawText(box, Qt.AlignmentFlag.AlignCenter, "A" if draw.source == "label_a" else "B")
+                p.setPen(Qt.PenStyle.NoPen)
+            else:
+                p.setBrush(QColor(theme.TEXT_BRIGHT))
+                p.setOpacity(draw.opacity * 0.85)
+                if draw.source == "cam":
+                    p.drawRoundedRect(box, unit * 0.5, unit * 0.5)
+                else:
+                    p.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+        p.end()
         return image
 
     @staticmethod
@@ -491,11 +549,11 @@ class TransitionsPanel(QWidget):
             self.kinds.addButton(button)
             self.kind_buttons[kind] = button
             button.clicked.connect(lambda _=False, k=kind: self._pick(k))
-        choices = QWidget()  # the eight pills; on Live's short card a drop-down takes their place
+        choices = QWidget()  # the nine pills; on Live's short card a drop-down takes their place
         choices.setLayout(grid)
         choices.setVisible(not compact)
         root.addWidget(choices)
-        self._reflow(4)
+        self._reflow(3)
         self.kind_pick: QPushButton | None = None
         if compact:
             self.kind_pick = KindPick()
@@ -556,6 +614,12 @@ class TransitionsPanel(QWidget):
             row.addWidget(button)
         row.addStretch(1)
         form.addRow("Way", arrows)
+
+        # Move: how it speeds up and settles, and what happens to what only one of the blooms shows.
+        self.easing = self._pick_pill(EASINGS, "How it speeds up and settles", self._set_easing)
+        form.addRow("Easing", self.easing)
+        self.unmatched = self._pick_pill(UNMATCHED, "What only one of the two blooms shows", self._set_unmatched)
+        form.addRow("Others", self.unmatched)
 
         self.softness = QSlider(Qt.Orientation.Horizontal)
         self.softness.setRange(0, 100)
@@ -651,8 +715,7 @@ class TransitionsPanel(QWidget):
         super().resizeEvent(event)
         if not hasattr(self, "form"):
             return
-        inner = self.width() - 16
-        self._reflow(4 if inner >= 4 * CHOICE_WIDTH else 2)  # 4 or 2 columns: eight choices fill whole rows
+        self._reflow(3)  # nine choices: three full rows of three
         wrap = QFormLayout.RowWrapPolicy.WrapAllRows if self.width() < self._narrow else QFormLayout.RowWrapPolicy.DontWrapRows
         if self.form.rowWrapPolicy() != wrap:
             self.form.setRowWrapPolicy(wrap)
@@ -690,6 +753,41 @@ class TransitionsPanel(QWidget):
             self.grid.addWidget(button, i // columns, i % columns)
         for c in range(4):
             self.grid.setColumnStretch(c, 1 if c < columns else 0)
+
+    def _pick_pill(self, choices: list[tuple[str, str]], tip: str, chosen: Callable[[str], None]) -> QPushButton:
+        """A pill with a little menu of choices (like Matte), the current one ticked."""
+        pill = QPushButton()
+        pill.setStyleSheet(PILL_STYLE)
+        pill.setToolTip(tip)
+        pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        menu = QMenu(pill)
+        menu.setStyleSheet(MENU_STYLE)
+        pill.choices = choices
+        pill.actions_by_value = {}
+        for value, label in choices:
+            action = menu.addAction(label, lambda v=value: chosen(v))
+            action.setCheckable(True)
+            pill.actions_by_value[value] = action
+        pill.setMenu(menu)
+        return pill
+
+    @staticmethod
+    def _show_pick(pill: QPushButton, value: str) -> None:
+        pill.setText(dict(pill.choices).get(value, pill.choices[0][1]) + "  ▾")
+        for v, action in pill.actions_by_value.items():
+            action.setChecked(v == value)
+
+    def _set_easing(self, value: str) -> None:
+        self.transition.easing = value
+        self._show_pick(self.easing, value)
+        self.picture.play(1)
+        self.changed()
+
+    def _set_unmatched(self, value: str) -> None:
+        self.transition.unmatched = value
+        self._show_pick(self.unmatched, value)
+        self.picture.play(1)
+        self.changed()
 
     def _build_matte_menu(self) -> None:
         menu = QMenu(self.matte)
@@ -749,6 +847,8 @@ class TransitionsPanel(QWidget):
         self.softness.setValue(round(t.softness * 100))
         self.cut_at.setValue(s.cut_ms)
         self._show_matte(s.matte)
+        self._show_pick(self.easing, t.easing)
+        self._show_pick(self.unmatched, t.unmatched)
         self.matte_only.setChecked(s.matte_only)
         self.volume.setValue(round(s.volume_db))
         self.mute.setChecked(s.muted)
@@ -767,6 +867,7 @@ class TransitionsPanel(QWidget):
             self.length: kind in TIMED,
             self.direction_buttons["left"].parentWidget(): kind in MOVES and not (kind == "wipe" and self.transition.wipe_image),
             self.softness: kind in SOFT,
+            self.easing: kind == "move", self.unmatched: kind == "move",
             self.wipe_image: kind == "wipe",
             self.clip: stinger, self.tall_clip: stinger, self.cut_at.parentWidget(): stinger,
             self.matte: stinger, self.volume.parentWidget(): stinger,

@@ -381,7 +381,9 @@ class AudioSettings(BaseModel):
         return names[number - 1].strip() or TRACK_NAMES[number - 1]
 
 
-TRANSITION_KINDS = ("cut", "fade", "slide", "swipe", "wipe", "leaf", "bloom", "stinger")
+TRANSITION_KINDS = ("cut", "fade", "move", "slide", "swipe", "wipe", "leaf", "bloom", "stinger")
+MOVE_EASINGS = ("smooth", "ease_out", "ease_in", "linear", "spring")  # render/move.py ease()
+MOVE_UNMATCHED = ("fade", "scale", "slide")  # what is only in one of the two blooms
 
 
 class Stinger(BaseModel):
@@ -405,14 +407,17 @@ class Transition(BaseModel):
 
     cut swaps at once; fade crossfades; slide pushes the old scene out; swipe slides the new one over
     the old; wipe sweeps a soft edge across (or follows a black and white image: a luma wipe); leaf and
-    bloom open the new scene through a growing leaf or flower; stinger plays a video over the swap.
+    bloom open the new scene through a growing leaf or flower; stinger plays a video over the swap; move
+    glides what both blooms show from its old spot to its new one (render/move.py).
     """
 
-    kind: Literal["cut", "fade", "slide", "swipe", "wipe", "leaf", "bloom", "stinger"] = "fade"
+    kind: Literal["cut", "fade", "move", "slide", "swipe", "wipe", "leaf", "bloom", "stinger"] = "fade"
     duration_ms: int = 300
     direction: Literal["left", "right", "up", "down"] = "left"  # slide, swipe and wipe: where it moves to
     softness: float = 0.15  # wipe, leaf and bloom: how soft the edge is, 0 sharp .. 1 very soft
     wipe_image: str = ""  # wipe: a black and white image, dark parts change first
+    easing: Literal["smooth", "ease_out", "ease_in", "linear", "spring"] = "smooth"  # move: how it speeds up and settles
+    unmatched: Literal["fade", "scale", "slide"] = "fade"  # move: what only one bloom shows fades, scales or slides
     stinger: Stinger = Field(default_factory=Stinger)
 
 

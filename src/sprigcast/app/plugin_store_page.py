@@ -212,7 +212,7 @@ class PluginStorePage(QWidget):
         row.refresh()
         if error is None:
             row.say(f"Added. Find it under + → Plugins → {plugin.name}." if plugin.adds == "Source"
-                    else "Added.")
+                    else "Added. Find it in the Tools menu." if plugin.adds == "Tool" else "Added.")
         self.changed.emit()
 
     def update(self, plugin: plugin_store.StorePlugin) -> None:
