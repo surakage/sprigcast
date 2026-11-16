@@ -198,3 +198,28 @@ def test_tiktok_not_live_checks_slow_down_and_going_live_checks_now(monkeypatch)
     reader.stop()
     reader.check_now()  # stopped: nothing to do
     assert not reader._retry.isActive()
+
+
+def test_tiktok_direct_never_imports_the_heavy_library_on_the_ui_thread(monkeypatch):
+    import sys
+
+    from PySide6.QtCore import QCoreApplication
+
+    from sprigcast.chat import tiktok
+
+    QCoreApplication.instance() or QCoreApplication([])
+    for name in [n for n in sys.modules if n == "TikTokLive" or n.startswith(("TikTokLive.", "TikTokLiveProto"))]:
+        monkeypatch.delitem(sys.modules, name)
+    scheduled = []
+
+    class Loop:
+        loop = object()
+
+    monkeypatch.setattr(tiktok, "_shared_loop", lambda: Loop())
+    monkeypatch.setattr(tiktok.asyncio, "run_coroutine_threadsafe", lambda coro, loop: (scheduled.append(coro), coro.close()))
+    reader = tiktok.TikTokChat()
+    reader._wanted, reader.channel = True, "sloth.bloom"
+    reader._open_direct()
+    assert scheduled and reader.via == "direct"
+    assert not any(n == "TikTokLive" or n.startswith("TikTokLiveProto") for n in sys.modules)
+    reader.stop()

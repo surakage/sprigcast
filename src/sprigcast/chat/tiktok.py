@@ -250,9 +250,11 @@ class TikTokChat(QObject):
     # 2. Straight from TikTok -----------------------------------------------------------------
 
     def _open_direct(self) -> None:
-        try:
-            import TikTokLive  # noqa: F401
-        except ImportError:
+        import importlib.util
+
+        # Only ask whether it's installed: importing TikTokLive builds hundreds of message classes
+        # (~1.7 s), which _run_direct does on the helper thread so the window never freezes.
+        if importlib.util.find_spec("TikTokLive") is None:
             self._failed("start TikFinity, or install the TikTok add-on")
             return
         self.via = "direct"
