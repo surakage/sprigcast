@@ -117,3 +117,21 @@ def test_one_hitch_in_a_second_does_not_read_busy(window):
     assert "Smooth" in w.status.text()
     w._show_render_health(SimpleNamespace(fps=60, dropped_ticks=3, render_ms=3.0))
     assert "Busy" in w.status.text()
+
+
+def test_started_minimized_the_window_is_drawn_once_first(window, caplog):
+    import logging
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    window, _col = window
+    with caplog.at_level(logging.INFO, logger="sprigcast.app.main_window"):
+        window.show_minimized_drawn(settle_ms=50)
+        assert window.isVisible() and window.windowOpacity() == 0.0  # shown see-through, so it gets drawn
+        deadline = time.monotonic() + 3
+        while "drawn once first" not in caplog.text and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.01)
+    assert "started minimized: drawn once first" in caplog.text
+    assert window.windowOpacity() == 1.0

@@ -31,9 +31,11 @@ def test_a_fence_marks_a_tick_and_the_next_waits_for_it(compositor):
         fbo.clear(level, 0.0, 0.0, 1.0)
         fbo.read_into(buffer, components=4)
         gpu.mark()
-        assert 0.0 <= gpu.wait() < 1.0
+    assert len(gpu._syncs) == 2
+    assert 0.0 <= gpu.wait() < 1.0  # for the tick before last; the last may still be on the card
+    assert len(gpu._syncs) == 1
+    assert gpu.wait() == 0.0  # one tick in flight is fine
     assert buffer.read()[0] == round(0.6 * 255)
-    assert gpu.wait() == 0.0  # nothing marked since
     gpu.release()
     fbo.release()
     buffer.release()

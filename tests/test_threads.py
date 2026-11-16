@@ -1,4 +1,5 @@
 import threading
+import time
 
 from sprigcast.core import pacing, workers
 
@@ -107,3 +108,55 @@ def test_picture_conversion_starts_no_threads():
     stop.set()
     watcher.join()
     assert peak[0] <= before  # FFmpeg's own default started a pool as big as the CPU for each one
+
+
+def test_trimming_memory_keeps_the_pages_used_last():
+    """At rest the working set is trimmed down to TRIM_KEEP_MB (oldest pages first), never emptied: an emptied
+    one made opening a minimized SprigCast take seconds while every page came back."""
+    from sprigcast.core import pacing
+
+    calls = []
+
+    class Kernel32:
+        def GetCurrentProcess(self):
+            return 7
+
+        def SetProcessWorkingSetSizeEx(self, process, low, high, flags):
+            calls.append((process, low, high, flags))
+            return 1
+
+    assert pacing.trim_working_set(kernel32=Kernel32())
+    keep = pacing.TRIM_KEEP_MB * 1024 * 1024
+    assert calls == [(7, keep // 4, keep, 0)]  # soft limits: it grows again when it needs to
+    assert all(size != (1 << 64) - 1 for size in calls[0][1:3])  # not (SIZE_T)-1, which empties it
+
+
+def test_the_window_not_answering_is_logged_with_where_it_was(caplog):
+    import logging
+    import threading
+
+    from sprigcast.core import pacing
+
+    clock = [10.0]
+    pacing._ui.update(beat=None, ident=None, where=None, clock=lambda: clock[0])
+    try:
+        pacing.ui_beat()  # this thread plays the window's
+        pacing._check_window(10.1)
+        assert pacing._ui["where"] is None  # 100 ms: fine
+        seen = threading.Event()
+
+        def check():
+            pacing._check_window(11.7)
+            seen.set()
+
+        threading.Thread(target=check).start()  # the stall watch, while "the window" is right here
+        seen.wait(2)
+        assert "test_threads.py" in pacing._ui["where"]
+        clock[0] = 11.8
+        with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
+            pacing.ui_beat()
+        assert "the window didn't answer for 1800 ms; it was at " in caplog.text
+        assert "test_the_window_not_answering_is_logged_with_where_it_was" in caplog.text
+        assert pacing._ui["where"] is None
+    finally:
+        pacing._ui.update(beat=None, ident=None, where=None, clock=time.perf_counter)

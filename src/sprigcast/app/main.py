@@ -255,7 +255,7 @@ def run() -> None:
 
     autostart.refresh()
     if autostart.start_minimized(sys.argv):
-        window.showMinimized()
+        window.show_minimized_drawn()  # drawn once first: opening it later shows it at once
     else:
         window.show()
         from PySide6.QtCore import QTimer
@@ -271,6 +271,9 @@ def run() -> None:
 
     pacing.watch_gc()  # logs slow garbage collections (they made the late frames in long streams)
     pacing.watch_stalls()  # names the thread whenever something holds everything up for 200 ms or more
+    beat = QTimer(window)  # and whenever the window itself stops answering, where it was (pacing.ui_beat)
+    beat.timeout.connect(pacing.ui_beat)
+    beat.start(pacing.UI_BEAT_MS)
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
     tidy.timeout.connect(pacing.tidy)

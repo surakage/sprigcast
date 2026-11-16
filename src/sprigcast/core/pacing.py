@@ -200,7 +200,43 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
             if late >= STALL_MS and now - logged >= STALL_EVERY_S:
                 logged = now
                 log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
+            _check_window(now)
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
+
+
+# The window's own thread: a timer on it beats every UI_BEAT_MS; when the beat stops for UI_STALL_MS the stall
+# watch notes where that thread is, and logs it with how long the window didn't answer once it answers again.
+# (The PC saw the window busy 1.6 s some 10 s after a minimized start, with nothing in the log.)
+UI_BEAT_MS = 100
+UI_STALL_MS = 250.0
+_ui = {"beat": None, "ident": None, "where": None, "since": 0.0, "clock": time.perf_counter}
+
+
+def ui_beat() -> None:
+    """Call on the window's thread every UI_BEAT_MS (a QTimer in main.py)."""
+    import threading
+
+    now = _ui["clock"]()
+    if _ui["where"] is not None:
+        log.info("the window didn't answer for %.0f ms; it was at %s", 1000 * (now - _ui["since"]), _ui["where"])
+        _ui["where"] = None
+    _ui["beat"], _ui["ident"] = now, threading.get_ident()
+
+
+def _check_window(now: float) -> None:
+    beat, ident = _ui["beat"], _ui["ident"]
+    if beat is None or _ui["where"] is not None or 1000 * (now - beat) < UI_STALL_MS:
+        return
+    frame = sys._current_frames().get(ident)
+    if frame is None:
+        return
+    import os
+    import traceback
+
+    stack = traceback.extract_stack(frame)[::-1][:5]
+    del frame
+    _ui["since"] = beat
+    _ui["where"] = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack) or "?"
 
 
 def raise_thread_priority(level: int = HIGHEST) -> bool:
@@ -250,23 +286,32 @@ def memory_line() -> str:
     return "; ".join(parts)
 
 
-def trim_working_set() -> bool:
-    """Windows: hand the pages the app isn't using right now back to the system (what Task Manager counts).
+TRIM_KEEP_MB = 160  # what stays in memory at rest: the pages touched last (the window, the render loop)
+
+
+def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None) -> bool:
+    """Windows: hand back to the system the pages the app hasn't touched in a while (what Task Manager counts),
+    keeping the last-used keep_mb.
 
     After a long show the app keeps hundreds of MB of pages it touched once (encoder start-up, the clips
-    buffer, frames in flight) that it won't touch again at rest. Pages still in use come straight back
-    from memory on their next touch, without reading the disk. True if Windows took it."""
-    if sys.platform != "win32":
+    buffer, frames in flight) that it won't touch again at rest. This used to empty the whole working set (14
+    MB in Task Manager), so the next look at the window brought every page of the window, Qt and the graphics
+    driver back one by one: SprigCast started minimized, or minimized at rest, took seconds to open fully.
+    Windows trims the least recently used pages first, so the window and the render loop stay. True if
+    Windows took it."""
+    if sys.platform != "win32" and kernel32 is None:
         return False
     try:
         import ctypes
 
-        kernel32 = ctypes.WinDLL("kernel32")
-        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-        kernel32.SetProcessWorkingSetSizeEx.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
-                                                         ctypes.c_uint32]
-        unlimited = ctypes.c_size_t(-1).value  # (SIZE_T)-1 for both: empty the working set once
-        return bool(kernel32.SetProcessWorkingSetSizeEx(kernel32.GetCurrentProcess(), unlimited, unlimited, 0))
+        if kernel32 is None:
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.SetProcessWorkingSetSizeEx.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
+                                                             ctypes.c_uint32]
+        keep = int(keep_mb * 1024 * 1024)
+        # Soft limits (no QUOTA_LIMITS_HARDWS_* flags): the app grows past them again whenever it needs to.
+        return bool(kernel32.SetProcessWorkingSetSizeEx(kernel32.GetCurrentProcess(), keep // 4, keep, 0))
     except Exception as exc:
         log.info("could not trim memory: %s", exc)
         return False

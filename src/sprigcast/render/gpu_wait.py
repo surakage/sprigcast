@@ -5,9 +5,11 @@ app's heavy work, a driver hiccup), the driver makes one of those calls wait unt
 2026-11-16 retest a frame read-back waited 317 ms, and with the lock held the sound, encoders and window all
 stopped with it ("everything waited 258 ms").
 
-So each tick ends with a fence (glFenceSync) and the next tick first waits for it through ctypes, which lets
-go of the lock while it waits. The card is then never more than a tick behind when the render thread starts
-calling OpenGL again, and if it is behind, only the render thread waits.
+So each tick ends with a fence (glFenceSync), and a tick first waits through ctypes, which lets go of the
+lock while it waits, for the fence of the tick before last. The card may work on one tick while the next is
+being prepared (waiting for the last tick itself took that overlap away: a slow card, or software drawing,
+then missed a frame in three), but never falls further behind; and if it is behind, only the render thread
+waits.
 
 Needs OpenGL 3.2 sync objects (every 3.3 driver has them). Without them, nothing changes.
 """
@@ -50,8 +52,10 @@ class GpuWait:
     """mark() at the end of a tick, wait() at the start of the next. Call both on the render thread, with its
     OpenGL context current."""
 
+    IN_FLIGHT = 1  # ticks the card may still be working on when the next one starts
+
     def __init__(self, lookups=None):
-        self._sync = None
+        self._syncs: list = []
         self.ok = False
         try:
             for lookup in (lookups if lookups is not None else _proc_address()):
@@ -68,34 +72,34 @@ class GpuWait:
             log.info("graphics: no fences (%s); frames read back as before", exc)
 
     def mark(self) -> None:
-        """Everything this tick asked of the card so far: wait() returns once it's done."""
+        """Everything this tick asked of the card so far."""
         if not self.ok:
             return
-        self._drop()
-        self._sync = self._fence(GL_SYNC_GPU_COMMANDS_COMPLETE, 0) or None
+        sync = self._fence(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+        if sync:
+            self._syncs.append(sync)
 
     def wait(self, limit_s: float = WAIT_LIMIT_S) -> float:
-        """Wait (without Python's lock) until the card finished the last marked tick. Returns seconds waited
-        past a quick check: 0.0 when it was already done, as it nearly always is."""
-        if self._sync is None:
+        """Wait (without Python's lock) until the card finished all but the last IN_FLIGHT marked ticks. Returns
+        seconds waited: next to nothing when it was already done, as it nearly always is."""
+        if len(self._syncs) <= self.IN_FLIGHT:
             return 0.0
         import time
 
         began = time.perf_counter()
-        # glClientWaitSync goes through ctypes, which lets go of the GIL for the call.
-        result = self._client_wait(self._sync, GL_SYNC_FLUSH_COMMANDS_BIT, int(limit_s * 1e9))
+        result = None
+        while len(self._syncs) > self.IN_FLIGHT:
+            sync = self._syncs.pop(0)
+            # glClientWaitSync goes through ctypes, which lets go of the GIL for the call.
+            result = self._client_wait(sync, GL_SYNC_FLUSH_COMMANDS_BIT, int(limit_s * 1e9))
+            self._delete(sync)
         waited = time.perf_counter() - began
-        self._drop()
         if result == GL_WAIT_FAILED:
             self.ok = False
+            self.release()
             log.info("graphics: fence wait failed; frames read back as before")
         return waited
 
-    def _drop(self) -> None:
-        if self._sync is not None:
-            self._delete(self._sync)
-            self._sync = None
-
     def release(self) -> None:
-        if self.ok:
-            self._drop()
+        while self._syncs:
+            self._delete(self._syncs.pop())
