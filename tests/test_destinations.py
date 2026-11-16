@@ -617,11 +617,29 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         assert any("Ctrl+K" in str(line) for line in lines)
         tools = [a.text() for a in w.menuBar().actions()[5].menu().actions() if not a.isSeparator()]
         assert tools == ["Get started…", "Starter kit…", "Optimize for this PC…", "Stream doctor…", "Plugin store…"]
+        shown = []
+        monkeypatch.setattr("sprigcast.app.transitions_panel.PopUp.exec", lambda self: shown.append(self))
+        help_menu = w.menuBar().actions()[6].menu()
+        next(a for a in help_menu.actions() if a.text() == "Support SprigCast").trigger()
+        assert shown and shown[0].windowTitle() == "Support SprigCast"
         for menu_action in w.menuBar().actions():  # no tick column on the left of any top menu
             assert not any(a.isCheckable() for a in menu_action.menu().actions())
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_support_pop_up_goes_to_the_tip_page_or_closes(app):
+    from sprigcast.app.support import TIP_URL, support_dialog
+
+    opened = []
+    dialog = support_dialog(open_url=opened.append)
+    assert dialog.close_button.text() == "Close" and not dialog.done_button.isVisible()
+    dialog.close_button.click()
+    assert opened == []
+    dialog = support_dialog(open_url=opened.append)
+    dialog.go_button.click()
+    assert opened == [TIP_URL] == ["https://slothbloom.com/tip"]
 
 
 def test_file_menu_repots_a_recording_as_mp4(app, tmp_path, monkeypatch):
