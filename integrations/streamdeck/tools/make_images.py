@@ -27,20 +27,20 @@ WHITE = "#ffffff"
 # tile behind (for cut-outs). Every key has its own picture; leaves and petals keep them in the sprig family.
 SW = 'stroke="{c}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"'
 GLYPHS = {
-    # Show bloom: a five-petal bloom.
-    "bloom": '<g fill="{c}"><circle cx="50" cy="29" r="14"/><circle cx="70" cy="44" r="14"/><circle cx="62" cy="68" r="14"/>'
-             '<circle cx="38" cy="68" r="14"/><circle cx="30" cy="44" r="14"/></g><circle cx="50" cy="52" r="10" fill="{bg}"/>',
+    # Show bloom: a bloom on the screen (puts it on air).
+    "bloom": f'<rect x="8" y="16" width="84" height="56" rx="10" {SW}/><path d="M38 88h24M50 72v16" {SW}/>'
+             '<g fill="{c}"><circle cx="50" cy="31" r="8.5"/><circle cx="61" cy="39" r="8.5"/><circle cx="57" cy="52" r="8.5"/>'
+             '<circle cx="43" cy="52" r="8.5"/><circle cx="39" cy="39" r="8.5"/></g><circle cx="50" cy="43" r="5" fill="{bg}"/>',
     # Show or hide: an eye, and the eye shut.
     "eye": f'<path d="M10 50q40-42 80 0q-40 42-80 0z" {SW}/><circle cx="50" cy="50" r="12" fill="{{c}}"/>',
     "eye-off": f'<path d="M10 46q40 40 80 0" {SW}/><path d="M24 60l-8 10M50 66v12M76 60l8 10" {SW}/>',
-    # Garden: a planter with three sprouts (a whole set of blooms).
-    "garden": f'<path d="M18 60h64l-8 26H26z" fill="{{c}}"/><path d="M50 58V30M30 58V42M70 58V42" {SW}/>'
-              '<path d="M50 34q-14-2-16-16q14 2 16 16zM50 30q12-2 14-14q-12 2-14 14z" fill="{c}"/>'
-              '<circle cx="30" cy="38" r="6" fill="{c}"/><circle cx="70" cy="38" r="6" fill="{c}"/>',
-    # Path: a winding trail to a pin.
-    "path": f'<path d="M20 86q2-22 24-28t24-26" {SW} stroke-dasharray="1 13"/>'
-            '<path d="M72 8a14 14 0 0 1 14 14c0 11-14 24-14 24s-14-13-14-24a14 14 0 0 1 14-14z" fill="{c}"/>'
-            '<circle cx="72" cy="22" r="5" fill="{bg}"/>',
+    # Garden: a stack of blooms with a sprout (a whole set of blooms, switched at once).
+    "garden": f'<rect x="26" y="10" width="62" height="44" rx="9" {SW}/><rect x="12" y="26" width="62" height="44" rx="9" fill="{{bg}}" stroke="{{c}}" stroke-width="7"/>'
+              f'<path d="M43 62V46" stroke="{{c}}" stroke-width="5" stroke-linecap="round"/>'
+              f'<path d="M43 52q-13 0-15-13q13 0 15 13zM43 48q11 0 13-11q-11 0-13 11z" fill="{{c}}"/>',
+    # Path: set sliders (where and how you go out: places, encoder, recording).
+    "path": f'<path d="M18 26h64M18 50h64M18 74h64" {SW}/>'
+            '<circle cx="36" cy="26" r="9" fill="{c}"/><circle cx="64" cy="50" r="9" fill="{c}"/><circle cx="44" cy="74" r="9" fill="{c}"/>',
     # Mute sound: a speaker with waves, and with a cross.
     "sound": f'<path d="M14 40h14l20-16v52L28 60H14z" fill="{{c}}"/><path d="M62 38q8 12 0 24M72 28q16 22 0 44" {SW}/>',
     "muted": f'<path d="M14 40h14l20-16v52L28 60H14z" fill="{{c}}"/><path d="M62 38l22 24M84 38L62 62" {SW}/>',
@@ -59,9 +59,9 @@ GLYPHS = {
             '<g fill="{c}"><rect x="24" y="21" width="8" height="7" rx="2"/><rect x="24" y="48" width="8" height="7" rx="2"/>'
             '<rect x="68" y="21" width="8" height="7" rx="2"/><rect x="68" y="48" width="8" height="7" rx="2"/></g>'
             f'<path d="M50 30v36M36 54l14 14 14-14" {SW}/><path d="M22 88h56" {SW}/>',
-    # Virtual camera: a webcam on its stand.
-    "camera": f'<circle cx="50" cy="42" r="28" {SW}/><circle cx="50" cy="42" r="11" fill="{{c}}"/>'
-              f'<path d="M36 84h28M50 70v14" {SW}/>',
+    # Virtual camera: a webcam sending SprigCast out to other apps.
+    "camera": f'<circle cx="40" cy="42" r="26" {SW}/><circle cx="40" cy="42" r="10" fill="{{c}}"/><path d="M28 84h24M40 68v16" {SW}/>'
+              f'<path d="M70 34h18M80 26l8 8-8 8" {SW}/>',
     # Screenshot: viewfinder corners round a dot.
     "screenshot": f'<path d="M14 32V20a6 6 0 0 1 6-6h12M68 14h12a6 6 0 0 1 6 6v12M86 68v12a6 6 0 0 1-6 6H68M32 86H20'
                   f'a6 6 0 0 1-6-6V68" {SW}/><circle cx="50" cy="50" r="14" fill="{{c}}"/>',
@@ -69,19 +69,22 @@ GLYPHS = {
     "media": f'<rect x="12" y="18" width="76" height="64" rx="14" {SW}/><path d="M41 35l24 15-24 15z" fill="{{c}}"/>',
     "media-on": f'<rect x="12" y="18" width="76" height="64" rx="14" {SW}/>'
                 '<rect x="37" y="35" width="9" height="30" rx="3" fill="{c}"/><rect x="54" y="35" width="9" height="30" rx="3" fill="{c}"/>',
-    # Filter: three overlapping lenses.
-    "filter": f'<circle cx="38" cy="38" r="22" {SW}/><circle cx="62" cy="38" r="22" {SW}/><circle cx="50" cy="60" r="22" {SW}/>',
+    # Filter: a wand with sparkles (an effect on a source).
+    "filter": f'<path d="M20 82L62 40" {SW}/><path d="M62 40l8-8" stroke="{{c}}" stroke-width="13" stroke-linecap="round"/>'
+              '<path d="M74 10l3 8 8 3-8 3-3 8-3-8-8-3 8-3zM30 18l2 5 5 2-5 2-2 5-2-5-5-2 5-2zM84 52l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="{c}"/>',
     # Transition: one frame sliding into the next.
     "transition": f'<rect x="8" y="22" width="44" height="56" rx="9" {SW}/><rect x="48" y="22" width="44" height="56" rx="9" fill="{{c}}"/>'
                   f'<path d="M58 50h22M72 42l8 8-8 8" stroke="{{bg}}" stroke-width="6" stroke-linecap="round" '
                   'stroke-linejoin="round" fill="none"/>',
-    # Sprig state: a sprig with two leaves.
-    "sprig": f'<path d="M50 88V36" {SW}/><path d="M50 56q-28 0-32-26q28 0 32 26zM50 44q24 0 30-26q-26 0-30 26z" fill="{{c}}"/>',
+    # Sprig state: a switch with a sprout (flips a sprig to another Live state).
+    "sprig": f'<rect x="10" y="34" width="80" height="40" rx="20" {SW}/><circle cx="70" cy="54" r="12" fill="{{c}}"/>'
+             '<path d="M26 64q-4-20 18-22q2 20-18 22z" fill="{c}"/>',
     # Death count: a gravestone on its mound.
     "deaths": f'<path d="M28 80V40q0-22 22-22t22 22v40" {SW}/><path d="M50 32v24M40 42h20" {SW}/>'
               '<path d="M12 86q38-14 76 0z" fill="{c}"/>',
-    # Run action: a bolt.
-    "run": '<path d="M58 8L22 56h24l-6 36 38-50H54z" fill="{c}" stroke="{c}" stroke-width="3" stroke-linejoin="round"/>',
+    # Run action: braces round a play mark (runs any SprigCast action).
+    "run": f'<path d="M30 16q-12 0-12 12v10q0 12-10 12q10 0 10 12v10q0 12 12 12M70 16q12 0 12 12v10q0 12 10 12q-10 0-10 12v10q0 12-12 12" {SW}/>'
+           '<path d="M42 36l22 14-22 14z" fill="{c}"/>',
 }
 
 # action -> (state 0 glyph, colour), (state 1 glyph, colour) or None
