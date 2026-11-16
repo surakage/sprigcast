@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +28,15 @@ CONTAINER_LABELS = {
     "mkv": "MKV (recommended: still plays if SprigCast or Windows crashes)",
     "mp4": "MP4 (plays everywhere, but the file is lost if recording is cut off)",
 }
+# Repot: copy a finished MKV into an MP4 (remux: same video and sound, a new file type, no quality change).
+REPOT = "advanced/remux_mp4"  # keys kept from when this lived in Advanced, so the choice carries over
+REPOT_DELETE = "advanced/remux_delete_mkv"
+
+
+def repot_choice() -> tuple[bool, bool]:
+    """(repot each MKV recording as an MP4 when it stops, delete the MKV afterwards)."""
+    q = QSettings()
+    return q.value(REPOT, False, type=bool), q.value(REPOT_DELETE, False, type=bool)
 
 
 class RecordingPage(QWidget):
@@ -65,6 +75,23 @@ class RecordingPage(QWidget):
             self.container.addItem(label, key)
         self.container.setCurrentIndex(list(CONTAINER_LABELS).index(settings.container))
         form.addRow("File type", self.container)
+        repot, delete = repot_choice()
+        self.repot = QCheckBox("Repot as MP4 when it stops")
+        self.repot.setToolTip("Copies the MKV into an MP4 in seconds: same video and sound, no quality change")
+        self.repot.setChecked(repot)
+        form.addRow("", self.repot)
+        self.repot_delete = QCheckBox("Then delete the MKV")
+        self.repot_delete.setChecked(delete)
+        form.addRow("", self.repot_delete)
+
+        def follow(*_):
+            mkv = self.container.currentData() == "mkv"
+            self.repot.setEnabled(mkv)
+            self.repot_delete.setEnabled(mkv and self.repot.isChecked())
+
+        self.container.currentIndexChanged.connect(follow)
+        self.repot.toggled.connect(follow)
+        follow()
 
         self.size = QComboBox()
         for short, label in SIZE_LABELS.items():
@@ -92,6 +119,9 @@ class RecordingPage(QWidget):
         settings.folder = "" if folder == default_folder else folder
         settings.bitrate_kbps = self.bitrate.value()
         settings.container = self.container.currentData()
+        q = QSettings()
+        q.setValue(REPOT, self.repot.isChecked())
+        q.setValue(REPOT_DELETE, self.repot_delete.isChecked())
         settings.short_side = self.size.currentData()
         if self.canvas_boxes:
             settings.canvases = [cid for cid, box in self.canvas_boxes.items() if box.isChecked()]

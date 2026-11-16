@@ -11,7 +11,7 @@ import uuid
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -233,6 +233,10 @@ def _button(text: str, slot) -> QPushButton:
     return b
 
 
+class _Repotted(QObject):
+    """Carries the repot result from its thread back to the window."""
+
+    done = Signal(list)
 
 
 class MainWindow(QMainWindow):
@@ -2464,6 +2468,8 @@ class MainWindow(QMainWindow):
         plugins.setEnabled(self.plugins_dir is not None)
         file_menu.addAction(f"Show {COLLECTION} file").triggered.connect(lambda: self._show_garden_file())
         file_menu.addSeparator()
+        file_menu.addAction("Repot as MP4…").triggered.connect(lambda: self._ask_repot())
+        file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -2535,6 +2541,35 @@ class MainWindow(QMainWindow):
         help_menu.addSeparator()
         help_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
+
+    def _ask_repot(self) -> None:
+        """File → Repot as MP4: pick recordings (MKV, FLV, MOV, TS) and copy each into an MP4 beside it."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Repot as MP4", str(self._recordings_folder()), "Videos (*.mkv *.flv *.mov *.ts);;All files (*)")
+        files = [Path(p) for p in paths if Path(p).suffix.lower() != ".mp4"]
+        if files:
+            self.repot(files)
+
+    def repot(self, files: list[Path], delete_original: bool = False):
+        """Remux each file into an MP4 next to it on a background thread (no re-encoding, so it takes seconds
+        and keeps the quality), then say how it went in the status bar."""
+        from sprigcast.output.naming import remux_later
+
+        word = "file" if len(files) == 1 else "files"
+        self.statusBar().showMessage(f"Repotting {len(files)} {word} as MP4…")
+        reporter = _Repotted(self)
+        reporter.done.connect(lambda made: self._repotted(files, made, reporter),
+                              Qt.ConnectionType.QueuedConnection)  # emitted on the repot thread
+        return remux_later(files, delete_original, done=reporter.done.emit)
+
+    def _repotted(self, files: list[Path], made: list, reporter) -> None:
+        reporter.deleteLater()
+        missed = len(files) - len(made)
+        if not missed:
+            text = f"Repotted {made[0].name}" if len(made) == 1 else f"Repotted {len(made)} files as MP4"
+        else:
+            text = f"Couldn't repot {missed} of {len(files)} (details in the log)"
+        self.statusBar().showMessage(text, 10000)
 
     def _show_garden_file(self) -> None:
         """Explorer, open on this garden's file and with it selected."""
@@ -5192,14 +5227,12 @@ class MainWindow(QMainWindow):
         else:
             self._say(f"Saved {names}")
             self.live_panel.set_recording("")
-            from sprigcast.app.settings_window import remux_choice
+            from sprigcast.app.recording_dialog import repot_choice
 
-            remux, delete = remux_choice()
+            repot, delete = repot_choice()
             mkvs = [p for p in session.paths if p.suffix.lower() == ".mkv"]
-            if remux and mkvs:
-                from sprigcast.output.naming import remux_later
-
-                remux_later(mkvs, delete)  # the result is logged; the files appear next to the MKVs
+            if repot and mkvs:
+                self.repot(mkvs, delete)
 
     def _refresh_recording_status(self) -> None:
         session = self.recording

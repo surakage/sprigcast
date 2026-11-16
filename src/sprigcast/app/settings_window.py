@@ -161,8 +161,6 @@ def _hint(text: str) -> QLabel:
 
 ADV_FILENAME = "advanced/filename"
 ADV_REPLAY_PREFIX = "advanced/replay_prefix"
-ADV_REMUX = "advanced/remux_mp4"
-ADV_REMUX_DELETE = "advanced/remux_delete_mkv"
 ADV_STREAM_DELAY = "advanced/stream_delay_s"
 
 
@@ -179,10 +177,6 @@ def stream_delay() -> float:
     return float(min(MAX_DELAY, max(0, QSettings().value(ADV_STREAM_DELAY, 0, type=int))))
 
 
-def remux_choice() -> tuple[bool, bool]:
-    """(make an MP4 copy of each MKV recording, delete the MKV afterwards)."""
-    q = QSettings()
-    return q.value(ADV_REMUX, False, type=bool), q.value(ADV_REMUX_DELETE, False, type=bool)
 
 
 def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
@@ -407,7 +401,7 @@ class SettingsWindow(QDialog):
         return _page(look, startup, updates, snapping, safety, performance)
 
     def _advanced_page(self) -> QWidget:
-        """The settings most people never touch: priority, file names, MP4 copies, colour."""
+        """The settings most people never touch: priority, file names, colour."""
         q = QSettings()
         process = QGroupBox("Process")
         pform = QFormLayout(process)
@@ -431,16 +425,6 @@ class SettingsWindow(QDialog):
         self.replay_prefix = QLineEdit(q.value(ADV_REPLAY_PREFIX, naming.REPLAY_PREFIX, type=str))
         self.replay_prefix.setPlaceholderText(naming.REPLAY_PREFIX)
         fform.addRow("Clip names start with", self.replay_prefix)
-        self.remux = QCheckBox("Also save each MKV recording as an MP4")
-        self.remux.setChecked(q.value(ADV_REMUX, False, type=bool))
-        fform.addRow("", self.remux)
-        self.remux_delete = QCheckBox("Then delete the MKV")
-        self.remux_delete.setChecked(q.value(ADV_REMUX_DELETE, False, type=bool))
-        fform.addRow("", self.remux_delete)
-        fform.addRow("", _hint("MKV survives a crash; the MP4 copy is made once a recording ends, in seconds, "
-                               "with no quality change. Editors and phones like MP4 best."))
-        self.remux.toggled.connect(self.remux_delete.setEnabled)
-        self.remux_delete.setEnabled(self.remux.isChecked())
 
         def example(*_):
             from datetime import datetime
@@ -669,8 +653,6 @@ class SettingsWindow(QDialog):
         settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
         settings.setValue(ADV_FILENAME, self.filename.text().strip() or naming.RECORDING_PATTERN)
         settings.setValue(ADV_REPLAY_PREFIX, self.replay_prefix.text().strip() or naming.REPLAY_PREFIX)
-        settings.setValue(ADV_REMUX, self.remux.isChecked())
-        settings.setValue(ADV_REMUX_DELETE, self.remux_delete.isChecked())
         settings.setValue(ADV_STREAM_DELAY, self.stream_delay.value())
         apply_naming()
         level = self.priority.currentData()
