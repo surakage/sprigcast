@@ -98,6 +98,9 @@ def _pair(request: Request, pairing) -> tuple[int, dict[str, Any]]:
         except ValueError:
             return _error("bad_request", "The body must be JSON.")
     device = pairing.redeem(fields.get("code", ""), fields.get("name", "")) if pairing is not None else None
+    if device is None and pairing is not None and pairing.locked_seconds():
+        return 429, {"ok": False, "error": {"code": "busy", "message": "Too many wrong pairing codes: try again in "
+                                                                     f"{pairing.locked_seconds()} s."}}
     if device is None:
         return _error("auth", "Wrong or expired pairing code. Press Pair a device in SprigCast → Settings → "
                               "Connections for a new one.")

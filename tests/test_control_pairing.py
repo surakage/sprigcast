@@ -7,7 +7,7 @@ from test_control_api import FakeHost, _collection
 
 from sprigcast.control import secret_store, web
 from sprigcast.control.native import NativeApi, NativeSession
-from sprigcast.control.pairing import CODE_SECONDS, MOST_TRIES, Pairing, matches
+from sprigcast.control.pairing import CODE_SECONDS, LOCK_SECONDS, MOST_TRIES, TRY_WINDOW, Pairing, matches
 from sprigcast.control.protocol import Close, auth_string
 
 
@@ -36,13 +36,36 @@ def test_a_code_works_once_for_two_minutes():
     assert pairing.redeem(code, "Late") is None and pairing.seconds_left() == 0
 
 
-def test_wrong_codes_cancel_it():
-    pairing = Pairing(clock=Clock())
+def test_wrong_codes_lock_pairing_for_a_minute():
+    """Soak 2026-11-16: about 100 guesses a second were answered. Five wrong codes in a minute lock pairing."""
+    clock = Clock()
+    pairing = Pairing(clock=clock)
     code = pairing.start()
     wrong = "000000" if code != "000000" else "111111"
-    for _ in range(MOST_TRIES):
+    for _ in range(MOST_TRIES - 1):
         assert pairing.redeem(wrong) is None
-    assert pairing.redeem(code) is None  # no guessing: the code is gone
+    assert not pairing.locked_seconds() and pairing.code == code  # four: still fine
+    assert pairing.redeem(wrong) is None
+    assert pairing.locked_seconds() == LOCK_SECONDS and pairing.code == ""  # five: locked, code gone
+    code = pairing.start()
+    assert pairing.redeem(code) is None  # even the right code is refused unread while locked
+    for _ in range(1000):
+        pairing.redeem(wrong)  # hammering doesn't make it longer or count
+    assert pairing.locked_seconds() == LOCK_SECONDS
+    clock.now += LOCK_SECONDS
+    assert not pairing.locked_seconds() and pairing.redeem(code, "Deck") is not None
+
+
+def test_slow_wrong_tries_and_tries_with_no_code_showing():
+    clock = Clock()
+    pairing = Pairing(clock=clock)
+    for _ in range(MOST_TRIES * 2):  # one a minute: never locks
+        assert pairing.redeem("123456") is None
+        clock.now += TRY_WINDOW
+    assert not pairing.locked_seconds()
+    for _ in range(MOST_TRIES):  # no code showing still counts
+        pairing.redeem("123456")
+    assert pairing.locked_seconds()
 
 
 def test_devices_save_and_remove():
@@ -91,6 +114,10 @@ def test_web_links_pair_even_while_off_and_take_the_key():
     status, _ = web.handle(api, _request(f"GET /api/pair?code={code} HTTP/1.1\r\n\r\n"), enabled=False,
                            password="leafy", pairing=pairing)
     assert status == 401  # once only
+    for _ in range(MOST_TRIES):
+        status, body = web.handle(api, _request("GET /api/pair?code=000000 HTTP/1.1\r\n\r\n"), enabled=False,
+                                  password="leafy", pairing=pairing)
+    assert status == 429 and "try again" in body["error"]["message"]
     status, body = web.handle(api, _request(f"GET /api/app.info HTTP/1.1\r\nAuthorization: Bearer {key}\r\n\r\n"),
                               enabled=True, password="leafy", keys=pairing.keys(), pairing=pairing)
     assert status == 200 and body["ok"]

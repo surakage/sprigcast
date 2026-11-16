@@ -278,6 +278,9 @@ class ConnectionsPage(QWidget):
     def _pair(self) -> None:
         if self._pairing is None:
             return
+        if self._pairing.locked_seconds():
+            self._pair_tick()
+            return
         code = self._pairing.start()
         self._paired_count = len(self._pairing.devices)
         self.pair_code.setText(f"{code[:3]} {code[3:]}")
@@ -294,6 +297,10 @@ class ConnectionsPage(QWidget):
             self._paired_count = len(pairing.devices)
             self._fill_devices()
             self._pair_done(f"Paired with {pairing.devices[-1].name}")
+            return
+        locked = pairing.locked_seconds()
+        if locked:
+            self._pair_done(f"Too many wrong codes · try again in {locked} s")
             return
         left = pairing.seconds_left()
         if not left:

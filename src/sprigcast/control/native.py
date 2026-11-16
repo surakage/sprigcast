@@ -1135,7 +1135,9 @@ class NativeSession:
             if "pair" in message:
                 device = self.pairing.redeem(message["pair"], message.get("name", "")) if self.pairing else None
                 if device is None:
-                    yield Close(4011, "Wrong or expired pairing code.")
+                    locked = self.pairing.locked_seconds() if self.pairing else 0
+                    yield Close(4011, f"Too many wrong pairing codes: try again in {locked} s." if locked
+                                else "Wrong or expired pairing code.")
                     return
                 self.key = device.key
                 yield json.dumps({"paired": {"key": device.key, "name": device.name}})
