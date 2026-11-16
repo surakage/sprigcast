@@ -503,10 +503,15 @@ class LivePanel(QWidget):
             button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
-                lambda pos, sid=scene.id, b=button: self.scene_menu(sid).exec(b.mapToGlobal(pos)))
+                lambda pos, sid=scene.id, b=button: self._run_menu(self.scene_menu(sid), b.mapToGlobal(pos)))
             self.buttons[scene.id] = button
             tiles.append(button)
         return tiles
+
+    @staticmethod
+    def _run_menu(menu: QMenu, where) -> None:
+        menu.exec(where)
+        menu.deleteLater()  # a new menu each right-click: kept, each one held a window handle for good
 
     def scene_menu(self, scene_id: str) -> QMenu:
         """A bloom tile's right-click menu: things you do with a bloom while live (editing is in Build)."""

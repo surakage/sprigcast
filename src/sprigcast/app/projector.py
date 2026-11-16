@@ -106,6 +106,7 @@ class Projector(QWidget):
         menu = QMenu(self)
         menu.addAction("Close  (Esc)").triggered.connect(self.close)
         menu.exec(self.mapToGlobal(pos))
+        menu.deleteLater()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.on_closed(self)

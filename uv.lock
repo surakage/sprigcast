@@ -3,7 +3,10 @@ revision = 3
 requires-python = "==3.12.*"
 
 [manifest]
-overrides = [{ name = "onnxruntime", marker = "sys_platform != 'win32'", specifier = ">=1.20" }]
+overrides = [
+    { name = "onnxruntime", marker = "sys_platform != 'win32'", specifier = ">=1.20" },
+    { name = "sympy", marker = "sys_platform == 'never'" },
+]
 
 [[package]]
 name = "annotated-types"
@@ -542,6 +545,20 @@ wheels = [
 ]
 
 [[package]]
+name = "onnxruntime-directml"
+version = "1.24.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/ea/33814eb0ec96775eda4c1d30b0d86e91d7d2cd0d84c66d3915aef0e06fa3/onnxruntime_directml-1.24.4-cp312-cp312-win_amd64.whl", hash = "sha256:f2ecb68b7b7b259d2ef3112ae760149f9b5a1e7c0fbb73d539da6250a648a614", size = 25111930, upload-time = "2026-03-17T21:47:18.419Z" },
+]
+
+[[package]]
 name = "opencv-python"
 version = "5.0.0.93"
 source = { registry = "https://pypi.org/simple" }
@@ -972,6 +989,8 @@ dependencies = [
     { name = "keyring" },
     { name = "moderngl" },
     { name = "numpy" },
+    { name = "onnxruntime", marker = "sys_platform != 'win32'" },
+    { name = "onnxruntime-directml", marker = "sys_platform == 'win32'" },
     { name = "opencv-python" },
     { name = "pedalboard" },
     { name = "pillow" },
@@ -998,6 +1017,8 @@ requires-dist = [
     { name = "keyring", specifier = ">=25" },
     { name = "moderngl", specifier = ">=5.10" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "onnxruntime", marker = "sys_platform != 'win32'", specifier = ">=1.20" },
+    { name = "onnxruntime-directml", marker = "sys_platform == 'win32'", specifier = ">=1.20" },
     { name = "opencv-python", specifier = ">=4.9" },
     { name = "pedalboard", specifier = ">=0.9.26" },
     { name = "pillow", specifier = ">=10.0" },

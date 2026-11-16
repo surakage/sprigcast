@@ -169,6 +169,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   line (normal speed or slow motion, sound slowed with it), then the bands sweep back and it hides. Apps hear
   `replay.started` and `replay.ended`. It keeps nothing while its bloom is off air, encodes only what you picked (720p,
   or 1080p with Sharp) and deletes each replay file when it ends.
+- Background remover store plugin: a camera filter that removes the room behind you, blurs it, or puts a picture
+  there, no green screen needed. A small model (Google's MediaPipe selfie segmentation, Apache 2.0) runs on the
+  graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
+  hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
+  camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat
