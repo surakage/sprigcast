@@ -41,11 +41,23 @@ _ON_SCREENSHOT: list[Callable[[Any, list[dict]], None]] = []
 _ITEM_MENUS: list[Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]] = []
 
 
+def _same(a, b) -> bool:
+    """The same function from the same plugin (added again after a remove): it replaces the old one."""
+    def where(fn):
+        code = getattr(fn, "__code__", None)
+        return (getattr(fn, "__module__", None), getattr(fn, "__qualname__", None),
+                getattr(code, "co_firstlineno", None))
+
+    return where(a) == where(b) and where(a)[0] is not None
+
+
 def register_hotkeys(list_fn: Callable[[Any], list[tuple[str, str]]], run_fn: Callable[[Any, str], None]) -> None:
+    _HOTKEYS[:] = [h for h in _HOTKEYS if not _same(h[0], list_fn)]
     _HOTKEYS.append((list_fn, run_fn))
 
 
 def register_item_menu(fn: Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]) -> None:
+    _ITEM_MENUS[:] = [f for f in _ITEM_MENUS if not _same(f, fn)]
     _ITEM_MENUS.append(fn)
 
 
@@ -121,6 +133,7 @@ def tools() -> list[tuple[str, Callable[[Any], None]]]:
 def register_on_screenshot(fn: Callable[[Any, list[dict]], None]) -> None:
     """fn(api, shots) after each saved screenshot: one dict per shape with "shape", "path" and "image"
     (a QImage of what was on air). Called on the UI thread; keep it quick."""
+    _ON_SCREENSHOT[:] = [f for f in _ON_SCREENSHOT if not _same(f, fn)]
     _ON_SCREENSHOT.append(fn)
 
 
@@ -327,3 +340,23 @@ def filter_off(api, source, kind: str) -> bool:
     flt.enabled = False
     api.host.commit("filters")
     return True
+
+
+# Live and recording: when they started ------------------------------------------------------------
+
+_OUTPUT_SINCE: dict[str, float] = {}  # "stream" / "record" -> time.monotonic() when it started
+
+
+def output_changed(what: str, started_at: float | None) -> None:
+    """The main window: going live / recording ("stream" / "record") started at started_at (time.monotonic()),
+    or stopped (None)."""
+    if started_at is None:
+        _OUTPUT_SINCE.pop(what, None)
+    else:
+        _OUTPUT_SINCE[what] = float(started_at)
+
+
+def output_since(what: str) -> float | None:
+    """When going live ("stream") or recording ("record") started (time.monotonic()), or None while it's off.
+    A plain read: safe from the render thread, costs nothing."""
+    return _OUTPUT_SINCE.get(what)
