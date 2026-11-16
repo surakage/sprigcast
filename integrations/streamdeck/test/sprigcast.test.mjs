@@ -201,3 +201,22 @@ test("a password typed in the key settings wins over api.json", async () => {
 	sc.want(false);
 	rmSync(dir, { recursive: true, force: true });
 });
+
+test("every key style has a picture for every key state", async () => {
+	const { readFileSync, existsSync } = await import("node:fs");
+	const root = new URL("../com.sprigcast.sprigcast.sdPlugin/", import.meta.url);
+	const manifest = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8"));
+	const plugin = readFileSync(new URL("../src/plugin.js", import.meta.url), "utf8");
+	const styles = [...plugin.match(/STYLES = new Set\(\[([^\]]+)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
+	assert.deepEqual(styles, ["canopy", "colour", "graphite"]);
+	for (const action of manifest.Actions) {
+		const suffix = action.UUID.split(".").pop();
+		const states = Number(plugin.match(new RegExp(`super\\("${suffix}"(?:, (\\d))?\\)`))?.[1] ?? 2);
+		assert.equal(states, action.States.length, `${suffix} states`);
+		for (const style of styles.slice(1)) {
+			for (let n = 0; n < states; n++) {
+				assert.ok(existsSync(new URL(`imgs/styles/${style}/${suffix}/key${n}@2x.png`, root)), `${style}/${suffix}/key${n}`);
+			}
+		}
+	}
+});

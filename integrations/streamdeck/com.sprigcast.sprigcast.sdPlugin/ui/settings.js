@@ -92,9 +92,10 @@ function askLists(only) {
 function showGlobals() {
 	document.getElementById("port").value = globals.port ?? "";
 	document.getElementById("password").value = globals.password ?? "";
+	document.getElementById("style").value = globals.style ?? "canopy";
 }
 
-for (const id of ["port", "password"]) {
+for (const id of ["port", "password", "style"]) {
 	const save = (ev) => {
 		if (globals[id] === ev.target.value) return;
 		globals[id] = ev.target.value;

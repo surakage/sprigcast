@@ -10,25 +10,30 @@ const sprigcast = new SprigCast();
 const visible = new Set(); // action contexts on screen
 const all = [];
 
+let keyStyle = "canopy"; // Key style in the key settings: canopy (the manifest's own pictures), colour or graphite
+const STYLES = new Set(["canopy", "colour", "graphite"]);
 let settingsLoaded = false; // connect only once the password is known (else SprigCast refuses the first tries)
 
 function refreshConnection() {
 	sprigcast.want(settingsLoaded && visible.size > 0);
 }
 
-async function loadGlobalSettings() {
-	const settings = await streamDeck.settings.getGlobalSettings();
+function useGlobalSettings(settings = {}) {
 	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
 	settingsLoaded = true;
 	refreshConnection();
+	const style = STYLES.has(settings.style) ? settings.style : "canopy";
+	if (style !== keyStyle) {
+		keyStyle = style;
+		for (const kind of all) for (const action of kind.actions) kind.dress(action).catch(() => {});
+	}
 }
 
-streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
-	const settings = ev.settings ?? {};
-	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
-	settingsLoaded = true;
-	refreshConnection();
-});
+async function loadGlobalSettings() {
+	useGlobalSettings(await streamDeck.settings.getGlobalSettings());
+}
+
+streamDeck.settings.onDidReceiveGlobalSettings((ev) => useGlobalSettings(ev.settings ?? {}));
 
 const TITLED = new Set(["getTransitions"]); // SprigCast's own words (cut, fade...): shown as SprigCast shows them
 
@@ -70,16 +75,28 @@ async function flash(action, text) {
 }
 
 class SprigCastAction extends SingletonAction {
-	constructor(suffix) {
+	constructor(suffix, states = 2) {
 		super();
+		this.suffix = suffix;
+		this.states = states;
 		this.manifestId = `${ID}.${suffix}`;
 		all.push(this);
 	}
 
-	onWillAppear(ev) {
+	async onWillAppear(ev) {
 		visible.add(ev.action.id);
 		refreshConnection();
+		if (keyStyle !== "canopy") await this.dress(ev.action);
 		return this.paint(ev.action, ev.payload.settings);
+	}
+
+	/** The key's pictures in the chosen Key style (canopy = the manifest's own, so the pictures reset). */
+	async dress(action) {
+		if (!action.isKey()) return;
+		if (keyStyle === "canopy") return action.setImage();
+		const image = (n) => `imgs/styles/${keyStyle}/${this.suffix}/key${n}@2x.png`;
+		if (this.states === 1) return action.setImage(image(0));
+		for (let n = 0; n < this.states; n++) await action.setImage(image(n), { state: n });
 	}
 
 	onWillDisappear(ev) {
@@ -169,7 +186,7 @@ class ToggleItem extends SprigCastAction {
 class SoundVolume extends SprigCastAction {
 	// A key changes the volume by a step (or sets it); on a Stream Deck + dial, turning changes it and
 	// pressing mutes.
-	constructor() { super("volume"); }
+	constructor() { super("volume", 1); }
 	press(s) {
 		const db = Number(s.db);
 		if (s.mode === "set" && Number.isFinite(db)) return sprigcast.run("sound.volume", { sound: s.sound, db });
@@ -283,24 +300,24 @@ class Record extends SprigCastAction {
 }
 
 class SaveClip extends SprigCastAction {
-	constructor() { super("clip"); this.okAfterPress = true; }
+	constructor() { super("clip", 1); this.okAfterPress = true; }
 	press() { return sprigcast.run("clip.save"); }
 	said(result) { return result?.started ? "Clips\nstarting" : "Clip\nsaved"; } // clips were off: this press turned them on
 }
 
 class Screenshot extends SprigCastAction {
-	constructor() { super("screenshot"); this.okAfterPress = true; }
+	constructor() { super("screenshot", 1); this.okAfterPress = true; }
 	press() { return sprigcast.run("screenshot.take"); }
 	said() { return "Saved"; }
 }
 
 class SprigStateAction extends SprigCastAction {
-	constructor() { super("sprig-state"); this.okAfterPress = true; }
+	constructor() { super("sprig-state", 1); this.okAfterPress = true; }
 	press(s) { return sprigcast.run("sprig.state", { sprig: s.sprig, state: s.state }); }
 }
 
 class DeathCount extends SprigCastAction {
-	constructor() { super("deaths"); }
+	constructor() { super("deaths", 1); }
 	async press(s, action) {
 		const verb = { remove: "deaths.remove", reset: "deaths.reset", show: "deaths.show" }[s.mode] ?? "deaths.add";
 		const result = await sprigcast.run(verb);
@@ -312,7 +329,7 @@ class DeathCount extends SprigCastAction {
 }
 
 class RunAction extends SprigCastAction {
-	constructor() { super("run"); this.okAfterPress = true; }
+	constructor() { super("run", 1); this.okAfterPress = true; }
 	press(s) {
 		let fields = {};
 		if (s.fields) fields = JSON.parse(s.fields); // a bad JSON throws: the key shows an alert

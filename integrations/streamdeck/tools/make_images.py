@@ -9,15 +9,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 HERE = Path(__file__).resolve().parent.parent
 IMGS = HERE / "com.sprigcast.sprigcast.sdPlugin" / "imgs"
 BRAND = HERE.parent.parent / "brand"
 
-TILE = "#123826"  # brand: dark green tile
 MINT = "#4fd88f"  # brand: the S
 DIM = "#6f8f7e"
 PINK = "#ff5c93"  # only for live and recording
@@ -110,41 +110,141 @@ KEYS = {
 }
 
 
-def svg_key(glyph: str, colour: str, on: bool) -> str:
-    bg = "#0f2a1d" if not on else TILE
-    body = GLYPHS[glyph].format(c=colour, bg=bg)
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144"><rect width="144" height="144" fill="{bg}"/>'
-            f'<g transform="translate(19 12) scale(1.06)">{body}</g></svg>')
+# Groups for the Colour style (each kind of key its own colour; pink stays for live and recording).
+GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", "transition": "scene", "sprig-state": "scene",
+         "mute": "sound", "volume": "sound", "media": "sound",
+         "live": "live", "record": "live",
+         "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
+         "filter": "fx", "deaths": "fx", "run": "fx"}
+GROUP_TILE = {"scene": ("#1f7a4d", "#0b3322"), "sound": ("#1f6f86", "#0a2b38"), "capture": ("#8a6a1e", "#3a2a08"),
+              "fx": ("#5b4a9a", "#221a45"), "live": ("#b4305f", "#4a0f26")}
+
+# Key styles the user can pick in the key settings (Key style). The first is the one in the manifest.
+STYLES = ("canopy", "colour", "graphite")
 
 
-def svg_icon(glyph: str) -> str:
-    """White on black: render_icon turns black see-through (so cut-outs show the list behind, as Elgato asks)."""
-    body = GLYPHS[glyph].format(c=WHITE, bg="#000000")
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#000000"/>'
-            f'{body}</svg>')
+def rgb(colour: str) -> tuple[int, int, int]:
+    colour = colour.lstrip("#")
+    return tuple(int(colour[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def render(svg: str, size: int, path: Path) -> None:
+def raster(svg: str, size: int, box: tuple[float, float, float, float] | None = None) -> QImage:
     renderer = QSvgRenderer(QByteArray(svg.encode()))
-    image = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    image = QImage(size, size, QImage.Format.Format_RGBA8888)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    renderer.render(painter, QRectF(0, 0, size, size))
+    renderer.render(painter, QRectF(*(box or (0, 0, size, size))))
     painter.end()
+    return image
+
+
+def to_pil(image: QImage):
+    from PIL import Image
+
+    size = image.width()
+    return Image.fromarray(np.frombuffer(image.constBits(), np.uint8).reshape(size, size, 4).copy(), "RGBA")
+
+
+def glyph_mask(glyph: str, size: int, inset: float, width: float = 7):
+    """The glyph as a mask (cut-outs stay cut out)."""
+    body = GLYPHS[glyph].replace('stroke-width="7"', f'stroke-width="{width}"').format(c=WHITE, bg="#000000")
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#000"/>'
+           f'{body}</svg>')
+    return to_pil(raster(svg, size, (inset, inset, size - 2 * inset, size - 2 * inset))).convert("L")
+
+
+def gradient(size: int, top: str, bottom: str) -> np.ndarray:
+    t = np.linspace(0, 1, size)[:, None, None]
+    a, b = np.array(rgb(top), float), np.array(rgb(bottom), float)
+    return np.repeat(a + (b - a) * t, size, axis=1)
+
+
+def radial(size: int, inner: str, outer: str, cy: float = 0.25) -> np.ndarray:
+    y, x = np.mgrid[0:size, 0:size] / size
+    d = np.clip(np.hypot(x - 0.5, y - cy) / 0.95, 0, 1)[..., None]
+    a, b = np.array(rgb(inner), float), np.array(rgb(outer), float)
+    return a + (b - a) * d
+
+
+def layer(colour: tuple[int, int, int], alpha: np.ndarray, size: int):
+    from PIL import Image
+
+    out = Image.new("RGBA", (size, size), colour + (255,))
+    out.putalpha(Image.fromarray(np.clip(alpha, 0, 255).astype(np.uint8)))
+    return out
+
+
+def finish(tile: np.ndarray, mask, top: str, bottom: str, shadow: float, glow: str | None, gloss: float, rim: tuple[str, int]):
+    """Tile + soft shadow + glow + glyph (lit from the top) + gloss + thin rim."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    size = tile.shape[0]
+    out = Image.fromarray(np.clip(tile, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    m = np.asarray(mask).astype(float)
+    blur = np.asarray(mask.filter(ImageFilter.GaussianBlur(size * 0.035))).astype(float)
+    out.alpha_composite(layer((0, 0, 0), blur * shadow, size), (0, int(size * 0.025)))
+    if glow:
+        halo = np.asarray(mask.filter(ImageFilter.GaussianBlur(size * 0.06))).astype(float)
+        out.alpha_composite(layer(rgb(glow), halo * 0.55, size))
+    fill = Image.fromarray(gradient(size, top, bottom).astype(np.uint8), "RGB").convert("RGBA")
+    fill.putalpha(Image.fromarray(m.astype(np.uint8)))
+    out.alpha_composite(fill)
+    y, x = np.mgrid[0:size, 0:size] / size
+    out.alpha_composite(layer((255, 255, 255), np.clip(1 - np.hypot((x - 0.5) * 0.9, (y + 0.15) * 1.6), 0, 1) ** 1.6 * 255 * gloss, size))
+    edge = Image.new("RGBA", (size, size))
+    ImageDraw.Draw(edge).rounded_rectangle([0, 0, size - 1, size - 1], size * 0.153, outline=rgb(rim[0]) + (rim[1],),
+                                           width=max(1, size // 72))
+    out.alpha_composite(edge)
+    return out.convert("RGB")
+
+
+def style_canopy(glyph: str, lit: bool, pink: bool, _group: str, size: int):
+    tile = radial(size, "#1c5a3c" if lit else "#163b2b", "#07160f")
+    if lit:
+        top, bottom, glow = ("#ff8fb4", "#ff3d7f", PINK) if pink else ("#b6ffd6", "#3ecf7f", MINT)
+    else:
+        top, bottom, glow = "#9fb3a8", "#5f7f6e", None
+    return finish(tile, glyph_mask(glyph, size, size * 0.2), top, bottom, 0.7, glow, 0.08, ("#4fd88f", 40))
+
+
+def style_colour(glyph: str, lit: bool, _pink: bool, group: str, size: int):
+    top, bottom = GROUP_TILE[group] if lit else ("#3a4540", "#151b18")
+    return finish(gradient(size, top, bottom), glyph_mask(glyph, size, size * 0.21), WHITE, "#dfe8e3" if lit else "#9aa8a0",
+                  0.6, None, 0.18, ("#ffffff", 50))
+
+
+def style_graphite(glyph: str, lit: bool, pink: bool, _group: str, size: int):
+    colour = (PINK if pink else MINT) if lit else None
+    return finish(radial(size, "#2a2f2d", "#101312", cy=0.2), glyph_mask(glyph, size, size * 0.22, 5.5),
+                  colour or "#e8ecea", colour or "#b9c2bd", 0.5, None, 0.05, ("#ffffff", 22))
+
+
+DRAW = {"canopy": style_canopy, "colour": style_colour, "graphite": style_graphite}
+
+
+def key_image(style: str, action: str, glyph: str, colour: str, size: int):
+    return DRAW[style](glyph, colour != DIM, colour == PINK, GROUP[action], size)
+
+
+def svg_icon(glyph: str) -> str:
+    """Thin white lines on black: render_icon turns black see-through (cut-outs show the list behind, as Elgato asks)."""
+    body = GLYPHS[glyph].replace('stroke-width="7"', 'stroke-width="4.2"').format(c=WHITE, bg="#000000")
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#000000"/>'
+            f'<g transform="translate(4 4) scale(0.92)">{body}</g></svg>')
+
+
+def render(svg: str, size: int, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(str(path))
+    raster(svg, size).save(str(path))
 
 
 def render_icon(svg: str, size: int, path: Path) -> None:
-    """A white glyph on transparent: brightness becomes alpha."""
-    render(svg, size, path)
-    image = QImage(str(path)).convertToFormat(QImage.Format.Format_ARGB32)
-    for y in range(image.height()):
-        for x in range(image.width()):
-            level = image.pixelColor(x, y).red()
-            image.setPixelColor(x, y, QColor(255, 255, 255, level))
-    image.save(str(path))
+    """A white glyph on transparent, a touch soft like the other list icons: brightness becomes alpha."""
+    image = to_pil(raster(svg, size * 2)).resize((size, size), resample=3)  # drawn big, shrunk smooth
+    alpha = np.asarray(image.convert("L")).astype(float) * 0.86
+    path.parent.mkdir(parents=True, exist_ok=True)
+    layer((255, 255, 255), alpha, size).save(str(path))
 
 
 def both(svg: str, size: int, base: Path, draw=render) -> None:
@@ -152,12 +252,22 @@ def both(svg: str, size: int, base: Path, draw=render) -> None:
     draw(svg, size * 2, base.with_name(base.name + "@2x.png"))
 
 
+def key_folder(style: str, action: str) -> Path:
+    """The first style lives with the manifest's images; the others under imgs/styles/<style>."""
+    return IMGS / "actions" / action if style == STYLES[0] else IMGS / "styles" / style / action
+
+
 def main() -> None:
     QGuiApplication(sys.argv)
     for action, states in KEYS.items():
         for n, state in enumerate(states):
-            if state is not None:
-                both(svg_key(state[0], state[1], n == 1), 72, IMGS / "actions" / action / f"key{n}")
+            if state is None:
+                continue
+            for style in STYLES:
+                folder = key_folder(style, action)
+                folder.mkdir(parents=True, exist_ok=True)
+                for size, name in ((72, f"key{n}.png"), (144, f"key{n}@2x.png")):
+                    key_image(style, action, state[0], state[1], size).save(str(folder / name))
         both(svg_icon(states[0][0]), 20, IMGS / "actions" / action / "icon", render_icon)
     tile = (BRAND / "sprigcast-app-icon.svg").read_text(encoding="utf-8")
     both(tile, 256, IMGS / "plugin" / "marketplace")

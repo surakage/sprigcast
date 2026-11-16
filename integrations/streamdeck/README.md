@@ -44,6 +44,9 @@ While its API runs (on by default: Settings → Connections), SprigCast keeps it
 reads obs-websocket's settings. If OBS holds port 4455, SprigCast takes the next free port and the file says so.
 The plugin looks for the file every 2 seconds, so keys come alive as soon as SprigCast opens.
 
+**Key style** in any key's settings switches every key's look: Canopy (dark green with a mint glow), Colour (each kind of key
+its own colour) or Graphite (dark and plain, mint when on).
+
 To connect to a SprigCast elsewhere, type a port and password under **Connection** in any key's settings (every
 key shares them); they win over the file. The line there says whether SprigCast is found.
 
