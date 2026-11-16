@@ -224,3 +224,40 @@ def test_session_drops_and_adds_one_place_while_live(monkeypatch):
     assert session.find("late") is late and ("horizontal", late.push_frame) in engine.frame_taps
     session.stop()
     assert engine.frame_taps == [] and engine.mixer.taps == []
+
+
+def test_ending_a_stream_from_the_window_doesnt_wait_for_the_encoders():
+    """Joining the encoders on the window's thread froze it 637 ms on the PC (2026-11-16)."""
+    import threading
+    import time
+
+    from sprigcast.output.stream import StreamSession
+
+    release = threading.Event()
+
+    class Slow:
+        def push_frame(self, frame):
+            pass
+
+        def push_audio(self, block):
+            pass
+
+        def stop(self, timeout=5):
+            release.wait(5)
+
+    class Mixer:
+        def remove_tap(self, fn):
+            pass
+
+    class Engine:
+        mixer = Mixer()
+
+        def remove_frame_tap(self, canvas_id, fn):
+            pass
+
+    session = StreamSession(Engine(), [("h", Slow())])
+    began = time.perf_counter()
+    session.stop(wait=False)
+    assert time.perf_counter() - began < 1.0 and not session.finished(0.05)
+    release.set()
+    assert session.finished(5)

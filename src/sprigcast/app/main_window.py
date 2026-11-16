@@ -5875,7 +5875,7 @@ class MainWindow(QMainWindow):
             return
         plugin_hooks.output_changed("stream", None)
         self._say("Ending stream…")
-        session.stop()
+        session.stop(wait=False)  # the encoders and connections finish on their own thread
         delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)
         if delayed > 0:
             self.statusBar().showMessage(f"Stream delay: the last {delayed:g} s still go out to viewers.",

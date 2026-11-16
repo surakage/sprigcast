@@ -67,3 +67,17 @@ def warm_encoders(recording=None, stream=None) -> None:
                  picked, ", ".join(chosen) or picked)
     except Exception as exc:  # noqa: BLE001 (checked again when used)
         log.info("warm-up: encoder check failed: %s", exc)
+
+
+def warm_keyring() -> None:
+    """Load the saved-password store (keyring and its Windows backend) in the background: the first stream
+    key read loaded it on the window's thread, which froze 2.9 s on the PC (2026-11-16). Reads nothing."""
+    try:
+        began = time.perf_counter()
+        import keyring
+
+        backend = keyring.get_keyring()
+        log.info("warm-up: password store ready in %.0f ms (%s)", 1000 * (time.perf_counter() - began),
+                 type(backend).__name__)
+    except Exception as exc:  # noqa: BLE001 (no store here: reading a key says so when it happens)
+        log.info("warm-up: password store unavailable: %s", exc)

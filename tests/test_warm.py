@@ -58,3 +58,14 @@ def test_encoders_are_checked_in_the_background_before_recording(monkeypatch):
     assert calls == ["pick", ("resolve", False)]  # no HEVC check when nothing uses it
     monkeypatch.setattr(recorder, "pick_codec", lambda: 1 / 0)
     warm.warm_encoders(None, None)  # never raises
+
+
+def test_the_password_store_is_loaded_without_reading_anything(monkeypatch):
+    import keyring
+
+    asked = []
+    monkeypatch.setattr(keyring, "get_password", lambda *a: asked.append(a))
+    warm.warm_keyring()
+    assert asked == []
+    monkeypatch.setattr(keyring, "get_keyring", lambda: 1 / 0)
+    warm.warm_keyring()  # never raises
