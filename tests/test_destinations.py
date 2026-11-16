@@ -742,3 +742,15 @@ def test_bloom_pills_show_their_key_and_numbers_switch(app):
     panel._number(5)  # nothing there
     assert picked == ["h2"]
     panel.close()
+
+
+def test_encoder_room_from_the_measured_load():
+    from sprigcast.app.destinations import encoder_room, room_line
+
+    assert encoder_room(None, 2) is None
+    assert encoder_room(30.0, 0) is None
+    assert encoder_room(30.0, 2) == 3  # 15% each, up to 85%
+    assert encoder_room(80.0, 2) == 0
+    assert encoder_room(1.0, 1) == 16  # a near-zero reading counts as 5% each
+    assert room_line(30.0, 2) == (True, "Encoder 30% busy · room for about 3 more")
+    assert room_line(84.0, 4) == (False, "Encoder 84% busy · no room for more")

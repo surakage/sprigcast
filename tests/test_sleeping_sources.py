@@ -198,3 +198,27 @@ def test_a_switch_waits_for_a_closed_camera_to_open(monkeypatch):
     cam.video_frame = lambda: np.zeros((8, 8, 4), dtype=np.uint8)
     engine._tick(fake, 40.1)
     assert fake.rendered[-1] == "b"  # its first picture is in: switch
+
+
+def test_a_slow_source_is_drawn_less_often(monkeypatch):
+    """A plugin that takes ~20 ms a frame is asked every 4th tick, so the canvas stays on time."""
+    from sprigcast.render import engine as module
+
+    engine, col = _engine()
+    fake = FakeCompositor()
+    calls = []
+    clock = [0.0]
+    slow = engine._sources["game"]
+
+    def frame():
+        calls.append(1)
+        clock[0] += 0.02  # 20 ms of painting
+        return np.zeros((8, 8, 4), dtype=np.uint8)
+    slow.video_frame = frame
+    real = module.time.perf_counter
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0] + real() * 0)
+    for i in range(200):
+        engine._tick(fake, 1.0 + i / 60)
+    assert engine._source_every["game"] == 4
+    assert 50 <= len(calls) <= 80  # about a quarter of 200 once the average settled
+    assert engine._source_every.get("cam", 1) == 1  # quick sources every tick

@@ -109,7 +109,12 @@ def test_chromium_draws_the_page_see_through(tmp_path):
         assert frame[80, 150, 3] == 0  # the page's background is see-through
         host.pause("b", True)
         app.processEvents()
-        assert host.pages["b"].paused
+        page_b = host.pages["b"]
+        assert page_b.paused and not page_b.page.isVisible()  # hidden like a background tab: Chromium throttles it
+        assert page_b.timer.interval() == 1000
+        host.pause("b", False)
+        app.processEvents()
+        assert page_b.page.isVisible() and page_b.timer.interval() == round(1000 / 30)
         host.close("b")
         app.processEvents()
         assert "b" not in host.pages

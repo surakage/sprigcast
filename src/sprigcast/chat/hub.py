@@ -15,8 +15,11 @@ from PySide6.QtCore import QObject, Signal
 
 from sprigcast.chat import PLATFORMS, ChatMessage, make_reader
 from sprigcast.chat.feed import FEED
+from sprigcast.core.quiet import Every
 
 log = logging.getLogger(__name__)
+
+_CHAT_LOG = Every(1800)
 
 
 class ChatHub(QObject):
@@ -91,6 +94,11 @@ class ChatHub(QObject):
         if platform not in self.readers:
             return
         if self.states.get(platform) != state:
-            log.info("chat %s %s: %s", platform, self.readers[platform].channel, state)  # in the logbook
+            # Waiting for a channel to go live cycles "connecting" / "not live yet" all day (TikTok: 519 lines
+            # on 2026-11-15): those are written every 30 minutes; going live, offline or an error every time.
+            routine = state == "connecting" or state.startswith("waiting")
+            if not routine or _CHAT_LOG.allow((platform, state)):
+                log.info("chat %s %s: %s%s", platform, self.readers[platform].channel, state,
+                         _CHAT_LOG.skipped((platform, state)) if routine else "")  # in the logbook
         self.states[platform] = state
         self.changed.emit()

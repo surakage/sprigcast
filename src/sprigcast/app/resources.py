@@ -58,7 +58,10 @@ class ResourceMeter:
             ram = self._ram_bytes() / 1e6
         except (psutil.Error, OSError):
             return {}
-        return {"cpu": cpu, "ram_mb": ram, "gpu": self.gpu_pct, "at": time.monotonic()}
+        from sprigcast.app.gpu_usage import windows_encoder_load
+
+        return {"cpu": cpu, "ram_mb": ram, "gpu": self.gpu_pct, "encoder": windows_encoder_load(),
+                "at": time.monotonic()}
 
 
 def _private_working_set(process) -> int:

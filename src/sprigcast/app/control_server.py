@@ -26,11 +26,14 @@ from sprigcast.control import web
 from sprigcast.control.api import ControlApi
 from sprigcast.control.native import NativeApi, NativeSession
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
+from sprigcast.core.quiet import Every
 
 if TYPE_CHECKING:
     from sprigcast.app.main_window import MainWindow
 
 log = logging.getLogger(__name__)
+
+_CONNECT_LOG = Every(600)
 
 ENABLED = "control/enabled"
 PORT = "control/port"
@@ -391,8 +394,9 @@ class ControlServer(QObject):
                 QWebSocketProtocol.CloseCode(4002), "Only JSON text messages are understood."))
             socket.disconnected.connect(lambda s=socket: self._gone(s))
             socket.sendTextMessage(session.hello())
-            log.info("control: %s app connected from %s", "a SprigCast API" if native else "an OBS-style",
-                     socket.peerAddress().toString())
+            if _CONNECT_LOG.allow("connect"):  # Streamer.bot and friends reconnect often: 129 lines in a day
+                log.info("control: %s app connected from %s%s", "a SprigCast API" if native else "an OBS-style",
+                         socket.peerAddress().toString(), _CONNECT_LOG.skipped("connect"))
             if first:  # start comparing from now
                 (self.native if native else self.api).changes()
             self.watch.start()
@@ -400,7 +404,8 @@ class ControlServer(QObject):
 
     def _gone(self, socket: QWebSocket) -> None:
         if self.sessions.pop(socket, None) is not None:
-            log.info("control: an app disconnected")
+            if _CONNECT_LOG.allow("gone"):
+                log.info("control: an app disconnected%s", _CONNECT_LOG.skipped("gone"))
         try:
             socket.deleteLater()
             if not self.sessions:
