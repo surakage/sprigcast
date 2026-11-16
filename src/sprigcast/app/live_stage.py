@@ -126,13 +126,15 @@ def _dot_icon(colour: str, size: int = 10) -> QIcon:
     return QIcon(pix)
 
 
+BAR_HEIGHT = 32  # radius 16: round ends
 BAR_BUTTON_STYLE = (
+    # The height lives here: the app's QPushButton min-height would otherwise win over setFixedHeight,
+    # squash the pills to 18 px and turn their round ends square.
     f"QPushButton {{ background: transparent; color: {theme.TEXT}; border: none; border-radius: 16px;"
-    f" padding: 0 14px; font-weight: 600; }}"
+    f" padding: 0 14px; font-weight: 600; min-height: {BAR_HEIGHT}px; max-height: {BAR_HEIGHT}px; }}"
     f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
     f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
 )
-BAR_HEIGHT = 32  # radius 16: round ends
 
 
 class BarGroup(QFrame):
@@ -155,7 +157,7 @@ class BarGroup(QFrame):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFixedHeight(BAR_HEIGHT)
         if not text:
-            button.setFixedWidth(BAR_HEIGHT + 4)
+            button.setFixedWidth(BAR_HEIGHT)  # a round icon button at the end of the pill
             button.setStyleSheet(BAR_BUTTON_STYLE + "QPushButton { padding: 0; }")
         button.setToolTip(tip)
         button.setCheckable(True)  # the camera and clips show on/off; the view buttons pick one
@@ -163,6 +165,37 @@ class BarGroup(QFrame):
             button.setCheckable(text in ("Clip", "Virtual Cam"))
         self.row.addWidget(button)
         return button
+
+
+class Elided(QLabel):
+    """A one-line label that ends in "…" when it hasn't room (the whole text is in its tooltip)."""
+
+    def __init__(self, text: str = ""):
+        super().__init__()
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(30)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full = text
+        self.setToolTip(text)
+        self._fit()
+
+    def text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self) -> None:
+        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(10, self.width()))
+        super().setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
 
 
 class GardenCheck(QPushButton):
@@ -201,6 +234,16 @@ class GardenCheck(QPushButton):
         self.bars.colour = {"warning": theme.WARN, "bad": theme.BAD}.get(level, theme.ACCENT)
         self.bars.update()
         self.setMinimumWidth(self.layout().sizeHint().width())  # the header never squeezes the numbers
+        self.updateGeometry()
+        tip = self.toolTip().split("\n")[0]
+        self.setToolTip(tip if self.numbers.isVisible() else f"{tip}\n{text}")
+
+    def set_compact(self, step: int) -> None:
+        """-1 or 0: everything; 1: no numbers (they're in the tooltip); 2: just the leaf and the bars."""
+        self.numbers.setVisible(step < 1)
+        self.title.setVisible(step < 2)
+        self.setMinimumWidth(0)
+        self.setMinimumWidth(self.layout().sizeHint().width())
         self.updateGeometry()
 
     def sizeHint(self) -> QSize:  # noqa: N802
@@ -344,12 +387,16 @@ class FitScroll(QScrollArea):
             height = min(height, self.cap)
         self.setMaximumHeight(max(1, height))  # never taller than the content
         self.updateGeometry()
+        self._bar()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
+    def _bar(self) -> None:
         # The bar only when the rows really don't fit, so it never sits over them for a moment.
         fits = self.height() >= self.widget().sizeHint().height()
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits
                                         else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self._bar()
         super().resizeEvent(event)
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
@@ -507,8 +554,8 @@ class LiveSide(QWidget):
                                on_mic_first)
         # A long sound list (Edit shows all of them) scrolls inside its card instead of pushing the
         # panels below (Chat, Transitions) off the bottom of the window.
-        sound_card.layout().addWidget(FitScroll(self.sound))
-        sound_card.layout().addStretch(1)  # a short list sits at the top, its title level with Blooms and Transitions
+        # A short list sits at the top, its title level with Blooms and Transitions; a long one fills the card.
+        sound_card.layout().addWidget(FitScroll(self.sound), 1, Qt.AlignmentFlag.AlignTop)
         self.sound_card = sound_card  # LiveStage shows it under the canvas, beside Blooms and Transitions
 
         # Panels you choose for Live (chat, activity feed...) go in panel_slot, above (app/panels.py).
@@ -662,7 +709,10 @@ class LiveSide(QWidget):
         tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tile.setStyleSheet(f"background: {fill}; color: {ink}; border-radius: 10px; font-weight: 800;"
                            f" border: 1px solid {theme.EDGE_STRONG if fill == theme.CHROME else fill};")
-        name, note = QLabel(), QLabel()
+        name, note = Elided(), QLabel()
+        for label in (name, note):  # a long name or note is cut at the card's edge, never the switch
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            label.setMinimumWidth(40)
         note.setTextFormat(Qt.TextFormat.RichText)
         note.setStyleSheet(f"color: {theme.MUTED}; background: transparent; font-size: 12px;")
         for label in (tile, name, note):
@@ -810,8 +860,11 @@ class LiveStage(QWidget):
         row.setSpacing(GAP)
         self.blooms_card, self.transitions_card = side_card(), side_card()
         self.shares = {self.blooms_card: 5, side.sound_card: 7, self.transitions_card: 3}
+        # Each card keeps enough room for its own controls; past that they share by these weights.
+        self.least = {self.blooms_card: 240, side.sound_card: 250, self.transitions_card: 250}
         for card, share in self.shares.items():
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            card.setMinimumWidth(self.least[card])
             row.addWidget(card, share)
         side.where_card.setFixedWidth(SIDE_WIDTH)
         row.addWidget(side.where_card)
@@ -823,7 +876,8 @@ class LiveStage(QWidget):
 
     def set_blooms_wide(self, wide: bool) -> None:
         """Two bloom columns (both canvases) need more room than one; Sound takes what's left."""
-        self.bottom_row.setStretch(0, 5 if wide else 3)
+        self.bottom_row.setStretch(0, 7 if wide else 3)
+        self.blooms_card.setMinimumWidth(310 if wide else 200)  # two lists side by side need a little more
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

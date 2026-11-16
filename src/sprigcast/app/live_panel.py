@@ -23,6 +23,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QSizePolicy,
     QLabel,
     QLayout,
     QMenu,
@@ -147,8 +148,8 @@ class BloomTile(QPushButton):
         self.update()
 
     def _key_width(self) -> int:
-        if not self.key:
-            return 0
+        if not self.key or 0 < self.width() < 150:
+            return 0  # a narrow tile gives its name the room: the key still works, and its tooltip says it
         small = QFont(self.font())
         small.setPixelSize(11)
         return QFontMetrics(small).horizontalAdvance(self.key) + 14 + 6
@@ -422,6 +423,9 @@ class LivePanel(QWidget):
         """The blooms as a list, one full-width row each. The column's heading names the canvas, so a
         "(vertical)" on the end of a name and the ⇄ link mark are left off (the tooltip says it's linked)."""
         for button in self._tiles(scenes, colour, plain=True):
+            # Shrink with the card (the name ends in "…"; the whole name is in the tooltip).
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setMinimumWidth(90)
             column.addWidget(button)
 
     def _add_grid(self, scenes, colour: str | None = None) -> None:

@@ -269,10 +269,13 @@ class GardenCheckPage(QWidget):
         colour = LEVEL_COLOURS.get(level, theme.MUTED)
         dot = QLabel("●")
         dot.setStyleSheet(f"color: {colour}; background: transparent; font-size: 10px;")
-        title = QLabel(name)
+        from sprigcast.app.live_stage import Elided
+
+        title = Elided(name)
         title.setFixedWidth(110)
         title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
         info = QLabel(detail)
+        info.setWordWrap(True)  # a long line (reconnects, auto-pilot) wraps instead of pushing the word off
         info.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         state = QLabel(word)
         state.setStyleSheet(f"color: {colour}; font-weight: 600; background: transparent;")
