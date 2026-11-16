@@ -24,6 +24,8 @@ streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
 	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
 });
 
+const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
 /** Lists for the property inspector's pickers (sdpi-select datasource). */
 async function listFor(event, payload = {}) {
 	const lists = {
@@ -42,7 +44,8 @@ async function listFor(event, payload = {}) {
 	if (!fill) return null;
 	try {
 		const names = [...new Set(await fill())].sort((a, b) => String(a).localeCompare(String(b)));
-		return names.map((name) => ({ label: String(name), value: String(name) }));
+		const label = event === "getTransitions" ? capitalize : String; // transition kinds are lowercase ids
+		return names.map((name) => ({ label: label(String(name)), value: String(name) }));
 	} catch {
 		return [{ label: "Open SprigCast first", value: "", disabled: true }];
 	}
