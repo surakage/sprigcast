@@ -108,3 +108,30 @@ def test_uploads_and_nv12_read_backs_match_without_direct_calls(compositor, monk
         compositor.gl = gl
         compositor.nv12_targets.clear()
     assert results[:3] == results[3:]
+
+
+def test_a_card_stuck_past_the_limit_is_left_alone_for_the_tick():
+    """The card still on the tick before last after WAIT_LIMIT_S: behind is set, the fence is kept for the next
+    look, and the render loop draws nothing new this tick instead of blocking in OpenGL for the rest."""
+    from sprigcast.render import gpu_wait
+
+    done = {"ready": False}
+    made, deleted = [], []
+    fence_t = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint)
+    wait_t = ctypes.CFUNCTYPE(ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint64)
+    delete_t = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    fence = fence_t(lambda kind, flags: made.append(len(made) + 1) or len(made))
+    client_wait = wait_t(lambda sync, flags, ns: 0x911C if done["ready"] else gpu_wait.GL_TIMEOUT_EXPIRED)
+    delete = delete_t(lambda sync: deleted.append(sync))
+    keep = (fence, client_wait, delete)
+    addresses = {b"glFenceSync": fence, b"glClientWaitSync": client_wait, b"glDeleteSync": delete}
+    gpu = GpuWait(lookups=[lambda name: ctypes.cast(addresses[name], ctypes.c_void_p).value])
+    assert gpu.ok
+    gpu.mark()
+    gpu.mark()
+    gpu.wait(limit_s=0.001)
+    assert gpu.behind and deleted == [] and len(gpu._syncs) == 2  # kept: looked at again next tick
+    done["ready"] = True
+    gpu.wait(limit_s=0.001)
+    assert not gpu.behind and deleted == [1] and len(gpu._syncs) == 1
+    del keep

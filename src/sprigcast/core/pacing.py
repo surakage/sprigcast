@@ -201,7 +201,42 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
                 logged = now
                 log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
             _check_window(now)
+            _check_busy(now)
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
+
+
+# A step that should be quick (a render tick) can be held up without Python's lock held, inside the graphics
+# driver: then nothing else stops and "everything waited" never shows. The step says when it starts and ends;
+# if it runs past BUSY_STALL_S the stall watch notes where its thread is, and the step's own log line says so.
+BUSY_STALL_S = 0.15
+_busy: dict[str, list] = {}  # name -> [thread ident, started (perf_counter), where or None]
+
+
+def busy_begin(name: str) -> None:
+    import threading
+
+    _busy[name] = [threading.get_ident(), time.perf_counter(), None]
+
+
+def busy_end(name: str) -> str | None:
+    """Where the step's thread was when it ran long, or None."""
+    entry = _busy.pop(name, None)
+    return entry[2] if entry is not None else None
+
+
+def _check_busy(now: float) -> None:
+    for entry in list(_busy.values()):
+        if entry[2] is not None or now - entry[1] < BUSY_STALL_S:
+            continue
+        frame = sys._current_frames().get(entry[0])
+        if frame is None:
+            continue
+        import os
+        import traceback
+
+        stack = traceback.extract_stack(frame)[::-1][:4]
+        del frame
+        entry[2] = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack) or "?"
 
 
 # The window's own thread: a timer on it beats every UI_BEAT_MS; when the beat stops for UI_STALL_MS the stall

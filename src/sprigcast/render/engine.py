@@ -37,6 +37,7 @@ SLEEP_AFTER = 5.0  # seconds a source stays ready after the last scene showing i
 # them lets the camera's own app (Elgato Camera Hub: 11% CPU, 22% GPU on the user's PC) go idle too.
 CAMERA_SLEEP_AFTER = 30.0
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
+GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
@@ -287,15 +288,39 @@ class Engine:
         late_logged, late_held = float("-inf"), 0
         gpu = self._gpu_wait(compositor)
         gpu_waited = 0.0
+        skipped_gpu, gpu_logged = 0, float("-inf")
+        skipped_run, behind_since = False, float("inf")
         try:
             while True:
                 woke = time.perf_counter()
                 # The card finishes the last tick before any OpenGL call of this one: if it fell behind, this
                 # waits without Python's lock, instead of an OpenGL call waiting with it (render/gpu_wait.py).
                 gpu_waited = gpu.wait() if gpu is not None else 0.0
+                if gpu is not None and gpu.behind and woke - behind_since < GPU_SKIP_MAX_S:
+                    # The card hasn't finished the tick before last: draw nothing new this tick (the window,
+                    # sound and encoders carry on; outputs keep their last picture) and look again next tick.
+                    if not skipped_run:
+                        behind_since = woke
+                    skipped_run = True
+                    skipped_gpu += 1
+                    dropped += 1
+                    next_tick += interval
+                    now = time.perf_counter()
+                    if now < next_tick:
+                        time.sleep(next_tick - now)
+                    else:
+                        next_tick = now
+                    if skipped_gpu == 1 or now - gpu_logged >= LATE_LOG_EVERY_S:
+                        gpu_logged = now
+                        log.info("graphics card busy: waiting for it without drawing (%d ticks so far)",
+                                 skipped_gpu)
+                    continue
+                if not (gpu is not None and gpu.behind):
+                    skipped_run, behind_since = False, float("inf")
                 if not self._drain_commands(compositor):
                     break
                 started = time.perf_counter()
+                pacing.busy_begin("render")  # a tick that runs long: the stall watch notes where it was
                 try:
                     self._tick(compositor, started)
                 except Exception as exc:  # one bad frame must not end rendering for the whole session
@@ -306,6 +331,7 @@ class Engine:
                         self.events.put(EngineError(f"A frame failed to render: {problem}"))
                 if gpu is not None:
                     gpu.mark()
+                held_at = pacing.busy_end("render")
                 render_times.append(time.perf_counter() - started)
                 ticks += 1
 
@@ -323,12 +349,13 @@ class Engine:
                         # (878 lines on 2026-11-15), with how many were let go since.
                         if now - late_logged >= LATE_LOG_EVERY_S:
                             late_logged = now
-                            log.info("late frame (%d missed): woke %.1f ms late, %scommands %.1f ms, frame %.1f ms%s%s%s",
+                            log.info("late frame (%d missed): woke %.1f ms late, %scommands %.1f ms, frame %.1f ms%s%s%s%s",
                                      missed, 1000 * max(0.0, woke - (next_tick - interval)),
                                      f"graphics card behind {1000 * gpu_waited:.1f} ms, " if gpu_waited >= 0.001
                                      else "",
                                      1000 * (started - woke - gpu_waited), 1000 * (render_times[-1]), self._where(),
                                      pacing.pause_since(next_tick - 2 * interval),
+                                     f"; held up at {held_at}" if held_at else "",
                                      f"; {late_held - 1} more late since the last line" if late_held > 1 else "")
                             late_held = 0
                         next_tick += missed * interval
@@ -1084,7 +1111,9 @@ class Engine:
             self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
+            self._mark("canvases")  # the late-frame line splits the canvases into these steps
             compositor.render(canvas, held or self._collection.active_scene(canvas.id), sizes, **extra)
+            self._mark(f"{canvas.id} drawn")
             frames: dict = {}  # nv12 size (None = RGBA) -> Frame, so outputs of one size share one readback
             if preview:
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height))
@@ -1094,14 +1123,17 @@ class Engine:
                     shown = self._preview_frame(compositor, canvas.id, (canvas.width, canvas.height), now)
                 if shown is not None:
                     self.frames[canvas.id].put(shown)
+                self._mark(f"{canvas.id} preview copy")
             for callback, nv12_size in outputs:
                 frame = self._frame(compositor, canvas, nv12_size, now, frames)
+                self._mark(f"{canvas.id} read back")
                 if frame is None:
                     continue  # the first tick of a wait-free copy: its frame arrives next tick
                 try:
                     callback(frame)
                 except Exception:
                     log.exception("frame tap for %s failed", canvas.id)
+                self._mark(f"{canvas.id} {getattr(callback, '__qualname__', 'output')}")
         self._mark("canvases")
         self._render_views(compositor, sizes, now, taps)
         self._mark("virtual camera")
