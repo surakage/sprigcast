@@ -197,12 +197,11 @@ def test_video_page_base_and_output_size(app):
     assert col.canvases[0].output_size() == (1280, 720)
 
 
-def test_advanced_page_names_remux_and_priority(app):
+def test_advanced_page_names_and_priority(app):
     from datetime import datetime
 
     from PySide6.QtCore import QSettings
 
-    from sprigcast.app.settings_window import remux_choice
     from sprigcast.output import naming
 
     w = _window(_collection(), tab="Advanced")
@@ -210,17 +209,35 @@ def test_advanced_page_names_remux_and_priority(app):
     w.filename.setText("{date} live")
     assert w.filename_example.text().startswith("2026-11-14 live horizontal 19-30-05.mkv")
     w.replay_prefix.setText("Clip")
-    assert not w.remux_delete.isEnabled()
-    w.remux.setChecked(True)
-    w.remux_delete.setChecked(True)
     try:
         assert w.apply()
-        assert remux_choice() == (True, True)
         assert naming.recording_name("vertical", datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02 live vertical 03-04-05"
         assert naming.replay_name("vertical", datetime(2026, 1, 2, 3, 4, 5)).startswith("Clip 2026-01-02")
     finally:
         naming.set_patterns()
-        for key in ("advanced/filename", "advanced/replay_prefix", "advanced/remux_mp4", "advanced/remux_delete_mkv"):
+        for key in ("advanced/filename", "advanced/replay_prefix"):
+            QSettings().remove(key)
+
+
+def test_repot_lives_with_the_recording_file_type(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app.recording_dialog import REPOT, REPOT_DELETE, repot_choice
+
+    w = _window(_collection(), tab="Recording")
+    page = w.recording_page
+    page.container.setCurrentIndex(page.container.findData("mkv"))
+    assert page.repot.isEnabled() and not page.repot_delete.isEnabled()
+    page.repot.setChecked(True)
+    page.repot_delete.setChecked(True)
+    page.container.setCurrentIndex(page.container.findData("mp4"))
+    assert not page.repot.isEnabled()  # an MP4 recording needs no repotting
+    page.container.setCurrentIndex(page.container.findData("mkv"))
+    try:
+        assert w.apply()
+        assert repot_choice() == (True, True)
+    finally:
+        for key in (REPOT, REPOT_DELETE):
             QSettings().remove(key)
 
 

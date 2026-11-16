@@ -624,6 +624,36 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         QSettings().clear()
 
 
+def test_file_menu_repots_a_recording_as_mp4(app, tmp_path, monkeypatch):
+    import av
+    import keyring
+    import numpy as np
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    from sprigcast.app.main_window import MainWindow
+
+    src = tmp_path / "rec.mkv"
+    with av.open(str(src), "w") as out:
+        stream = out.add_stream("libx264", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 64, 36, "yuv420p"
+        for i in range(5):
+            for packet in stream.encode(av.VideoFrame.from_ndarray(np.zeros((36, 64, 3), np.uint8), format="rgb24")):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    w = MainWindow(_collection(), tmp_path / "scenes.json")
+    try:
+        file_menu = w.menuBar().actions()[0].menu()
+        assert "Repot as MP4…" in [a.text() for a in file_menu.actions()]
+        w.repot([src]).join(30)
+        for _ in range(20):
+            app.processEvents()
+        assert (tmp_path / "rec.mp4").exists() and src.exists()  # the MKV stays unless asked
+        assert w.statusBar().currentMessage() == "Repotted rec.mp4"
+    finally:
+        w.close()
+
+
 def test_clip_saves_the_shapes_chosen_in_settings(app, tmp_path, monkeypatch):
     import keyring
 

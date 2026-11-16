@@ -61,7 +61,8 @@ def replay_name(canvas_id: str, when: datetime) -> str:
 
 
 def remux_to_mp4(path: Path, delete_original: bool = False) -> Path | None:
-    """Copy an MKV's streams into an MP4 next to it, without re-encoding. Returns the MP4, or None."""
+    """Repot: copy a recording's video and sound into an MP4 next to it, without re-encoding (a remux).
+    Works for MKV, FLV, MOV and TS. Returns the MP4, or None (the original is left as it is)."""
     import av
 
     target = unique(path.parent, path.stem, "mp4")
@@ -87,9 +88,9 @@ def remux_to_mp4(path: Path, delete_original: bool = False) -> Path | None:
 
 
 def remux_later(paths: list[Path], delete_original: bool = False, done=None) -> threading.Thread:
-    """Remux finished MKVs on a background thread; `done(list_of_mp4s)` runs on that thread."""
+    """Repot finished recordings on a background thread; `done(list_of_mp4s)` runs on that thread."""
     def work():
-        made = [m for p in paths if p.suffix.lower() == ".mkv" and (m := remux_to_mp4(p, delete_original))]
+        made = [m for p in paths if p.suffix.lower() != ".mp4" and (m := remux_to_mp4(p, delete_original))]
         if done:
             done(made)
     thread = threading.Thread(target=work, name="remux", daemon=True)
