@@ -380,9 +380,46 @@ class TransitionPicture(QWidget):
 
 COMBO_STYLE = (  # Live's type drop-down: a soft pill, the name on the left and a drawn chevron on the right
     f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT_BRIGHT}; border: none; border-radius: 19px;"
-    f" padding: 0 44px 0 18px; font-weight: 600; text-align: left; min-height: 38px; }}"
+    f" padding: 0; min-height: 38px; max-height: 38px; }}"
     f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
     "QPushButton::menu-indicator { width: 0; image: none; }"
+)
+
+
+class KindPick(QPushButton):
+    """Live's type drop-down. The name is its own label, padded off the round end: a menu button's
+    stylesheet padding isn't honoured on every style, which left the name in the corner."""
+
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet(COMBO_STYLE)
+        self.name = QLabel(self)
+        self.name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.name.setStyleSheet(f"background: transparent; color: {theme.TEXT_BRIGHT}; font-weight: 600;")
+        from sprigcast.app import icons
+
+        chevron = QLabel(self)
+        chevron.setPixmap(icons.pixmap("chevron-down", theme.MUTED, 16))
+        chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        chevron.setStyleSheet("background: transparent;")
+        inside = QHBoxLayout(self)
+        inside.setContentsMargins(22, 0, 18, 0)
+        inside.setSpacing(12)
+        inside.addWidget(self.name, 1)
+        inside.addWidget(chevron)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self.name.setText(text)
+
+    def text(self) -> str:
+        return self.name.text()
+
+
+MENU_STYLE = (  # its list: as wide as the drop-down, each name with room around it
+    f"QMenu {{ padding: 8px; }}"
+    f"QMenu::item {{ padding: 9px 22px 9px 14px; border-radius: 10px; }}"
+    f"QMenu::indicator {{ width: 0; height: 0; }}"  # no tick gutter: the one in use is green instead
+    f"QMenu::item:checked {{ color: {theme.SELECT_TEXT}; font-weight: 600; }}"
 )
 
 
@@ -461,21 +498,12 @@ class TransitionsPanel(QWidget):
         self._reflow(4)
         self.kind_pick: QPushButton | None = None
         if compact:
-            self.kind_pick = QPushButton()
-            self.kind_pick.setStyleSheet(COMBO_STYLE)
-            from sprigcast.app import icons
-
-            chevron = QLabel(self.kind_pick)
-            chevron.setPixmap(icons.pixmap("chevron-down", theme.MUTED, 16))
-            chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            chevron.setStyleSheet("background: transparent;")
-            inside = QHBoxLayout(self.kind_pick)
-            inside.setContentsMargins(0, 0, 16, 0)
-            inside.addStretch(1)
-            inside.addWidget(chevron)
+            self.kind_pick = KindPick()
             self.kind_pick.setCursor(Qt.CursorShape.PointingHandCursor)
             self.kind_pick.setToolTip("How blooms change on air")
             menu = QMenu(self.kind_pick)
+            menu.setStyleSheet(MENU_STYLE)
+            menu.aboutToShow.connect(lambda: menu.setMinimumWidth(self.kind_pick.width()))
             picks = {}
             for kind, label, tip in KINDS:
                 action = menu.addAction(label, lambda k=kind: self.set_kind(k))
