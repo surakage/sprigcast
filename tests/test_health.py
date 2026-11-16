@@ -115,14 +115,21 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         w._refresh_garden()
         assert side.garden.numbers.text() == "CPU 4.6%  ·  209 MB  ·  0 dropped" and side.garden.level == "good"
         health.save(QSettings(), health.HealthRecord(started="2026-11-15 20:10", seconds=600))
-        pop = w._open_health()  # Tools → Stream health: the Garden check, on its Stream health tab
-        assert pop.page.records[0].seconds == 600 and pop.tabs["health"].isChecked()
-        assert set(pop.tabs) == {"now", "health"}
+        pop = w._open_health()  # Tools → Stream health: the Garden check, on the last streams
+        assert pop.page.records[0].seconds == 600 and pop.garden.stack.currentWidget() is pop.page
         pop.close()
         side.garden.click()
         pop = w.findChildren(type(pop))[-1]
-        assert pop.tabs["now"].isChecked() and pop.now.label.text()
-        pop.close()
+        garden = pop.garden
+        assert garden.stack.currentIndex() == 0  # now: tiles, stream health and checks
+        assert garden.values["cpu"].text() == "4.6%" and garden.values["ram"].text() == "209 MB"
+        assert garden.values["recording"].text() == "Off" and garden.values["upload"].text() == "Not live"
+        labels = [garden.checks.itemAt(i).widget().text() for i in range(garden.checks.count())]
+        assert any("GPU encoder" in t for t in labels) and any("Disk has room" in t for t in labels)
+        garden.history.click()
+        assert garden.stack.currentWidget() is pop.page
+        garden.done.click()
+        assert not pop.isVisible()
     finally:
         w.close()
 

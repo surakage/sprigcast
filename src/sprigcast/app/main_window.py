@@ -2661,6 +2661,11 @@ class MainWindow(QMainWindow):
                     self._refresh_stats_panel()
                 self._show_render_health(event)
             elif isinstance(event, AudioLevels):
+                heard = self.__dict__.setdefault("_heard_at", {})
+                now = time.monotonic()
+                for source_id, (_peak, rms) in event.levels.items():
+                    if rms > -50:  # above the hiss: something was heard
+                        heard[source_id] = now
                 if self.mode == "live":
                     self.live_side.set_levels(event.levels)
                 else:
@@ -5903,20 +5908,95 @@ class MainWindow(QMainWindow):
         self.live_side.garden.set_numbers("  ·  ".join(parts), level, sample.get("cpu"))
 
     def _open_garden_check(self, tab: str = "now"):
-        """Every number (render, CPU, memory, each output) and the last streams' health, in one pop-up."""
-        from sprigcast.app.health_page import garden_check_popup
+        """How SprigCast and the streams are doing (tiles, stream health, quick checks), and the last streams."""
+        from sprigcast.app.garden_check import garden_check_popup
 
-        def refresh(panel) -> None:
-            outputs = []
-            if self.streaming is not None:
-                outputs += [(f"Stream: {st.name}", st) for _, st in self.streaming.streamers]
-            if self.recording is not None:
-                outputs += [(f"Recording: {canvas_id}", rec) for canvas_id, rec in self.recording.recorders]
-            panel.refresh(self._last_stats, outputs, self._recordings_folder())
-
-        pop = garden_check_popup(self._health_records(), refresh, self, self._open_logs, tab)
+        pop = garden_check_popup(self._garden_snapshot, self._health_records(), self, self._open_logs,
+                                 "health" if tab == "health" else "now")
         pop.open()
         return pop
+
+    def _garden_snapshot(self):
+        """Today's numbers for the Garden check: the meter, the render loop, each place and quick checks."""
+        import re
+        import shutil
+
+        from sprigcast.app.destinations import live_line, problem
+        from sprigcast.app.garden_check import GardenSnapshot
+        from sprigcast.output.keys import probably_has_key
+
+        sample = getattr(self, "last_resources", None) or {}
+        snap = GardenSnapshot(cpu=sample.get("cpu"), ram_mb=sample.get("ram_mb"), gpu=sample.get("gpu"),
+                              dropped=self._dropped_now())
+        stats = getattr(self, "_last_stats", None)
+        if stats is not None:
+            snap.render_ms = stats.render_ms
+        folder = self._recordings_folder()
+        try:
+            snap.disk_gb = shutil.disk_usage(folder if folder.exists() else folder.anchor or Path.home()).free / 1e9
+        except OSError:
+            pass
+        if self.streaming is not None:
+            sending = 0
+            for _, st in self.streaming.streamers:
+                level, text = live_line(st)
+                kbps = re.match(r"(\d+) kbps", text)
+                sending += int(kbps.group(1)) if kbps else 0
+                canvas = str(getattr(st, "canvas_id", "") or getattr(st, "canvas", "") or "").capitalize()
+                detail = "  ·  ".join(filter(None, [canvas, text.split(" · ")[0], f"{int(getattr(st, 'dropped', 0))} dropped"]))
+                snap.rows.append((st.name, detail, level, {"good": "Good", "warning": "Slow", "bad": "Trouble"}
+                                  .get(level, "Waiting")))
+            snap.upload_kbps = sending
+        else:
+            for output in [o for o in self.collection.outputs if o.type == "stream"]:
+                service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+                issue = problem(output, self.collection, probably_has_key) if output.enabled else None
+                word, level = ("Off", "idle") if not output.enabled else (issue, "warning") if issue else ("Ready", "good")
+                snap.rows.append((service.label, output.canvas.capitalize(), level, word))
+        if self.recording is not None:
+            seconds = int(self.recording.elapsed)
+            snap.recording = f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
+            codec = codec_short(self.recording.recorders[0][1].codec) if self.recording.recorders else ""
+            dropped = int(self.recording.dropped)
+            snap.rows.append(("Recording", "  ·  ".join(filter(None, [codec, f"{dropped} dropped"])),
+                              "warning" if dropped else "good", "Busy" if dropped else "Good"))
+        snap.checks = self._garden_checks(snap)
+        return snap
+
+    def _garden_checks(self, snap) -> list[tuple[str, bool, str]]:
+        """Quick yes/no checks, only for things this setup has (no camera: no camera check)."""
+        now = time.monotonic()
+        heard = getattr(self, "_heard_at", {})
+        checks = []
+        for kind, label, ok_tip, bad_tip in (
+                ("audio_input", "Mic heard", "Your mic picked up sound in the last half minute",
+                 "No sound from your mic in the last half minute: is it muted or unplugged?"),
+                ("audio_output", "Desktop sound", "Desktop sound is coming through",
+                 "No desktop sound in the last half minute (fine if nothing is playing)")):
+            ids = [s.id for s in self.collection.sources if s.kind == kind]
+            if ids:
+                ok = any(now - heard.get(i, -1e9) < 30 for i in ids)
+                # A quiet mic only matters on air; quiet desktop sound is fine when nothing plays.
+                on_air = kind == "audio_input" and (self.streaming is not None or self.recording is not None)
+                checks.append((label, True if ok else False if on_air else None, ok_tip if ok else bad_tip))
+        cameras = [s.id for s in self.collection.sources if s.kind == "camera"]
+        if cameras:
+            sizes = getattr(self, "source_sizes", {}) or {}
+            ok = any((sizes.get(i) or (0, 0))[0] > 0 for i in cameras)
+            checks.append(("Camera on", ok, "Your camera is sending pictures" if ok else "No picture from your camera"))
+        if self.streaming is not None:
+            backlog = max((float(st.stats().get("backlog_s", 0) or 0) for _, st in self.streaming.streamers
+                           if hasattr(st, "stats")), default=0.0)
+            checks.append(("Upload has room", backlog < 1.0, "Everything is going out on time" if backlog < 1.0
+                           else f"{backlog:.1f} s waiting to upload: your connection is behind"))
+        if snap.disk_gb is not None:
+            ok = snap.disk_gb >= 10
+            checks.append(("Disk has room", ok, f"{snap.disk_gb:.0f} GB free for recordings"))
+        codec = codec_short(pick_codec())
+        gpu = any(name in codec for name in ("NVENC", "AMF", "Quick Sync"))
+        checks.append(("GPU encoder", gpu, f"Recording and streaming use {codec}" if gpu
+                       else "No graphics-card encoder: the CPU does the encoding (slower)"))
+        return checks
 
     def _open_logs(self) -> None:
         from PySide6.QtCore import QUrl
