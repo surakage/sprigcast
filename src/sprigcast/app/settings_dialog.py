@@ -61,6 +61,8 @@ LABELS = {
     "engine": "Captions by",
     "google_key": "Google key",
     "lines": "Lines",
+    "color": "Colour",
+    "peak_color": "Peak colour",
 }
 
 

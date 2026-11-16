@@ -168,6 +168,11 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   graphics card through DirectML, any brand, or the processor when it can't; "Better edges" uses a bigger one for
   hair and fingers. It downloads the first time it's used (0.5 MB, or 16 MB for Better edges), runs only while the
   camera shows and lets go a minute after. A shadow or stroke on the camera follows you, not the frame.
+- Audio visualizer store plugin: bars, a wave, a circle or a line spectrum that move with a sound, in your colours
+  (Night Canopy greens by default), with bar count, smoothing, mirror and sensitivity. It hears what SprigCast
+  already mixes (everything viewers hear, or one mic, desktop, music or app sound), so no device is opened again,
+  draws with NumPy in about a millisecond, at most 30 times a second, and only while it's on air; during silence
+  nothing is drawn. `visualizer.set` changes the look from Streamer.bot.
 - Death count store plugin: a mossy gravestone grows out of the ground, flips to the new count and sinks back. Hotkeys, right-click and `deaths.*` API actions for Streamer.bot; the count survives a restart.
 
 ### Chat

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from sprigcast.audio import listen
 from sprigcast.core.filters import SOUND_LEVELS
 from sprigcast.sources.audio import SAMPLE_RATE
 
@@ -268,6 +269,7 @@ class Mixer:
             sources, taps, monitor_taps = self._sources + self._extras, self._taps, self._monitor_taps
         processed, meters = [], {}
         listened = self.followed
+        heard = listen.LISTENERS  # plugins hearing a sound (the audio visualizer); usually empty
         voice_db = FLOOR_DB
         for source in sources:
             block = source.read_block(BLOCK)
@@ -288,6 +290,8 @@ class Mixer:
             gain = source.gain
             if source.id in listened:  # a Ducking filter follows this sound
                 SOUND_LEVELS[source.id] = float(np.max(np.abs(block))) * gain if gain and len(block) else 0.0
+            if heard and source.id in heard:
+                listen.hand(heard[source.id], block * np.float32(gain) if gain != 1.0 else block)
             voice = is_voice(source)
             if voice and gain:
                 voice_db = max(voice_db, levels(block, gain)[1])
@@ -316,6 +320,8 @@ class Mixer:
                 done[key] = mix(parts)
             mixes[track] = done[key]
         mixed = mixes["stream"]
+        if heard and listen.MIX in heard:
+            listen.hand(heard[listen.MIX], mixed)
         if measure:
             meters["master"] = levels(mixed)
             duck_db = to_db(self.duck_gain)
