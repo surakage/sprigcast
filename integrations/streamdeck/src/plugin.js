@@ -10,18 +10,24 @@ const sprigcast = new SprigCast();
 const visible = new Set(); // action contexts on screen
 const all = [];
 
+let settingsLoaded = false; // connect only once the password is known (else SprigCast refuses the first tries)
+
 function refreshConnection() {
-	sprigcast.want(visible.size > 0);
+	sprigcast.want(settingsLoaded && visible.size > 0);
 }
 
 async function loadGlobalSettings() {
 	const settings = await streamDeck.settings.getGlobalSettings();
 	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
+	settingsLoaded = true;
+	refreshConnection();
 }
 
 streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
 	const settings = ev.settings ?? {};
 	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
+	settingsLoaded = true;
+	refreshConnection();
 });
 
 const TITLED = new Set(["getTransitions"]); // SprigCast's own words (cut, fade...): shown as SprigCast shows them
@@ -101,7 +107,7 @@ class SprigCastAction extends SingletonAction {
 		} catch (error) {
 			streamDeck.logger.warn(`${this.manifestId}: ${error.message}`);
 			await ev.action.showAlert();
-			if (this.okAfterPress) await flash(ev.action, sprigcast.ready ? "Didn't\nwork" : "SprigCast\nclosed");
+			if (this.okAfterPress) await flash(ev.action, sprigcast.ready ? "Didn't\nwork" : "Not\nconnected");
 		}
 	}
 
