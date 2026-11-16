@@ -275,3 +275,54 @@ def test_virtual_camera_tab(app, monkeypatch):
     tab.on.setEnabled(True)
     tab.on.setChecked(True)
     assert w.apply() and camera_wanted()
+
+
+def test_only_the_shown_page_is_made_before_the_window_opens(app, monkeypatch):
+    """Making all nine pages before showing anything held the window 2.4 s on the PC (2026-11-16)."""
+    from sprigcast.app import settings_window
+    from sprigcast.app.settings_window import TABS
+
+    made = []
+    real = settings_window.SettingsWindow.ensure
+    monkeypatch.setattr(settings_window.SettingsWindow, "ensure",
+                        lambda self, name: (name not in self._built and made.append((self, name)), real(self, name))[1])
+    w = _window(_collection(), tab="Audio/Sounds")
+    made[:] = [name for who, name in made if who is w]
+    assert made == ["Audio"] and w.current_tab() == "Audio"
+    ducked = []
+    w.on_ducking = ducked.append  # set after the page was made: still reaches it
+    w.audio_page.ducking_button.click()
+    assert ducked == [w.audio_page]
+    for _ in range(len(TABS) * 3):  # then the rest, one per turn of the event loop
+        app.processEvents()
+    made[:] = [entry if isinstance(entry, str) else entry[1] for entry in made
+               if isinstance(entry, str) or entry[0] is w]
+    assert sorted(made) == sorted(TABS) and w.stack.count() == len(TABS)
+    w.tabs.setCurrentRow(TABS.index("Hotkeys"))
+    assert w.stack.currentIndex() == TABS.index("Hotkeys")
+    assert w.stack.currentWidget().findChild(settings_window.HotkeysPage) is not None
+
+
+def test_apply_and_attributes_make_pages_not_made_yet(app):
+    from sprigcast.app.settings_window import TABS
+
+    w = _window(_collection())
+    assert w._built == {"General"}
+    assert w.stream_page is not None and w._built == {"General", "Stream"}  # only the page asked for
+    assert w.apply() and w._built == set(TABS)
+
+
+def test_the_audio_page_waits_for_its_device_scan_on_a_worker(app):
+    import threading
+    from concurrent.futures import Future
+
+    from sprigcast.app.settings_window import TABS
+
+    scan: Future = Future()
+    w = _window(_collection(), audio_devices=scan)
+    for _ in range(len(TABS) * 3):
+        app.processEvents()
+    assert "Audio" not in w._built and len(w._built) == len(TABS) - 1  # the rest are made meanwhile
+    threading.Timer(0.05, lambda: scan.set_result({"audio_input": ["USB Mic"], "audio_output": []})).start()
+    w.tabs.setCurrentRow(TABS.index("Audio"))  # clicked before the scan is done: waits, the window drawing
+    assert "Audio" in w._built and w.current_tab() == "Audio"
