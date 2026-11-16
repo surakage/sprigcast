@@ -294,3 +294,58 @@ def test_an_empty_page_opens_no_browser_until_a_link_is_added():
         assert host.calls[-1] == ("open", "https://b.com")
     finally:
         browser.set_host(None)
+
+
+def test_a_cut_to_a_closed_page_waits_for_its_first_paint():
+    """The bloom switch handover: the page starts loading as the switch starts, and the old bloom stays up
+    until it has drawn (the clear placeholder doesn't count), at most WAKE_WAIT_S."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render.engine import WAKE_WAIT_S, Engine
+
+    host = FakeHost()
+    browser.set_host(host)
+    try:
+        col = SceneCollection(
+            canvases=[Canvas(id="h", width=64, height=36)],
+            sources=[SourceConfig(id="p", kind="browser", name="Alerts", settings={"url": "https://a.com"})],
+            scenes=[Scene(id="one", name="One", canvas="h", items=[]),
+                    Scene(id="two", name="Two", canvas="h", items=[SceneItem(source="p")])],
+            active_scenes={"h": "one"},
+        )
+        engine = Engine(col)
+        page = BrowserSource("p", {"url": "https://a.com"})
+        page.asleep = True
+        engine._sources = {"p": page}
+        assert page.slow_wake
+        new = col.model_copy(deep=True)
+        new.active_scenes = {"h": "two"}
+        engine._wait_for_waking("h", col.scenes[0], new, "two")
+        page.asleep = False
+        page.wake()  # loads as the switch starts
+        assert host.calls == [("open", "https://a.com")]
+
+        class Comp:
+            textures = {}
+
+        assert page.video_frame() is not None  # the clear placeholder
+        Comp.textures["p"] = object()
+        now = time.perf_counter()
+        assert engine._still_waking(Comp, "h", now) is not None  # not painted yet: the old bloom stays
+        host.frame = np.ones((4, 4, 4), np.uint8)
+        page.video_frame()
+        assert engine._still_waking(Comp, "h", now) is None  # first paint: the cut lands
+
+        engine._wait_for_waking("h", col.scenes[0], new, "two")
+        assert "h" not in engine._waking  # awake already: nothing to wait for
+        page.update({"url": "https://a.com", "keep_running": True})
+        page.sleep()
+        page.asleep = True
+        assert not page.slow_wake  # a page kept running is back at once
+        page.update({"url": "https://a.com"})
+        page.sleep()
+        assert page.slow_wake
+        page.wake()
+        engine._waking["h"] = (col.scenes[0], now + WAKE_WAIT_S, {"p"})
+        assert engine._still_waking(Comp, "h", now + WAKE_WAIT_S + 0.1) is None  # never later than the cap
+    finally:
+        browser.set_host(None)

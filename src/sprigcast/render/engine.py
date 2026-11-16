@@ -567,7 +567,8 @@ class Engine:
 
     def _wait_for_waking(self, canvas_id: str, outgoing, collection: SceneCollection, scene_id: str) -> None:
         """Switching to a bloom with a closed camera (or a slow_wake source, like a PNGtuber loading its pictures
-        again): keep showing the old bloom until it has a picture
+        again, a closed video, or a web page loading again: its first paint, not the clear placeholder, counts
+        through `first_picture`): keep showing the old bloom until it has a picture
         (at most WAKE_WAIT_S), so the cut or transition lands on the camera, not on an empty spot."""
         self._waking.pop(canvas_id, None)
         scene = next((s for s in collection.scenes if s.id == scene_id), None)
@@ -592,7 +593,8 @@ class Engine:
         if waiting is None:
             return None
         outgoing, give_up, ids = waiting
-        if now < give_up and not all(sid in compositor.textures for sid in ids):
+        if now < give_up and not all(sid in compositor.textures
+                                     and getattr(self._sources.get(sid), "first_picture", True) for sid in ids):
             return outgoing
         del self._waking[canvas_id]
         running = self._transitions.get(canvas_id)

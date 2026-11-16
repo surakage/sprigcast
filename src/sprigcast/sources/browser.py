@@ -118,6 +118,7 @@ class BrowserSource(Source):
         self._open = False
         self._wanted = False  # started and awake: a page set later opens straight away
         self._blank = True  # send one clear frame so a new source has a size before the page draws
+        self.first_picture = False  # the page has drawn since it (re)opened: a bloom switch waits for this
 
     @property
     def size(self) -> tuple[int, int]:
@@ -125,6 +126,12 @@ class BrowserSource(Source):
 
     def _keep_running(self) -> bool:
         return bool(self.settings.get("keep_running", False))
+
+    @property
+    def slow_wake(self) -> bool:
+        """Asleep, its page is closed: a bloom switch to it waits (at most 2 s) for the page's first paint, so
+        an alert box never appears late. A page kept running is back at once."""
+        return _host is not None and bool(page_url(self.settings)) and not (self._keep_running() and self._open)
 
     def start(self) -> None:
         self._start_page()
@@ -143,6 +150,8 @@ class BrowserSource(Source):
             self._blank = True
             return
         self.status = "ok"
+        if not self._open:
+            self.first_picture = False
         _host.open(self.id, dict(self.settings))
         self._open = True
 
@@ -195,6 +204,7 @@ class BrowserSource(Source):
         frame = _host.take(self.id) if _host is not None else None
         if frame is not None:
             self._blank = False
+            self.first_picture = True
             return frame
         if self._blank:
             self._blank = False
