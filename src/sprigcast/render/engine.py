@@ -10,6 +10,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 import numpy as np
 
@@ -25,8 +26,9 @@ from sprigcast.core.events import (
 )
 from sprigcast.core.filters import AudioChain, video_effects
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, STATE_FADE_S, SceneCollection
+from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
+from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer
 
 log = logging.getLogger(__name__)
@@ -108,6 +110,7 @@ class Engine:
         self._taps_lock = threading.Lock()
         self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
+        self._filtered: frozenset[str] = frozenset()  # sources with video filters, see _sync_filters
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
         self._waking: dict[str, tuple] = {}
         self._source_ms: dict[str, float] = {}  # source id -> average ms per frame it was asked for
@@ -638,6 +641,10 @@ class Engine:
             self._finish_transition(canvas_id, compositor)
             return None
         extra = {"previous": running.outgoing, "progress": max(0.0, progress), "transition": running.settings}
+        if running.settings.kind == "move":
+            canvas = next((c for c in self._collection.canvases if c.id == canvas_id), None)
+            if canvas is not None:
+                extra["move"] = partial(self._move_frame, running, canvas, max(0.0, progress))
         if running.stinger is not None:
             frame = running.stinger.frame_at(elapsed)
             if frame is not None:
@@ -784,6 +791,7 @@ class Engine:
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
         compositor.effects = effects
+        self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
         self._watched = watched
         for source_id in [s for s, w in self._watchers.items() if watched.get(s, ("",))[0] != w[1]]:
             self._close_watcher(compositor, source_id)  # its filter went (or the plugin was removed)
@@ -982,6 +990,60 @@ class Engine:
                 drawn.append(scene)
         return drawn
 
+    # Move transition -----------------------------------------------------------------------------------
+
+    def _move_pieces(self, scene, sizes: dict, hidden: frozenset = frozenset()) -> list:
+        """A bloom as the pieces a Move transition moves (render/move.py flatten): sprigs that fill the
+        canvas one to one are opened up so what's inside them moves on its own."""
+        collection = self._collection
+        canvases = {c.id: (c.width, c.height) for c in collection.canvases}
+        sources = {s.id: s for s in collection.sources}
+
+        def part_size(source_id: str, canvas_id: str):
+            source = sources.get(source_id)
+            part = collection.part_of(source) if source is not None else None
+            return canvases.get(collection.shape_for(part, canvas_id).canvas) if part is not None else None
+
+        def view(shape, source):
+            layout, fades = self._state_view(collection, shape)
+            if collection.hidden_here(source):
+                layout = collection.placement_view(source, layout)
+            return layout, fades
+
+        filtered = self._filtered
+        return move.flatten(scene, collection, sizes, part_size, view, lambda sid: sid not in filtered,
+                            canvases.get(scene.canvas, (0, 0)), hidden)
+
+    def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
+        """This frame of a Move transition on a canvas, as pieces to draw (see compositor.render)."""
+        sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        new = self._collection.active_scene(canvas.id)
+        old = self._move_pieces(running.outgoing, sizes, hidden)
+        now = self._move_pieces(new, sizes, hidden) if new is not None else []
+        t = running.settings
+        return move.frame(old, now, progress, t.easing, t.unmatched, (canvas.width, canvas.height))
+
+    def _move_light(self, collection: SceneCollection, drawn: list) -> list:
+        """What to draw sprigs for: during a Move, the bloom it moves out of needs only the sprigs it draws
+        whole, not the ones opened up into their pieces (their sources are drawn straight onto the canvas)."""
+        outgoing = {id(r.outgoing): r for r in self._transitions.values()
+                    if r.settings.kind == "move" and r.began is not None}
+        if not outgoing:
+            return drawn
+        held = {id(w[0]) for w in self._waking.values()}  # shown as it is while a camera opens
+        out = []
+        for scene in drawn:
+            if id(scene) not in outgoing or id(scene) in held:
+                out.append(scene)
+                continue
+            whole: dict[str, list] = {}  # canvas id -> sprigs drawn whole
+            for piece in self._move_pieces(scene, {}):
+                if collection.part_of(collection.source(piece.source)) is not None:
+                    whole.setdefault(piece.canvas, []).append(SceneItem(source=piece.source))
+            for canvas_id, items in whole.items():  # stand-ins placing just those sprigs, so they are drawn
+                out.append(Scene(id=f"~move:{scene.id}", name="", canvas=canvas_id, items=items))
+        return out
+
     def _render_parts(self, compositor, sizes: dict[str, tuple[int, int]], now: float) -> None:
         """Render every part layout in use once (inner ones first), then point each placement at its texture."""
         collection = self._collection
@@ -989,7 +1051,7 @@ class Engine:
         # transition fades out of, the bloom being edited in Build, and the Part editor. The other blooms'
         # sprigs cost nothing until they are switched to.
         used: set[str] = set()
-        stack = self._drawn_scenes(collection)
+        stack = self._move_light(collection, self._drawn_scenes(collection))
         if self.editing_part:
             stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
             used.add(self.editing_part)
@@ -1115,6 +1177,8 @@ class Engine:
             more = dict(extra)
             if more.get("previous") is not None:
                 more["previous"] = collection.hide_items(more["previous"], set(hidden))
+            if more.get("move") is not None:  # a Move: its pieces without them, however deep
+                more["move"] = partial(more["move"], hidden=frozenset(hidden))
             compositor.render(target, collection.hide_items(scene, set(hidden)) if scene else scene, sizes, **more)
             frame = Frame(target.id, canvas.width, canvas.height, compositor.read(target.id), now)  # now, not later
         except Exception:

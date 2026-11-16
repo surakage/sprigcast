@@ -120,7 +120,14 @@ def test_outputs_and_transitions():
     assert _ok(api, "record.stop") == {"file": "C:/rec.mkv"}
     assert _ok(api, "clip.save") == {"saved": [], "started": True}
     assert _ok(api, "clip.save") == {"saved": ["clip.mkv"], "started": False}
-    assert _ok(api, "transition.set", kind="leaf", ms=500) == {"kind": "leaf", "ms": 500}
+    assert _ok(api, "transition.set", kind="leaf", ms=500) == {"kind": "leaf", "ms": 500, "easing": "smooth",
+                                                              "unmatched": "fade"}
+    assert _ok(api, "transition.set", kind="move", easing="spring", unmatched="slide")["easing"] == "spring"
+    assert api.col.transition.unmatched == "slide" and api.col.transition.duration_ms == 500
+    assert _fails(api, "transition.set", easing="bouncy") == "bad_request"
+    assert _fails(api, "transition.set", unmatched="melt") == "bad_request"
+    assert {"easings", "unmatched_choices"} <= set(_ok(api, "transition.get"))
+    _ok(api, "transition.set", kind="leaf")
     assert _fails(api, "transition.set", kind="spin") == "bad_request"
 
 

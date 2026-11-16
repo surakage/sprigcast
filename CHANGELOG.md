@@ -143,6 +143,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 
 - Transitions: slide, swipe, wipe, leaf, bloom and stinger clips (#145), a transition for particular bloom switches (#151),
   and a Transitions card with a pop-up for the details (#149, #162, #164, #166).
+- Move transition: what both blooms show (matched by source, then by name, even inside sprigs) glides to its new
+  spot, size, turn and crop; the rest fades, scales or slides. Five easings, both canvases, and usable in Between
+  blooms rules. It draws straight onto the canvas, so it costs less than a fade. OBS Move transitions import as it.
 - Browser source on Chromium 140 (#139), and right-click Interact to click around in the page (#153).
 - Color looks (LUTs) and shapes for any source (#168).
 - Media source: video and sound files, with play and pause from menus, hotkeys and the API (#198).
