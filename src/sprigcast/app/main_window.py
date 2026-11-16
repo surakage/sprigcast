@@ -2818,8 +2818,8 @@ class MainWindow(QMainWindow):
                     self._show_spin_values(selected)  # its size just became known
                     self._updating = False
             elif isinstance(event, EngineError):
-                self.statusBar().showMessage(event.message, 10000)
-                if "compositor" in event.message:
+                self.statusBar().showMessage(event.message.split("\n")[0], 10000)
+                if event.graphics or "compositor" in event.message:
                     QMessageBox.critical(self, "SprigCast", event.message)
         if self.recording is not None:
             self._refresh_recording_status()
@@ -6144,7 +6144,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Light settings", "Stop streaming, recording and the replay buffer first.")
             return False
         cpu = pick_codec() == "libx264"
-        lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu)
+        facts = lowend.pc_facts()
+        older = bool(lowend.older_reasons(facts))
+        try:
+            hdd = bool(lowend.on_hard_drive(self._recordings_folder()))
+        except Exception:
+            hdd = False
+        lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
+                                          older=older, hdd=hdd)
         if not lines:
             QMessageBox.information(self, "Light settings", "You're already on light settings.")
             return False
@@ -6157,9 +6164,11 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is not use:
             return False
-        _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu)
+        _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
+                                      older=older, hdd=hdd)
         lowend.store_fps(fps)
         self.collection.save(self.scenes_path)
+        self._after_settings()  # a canvas switched off, clips and browser sources: bring the docks in line
         self.statusBar().showMessage(
             "Light settings are on." + (" Restart SprigCast for 30 fps." if fps else ""), 15000)
         return True

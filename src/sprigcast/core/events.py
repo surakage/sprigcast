@@ -49,3 +49,4 @@ class AudioLevels:
 @dataclass
 class EngineError:
     message: str
+    graphics: bool = False  # the GPU compositor couldn't start: the message says what to do

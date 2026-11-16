@@ -258,12 +258,16 @@ class Engine:
     def _run(self) -> None:
         from sprigcast.render.compositor import (
             Compositor,  # GL context must live on this thread
+            GraphicsError,
         )
 
         try:
             compositor = Compositor()
-        except Exception as exc:  # no GPU driver, remote desktop without GL, ...
-            self.events.put(EngineError(f"Could not start the GPU compositor: {exc}"))
+        except GraphicsError as exc:  # no graphics driver, or graphics older than OpenGL 3.3
+            self.events.put(EngineError(str(exc), graphics=True))
+            return
+        except Exception as exc:  # remote desktop without GL, ...
+            self.events.put(EngineError(f"Could not start the GPU compositor: {exc}", graphics=True))
             return
 
         from sprigcast.core import pacing
