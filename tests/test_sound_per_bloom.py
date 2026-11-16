@@ -148,7 +148,11 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     assert w.collection.source("game").settings["muted"] is True
     from PySide6.QtTest import QTest
 
-    QTest.qWait(150)  # the strips refresh once changes settle (100 ms)
+    # The strips refresh once changes settle (100 ms); a busy test run can take longer to get there.
+    for _ in range(60):
+        QTest.qWait(50)
+        if _sound_rows(w)[0]["game"].db.text() == "muted":
+            break
     assert _sound_rows(w)[0]["game"].db.text() == "muted"
 
 
