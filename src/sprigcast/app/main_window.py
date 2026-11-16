@@ -2103,6 +2103,7 @@ class MainWindow(QMainWindow):
         name.setFont(font)
         name.setStyleSheet(f"color: {theme.TEXT_BRIGHT};")
         brand_row.addWidget(name)
+        self.brand_name = name
         bar.addWidget(brand)
         pills = QFrame()
         pills.setObjectName("modePills")
@@ -2198,6 +2199,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.settings_button)
         self._set_header_clock("Offline", False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
+        self.mode_bar = bar
         self._show_mode_bar(self.mode)
 
     def _show_mode_bar(self, mode: str) -> None:
@@ -2229,7 +2231,8 @@ class MainWindow(QMainWindow):
         font.setWeight(font.Weight.DemiBold if live else font.Weight.Normal)
         self.mode_clock.setFont(font)
         self.mode_clock.setStyleSheet(f"color: {theme.LIVE_TEXT if live else theme.MUTED}; padding-left: 6px;")
-        self.mode_clock.setMinimumWidth(self.mode_clock.sizeHint().width())
+        self._hold_clock_width()
+        QTimer.singleShot(0, self._fit_header)
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -5246,7 +5249,7 @@ class MainWindow(QMainWindow):
                 warn = True
         self.live_panel.set_recording("  ·  ".join([text, *notes]))
         self._side_status("rec", seconds, "  ·  ".join(notes), warn)
-        self.mode_clock.setToolTip(f"Recording with {codec}")
+        self.mode_clock.setToolTip("  ·  ".join([f"Recording with {codec}", *notes]))
 
     def _side_status(self, kind: str, seconds: int | None, details: str = "", warn: bool = False) -> None:
         """The header's one clock while live or recording (whichever has run longest, no label: the pink
@@ -5262,15 +5265,65 @@ class MainWindow(QMainWindow):
         shown = [parts[k] for k in ("live", "rec") if k in parts]
         top = max(p[0] for p in shown)
         clock = f"{top // 3600}:{top // 60 % 60:02d}:{top % 60:02d}"
-        text = f'<span style="color:{theme.LIVE_TEXT}; font-weight:700; font-size:16px">●&nbsp;&nbsp;{clock}</span>'
-        for _seconds, note, warned in shown:
-            if note:
-                text += (f'<span style="color:{theme.WARN if warned else theme.MUTED}">'
-                         f"&nbsp;&nbsp;·&nbsp;&nbsp;{html.escape(note)}</span>")
+        self._clock_html = f'<span style="color:{theme.LIVE_TEXT}; font-weight:700; font-size:16px">●&nbsp;&nbsp;{clock}</span>'
+        # Beside the clock only the stream's short line ("2 of 2 sending"); anything about the recording
+        # (dropped frames, low disk) turns the Garden check amber and is in the clock's tooltip, so the
+        # header never grows past the window.
+        live = parts.get("live")
+        self._clock_details = ""
+        if live and live[1]:
+            self._clock_details = (f'<span style="color:{theme.WARN if live[2] else theme.MUTED}">'
+                                   f"&nbsp;&nbsp;·&nbsp;&nbsp;{html.escape(live[1])}</span>")
+        rec = parts.get("rec")
+        self._rec_warning = rec[1] if rec and rec[2] else ""
         self.mode_clock.setStyleSheet("padding-left: 6px;")
         self.mode_clock.setTextFormat(Qt.TextFormat.RichText)
-        self.mode_clock.setText(text)
+        self._show_clock()
+
+    def _show_clock(self) -> None:
+        brief = getattr(self, "_header_level", 0) >= 1
+        self.mode_clock.setText(self._clock_html + ("" if brief else self._clock_details))
+        self._hold_clock_width()
+        QTimer.singleShot(0, self._fit_header)
+
+    def _hold_clock_width(self) -> None:
+        """The clock as wide as its text, so the toolbar never squeezes it (measured fresh each time)."""
+        self.mode_clock.setMinimumWidth(0)
+        self.mode_clock.adjustSize()
         self.mode_clock.setMinimumWidth(self.mode_clock.sizeHint().width())
+
+    def _fit_header(self) -> None:
+        """Keep Garden check, Record and Go live on screen: on a narrow window the header drops, in turn,
+        the note beside the clock, the Garden check's numbers, then its name (the leaf and bars stay)."""
+        bar = getattr(self, "mode_bar", None)
+        if bar is None or getattr(self, "_fitting", False):
+            return
+        self._fitting = True
+        try:
+            for level in range(6):
+                self._header_level = level
+                self.live_side.garden.set_compact(level - 1)
+                # Then tighter gaps, then the logo without its name.
+                spacing = 10 if level >= 4 else 18
+                if getattr(self, "_bar_spacing", 18) != spacing:
+                    self._bar_spacing = spacing
+                    bar.setStyleSheet(f"QToolBar#modeBar {{ background: {theme.CHROME}; border: none;"
+                                      f" padding: 10px 18px; spacing: {spacing}px; }}")
+                    bar.ensurePolished()
+                self.brand_name.setVisible(level < 5)
+                if getattr(self, "_side_parts", None) and hasattr(self, "_clock_html"):
+                    self.mode_clock.setText(self._clock_html + ("" if level >= 1 else self._clock_details))
+                    self._hold_clock_width()
+                bar.layout().invalidate()
+                if bar.sizeHint().width() <= self.width():
+                    break
+            bar.layout().activate()  # lay it out now, so nothing stays tucked away from a narrower moment
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit_header()
 
     # Streaming -----------------------------------------------------------------
 
@@ -5561,7 +5614,7 @@ class MainWindow(QMainWindow):
             self.engine.set_sound_out(None)
             return
         self.camera.poll()
-        self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched() else None)
+        self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched else None)
 
     def _camera_sound_device(self) -> str | None:
         """Settings → Output → Virtual camera → Sound to, unless SprigCast also captures that device (an echo)."""
@@ -5968,8 +6021,13 @@ class MainWindow(QMainWindow):
             parts += [f"CPU {sample['cpu']:.1f}%", f"{sample['ram_mb']:.0f} MB"]
         parts.append(f"{dropped} dropped")
         word = getattr(self, "_render_word", "Smooth")
-        level = "bad" if ram_high or word == "Struggling" else "warning" if dropped or word == "Busy" else "good"
+        rec_warning = getattr(self, "_rec_warning", "") if self.recording is not None else ""
+        level = ("bad" if ram_high or word == "Struggling" else
+                 "warning" if dropped or word == "Busy" or rec_warning else "good")
+        self.live_side.garden.setToolTip("Garden check: how SprigCast and your streams are doing. Click for everything."
+                                         + (f" Recording: {rec_warning}" if rec_warning else ""))
         self.live_side.garden.set_numbers("  ·  ".join(parts), level, sample.get("cpu"))
+        QTimer.singleShot(0, self._fit_header)
 
     def _open_garden_check(self, tab: str = "now"):
         """How SprigCast and the streams are doing (tiles, stream health, quick checks), and the last streams."""

@@ -27,6 +27,9 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
   number and the last streams' health) in the header; Both / Horizontal / Vertical, Clip, Screenshot and Virtual Cam
   under the canvases; Blooms as a list per canvas; Destinations with platform tiles under Chat; a shorter
   Transitions card (type, Duration, Between blooms "N active", the rest behind its gear).
+- Live fits small windows (down to 1280 × 720): the header drops extra words before any button, long names end in "…"
+  with the full name on hover, Transitions and Sound wrap instead of cutting off, recording warnings move into the
+  Garden check, and the pills under the canvases have round ends.
 - No Studio mode: clicking a bloom puts it on air. Bloom right-click: Comes in with, Save screenshot, Pop out, Rename, Set a key. Canvas right-click: Pop out, Safe zones (tall canvases), Canvas settings. OBS clients see Studio mode as off.
 - A round screenshot button in the top bar, beside search and settings. Virtual Cam and its gear share one small card. Record, Clips and Virtual Cam keep their names and show on or off by colour.
 

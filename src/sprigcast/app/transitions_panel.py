@@ -592,26 +592,29 @@ class TransitionsPanel(QWidget):
         self.rules_button: QPushButton | None = None
         if collection is not None:
             # The table of bloom-to-bloom rules opens in its own pop-up: there's no room for it here.
-            row = QHBoxLayout()
-            row.setSpacing(8)
+            rules = QWidget()
+            row = QGridLayout(rules)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setHorizontalSpacing(16 if compact else 8)
+            row.setVerticalSpacing(8)
             label = QLabel("Between blooms")
             label.setToolTip("Give particular switches their own transition, like a stinger into BRB")
-            row.addWidget(label)
             self.rules_count = QLabel("")
             self.rules_count.setStyleSheet(theme.MUTED_STYLE)
             if compact:
                 label.setStyleSheet(theme.MUTED_STYLE)
-                row.setSpacing(16)
-            row.addWidget(self.rules_count, 0 if compact else 1)
-            if compact:
-                row.addStretch(1)
             self.rules_button = QPushButton("Edit")
             self.rules_button.setStyleSheet(PILL_STYLE)
             self.rules_button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.rules_button.clicked.connect(self.open_rules)
-            row.addWidget(self.rules_button)
+            # Its width never holds the panel open: resizeEvent moves the count and Edit under it instead.
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            self.rules_label = label
+            self.rules_grid = row
+            self._rules_split: bool | None = None
+            self._place_rules(False)
             root.addSpacing(4)
-            root.addLayout(row)
+            root.addWidget(rules)
             self.show_rule_count()
         root.addStretch(1)
         self.load(transition)
@@ -625,6 +628,28 @@ class TransitionsPanel(QWidget):
         wrap = QFormLayout.RowWrapPolicy.WrapAllRows if self.width() < self._narrow else QFormLayout.RowWrapPolicy.DontWrapRows
         if self.form.rowWrapPolicy() != wrap:
             self.form.setRowWrapPolicy(wrap)
+        if self.rules_button is not None:
+            # A narrow card puts the count and Edit under "Between blooms" instead of clipping them.
+            one_line = (self.rules_label.sizeHint().width() + self.rules_count.sizeHint().width()
+                        + self.rules_button.sizeHint().width() + 2 * self.rules_grid.horizontalSpacing())
+            margins = self.layout().contentsMargins()
+            self._place_rules(self.width() - margins.left() - margins.right() < one_line)
+
+    def _place_rules(self, split: bool) -> None:
+        if split == self._rules_split:
+            return
+        self._rules_split = split
+        grid = self.rules_grid
+        for widget in (self.rules_label, self.rules_count, self.rules_button):
+            grid.removeWidget(widget)
+        row = 1 if split else 0
+        grid.addWidget(self.rules_label, 0, 0, 1, 4 if split else 1)
+        grid.addWidget(self.rules_count, row, 0 if split else 1)
+        grid.addWidget(self.rules_button, row, 3)
+        for c in range(4):
+            grid.setColumnStretch(c, 0)
+        # Live's card keeps the count beside its label and Edit at the far end; the full panel lets the count fill.
+        grid.setColumnStretch(2 if self.compact or split else 1, 1)
 
     def _reflow(self, columns: int) -> None:
         """Lay the choices out in `columns` equal columns: four on a wide card, fewer on a narrow one."""
