@@ -27,6 +27,7 @@ The OBS-compatible door (control/api.py) is frozen: new features land here.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import secrets
 from collections.abc import Callable, Iterator
@@ -36,6 +37,8 @@ from typing import Any
 from sprigcast import __version__
 from sprigcast.control.protocol import Close, Sleep, auth_string
 from sprigcast.core.scene import MOVE_EASINGS, MOVE_UNMATCHED, PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
+
+log = logging.getLogger(__name__)
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
 # What this SprigCast can do, for apps to check (app.info "features") instead of guessing from answers' shapes.
@@ -1505,6 +1508,7 @@ class NativeSession:
                                 else "Wrong or expired pairing code.")
                     return
                 self.key = device.key
+                log.info("control: paired %s (%s) with a code", device.name, device.id)
                 yield json.dumps({"paired": {"key": device.key, "name": device.name}})
             elif self.password:
                 answer = message.get("auth")
