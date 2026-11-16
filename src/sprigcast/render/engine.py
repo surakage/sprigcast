@@ -761,6 +761,7 @@ class Engine:
             elif existing.settings != config.settings:
                 existing.update(config.settings)
         self._sync_filters(compositor, wanted)
+        self._sync_detail()
         compositor.downscale = {c.id: c.downscale for c in self._collection.canvases}
         self._sync_parts(compositor)
         self.mixer.set_sources(list(self._sources.values()))
@@ -786,6 +787,25 @@ class Engine:
             SOUND_LEVELS.pop(gone, None)
         self.mixer.followed = frozenset(followed)
         self._sync_audio_options()
+
+    def _sync_detail(self) -> None:
+        """Tell each sharp source (text, clock cards) the biggest size it's shown at, so it draws that many
+        pixels: crisp when it's made big, light when it's small. Only a step change redraws it."""
+        sharp = {sid: s for sid, s in self._sources.items() if getattr(s, "sharp", False)}
+        if not sharp:
+            return
+        try:
+            scales = shown_detail(self._collection, {sid: s.size for sid, s in sharp.items()})
+        except Exception as exc:  # never stop the render loop for this: they keep the detail they have
+            log.warning("couldn't work out how big sharp sources are shown: %s", exc)
+            return
+        for source_id, source in sharp.items():
+            try:
+                step = detail_step(scales.get(source_id, 1.0), source.size)
+                if step != source.detail:
+                    source.set_detail(step)
+            except Exception as exc:  # a plugin's source
+                log.warning("source %s set_detail failed: %s", source_id, exc)
 
     def set_sound_out(self, device: str | None) -> None:
         """Play the stream mix on a playback device too (None: stop), e.g. a virtual cable that TikTok LIVE
@@ -1462,7 +1482,8 @@ class Engine:
             if frame is None and missed is not None:
                 frame = missed
             if frame is not None:
-                compositor.upload(source_id, frame, source.channel_order)
+                compositor.upload(source_id, frame, source.channel_order,
+                                  source.size if getattr(source, "sharp", False) else None)
                 if source_id in self._watched and source_id in self._visible:
                     self._feed_watcher(source_id, frame, source.channel_order, now)
             spent = time.perf_counter() - began
@@ -1528,6 +1549,54 @@ class Engine:
         if self._grabs:
             self._serve_grabs(compositor, sizes)
             self._mark("snapshots")
+
+
+MOST_DETAIL_PIXELS = 4096  # a sharp source's picture is never drawn wider or taller than this
+DETAIL_RANGE = (0.125, 4.0)
+
+
+def detail_step(scale: float, size: tuple[int, int]) -> float:
+    """The detail a sharp source shown at `scale` draws at: rounded UP to a step of about 19% (2 ** 0.25), so
+    dragging its corner redraws it a few times, not every frame, and it's never drawn smaller than shown."""
+    most = min(DETAIL_RANGE[1], MOST_DETAIL_PIXELS / max(1, size[0]), MOST_DETAIL_PIXELS / max(1, size[1]))
+    scale = min(max(scale, DETAIL_RANGE[0]), most)
+    step = 2.0 ** (math.ceil(math.log2(scale) * 4 - 1e-6) / 4)
+    return round(min(step, most), 4)
+
+
+def shown_detail(collection: SceneCollection, sizes: dict[str, tuple[int, int]]) -> dict[str, float]:
+    """How many canvas pixels each source in `sizes` covers per pixel of its own, at the biggest it's placed
+    anywhere in the garden: through every sprig it sits in (a sprig made half size halves what's inside it).
+    Each bloom and each sprig (as Build shows it, at canvas size) is a starting point."""
+    configs = {s.id: s for s in collection.sources}
+    canvases = {c.id: (c.width, c.height) for c in collection.canvases}
+    best: dict[str, float] = {}
+    for scene in collection.scenes:
+        _walk_detail(collection, configs, canvases, sizes, best, scene, 1.0, (scene.id,))
+    return best
+
+
+def _walk_detail(collection, configs, canvases, sizes, best, scene, factor: float, path: tuple[str, ...]) -> None:
+    """shown_detail's walk (not a closure, like _walk_visible)."""
+    for item in scene.items:
+        config = configs.get(item.source)
+        part = collection.part_of(config) if config is not None else None
+        if part is not None:
+            if part.id in path or len(path) >= 16:
+                continue
+            shape = collection.shape_for(part, scene.canvas)
+            size = canvases.get(shape.canvas)
+        else:
+            size = sizes.get(item.source)
+            shape = None
+        if not size or size[0] <= 0 or size[1] <= 0:
+            continue
+        sx, sy = item.picture_scale(size)
+        scale = factor * max(abs(sx), abs(sy))
+        if shape is not None:
+            _walk_detail(collection, configs, canvases, sizes, best, shape, scale, (*path, part.id))
+        elif scale > best.get(item.source, 0.0):
+            best[item.source] = scale
 
 
 def _walk_visible(collection, configs, visible: set[str], scene, hidden: set[str], path: tuple[str, ...]) -> None:

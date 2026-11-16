@@ -24,8 +24,9 @@ import numpy as np
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "local_time", "name": "Local time", "version": 1, "adds": "Source",
-          "about": "Your local time, and the date if you like, in a small card on stream."}
+PLUGIN = {"id": "local_time", "name": "Local time", "version": 2, "adds": "Source",
+          "about": "Your local time, and the date if you like, in a small card on stream.",
+          "new": "Stays crisp at any size, and starts bigger."}
 
 KIND = "local_time"
 W, H = 640, 220  # the card's box; scale it on the canvas like anything else
@@ -71,17 +72,13 @@ def _colour(text: str, fallback: str):
     return c if c.isValid() else QColor(fallback)
 
 
-def paint(clock: str, under: str, settings: dict[str, Any]):
+def paint(clock: str, under: str, settings: dict[str, Any], detail: float = 1.0):
     """The card as a QImage (premultiplied), W x H. The card hugs the words and sits at the right of
-    the box, so it grows to the left and stays tucked in the corner."""
+    the box, so it grows to the left and stays tucked in the corner. detail: pixels drawn per box unit."""
     from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter
+    from PySide6.QtGui import QColor, QFont, QFontMetricsF
 
-    image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent)
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+    image, p = painted.canvas(W, H, detail)
     big = QFont()
     big.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
     big.setWeight(QFont.Weight.Bold)
@@ -127,8 +124,10 @@ class LocalTimeSource(Source):
     defaults = {"show_date": True, "hour_24": False, "seconds": False, "time_zone": False,
                 "text_color": "#f2f7f3", "card_color": "#151c19e0"}
     sleeps = True  # hidden, it does nothing; shown again, it draws the time as it is then
+    sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "top_right"
+    own_sprig_height = 0.14  # starts readable: the card about a seventh of the canvas tall
     channel_order = painted.Frame.channel_order
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -154,8 +153,8 @@ class LocalTimeSource(Source):
 
     def video_frame(self) -> np.ndarray | None:
         clock, under = words(datetime.now(), self.settings)
-        key = (clock, under, self.settings.get("text_color"), self.settings.get("card_color"))
+        key = (clock, under, self.settings.get("text_color"), self.settings.get("card_color"), self.detail)
         if key == self._shown:
             return None  # nothing changed: nothing drawn, nothing uploaded
         self._shown = key
-        return self._frame(paint(clock, under, self.settings))
+        return self._frame(paint(clock, under, self.settings, self.detail))

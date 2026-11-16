@@ -242,6 +242,10 @@ class SceneFolder(BaseModel):
     holds: Literal["show", "part"] = "show"
 
 
+# Shares of a portrait canvas's height that TikTok, Shorts and Reels cover with their own tabs (top) and
+# captions (bottom), from app/safe_zones.py: corner cards and bands start inside the rest.
+PORTRAIT_TOP, PORTRAIT_BOTTOM = 0.12, 0.225
+CARD_ROW = 0.14  # a corner card's height, as a share of the canvas's short side (Stream timer, Now playing)
 PART_KIND = "scene"  # source kind that places a part inside another scene
 SOUND_KINDS = ("audio_input", "audio_output", "app_audio")  # sounds: global, in no bloom, both shapes
 
@@ -836,25 +840,37 @@ class SceneCollection(BaseModel):
         return made
 
     def own_sprig(self, scene: Scene, source_id: str, size: tuple[int, int], name: str,
-                  corner: str | None = None) -> Scene:
+                  corner: str | None = None, height_share: float | None = None,
+                  band_share: float | None = None) -> Scene:
         """Put a source in a sprig of its own, on top of this bloom and the blooms linked to it (each
         shape gets a layout fitted to it). It fills the canvas (overlays like Snap), or with corner
         ("top_right" ...) it sits small in that corner (a clock); "bottom_center" is a wide band along
-        the bottom (captions). Returns the sprig."""
+        the bottom (captions), above the bottom corners' cards. height_share: in a corner, its box is this share of the canvas's short side
+        tall (a card, so its words start readable), instead of a third of it wide. band_share: a band's
+        share of a landscape canvas's width (else 0.72). Sizes follow the canvas, so 720p and 1080p look
+        the same. On a portrait canvas, corners and bands keep out of where TikTok, Shorts and Reels draw
+        their tabs and captions (app/safe_zones.py). Returns the sprig."""
         def fitted(canvas_id: str) -> SceneItem:
             canvas = self.canvas(canvas_id)
             if corner:
                 margin = min(canvas.width, canvas.height) * 0.035
+                portrait = canvas.height > canvas.width
+                top = max(margin, canvas.height * PORTRAIT_TOP) if portrait else margin
+                bottom = max(margin, canvas.height * PORTRAIT_BOTTOM) if portrait else margin
                 if "center" in corner:  # a wide band across the middle (captions): most of the width
-                    scale = canvas.width * (0.9 if canvas.height > canvas.width else 0.72) / size[0]
+                    scale = canvas.width * (0.9 if portrait else band_share or 0.72) / size[0]
+                elif height_share:
+                    scale = min(canvas.width, canvas.height) * height_share / size[1]
                 else:
                     scale = min(canvas.width, canvas.height) * 0.36 / size[0]  # about a third of the short side
                 w, h = size[0] * scale, size[1] * scale
                 if "center" in corner:
                     x = (canvas.width - w) / 2
+                    if "bottom" in corner:  # a band sits above the bottom corners' cards (now playing), not on them
+                        bottom += min(canvas.width, canvas.height) * CARD_ROW + margin
                 else:
                     x = margin if "left" in corner else canvas.width - w - margin
-                y = margin if "top" in corner else canvas.height - h - margin
+                y = top if "top" in corner else canvas.height - h - bottom
                 return SceneItem(source=source_id, scale=scale, x=x, y=y)
             scale = min(canvas.width / size[0], canvas.height / size[1])
             return SceneItem(source=source_id, scale=scale, x=(canvas.width - size[0] * scale) / 2,

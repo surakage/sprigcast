@@ -143,6 +143,7 @@ from sprigcast.core.scene import (
     Filter,
     Output,
     PART_KIND,
+    PORTRAIT_TOP,
     Scene,
     SceneCollection,
     SceneItem,
@@ -4448,7 +4449,8 @@ class MainWindow(QMainWindow):
         if size:  # on top of what you're editing: the bloom, or the sprig you have open
             self.collection.sources.append(config)
             self.collection.own_sprig(scene, config.id, tuple(size), config.name,
-                                      getattr(cls, "own_sprig_corner", None))
+                                      getattr(cls, "own_sprig_corner", None), getattr(cls, "own_sprig_height", None),
+                                      getattr(cls, "own_sprig_band", None))
             self._changed()
             self._refresh_all()
             return
@@ -4469,8 +4471,12 @@ class MainWindow(QMainWindow):
             return
         # Start each new one a little lower so several don't pile up in the corner.
         stacked = sum(1 for i in scene.items if i is not item and self.collection.source(i.source).kind == kind)
+        short = min(canvas.width, canvas.height)
+        if getattr(cls, "sharp", False):  # text: the same share of the canvas at 720p, 1080p or 4K (and crisp)
+            item.scale, item.scale_y = short / 1080, None
+        top = canvas.height * (PORTRAIT_TOP if canvas.height > canvas.width else 0.05)  # below TikTok's tabs
         item.x = round(canvas.width * 0.05)
-        item.y = round(canvas.height * 0.05) + (stacked * 100) % max(1, canvas.height // 2)
+        item.y = round(top + (stacked * 100 * short / 1080) % max(1, canvas.height // 2))
         self._changed()
         self._refresh_properties()
 
