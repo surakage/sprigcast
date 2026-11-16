@@ -20,7 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, QSettings, QTimer
+from PySide6.QtCore import QObject, QSettings, QTimer, Slot
 from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServer
 
@@ -525,9 +525,17 @@ class ControlServer(QObject):
     def _incoming(self) -> None:
         while self.tcp is not None and self.tcp.hasPendingConnections():
             sock = self.tcp.nextPendingConnection()
-            sock.readyRead.connect(lambda s=sock: self._sniff(s))
+            # Bound slots, not lambdas: a lambda makes PySide watch the socket's destroyed signal, and Qt's WebSocket
+            # code then warns "wildcard call disconnects from destroyed signal" when it lets the socket go.
+            sock.readyRead.connect(self._ready_read)
             sock.disconnected.connect(sock.deleteLater)
             QTimer.singleShot(WEB_TIMEOUT_MS, lambda s=sock: self._too_slow(s))
+
+    @Slot()
+    def _ready_read(self) -> None:
+        sock = self.sender()
+        if isinstance(sock, QTcpSocket):
+            self._sniff(sock)
 
     def _too_slow(self, sock: QTcpSocket) -> None:
         try:
@@ -545,7 +553,7 @@ class ControlServer(QObject):
             return  # wait for the rest of the headers
         if web.header_end(raw) >= 0 and web.is_websocket(raw):
             sock.setProperty("sprigcast_door", "ws")
-            sock.readyRead.disconnect()
+            sock.readyRead.disconnect(self._ready_read)
             if self.server is not None:
                 self.server.handleConnection(sock)
             return
@@ -624,7 +632,9 @@ class ControlServer(QObject):
                 QTimer.singleShot(int(step.seconds * 1000), lambda: self._pump(socket, steps))
                 return
             if isinstance(step, Close):
-                log.info("control: closing a connection: %s", step.reason)
+                log.info("control: closing a connection: %s%s", step.reason,
+                         f" ({len(self.pairing.devices)} paired device key(s), the password"
+                         f"{' and the api.json key' if self.local_key else ''} checked)" if step.code == 4009 else "")
                 socket.close(QWebSocketProtocol.CloseCode(step.code), step.reason)
                 return
             socket.sendTextMessage(step)
