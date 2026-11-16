@@ -63,11 +63,12 @@ function build(kind) {
 /** Every name SprigCast has, plus the one picked now (even if SprigCast doesn't have it right now). */
 function fillSelect(select, items) {
 	const picked = settings[select.dataset.key] ?? "";
-	const names = items.filter((i) => i.value).map((i) => i.value);
+	const listed = items.filter((i) => i.value);
+	const names = listed.map((i) => i.value);
 	const options = [new Option(names.length || picked ? "Choose…" : "Open SprigCast to pick", "")];
 	options[0].disabled = true;
 	if (picked && !names.includes(picked)) options.push(new Option(picked, picked));
-	for (const name of names) options.push(new Option(name, name));
+	for (const item of listed) options.push(new Option(item.label ?? item.value, item.value));
 	select.replaceChildren(...options);
 	select.value = picked;
 }

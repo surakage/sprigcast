@@ -24,6 +24,8 @@ streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
 	sprigcast.configure({ port: Number(settings.port) || 0, password: settings.password ?? "" });
 });
 
+const TITLED = new Set(["getTransitions"]); // SprigCast's own words (cut, fade...): shown as SprigCast shows them
+
 /** Lists for the property inspector's pickers (sdpi-select datasource). */
 async function listFor(event, payload = {}) {
 	const lists = {
@@ -42,7 +44,8 @@ async function listFor(event, payload = {}) {
 	if (!fill) return null;
 	try {
 		const names = [...new Set(await fill())].sort((a, b) => String(a).localeCompare(String(b)));
-		return names.map((name) => ({ label: String(name), value: String(name) }));
+		const label = TITLED.has(event) ? (n) => n.charAt(0).toUpperCase() + n.slice(1) : (n) => n;
+		return names.map((name) => ({ label: label(String(name)), value: String(name) }));
 	} catch {
 		return [{ label: "Open SprigCast first", value: "", disabled: true }];
 	}
