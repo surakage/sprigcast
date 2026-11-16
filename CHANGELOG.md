@@ -23,6 +23,10 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Bloom buttons show their hotkey and a small picture (#183).
 - A "You're live!" card with the sloth when a stream starts (#163, #187-#195).
 - Right-click menus on the stage, bloom buttons and destination cards (#99), and Full screen on another monitor (#131).
+- New Live layout: Go live, Record, one clock and a Garden check pill (CPU, memory, dropped frames; click for every
+  number and the last streams' health) in the header; Both / Horizontal / Vertical, Clip, Screenshot and Virtual Cam
+  under the canvases; Blooms as a list per canvas; Destinations with platform tiles under Chat; a shorter
+  Transitions card (type, Duration, Between blooms "N active", the rest behind its gear).
 - No Studio mode: clicking a bloom puts it on air. Bloom right-click: Comes in with, Save screenshot, Pop out, Rename, Set a key. Canvas right-click: Pop out, Safe zones (tall canvases), Canvas settings. OBS clients see Studio mode as off.
 - A round screenshot button in the top bar, beside search and settings. Virtual Cam and its gear share one small card. Record, Clips and Virtual Cam keep their names and show on or off by colour.
 

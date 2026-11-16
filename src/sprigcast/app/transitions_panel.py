@@ -378,6 +378,38 @@ class TransitionPicture(QWidget):
                              width=max(1.2, size / 40))
 
 
+COMBO_STYLE = (  # Live's type drop-down: a soft pill, the name on the left and a drawn chevron on the right
+    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT_BRIGHT}; border: none; border-radius: 19px;"
+    f" padding: 0 44px 0 18px; font-weight: 600; text-align: left; min-height: 38px; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+    "QPushButton::menu-indicator { width: 0; image: none; }"
+)
+
+
+class ChevronSpin(QSpinBox):
+    """A number box with clean up and down chevrons on its right end (click the top or bottom half)."""
+
+    ARROWS = 34  # the width the chevrons take on the right
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        from sprigcast.app import icons
+
+        p = QPainter(self)
+        x = self.width() - self.ARROWS
+        mid = self.height() / 2
+        icons.paint_icon(p, QRectF(x + 8, mid - 15, 16, 16), "chevron-up", theme.MUTED, 1.6)
+        icons.paint_icon(p, QRectF(x + 8, mid - 1, 16, 16), "chevron-down", theme.MUTED, 1.6)
+        p.end()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.position().x() >= self.width() - self.ARROWS:
+            self.stepBy(1 if event.position().y() < self.height() / 2 else -1)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 def summary(transition: Transition) -> str:
     """What the Live chip says: the kind, and its length when it has one."""
     label = dict((k, name) for k, name, _tip in KINDS)[transition.kind]
@@ -403,7 +435,7 @@ class TransitionsPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(12)
-        self.setStyleSheet(FIELD_STYLE)
+        self.setStyleSheet(FIELD_STYLE + (f"QLabel {{ color: {theme.MUTED}; }}" if compact else ""))
 
         grid = QGridLayout()
         grid.setSpacing(6)
@@ -430,7 +462,17 @@ class TransitionsPanel(QWidget):
         self.kind_pick: QPushButton | None = None
         if compact:
             self.kind_pick = QPushButton()
-            self.kind_pick.setStyleSheet(PILL_STYLE)
+            self.kind_pick.setStyleSheet(COMBO_STYLE)
+            from sprigcast.app import icons
+
+            chevron = QLabel(self.kind_pick)
+            chevron.setPixmap(icons.pixmap("chevron-down", theme.MUTED, 16))
+            chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            chevron.setStyleSheet("background: transparent;")
+            inside = QHBoxLayout(self.kind_pick)
+            inside.setContentsMargins(0, 0, 16, 0)
+            inside.addStretch(1)
+            inside.addWidget(chevron)
             self.kind_pick.setCursor(Qt.CursorShape.PointingHandCursor)
             self.kind_pick.setToolTip("How blooms change on air")
             menu = QMenu(self.kind_pick)
@@ -454,15 +496,20 @@ class TransitionsPanel(QWidget):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.form = form
         if self.kind_pick is not None:
-            form.addRow("Type", self.kind_pick)
+            root.addWidget(self.kind_pick)  # the name alone says what it is: no "Type" label
 
-        self.length = QSpinBox()
+        self.length = ChevronSpin() if compact else QSpinBox()
         self.length.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.length.setRange(50, 5000)
         self.length.setSingleStep(50)
         self.length.setSuffix(" ms")
         self.length.valueChanged.connect(self._edit)
-        form.addRow("Length", self.length)
+        form.addRow("Duration" if compact else "Length", self.length)
+        if compact:
+            self.length.setStyleSheet(FIELD_STYLE.replace("padding: 6px 14px", f"padding: 9px {ChevronSpin.ARROWS}px 9px 18px")
+                                      .replace("border-radius: 13px", "border-radius: 19px")
+                                      + "QSpinBox { font-weight: 600; }")
+            self.length.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         arrows = QWidget()
         row = QHBoxLayout(arrows)
@@ -540,13 +587,8 @@ class TransitionsPanel(QWidget):
             # Everything deeper (direction, edge, images, stinger clips and sound) lives in a pop-up.
             self.clip_note = QLabel("")
             self.clip_note.setStyleSheet(theme.MUTED_STYLE)
-            form.insertRow(2, "Clip", self.clip_note)
-            self.more_button = QPushButton("More settings…")
-            self.more_button.setStyleSheet(PILL_STYLE)
-            self.more_button.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.more_button.setToolTip("Direction, edge, wipe image, stinger clips and sound")
-            self.more_button.clicked.connect(self.open_settings)
-            root.addWidget(self.more_button)
+            form.insertRow(1, "Clip", self.clip_note)
+            # Direction, edge, wipe image, stinger clips and sound: the gear on the card's title opens them.
         self.rules_button: QPushButton | None = None
         if collection is not None:
             # The table of bloom-to-bloom rules opens in its own pop-up: there's no room for it here.
@@ -557,7 +599,12 @@ class TransitionsPanel(QWidget):
             row.addWidget(label)
             self.rules_count = QLabel("")
             self.rules_count.setStyleSheet(theme.MUTED_STYLE)
-            row.addWidget(self.rules_count, 1)
+            if compact:
+                label.setStyleSheet(theme.MUTED_STYLE)
+                row.setSpacing(16)
+            row.addWidget(self.rules_count, 0 if compact else 1)
+            if compact:
+                row.addStretch(1)
             self.rules_button = QPushButton("Edit")
             self.rules_button.setStyleSheet(PILL_STYLE)
             self.rules_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -692,8 +739,18 @@ class TransitionsPanel(QWidget):
     def show_rule_count(self) -> None:
         if self.collection is None:
             return
-        count = len(self.collection.transition_rules)
-        self.rules_count.setText(f"{count} rule{'s' if count != 1 else ''}" if count else "None")
+        rules = self.collection.transition_rules
+        count = len(rules)
+        if not self.compact:
+            self.rules_count.setText(f"{count} rule{'s' if count != 1 else ''}" if count else "None")
+            return
+        # Live's card: a small green "N active" chip, or a muted "None" (the rules themselves are under Edit).
+        self.rules_count.setText(f"{count} active" if count else "None")
+        self.rules_count.setStyleSheet(
+            f"color: {theme.ACCENT}; background: {theme.SELECT_BG}; border-radius: 11px; padding: 0 10px;"
+            " font-weight: 600; font-size: 12px;" if count else theme.MUTED_STYLE)
+        self.rules_count.setFixedHeight(22)
+        self.rules_count.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
 
     def popup(self, tab: str = "transition") -> "PopUp":
         """The pop-up: a "Transition" tab with every setting and a "Between blooms" tab with the table.
@@ -746,7 +803,7 @@ class TransitionsPanel(QWidget):
     def _show_kind(self) -> None:
         if self.kind_pick is not None:
             label = dict((k, name) for k, name, _tip in KINDS)[self.transition.kind]
-            self.kind_pick.setText(f"{label}  ▾")
+            self.kind_pick.setText(label)
 
     def _pick(self, kind: str) -> None:
         self.transition.kind = kind

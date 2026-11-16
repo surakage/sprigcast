@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import queue
@@ -632,7 +633,16 @@ class MainWindow(QMainWindow):
         from sprigcast.render.stinger import probe
 
         card = self.live_stage.transitions_card
-        card.layout().addWidget(heading("Transitions"))
+        title = QHBoxLayout()
+        title.addWidget(heading("Transitions"), 1)
+        gear = QPushButton()
+        gear.setIcon(icons.icon("gear", theme.MUTED, 16))
+        gear.setStyleSheet(theme.LINK_STYLE)
+        gear.setCursor(Qt.CursorShape.PointingHandCursor)
+        gear.setToolTip("Direction, edge, wipe image, stinger clips and sound")
+        gear.clicked.connect(lambda: self.live_transitions.open_settings())
+        title.addWidget(gear)
+        card.layout().addLayout(title)
         self.live_transitions = TransitionsPanel(self.collection.transition,
                                                  lambda: self._transition_edited(self.live_transitions), probe,
                                                  collection=self.collection, compact=True)
@@ -1823,7 +1833,9 @@ class MainWindow(QMainWindow):
                                   self._toggle_camera, self._camera_settings)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_side.on_health = lambda: self._open_health()
-        self.live_side.set_health_link(bool(self._health_records()))
+        self.live_side.on_screenshot = lambda: self._screenshot()
+        self.live_side.on_view = self._set_live_view
+        self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
         self.live_stage = LiveStage(self.live_side)
         self.live_tiles = QScrollArea()
         self.live_tiles.setWidgetResizable(True)
@@ -1877,8 +1889,10 @@ class MainWindow(QMainWindow):
 
     def _share_stage(self) -> None:
         """Give each canvas stage width in proportion to its shape, so a 16:9 and a 9:16 both fill the height."""
-        shown = [c for c in self.collection.canvases if c.enabled]
+        shown = [c for c in self.collection.canvases if c.enabled and self.canvas_columns[c.id].isVisibleTo(self.splitter)]
         if len(shown) < 2:
+            for preview in self.previews.values():
+                preview.align = "center"  # one canvas: in the middle of the stage
             return
         total = self.splitter.width()
         order = [self.splitter.widget(i) for i in range(self.splitter.count())]
@@ -1989,7 +2003,8 @@ class MainWindow(QMainWindow):
             if sum(1 for o in streams if o.service == output.service) > 1:  # two Twitch rows: say which shape
                 name += f" · {output.canvas}"
             places.append(Destination(output.id, name, output.enabled, note, output.canvas,
-                                      output.bandwidth_test if service.bandwidth_test else None))
+                                      output.bandwidth_test if service.bandwidth_test else None,
+                                      output.service or "custom"))
         self.live_side.show_destinations(places, levels or {})
         if self.streaming is None and hasattr(self, "mode_clock"):
             ready = sum(1 for p in places if p.on and p.note == "Ready")
@@ -2106,6 +2121,14 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bar.addWidget(spacer)
+        self.mode_clock = QLabel("")
+        bar.addWidget(self.mode_clock)
+        # Garden check, Record and Go live: always at hand, in Live and in Build.
+        bar.addWidget(self.live_side.header_box)
+        divider = QFrame()
+        divider.setFixedSize(1, 24)
+        divider.setStyleSheet(f"background: {theme.EDGE_STRONG};")
+        bar.addWidget(divider)
         self.screenshot_button = QToolButton()
         self.screenshot_button.setIcon(icons.icon("shutter", theme.MUTED, 18))
         self.screenshot_button.setIconSize(QSize(18, 18))
@@ -2135,18 +2158,22 @@ class MainWindow(QMainWindow):
         self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_button.clicked.connect(lambda: self._open_settings())
         bar.addWidget(self.settings_button)
-        self.mode_clock = QLabel("")
-        bar.addWidget(self.mode_clock)
         self._set_header_clock("Offline", False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
 
     def _set_header_clock(self, text: str, live: bool) -> None:
+        if not live:
+            self._offline_clock = text
+            if getattr(self, "_side_parts", None):
+                return  # recording: the clock stays (see _side_status)
+        self.mode_clock.setTextFormat(Qt.TextFormat.PlainText)
         self.mode_clock.setText(text)
         font = self.mode_clock.font()
         font.setPixelSize(16 if live else 13)
         font.setWeight(font.Weight.DemiBold if live else font.Weight.Normal)
         self.mode_clock.setFont(font)
         self.mode_clock.setStyleSheet(f"color: {theme.LIVE_TEXT if live else theme.MUTED}; padding-left: 6px;")
+        self.mode_clock.setMinimumWidth(self.mode_clock.sizeHint().width())
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -2163,9 +2190,25 @@ class MainWindow(QMainWindow):
             preview.editable = editable
             preview.update()
         self._apply_canvas_view()
+        self.screenshot_button.setVisible(mode == "build")  # Live has Screenshot under its canvases
         QSettings().setValue("window/mode", mode)
 
     # Build mode's canvas tabs ---------------------------------------------------------
+
+    def _live_view(self) -> str:
+        """Which canvases Live's stage shows: "both", or one canvas id (only one that is switched on)."""
+        enabled = [c.id for c in self.collection.canvases if c.enabled]
+        view = str(QSettings().value("live/canvas_view", "both") or "both")
+        if len(enabled) < 2:
+            return enabled[0] if enabled else "both"
+        return view if view == "both" or view in enabled else "both"
+
+    def _set_live_view(self, view: str) -> None:
+        QSettings().setValue("live/canvas_view", view)
+        self._apply_canvas_view()
+        if self.mode == "live":
+            QTimer.singleShot(0, self._share_stage)
+        self.live_panel.show_scenes(self.collection)
 
     def _apply_canvas_view(self) -> None:
         """Build shows only the canvas of the current tab; Live shows every canvas side by side."""
@@ -2173,10 +2216,16 @@ class MainWindow(QMainWindow):
         self.canvas_tabs_row.setVisible(False)
         # The shape tabs only show when both shapes are on (nothing to switch between otherwise).
         self.canvas_tabs.setVisible(sum(c.enabled for c in self.collection.canvases) > 1)
+        view = self._live_view()
+        self.live_side.set_view(view, sum(c.enabled for c in self.collection.canvases) > 1)
+        self.live_stage.set_blooms_wide(view == "both")
+        self.live_panel.set_view(view)
         for canvas in self.collection.canvases:
             column = self.canvas_columns[canvas.id]
             # Build shows just the shape on the tab you're on; the other one isn't drawn (or rendered) at all.
-            column.setVisible(canvas.enabled and (not build or canvas.id == self.build_canvas))
+            # Live shows both, or just the one picked under the stage.
+            column.setVisible(canvas.enabled and (canvas.id == self.build_canvas if build else
+                                                  view in ("both", canvas.id)))
             preview = self.previews[canvas.id]
             twin = build and canvas.id != self.build_canvas
             preview.twin = twin
@@ -2535,6 +2584,7 @@ class MainWindow(QMainWindow):
         self.meter_label.setText(describe(self.last_resources))
         self.live_side.stats.setText(describe(self.last_resources))
         warning = ram_warning(self.last_resources)
+        self._refresh_garden(bool(warning))
         self.meter_label.setStyleSheet(f"color: {theme.WARN}" if warning else "")
         self.meter_label.setToolTip(warning or self._meter_tip)
         if warning and not self._warned_ram:
@@ -5122,22 +5172,32 @@ class MainWindow(QMainWindow):
                 notes.append(note)
                 warn = True
         self.live_panel.set_recording("  ·  ".join([text, *notes]))
-        self._side_status("rec", seconds, "  ·  ".join([codec, *notes]), warn)
+        self._side_status("rec", seconds, "  ·  ".join(notes), warn)
+        self.mode_clock.setToolTip(f"Recording with {codec}")
 
     def _side_status(self, kind: str, seconds: int | None, details: str = "", warn: bool = False) -> None:
-        """The Go live card's one clock (whichever of the stream and the recording has run longest) and
-        the details of both under it, so streaming and recording at once never shows only one."""
+        """The header's one clock while live or recording (whichever has run longest, no label: the pink
+        Record and End stream buttons beside it say which), then the details of both."""
         parts = self.__dict__.setdefault("_side_parts", {})
         if seconds is None:
             parts.pop(kind, None)
         else:
             parts[kind] = (seconds, details, warn)
         if not parts:
-            self.live_side.set_status(None)
+            self._set_header_clock(getattr(self, "_offline_clock", "Offline"), False)
             return
         shown = [parts[k] for k in ("live", "rec") if k in parts]
-        self.live_side.set_status(max(p[0] for p in shown), "  ·  ".join(p[1] for p in shown if p[1]),
-                                  any(p[2] for p in shown))
+        top = max(p[0] for p in shown)
+        clock = f"{top // 3600}:{top // 60 % 60:02d}:{top % 60:02d}"
+        text = f'<span style="color:{theme.LIVE_TEXT}; font-weight:700; font-size:16px">●&nbsp;&nbsp;{clock}</span>'
+        for _seconds, note, warned in shown:
+            if note:
+                text += (f'<span style="color:{theme.WARN if warned else theme.MUTED}">'
+                         f"&nbsp;&nbsp;·&nbsp;&nbsp;{html.escape(note)}</span>")
+        self.mode_clock.setStyleSheet("padding-left: 6px;")
+        self.mode_clock.setTextFormat(Qt.TextFormat.RichText)
+        self.mode_clock.setText(text)
+        self.mode_clock.setMinimumWidth(self.mode_clock.sizeHint().width())
 
     # Streaming -----------------------------------------------------------------
 
@@ -5337,7 +5397,6 @@ class MainWindow(QMainWindow):
         self.live_stage.card.set_notice("", "")
         if health is not None and seconds >= 10:  # not for a start that never got going
             health.finish(QSettings())
-        self.live_side.set_health_link(bool(self._health_records()))
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()
@@ -5374,12 +5433,13 @@ class MainWindow(QMainWindow):
         import re
 
         sending = [int(m.group(1)) for _level, text in states.values() if (m := re.match(r"(\d+) kbps", text))]
-        line = clock.replace("● LIVE", "● Live")
+        # How many places are getting the stream (the upload they add up to is in the tooltip).
+        details = f"{len(sending)} of {len(states)} sending" if sending else ""
+        if worst != "good":
+            details = "  ·  ".join(filter(None, [details, "check Destinations"]))
+        self._side_status("live", seconds, details, worst != "good")
         if sending:
-            # How many places are getting the stream, and the upload they add up to.
-            line += f"  ·  {len(sending)} of {len(states)} sending  ·  {sum(sending) / 1000:.1f} Mbps up"
-        self._set_header_clock(line + ("" if worst == "good" else "  ·  check Destinations"), True)
-        self._side_status("live", seconds, "" if worst == "good" else "Check Destinations", worst != "good")
+            self.mode_clock.setToolTip(f"{sum(sending) / 1000:.1f} Mbps up in all")
 
     # Hotkeys -----------------------------------------------------------------
 
@@ -5612,6 +5672,7 @@ class MainWindow(QMainWindow):
             word, colour = "Busy", theme.WARN
         else:
             word, colour = "Smooth", theme.ACCENT
+        self._render_word = word
         self.status.setText(f'<span style="color:{colour}">●</span>'
                             f'<span style="color:{theme.MUTED}">&nbsp;&nbsp;{word}</span>')
         self.stats_strip.setToolTip(f"{event.fps:.0f} of {target} frames a second  ·  each frame takes "
@@ -5787,10 +5848,38 @@ class MainWindow(QMainWindow):
         return health.load(QSettings())
 
     def _open_health(self):
-        """How the last few streams went: drops, reconnects, peak memory and hitches."""
-        from sprigcast.app.health_page import health_popup
+        """How the last few streams went: the Garden check, on its Stream health tab."""
+        return self._open_garden_check("health")
 
-        pop = health_popup(self._health_records(), self, self._open_logs)
+    def _dropped_now(self) -> int:
+        dropped = sum(int(getattr(st, "dropped", 0)) for _, st in self.streaming.streamers) if self.streaming else 0
+        return dropped + (int(self.recording.dropped) if self.recording is not None else 0)
+
+    def _refresh_garden(self, ram_high: bool = False) -> None:
+        """The header's Garden check pill: CPU, memory and dropped frames, coloured by how things are going."""
+        sample = getattr(self, "last_resources", None) or {}
+        dropped = self._dropped_now()
+        parts = []
+        if sample:
+            parts += [f"CPU {sample['cpu']:.1f}%", f"{sample['ram_mb']:.0f} MB"]
+        parts.append(f"{dropped} dropped")
+        word = getattr(self, "_render_word", "Smooth")
+        level = "bad" if ram_high or word == "Struggling" else "warning" if dropped or word == "Busy" else "good"
+        self.live_side.garden.set_numbers("  ·  ".join(parts), level, sample.get("cpu"))
+
+    def _open_garden_check(self, tab: str = "now"):
+        """Every number (render, CPU, memory, each output) and the last streams' health, in one pop-up."""
+        from sprigcast.app.health_page import garden_check_popup
+
+        def refresh(panel) -> None:
+            outputs = []
+            if self.streaming is not None:
+                outputs += [(f"Stream: {st.name}", st) for _, st in self.streaming.streamers]
+            if self.recording is not None:
+                outputs += [(f"Recording: {canvas_id}", rec) for canvas_id, rec in self.recording.recorders]
+            panel.refresh(self._last_stats, outputs, self._recordings_folder())
+
+        pop = garden_check_popup(self._health_records(), refresh, self, self._open_logs, tab)
         pop.open()
         return pop
 

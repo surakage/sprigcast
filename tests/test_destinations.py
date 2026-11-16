@@ -56,7 +56,11 @@ def test_live_panel_scene_buttons(app):
     picked = []
     panel = LivePanel(picked.append)
     panel.show_scenes(col)
-    assert set(panel.buttons) == {"h1", "h2"}  # v1 is linked to h1: its tile switches both
+    assert set(panel.buttons) == {"h1", "h2", "v1"}  # a list per canvas: v1 (linked to h1) switches both
+    assert panel.buttons["v1"].key == ""  # a linked twin has no number of its own
+    panel.set_view("horizontal")
+    assert set(panel.buttons) == {"h1", "h2"}  # only the canvas on the stage
+    panel.set_view("both")
     assert panel.buttons["h1"].isChecked() and not panel.buttons["h2"].isChecked()
     assert "Main (vertical)" in panel.buttons["h1"].toolTip()
     panel.buttons["h2"].click()
@@ -402,9 +406,11 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         switch = side.place_rows["tt"][3]
         assert side.place_rows["tw"][3].isChecked() and not switch.isChecked()
         switch.click()  # turn TikTok on from Live
-        assert col.outputs[1].enabled and side.place_rows["tt"][2].text() != "Off"
+        assert col.outputs[1].enabled and not side.place_rows["tt"][2].text().endswith(">off</span>")
         side.place_rows["tw"][3].click()
-        assert not col.outputs[0].enabled and side.place_rows["tw"][2].text() == "Off"
+        note = side.place_rows["tw"][2].text()  # the shape, then how it's doing
+        assert not col.outputs[0].enabled and note.startswith("Horizontal") and note.endswith(">off</span>")
+        assert side.place_rows["tw"][0].text() == "Tw"  # the platform's little tile
         # Edit opens the list on the first one; only + Add makes a new one.
         w._edit_destination(None)
         assert opened == ["tw"] and len(col.outputs) == 2  # opening settings adds nothing
@@ -419,7 +425,7 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         assert col.outputs[3].twitch_account and len(opened) == 2
         # Edit works right here: shape, test mode and remove (twice) without opening Settings.
         side.manage.click()
-        assert side.editing and side.manage.text() == "Done" and side.all_settings.isVisibleTo(side)
+        assert side.editing and side.manage.text() == "Done" and side.all_settings.isVisibleTo(side.where_card)
         tools = side.place_tools["tw"]
         tools["shape"].click()
         assert col.outputs[0].canvas == "vertical" and side.place_tools["tw"]["shape"].text() == "Vertical"
@@ -630,15 +636,13 @@ def test_clip_saves_the_shapes_chosen_in_settings(app, tmp_path, monkeypatch):
         assert [c.id for c in w._clip_canvases()] == ["vertical"]
         col.recording.clip_shapes = "horizontal"
         assert [c.id for c in w._clip_canvases()] == ["horizontal"]
-        from sprigcast.app.live_stage import CARD_PILL_STYLE, CARD_SELECTED_STYLE
-
         w.live_side.set_clip(True, 45)  # on and off show by colour; the label never changes
-        assert w.live_side.clip.text() == "Clips" and w.live_side.clip.styleSheet() == CARD_SELECTED_STYLE
+        assert w.live_side.clip.text() == "Clip" and w.live_side.clip.isChecked()
         assert "45 s" in w.live_side.clip.toolTip()
         w.live_side.set_clip(False, 45)
-        assert w.live_side.clip.text() == "Clips" and w.live_side.clip.styleSheet() == CARD_PILL_STYLE
+        assert w.live_side.clip.text() == "Clip" and not w.live_side.clip.isChecked()
         w.live_side.clip_saved(2)
-        assert w.live_side.clip.text() == "Clips"
+        assert w.live_side.clip.text() == "Clip"
         w.live_side.set_recording(True)
         assert w.live_side.record.text() == "Record"
         w.live_side.set_recording(False)

@@ -265,6 +265,7 @@ class LivePanel(QWidget):
             shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
             shortcut.activated.connect(lambda n=n: self._number(n))
         self._signature: tuple = ()
+        self.view = "both"  # which canvases Live's stage shows; the list follows it
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
@@ -296,6 +297,13 @@ class LivePanel(QWidget):
         root.addLayout(self.rows)
         root.addStretch(1)
 
+    def set_view(self, view: str) -> None:
+        """"both": a column per canvas; a canvas id: just that canvas's blooms."""
+        self.view = view
+        collection = getattr(self, "_collection", None)
+        if collection is not None:
+            self.show_scenes(collection)
+
     def _number(self, n: int) -> None:
         if 0 < n <= len(self.number_order) and self.isVisible():
             self.on_scene(self.number_order[n - 1])
@@ -310,7 +318,7 @@ class LivePanel(QWidget):
         signature = (tuple((s.id, s.name, s.canvas, s.kind, s.folder, s.linked_to) for s in collection.scenes),
                      tuple((f.id, f.name, f.colour, f.live) for f in collection.folders),
                      tuple((p.id, p.name, tuple(s.name for s in p.states)) for p in collection.parts()),
-                     tuple(c.id for c in collection.canvases if c.enabled),
+                     tuple(c.id for c in collection.canvases if c.enabled), self.view,
                      tuple(sorted((collection.hotkeys or {}).items())))
         if signature != self._signature:
             self._signature = signature
@@ -341,28 +349,41 @@ class LivePanel(QWidget):
         self.buttons = {}
         self.state_buttons = {}
         self.number_order = []
-        sections, shown = [], set()
+        sections = []
         for canvas in collection.canvases:
-            if not canvas.enabled:
-                continue  # switched off with Settings → Show canvases
-            # A bloom linked to one already shown switches with it, so it needs no tile of its own.
-            groups = [(f, [s for s in shows if s.linked_to not in shown])
-                      for f, shows in collection.live_scenes(canvas.id)]
-            groups = [(f, shows) for f, shows in groups if shows]
-            shown |= {s.id for _f, shows in groups for s in shows}
+            if not canvas.enabled or self.view not in ("both", canvas.id):
+                continue  # switched off with Settings → Show canvases, or not shown on the stage
+            # Every bloom in its canvas's list, linked ones too (⇄: clicking either switches both).
+            groups = [(f, shows) for f, shows in collection.live_scenes(canvas.id) if shows]
             if groups:
                 sections.append((canvas, groups))
+        # A list per canvas: side by side when both show, each with its shape over it.
+        columns_box = QWidget()
+        columns = QHBoxLayout(columns_box)
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(16)
         for canvas, groups in sections:
-            if len(sections) > 1:
+            column = QVBoxLayout()
+            column.setSpacing(6)
+            if len(sections) > 1 or self.view != "both":
                 title = QLabel(canvas.id.capitalize())
-                title.setStyleSheet(theme.MUTED_STYLE + "; margin-left: 4px;")
-                self.rows.addWidget(title)
+                title.setStyleSheet(theme.MUTED_STYLE + "; background: transparent;")
+                head = QHBoxLayout()
+                head.setSpacing(6)
+                mark = QLabel()
+                mark.setPixmap(icons.pixmap("portrait" if canvas.height > canvas.width else "landscape", theme.MUTED, 14))
+                head.addWidget(mark)
+                head.addWidget(title, 1)
+                column.addLayout(head)
             for folder, group in groups:
                 if folder is not None and len(groups) > 1:  # one Live folder needs no heading
                     heading = QLabel(f"●  {folder.name}")
                     heading.setStyleSheet(f"color: {folder.colour}; font-weight: bold; margin: 4px 0 0 4px;")
-                    self.rows.addWidget(heading)
-                self._add_grid(group, folder.colour if folder is not None else None)
+                    column.addWidget(heading)
+                self._add_list(column, group, folder.colour if folder is not None else None)
+            column.addStretch(1)
+            columns.addLayout(column, 1)
+        self.rows.addWidget(columns_box)
         self._add_state_rows(collection)
 
     def _add_state_rows(self, collection: SceneCollection) -> None:
@@ -397,9 +418,20 @@ class LivePanel(QWidget):
             row.addWidget(flow_box, 1)
             self.rows.addWidget(row_box)
 
+    def _add_list(self, column: QVBoxLayout, scenes, colour: str | None = None) -> None:
+        """The blooms as a list, one full-width row each."""
+        for button in self._tiles(scenes, colour):
+            column.addWidget(button)
+
     def _add_grid(self, scenes, colour: str | None = None) -> None:
         flow_box = QWidget()
         flow = FlowLayout(flow_box, spacing=8)
+        for button in self._tiles(scenes, colour):
+            flow.addWidget(button)
+        self.rows.addWidget(flow_box)
+
+    def _tiles(self, scenes, colour: str | None = None) -> list:
+        tiles = []
         tint = QColor(colour).darker(260).name() if colour else None
         for scene in scenes:
             button = BloomTile(scene.name + ("  ⇄" if scene.linked_to else ""), tint)
@@ -412,7 +444,7 @@ class LivePanel(QWidget):
             from sprigcast.app.hotkeys import SCENE_PREFIX
 
             combo = (self._collection.hotkeys or {}).get(SCENE_PREFIX + scene.id, "")
-            if len(self.number_order) < 9:
+            if len(self.number_order) < 9 and not scene.linked_to:  # a linked twin switches with its partner's key
                 self.number_order.append(scene.id)
                 combo = combo or str(len(self.number_order))
             button.set_key(combo)
@@ -423,8 +455,8 @@ class LivePanel(QWidget):
             button.customContextMenuRequested.connect(
                 lambda pos, sid=scene.id, b=button: self.scene_menu(sid).exec(b.mapToGlobal(pos)))
             self.buttons[scene.id] = button
-            flow.addWidget(button)
-        self.rows.addWidget(flow_box)
+            tiles.append(button)
+        return tiles
 
     def scene_menu(self, scene_id: str) -> QMenu:
         """A bloom tile's right-click menu: things you do with a bloom while live (editing is in Build)."""

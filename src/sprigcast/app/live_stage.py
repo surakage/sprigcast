@@ -1,14 +1,16 @@
-"""Live mode's own screen: the stage, the bloom tiles under it, and a calm column on the right.
+"""Live mode's own screen: the stage with Chat beside it, and a row of cards under both.
 
-    ┌ stage ─────────────────────────────────────┐ ┌ End stream ┐
-    │ horizontal program   vertical program      │ │ Record  Clip│
-    │                                            │ │ Destinations 
-    └────────────────────────────────────────────┘ │ Sound       │
-    [Just Chatting] [Gaming] [BRB] [Ending] …      │ CPU · RAM   │
+    header: … ● 1:56:14 · 2 of 2 sending   [Garden check]  [Record]  [Go live]
+    ┌ stage ─────────────────────────────────────┐ ┌ Chat ───────┐
+    │ horizontal program   vertical program      │ │             │
+    │ [Both|Horizontal|Vertical]  [Clip|Screenshot|Virtual Cam] │
+    └────────────────────────────────────────────┘ └─────────────┘
+    [Blooms] [Sound] [Transitions]                  [Destinations]
 
-No docks: the main window moves its canvas previews and the Live panel (bloom tiles) in here when
-Live mode starts, and back when Build mode starts. Panels you pick in the Panels menu (chat, activity)
-fill the bottom of the right column (app/panels.py); CPU and memory live in the strip along the bottom.
+No docks: the main window moves its canvas previews and the bloom list in here when Live mode starts,
+and back when Build mode starts. Panels you pick in the Panels menu (chat, activity) fill the column
+beside the stage (app/panels.py). The header widgets (header_box) and the bar under the canvases
+(stage_bar) belong to LiveSide; the main window and LiveStage place them.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -33,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import icons, theme
 
-SIDE_WIDTH = 350  # Chat on top, the Go live card below
+SIDE_WIDTH = 360  # Chat beside the canvases, Destinations under it
 BOTTOM_HEIGHT = 300  # the Blooms | Sound | Transitions row under the canvas
 GAP = 20
 
@@ -77,34 +79,157 @@ def heading(text: str, size: int = 14) -> QLabel:
     return label
 
 
-# Pills on a PANEL card are one step lighter, so they read as buttons.
-def _snug(style: str) -> str:
-    """A pill a little shorter than the usual, so the Go live card fits beside the row under the canvas."""
-    return style.replace("padding: 10px 14px", "padding: 7px 14px").replace("border-radius: 19px", "border-radius: 16px")
-
-
-CARD_PILL_STYLE = _snug(theme.PILL_STYLE) + (
-    f"QPushButton {{ background: {theme.RAISED}; }} QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-)
-CARD_ON_AIR_STYLE = _snug(theme.PILL_ON_AIR_STYLE)
-CARD_SELECTED_STYLE = _snug(theme.PILL_SELECTED_STYLE)
-CARD_PILL_HEIGHT = 34  # at least twice the 16 px radius, or Qt draws square corners
-# Virtual Cam and its gear share one mini card, so the gear reads as the camera's settings.
-_LEFT_HALF = "QPushButton { border-top-right-radius: 0; border-bottom-right-radius: 0; }"
-CAM_STYLE = CARD_PILL_STYLE + "QPushButton { background: transparent; }" + _LEFT_HALF
-CAM_ON_STYLE = CARD_SELECTED_STYLE + _LEFT_HALF
-CAM_GEAR_STYLE = CARD_PILL_STYLE + (
-    "QPushButton { background: transparent; border-top-left-radius: 0; border-bottom-left-radius: 0;"
-    " padding: 7px 10px; }"
-)
-
-
 def pill(text: str, style: str = "") -> QPushButton:
     button = QPushButton(text)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setStyleSheet(style or theme.PILL_STYLE)
     return button
 
+
+# The header's Record and Go live: shorter than the old card's big button, still round (radius = half).
+HEADER_PILL_HEIGHT = 40
+HEADER_RECORD_STYLE = (
+    f"QPushButton {{ background: {theme.PANEL}; color: {theme.TEXT}; border: none; border-radius: 20px;"
+    f" padding: 0 20px; font-weight: 600; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED}; }}"
+)
+HEADER_RECORDING_STYLE = HEADER_RECORD_STYLE + (
+    f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; }} QPushButton:hover {{ background: {theme.LIVE_HOVER}; }}"
+)
+HEADER_GO_STYLE = (
+    f"QPushButton {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border: none; border-radius: 20px;"
+    f" padding: 0 26px; font-size: 15px; font-weight: 700; }}"
+    f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}"
+    f"QPushButton:disabled {{ background: {theme.PANEL}; color: {theme.MUTED}; }}"
+)
+HEADER_END_STYLE = HEADER_GO_STYLE + (
+    f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; }} QPushButton:hover {{ background: {theme.LIVE_HOVER}; }}"
+)
+
+VIEWS = (  # (key, label, icon, tooltip): which canvases Live's stage shows
+    ("both", "Both", "dual", "Show both canvases"),
+    ("horizontal", "Horizontal", "landscape", "Show only the horizontal canvas, bigger"),
+    ("vertical", "Vertical", "portrait", "Show only the vertical canvas, bigger"),
+)
+
+
+def _dot_icon(colour: str, size: int = 10) -> QIcon:
+    pix = QPixmap(size * 2, size * 2)
+    pix.setDevicePixelRatio(2)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(colour))
+    p.drawEllipse(QRectF(1, 1, size - 2, size - 2))
+    p.end()
+    return QIcon(pix)
+
+
+BAR_BUTTON_STYLE = (
+    f"QPushButton {{ background: transparent; color: {theme.TEXT}; border: none; border-radius: 16px;"
+    f" padding: 0 14px; font-weight: 600; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+)
+BAR_HEIGHT = 32  # radius 16: round ends
+
+
+class BarGroup(QFrame):
+    """A soft pill holding a few quiet buttons (icon and a word), like a segmented control."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("barGroup")
+        self.setStyleSheet(f"#barGroup {{ background: {theme.RAISED}; border-radius: 20px; }}")
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(4, 4, 4, 4)
+        self.row.setSpacing(2)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+
+    def add(self, text: str, icon_name: str, tip: str, checkable: bool = False) -> QPushButton:
+        button = QPushButton(text)
+        button.setIcon(icons.icon(icon_name, theme.MUTED, 16))
+        button.setIconSize(QSize(16, 16))
+        button.setStyleSheet(BAR_BUTTON_STYLE)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(BAR_HEIGHT)
+        if not text:
+            button.setFixedWidth(BAR_HEIGHT + 4)
+            button.setStyleSheet(BAR_BUTTON_STYLE + "QPushButton { padding: 0; }")
+        button.setToolTip(tip)
+        button.setCheckable(True)  # the camera and clips show on/off; the view buttons pick one
+        if not checkable:
+            button.setCheckable(text in ("Clip", "Virtual Cam"))
+        self.row.addWidget(button)
+        return button
+
+
+class GardenCheck(QPushButton):
+    """The header's health pill: a leaf, "Garden check", the CPU, memory and dropped frames, and a few
+    small bars of recent CPU. Click it for every number and the last stream's health."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("gardenCheck")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(HEADER_PILL_HEIGHT)
+        self.setStyleSheet(f"#gardenCheck {{ background: {theme.PANEL}; border: none; border-radius: 20px; }}"
+                           f"#gardenCheck:hover {{ background: {theme.RAISED}; }}")
+        self.setToolTip("Garden check: how SprigCast and your streams are doing. Click for everything.")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 0, 16, 0)
+        row.setSpacing(8)
+        leaf = QLabel()
+        leaf.setPixmap(icons.pixmap("leaf", theme.ACCENT, 16))
+        self.title = QLabel("Garden check")
+        self.title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
+        self.numbers = QLabel("")
+        self.numbers.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        self.bars = _Bars()
+        for w in (leaf, self.title, self.numbers, self.bars):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            row.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.level = "good"
+
+    def set_numbers(self, text: str, level: str = "good", cpu: float | None = None) -> None:
+        """text: "CPU 4% · 209 MB · 0 dropped"; level: good, warning or bad (colours the bars)."""
+        self.numbers.setText(text)
+        self.level = level
+        if cpu is not None:
+            self.bars.push(cpu)
+        self.bars.colour = {"warning": theme.WARN, "bad": theme.BAD}.get(level, theme.ACCENT)
+        self.bars.update()
+        self.setMinimumWidth(self.layout().sizeHint().width())  # the header never squeezes the numbers
+        self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.layout().sizeHint().width(), HEADER_PILL_HEIGHT)
+
+
+class _Bars(QWidget):
+    """Five tiny bars: the last few CPU readings, so a climb shows at a glance."""
+
+    def __init__(self):
+        super().__init__()
+        self.values: list[float] = []
+        self.colour = theme.ACCENT
+        self.setFixedSize(30, 14)
+
+    def push(self, value: float) -> None:
+        self.values = (self.values + [max(0.0, value)])[-5:]
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(self.colour))
+        values = ([0.0] * 5 + self.values)[-5:]
+        top = max(20.0, *values)  # a quiet PC still shows small bars, a busy one fills them
+        for i, v in enumerate(values):
+            h = max(3.0, 14 * v / top)
+            p.drawRoundedRect(QRectF(i * 6.5, 14 - h, 3.5, h), 1.5, 1.5)
+        p.end()
 
 class ThinMeter(QWidget):
     """A 6 px rounded level bar: green, yellow when loud, pink when it's about to clip."""
@@ -149,6 +274,20 @@ class Destination:
     note: str  # "Ready", "Needs a stream key", or the live bitrate
     canvas: str = "horizontal"
     test: bool | None = None  # Twitch bandwidth test on/off; None where the service has none
+    service: str = ""  # twitch, youtube, kick, tiktok, x or custom: picks the little tile
+
+
+# Each place's tile: two letters on the platform's own colour.
+PLATFORM_TILES = {
+    "twitch": ("Tw", "#9146ff", "#ffffff"), "youtube": ("Yt", "#ff2d48", "#ffffff"),
+    "kick": ("K", "#53fc18", "#0b0f0d"), "tiktok": ("Tt", "#0b0f0d", "#ffffff"),
+    "x": ("X", "#0b0f0d", "#ffffff"),
+}
+
+
+def _sentence(note: str) -> str:
+    """ "Ready" -> "ready" after the shape; numbers and names like "OBS" stay as they are."""
+    return note[:1].lower() + note[1:] if note[:1].isupper() and not note[1:2].isupper() else note
 
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
@@ -173,7 +312,7 @@ def side_card() -> QFrame:
     return card
 
 
-PLACES_HEIGHT = 124  # five destinations; more scroll inside the card
+PLACES_HEIGHT = 200  # four destinations; more scroll inside the card
 
 
 class FitScroll(QScrollArea):
@@ -248,80 +387,70 @@ class LiveSide(QWidget):
         self.panel_slot.setContentsMargins(0, 0, 0, 0)
         root.addLayout(self.panel_slot, 1)
 
-        # One card: Go live, Record / Clips / Settings, then where the stream goes. The list scrolls
-        # inside the card past a few rows, so a long list never squeezes Chat below it.
+        # The Destinations card (bottom right). Go live, Record and the Garden check sit in the window's
+        # header (header_box); Clip, Screenshot and Virtual Cam in a small bar under the canvases (stage_bar).
         where_card = side_card()
         where = where_card.layout()
         where.setSpacing(10)
-        buttons = QVBoxLayout()
-        buttons.setSpacing(10)
-        self.live = pill("Go live", theme.BIG_GO_STYLE)
-        self.live.setFixedHeight(48)  # BIG_GO_STYLE radius is 24: any shorter and Qt squares the corners
-        self.live.clicked.connect(on_live)
-        buttons.addWidget(self.live)
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        self.record = pill("Record", CARD_PILL_STYLE)
+        self.header_box = QWidget()
+        head = QHBoxLayout(self.header_box)
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(12)
+        self.garden = GardenCheck()
+        head.addWidget(self.garden)
+        self.record = pill("Record", HEADER_RECORD_STYLE)
+        self.record.setIcon(_dot_icon(theme.MUTED))
         self.record.setToolTip("Record the canvases ticked in Controls, to your recordings folder")
         self.record.clicked.connect(on_record)
-        self.clip = pill("Clips", CARD_PILL_STYLE)
+        head.addWidget(self.record)
+        self.live = pill("Go live", HEADER_GO_STYLE)
+        self.live.setMinimumWidth(150)  # "End stream" fits, and Go live doesn't jump when it changes
+        self.live.clicked.connect(on_live)
+        head.addWidget(self.live)
+        for w in (self.record, self.live):
+            w.setFixedHeight(HEADER_PILL_HEIGHT)
+
+        # Under the canvases: which canvases to show, then Clip, Screenshot and Virtual Cam.
+        self.stage_bar = QWidget()
+        bar_box = QVBoxLayout(self.stage_bar)
+        bar_box.setContentsMargins(0, 0, 0, 0)
+        bar_box.setSpacing(6)
+        bar = QHBoxLayout()
+        bar.setSpacing(12)
+        bar_box.addLayout(bar)
+        self.on_view: Callable[[str], None] = lambda _view: None
+        self.view_group = BarGroup()
+        self.view_buttons: dict[str, QPushButton] = {}
+        for key, label, icon_name, tip in VIEWS:
+            button = self.view_group.add(label, icon_name, tip, checkable=True)
+            button.clicked.connect(lambda _=False, k=key: self._view_clicked(k))
+            self.view_buttons[key] = button
+        bar.addWidget(self.view_group)
+        self.tools_group = BarGroup()
+        self.clip = self.tools_group.add("Clip", "clip", "")
         self.clip.clicked.connect(on_clip)
         self._clip_on, self._clip_seconds = False, 30
-        row.addWidget(self.record)
-        row.addWidget(self.clip)
-        # Virtual camera sits beside Record and Clips; its gear picks what it shows (the same setting as
-        # Settings → Output → Virtual camera). Settings itself is the gear in the header.
-        self.camera_card = QFrame()
-        self.camera_card.setObjectName("camCard")
-        self.camera_card.setStyleSheet(f"#camCard {{ background: {theme.RAISED}; border-radius: 16px; }}")
-        card_row = QHBoxLayout(self.camera_card)
-        card_row.setContentsMargins(0, 0, 0, 0)
-        card_row.setSpacing(0)
-        self.camera = pill("Virtual Cam", CAM_STYLE)
-        self.camera.setToolTip("Virtual camera: show SprigCast as a camera in Zoom, Discord, TikTok LIVE Studio…")
+        self.on_screenshot: Callable[[], None] = lambda: None
+        self.screenshot = self.tools_group.add("Screenshot", "shutter", "Screenshot every canvas, to your Screenshots folder")
+        self.screenshot.clicked.connect(lambda: self.on_screenshot())
+        self.camera = self.tools_group.add("Virtual Cam", "camera", "")
         if on_camera is not None:
             self.camera.clicked.connect(on_camera)
-        card_row.addWidget(self.camera, 1)
-        divider = QFrame()
-        divider.setFixedSize(1, 18)
-        divider.setStyleSheet(f"background: {theme.PANEL};")
-        card_row.addWidget(divider, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.camera_settings = pill("", CAM_GEAR_STYLE)
-        self.camera_settings.setIcon(icons.icon("gear"))
-        self.camera_settings.setFixedWidth(40)
-        self.camera_settings.setToolTip("Virtual camera settings: what it shows")
+        self.camera_settings = self.tools_group.add("", "gear", "Virtual camera settings: what it shows")
         if on_camera_settings is not None:
             self.camera_settings.clicked.connect(on_camera_settings)
-        card_row.addWidget(self.camera_settings)
-        self.camera_card.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)  # snug, like a pill
-        # Qt squares the corners when the radius (16) is over half the height, and these pills are only
-        # ~29 px tall with the usual font: fix them at 34 so they're always round.
-        for w in (self.record, self.clip, self.camera, self.camera_settings, self.camera_card):
-            w.setFixedHeight(CARD_PILL_HEIGHT)
-        row.addWidget(self.camera_card)
-        self.camera_card.setVisible(on_camera is not None)
-        buttons.addLayout(row)
+        for w in (self.camera, self.camera_settings):
+            w.setVisible(on_camera is not None)
+        bar.addWidget(self.tools_group)
         self.camera_note = QLabel("")
         self.camera_note.setWordWrap(True)
+        self.camera_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.camera_note.setStyleSheet(f"color: {theme.WARN}; background: transparent;")
         self.camera_note.setVisible(False)
         self.camera_note.setOpenExternalLinks(True)  # "Open settings" for Windows camera privacy
-        buttons.addWidget(self.camera_note)
-        # While live or recording: one clock on its own line (no label), the details under it.
-        self.clock = QLabel("")
-        self.clock.setStyleSheet(f"color: {theme.LIVE_TEXT}; font-size: 15px; font-weight: 700;"
-                                 " background: transparent;")
-        self.clock.setVisible(False)
-        status = QVBoxLayout()
-        status.setSpacing(2)  # the details sit close under their clock
-        status.addWidget(self.clock)
-        self.rec_note = QLabel("")
-        self.rec_note.setWordWrap(True)  # a long note wraps instead of running off the card
-        self.rec_note.setVisible(False)
-        status.addWidget(self.rec_note)
-        buttons.addLayout(status)
-        where.addLayout(buttons)
-        where.addSpacing(4)
+        bar_box.addWidget(self.camera_note)
+        self.set_camera(False)
+        self.set_clip(False, 30)
         top = QHBoxLayout()
         top.addWidget(heading("Destinations"), 1)
         self.add_place = QPushButton("+ Add")
@@ -352,16 +481,9 @@ class LiveSide(QWidget):
         self.all_settings.clicked.connect(lambda: on_destination(None))
         self.all_settings.setVisible(False)
         where.addWidget(self.all_settings, 0, Qt.AlignmentFlag.AlignLeft)
-        self.on_health: Callable[[], None] = lambda: None
-        self.health_link = QPushButton("Last stream's health")
-        self.health_link.setStyleSheet(theme.LINK_STYLE)
-        self.health_link.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.health_link.setToolTip("Dropped frames, reconnects, peak memory and hitches from your last stream")
-        self.health_link.clicked.connect(lambda: self.on_health())
-        self.health_link.setVisible(False)
-        where.addWidget(self.health_link, 0, Qt.AlignmentFlag.AlignLeft)
-        root.addWidget(where_card)
-        self.where_card = where_card
+        self.on_health: Callable[[], None] = lambda: None  # the Garden check opens the last stream's health
+        where.addStretch(1)  # a short list sits at the top, its title level with Blooms, Sound and Transitions
+        self.where_card = where_card  # LiveStage puts it at the end of the row under the canvas
         self.place_rows: dict[str, tuple[QLabel, QLabel, QLabel, QCheckBox]] = {}
         self.place_tools: dict[str, dict[str, QPushButton]] = {}
         self._shape_key: tuple | None = None
@@ -387,13 +509,11 @@ class LiveSide(QWidget):
     # The buttons ------------------------------------------------------------------------
 
     def set_health_link(self, shown: bool) -> None:
-        """After a stream: a small link to how it went (hidden while live and before the first stream)."""
+        """Kept for older callers: the last stream's health is in the Garden check now."""
         self._has_health = shown
-        self.health_link.setVisible(shown and not self.is_live)
 
     def set_live(self, live: bool) -> None:
         self.is_live = live
-        self.health_link.setVisible(getattr(self, "_has_health", False) and not live)
         self.add_place.setEnabled(not live)
         if live and self.editing:
             self.set_editing(False)
@@ -401,13 +521,24 @@ class LiveSide(QWidget):
         for *_, switch in self.place_rows.values():
             switch.setEnabled(not live)  # a place joins or leaves only between streams
         self.live.setText("End stream" if live else "Go live")
-        self.live.setStyleSheet(theme.BIG_END_STYLE if live else theme.BIG_GO_STYLE)
+        self.live.setStyleSheet(HEADER_END_STYLE if live else HEADER_GO_STYLE)
+
+    def set_view(self, view: str, choices: bool) -> None:
+        """Which canvases the stage shows ("both", "horizontal", "vertical"); no choice with one canvas."""
+        for key, button in self.view_buttons.items():
+            button.setChecked(key == view)
+        self.view_group.setVisible(choices)
+
+    def _view_clicked(self, view: str) -> None:
+        for key, button in self.view_buttons.items():
+            button.setChecked(key == view)
+        self.on_view(view)
 
     def set_camera(self, on: bool, error: str = "") -> None:
         """Camera on (highlighted, not pink: pink is only for Live and Recording), or off with a short reason."""
         self.camera.setToolTip("Virtual camera on. Click to turn it off." if on else
                                "Virtual camera: show SprigCast as a camera in Zoom, Discord, TikTok LIVE Studio…")
-        self.camera.setStyleSheet(CAM_ON_STYLE if on else CAM_STYLE)
+        self.camera.setChecked(on)
         from sprigcast.output.virtualcam import PRIVACY_HINT, PRIVACY_PAGE
 
         if error == PRIVACY_HINT:
@@ -417,35 +548,24 @@ class LiveSide(QWidget):
 
     def set_recording(self, on: bool) -> None:
         """The button always says Record: pink means on."""
-        self.record.setStyleSheet(CARD_ON_AIR_STYLE if on else CARD_PILL_STYLE)
+        self.record.setStyleSheet(HEADER_RECORDING_STYLE if on else HEADER_RECORD_STYLE)
+        self.record.setIcon(_dot_icon("#ffffff" if on else theme.MUTED))
         self.record.setToolTip("Recording. Click to stop." if on else
                                "Record the canvases ticked in Controls, to your recordings folder")
 
-    def set_status(self, seconds: int | None, details: str = "", warn: bool = False) -> None:
-        """The clock (None hides it: not live or recording) and a details line under it."""
-        if seconds is None:
-            self.clock.setVisible(False)
-            self.rec_note.setVisible(False)
-            return
-        self.clock.setText(f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}")
-        self.clock.setVisible(True)
-        self.rec_note.setStyleSheet(f"color: {theme.WARN if warn else theme.MUTED}; background: transparent;")
-        self.rec_note.setText(details)
-        self.rec_note.setVisible(bool(details))
-
     def set_clip(self, on: bool, seconds: int) -> None:
-        """The button always says Clips: highlighted when ready (a click saves the last `seconds`)."""
+        """The button always says Clip: highlighted when ready (a click saves the last `seconds`)."""
         self._clip_on, self._clip_seconds = on, seconds
         self.clip.setToolTip(f"Clips on. Click to save the last {seconds} s (length and shapes: Settings → Recording)"
-                             if on else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clips can save it")
-        self.clip.setStyleSheet(CARD_SELECTED_STYLE if on else CARD_PILL_STYLE)
+                             if on else f"Get clips ready: SprigCast keeps the last {seconds} s, so Clip can save it")
+        self.clip.setChecked(on)
 
     def clip_saved(self, files: int) -> None:
-        """A short flash of the button (the status bar names the files); the label stays Clips."""
+        """A short flash of the button (the status bar names the files); the label stays Clip."""
         from PySide6.QtCore import QTimer
 
         if files:
-            self.clip.setStyleSheet(CARD_PILL_STYLE)
+            self.clip.setChecked(False)
             QTimer.singleShot(250, lambda: self.set_clip(self._clip_on, self._clip_seconds))
 
     # Destinations ---------------------------------------------------------------------------
@@ -479,23 +599,26 @@ class LiveSide(QWidget):
                 empty.clicked.connect(self._show_add_menu)
                 self.places.addWidget(empty)
             for place in places:
-                self.places.addWidget(self._place_row(place))
+                row = self._place_row(place)
+                self.places.addWidget(row)
+                row.show()  # now, so the list measures its rows straight away
+            self.places_scroll._fit()
         from sprigcast.app.destinations import HEALTH_COLORS
 
         for place in places:
-            dot, name, note, switch = self.place_rows[place.id]
+            tile, name, note, switch = self.place_rows[place.id]
             switch.blockSignals(True)
             switch.setChecked(place.on)
             switch.blockSignals(False)
             switch.setEnabled(not self.is_live)
             level = levels.get(place.id, "idle" if place.on else "off")
             colour = HEALTH_COLORS.get(level, HEALTH_COLORS['idle'])
-            dot.setStyleSheet(f"color: {colour}; background: transparent;")
-            # The note carries the health colour itself (Ready, Live, Slow...): no separate dot needed.
-            note.setStyleSheet(f"color: {colour if place.on and level != 'idle' else theme.MUTED}; background: transparent;")
             name.setText(place.name)
-            name.setStyleSheet(f"color: {theme.TEXT if place.on else theme.MUTED}; background: transparent;")
-            note.setText(place.note)
+            name.setStyleSheet(f"color: {theme.TEXT_BRIGHT if place.on else theme.TEXT}; font-weight: 600;"
+                               " background: transparent;")
+            # The second line: the shape, then how it's doing (the live bitrate in its health colour).
+            state = colour if place.on and level != "idle" else theme.MUTED
+            note.setText(f'{place.canvas.capitalize()}  ·  <span style="color:{state}">{_sentence(place.note)}</span>')
             tools = self.place_tools.get(place.id)
             if tools:
                 tall = place.canvas == "vertical"
@@ -508,7 +631,9 @@ class LiveSide(QWidget):
     def _place_row(self, place: Destination) -> QWidget:
         if not self.editing:
             box = QPushButton()
-            box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left; }")
+            # The row's height in the style sheet too: the app's QPushButton min-height would win at polish.
+            box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
+                              " min-height: 40px; max-height: 40px; }")
             box.setCursor(Qt.CursorShape.PointingHandCursor)
             box.setToolTip("Open this place's settings")
             box.clicked.connect(lambda _=False, pid=place.id: self.on_destination(pid))
@@ -518,22 +643,33 @@ class LiveSide(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
         line = QHBoxLayout()
-        line.setSpacing(10)
-        dot, name, note = QLabel("●"), QLabel(), QLabel()
-        for label in (dot, name, note):
+        line.setSpacing(12)
+        letters, fill, ink = PLATFORM_TILES.get(place.service, (place.name[:2], theme.RAISED_HOVER, theme.TEXT))
+        tile = QLabel(letters)
+        tile.setFixedSize(32, 32)
+        tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tile.setStyleSheet(f"background: {fill}; color: {ink}; border-radius: 10px; font-weight: 800;"
+                           f" border: 1px solid {theme.EDGE_STRONG if fill == theme.CHROME else fill};")
+        name, note = QLabel(), QLabel()
+        note.setTextFormat(Qt.TextFormat.RichText)
+        note.setStyleSheet(f"color: {theme.MUTED}; background: transparent; font-size: 12px;")
+        for label in (tile, name, note):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        words = QVBoxLayout()
+        words.setSpacing(1)
+        words.addWidget(name)
+        words.addWidget(note)
         switch = Switch()
         switch.setCursor(Qt.CursorShape.PointingHandCursor)
         switch.setToolTip("On: Go live sends here. Off: skipped.")
         switch.toggled.connect(lambda on, pid=place.id: self.on_toggle(pid, on))
-        dot.setVisible(False)
+        line.addWidget(tile)
+        line.addLayout(words, 1)
         line.addWidget(switch)
-        line.addWidget(name, 1)
-        line.addWidget(note)
         outer.addLayout(line)
-        box.setMinimumHeight(22)
-        self.place_rows[place.id] = (dot, name, note, switch)
+        if not self.editing:
+            box.setFixedHeight(40)  # a QPushButton sizes to its text, not its layout: give it the row's height
+        self.place_rows[place.id] = (tile, name, note, switch)
         if self.editing:
             tools_row = QHBoxLayout()
             tools_row.setContentsMargins(0, 2, 0, 4)
@@ -592,8 +728,8 @@ class StageCard(QFrame):
         self.setStyleSheet(f"#stageCard {{ background: {theme.PANEL}; border: none; border-radius: 28px; }}"
                            "#stageCard QSplitter::handle { background: transparent; }")
         self.root = QVBoxLayout(self)
-        self.root.setContentsMargins(20, 16, 20, 20)
-        self.root.setSpacing(12)
+        self.root.setContentsMargins(24, 24, 24, 18)
+        self.root.setSpacing(16)
         self.holder = QVBoxLayout()  # the main window puts its canvas splitter in here
         self.holder.setContentsMargins(0, 0, 0, 0)
         self.root.addLayout(self.holder, 1)
@@ -631,42 +767,53 @@ class StageCard(QFrame):
             self._place_notice()
 
 class LiveStage(QWidget):
-    """The whole Live screen. The main window fills `card.holder` and `tiles_slot` when Live starts."""
+    """The whole Live screen. The main window fills `card.holder` and `tiles_slot` when Live starts.
+
+        ┌ stage ──────────────────────────────┐ ┌ Chat ──────┐
+        │ the canvases                         │ │            │
+        │ [Both|Horizontal|Vertical] [Clip|…]  │ │            │
+        └──────────────────────────────────────┘ └────────────┘
+        [Blooms] [Sound] [Transitions]            [Destinations]
+    """
 
     def __init__(self, side: LiveSide):
         super().__init__()
         self.setObjectName("liveStage")
         self.setStyleSheet(f"#liveStage {{ background: {theme.CHROME}; }}")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(GAP, 8, GAP, GAP)  # one gap size around and between every card
         root.setSpacing(GAP)
-        left = QVBoxLayout()
-        left.setSpacing(GAP)
+        top = QHBoxLayout()
+        top.setSpacing(GAP)
         self.card = StageCard()
-        left.addWidget(self.card, 1)
-        # Under the canvas: Blooms | Sound | Transitions (narrower). The main window
-        # fills the Blooms and Transitions cards; the right column keeps Go live, Destinations and Chat.
+        self.card.root.addWidget(side.stage_bar, 0, Qt.AlignmentFlag.AlignHCenter)
+        top.addWidget(self.card, 1)
+        top.addWidget(side)  # Chat (and any other Live panels), as tall as the stage
+        root.addLayout(top, 1)
+        # Under it all: Blooms | Sound | Transitions | Destinations (as wide as Chat above it).
         self.bottom = QWidget()
         row = QHBoxLayout(self.bottom)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(GAP)
         self.blooms_card, self.transitions_card = side_card(), side_card()
-        # Blooms and Sound get the most room; Transitions only needs its few settings.
-        for card, share in ((self.blooms_card, 4), (side.sound_card, 4), (self.transitions_card, 3)):
+        self.shares = {self.blooms_card: 5, side.sound_card: 7, self.transitions_card: 3}
+        for card, share in self.shares.items():
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             row.addWidget(card, share)
+        side.where_card.setFixedWidth(SIDE_WIDTH)
+        row.addWidget(side.where_card)
+        self.bottom_row = row
         self.bottom.setFixedHeight(BOTTOM_HEIGHT)
-        side.where_card.setFixedHeight(BOTTOM_HEIGHT)
-        left.addWidget(self.bottom)
+        root.addWidget(self.bottom)
         self.tiles_slot = self.blooms_card.layout()
-        root.addLayout(left, 1)
         self.side = side
-        root.addWidget(side)
+
+    def set_blooms_wide(self, wide: bool) -> None:
+        """Two bloom columns (both canvases) need more room than one; Sound takes what's left."""
+        self.bottom_row.setStretch(0, 5 if wide else 3)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         # About a third of the screen, so a small laptop screen still has a canvas worth looking at.
-        height = max(220, min(BOTTOM_HEIGHT, int(self.height() * 0.36)))
-        self.bottom.setFixedHeight(height)
-        self.side.where_card.setFixedHeight(height)  # the Go live card lines up with the row beside it
+        self.bottom.setFixedHeight(max(220, min(BOTTOM_HEIGHT, int(self.height() * 0.32))))
