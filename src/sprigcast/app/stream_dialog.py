@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.app.live_stage import Switch
 from sprigcast.core.scene import Output, SceneCollection
-from sprigcast.output import twitch_auth
+from sprigcast.output import service_signin, twitch_auth
 from sprigcast.output.keys import get_key, set_key
 from sprigcast.output.stream import SERVICES, preset_size, sizes_for
 
@@ -220,6 +220,10 @@ class StreamPage(QWidget):
         )
         key_row.addWidget(self.key, 1)
         key_row.addWidget(show)
+        self.sign_in_button = QPushButton("Sign in")  # YouTube and Kick: fetch the key instead of pasting it
+        self.sign_in_button.setToolTip("Sign in to fill in the stream key")
+        self.sign_in_button.clicked.connect(self._sign_in_clicked)
+        key_row.addWidget(self.sign_in_button)
         self.key_label = QLabel("Stream key")
         form.addRow(self.key_label, self.key_row)
         self.help = QLabel()
@@ -465,6 +469,7 @@ class StreamPage(QWidget):
         hide_key = is_twitch and account is not None and output.twitch_account
         self.key_row.setVisible(not hide_key)
         self.key_label.setVisible(not hide_key)
+        self.sign_in_button.setVisible(service_signin.available(output.service or ""))
         if is_twitch:
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
             self.twitch_button.setText("Disconnect Account" if account else "Connect Account (recommended)")
@@ -541,6 +546,21 @@ class StreamPage(QWidget):
             self.key.setText(dialog.stream_key)  # saved too, so going live still works if Twitch is unreachable
         self._show_service(output)
         self.use_account.setChecked(True)
+        self._edited()
+
+    def _sign_in_clicked(self) -> None:
+        """YouTube or Kick: sign in once, fill in the key (and Kick's server)."""
+        output = self._current()
+        if output is None:
+            return
+        from sprigcast.app.signin_dialog import sign_in
+
+        fetched = sign_in(output.service or "", self)
+        if fetched is None:
+            return
+        self.key.setText(fetched.key)
+        if fetched.server and not self.server.isReadOnly():
+            self.server.setText(fetched.server)
         self._edited()
 
     # Result ------------------------------------------------------------------------
