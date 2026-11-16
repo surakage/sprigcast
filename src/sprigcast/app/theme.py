@@ -425,16 +425,62 @@ def _seed_handle_svg() -> str:
             f'<path d="M12,13.5 C12,10.5 9.5,9 6.5,9 C6.5,12 9,13.5 12,13.5 Z" fill="{ACCENT_DARK}"/></svg>')
 
 
-def _leaf_svg(fill: str, stroke: str, vein: str) -> str:
-    def pt(x, y):  # unit leaf -> a 24 px box with a 1 px margin
-        return f"{12 + x * 18.3:.2f},{12 + y * 18.3:.2f}"
+# The tick box: a rounded square cut like a leaf, two opposite corners fully round (top-left, bottom-right)
+# and two nearly square. Ticked, it fills green with a dark tick. 24 px design grid.
+LEAFCUT_D = ("M2.5,11 Q2.5,2.5 11,2.5 L19.5,2.5 Q21.5,2.5 21.5,4.5 L21.5,13 Q21.5,21.5 13,21.5 "
+             "L4.5,21.5 Q2.5,21.5 2.5,19.5 Z")
+TICK_D = "M7,12.5 L10.5,16 L17,8.5"
 
-    (x0, y0), c1, c2, end, c3, c4 = _LEAF
-    d = f"M{pt(x0, y0)} C{pt(*c1)} {pt(*c2)} {pt(*end)} C{pt(*c3)} {pt(*c4)} {pt(x0, y0)} Z"
+
+def _leafcut_svg(fill: str, stroke: str, tick: str | None) -> str:
+    mark = (f'<path d="{TICK_D}" fill="none" stroke="{tick}" stroke-width="2.4" stroke-linecap="round" '
+            'stroke-linejoin="round"/>') if tick else ""
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
-            f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="1.8" stroke-linejoin="round"/>'
-            f'<path d="M{pt(x0, y0)} L{pt(*_VEIN_END)}" stroke="{vein}" stroke-width="1.5" '
-            f'stroke-linecap="round" fill="none"/></svg>')
+            f'<path d="{LEAFCUT_D}" fill="{fill}" stroke="{stroke}" stroke-width="1.6" stroke-linejoin="round"/>'
+            f'{mark}</svg>')
+
+
+def leafcut_path(rect: QRectF) -> QPainterPath:
+    """The leaf-cut tick box filling `rect` (for painted widgets; the style sheet uses the SVG)."""
+    sx, sy = rect.width() / 24, rect.height() / 24
+    at = lambda x, y: QPointF(rect.x() + x * sx, rect.y() + y * sy)  # noqa: E731
+    path = QPainterPath(at(2.5, 11))
+    path.quadTo(at(2.5, 2.5), at(11, 2.5))
+    path.lineTo(at(19.5, 2.5))
+    path.quadTo(at(21.5, 2.5), at(21.5, 4.5))
+    path.lineTo(at(21.5, 13))
+    path.quadTo(at(21.5, 21.5), at(13, 21.5))
+    path.lineTo(at(4.5, 21.5))
+    path.quadTo(at(2.5, 21.5), at(2.5, 19.5))
+    path.closeSubpath()
+    return path
+
+
+def paint_tick_box(p: QPainter, rect: QRectF, on: bool, enabled: bool = True) -> None:
+    """Draw the leaf-cut tick box, the same as every QCheckBox: green with a dark tick when on."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    width = max(1.2, rect.width() / 15)
+    if on:
+        colour = QColor(ACCENT if enabled else MUTED)
+        p.setPen(QPen(colour, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(colour)
+    else:
+        p.setPen(QPen(QColor(LEAF_OFF if enabled else EDGE_STRONG), width, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(QColor(CHROME if enabled else PANEL))
+    p.drawPath(leafcut_path(rect))
+    if on:
+        sx, sy = rect.width() / 24, rect.height() / 24
+        at = lambda x, y: QPointF(rect.x() + x * sx, rect.y() + y * sy)  # noqa: E731
+        tick = QPainterPath(at(7, 12.5))
+        tick.lineTo(at(10.5, 16))
+        tick.lineTo(at(17, 8.5))
+        p.setPen(QPen(QColor(ACCENT_TEXT if enabled else PANEL), rect.width() / 10, Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(tick)
+    p.restore()
 
 
 def _seed_svg(ring: str, fill: str, sprout: str | None) -> str:
@@ -449,11 +495,12 @@ def _seed_svg(ring: str, fill: str, sprout: str | None) -> str:
 
 
 NATURE_PICTURES = {
-    "leaf_off": lambda: _leaf_svg(CHROME, LEAF_OFF, LEAF_OFF),
-    "leaf_hover": lambda: _leaf_svg(CHROME, ACCENT, ACCENT),
-    "leaf_on": lambda: _leaf_svg(ACCENT, ACCENT, ACCENT_TEXT),
-    "leaf_off_disabled": lambda: _leaf_svg(PANEL, EDGE_STRONG, EDGE_STRONG),
-    "leaf_on_disabled": lambda: _leaf_svg(MUTED, MUTED, PANEL),
+    # Tick boxes: the leaf-cut box (the names stay "leaf" for the style-sheet rules below).
+    "leaf_off": lambda: _leafcut_svg(CHROME, LEAF_OFF, None),
+    "leaf_hover": lambda: _leafcut_svg(CHROME, ACCENT, None),
+    "leaf_on": lambda: _leafcut_svg(ACCENT, ACCENT, ACCENT_TEXT),
+    "leaf_off_disabled": lambda: _leafcut_svg(PANEL, EDGE_STRONG, None),
+    "leaf_on_disabled": lambda: _leafcut_svg(MUTED, MUTED, PANEL),
     "seed_off": lambda: _seed_svg(LEAF_OFF, CHROME, None),
     "seed_hover": lambda: _seed_svg(ACCENT, CHROME, None),
     "seed_on": lambda: _seed_svg(ACCENT, ACCENT, ACCENT_TEXT),
@@ -486,7 +533,7 @@ def nature_pictures(folder: str | None = None) -> dict[str, str]:
 
 
 def nature_rules(folder: str | None = None) -> str:
-    """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaves and seeds."""
+    """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaf-cut boxes and seeds."""
     try:
         pic = nature_pictures(folder)
     except OSError:  # can't write the pictures: keep the plain shapes
@@ -495,7 +542,7 @@ def nature_rules(folder: str | None = None) -> str:
     clear = "border: none; background: transparent;"  # the plain rules above fill a checked box green
     for widget, kind in (("QCheckBox", "leaf"), ("QRadioButton", "seed"), ("QListWidget", "leaf"),
                          ("QTreeWidget", "leaf")):
-        size = 18 if widget in ("QCheckBox", "QRadioButton") else 16
+        size = 16 if widget == "QCheckBox" else 18 if widget == "QRadioButton" else 15
         rules += [
             f"{widget}::indicator {{ width: {size}px; height: {size}px; border: none; background: transparent;"
             f" border-radius: 0; image: url({pic[kind + '_off']}); }}",

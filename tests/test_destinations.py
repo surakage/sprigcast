@@ -629,17 +629,19 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         QSettings().clear()
 
 
-def test_support_pop_up_goes_to_the_tip_page_or_closes(app):
+def test_support_pop_up_offers_me_or_either_charity(app):
     from sprigcast.app.support import TIP_URL, support_dialog
 
     opened = []
     dialog = support_dialog(open_url=opened.append)
-    assert dialog.close_button.text() == "Close" and not dialog.done_button.isVisible()
-    dialog.close_button.click()
-    assert opened == []
-    dialog = support_dialog(open_url=opened.append)
-    dialog.go_button.click()
-    assert opened == [TIP_URL] == ["https://slothbloom.com/tip"]
+    assert dialog.close_button.text() == "Close"
+    assert set(dialog.way_buttons) == {"me", "trees", "sloths"}
+    dialog.way_buttons["me"].click()
+    dialog.way_buttons["trees"].click()
+    dialog.way_buttons["sloths"].click()
+    assert opened == [TIP_URL, "https://onetreeplanted.org/products/plant-trees",
+                      "https://www.slothconservation.org/donate"]
+    assert TIP_URL == "https://slothbloom.com/tip"
 
 
 def test_file_menu_repots_a_recording_as_mp4(app, tmp_path, monkeypatch):
