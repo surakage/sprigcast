@@ -32,7 +32,9 @@ def cap(tmp_path):
     assert plugin.name == "Live captions" and plugin.adds == "Source"
     assert plugin_store.install(tmp_path / "plugins", plugin) is None
     models.set_folder(tmp_path / "models")
-    yield sys.modules["sprigcast_plugin_live_captions"]
+    module = sys.modules["sprigcast_plugin_live_captions"]
+    module.PREFETCH = False  # no downloads from tests unless one asks
+    yield module
     models.set_folder(None)
     plugin_store.remove(tmp_path / "plugins", "live_captions")
     assert "live_captions" not in known_kinds()
@@ -325,15 +327,27 @@ def test_log_mel_is_whispers_picture_of_the_sound(cap):
 def test_auto_uses_a_graphics_card_only_when_there_is_one(cap, monkeypatch):
     from sprigcast.app import lowend
 
-    fake = _FakeOrt([])
-    monkeypatch.setitem(sys.modules, "onnxruntime", fake)
+    monkeypatch.setattr(cap, "directml", lambda: True)
     monkeypatch.setattr(lowend, "gpu_names", lambda: ("NVIDIA GeForce RTX 4070",))
     assert cap.graphics_card()
     monkeypatch.setattr(lowend, "gpu_names", lambda: ("Intel(R) UHD Graphics 770",))
     assert not cap.graphics_card()
-    monkeypatch.setattr(fake, "get_available_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr(cap, "directml", lambda: False)
     monkeypatch.setattr(lowend, "gpu_names", lambda: ("NVIDIA GeForce RTX 4070",))
     assert not cap.graphics_card()
+
+
+def test_directml_is_found_without_importing_onnxruntime(cap, monkeypatch, tmp_path):
+    import importlib.util
+
+    pkg = tmp_path / "onnxruntime"
+    (pkg / "capi").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("raise ImportError('must not be imported')")
+    spec = type("Spec", (), {"origin": str(pkg / "__init__.py")})()
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
+    assert not cap.directml()
+    (pkg / "capi" / "DirectML.dll").write_bytes(b"")
+    assert cap.directml()
 
 
 def test_the_card_is_drawn_only_when_the_words_change(cap):
@@ -684,3 +698,117 @@ def test_wake_and_sleep_many_times_keeps_memory_objects_and_threads_flat(cap, mo
     assert len(loads) == 1
     source.stop()
     assert _until(lambda: not _captions_threads()) and source._engine is None
+
+
+def _render_ticks(source, seconds, until=None):
+    """Call the source like the render loop does, 60 times a second, and return the longest tick gap."""
+    import time
+
+    worst, last = 0.0, time.perf_counter()
+    end = last + seconds
+    while time.perf_counter() < end and not (until and until()):
+        source.video_frame()
+        time.sleep(1 / 60)
+        now = time.perf_counter()
+        worst = max(worst, now - last - 1 / 60)
+        last = now
+    return worst
+
+
+def test_loading_the_model_never_holds_up_the_render_tick(cap):
+    """The PC test: making the graphics-card session held Python's lock for 1.3 s and froze the stream.
+    Here the helper's load holds its own lock for 1.5 s in one C call; SprigCast's ticks stay smooth."""
+    import time
+
+    source = create_source("live_captions", "c", {})
+    done = {}
+
+    def load():
+        t = time.perf_counter()
+        done["engine"] = cap.ProcessEngine(None, "tiny", "en", "cpu", hold=1.5)
+        done["took"] = time.perf_counter() - t
+
+    loader = threading.Thread(target=load)
+    loader.start()
+    worst = _render_ticks(source, 10.0, until=lambda: "engine" in done)
+    loader.join()
+    engine = done["engine"]
+    assert done["took"] >= 1.4 and engine.alive()
+    assert worst < 0.05, f"a render tick waited {worst * 1000:.0f} ms"
+    engine.close()
+    assert engine.proc.returncode is not None  # the helper (and the model's memory) is gone
+
+
+
+def test_captions_get_ready_in_the_helper_and_show_nothing_until_then(cap, monkeypatch, tmp_path):
+    import time
+
+    from sprigcast.sources import audio
+
+    speech = np.concatenate([_quiet(0.3), _tone(1.0), _quiet(1.0)])
+    stereo48 = np.repeat(np.repeat(speech, 3)[:, None], 2, axis=1).astype(np.float32)
+
+    class FakeMic:
+        def __init__(self, source_id, settings):
+            self.ring = None
+
+        def start(self):
+            for i in range(0, len(stereo48), 4800):
+                self.ring.write(stereo48[i:i + 4800])
+
+        def stop(self):
+            pass
+
+    made = []
+    real = cap.ProcessEngine
+
+    def slow_helper(folder, name, language, device):
+        engine = real(None, name, language, device, hold=1.0)  # loads for a second, holding its own lock
+        engine.transcribe = lambda clip: "Ready now."
+        made.append(engine)
+        return engine
+
+    monkeypatch.setattr(audio, "MicSource", FakeMic)
+    monkeypatch.setattr(cap, "fetch_model", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(cap, "model_ready", lambda *a: True)
+    monkeypatch.setattr(cap, "ProcessEngine", slow_helper)
+    monkeypatch.setattr(cap, "PARK_SECONDS", 0.2)
+    source = create_source("live_captions", "c", {})
+    source.wake()
+    assert _until(lambda: source.status == "Loading the speech model")
+    seen_loading = []
+    worst = _render_ticks(source, 10.0, until=lambda: bool(made))
+    seen_loading.append(source.board.text(time.monotonic(), 4.0))
+    assert worst < 0.05 and seen_loading == [""]  # smooth, and nothing on stream while it loads
+    assert _until(lambda: "Ready now." in source.board.text(time.monotonic(), 4.0)) and source.status == "Listening"
+    source.sleep()
+    assert _until(lambda: made[0].proc.poll() is not None)  # off air a while: the helper ends
+    source.stop()
+
+
+def test_the_model_downloads_when_captions_join_a_garden_not_when_they_go_on_air(cap, monkeypatch):
+    fetched = []
+    gate = threading.Event()
+
+    def fetch(name, device, progress=None, cancel=None):
+        fetched.append((name, device))
+        gate.wait(2)
+
+    monkeypatch.setattr(cap, "PREFETCH", True)
+    monkeypatch.setattr(cap, "fetch_model", fetch)
+    monkeypatch.setattr(cap, "graphics_card", lambda: False)
+    source = create_source("live_captions", "c", {"model": "tiny", "language": "es"})
+    source.sleep()  # how the renderer adds a source that isn't on screen
+    source.sleep()
+    assert _until(lambda: fetched == [("tiny", "cpu")])  # once, in the background
+    gate.set()
+    google = create_source("live_captions", "g", {"engine": "google"})
+    google.sleep()
+    assert fetched == [("tiny", "cpu")]  # Google mode needs no model
+    source.stop()
+    google.stop()
+
+
+def test_a_helper_that_cant_load_says_why(cap, tmp_path):
+    with pytest.raises(RuntimeError, match="NoSuchFile|No such file|FileNotFound|doesn't exist|INVALID|Load model"):
+        cap.ProcessEngine(tmp_path, "tiny", "en", "cpu")
