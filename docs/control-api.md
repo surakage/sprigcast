@@ -63,6 +63,8 @@ GET http://127.0.0.1:4455/api/pair?code=123456&name=Streamer.bot
 
 While the API runs, SprigCast writes `%LOCALAPPDATA%\Slothbloom\SprigCast\api.json` (`app`, `port`, `path`, `password`) so apps on the same PC connect with nothing typed, the way Elgato's OBS plugin reads obs-websocket's settings. The `password` there is this PC's own key, not your password, and it changes when the password does. The file is removed when the API stops.
 
+It also writes `%APPDATA%\SprigCast\connection.json` for apps that find SprigCast by themselves (THSV StreamBridge): `app`, `version`, `port`, `path` (`/sprigcast`), `obsCompatible` (Compatibility mode on), `passwordSet` and `pid`. It never holds the password or a key, so those apps still ask you for the password. It is removed when the API stops.
+
 The password and paired keys are stored encrypted for your Windows account (DPAPI), not as plain text.
 
 ## Asking
@@ -163,6 +165,8 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `bloom.current` | The bloom on air in each shape. | none |
+| `bloom.new` | Make an empty bloom (with its own sprig, where what you add goes). | `name`: name, `shape` (optional): both (default: every canvas), horizontal or vertical |
+| `bloom.remove` | Remove a bloom (in every shape). Its sources stay while other blooms use them. | `bloom`: name or id |
 | `bloom.show` | Put a bloom on air. | `bloom`: name or id, `shape` (optional): both (default), horizontal or vertical |
 | `blooms.list` | Every bloom, its shapes and which shapes it's on air in. | none |
 
@@ -212,6 +216,7 @@ for. The connection closes next. Look again in a second or two: it's often a res
 
 | Action | What it does | Fields |
 | --- | --- | --- |
+| `item.add` | Put a source in a bloom (in its sprig) or a sprig, on top. Answers the item's id. | `source`: name or id, `bloom` (optional): bloom to add to, `sprig` (optional): sprig to add to, `shape` (optional): both (default), horizontal or vertical, `visible` (optional): true (default) or false |
 | `item.hide` | Hide something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.order` | Bring something forward or send it back. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `to`: top, bottom, up (one step) or down (one step) |
 | `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
@@ -241,6 +246,8 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `place.set` | Switch a place on or off for the next Go live. | `place`: id from places.list, `on`: true or false |
+| `place.start` | While live: start sending to one more place (switched on for next time too). | `place`: id from places.list |
+| `place.stop` | While live: stop sending to one place (the others keep going; the last one ends the stream). | `place`: id from places.list |
 | `places.list` | Where the stream goes (Twitch, YouTube...), each one's shape and if it's on. | none |
 
 ### path
@@ -281,6 +288,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `source.get` | A source's settings. | `source`: name or id |
+| `source.new` | Make a source (a browser page, text, image...). Put it in a bloom with item.add. | `name`: name, `kind`: browser, text, image, color, media..., `settings` (optional): {key: value}, e.g. url, width, height |
 | `source.rename` | Give a source a new name. | `source`: name or id, `name`: new name |
 | `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a colour... | `source`: name or id, `settings`: {key: value} |
 | `sources.list` | Every source (cameras, text, browser pages, images, sounds...). | none |
@@ -297,7 +305,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `stream.start` | Go live to every place that's switched on. | none |
-| `stream.status` | Live or not, for how long, and dropped frames. | none |
+| `stream.status` | Live or not, for how long, dropped frames, and each place on its own. | none |
 | `stream.stop` | End the stream. | none |
 | `stream.toggle` | Go live, or end the stream. | none |
 
@@ -349,7 +357,7 @@ Requests made by web pages on other sites are refused, so a page you visit can't
 
 ## The OBS-compatible door
 
-Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Beyond these, new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
+Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Apps that build overlays can make them: CreateScene (a bloom in every shape that's on, with its own sprig), RemoveScene, CreateInput (answers `inputUuid` and a numeric `sceneItemId`), CreateSceneItem and RemoveSceneItem; things added to a bloom go in its sprig and answer to the bloom's name. A browser source's OBS `shutdown` setting is SprigCast's `keep_running` turned around, both ways. Each place you stream to is an output called `sprigcast:<id>` with GetOutputStatus, StartOutput and StopOutput while live (`simple_stream` is the whole stream). Beyond these, new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
 
 ## Adding actions from a plugin
 

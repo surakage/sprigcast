@@ -222,8 +222,7 @@ class ConnectionsPage(QWidget):
         self.obs_door = QCheckBox("Compatibility mode")
         self.obs_door.setChecked(s["obs_door"])
         dbox.addWidget(self.obs_door)
-        dbox.addWidget(_hint("For apps that can only connect the way they connect to OBS. "
-                             "New features come to SprigCast's own connection first."))
+        dbox.addWidget(_hint("Using THSV StreamBridge or Streamer.bot? Keep this on."))
 
         for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled, self.obs_door.toggled,
                        self.web_door.toggled):

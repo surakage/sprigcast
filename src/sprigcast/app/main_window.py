@@ -5531,28 +5531,12 @@ class MainWindow(QMainWindow):
             return
         targets, problems = [], []
         for output in outputs:
-            service = SERVICES.get(output.service or "custom", SERVICES["custom"])
-            server = service.server or output.server
-            key = get_key(output.key_ref)
-            if output.twitch_account and output.service == "twitch":
-                key = self._fresh_twitch_key(output, key)
-            canvas = next((c for c in self.collection.canvases if c.id == output.canvas and c.enabled), None)
-            if not server:
-                problems.append(f"{service.label}: paste the server URL in Stream…")
-            elif not key:
-                problems.append(f"{service.label}: add your stream key in Stream…")
-            elif canvas is None:
-                problems.append(f"{service.label}: the {output.canvas} canvas is not available")
+            target, problem = self._stream_target(output)
+            if problem:
+                problems.append(problem)
+            elif target is None:
+                return  # the user chose not to go live
             else:
-                name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
-                kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
-                target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
-                                      output.bandwidth_test and service.bandwidth_test, output_id=output.id,
-                                      auto_bitrate=output.auto_bitrate)
-                if output.enhanced and output.service == "twitch":
-                    target = self._enhanced_target(output, target)
-                    if target is None:
-                        return  # the user chose not to go live
                 targets.append(target)
         if problems:
             QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
@@ -5589,6 +5573,70 @@ class MainWindow(QMainWindow):
         self._health = SessionHealth(self.streaming)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
+
+    def _stream_target(self, output, ask: bool = True):
+        """What going live sends to one place: (target, None), (None, problem), or (None, None) when the
+        user said no to Twitch's question. ask=False (an app starting a place): no questions, one quality."""
+        service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+        server = service.server or output.server
+        key = get_key(output.key_ref)
+        if output.twitch_account and output.service == "twitch":
+            key = self._fresh_twitch_key(output, key)
+        canvas = next((c for c in self.collection.canvases if c.id == output.canvas and c.enabled), None)
+        if not server:
+            return None, f"{service.label}: paste the server URL in Stream…"
+        if not key:
+            return None, f"{service.label}: add your stream key in Stream…"
+        if canvas is None:
+            return None, f"{service.label}: the {output.canvas} canvas is not available"
+        name = f"{service.label} ({canvas.id})" + (" test" if output.bandwidth_test and service.bandwidth_test else "")
+        kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
+        target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
+                              output.bandwidth_test and service.bandwidth_test, output_id=output.id,
+                              auto_bitrate=output.auto_bitrate)
+        if ask and output.enhanced and output.service == "twitch":
+            return self._enhanced_target(output, target), None
+        return target, None
+
+    def start_place(self, output_id: str) -> str | None:
+        """Send to one more place while live (apps: place.start). A problem, or None."""
+        output = next((o for o in self.collection.outputs if o.id == output_id and o.type == "stream"), None)
+        if output is None:
+            return "No such place."
+        if self.streaming is None:
+            return "Not live."
+        if self.streaming.find(output.id) is not None:
+            return None  # already sending
+        target, problem = self._stream_target(output, ask=False)
+        if target is None:
+            return problem or "Couldn't start it."
+        from sprigcast.app.settings_window import stream_delay
+
+        try:
+            self.streaming.add(target, resolve_codec(self.collection.stream_encoder, streaming=True),
+                               self.collection.stream_encoder, delay_s=stream_delay())
+        except Exception as exc:
+            log.warning("could not start %s: %s", target.name, exc)
+            return f"Couldn't start {target.name}: {exc}"
+        log.info("app started %s while live", target.name)
+        self._stream_status_at = 0.0
+        self._refresh_stream_status()
+        return None
+
+    def stop_place(self, output_id: str) -> str | None:
+        """Stop one place while the rest stay live (apps: place.stop); the last one ends the stream."""
+        if self.streaming is None:
+            return "Not live."
+        if self.streaming.find(output_id) is None:
+            return None  # not sending there: nothing to stop
+        if len(self.streaming.streamers) == 1:
+            QTimer.singleShot(0, self._stop_streaming)  # just after replying, like stream.stop
+            return None
+        self.streaming.drop(output_id)
+        log.info("app stopped %s while live", output_id)
+        self._stream_status_at = 0.0
+        self._refresh_stream_status()
+        return None
 
     def _enhanced_target(self, output, target):
         """Ask Twitch which qualities to send. Returns the target to use, or None to cancel going live."""

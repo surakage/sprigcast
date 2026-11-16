@@ -860,6 +860,74 @@ class SceneCollection(BaseModel):
             bloom.items.append(SceneItem(source=placement.id))  # last is on top
         return part
 
+    def new_bloom(self, name: str, canvas_ids: list[str]) -> Scene:
+        """A new empty bloom (what the API's bloom.new and OBS's CreateScene make): one bloom per canvas, switching
+        together, holding one sprig named after it placed full canvas, so things added to the bloom go in its
+        sprig as they do in Build. Returns the bloom on the first canvas."""
+        first: Scene | None = None
+        for canvas_id in canvas_ids:
+            bloom = Scene(id=self.new_id("scene"), name=name, canvas=canvas_id,
+                          linked_to=first.id if first is not None else None)
+            self.scenes.append(bloom)
+            self.active_scenes.setdefault(canvas_id, bloom.id)
+            first = first or bloom
+        assert first is not None
+        self.give_sprig(first)
+        return first
+
+    def give_sprig(self, bloom: Scene) -> Scene:
+        """The sprig a bloom shows; an empty bloom (and its twins) gets one named after it first, with a layout
+        per canvas, placed full canvas."""
+        found = self.bloom_sprig(bloom)
+        if found is not None:
+            return found
+        family = self.linked_with(bloom.id)
+        taken = {p.name for p in self.parts()}
+        name, n = bloom.name, 2
+        while name in taken:
+            name, n = f"{bloom.name} {n}", n + 1
+        folder = next((f for f in self.part_folders() if f.name == "Nested Scenes"), None)
+        part = Scene(id=self.new_id("part"), name=name, canvas=family[0].canvas, kind="part",
+                     folder=folder.id if folder is not None else None)
+        self.scenes.append(part)
+        for member in family:
+            if member.canvas != part.canvas and not any(sh.canvas == member.canvas for sh in self.shapes(part)):
+                self.scenes.append(Scene(id=self.new_id(f"{part.id}-{member.canvas}"), name=name,
+                                         canvas=member.canvas, kind="part", shape_of=part.id))
+            placement = SourceConfig(id=self.new_id("part-src"), kind=PART_KIND, name=name, settings={"scene": part.id})
+            self.sources.append(placement)
+            member.items.append(SceneItem(source=placement.id))
+        return part
+
+    def remove_bloom(self, bloom: Scene) -> None:
+        """Remove a bloom and its twins on other canvases. Its sprig goes too unless another bloom shows it;
+        sources stay while anything else uses them."""
+        blooms = self.linked_with(bloom.id)
+        gone = {b.id for b in blooms}
+        sprigs = [p for p in (self.part_of(self.source(i.source)) for b in blooms for i in b.items
+                              if any(c.id == i.source for c in self.sources)) if p is not None]
+        self.scenes = [s for s in self.scenes if s.id not in gone]
+        for other in self.scenes:
+            if other.linked_to in gone:
+                other.linked_to = None
+        for canvas_id, scene_id in list(self.active_scenes.items()):
+            if scene_id in gone:
+                rest = self.scenes_for(canvas_id)
+                if rest:
+                    self.active_scenes[canvas_id] = rest[0].id
+                else:
+                    self.active_scenes.pop(canvas_id)
+        for b in blooms:
+            for item in b.items:
+                self.remove_source_if_unused(item.source)
+        for sprig in {p.id: p for p in sprigs}.values():
+            if not self.part_uses(sprig.id) and not any(self.part_of(c) is sprig for c in self.sources):
+                shapes = self.shapes(sprig)
+                self.scenes = [s for s in self.scenes if s not in shapes]
+                for shape in shapes:
+                    for item in shape.items:
+                        self.remove_source_if_unused(item.source)
+
     def remove_shape(self, shape: Scene) -> None:
         """Drop a part's extra layout; shows on that canvas go back to its main layout, refitted."""
         if shape.shape_of is None:

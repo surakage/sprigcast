@@ -13,6 +13,8 @@ all over the app. Volume meters are only sent to apps that ask for them.
 from __future__ import annotations
 
 import json
+import os
+import time
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -123,6 +125,10 @@ class WindowHost:
             w._refresh_stream_boxes()
         elif what in ("sources", "filters"):
             w._refresh_sources()
+        elif what == "scenes":  # blooms made or removed
+            w._refresh_scenes()
+            w._refresh_sources()
+            w._refresh_previews()
 
     def stream_status(self) -> dict[str, Any] | None:
         session = self.w.streaming
@@ -137,6 +143,32 @@ class WindowHost:
             "reconnecting": any(not getattr(st, "connected", True) and not getattr(st, "delay_left", lambda: 0.0)()
                                 for st in streamers),
         }
+
+    def stream_places(self) -> dict[str, dict[str, Any]]:
+        """Each place being sent to while live, by output id: on, reconnecting, seconds, skipped, frames, bytes."""
+        session = self.w.streaming
+        out: dict[str, dict[str, Any]] = {}
+        if session is None:
+            return out
+        now = time.monotonic()
+        for _, st in session.streamers:
+            connected = getattr(st, "connected", True)
+            out[getattr(st, "output_id", None) or st.name] = {
+                "on": True,
+                "reconnecting": not connected and not getattr(st, "delay_left", lambda: 0.0)(),
+                "seconds": round(now - getattr(st, "started_at", session.started_at), 1),
+                "skipped": getattr(st, "dropped", 0),
+                "frames": getattr(st, "frames", 0),
+                "bytes": getattr(st, "bytes_out", 0),
+                "congestion": min(1.0, max(0.0, float(getattr(st, "backlog_seconds", lambda: 0.0)()) / 5)),
+            }
+        return out
+
+    def start_place(self, output_id: str) -> str | None:
+        return self.w.start_place(output_id)
+
+    def stop_place(self, output_id: str) -> str | None:
+        return self.w.stop_place(output_id)
 
     def record_status(self) -> dict[str, Any] | None:
         session = self.w.recording
@@ -209,7 +241,12 @@ class WindowHost:
         try:
             import psutil
 
-            out["memoryUsage"] = psutil.Process().memory_info().rss / (1024 * 1024)
+            if getattr(self, "_process", None) is None:
+                self._process = psutil.Process()
+                self._process.cpu_percent()  # the first reading is always 0: it starts the count
+            out["memoryUsage"] = self._process.memory_info().rss / (1024 * 1024)
+            out["cpuUsage"] = self._process.cpu_percent() / (psutil.cpu_count() or 1)  # of the whole PC, like OBS
+            out["availableDiskSpace"] = psutil.disk_usage(out["recordDirectory"]).free / (1024 * 1024)
         except Exception:
             pass
         status = self.stream_status()
@@ -280,6 +317,7 @@ class ControlServer(QObject):
         self._notify_queued = False
         self._running: tuple | None = None  # (port, password, lan, obs door) it listens with
         self.info_path: Path | None = None  # where apps on this PC find the port and password (api.json)
+        self.connection_path: Path | None = None  # %APPDATA%\SprigCast\connection.json: port and doors, no secrets
         self.on_clients_changed = lambda count: None
         self.pairing = Pairing(Pairing.devices_from_json(_secret(DEVICES)),
                                on_change=lambda: save_secret(DEVICES, self.pairing.to_json()))
@@ -329,21 +367,38 @@ class ControlServer(QObject):
         """api.json next to SprigCast's settings (this Windows user's own folder): the port and a key, so an app on
         this PC (the Stream Deck plugin) connects without anyone typing them, like Wave Link's ws-info.json. The key
         is this PC's own, not the password, and changes with the password. Gone again when the API stops."""
-        if self.info_path is None:
-            return
         info = {"app": "SprigCast", "port": self.port, "path": NATIVE_PATH, "password": key}
+        self._write(self.info_path, info)
+        self.write_connection()
+
+    def write_connection(self) -> None:
+        """connection.json: where SprigCast is listening and which doors are open, for apps like THSV StreamBridge
+        that find it by themselves. Never the password or a key (apps ask the user for the password)."""
+        if self.connection_path is None or not self.listening:
+            return
+        from sprigcast import __version__
+
+        info = {"app": "SprigCast", "version": __version__, "port": self.port, "path": NATIVE_PATH,
+                "obsCompatible": bool(self.obs_door), "passwordSet": bool(self.password), "pid": os.getpid()}
+        self._write(self.connection_path, info)
+
+    @staticmethod
+    def _write(path: Path | None, info: dict[str, Any]) -> None:
+        if path is None:
+            return
         try:
-            self.info_path.parent.mkdir(parents=True, exist_ok=True)
-            self.info_path.write_text(json.dumps(info, indent=2), encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(info, indent=2), encoding="utf-8")
         except OSError as exc:
-            log.warning("control: couldn't write %s: %s", self.info_path, exc)
+            log.warning("control: couldn't write %s: %s", path, exc)
 
     def _remove_info(self) -> None:
-        if self.info_path is not None:
-            try:
-                self.info_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        for path in (self.info_path, self.connection_path):
+            if path is not None:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def stop(self) -> None:
         if self.server is None:
@@ -548,6 +603,8 @@ def apply_settings(server: ControlServer, window: MainWindow | None = None) -> N
         from sprigcast.app.main import config_dir
 
         server.info_path = config_dir() / "api.json"
+    if server.connection_path is None and os.environ.get("APPDATA"):
+        server.connection_path = Path(os.environ["APPDATA"]) / "SprigCast" / "connection.json"
     if window is not None and window.collection.canvases:
         server.frame_seconds = 1 / max(1, window.collection.canvases[0].fps)
     password = settings["password"] if settings["use_password"] else ""
@@ -562,6 +619,7 @@ def apply_settings(server: ControlServer, window: MainWindow | None = None) -> N
         for socket, _ in server._obs():
             socket.close(QWebSocketProtocol.CloseCode(4000), "Apps made for OBS are switched off in SprigCast")
     if server.listening and server._running == wanted:
+        server.write_connection()  # Compatibility mode may have changed
         return
     if server.start(*wanted):
         server._running = wanted
