@@ -365,3 +365,106 @@ def test_go_live_hotkey_from_an_app_asks_nothing():
     host = WindowHost.__new__(WindowHost)
     host.w = Window()
     assert host.trigger_hotkey("toggle_stream") == "Not started: Your PC is busy (CPU 95%)."
+
+
+def test_app_info_features_and_canvas_sizes():
+    api, host = _native()
+    info = _ok(api, "app.info")
+    assert {"bloom.new", "screenshot.source", "plugins.enabled", "effects.autoend", "canvas.size", "item.scale_xy",
+            "events.effect", "events.plugins", "events.lists", "notfound.what", "page.api"} <= set(info["features"])
+    assert info["canvases"] == [{"id": "horizontal", "width": 64, "height": 36, "fps": 30, "enabled": True},
+                                {"id": "vertical", "width": 36, "height": 64, "fps": 30, "enabled": True}] or \
+        [(c["id"], c["width"], c["height"]) for c in info["canvases"]] == [("horizontal", 64, 36), ("vertical", 36, 64)]
+    assert info["api"] == 0 and info["shapes"] == ["horizontal", "vertical"]  # old fields stay
+
+
+def test_item_place_stretches_and_not_found_says_what():
+    from sprigcast.control.native import answer
+
+    api, host = _native()
+    _ok(api, "bloom.new", name="Overlay")
+    item = _ok(api, "source.new", name="Full", kind="browser", settings={"url": "http://x", "width": 1920,
+                                                                        "height": 1080})["id"]
+    _ok(api, "item.add", bloom="Overlay", source=item)
+    out = _ok(api, "item.place", bloom="Overlay", item=item, shape="vertical", x=0, y=0, scale_x=0.5625, scale_y=1.7778)
+    assert out["items"] == [{"x": 0.0, "y": 0.0, "scale": 0.5625, "rotation": 0.0, "scale_x": 0.5625,
+                             "scale_y": 1.7778}]
+    placed = _ok(api, "item.place", bloom="Overlay", item=item, shape="vertical", scale_y=0.5625)["items"][0]
+    assert placed["scale_x"] == placed["scale_y"] == 0.5625  # same both ways: not stretched any more
+    assert "scale_x" not in _ok(api, "item.place", bloom="Overlay", item=item, x=5)["items"][0]  # old answer
+    assert _fails(api, "item.place", bloom="Overlay", item=item, scale_x=0) == "bad_request"
+    for request, what, name in (({"do": "bloom.show", "bloom": "Nope"}, "bloom", "Nope"),
+                                ({"do": "source.get", "source": "Nope"}, "source", "Nope"),
+                                ({"do": "sprig.state", "sprig": "Nope", "state": None}, "sprig", "Nope"),
+                                ({"do": "item.show", "bloom": "Overlay", "item": "Nope"}, "item", "Nope"),
+                                ({"do": "filter.set", "source": "Cam", "filter": "Nope", "on": True}, "filter", "Nope")):
+        error = answer(api, request)["error"]
+        assert error["code"] == "not_found" and error["what"] == what and error["name"] == name, request
+        assert name in error["message"]
+
+
+def test_events_for_lists_and_effects():
+    from sprigcast.control.native import event_group
+
+    api, host = _native()
+    col = host.collection
+    api.changes()  # first look
+    _ok(api, "bloom.new", name="Overlay")
+    _ok(api, "source.new", name="Hydrate", kind="browser", settings={"url": "http://x"})
+    _ok(api, "item.add", bloom="Overlay", source="Hydrate")
+    events = dict(api.changes())
+    assert events["sources.changed"]["added"] == ["Hydrate"]
+    assert events["items.changed"]["blooms"] == ["Overlay"]
+    assert [i["item"] for i in events["items.changed"]["items"]] == ["Hydrate"]
+    _ok(api, "source.rename", source="Hydrate", name="Water")
+    assert dict(api.changes())["sources.changed"]["renamed"] == [{"from": "Hydrate", "to": "Water"}]
+    # An effect switching off (its time was up) says so; one swapped for another says replaced.
+    from sprigcast.core.scene import Filter
+
+    cam = col.source("cam")
+    cam.filters += [Filter(id="f-px", kind="pixelate", name="Pixelate", enabled=True),
+                    Filter(id="f-bo", kind="blackout", name="Blackout", enabled=False)]
+    api.changes()
+    cam.filters[-2].enabled = False
+    assert ("effect.ended", {"source": "Cam", "sourceId": "cam", "effect": "hide.pixelate", "reason": "ended"}) \
+        in api.changes()
+    cam.filters[-2].enabled = True
+    api.changes()
+    cam.filters[-2].enabled, cam.filters[-1].enabled = False, True
+    ended = [e for n, e in api.changes() if n == "effect.ended"]
+    assert ended == [{"source": "Cam", "sourceId": "cam", "effect": "hide.pixelate", "reason": "replaced"}]
+    assert (event_group("effect.ended"), event_group("sources.changed"), event_group("items.changed"),
+            event_group("plugins.changed")) == ("filter", "source", "item", "plugin")
+
+
+def test_pages_see_where_they_are():
+    from sprigcast.app import browser_host
+
+    shim = browser_host.shim()
+    for name in ("window.sprigcast", "obsSceneChanged", "sprigcastVisibleChanged", "sprigcastStateChanged",
+                 "obsSourceVisibleChanged", "obsStreamingStarted", "obsRecordingStopped", '"SprigCast"'):
+        assert name in shim
+    assert "__VERSION__" not in shim
+    import types
+
+    host = types.SimpleNamespace(_state={"blooms": {"horizontal": "Chatting", "vertical": "Shorts"},
+                                         "shapes": {"web": "vertical"}, "streaming": True, "recording": False})
+    page_state = browser_host.BrowserHost.page_state
+    assert page_state(host, "web") == {"bloom": "Shorts", "blooms": {"horizontal": "Chatting", "vertical": "Shorts"},
+                                      "shape": "vertical", "streaming": True, "recording": False}
+    assert page_state(host, "other")["bloom"] == "Chatting"
+
+
+def test_main_window_page_state():
+    import types
+
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SceneItem, SourceConfig
+
+    col = _host().collection
+    col.sources.append(SourceConfig(id="web", kind="browser", name="Web"))
+    col.scene("p-frame").items.append(SceneItem(source="web"))  # inside the Frame sprig, shown in Chatting
+    window = types.SimpleNamespace(collection=col, streaming=None, recording=object())
+    state = MainWindow._page_state(window)
+    assert state["blooms"] == {"horizontal": "Chatting", "vertical": "Chatting"}
+    assert state["shapes"] == {"web": "horizontal"} and state["recording"] and not state["streaming"]

@@ -80,7 +80,7 @@ Error codes:
 | Code | Meaning |
 | --- | --- |
 | `bad_request` | a field is missing or has the wrong type |
-| `not_found` | no such bloom, sprig, item, sound, source, filter or place |
+| `not_found` | no such bloom, sprig, item, sound, source, filter or place; the error also has `what` (bloom, sprig, source, item, filter, shape, state, place, hotkey, kind) and `name` (what was asked for) |
 | `not_allowed` | it can't be done here, e.g. putting a sprig on air |
 | `busy` | already doing it, e.g. already live |
 | `unknown_action` | no such action |
@@ -88,7 +88,11 @@ Error codes:
 | `plugin_missing` | the action comes with a store plugin that isn't added; the message names it |
 | `failed` | something went wrong inside SprigCast |
 
-`app.actions` returns every action with its fields, so a plugin can build its menus from it.
+These codes are never renamed; new ones may be added. `app.actions` returns every action with its fields, so a plugin can build its menus from it.
+
+### Features
+
+`app.info` has `features`: names of what this SprigCast can do, so an app can check instead of guessing from the shape of an answer. Names are only ever added. `api` stays 0 (preview) until SprigCast's first public release; the features list is what to check. `app.info` also has `canvases`: each canvas's `id`, `width`, `height`, `fps` and `enabled`, for placing things in canvas pixels.
 
 ### Step lists
 
@@ -114,18 +118,18 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Group | Events |
 | --- | --- |
 | `bloom` | `bloom.shown` (bloom, bloomId, shape), `blooms.changed` |
-| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible; inside a sprig also `blooms`: the blooms whose own sprig it is) |
+| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible; inside a sprig also `blooms`: the blooms whose own sprig it is), `items.changed` (bloom or sprig, shape, items: [{item, itemId}], top first) when something is added to or taken out of a bloom or sprig |
 | `sprig` | `sprig.state` (sprig, sprigId, state) |
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
-| `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed` |
-| `source` | `source.changed` (source, sourceId, settings) |
+| `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed`, `effect.ended` (source, sourceId, effect: hide.pixelate, hide.blackout or roll.spin, reason: ended or replaced) |
+| `source` | `source.changed` (source, sourceId, settings), `sources.changed` (sources: [{id, name, kind}], added, removed, renamed: [{from, to}]) |
 | `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `clip.saved` (files) |
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `garden` | `garden.changed` (garden), `gardens.changed` (gardens) |
 | `path` | `path.changed` (path), `paths.changed` (paths) |
 | `custom` | `custom` (data), sent by another app with `app.broadcast` |
-| `plugin` | events sent by added plugins (`<plugin>.<what>`, see below) |
+| `plugin` | `plugins.changed` (plugins, added, removed: plugin ids) when a plugin is added or removed, and events sent by added plugins (`<plugin>.<what>`, see below) |
 | `meters` | `meters` (levels per sound: peakDb, rmsDb), about 15 a second, only when asked for by name |
 
 Every app also gets `app.closing` just before SprigCast closes (or turns its API off), whatever groups it asked
@@ -158,7 +162,7 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | --- | --- | --- |
 | `app.actions` | Every action with what it does and its fields (fields starting with ? are optional). | none |
 | `app.broadcast` | Send your own event to every connected app. | `data`: any object |
-| `app.info` | Version, API version and the shapes that are turned on. | none |
+| `app.info` | Version, API version, the shapes that are on, each canvas's size, event groups and features. | none |
 | `app.stats` | Frames per second, render time and memory. | none |
 | `plugins.list` | The plugins that are added (enabled) and the store's others (not enabled), each with the actions it brings. | none |
 
@@ -221,7 +225,7 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | `item.add` | Put a source in a bloom (in its sprig) or a sprig, on top. Answers the item's id. | `source`: name or id, `bloom` (optional): bloom to add to, `sprig` (optional): sprig to add to, `shape` (optional): both (default), horizontal or vertical, `visible` (optional): true (default) or false |
 | `item.hide` | Hide something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.order` | Bring something forward or send it back. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `to`: top, bottom, up (one step) or down (one step) |
-| `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
+| `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `scale_x` (optional): width only, 1 = as wide as the source, `scale_y` (optional): height only, 1 = as tall as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
 | `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.status` | Whether something inside a bloom or sprig is shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
@@ -318,6 +322,10 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | --- | --- | --- |
 | `transition.get` | The usual transition and its length. | none |
 | `transition.set` | Change the usual transition and/or its length. | `kind` (optional): cut, fade, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000 |
+
+## Web page sources
+
+Pages shown by a Web page source get `window.sprigcast` (the same object as `window.obsstudio`, so overlays made for OBS keep working). Fields: `app` ("SprigCast"), `version`, `visible` (shown in a bloom on air), `bloom` (the bloom on air in the shape the page is shown in), `blooms` ({shape: bloom}), `shape`, `streaming`, `recording`. Events on `window`: `sprigcastVisibleChanged` and `sprigcastStateChanged` (detail: the fields above), and OBS's `obsSourceVisibleChanged`, `obsSourceActiveChanged`, `obsSceneChanged`, `obsStreamingStarted` / `obsStreamingStopped`, `obsRecordingStarted` / `obsRecordingStopped`. `getCurrentScene` answers the bloom on air. The state is looked at about once a second.
 
 ## Store plugins
 

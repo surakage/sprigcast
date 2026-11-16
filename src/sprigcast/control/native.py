@@ -27,6 +27,7 @@ The OBS-compatible door (control/api.py) is frozen: new features land here.
 from __future__ import annotations
 
 import json
+import math
 import secrets
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -37,6 +38,25 @@ from sprigcast.control.protocol import Close, Sleep, auth_string
 from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
 
 API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it settles.
+# What this SprigCast can do, for apps to check (app.info "features") instead of guessing from answers' shapes.
+# Names are only ever added, never removed or renamed.
+FEATURES = (
+    "bloom.new",           # bloom.new, bloom.remove, source.new, item.add
+    "places.status",       # stream.status places, place.start, place.stop
+    "screenshot.source",   # screenshot.take with source or bloom
+    "plugins.enabled",     # plugins.list: id, enabled, store plugins not added
+    "plugin.missing",      # plugin_missing error
+    "effects.autoend",     # hide.*, roll.spin end by themselves after seconds (1-600); a new call restarts the time
+    "source.rotate",
+    "start.warnings",      # stream.start / record.start answer doctor_warnings, force: true goes ahead
+    "canvas.size",         # app.info canvases: id, width, height, fps, enabled
+    "item.scale_xy",       # item.place scale_x / scale_y
+    "events.effect",       # effect.ended
+    "events.plugins",      # plugins.changed
+    "events.lists",        # sources.changed, items.changed
+    "notfound.what",       # not_found errors carry what and name
+    "page.api",            # Web page sources: window.sprigcast (app, version, visible, bloom...) and its events
+)
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
                 "plugin", "garden", "path")
@@ -58,8 +78,11 @@ def _bad(message: str) -> ApiError:
     return ApiError("bad_request", message)
 
 
-def _missing(what: str) -> ApiError:
-    return ApiError("not_found", what)
+def _missing(message: str, what: str = "", name: Any = None) -> ApiError:
+    """not_found, saying what kind of thing (bloom, sprig, source, item, filter, shape, state, place, hotkey,
+    kind) and the name asked for, so an app can say exactly what's missing."""
+    extra = {"what": what, "name": name} if what else {}
+    return ApiError("not_found", message, **extra)
 
 
 @dataclass
@@ -242,7 +265,7 @@ class NativeApi:
         if scene is None:
             if any(s.kind == "part" and (s.id == wanted or s.name == wanted) for s in self.col.scenes):
                 raise ApiError("not_allowed", f"{wanted!r} is a sprig: sprigs show inside blooms.")
-            raise _missing(f"No bloom called {wanted!r}.")
+            raise _missing(f"No bloom called {wanted!r}.", "bloom", wanted)
         return self._main_shape(scene)
 
     def _main_shape(self, scene: Scene) -> Scene:
@@ -256,7 +279,7 @@ class NativeApi:
             return family
         found = [s for s in family if s.canvas == shape]
         if not found:
-            raise _missing(f"{bloom.name!r} has no {shape} shape.")
+            raise _missing(f"{bloom.name!r} has no {shape} shape.", "shape", shape)
         return found
 
     def _sprig(self, data: dict[str, Any], key: str = "sprig") -> Scene:
@@ -264,7 +287,7 @@ class NativeApi:
         parts = self.col.parts()
         part = next((p for p in parts if p.id == wanted), None) or next((p for p in parts if p.name == wanted), None)
         if part is None:
-            raise _missing(f"No sprig called {wanted!r}.")
+            raise _missing(f"No sprig called {wanted!r}.", "sprig", wanted)
         return part
 
     def _holder(self, data: dict[str, Any]) -> tuple[Scene, list[Scene]]:
@@ -284,7 +307,7 @@ class NativeApi:
         sources = [s for s in self.col.sources if s.kind != PART_KIND]
         source = next((s for s in sources if s.id == wanted), None) or next((s for s in sources if s.name == wanted), None)
         if source is None:
-            raise _missing(f"No source called {wanted!r}.")
+            raise _missing(f"No source called {wanted!r}.", "source", wanted)
         return source
 
     @staticmethod
@@ -339,7 +362,7 @@ class NativeApi:
                     inner.append(shape)
             items = self._matching_items(inner, wanted)
         if not items:
-            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+            raise _missing(f"{holder.name!r} has no item {wanted!r}.", "item", wanted)
         return holder, items
 
     def _filter(self, source: SourceConfig, data: dict[str, Any]) -> Filter:
@@ -348,7 +371,7 @@ class NativeApi:
             or next((f for f in source.filters if f.name == wanted), None) \
             or next((f for f in source.filters if f.kind == wanted), None)
         if found is None:
-            raise _missing(f"{source.name!r} has no filter {wanted!r}.")
+            raise _missing(f"{source.name!r} has no filter {wanted!r}.", "filter", wanted)
         return found
 
     # Describing -------------------------------------------------------------------------
@@ -384,11 +407,13 @@ class NativeApi:
 
     # App --------------------------------------------------------------------------------
 
-    @action("app.info", "Version, API version and the shapes that are turned on.")
+    @action("app.info", "Version, API version, the shapes that are on, each canvas's size, event groups and features.")
     def app_info(self, data):
         return {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
                 "shapes": [c.id for c in self.col.canvases if c.enabled],
-                "events": list(EVENT_GROUPS + HIGH_VOLUME)}
+                "canvases": [{"id": c.id, "width": c.width, "height": c.height, "fps": c.fps, "enabled": c.enabled}
+                             for c in self.col.canvases],
+                "events": list(EVENT_GROUPS + HIGH_VOLUME), "features": list(FEATURES)}
 
     @action("app.actions", "Every action with what it does and its fields (fields starting with ? are optional).")
     def app_actions(self, data):
@@ -431,7 +456,7 @@ class NativeApi:
     def hotkey_run(self, data):
         wanted = _get(data, "hotkey", str)
         if wanted not in {a for a, _ in self.host.hotkeys()}:
-            raise _missing(f"No hotkey action {wanted!r}.")
+            raise _missing(f"No hotkey action {wanted!r}.", "hotkey", wanted)
         note = self.host.trigger_hotkey(wanted)
         return {"hotkey": wanted, "note": note if isinstance(note, str) else None}
 
@@ -593,27 +618,36 @@ class NativeApi:
     @action("item.place", "Move, size or turn something inside a bloom or sprig (only the fields you give change).",
             item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",
             shape="?both (default), horizontal or vertical", x="?left edge, canvas pixels", y="?top edge",
-            scale="?size, 1 = as big as the source", rotation="?degrees clockwise",
+            scale="?size, 1 = as big as the source", scale_x="?width only, 1 = as wide as the source",
+            scale_y="?height only, 1 = as tall as the source", rotation="?degrees clockwise",
             dx="?pixels to move right (negative: left)", dy="?pixels to move down (negative: up)")
     def item_place(self, data):
         _, items = self._items(data)
-        values = {key: _get(data, key, float, optional=True) for key in ("x", "y", "scale", "rotation", "dx", "dy")}
+        keys = ("x", "y", "scale", "scale_x", "scale_y", "rotation", "dx", "dy")
+        values = {key: _get(data, key, float, optional=True) for key in keys}
         if all(v is None for v in values.values()):
-            raise _bad("Give x, y, scale, rotation, dx or dy.")
-        if values["scale"] is not None and not 0.01 <= values["scale"] <= 100:
-            raise _bad("scale must be 0.01 to 100.")
+            raise _bad("Give x, y, scale, scale_x, scale_y, rotation, dx or dy.")
+        for key in ("scale", "scale_x", "scale_y"):
+            if values[key] is not None and not 0.01 <= values[key] <= 100:
+                raise _bad(f"{key} must be 0.01 to 100.")
         for item in items:
             if values["scale"] is not None:
                 ratio = None if item.scale_y is None or not item.scale else item.scale_y / item.scale
                 item.scale = values["scale"]
                 item.scale_y = None if ratio is None else values["scale"] * ratio
+            if values["scale_x"] is not None or values["scale_y"] is not None:  # stretch: each way on its own
+                tall = values["scale_y"] if values["scale_y"] is not None else item.sy
+                item.scale = values["scale_x"] if values["scale_x"] is not None else item.scale
+                item.scale_y = None if math.isclose(tall, item.scale) else tall
             for key, attr in (("x", "x"), ("y", "y"), ("rotation", "rotation")):
                 if values[key] is not None:
                     setattr(item, attr, values[key])
             item.x += values["dx"] or 0.0
             item.y += values["dy"] or 0.0
         self.host.commit("items")
-        return {"items": [{"x": i.x, "y": i.y, "scale": i.scale, "rotation": i.rotation} for i in items]}
+        stretch = values["scale_x"] is not None or values["scale_y"] is not None
+        return {"items": [{"x": i.x, "y": i.y, "scale": i.scale, "rotation": i.rotation,
+                           **({"scale_x": i.scale, "scale_y": i.sy} if stretch else {})} for i in items]}
 
     @action("item.order", "Bring something forward or send it back.", item="name or id", bloom="?bloom it's in",
             sprig="?sprig it's in", shape="?both (default), horizontal or vertical",
@@ -633,7 +667,7 @@ class NativeApi:
                 layout.items.insert(min(new, len(layout.items)), item)  # index 0 draws first (bottom)
                 moved = True
         if not moved:
-            raise _missing(f"{holder.name!r} has no {wanted!r}.")
+            raise _missing(f"{holder.name!r} has no item {wanted!r}.", "item", wanted)
         self.host.commit("items")
 
     @action("sprigs.list", "Every sprig, its Live states and the state showing.")
@@ -647,7 +681,7 @@ class NativeApi:
         part = self._sprig(data)
         name = data.get("state") or None
         if name is not None and all(s.name != name for s in part.states):
-            raise _missing(f"{part.name!r} has no state {name!r}.")
+            raise _missing(f"{part.name!r} has no state {name!r}.", "state", name)
         self.col.set_state(part.id, name)
         self.host.commit("states")
 
@@ -750,7 +784,7 @@ class NativeApi:
         source = self._source(data, "source")
         kind = filter_kind(_get(data, "kind", str))
         if kind is None:
-            raise _missing("No such filter kind (filters.kinds lists them).")
+            raise _missing("No such filter kind (filters.kinds lists them).", "kind", data.get("kind"))
         if kind.media == "video" and any(f.kind == kind.kind for f in source.filters):
             raise ApiError("not_allowed", f"{source.name!r} already has a {kind.label} filter.")
         name = _get(data, "name", str, optional=True, default=kind.label)
@@ -885,7 +919,7 @@ class NativeApi:
         wanted = _get(data, "place", str)
         output = next((o for o in self.col.outputs if o.type == "stream" and wanted in (o.id, o.service)), None)
         if output is None:
-            raise _missing(f"No place {wanted!r}.")
+            raise _missing(f"No place {wanted!r}.", "place", wanted)
         return output
 
     @action("place.stop", "While live: stop sending to one place (the others keep going; the last one ends the "
@@ -960,7 +994,7 @@ class NativeApi:
         wanted = _get(data, "place", str)
         output = next((o for o in self.col.outputs if o.type == "stream" and wanted in (o.id, o.service)), None)
         if output is None:
-            raise _missing(f"No place {wanted!r}.")
+            raise _missing(f"No place {wanted!r}.", "place", wanted)
         if self.host.stream_status() is not None:
             raise ApiError("busy", "End the stream to change where it goes.")
         output.enabled = _get(data, "on", bool)
@@ -1212,6 +1246,9 @@ class NativeApi:
             "filters": {(s.id, f.id): (f.enabled, json.dumps(f.settings, sort_keys=True, default=str))
                         for s in col.sources for f in s.filters},
             "settings": {s.id: json.dumps(s.settings, sort_keys=True, default=str) for s in col.sources},
+            "sourceList": {s.id: (s.name, s.kind) for s in col.sources if s.kind != PART_KIND},
+            "layouts": {scene.id: tuple(i.source for i in scene.items) for scene in col.scenes},
+            "plugins": self._plugin_ids(),
             "stream": self.host.stream_status() is not None,
             "record": self.host.record_status() is not None,
             "clips": self.host.clips_ready(),
@@ -1221,6 +1258,19 @@ class NativeApi:
             "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
             "shelf": self._shelf(),
         }
+
+    @staticmethod
+    def _plugin_ids() -> tuple[str, ...]:
+        """The plugins that are added now (their actions are registered), for plugins.changed."""
+        import sys
+
+        ids = set()
+        for extra in _PLUGIN_ACTIONS.values():
+            if extra.module.startswith("sprigcast_plugin_") and extra.module not in sys.modules:
+                continue
+            head = getattr(sys.modules.get(extra.module), "PLUGIN", None) or {}
+            ids.add(str(head.get("id") or extra.module.removeprefix("sprigcast_plugin_")))
+        return tuple(sorted(ids))
 
     def _blooms_showing(self, part: Scene) -> list[str]:
         """The blooms whose own sprig this is (blooms hold sprigs only), so an item.changed inside it can say."""
@@ -1283,10 +1333,37 @@ class NativeApi:
         for (sid, fid) in set(last["filters"]) - set(now["filters"]):
             name = sources[sid].name if sid in sources else sid
             out.append(("filter.removed", {"source": name, "sourceId": sid, "id": fid}))
+        out += self._effects_ended(last["filters"], now["filters"], sources)
         for sid, settings in now["settings"].items():
             if sid in last["settings"] and last["settings"][sid] != settings and sources[sid].kind != PART_KIND:
                 out.append(("source.changed", {"source": sources[sid].name, "sourceId": sid,
                                                "settings": dict(sources[sid].settings)}))
+        if "sourceList" in last and now["sourceList"] != last["sourceList"]:
+            out.append(("sources.changed", {
+                "sources": [{"id": sid, "name": n, "kind": k} for sid, (n, k) in now["sourceList"].items()],
+                "added": [n for sid, (n, _) in now["sourceList"].items() if sid not in last["sourceList"]],
+                "removed": [n for sid, (n, _) in last["sourceList"].items() if sid not in now["sourceList"]],
+                "renamed": [{"from": last["sourceList"][sid][0], "to": n} for sid, (n, _) in now["sourceList"].items()
+                            if sid in last["sourceList"] and last["sourceList"][sid][0] != n]}))
+        for scene_id, held in now.get("layouts", {}).items():
+            if "layouts" not in last:
+                break
+            before = last["layouts"].get(scene_id, ())  # a new bloom or sprig counts from empty
+            scene = scenes.get(scene_id)
+            if before == held or scene is None:
+                continue
+            if scene.kind == "part":
+                part = self.col.main_part(scene)
+                where = {"sprig": part.name, "blooms": owners.setdefault(part.id, self._blooms_showing(part))}
+            else:
+                where = bloom_ref(scene_id)
+            out.append(("items.changed", {**where, "shape": scene.canvas,
+                                          "items": [{"item": self._item_name(sid), "itemId": self._item_key(sid)}
+                                                    for sid in reversed(held)]}))  # top first, as items.list
+        if "plugins" in last and now["plugins"] != last["plugins"]:
+            out.append(("plugins.changed", {"plugins": list(now["plugins"]),
+                                            "added": sorted(set(now["plugins"]) - set(last["plugins"])),
+                                            "removed": sorted(set(last["plugins"]) - set(now["plugins"]))}))
         for key, name in (("stream", "stream.changed"), ("record", "record.changed"), ("clips", "clips.changed"),
                           ("camera", "camera.changed")):
             if now.get(key) != last.get(key):
@@ -1301,6 +1378,29 @@ class NativeApi:
                 out.append(("media.changed", self._media_info(sources[sid])))
         return out
 
+    EFFECTS = {"pixelate": "hide.pixelate", "blackout": "hide.blackout", "barrel_roll": "roll.spin"}
+
+    def _effects_ended(self, last: dict, now: dict, sources: dict) -> list[tuple[str, dict[str, Any]]]:
+        """effect.ended: a Hide it or Barrel Roll effect finished (its time was up, or hide.show), or was replaced
+        (pixelate swapped for blackout, a new spin started over a running one)."""
+        out = []
+        turned_on = {sid for (sid, fid), (on, _) in now.items() if on and not (last.get((sid, fid)) or (False,))[0]}
+        for (sid, fid), (was_on, was_settings) in last.items():
+            if not was_on or sid not in sources:
+                continue
+            flt = next((f for f in sources[sid].filters if f.id == fid), None)
+            kind = flt.kind if flt is not None else None
+            if kind not in self.EFFECTS:
+                continue
+            on, settings = now.get((sid, fid), (False, was_settings))
+            restarted = on and kind == "barrel_roll" and \
+                json.loads(settings).get("run") != json.loads(was_settings).get("run")
+            if on and not restarted:
+                continue
+            out.append(("effect.ended", {"source": sources[sid].name, "sourceId": sid, "effect": self.EFFECTS[kind],
+                                         "reason": "replaced" if restarted or sid in turned_on else "ended"}))
+        return out
+
     def meters(self, levels: dict[str, tuple[float, float]]) -> dict[str, Any]:
         return {"levels": {sid: {"peakDb": round(p, 1), "rmsDb": round(r, 1)} for sid, (p, r) in levels.items()}}
 
@@ -1311,7 +1411,8 @@ def event_group(name: str) -> str:
     if head in _PLUGIN_EVENTS:
         return "plugin"
     return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
-            "places": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path"}.get(head, head)
+            "places": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path",
+            "sources": "source", "plugins": "plugin", "effect": "filter"}.get(head, head)
 
 
 @dataclass

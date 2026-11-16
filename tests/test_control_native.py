@@ -156,7 +156,8 @@ def test_session_password_and_requests():
     assert out[0]["welcome"]["events"] == ["bloom"]
     assert out[1]["id"] == "1" and out[1]["ok"] is True
     [fail] = [json.loads(m) for m in session.receive(json.dumps({"id": 2, "do": "bloom.show", "bloom": "Nope"}))]
-    assert fail == {"id": 2, "ok": False, "error": {"code": "not_found", "message": "No bloom called 'Nope'."}}
+    assert fail == {"id": 2, "ok": False, "error": {"code": "not_found", "message": "No bloom called 'Nope'.",
+                                                    "what": "bloom", "name": "Nope"}}
     assert session.event("sound.changed", {}) is None  # not subscribed
     assert json.loads(session.event("bloom.shown", {"bloom": "BRB"})) == {"event": "bloom.shown", "bloom": "BRB"}
 

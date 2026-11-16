@@ -33,27 +33,55 @@ SHIM = """
 (() => {
   if (window.obsstudio) return;
   const status = {recording: false, streaming: false, recordingPaused: false, replaybuffer: false, virtualcam: false};
+  const page = {app: "SprigCast", version: "__VERSION__", visible: true, bloom: "", blooms: {}, shape: "",
+                streaming: false, recording: false};
+  const fire = (name, detail) => window.dispatchEvent(new CustomEvent(name, {detail}));
   window.obsstudio = {
     pluginVersion: "2.24.0",
     sprigcast: true,
     getControlLevel: (cb) => cb(1),
     getStatus: (cb) => cb(status),
-    getCurrentScene: (cb) => cb({name: "", width: window.innerWidth, height: window.innerHeight}),
-    getScenes: (cb) => cb([]),
+    getCurrentScene: (cb) => cb({name: page.bloom, width: window.innerWidth, height: window.innerHeight}),
+    getScenes: (cb) => cb(page.bloom ? [page.bloom] : []),
     getCurrentTransition: (cb) => cb(""),
     getTransitions: (cb) => cb([]),
     onVisibilityChange: null,
     onActiveChange: null,
   };
+  // SprigCast's own names (the same object as window.obsstudio, so OBS overlays and SprigCast-aware ones agree).
+  for (const key of Object.keys(page)) {
+    Object.defineProperty(window.obsstudio, key, {get: () => page[key], enumerable: true});
+  }
   window.sprigcast = window.obsstudio;
   window.__sprigcastVisible = (shown) => {
-    window.dispatchEvent(new CustomEvent("obsSourceVisibleChanged", {detail: {visible: shown}}));
-    window.dispatchEvent(new CustomEvent("obsSourceActiveChanged", {detail: {active: shown}}));
+    const changed = page.visible !== shown;
+    page.visible = shown;
+    fire("obsSourceVisibleChanged", {visible: shown});
+    fire("obsSourceActiveChanged", {active: shown});
+    if (changed) fire("sprigcastVisibleChanged", {visible: shown});
     if (typeof window.obsstudio.onVisibilityChange === "function") window.obsstudio.onVisibilityChange(shown);
     if (typeof window.obsstudio.onActiveChange === "function") window.obsstudio.onActiveChange(shown);
   };
+  window.__sprigcastSet = (now) => {
+    const was = Object.assign({}, page);
+    Object.assign(page, now);
+    status.streaming = page.streaming;
+    status.recording = page.recording;
+    if (now.visible !== undefined && now.visible !== was.visible) window.__sprigcastVisible(now.visible);
+    if (page.bloom !== was.bloom) fire("obsSceneChanged", {name: page.bloom, width: window.innerWidth,
+                                                            height: window.innerHeight});
+    if (page.streaming !== was.streaming) fire(page.streaming ? "obsStreamingStarted" : "obsStreamingStopped", {});
+    if (page.recording !== was.recording) fire(page.recording ? "obsRecordingStarted" : "obsRecordingStopped", {});
+    fire("sprigcastStateChanged", Object.assign({}, page));
+  };
 })();
 """
+
+
+def shim() -> str:
+    from sprigcast import __version__
+
+    return SHIM.replace("__VERSION__", __version__)
 
 
 def css_script(css: str) -> str:
@@ -198,7 +226,7 @@ class _Page:
         scripts = self.page.scripts()
         scripts.clear()
         wanted = [
-            ("sprigcast-obs", SHIM, S.InjectionPoint.DocumentCreation),
+            ("sprigcast-obs", shim(), S.InjectionPoint.DocumentCreation),
             ("sprigcast-css", css_script(str(self.settings.get("css", "") or "")), S.InjectionPoint.DocumentReady),
         ]
         if self.sound is not None:
@@ -224,12 +252,20 @@ class _Page:
 
     def _loaded(self, ok: bool) -> None:
         self.dirty = True
+        self.push_state()
         if not ok:
             log.info("browser source %s: page didn't load", self.id)
 
     def _crashed(self, status, code) -> None:
         log.warning("browser source %s: page stopped (%s, %s), loading it again", self.id, status, code)
         QTimer.singleShot(2000, self.view.reload)
+
+    def push_state(self) -> None:
+        """Tell the page where it is (window.sprigcast: visible, bloom on air, live, recording)."""
+        import json
+
+        state = {**self.host.page_state(self.id), "visible": not self.paused}
+        self.page.runJavaScript(f"window.__sprigcastSet && window.__sprigcastSet({json.dumps(state)})")
 
     def set_paused(self, paused: bool) -> None:
         if paused == self.paused:
@@ -345,6 +381,10 @@ class BrowserHost(QObject):
         self._lock = threading.Lock()
         self._request.connect(self._handle, Qt.ConnectionType.QueuedConnection)
         self._shut = False
+        # What pages see in window.sprigcast: set by the window (state_of), looked at once a second while pages exist.
+        self.state_of = None  # callable: () -> {"blooms": {shape: name}, "streaming", "recording", "shapes": {id: shape}}
+        self._state: dict[str, Any] = {}
+        self._state_ticking = False  # a one-shot check is queued (no timer object: nothing ties the host's life to it)
 
     # Any thread ---------------------------------------------------------------------
 
@@ -402,6 +442,47 @@ class BrowserHost(QObject):
 
     # UI thread ----------------------------------------------------------------------
 
+    def page_state(self, source_id: str) -> dict[str, Any]:
+        """window.sprigcast for one page: the bloom on air in the shape the page is shown in (else the first)."""
+        state = self._state or {}
+        blooms = dict(state.get("blooms", {}))
+        shape = (state.get("shapes", {}) or {}).get(source_id) or next(iter(blooms), "")
+        return {"bloom": blooms.get(shape, ""), "blooms": blooms, "shape": shape,
+                "streaming": bool(state.get("streaming")), "recording": bool(state.get("recording"))}
+
+    def _tick_state(self) -> None:
+        """Look at the state again in a second, while pages exist. Holds the host only weakly."""
+        import weakref
+
+        if self._state_ticking:
+            return
+        self._state_ticking = True
+        ref = weakref.ref(self)
+
+        def later():
+            host = ref()
+            if host is None or host._shut:
+                return
+            host._state_ticking = False
+            host._check_state()
+            if host.pages:
+                host._tick_state()
+
+        QTimer.singleShot(1000, later)
+
+    def _check_state(self) -> None:
+        if not self.pages:
+            return
+        try:
+            now = self.state_of() if self.state_of is not None else {}
+        except Exception:
+            log.debug("page state", exc_info=True)
+            return
+        if now != self._state:
+            self._state = now
+            for page in self.pages.values():
+                page.push_state()
+
     def store(self, source_id: str, frame: np.ndarray) -> None:
         with self._lock:
             self._frames[source_id] = frame
@@ -415,6 +496,8 @@ class BrowserHost(QObject):
             if action == "open":
                 if page is None:
                     self.pages[source_id] = _Page(self, source_id, value)
+                    self._check_state()
+                    self._tick_state()
                 else:
                     page.apply(value)
             elif action == "close" and page is not None:

@@ -609,3 +609,11 @@ def test_effects_take_up_to_ten_minutes_and_name_what_is_missing(added):
         api.run("roll.spin", {"sprig": "Nobody", "seconds": 5})
     assert info.value.code == "not_found" and "Nobody" in info.value.message
     assert api.run("hide.blackout", {"source": "Cam", "seconds": 600})["seconds"] == 600.0
+
+
+def test_apps_hear_when_a_plugin_is_added(added):
+    api = NativeApi(FakeHost(_collection()))
+    api.changes()
+    added("barrel_roll")
+    changed = dict(api.changes())["plugins.changed"]
+    assert changed["added"] == ["barrel_roll"] and "barrel_roll" in changed["plugins"]
