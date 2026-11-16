@@ -65,7 +65,10 @@ def remux_to_mp4(path: Path, delete_original: bool = False) -> Path | None:
     Works for MKV, FLV, MOV and TS. Returns the MP4, or None (the original is left as it is)."""
     import av
 
+    import time
+
     target = unique(path.parent, path.stem, "mp4")
+    began = time.monotonic()
     try:
         with av.open(str(path)) as src, av.open(str(target), "w", format="mp4") as dst:
             pairs = {}
@@ -81,7 +84,13 @@ def remux_to_mp4(path: Path, delete_original: bool = False) -> Path | None:
         log.warning("couldn't turn %s into MP4: %s", path.name, exc)
         target.unlink(missing_ok=True)
         return None
-    log.info("saved %s as MP4", path.name)
+    try:
+        made = target.stat().st_size
+        size = f"{made / 1e9:.2f} GB" if made >= 1e9 else f"{made / 1e6:.0f} MB"
+    except OSError:
+        size = "?"
+    log.info("repot: saved %s as %s (%s) in %.1f s%s", path.name, target.name, size, time.monotonic() - began,
+             "; original deleted" if delete_original else "")
     if delete_original:
         path.unlink(missing_ok=True)
     return target

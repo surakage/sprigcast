@@ -200,6 +200,33 @@ def test_a_switch_waits_for_a_closed_camera_to_open(monkeypatch):
     assert fake.rendered[-1] == "b"  # its first picture is in: switch
 
 
+class caplog_at:
+    """Collect one logger's lines (INFO and up) inside a with block."""
+
+    def __init__(self, logger):
+        import logging
+
+        self.logger, self.lines = logger, []
+        outer = self
+
+        class Keep(logging.Handler):
+            def emit(self, record):
+                outer.lines.append(record.getMessage())
+        self.handler = Keep(logging.INFO)
+
+    def __enter__(self):
+        import logging
+
+        self.level = self.logger.level
+        self.logger.setLevel(logging.INFO)
+        self.logger.addHandler(self.handler)
+        return self.lines
+
+    def __exit__(self, *exc):
+        self.logger.removeHandler(self.handler)
+        self.logger.setLevel(self.level)
+
+
 def test_a_slow_source_is_drawn_less_often(monkeypatch):
     """A plugin that takes ~20 ms a frame is asked every 4th tick, so the canvas stays on time."""
     from sprigcast.render import engine as module
@@ -222,3 +249,12 @@ def test_a_slow_source_is_drawn_less_often(monkeypatch):
     assert engine._source_every["game"] == 4
     assert 50 <= len(calls) <= 80  # about a quarter of 200 once the average settled
     assert engine._source_every.get("cam", 1) == 1  # quick sources every tick
+    def quick():
+        clock[0] += 0.001  # its animation ended: 1 ms a frame
+        return np.zeros((8, 8, 4), dtype=np.uint8)
+    slow.video_frame = quick
+    with caplog_at(module.log) as lines:
+        for i in range(400):
+            engine._tick(fake, 5.0 + i / 60)
+    assert engine._source_every["game"] == 1
+    assert any("back to every frame" in line for line in lines)

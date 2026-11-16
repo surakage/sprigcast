@@ -41,3 +41,43 @@ def test_media_decoders_use_a_few_threads():
 
     assert decode_threads(1920, 1080) == 2 and decode_threads(1280, 720) == 2
     assert decode_threads(3840, 2160) == 4
+
+
+def test_a_long_hold_on_pythons_lock_names_the_busy_thread(caplog):
+    import logging
+    import time
+
+    caplog.set_level(logging.INFO, logger="sprigcast.core.pacing")
+    stop = threading.Event()
+
+    def spin():
+        while not stop.is_set():
+            sum(range(1000))
+    busy = threading.Thread(target=spin, name="camera-busy", daemon=True)
+    busy.start()
+    try:
+        line = pacing.busy_stacks()
+        assert "camera-busy at test_threads.py" in line
+    finally:
+        stop.set()
+        busy.join()
+    assert "camera-busy" not in pacing.busy_stacks()  # done: nothing to name
+
+
+def test_the_stall_watch_logs_a_long_wait(caplog):
+    import logging
+    import time
+
+    caplog.set_level(logging.INFO, logger="sprigcast.core.pacing")
+    ticks = iter([0.0, 0.01, 0.02, 0.48])  # the third wake comes 450 ms late
+    real = time.perf_counter
+
+    def clock():
+        return next(ticks, None) or real() + 100
+
+    pacing.watch_stalls(clock=clock, interval=0.01)
+    for _ in range(100):
+        if "everything waited" in caplog.text:
+            break
+        time.sleep(0.01)
+    assert "everything waited 450 ms" in caplog.text

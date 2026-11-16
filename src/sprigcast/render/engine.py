@@ -991,6 +991,9 @@ class Engine:
                 self._budget_logged.add(source_id)
                 log.info("source %s (%s) takes %.1f ms a frame: drawing it every %d frames to keep the canvas "
                          "on time", source_id, source.kind, avg, every)
+            elif every == 1 and source_id in self._budget_logged:
+                self._budget_logged.discard(source_id)
+                log.info("source %s (%s) back to every frame (%.1f ms a frame)", source_id, source.kind, avg)
 
     def _mark(self, name: str) -> None:
         self._marks.append((name, time.perf_counter()))
