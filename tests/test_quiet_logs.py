@@ -26,13 +26,13 @@ def test_chat_waiting_is_logged_now_and_then(caplog, monkeypatch):
 
     monkeypatch.setattr(hub, "_CHAT_LOG", Every(1800))
     fake = type("H", (), {})()
-    fake.readers = {"tiktok": type("R", (), {"channel": "me"})()}
+    fake.readers = {"kick": type("R", (), {"channel": "me"})()}
     fake.states = {}
     fake.changed = type("S", (), {"emit": lambda self: None})()
     caplog.set_level(logging.INFO, logger="sprigcast.chat.hub")
     for _ in range(50):
-        hub.ChatHub._state(fake, "tiktok", "connecting")
-        hub.ChatHub._state(fake, "tiktok", "waiting: not live yet")
-    hub.ChatHub._state(fake, "tiktok", "live")
+        hub.ChatHub._state(fake, "kick", "connecting")
+        hub.ChatHub._state(fake, "kick", "waiting: not live yet")
+    hub.ChatHub._state(fake, "kick", "live")
     lines = [r.getMessage() for r in caplog.records]
-    assert len(lines) == 3 and lines[-1] == "chat tiktok me: live"
+    assert len(lines) == 3 and lines[-1] == "chat kick me: live"
