@@ -6738,9 +6738,9 @@ class MainWindow(QMainWindow):
         if modal(dialog) != QDialog.DialogCode.Accepted:
             return False
 
-        return self._after_starter(build_starter(self.collection, dialog.choice(self._camera_settings)))
+        return self._after_starter(build_starter(self.collection, dialog.choice(self._device_source_settings)))
 
-    def _camera_settings(self, device) -> dict:
+    def _device_source_settings(self, device) -> dict:
         """A camera (or capture card) as source settings: its best mode, as the camera window picks it."""
         probe = CameraDialog([device], {"name": device.name, "path": device.path}, self,
                              max_fps=self._camera_max_fps())
@@ -7168,10 +7168,10 @@ class MainWindow(QMainWindow):
             m = next((m for m in monitors if m.primary), monitors[0] if monitors else None)
             monitor = (m.index, m.width, m.height) if m is not None else None
         choice = StarterChoice(
-            camera=self._camera_settings(picks.camera) if picks.camera is not None else None,
+            camera=self._device_source_settings(picks.camera) if picks.camera is not None else None,
             monitor=monitor, mic=picks.mic, desktop=None, app_sounds=gs.plan_sound(), blooms=blooms,
             vertical=answers.shape != "horizontal", replace_example=is_fresh(self.collection), names=names,
-            capture=self._camera_settings(picks.capture) if picks.capture is not None else None,
+            capture=self._device_source_settings(picks.capture) if picks.capture is not None else None,
             capture_audio=gs.capture_audio(picks.capture.name, gear.mics) if picks.capture is not None else None)
         made = build_starter(self.collection, choice)
         self._after_starter(made)
