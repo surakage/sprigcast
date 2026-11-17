@@ -1408,6 +1408,21 @@ class Engine:
             except Exception:
                 log.exception("frame tap for %s failed", target.id)
 
+    def _upload(self, compositor, source_id: str, frame, order: str, layout, held: bool = False) -> None:
+        """compositor.upload, saying which source's picture it was if the copy fails. The PC heavy run
+        (2026-11-17) had an access violation inside the copy to the card, twice, with nothing to say whose."""
+        try:
+            compositor.upload(source_id, frame, order, layout)
+        except Exception:
+            source = self._sources.get(source_id)
+            base = getattr(frame, "base", None)
+            log.error("the picture of %s (%s%s) failed to copy to the graphics card: %s %s, strides %s, "
+                      "%s, owned by %s", source_id, getattr(source, "kind", "?"), ", held back" if held else "",
+                      getattr(frame, "shape", "?"), getattr(frame, "dtype", "?"), getattr(frame, "strides", "?"),
+                      "contiguous" if getattr(getattr(frame, "flags", None), "c_contiguous", False)
+                      else "not contiguous", type(base).__name__ if base is not None else "itself")
+            raise
+
     def native_shot(self, canvas_id: str) -> tuple[bytes, int, int] | None:
         """A screenshot of a canvas the native engine draws, read from the engine (any thread; waits for its
         next frames): (BGRA premultiplied, width, height). None when Python must draw it: no engine, a canvas
@@ -1865,7 +1880,7 @@ class Engine:
                     self._held_back[source_id] = (frame, source.channel_order, layout)
                 else:
                     self._held_back.pop(source_id, None)
-                    compositor.upload(source_id, frame, source.channel_order, layout)
+                    self._upload(compositor, source_id, frame, source.channel_order, layout)
                 if native is not None and not direct:
                     native.upload(source_id, frame, source.channel_order, layout)
             spent = time.perf_counter() - began
@@ -1894,7 +1909,7 @@ class Engine:
             if self._python_drew or native is None:  # it draws again: it gets the newest pictures it skipped
                 for source_id, (frame, order, layout) in self._held_back.items():
                     if source_id in self._sources:
-                        compositor.upload(source_id, frame, order, layout)
+                        self._upload(compositor, source_id, frame, order, layout, held=True)
                 self._mark("pictures held back")
             self._held_back = {} if self._python_drew or native is None else \
                 {sid: held for sid, held in self._held_back.items() if sid in self._sources}
