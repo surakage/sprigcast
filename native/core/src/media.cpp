@@ -21,6 +21,8 @@ extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 }
@@ -57,6 +59,8 @@ namespace {
 #define SC_FF_FUNCTIONS(X)                                                                                         \
     X(0, avutil_version) X(0, av_frame_alloc) X(0, av_frame_free) X(0, av_frame_unref) X(0, av_strerror)           \
     X(0, av_channel_layout_default) X(0, av_channel_layout_compare)                                                \
+    X(0, av_hwdevice_ctx_create) X(0, av_hwdevice_find_type_by_name) X(0, av_hwframe_transfer_data)                \
+    X(0, av_buffer_ref) X(0, av_buffer_unref) X(0, av_pix_fmt_desc_get) X(1, avcodec_get_hw_config)                \
     X(1, avcodec_version) X(1, avcodec_find_decoder) X(1, avcodec_find_decoder_by_name)                            \
     X(1, avcodec_alloc_context3) X(1, avcodec_free_context) X(1, avcodec_parameters_to_context)                    \
     X(1, avcodec_open2) X(1, avcodec_send_packet) X(1, avcodec_receive_frame) X(1, avcodec_flush_buffers)          \
@@ -103,6 +107,54 @@ std::string av_text(int code) {
     if (ff.av_strerror) ff.av_strerror(code, buf, sizeof buf);
     if (!buf[0]) std::snprintf(buf, sizeof buf, "FFmpeg error %d", code);
     return buf;
+}
+
+// ---- decoding on the graphics card --------------------------------------------------------------------------
+
+// One device for every player that decodes on the graphics card (Direct3D 11 on Windows), made when first wanted.
+// Making one per file started a device per video; if it can't be made, every file decodes on the CPU and the log
+// says why once.
+std::mutex hw_lock;
+AVBufferRef *hw_device = nullptr;
+AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
+bool hw_tried = false;
+
+AVBufferRef *hw_device_ref(AVHWDeviceType &type) {
+    std::lock_guard<std::mutex> hold(hw_lock);
+    if (!hw_tried) {
+        hw_tried = true;
+#ifdef _WIN32
+        const char *name = "d3d11va";
+#else
+        const char *name = "vaapi";
+#endif
+        hw_type = ff.av_hwdevice_find_type_by_name(name);
+        int r = hw_type == AV_HWDEVICE_TYPE_NONE ? AVERROR(ENOSYS)
+                                                 : ff.av_hwdevice_ctx_create(&hw_device, hw_type, nullptr, nullptr, 0);
+        if (r < 0) {
+            hw_device = nullptr;
+            sc::log_line(SC_LOG_INFO, std::string("media: decoding on the graphics card isn't available (") + name +
+                                          ": " + av_text(r) + "); videos decode on the CPU");
+        } else {
+            sc::log_line(SC_LOG_INFO, std::string("media: videos asked to can decode on the graphics card (") + name +
+                                          ")");
+        }
+    }
+    type = hw_type;
+    return hw_device ? ff.av_buffer_ref(hw_device) : nullptr;
+}
+
+// The decoder's choice of picture format: the graphics card's when it offers it, else the first the CPU makes.
+AVPixelFormat pick_format(AVCodecContext *ctx, const AVPixelFormat *offered) {
+    const auto want = static_cast<AVPixelFormat>(reinterpret_cast<intptr_t>(ctx->opaque));
+    for (const AVPixelFormat *p = offered; *p != AV_PIX_FMT_NONE; ++p) {
+        if (*p == want) return *p;
+    }
+    for (const AVPixelFormat *p = offered; *p != AV_PIX_FMT_NONE; ++p) {
+        const AVPixFmtDescriptor *d = ff.av_pix_fmt_desc_get(*p);
+        if (d && !(d->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
+    }
+    return offered[0];
 }
 
 // ---- the player -----------------------------------------------------------------------------------------------
@@ -156,6 +208,8 @@ struct Held {
     int vi = -1, ai = -1;
     AVPacket *pkt = nullptr;
     AVFrame *frame = nullptr;
+    AVFrame *cpu = nullptr;  // a picture decoded on the graphics card, copied here to be packed
+    bool hardware = false;   // the video decoder decodes on the graphics card
     SwsContext *sws = nullptr;
     int sws_key[7] = {0, 0, 0, 0, 0, 0, 0};
     std::vector<uint8_t> planes[4];  // where the scaler writes (padded rows), before a picture is packed
@@ -169,6 +223,8 @@ struct Held {
         if (fmt) ff.avformat_close_input(&fmt);
         if (pkt) ff.av_packet_free(&pkt);
         if (frame) ff.av_frame_free(&frame);
+        if (cpu) ff.av_frame_free(&cpu);
+        hardware = false;
         vi = ai = -1;
     }
     // After a fault inside FFmpeg nothing of it is touched again: what it held is left behind.
@@ -177,6 +233,7 @@ struct Held {
         vdec = adec = nullptr;
         pkt = nullptr;
         frame = nullptr;
+        cpu = nullptr;
         sws = nullptr;
     }
 };
@@ -234,6 +291,8 @@ struct Core : std::enable_shared_from_this<Core> {
     std::atomic<float> shrink{1.0f};
     std::atomic<int> picture_format{0};              // sc_media_set_picture
     std::atomic<bool> grow{false};
+    std::atomic<bool> hardware{false};             // sc_media_set_decode: decode on the graphics card when it can
+    bool on_card = false;                          // the pictures now are decoded there
     std::atomic<int> max_w{MAX_W}, max_h{MAX_H};
     std::atomic<int> fault{0};
 
@@ -634,6 +693,26 @@ void Core::open(Held &held, const std::string &file) {
             if (video) {
                 ctx->thread_count = decode_threads(s->codecpar->width, s->codecpar->height);
                 ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+                AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
+                AVBufferRef *device = hardware.load() ? hw_device_ref(type) : nullptr;
+                AVPixelFormat hw_format = AV_PIX_FMT_NONE;
+                for (int i = 0; device; ++i) {  // libvpx (see-through WebM) has none: it stays on the CPU
+                    const AVCodecHWConfig *config = ff.avcodec_get_hw_config(codec, i);
+                    if (!config) break;
+                    if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) && config->device_type == type) {
+                        hw_format = config->pix_fmt;
+                        break;
+                    }
+                }
+                if (hw_format != AV_PIX_FMT_NONE) {
+                    ctx->hw_device_ctx = device;  // the decoder keeps this reference
+                    ctx->opaque = reinterpret_cast<void *>(static_cast<intptr_t>(hw_format));
+                    ctx->get_format = pick_format;
+                    ctx->thread_count = 1;  // the card decodes; FFmpeg's frame threads would only add copies
+                    held.hardware = true;
+                } else if (device) {
+                    ff.av_buffer_unref(&device);
+                }
             } else {
                 ctx->thread_count = 1;
             }
@@ -857,8 +936,9 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
         const std::u8string text(reinterpret_cast<const char8_t *>(file.data()), file.size());
         if (!std::filesystem::exists(std::filesystem::path(text), ec)) throw Error("file not found");
     }
-    if (held.key != file) held.release();
-    held.key = file;
+    const std::string key = file + (hardware.load() ? "\n(on the graphics card)" : "");  // asked anew: reopened
+    if (held.key != key) held.release();
+    held.key = key;
     double offset = 0;  // added to each pass's times when looping, so the timeline keeps running
     Resampler rs;       // one per play: a loop's next pass carries on with it
     rs.out_rate = std::max(8000, static_cast<int>(std::lround(RATE / static_cast<double>(at_speed))));
@@ -903,7 +983,7 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
             open(held, file);
         } else if (!rewind(held)) {  // the next pass: from the top of the open file
             held.release();
-            held.key = file;
+            held.key = key;
             open(held, file);
         }
         const AVStream *video = held.vi >= 0 ? held.fmt->streams[held.vi] : nullptr;
@@ -964,6 +1044,20 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 AVFrame *f = held.frame;
                 int64_t pts = f->pts != AV_NOPTS_VALUE ? f->pts : f->best_effort_timestamp;
                 if (pts == AV_NOPTS_VALUE && pkt) pts = pkt->pts;
+                if (f->hw_frames_ctx) {  // decoded on the graphics card: copied to memory (as NV12) to be packed
+                    if (!held.cpu) held.cpu = ff.av_frame_alloc();
+                    if (!held.cpu) throw std::bad_alloc();
+                    ff.av_frame_unref(held.cpu);
+                    const int got = ff.av_hwframe_transfer_data(held.cpu, f, 0);
+                    held.cpu->colorspace = f->colorspace;
+                    held.cpu->color_range = f->color_range;
+                    ff.av_frame_unref(f);
+                    if (got < 0) {
+                        if (++bad > BAD_PACKETS) throw Error(av_text(got));
+                        continue;
+                    }
+                    f = held.cpu;
+                }
                 const double at = (pts != AV_NOPTS_VALUE ? static_cast<double>(pts) * av_q2d(video->time_base) : 0.0)
                                   - origin;
                 if (at < skip_to - 0.001) {
@@ -975,6 +1069,10 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 shrunk(size_w, size_h, shrink_now, ow, oh);
                 PicturePtr picture = make_picture(held, f, ow, oh, ow < f->width || oh < f->height, as);
                 ff.av_frame_unref(f);
+                {
+                    std::lock_guard<std::mutex> hold(lock);
+                    on_card = held.hardware;
+                }
                 if (keeping && shrink_now != kept_shrink) keeping = false;  // pictures of two sizes: not kept
                 if (keeping) {
                     kept_bytes += picture->data.size();
@@ -1064,7 +1162,7 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
             replay.swap(kept);
             kept.clear();
             held.release();
-            held.key = file;
+            held.key = key;
         }
         offset += length;
     }
@@ -1192,6 +1290,14 @@ SC_API int sc_media_set_options(sc_media *media, const sc_media_options *options
     });
 }
 
+SC_API int sc_media_set_decode(sc_media *media, int hardware) {
+    return sc::guarded("sc_media_set_decode", [&]() -> int {
+        if (!media) return sc::fail(SC_ERR_ARGUMENT, "sc_media_set_decode: no player");
+        media->core->hardware = hardware != 0;
+        return SC_OK;
+    });
+}
+
 SC_API int sc_media_set_picture(sc_media *media, int format, int max_width, int max_height, int grow) {
     return sc::guarded("sc_media_set_picture", [&]() -> int {
         if (!media) return sc::fail(SC_ERR_ARGUMENT, "sc_media_set_picture: no player");
@@ -1259,6 +1365,7 @@ SC_API int sc_media_info_get(sc_media *media, sc_media_info *out) {
         out->decoded = c.decoded;
         out->passes = c.passes;
         out->picture_bytes = c.picture_bytes;
+        out->hardware = c.on_card;
         std::snprintf(out->status, sizeof out->status, "%s", c.status.c_str());
         return SC_OK;
     });

@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 11  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 12  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -699,7 +699,8 @@ class MediaInfo(ctypes.Structure):
                 ("height", ctypes.c_int), ("hidden", ctypes.c_int), ("thread", ctypes.c_int),
                 ("faulted", ctypes.c_int), ("replaying", ctypes.c_int), ("position", ctypes.c_double),
                 ("duration", ctypes.c_double), ("speed", ctypes.c_double), ("decoded", ctypes.c_uint64),
-                ("passes", ctypes.c_uint64), ("picture_bytes", ctypes.c_uint64), ("status", ctypes.c_char * 96)]
+                ("passes", ctypes.c_uint64), ("picture_bytes", ctypes.c_uint64), ("status", ctypes.c_char * 96),
+                ("hardware", ctypes.c_int)]
 
     @property
     def state_name(self) -> str:
@@ -733,6 +734,7 @@ def _media_sigs() -> dict:
                                          ctypes.c_size_t]),
         "sc_media_read_audio": (c_int, [vp, vp, c_int, c_int]),
         "sc_media_set_picture": (c_int, [vp, c_int, c_int, c_int, c_int]),
+        "sc_media_set_decode": (c_int, [vp, c_int]),
         "sc_media_debug_fault": (c_int, [vp, c_int]),
     }
 
@@ -841,6 +843,11 @@ class MediaPlayer:
         side). ``grow`` also enlarges smaller ones to fit it."""
         _check(self._call(self._lib.sc_media_set_picture, {"": 0, "RGBA": 1, "BGRA": 2}[order], int(limit[0]),
                           int(limit[1]), int(grow)))
+
+    def set_decode(self, hardware: bool) -> None:
+        """Before :meth:`set_file`: decode videos on the graphics card where it can (info().hardware says when it
+        does), else on the CPU."""
+        _check(self._call(self._lib.sc_media_set_decode, int(hardware)))
 
     def set_file(self, path: str, video: bool, playing: bool) -> None:
         _check(self._call(self._lib.sc_media_set_file, str(path).encode("utf-8"), int(video), int(playing)))

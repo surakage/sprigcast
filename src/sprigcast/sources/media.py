@@ -20,7 +20,7 @@ Hidden with its eye (still in a bloom on screen), a video pauses; shown again it
 With the native engine (SPRIGCAST_ENGINE=native, docs/native-engine.md phase 3) the engine plays the file itself:
 native/core/src/media.cpp is this player moved to C++ method for method, on a thread that never needs Python's
 lock. This class then only passes the controls on and hands the renderer and mixer what the engine has ready
-(self._native). Decoding on the graphics card (hw_decode) stays with the player below for now.
+(self._native), decoding on the graphics card too when hw_decode asks.
 """
 
 from __future__ import annotations
@@ -265,11 +265,12 @@ class MediaSource(Source):
     # The native engine's player ----------------------------------------------------------------------
 
     def _open_native(self):
-        if self.settings.get("hw_decode") or not sprigcore.use_native_media():
+        if not sprigcore.use_native_media():
             return None
         try:
             player = sprigcore.MediaPlayer(playing=self._state == "playing")
             self._send_options(player)
+            player.set_decode(bool(self.settings.get("hw_decode")))
             player.set_file(str(self.settings.get("path", "")), self.has_video, self._state == "playing")
             return player
         except Exception as exc:  # noqa: BLE001 (any refusal: the Python player plays it)
@@ -434,10 +435,11 @@ class MediaSource(Source):
         new_file = settings.get("path") != self.settings.get("path")
         reopen = bool(settings.get("hw_decode")) != bool(self.settings.get("hw_decode"))
         super().update(settings)
-        if self._native is not None and settings.get("hw_decode"):
-            # Decoding on the graphics card is the Python player's: it takes the file over from its start.
-            native, self._native = self._native, None
-            native.close()
+        if self._native is not None and reopen:
+            try:  # on the graphics card or off it: the file opens again (from its start) with the other decoder
+                self._native.set_decode(bool(settings.get("hw_decode")))
+            except sprigcore.NativeError as exc:
+                log.warning("media %s: %s", self.id, exc)
             new_file = True
         if self._native is not None:
             try:

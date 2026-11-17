@@ -147,7 +147,11 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   `NativePlayer`): B, G, R, A pictures fitted to the replay's box, from where the kept seconds start, at the
   replay's speed with its sound slowed to match. The wipes, the badge and the progress line are still drawn in
   Python on the picture it hands over.
-- **Still Python's:** decoding on the graphics card (`hw_decode`; such a source keeps the Python player).
+- **Decoding on the graphics card.** A source with `hw_decode` is played by the engine too (`sc_media_set_decode`):
+  its decoder decodes on the card through one Direct3D 11 device shared by every such player, and each picture
+  is copied to memory as NV12 and packed as usual. A see-through WebM (libvpx), a codec the card lacks, or a PC
+  without it decodes on the CPU, and the log says so once. Turning it on or off reopens the file with the other
+  decoder. Next: the decoded picture handed to the compositor on the card itself, with no copy through memory.
 - **Checks:** `tests/test_native_media.py` plays real files made with PyAV: a video with sound, a GIF looping
   from memory, a see-through WebM, a sound file, seeking, pausing, speed, shrink, sleep and wake, broken and
   missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone
@@ -161,7 +165,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
-| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too. Next: decoding on the graphics card, browser pages |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Next: pictures from the card's decoder straight to the compositor, browser pages |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
