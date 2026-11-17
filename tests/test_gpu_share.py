@@ -118,12 +118,13 @@ class NativeBridge:
     """Stands in for render/native_bridge.py NativeCanvases: a device for encoders, and frames on it."""
 
     can_share = True
+    device = 0x77
 
     def __init__(self):
         self.pool, self.back, self.out = None, [], 0
 
     def encoder_device(self):
-        return 0x77 if self.can_share else None
+        return self.device if self.can_share else None
 
     def hand(self, i, w=320, h=180):
         from sprigcast.render.native_bridge import CardFrame, CardPool
@@ -175,6 +176,33 @@ def test_a_native_frame_the_encoder_refuses_sends_that_recording_through_memory(
     rec.stop()
     assert rec.error is None and rec._gpu_failed and 1 <= rec.dropped <= 2 and rec.frames + rec.dropped == 12
     assert native.can_share and gpu_share.broken() is None  # the next recording opens on the new device
+    gc.collect()
+    assert len(native.back) == native.out
+
+
+def test_after_the_engine_rebuilds_its_device_the_encoder_opens_again_there(tmp_path, card, native):
+    """PC crash run 2026-11-17 (a lost graphics card): every output went through memory for good afterwards,
+    CPU 13% -> 30%. Now the encoder opens again on the new device and frames stay on the card."""
+    real = card.encode_texture
+
+    def on_its_device(self, frame, keyframe=False):  # a session takes only its own device's textures
+        if self.settings["device"].value != native.device:
+            raise nvenc_d3d11.NvencError("NVENC registering a texture failed: INVALID_CALL")
+        return real(self, frame, keyframe)
+
+    card.encode_texture = on_its_device
+    rec = _recorder(tmp_path)
+    rec.start()
+    assert rec._opened.wait(10)
+    for i in range(12):
+        if i == 4:
+            native.device = 0x78  # the engine rebuilt its device
+        assert rec.wants_gpu_frames()
+        rec.push_frame(native.hand(i))
+        _wait_queue(rec)
+    rec.stop()
+    assert rec.error is None and not rec._gpu_failed and rec.frames == 12 and rec.dropped == 0
+    assert [m.settings["device"].value for m in card.made] == [0x77, 0x78]
     gc.collect()
     assert len(native.back) == native.out
 

@@ -202,6 +202,7 @@ class DirectVideo:
         # Can also take frames on the card (encode_texture): the OpenGL hand-off's (render/gpu_share.py) or,
         # opened on the native engine's device, the native engine's (render/native_bridge.py CardFrame).
         self.shared = shared or device is not None
+        self.device = getattr(device, "value", None)  # the native engine's device it was opened on (a pointer)
         self._enc = enc
         try:
             black = bytes(width * height) + bytes([128]) * (width * height // 2)
@@ -1118,8 +1119,19 @@ class Recorder:
         except Exception as exc:  # noqa: BLE001 (the driver refused the texture: back to the read-back path)
             from sprigcast.render import gpu_share
 
+            native = str(getattr(frame, "key", ("",))[0]) == "native"
+            if native and self._reopen_on_native_device(str(exc)):
+                try:  # the same frame again, on the encoder opened on the engine's new device
+                    packets = self._direct.encode_texture(frame, pts, True)
+                except Exception as again:  # noqa: BLE001
+                    exc = again
+                else:
+                    for packet in packets:
+                        packet.stream = stream
+                    self._mux(container, packets)
+                    return True
             self._gpu_failed, self._force_key = True, True
-            if str(getattr(frame, "key", ("",))[0]) == "native":  # this recording only: the engine may have
+            if native:  # this recording only: the engine may have
                 log.warning("NVENC couldn't take the native engine's frame on the card (%s); this output's "
                             "frames go through memory", str(exc))  # rebuilt its device since the encoder opened
             else:
@@ -1130,6 +1142,32 @@ class Recorder:
         for packet in packets:
             packet.stream = stream
         self._mux(container, packets)
+        return True
+
+    def _reopen_on_native_device(self, why) -> bool:
+        """The native engine rebuilt its device (a lost graphics card, the crash gate): this output's NVENC,
+        opened on the old one, can't take the new device's frames. Opened again on the new device, the output
+        goes on taking frames on the card. Before, all four outputs of the PC crash run (2026-11-17) went
+        through memory for good: CPU 13% -> 30%, a minute at 20 fps. False when there is no new device or
+        it can't open there."""
+        from sprigcast.render import gpu_share
+
+        old = self._direct
+        device = gpu_share.native_device()
+        if old is None or device is None or device.value == getattr(old, "device", None):
+            return False
+        try:
+            new = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps, self.encoder,
+                              self.codec, device=device)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s: NVENC couldn't open again on the native engine's new device (%s)", self.path.stem, exc)
+            return False
+        self._direct = new
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001 (the old device may be gone)
+            pass
+        log.warning("%s: NVENC opened again on the native engine's new device (%s)", self.path.stem, why)
         return True
 
     def _encode_direct(self, stream, nv12, pts: int) -> list:
