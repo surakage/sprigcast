@@ -61,6 +61,7 @@ FEATURES = (
     "page.api",            # Web page sources: window.sprigcast (app, version, visible, bloom...) and its events
     "effects.freeze",      # freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start"
     "record.pause",        # record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event
+    "place.bandwidth_test",  # place.set bandwidth_test (Twitch test mode); places.list says it where there is one
 )
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
@@ -1006,18 +1007,41 @@ class NativeApi:
 
     @action("places.list", "Where the stream goes (Twitch, YouTube...), each one's shape and if it's on.")
     def places_list(self, data):
-        return {"places": [{"id": o.id, "service": o.service, "shape": o.canvas, "on": o.enabled,
-                            "bitrateKbps": o.bitrate_kbps} for o in self.col.outputs if o.type == "stream"]}
+        from sprigcast.output.stream import SERVICES
 
-    @action("place.set", "Switch a place on or off for the next Go live.", place="id from places.list", on="true or false")
+        out = []
+        for o in self.col.outputs:
+            if o.type != "stream":
+                continue
+            place = {"id": o.id, "service": o.service, "shape": o.canvas, "on": o.enabled, "bitrateKbps": o.bitrate_kbps}
+            if SERVICES.get(o.service or "custom", SERVICES["custom"]).bandwidth_test:
+                place["bandwidth_test"] = o.bandwidth_test  # only where the service has a test mode (Twitch)
+            out.append(place)
+        return {"places": out}
+
+    @action("place.set", "Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream "
+            "reaches Twitch but viewers never see it).", place="id from places.list", on="?true or false",
+            bandwidth_test="?true or false (only places whose service has a test mode)")
     def place_set(self, data):
+        from sprigcast.output.stream import SERVICES
+
         wanted = _get(data, "place", str)
         output = next((o for o in self.col.outputs if o.type == "stream" and wanted in (o.id, o.service)), None)
         if output is None:
             raise _missing(f"No place {wanted!r}.", "place", wanted)
+        on = _get(data, "on", bool, optional=True)
+        test = _get(data, "bandwidth_test", bool, optional=True)
+        if on is None and test is None:
+            raise _bad("Give on and/or bandwidth_test.")
+        service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+        if test is not None and not service.bandwidth_test:
+            raise _bad(f"{service.label} has no test mode.")
         if self.host.stream_status() is not None:
             raise ApiError("busy", "End the stream to change where it goes.")
-        output.enabled = _get(data, "on", bool)
+        if on is not None:
+            output.enabled = on
+        if test is not None:
+            output.bandwidth_test = test
         self.host.commit("places")
 
     @action("record.status", "Recording or not, for how long, the file, and whether it's paused.")
