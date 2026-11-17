@@ -279,7 +279,7 @@ class SettingsWindow(QDialog):
             self._show_row(0)  # row 0 was already current: no change signalled
         if tab == "Audio" and sub:
             self.audio_page.show_tab(sub)
-        QTimer.singleShot(0, self._make_next)
+        QTimer.singleShot(0, self, self._make_next)
 
         side = QVBoxLayout()
         side.setSpacing(14)
@@ -377,6 +377,10 @@ class SettingsWindow(QDialog):
         if took >= 100:
             log.info("settings: the %s page took %.0f ms to make", name, took)
 
+    def done(self, result: int) -> None:  # Save, Cancel, Esc or the window's X
+        self._closed = True
+        super().done(result)
+
     def ensure_all(self) -> None:
         for name in TABS:
             self.ensure(name)
@@ -384,13 +388,15 @@ class SettingsWindow(QDialog):
     def _make_next(self) -> None:
         """Once the window is up: the next page not made yet, then the one after on the next turn. The Audio
         page waits for its device scan (on a worker) to be done."""
+        if getattr(self, "_closed", False):
+            return  # closed before every page was made: nothing more to make (it used to make them all anyway)
         left = [name for name in TABS if name not in self._built]
         scanning = _scanning(self._audio_devices)
         ready = [name for name in left if not (name == "Audio" and scanning)]
         if ready:
             self.ensure(ready[0])
         if len(left) > 1 or (left and not ready):
-            QTimer.singleShot(0 if len(ready) > 1 else 50, self._make_next)
+            QTimer.singleShot(0 if len(ready) > 1 else 50, self, self._make_next)  # cancelled if it's deleted
 
     def _show_row(self, row: int) -> None:
         if 0 <= row < len(TABS):

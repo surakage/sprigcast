@@ -5,6 +5,7 @@ shrunk to 1280x720"). The Inside list and inspector show a short version; the fu
 """
 
 from __future__ import annotations
+from sprigcast.app.modal import modal
 
 import re
 
@@ -158,4 +159,4 @@ def ask_name(parent: QWidget | None, short: str, original: str) -> str:
     if not original or short == original:
         return short or original
     dialog = NameDialog(short, original, parent)
-    return dialog.name() if dialog.exec() else short
+    return dialog.name() if modal(dialog) else short

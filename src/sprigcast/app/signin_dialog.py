@@ -7,6 +7,7 @@ import threading
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.output import service_signin
 from sprigcast.output.oauth_loopback import Cancelled, SignInError
@@ -75,4 +76,4 @@ class SignInDialog(QDialog):
 
 def sign_in(service: str, parent: QWidget | None = None) -> service_signin.Fetched | None:
     dialog = SignInDialog(service, parent)
-    return dialog.fetched if dialog.exec() else None
+    return dialog.fetched if modal(dialog) else None

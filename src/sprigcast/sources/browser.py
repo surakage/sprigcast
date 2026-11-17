@@ -112,6 +112,7 @@ class BrowserSource(Source):
     label = "Browser"
     defaults = DEFAULTS
     sleeps = True
+    stop_may_wait = False  # stop() only asks the window's thread to close the page: done in order, right here
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)

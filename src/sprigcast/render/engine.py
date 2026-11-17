@@ -27,6 +27,7 @@ from sprigcast.core.events import (
     Stats,
 )
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
+from sprigcast.core import retire
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
@@ -53,6 +54,8 @@ GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw a
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
+FAIL_RETRY_S = 1.0  # a source whose picture keeps failing is asked again about once a second, not every frame
+CLOSE_ALL_S = 4.0  # quitting: sources close side by side for at most this long
 
 
 class Frame:
@@ -170,6 +173,10 @@ class Engine:
         self._frozen: dict[str, object] = {}
         self._caught: dict[str, object] = {}
         self._missed: dict[str, np.ndarray] = {}  # a frozen source's newest picture, shown when it's let go
+        # One source failing (a plugin's, a driver's) is that source's problem only: the rest of the canvas and
+        # the sound carry on. source id -> when to ask it for a picture again, and the last problem said.
+        self._failing: dict[str, float] = {}
+        self._failed_said: dict[str, tuple[str, str]] = {}
 
     # Called from the UI thread ----------------------------------------------
 
@@ -458,8 +465,7 @@ class Engine:
         finally:
             for canvas_id in list(self._transitions):
                 self._finish_transition(canvas_id, compositor)
-            for source in self._sources.values():
-                source.stop()
+            retire.stop_all(list(self._sources.values()), CLOSE_ALL_S)  # side by side, not one after another
             for source_id in list(self._watchers):
                 self._close_watcher(compositor, source_id)
             if gpu is not None:
@@ -739,18 +745,25 @@ class Engine:
             if gone or source_class(self._sources[source_id].kind) is None:  # its plugin was removed
                 if not gone:
                     self._stopped_unknown.add(source_id)
-                self._sources.pop(source_id).stop()
+                self._retire(self._sources.pop(source_id))
                 self._last_shown.pop(source_id, None)
+                self._failing.pop(source_id, None)
+                self._failed_said.pop(source_id, None)
                 self._camera_wait.pop(source_id, None)
                 self._slept_at.pop(source_id, None)
                 compositor.forget(source_id)
         for source_id, config in wanted.items():
             existing = self._sources.get(source_id)
+            if existing is not None and self._needs_new(existing, config.settings):
+                self._retire(self._sources.pop(source_id))  # a new one opens while the old one closes
+                existing = None
             if existing is None and source_class(config.kind) is None and source_id in self._stopped_unknown:
                 continue  # its plugin was removed: said so once already
             if existing is None:
                 try:
                     source = create_source(config.kind, config.id, config.settings)
+                    if hasattr(source, "canvas_fps"):  # captures ask Windows for no more pictures than this
+                        source.canvas_fps = max((c.fps for c in self._collection.canvases), default=60)
                     if getattr(source, "wants_engine", False):  # plugins that tap frames or sound (Instant replay)
                         source.engine = self
                     if self._may_sleep(source) and source_id not in self._shown_sources():
@@ -764,7 +777,7 @@ class Engine:
                     continue
                 self._sources[source_id] = source
             elif existing.settings != config.settings:
-                existing.update(config.settings)
+                self._safely(source_id, existing, "update", existing.update, config.settings)
         self._sync_filters(compositor, wanted)
         self._sync_detail()
         compositor.downscale = {c.id: c.downscale for c in self._collection.canvases}
@@ -1041,15 +1054,68 @@ class Engine:
                     source.asleep = False
                     if source.kind == "camera":
                         self._camera_back(source_id, now)
-                    source.wake()
+                    self._failing.pop(source_id, None)  # asked for a picture straight away
+                    self._safely(source_id, source, "wake", source.wake)
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
                     self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera"
                     else SLEEP_AFTER if source_id in shown else 0.0):
                 source.asleep = True
                 if source.kind == "camera":
                     self._slept_at[source_id] = now
-                source.sleep()
+                self._safely(source_id, source, "sleep", source.sleep)
                 compositor.forget(source_id)
+
+    # Lifecycle safety ---------------------------------------------------------------------------------
+
+    @staticmethod
+    def _needs_new(source, settings: dict) -> bool:
+        """True when a settings change means closing this source and opening a new one (Source.needs_new)."""
+        try:
+            return bool(source.needs_new(settings))
+        except Exception as exc:  # a plugin's source: update it in place as before
+            log.warning("source %s needs_new failed: %s", getattr(source, "id", "?"), exc)
+            return False
+
+    def _retire(self, source) -> None:
+        """Close a source that's gone. Its stop() may wait for a device or a thread, so it runs on the closing
+        helper (core/retire.py), never here: the render thread doesn't wait for anything."""
+        if getattr(source, "stop_may_wait", True):
+            retire.RETIRER.retire(source)
+        else:
+            self._safely(getattr(source, "id", "?"), source, "stop", source.stop)
+
+    def _safely(self, source_id: str, source, step: str, call, *args) -> bool:
+        """call(*args) for one source; if it fails, say so for that source and carry on with the rest."""
+        try:
+            call(*args)
+            return True
+        except Exception as exc:
+            self._source_failed(source_id, source, step, exc)
+            return False
+
+    def _source_failed(self, source_id: str, source, step: str, exc: Exception) -> None:
+        problem = f"{type(exc).__name__}: {exc}"
+        if self._failed_said.get(source_id) != (step, problem):  # each new problem once, not every frame
+            self._failed_said[source_id] = (step, problem)
+            log.error("source %s (%s) failed in %s: %s", source_id, getattr(source, "kind", "?"), step, problem,
+                      exc_info=exc)
+            name = next((c.name for c in self._collection.sources if c.id == source_id), source_id)
+            self.events.put(EngineError(f"Source {name!r} has a problem: {problem}"))
+        try:
+            source.status = f"failed: {problem}"[:160]
+        except Exception:  # noqa: BLE001 (a read-only status: the log has it)
+            pass
+
+    def _source_works_again(self, source_id: str, source) -> None:
+        self._failing.pop(source_id, None)
+        said = self._failed_said.pop(source_id, None)
+        if said is not None:
+            log.info("source %s (%s) works again", source_id, getattr(source, "kind", "?"))
+        if str(getattr(source, "status", "")).startswith("failed:"):
+            try:
+                source.status = "ok"
+            except Exception:  # noqa: BLE001
+                pass
 
     def _camera_back(self, source_id: str, now: float) -> None:
         """A closed camera is on screen again: back soon, it stays open longer next time; else 30 s again."""
@@ -1474,7 +1540,8 @@ class Engine:
         textures = getattr(compositor, "textures", {})
         for source_id, source in self._sources.items():
             freeze = frozen.get(source_id) if frozen else None
-            if source.asleep or not self._budget_allows(source_id):
+            if source.asleep or not self._budget_allows(source_id) or (
+                    self._failing and now < self._failing.get(source_id, 0.0)):
                 if freeze is not None and source_id in textures:
                     self._caught.setdefault(source_id, freeze)  # its picture now is the frozen one, as on screen
                 elif source.asleep and self._missed:
@@ -1482,7 +1549,15 @@ class Engine:
                 continue
             began = time.perf_counter()
             missed = self._missed.pop(source_id, None) if self._missed and freeze is None else None
-            frame = source.video_frame()
+            try:
+                frame = source.video_frame()
+            except Exception as exc:  # this source's problem only: the canvas keeps its last picture of it
+                self._failing[source_id] = now + FAIL_RETRY_S
+                self._source_failed(source_id, source, "video_frame", exc)
+                continue
+            if self._failed_said and (source_id in self._failing or self._failed_said.get(
+                    source_id, ("",))[0] in ("video_frame", "wake")):
+                self._source_works_again(source_id, source)
             if freeze is not None and self._caught.get(source_id) == freeze and source_id in textures:
                 if frame is not None:  # frozen: it keeps the picture it had (the source runs on, unseen)...
                     self._missed[source_id] = frame  # ...and shows its newest once it's let go: a text or

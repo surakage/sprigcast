@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast import plugin_hooks
+from sprigcast.app.modal import modal
 from sprigcast.app.labels import literal
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
@@ -579,6 +580,7 @@ class MainWindow(QMainWindow):
         else:
             self._fill_sound_menu(menu, source_id)
         menu.exec(at)
+        menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
     def _library_plus(self, key: str) -> None:
         """The round + beside Blooms or Sprigs."""
@@ -592,6 +594,7 @@ class MainWindow(QMainWindow):
             menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
             menu.addAction(f"New {SHOW} folder…").triggered.connect(lambda: self._add_folder())
         menu.exec(QCursor.pos())
+        menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
     def _fill_app_sound_menu(self, menu: QMenu) -> None:
         from sprigcast.sources.app_audio import SOUND_TYPES
@@ -624,7 +627,7 @@ class MainWindow(QMainWindow):
     def _connect_twitch(self) -> None:
         from sprigcast.app.twitch_connect import TwitchConnectDialog
 
-        TwitchConnectDialog(self).exec()  # the Chat panel hears about the new account itself
+        modal(TwitchConnectDialog(self))  # the Chat panel hears about the new account itself
 
     def _build_transitions_dock(self) -> None:
         from sprigcast.app.transitions_panel import TransitionsPanel
@@ -1432,6 +1435,7 @@ class MainWindow(QMainWindow):
         menu.addAction(colour_row(menu, self.collection.folder(folder_id).colour,
                                   lambda c: self._recolour_folder(folder_id, c)))
         menu.exec(at)
+        menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
     def _recolour_folder(self, folder_id: str, colour: str) -> None:
         self.collection.folder(folder_id).colour = colour
@@ -2660,8 +2664,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.support import support_dialog
 
         dialog = support_dialog(self)
-        dialog.exec()
-        dialog.deleteLater()
+        modal(dialog)
 
     def _show_garden_file(self) -> None:
         """Explorer, open on this garden's file and with it selected."""
@@ -2709,7 +2712,7 @@ class MainWindow(QMainWindow):
         box.setWindowTitle("Keyboard shortcuts")
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(f"<table>{rows}</table>")
-        box.exec()
+        modal(box)
 
     def _show_about(self) -> None:
         from sprigcast.app.about import show_about
@@ -2726,7 +2729,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "SprigCast", "Web panels need Qt WebEngine, which isn't installed.")
             return
         dialog = custom_docks.CustomDocksDialog(custom_docks.load(), self)
-        if dialog.exec():
+        if modal(dialog):
             custom_docks.apply(self, dialog.result_docks())
 
     # Engine link ------------------------------------------------------------
@@ -3537,6 +3540,7 @@ class MainWindow(QMainWindow):
         if not apps and not picked:
             menu.addAction("Open the app, then come back here").setEnabled(False)
         menu.exec(QCursor.pos())
+        menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
     def _set_app_sound(self, source_id: str, **changes) -> None:
         config = self.collection.source(source_id)
@@ -3573,7 +3577,7 @@ class MainWindow(QMainWindow):
 
     def _open_ducking(self, parent: QWidget | None = None) -> None:
         dialog = DuckingDialog(self.collection, parent or self)
-        if dialog.exec():
+        if modal(dialog):
             dialog.apply_to(self.collection)
             self._changed()
             self._refresh_audio()
@@ -3674,7 +3678,7 @@ class MainWindow(QMainWindow):
     def _open_filters(self, source_id: str, media: str | None = None) -> None:
         sounds = sorted(((c.id, c.name) for c in self.collection.sources if self._has_sound(c)),
                         key=lambda pair: pair[1].lower())
-        FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds).exec()
+        modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds))
         if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio_soon()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
@@ -3980,6 +3984,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         self._fill_plays_in_menu(menu, self.selected_sound_id)
         menu.exec(QCursor.pos())
+        menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
     def _close_build_sound(self, refresh: bool = True) -> None:
         self.selected_sound_id = None
@@ -4005,7 +4010,7 @@ class MainWindow(QMainWindow):
     def _edit_states(self, part_id: str) -> None:
         part = self.collection.main_part(self.collection.scene(part_id))
         dialog = StatesDialog(self.collection, part, self)
-        if dialog.exec():
+        if modal(dialog):
             dialog.apply_to(part)
             self._changed()
             self._refresh_scenes()
@@ -4439,7 +4444,7 @@ class MainWindow(QMainWindow):
             dialog = WebPageDialog("New web page", defaults, self, primary="Add")
         else:
             dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls, collection=self.collection)
-        if not dialog.exec():
+        if not modal(dialog):
             return
         settings = dialog.values()
         scene = self._scene()
@@ -4712,7 +4717,7 @@ class MainWindow(QMainWindow):
         source = self.engine._sources.get(source_id) if source_id else None
         modes = getattr(source, "modes_seen", None) or None
         dialog = CameraDialog(cameras, current, self, max_fps=self._camera_max_fps(), modes=modes)
-        return dialog.settings() if dialog.exec() else None
+        return dialog.settings() if modal(dialog) else None
 
     def _add_camera(self, device=None) -> None:
         """Add a camera: pick one and its mode, or (from + Add's list) that camera at its usual mode."""
@@ -5091,7 +5096,7 @@ class MainWindow(QMainWindow):
 
             dialog = GameCaptureDialog(config.settings, list_windows(), capture_sound(self.collection, config.id)
                                        is not None, self, list_windows=list_windows)
-            if not dialog.exec():
+            if not modal(dialog):
                 return
             changes, sound = dialog.values()
             config.settings = {**config.settings, **changes}
@@ -5130,7 +5135,7 @@ class MainWindow(QMainWindow):
             else:
                 dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls,
                                         collection=self.collection)
-            if not dialog.exec():
+            if not modal(dialog):
                 return
             old_auto = _name_from(config.settings, config.name)
             config.settings = {**config.settings, **dialog.values()}  # volume, mute... aren't in the form
@@ -6009,7 +6014,7 @@ class MainWindow(QMainWindow):
         window.plugins_changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
         window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
-        window.exec()
+        modal(window)
         self._plugin_updates()  # an Update pressed while on air waits until the stream and recording stop
 
     def _poll_camera(self) -> None:
@@ -6126,7 +6131,7 @@ class MainWindow(QMainWindow):
         box.setText(f"{why}\nIn Windows Settings, turn on Camera access and Let desktop apps access your camera.")
         open_button = box.addButton("Open camera settings", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Close)
-        box.exec()
+        modal(box)
         if box.clickedButton() is open_button:
             virtualcam.open_privacy_settings()
 
@@ -6139,8 +6144,7 @@ class MainWindow(QMainWindow):
         repair = virtualcam.set_up if ok and (not virtualcam.installed() or virtualcam.needs_update()) else None
         status = getattr(self, "_camera_error", "") if self.camera is None else ""
         pop = camera_popup(self.collection, self, repair, status)
-        pop.exec()
-        pop.deleteLater()  # one per open: kept, each held its widgets (and handles) until SprigCast closed
+        modal(pop)
 
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""
@@ -6360,7 +6364,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(QMessageBox.Icon.Question, "Light settings", text, parent=self)
         use = box.addButton("Use light settings", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
+        modal(box)
         if box.clickedButton() is not use:
             return False
         _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
@@ -6385,7 +6389,7 @@ class MainWindow(QMainWindow):
 
         dialog = StarterDialog(list_cameras(), list_monitors(), mics, is_fresh(self.collection), both, self,
                                speakers=speakers, running_apps=running_apps())
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if modal(dialog) != QDialog.DialogCode.Accepted:
             return False
 
         return self._after_starter(build_starter(self.collection, dialog.choice(self._camera_settings)))
@@ -6429,7 +6433,7 @@ class MainWindow(QMainWindow):
         if wants is not None:  # Get started already asked: live, record
             wizard.wants_stream.setChecked(wants[0])
             wizard.wants_record.setChecked(wants[1])
-        accepted = wizard.exec() == QDialog.DialogCode.Accepted
+        accepted = modal(wizard) == QDialog.DialogCode.Accepted
         plan = getattr(wizard, "plan", None)
         height, fps_q = getattr(plan, "quality", (0, 0))
         log.info("optimize: %s; quality %dp%d, %d change(s) ticked",
@@ -6639,7 +6643,7 @@ class MainWindow(QMainWindow):
             from sprigcast.app.twitch_connect import TwitchConnectDialog
 
             dialog = TwitchConnectDialog(parent)
-            return (dialog.account, dialog.stream_key) if dialog.exec() and dialog.account else None
+            return (dialog.account, dialog.stream_key) if modal(dialog) and dialog.account else None
 
         def twitch_account():
             try:
@@ -6657,7 +6661,7 @@ class MainWindow(QMainWindow):
         dialog = gs.GettingStartedDialog(self, twitch_account=twitch_account, connect_twitch=connect_twitch,
                                          list_gear=list_gear, can_sign_in=service_signin.available,
                                          sign_in=sign_in)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if modal(dialog) != QDialog.DialogCode.Accepted:
             log.info("get started: closed")
             return None
         answers = dialog.answers()
@@ -6872,7 +6876,7 @@ class MainWindow(QMainWindow):
         go = box.addButton("Go live anyway", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Open doctor", QMessageBox.ButtonRole.HelpRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
+        modal(box)
         if box.clickedButton() is go:
             return True
         if box.buttonRole(box.clickedButton()) == QMessageBox.ButtonRole.HelpRole:
@@ -6880,7 +6884,7 @@ class MainWindow(QMainWindow):
         return False
 
     def _open_doctor(self) -> None:
-        doctor.DoctorDialog(self._checkup, self).exec()
+        modal(doctor.DoctorDialog(self._checkup, self))
 
     def _refresh_stats_panel(self) -> None:
         outputs = []

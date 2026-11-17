@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.core.scene import ANY, SceneCollection, Transition, TransitionRule
 
@@ -942,15 +943,13 @@ class TransitionsPanel(QWidget):
 
     def open_settings(self) -> None:
         dialog = self.settings_dialog()
-        dialog.exec()
-        dialog.deleteLater()  # a new pop-up each time: kept, each one held its widgets until SprigCast closed
+        modal(dialog)
         self.load(self.transition)
         self.show_rule_count()
 
     def open_rules(self) -> None:
         dialog = self.rules_dialog()
-        dialog.exec()
-        dialog.deleteLater()
+        modal(dialog)
         self.show_rule_count()
 
     def set_kind(self, kind: str) -> None:
@@ -1226,7 +1225,7 @@ class RuleRow(QFrame):
         done.clicked.connect(dialog.accept)
         layout.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
         dialog.resize(380, 560)
-        dialog.exec()
+        modal(dialog)
 
 
 class RulesTable(QWidget):

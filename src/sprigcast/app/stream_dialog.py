@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.app.live_stage import Switch
 from sprigcast.core.scene import Output, SceneCollection
@@ -540,7 +541,7 @@ class StreamPage(QWidget):
         from sprigcast.app.twitch_connect import TwitchConnectDialog
 
         dialog = TwitchConnectDialog(self)
-        if not dialog.exec():
+        if not modal(dialog):
             return
         if dialog.stream_key:
             self.key.setText(dialog.stream_key)  # saved too, so going live still works if Twitch is unreachable

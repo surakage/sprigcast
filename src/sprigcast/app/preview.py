@@ -373,6 +373,7 @@ class Preview(QWidget):
         menu.addAction("Zoom in\tCtrl+=").triggered.connect(lambda: (self.set_zoom_locked(False), self.zoom_at(1.25)))
         menu.addAction("Zoom out\tCtrl+-").triggered.connect(lambda: (self.set_zoom_locked(False), self.zoom_at(0.8)))
         menu.exec(at - QPoint(0, menu.sizeHint().height() + 6) if above else at)
+        menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
         self.zoom_changed.emit()
 
     def set_zoom_locked(self, on: bool) -> None:

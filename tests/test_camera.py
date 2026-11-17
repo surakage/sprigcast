@@ -450,3 +450,26 @@ def test_camera_pictures_go_up_as_yuv_planes_and_mirror_cleanly(monkeypatch):
     monkeypatch.setattr(camera, "PLANAR", False)  # the escape hatch: BGR as before
     array, order, size = camera.camera_picture(nv12, (32, 18))
     assert order == "BGR" and array.shape == (18, 32, 3) and size == (32, 18)
+
+
+def test_nv12_and_mjpeg_pictures_go_up_without_a_conversion_pass(monkeypatch):
+    import av
+
+    from sprigcast.sources import camera
+
+    rng = np.random.default_rng(1)
+    bgr = rng.integers(0, 255, (36, 64, 3), dtype=np.uint8)
+    nv12 = av.VideoFrame.from_ndarray(bgr, format="bgr24").reformat(format="nv12")
+    expected, order, _ = camera.camera_picture(nv12.reformat(format="yuv420p"), None)  # the old way: convert first
+    calls = []
+    real = camera.reformat
+    monkeypatch.setattr(camera, "reformat", lambda *a, **k: calls.append(k) or real(*a, **k))
+    array, order2, size = camera.camera_picture(nv12, None)
+    assert not calls and order2 == order and size == (64, 36)
+    assert (array == expected).all()  # same picture, one pass less
+    camera.camera_picture(nv12, (32, 18))  # a shrink still converts (and scales) in one pass
+    assert len(calls) == 1
+    jpeg = av.VideoFrame.from_ndarray(bgr, format="bgr24").reformat(format="yuvj420p")
+    calls.clear()
+    array, order, _ = camera.camera_picture(jpeg, None)
+    assert not calls and order.endswith("/pc")  # MJPEG's full range is kept and labelled

@@ -173,6 +173,9 @@ def test_a_removed_plugins_sources_stop_now_not_at_restart(monkeypatch):
     monkeypatch.setitem(source_module._REGISTRY, "color", None)  # as if its plugin was taken out
     monkeypatch.delitem(source_module._REGISTRY, "color")
     engine._sync_sources(compositor)
+    from sprigcast.core import retire
+
+    assert retire.RETIRER.wait(2.0)  # closed on the closing helper, not the render thread
     assert stopped and "game" not in engine._sources and "game" in compositor.forgotten
     engine._sync_sources(compositor)  # no new attempt (and no error) every time the blooms change
     assert "game" not in engine._sources and engine.events.empty()
