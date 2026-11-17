@@ -17,8 +17,11 @@ if(MSVC)
   endif()
 endif()
 
-add_library(sprigcore SHARED src/sprigcore.cpp src/compositor.cpp src/engine.cpp src/transition.cpp src/nv12.cpp)
+add_library(sprigcore SHARED src/base.cpp src/sprigcore.cpp src/compositor.cpp src/engine.cpp src/transition.cpp
+            src/nv12.cpp src/media.cpp)
 target_include_directories(sprigcore PUBLIC include)
+# FFmpeg headers only (the libraries are loaded at run time from PyAV: native/third_party/ffmpeg/README.md).
+target_include_directories(sprigcore SYSTEM PRIVATE ../third_party/ffmpeg/include)
 target_compile_definitions(sprigcore PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_link_libraries(sprigcore PRIVATE d3d11 dxgi d3dcompiler winmm)
 

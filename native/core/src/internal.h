@@ -1,8 +1,7 @@
 // What the engine's source files share: errors, the log, the crash gate, and the device and canvas.
 #pragma once
 
-#define SPRIGCORE_BUILD
-#include "sprigcore.h"
+#include "base.h"
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -27,26 +26,7 @@ using Microsoft::WRL::ComPtr;
 
 namespace sc {
 
-void log_line(int level, const std::string &message);
-int fail(int code, const std::string &message);
 int fail_hr(int code, const char *what, HRESULT hr);
-void set_last_error(const std::string &message);
-
-// Every exported function runs inside this: no C++ exception crosses into Python. Built with /EHa, catch (...)
-// also stops Windows faults (an access violation in a driver or in our own code).
-template <typename F>
-int guarded(const char *name, F &&body) {
-    try {
-        set_last_error("");
-        return body();
-    } catch (const std::bad_alloc &) {
-        return fail(SC_ERR_OUT_OF_MEMORY, std::string(name) + ": out of memory");
-    } catch (const std::exception &e) {
-        return fail(SC_ERR_INTERNAL, std::string(name) + ": " + e.what());
-    } catch (...) {
-        return fail(SC_ERR_INTERNAL, std::string(name) + ": fault");
-    }
-}
 
 }  // namespace sc
 

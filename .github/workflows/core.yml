@@ -8,11 +8,13 @@ on:
     branches: [main]
     paths: ["native/core/**", ".github/workflows/core.yml", "src/sprigcast/sprigcore.py", "src/sprigcast/render/**",
             "src/sprigcast/core/filters.py", "src/sprigcast/core/scene.py", "tests/test_sprigcore.py",
-            "tests/test_native_compositor.py", "tests/test_native_bridge.py", "tests/native_cases.py", "tests/native_golden/**"]
+            "tests/test_native_compositor.py", "tests/test_native_bridge.py", "tests/native_cases.py", "tests/native_golden/**",
+            "native/third_party/**", "src/sprigcast/sources/media.py", "tests/test_native_media.py"]
   pull_request:
     paths: ["native/core/**", ".github/workflows/core.yml", "src/sprigcast/sprigcore.py", "src/sprigcast/render/**",
             "src/sprigcast/core/filters.py", "src/sprigcast/core/scene.py", "tests/test_sprigcore.py",
-            "tests/test_native_compositor.py", "tests/test_native_bridge.py", "tests/native_cases.py", "tests/native_golden/**"]
+            "tests/test_native_compositor.py", "tests/test_native_bridge.py", "tests/native_cases.py", "tests/native_golden/**",
+            "native/third_party/**", "src/sprigcast/sources/media.py", "tests/test_native_media.py"]
 
 jobs:
   build:
@@ -52,6 +54,16 @@ jobs:
           uv run --frozen pytest -q tests/test_sprigcore.py tests/test_native_compositor.py tests/test_native_bridge.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
           if ($LASTEXITCODE -ne 0) { throw "pixel checks failed" }
           if (Select-String -Path pytest.txt -Pattern "isn't built here" -Quiet) { throw "engine checks were skipped though the DLL is built" }
+      - name: Video, GIF and sound files played by the engine
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
+          $env:PYTHONPATH = "src"
+          uv run --frozen python -c "from sprigcast import sprigcore; print(sprigcore.ffmpeg_libraries()); assert sprigcore.media_ready(), 'the engine could not load FFmpeg'"
+          uv run --frozen pytest -q tests/test_native_media.py -rs 2>&1 | Tee-Object -FilePath media.txt
+          if ($LASTEXITCODE -ne 0) { throw "media checks failed" }
+          if (Select-String -Path media.txt -Pattern "isn't built|no g\+\+" -Quiet) { throw "media checks were skipped though the DLL is built" }
       - name: Engine checks under AddressSanitizer
         shell: pwsh
         run: |

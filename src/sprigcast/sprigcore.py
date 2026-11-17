@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 6  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 7  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -251,6 +251,7 @@ def _lib():
         "sc_engine_output_take": (c_int, [vp, c_int, c_int, vp, ctypes.c_size_t, ctypes.POINTER(c_int),
                                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint64)]),
     }
+    sigs.update(_media_sigs())
     try:
         for name, (restype, argtypes) in sigs.items():
             fn = getattr(lib, name)
@@ -283,7 +284,7 @@ def use_native() -> bool:
 
 def drain_log() -> int:
     """Moves the engine's queued log lines into SprigCast's log. Returns how many lines moved."""
-    lib = _lib()
+    lib = _lib() or _media_lib()
     if lib is None:
         return 0
     buf = ctypes.create_string_buffer(16384)
@@ -300,7 +301,7 @@ def drain_log() -> int:
 
 def _check(code: int) -> None:
     if code != SC_OK:
-        lib = _lib()
+        lib = _lib() or _media_lib()
         message = lib.sc_last_error().decode("utf-8", "replace") if lib else ""
         drain_log()
         raise NativeError(code, message)
@@ -663,3 +664,229 @@ class Engine:
 
     def __exit__(self, *exc):
         self.close()
+
+
+# ---- Video and sound files (phase 3) ------------------------------------------------------------------------------
+
+MEDIA_STATES = ("playing", "paused", "stopped", "ended")  # SC_MEDIA_PLAYING ...
+(MEDIA_PLAY, MEDIA_PAUSE, MEDIA_RESTART, MEDIA_STOP, MEDIA_SEEK, MEDIA_SLEEP, MEDIA_WAKE, MEDIA_HIDE, MEDIA_SHOW,
+ MEDIA_RESPEED, MEDIA_START, MEDIA_CLOSE) = range(1, 13)
+MEDIA_NO_PICTURE, MEDIA_PICTURE, MEDIA_BLANK, MEDIA_TOO_SMALL = range(4)
+_FORMAT_NAMES = {code: name for name, code in FORMATS.items()}
+FFMPEG_LIBRARIES = ("avutil", "avcodec", "avformat", "swscale", "swresample")
+
+
+class MediaOptions(ctypes.Structure):
+    _fields_ = [("loop", ctypes.c_int), ("clear_on_end", ctypes.c_int), ("restart_on_show", ctypes.c_int),
+                ("speed", ctypes.c_float)]
+
+
+class MediaInfo(ctypes.Structure):
+    """include/sprigcore.h sc_media_info."""
+
+    _fields_ = [("state", ctypes.c_int), ("has_video", ctypes.c_int), ("width", ctypes.c_int),
+                ("height", ctypes.c_int), ("hidden", ctypes.c_int), ("thread", ctypes.c_int),
+                ("faulted", ctypes.c_int), ("replaying", ctypes.c_int), ("position", ctypes.c_double),
+                ("duration", ctypes.c_double), ("speed", ctypes.c_double), ("decoded", ctypes.c_uint64),
+                ("passes", ctypes.c_uint64), ("picture_bytes", ctypes.c_uint64), ("status", ctypes.c_char * 96)]
+
+    @property
+    def state_name(self) -> str:
+        return MEDIA_STATES[self.state] if 0 <= self.state < len(MEDIA_STATES) else "stopped"
+
+    @property
+    def status_text(self) -> str:
+        return self.status.decode("utf-8", "replace")
+
+
+class MediaPicture(ctypes.Structure):
+    _fields_ = [("format", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int), ("stride", ctypes.c_int),
+                ("matrix", ctypes.c_int), ("full_range", ctypes.c_int), ("bytes", ctypes.c_uint64),
+                ("time", ctypes.c_double)]
+
+
+def _media_sigs() -> dict:
+    c_int, vp = ctypes.c_int, ctypes.c_void_p
+    text = ctypes.c_char_p
+    return {
+        "sc_media_ffmpeg_load": (c_int, [text, text, text, text, text]),
+        "sc_media_ffmpeg_ready": (c_int, []),
+        "sc_media_create": (c_int, [c_int, ctypes.POINTER(vp)]),
+        "sc_media_destroy": (None, [vp]),
+        "sc_media_set_options": (c_int, [vp, ctypes.POINTER(MediaOptions)]),
+        "sc_media_set_file": (c_int, [vp, text, c_int, c_int]),
+        "sc_media_control": (c_int, [vp, c_int, ctypes.c_double]),
+        "sc_media_set_shrink": (c_int, [vp, ctypes.c_float]),
+        "sc_media_info_get": (c_int, [vp, ctypes.POINTER(MediaInfo)]),
+        "sc_media_video_frame": (c_int, [vp, ctypes.POINTER(MediaPicture), vp, ctypes.c_size_t]),
+        "sc_media_read_audio": (c_int, [vp, vp, c_int, c_int]),
+        "sc_media_debug_fault": (c_int, [vp, c_int]),
+    }
+
+
+@functools.cache
+def _media_lib():
+    """The library with the media player: sprigcore.dll on Windows. Elsewhere the player alone can be built for
+    its checks (tests/test_native_media.py) and named in SPRIGCAST_MEDIA_LIB; SprigCast itself never does."""
+    lib = _lib()
+    if lib is not None or sys.platform == "win32":
+        return lib
+    path = os.environ.get("SPRIGCAST_MEDIA_LIB")
+    if not path or not Path(path).is_file():
+        return None
+    try:
+        lib = ctypes.CDLL(path)
+        sigs = {"sc_interface_version": (ctypes.c_int, []), "sc_last_error": (ctypes.c_char_p, []),
+                "sc_log_drain": (ctypes.c_int, [ctypes.c_char_p, ctypes.c_int]), **_media_sigs()}
+        for name, (restype, argtypes) in sigs.items():
+            fn = getattr(lib, name)
+            fn.restype, fn.argtypes = restype, argtypes
+    except (OSError, AttributeError) as e:
+        log.warning("native media: couldn't load %s (%s)", path, e)
+        return None
+    return lib if lib.sc_interface_version() == INTERFACE_VERSION else None
+
+
+def ffmpeg_libraries() -> list[str] | None:
+    """The FFmpeg library files PyAV brought with it (site-packages/av.libs), in FFMPEG_LIBRARIES order, or None
+    when they can't be found. The engine loads these same files: SprigCast ships one FFmpeg."""
+    try:
+        import av
+    except Exception:  # noqa: BLE001 (no PyAV: the Python player can't play either)
+        return None
+    package = Path(av.__file__).resolve().parent
+    folders = [package.parent / "av.libs", package, package.parent]
+    found = []
+    for name in FFMPEG_LIBRARIES:
+        for folder in folders:
+            hits = sorted(str(p) for pattern in (f"{name}-*.dll", f"lib{name}-*.so*", f"lib{name}.*.dylib")
+                          for p in folder.glob(pattern))
+            if hits:
+                found.append(hits[0])
+                break
+        else:
+            return None
+    return found
+
+
+@functools.cache
+def media_ready() -> bool:
+    """True once the engine has loaded FFmpeg and can play files itself. Asked once: a miss means the Python
+    player for this run."""
+    lib = _media_lib()
+    if lib is None:
+        return False
+    if lib.sc_media_ffmpeg_ready():
+        return True
+    paths = ffmpeg_libraries()
+    if paths is None:
+        log.warning("native media: PyAV's FFmpeg libraries weren't found; Python plays video and sound files")
+        return False
+    code = lib.sc_media_ffmpeg_load(*(p.encode("utf-8") for p in paths))
+    if code != SC_OK:
+        log.warning("native media: %s; Python plays video and sound files",
+                    lib.sc_last_error().decode("utf-8", "replace") or ERRORS.get(code, code))
+    drain_log()
+    return code == SC_OK
+
+
+def use_native_media() -> bool:
+    """True when the native engine was asked for (SPRIGCAST_ENGINE=native) and its player can play files."""
+    return engine_choice() == "native" and media_ready()
+
+
+class MediaPlayer:
+    """One video, GIF or sound file played by the engine (include/sprigcore.h sc_media): a thread of the engine's
+    own decodes ahead, and :meth:`video_frame` and :meth:`read_audio` take what is due on the file's clock. Every
+    method is safe from any thread, and none waits for the decoder."""
+
+    def __init__(self, playing: bool = True):
+        if not media_ready():
+            raise NativeError(-2, "the engine's media player isn't available")
+        self._lib = _media_lib()
+        handle = ctypes.c_void_p()
+        _check(self._lib.sc_media_create(int(playing), ctypes.byref(handle)))
+        self._handle = handle
+        self._lock = __import__("threading").Lock()  # close() against a call still using the handle
+        self._capacity = 0
+        self._picture = MediaPicture()
+
+    def _call(self, fn, *args) -> int:
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the player is closed")
+            return fn(self._handle, *args)
+
+    def set_options(self, loop: bool, clear_on_end: bool, restart_on_show: bool, speed: float) -> None:
+        options = MediaOptions(int(bool(loop)), int(bool(clear_on_end)), int(bool(restart_on_show)), float(speed))
+        _check(self._call(self._lib.sc_media_set_options, ctypes.byref(options)))
+
+    def set_file(self, path: str, video: bool, playing: bool) -> None:
+        _check(self._call(self._lib.sc_media_set_file, str(path).encode("utf-8"), int(video), int(playing)))
+
+    def control(self, what: int, value: float = 0.0) -> None:
+        _check(self._call(self._lib.sc_media_control, what, float(value)))
+
+    def set_shrink(self, shrink: float) -> None:
+        self._call(self._lib.sc_media_set_shrink, float(shrink))
+
+    def info(self) -> MediaInfo:
+        info = MediaInfo()
+        _check(self._call(self._lib.sc_media_info_get, ctypes.byref(info)))
+        return info
+
+    def video_frame(self):
+        """The picture due now, if it is a new one: (array, channel order), with the order as the compositors
+        take it ("I420/709/tv", "I420A/601/pc", "RGBA"). "blank" when nothing should show from now on. None when
+        nothing new is due."""
+        import numpy as np
+
+        picture = self._picture
+        for _ in range(2):
+            out = np.empty(max(1, self._capacity), dtype=np.uint8)
+            got = self._call(self._lib.sc_media_video_frame, ctypes.byref(picture), out.ctypes.data, self._capacity)
+            if got == MEDIA_TOO_SMALL:
+                self._capacity = int(picture.bytes)
+                continue
+            if got == MEDIA_BLANK:
+                return "blank"
+            if got != MEDIA_PICTURE:
+                if got < 0:
+                    _check(got)
+                return None
+            self._capacity = int(picture.bytes)  # the next one is most likely this size
+            kind = _FORMAT_NAMES.get(picture.format, "RGBA")
+            if kind.startswith("I420"):
+                pixels = out[:picture.bytes].reshape(picture.height, picture.width)
+                matrix = picture.matrix if picture.matrix in (601, 709, 2020) else 601
+                return pixels, f"{kind}/{matrix}/{'pc' if picture.full_range else 'tv'}"
+            return out[:picture.bytes].reshape(picture.height, picture.width, 4), kind
+        return None
+
+    def read_audio(self, count: int, asleep: bool = False):
+        """The next `count` stereo samples due (float32, shape (count, 2)); silence where there is none."""
+        import numpy as np
+
+        out = np.zeros((count, 2), dtype=np.float32)
+        try:
+            self._call(self._lib.sc_media_read_audio, out.ctypes.data, count, int(asleep))
+        except NativeError:  # closed while the mixer was reading: silence
+            pass
+        return out
+
+    def debug_fault(self, kind: int) -> None:
+        """A crash gate check (tests only): the decoder thread faults at its next step."""
+        self._call(self._lib.sc_media_debug_fault, kind)
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, ctypes.c_void_p()
+        if handle:
+            self._lib.sc_media_destroy(handle)
+            drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass

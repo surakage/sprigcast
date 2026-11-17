@@ -1,0 +1,392 @@
+"""The engine's own player for video, GIF and sound files (native/core/src/media.cpp, docs/native-engine.md
+phase 3), through sprigcore.MediaPlayer and sources/media.py.
+
+The player needs no graphics card, so these run wherever it can be built: against sprigcore.dll on Windows
+(SPRIGCAST_CORE_DLL in CI), and on Linux against the player built alone with g++ (a few seconds, once a run).
+It plays real files, made here with PyAV, with the same FFmpeg PyAV brought.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from sprigcast import sprigcore
+
+av = pytest.importorskip("av")
+ROOT = Path(__file__).resolve().parent.parent
+CORE = ROOT / "native" / "core"
+
+
+@pytest.fixture(scope="session")
+def player_lib(tmp_path_factory):
+    """Makes sure sprigcore can reach a media player, building one on Linux."""
+    if sys.platform != "win32" and not os.path.isfile(os.environ.get("SPRIGCAST_MEDIA_LIB", "")):
+        compiler = shutil.which("g++")
+        if compiler is None:
+            pytest.skip("no g++ to build the player with")
+        out = tmp_path_factory.mktemp("sprigmedia") / "libsprigmedia.so"
+        subprocess.run([compiler, "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
+                        f"-I{CORE / 'include'}", f"-I{ROOT / 'native' / 'third_party' / 'ffmpeg' / 'include'}",
+                        "-o", str(out), str(CORE / "src" / "base.cpp"), str(CORE / "src" / "media.cpp"),
+                        "-ldl", "-pthread"], check=True)
+        os.environ["SPRIGCAST_MEDIA_LIB"] = str(out)
+        sprigcore._media_lib.cache_clear()
+        sprigcore.media_ready.cache_clear()
+    elif sys.platform == "win32" and not sprigcore.available():
+        pytest.skip("sprigcore.dll isn't built")
+    assert sprigcore.media_ready(), "the engine couldn't load PyAV's FFmpeg"
+    return True
+
+
+@pytest.fixture(scope="session")
+def files(tmp_path_factory):
+    """A 2 s video with sound, a 1 s GIF, a 1 s sound file and a see-through WebM."""
+    folder = tmp_path_factory.mktemp("media")
+
+    def pictures(count, w, h):
+        for i in range(count):
+            img = np.zeros((h, w, 3), np.uint8)
+            img[:, :, 0] = i * 4
+            img[:, :max(1, i * w // count), 1] = 255
+            img[h // 2:, :, 2] = 200
+            yield i, img
+
+    video = folder / "clip.mp4"
+    with av.open(str(video), "w") as c:
+        v = c.add_stream("libx264", rate=30)
+        v.width, v.height, v.pix_fmt = 320, 240, "yuv420p"
+        v.options = {"bf": "0"}
+        a = c.add_stream("aac", rate=48000)
+        a.layout = "stereo"
+        for i, img in pictures(60, 320, 240):
+            frame = av.VideoFrame.from_ndarray(img, format="rgb24")
+            frame.pts = i
+            c.mux(v.encode(frame))
+        tone = (np.sin(2 * np.pi * 440 * np.arange(48000 * 2) / 48000) * 0.5).astype(np.float32)
+        for i in range(0, len(tone), 1024):
+            chunk = tone[i:i + 1024]
+            frame = av.AudioFrame.from_ndarray(np.stack([chunk, chunk]), format="fltp", layout="stereo")
+            frame.sample_rate, frame.pts = 48000, i
+            c.mux(a.encode(frame))
+        c.mux(v.encode())
+        c.mux(a.encode())
+
+    gif = folder / "loop.gif"
+    with av.open(str(gif), "w") as c:
+        v = c.add_stream("gif", rate=10)
+        v.width, v.height, v.pix_fmt = 64, 48, "rgb8"
+        for i, img in pictures(10, 64, 48):
+            frame = av.VideoFrame.from_ndarray(img, format="rgb24").reformat(format="rgb8")
+            frame.pts = i
+            c.mux(v.encode(frame))
+        c.mux(v.encode())
+
+    sound = folder / "tone.wav"
+    with av.open(str(sound), "w") as c:
+        a = c.add_stream("pcm_s16le", rate=44100)
+        a.layout = "mono"
+        tone = (np.sin(2 * np.pi * 330 * np.arange(44100) / 44100) * 20000).astype(np.int16)
+        for i in range(0, len(tone), 1024):
+            frame = av.AudioFrame.from_ndarray(tone[None, i:i + 1024], format="s16", layout="mono")
+            frame.sample_rate, frame.pts = 44100, i
+            c.mux(a.encode(frame))
+        c.mux(a.encode())
+
+    found = {"video": str(video), "gif": str(gif), "sound": str(sound), "folder": folder}
+    if "libvpx-vp9" in av.codecs_available:
+        webm = folder / "alpha.webm"
+        with av.open(str(webm), "w") as c:
+            v = c.add_stream("libvpx-vp9", rate=30)
+            v.width, v.height, v.pix_fmt = 64, 48, "yuva420p"
+            for i in range(15):
+                img = np.zeros((48, 64, 4), np.uint8)
+                img[:, :32] = (255, 0, 0, 255)  # the right half stays see-through
+                frame = av.VideoFrame.from_ndarray(img, format="rgba").reformat(format="yuva420p")
+                frame.pts = i
+                c.mux(v.encode(frame))
+            c.mux(v.encode())
+        found["webm"] = str(webm)
+    return found
+
+
+def opened(path, video=True, playing=True, **options):
+    player = sprigcore.MediaPlayer(playing=playing)
+    player.set_options(options.get("loop", False), options.get("clear_on_end", False),
+                       options.get("restart_on_show", True), options.get("speed", 1.0))
+    player.set_file(path, video, playing)
+    player.control(sprigcore.MEDIA_START)
+    return player
+
+
+def pump(player, seconds, until=None, audio=None):
+    """Asks for pictures (and sound) the way the renderer and mixer do. Returns the pictures that came."""
+    got, end = [], time.monotonic() + seconds
+    while time.monotonic() < end:
+        frame = player.video_frame()
+        if frame is not None:
+            got.append(frame)
+        block = player.read_audio(240)  # the mixer always reads: a file only ends once its sound is played too
+        if audio is not None:
+            audio.append(block)
+        if until is not None and until(got):
+            break
+        time.sleep(0.005)
+    return got
+
+
+def test_ffmpeg_libraries_are_pyavs():
+    paths = sprigcore.ffmpeg_libraries()
+    assert paths is not None and len(paths) == 5
+    for name, path in zip(sprigcore.FFMPEG_LIBRARIES, paths):
+        assert name in Path(path).name and Path(path).is_file()
+
+
+def test_a_video_plays_through_with_its_sound(player_lib, files):
+    player = opened(files["video"])
+    sound = []
+    got = pump(player, 6, until=lambda _: player.info().state_name == "ended", audio=sound)
+    info = player.info()
+    assert info.state_name == "ended" and info.status_text == "ok"
+    assert (info.width, info.height) == (320, 240) and info.has_video
+    assert abs(info.duration - 2.0) < 0.1 and info.decoded == 60
+    assert not info.thread  # played out: the thread closed the file and ended
+    pictures = [g for g in got if not isinstance(g, str)]
+    assert len(pictures) >= 50  # every picture, give or take a tick of this machine being slow
+    pixels, order = pictures[0]
+    assert order.startswith("I420/") and pixels.shape == (360, 320) and pixels.dtype == np.uint8
+    loud = sum(1 for block in sound if np.abs(block).max() > 0.2)
+    assert loud * 240 / 48000 > 1.5  # about two seconds of the tone
+    assert all(block.shape == (240, 2) for block in sound)
+    player.close()
+
+
+def test_pictures_match_the_python_players(player_lib, files):
+    """The first picture, byte for byte what sources/media.py packs from PyAV's decode of the same file."""
+    from sprigcast.sources.media import pack_i420
+
+    with av.open(files["video"]) as c:
+        frame = next(c.decode(video=0))
+        expected, order = pack_i420(frame, (320, 240))
+    player = opened(files["video"])
+    got = pump(player, 3, until=lambda g: len(g) >= 1)
+    player.close()
+    assert got and got[0][1] == order
+    assert np.array_equal(got[0][0], expected)
+
+
+def test_a_gif_loops_from_memory(player_lib, files):
+    player = opened(files["gif"], loop=True)
+    got = pump(player, 6, until=lambda _: player.info().passes >= 3)
+    info = player.info()
+    assert info.passes >= 3 and info.state_name == "playing"
+    assert info.replaying and info.decoded == 10  # decoded once; the later passes came from memory
+    pixels, order = got[0]
+    assert order == "RGBA" and pixels.shape == (48, 64, 4)
+    assert len(got) >= 20
+    player.close()
+
+
+def test_controls(player_lib, files):
+    player = opened(files["video"])
+    pump(player, 3, until=lambda g: len(g) >= 3)
+    player.control(sprigcore.MEDIA_PAUSE)
+    at = player.info().position
+    assert pump(player, 0.3) == [] and player.info().state_name == "paused"
+    assert abs(player.info().position - at) < 0.01  # the clock stands still
+    player.control(sprigcore.MEDIA_SEEK, 1.5)
+    player.control(sprigcore.MEDIA_START, 1)
+    got = pump(player, 3, until=lambda g: len(g) >= 1)  # paused: the picture there shows, then it waits
+    assert got and player.info().state_name == "paused" and abs(player.info().position - 1.5) < 0.05
+    player.control(sprigcore.MEDIA_PLAY)
+    pump(player, 3, until=lambda _: player.info().state_name == "ended")
+    assert player.info().state_name == "ended"
+    player.control(sprigcore.MEDIA_PLAY)  # from the start again
+    player.control(sprigcore.MEDIA_START, 1)
+    assert pump(player, 3, until=lambda g: len(g) >= 2) and player.info().position < 1.0
+    player.control(sprigcore.MEDIA_STOP)
+    assert player.video_frame() == "blank" and player.info().state_name == "stopped"
+    player.close()
+
+
+def test_sleep_and_wake(player_lib, files):
+    player = opened(files["video"], restart_on_show=False)
+    pump(player, 3, until=lambda _: player.info().position > 0.5)
+    player.control(sprigcore.MEDIA_SLEEP)
+    deadline = time.monotonic() + 3
+    while player.info().thread and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not player.info().thread  # asleep, nothing is kept running
+    at = player.info().position
+    time.sleep(0.2)
+    assert abs(player.info().position - at) < 0.01
+    player.control(sprigcore.MEDIA_WAKE)
+    got = pump(player, 3, until=lambda g: len(g) >= 2)
+    assert got and player.info().position >= at - 0.05  # carried on from where it was
+    player.close()
+
+
+def test_shown_small_is_decoded_small(player_lib, files):
+    player = opened(files["video"])
+    player.set_shrink(0.5)
+    got = pump(player, 3, until=lambda g: any(g_[0].shape == (180, 160) for g_ in g if not isinstance(g_, str)))
+    assert any(g[0].shape == (180, 160) for g in got)  # 160 x 120 as I420
+    assert (player.info().width, player.info().height) == (320, 240)  # its place in the layout stays
+    player.close()
+
+
+def test_faster_plays_in_less_time(player_lib, files):
+    player = opened(files["video"], speed=2.0)
+    began = time.monotonic()
+    sound = []
+    pump(player, 6, until=lambda _: player.info().state_name == "ended", audio=sound)
+    assert 0.8 < time.monotonic() - began < 1.8
+    assert sum(1 for block in sound if np.abs(block).max() > 0.2) > 60  # its sound came along
+    player.close()
+
+
+def test_a_sound_file_waits_for_play(player_lib, files):
+    player = opened(files["sound"], video=False, playing=False)
+    deadline = time.monotonic() + 3
+    while player.info().status_text != "ok" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    info = player.info()
+    assert info.status_text == "ok" and info.state_name == "stopped" and not info.has_video
+    assert abs(info.duration - 1.0) < 0.05 and not info.thread
+    assert np.abs(player.read_audio(480)).max() == 0
+    player.control(sprigcore.MEDIA_PLAY)
+    player.control(sprigcore.MEDIA_START, 1)
+    loud, deadline = 0, time.monotonic() + 4
+    while player.info().state_name != "ended" and time.monotonic() < deadline:
+        loud += int(np.abs(player.read_audio(240)).max() > 0.2)
+        time.sleep(0.005)
+    assert player.info().state_name == "ended" and loud * 240 / 48000 > 0.7
+    player.close()
+
+
+def test_a_see_through_webm_keeps_its_alpha(player_lib, files):
+    if "webm" not in files:
+        pytest.skip("this FFmpeg has no libvpx")
+    player = opened(files["webm"])
+    got = pump(player, 3, until=lambda g: len(g) >= 1)
+    player.close()
+    pixels, order = got[0]
+    assert order.startswith("I420A/") and pixels.shape == (48 + 24 + 48, 64)
+    alpha = pixels[72:]
+    assert alpha[:, :28].min() > 200 and alpha[:, 36:].max() < 50
+
+
+def test_files_that_cant_play_say_so(player_lib, files):
+    missing = opened(str(files["folder"] / "nothing.mp4"))
+    broken_file = files["folder"] / "broken.mp4"
+    broken_file.write_bytes(b"this is not a video" * 100)
+    broken = opened(str(broken_file))
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and not (missing.info().status_text.startswith("can't")
+                                               and broken.info().status_text.startswith("can't")):
+        time.sleep(0.01)
+    assert missing.info().status_text == "can't play: file not found"
+    assert broken.info().status_text.startswith("can't play")
+    assert missing.video_frame() is None
+    missing.close()
+    broken.close()
+
+
+@pytest.mark.parametrize("kind", [1, 2] if sys.platform == "win32" else [1])
+def test_crash_gate_a_decoder_fault_ends_the_file_not_the_app(player_lib, files, kind):
+    """kind 1 a C++ exception, kind 2 a write through a null pointer (Windows, where /EHa stops it)."""
+    player = opened(files["video"], loop=True)
+    pump(player, 3, until=lambda g: len(g) >= 2)
+    player.debug_fault(kind)
+    deadline = time.monotonic() + 3
+    while not player.info().faulted and time.monotonic() < deadline:
+        player.video_frame()
+        time.sleep(0.01)
+    info = player.info()
+    assert info.faulted and not info.thread and info.status_text.startswith("can't play")
+    player.control(sprigcore.MEDIA_PLAY)
+    player.control(sprigcore.MEDIA_START, 1)
+    assert not player.info().thread  # a faulted player starts nothing again
+    player.close()
+    other = opened(files["video"])  # and the next file plays
+    assert pump(other, 3, until=lambda g: len(g) >= 1)
+    other.close()
+
+
+def test_closing_while_playing_ends_its_thread(player_lib, files):
+    for _ in range(5):
+        player = opened(files["video"], loop=True)
+        pump(player, 1, until=lambda g: len(g) >= 1)
+        player.close()
+    with pytest.raises(sprigcore.NativeError):
+        player.info()
+
+
+def test_media_source_plays_through_the_engine(player_lib, files, monkeypatch):
+    """sources/media.py with SPRIGCAST_ENGINE=native: the same class, the engine's player underneath."""
+    from sprigcast.sources.media import MediaSource
+
+    monkeypatch.setenv("SPRIGCAST_ENGINE", "native")
+    source = MediaSource("m1", {**MediaSource.defaults, "path": files["video"]})
+    assert source._native is not None
+    source.start()
+    frames, sound, deadline = [], 0, time.monotonic() + 5
+    while source.state != "ended" and time.monotonic() < deadline:
+        frame = source.video_frame()
+        if frame is not None:
+            frames.append((frame.shape, source.channel_order))
+        sound += int(np.abs(source.read_block(240)).max() > 0.2)
+        time.sleep(0.005)
+    assert source.state == "ended" and len(frames) >= 50 and sound > 100
+    assert frames[0] == ((360, 320), frames[0][1]) and frames[0][1].startswith("I420/")
+    assert source.size == (320, 240) and abs(source.duration - 2.0) < 0.1 and source.status == "ok"
+    info = source.info()
+    assert info["state"] == "ended" and info["video"] and abs(info["duration"] - 2.0) < 0.1
+    source.seek(1.0)
+    assert source.state == "playing"
+    source.pause()
+    assert source.state == "paused"
+    source.stop_playing()
+    blank = source.video_frame()
+    assert blank is not None and blank.shape == (2, 2, 4) and not blank.any() and source.channel_order == "RGBA"
+    source.update({**source.settings, "path": files["gif"], "loop": True})
+    deadline = time.monotonic() + 5
+    shapes = set()
+    while time.monotonic() < deadline and len(shapes) < 1:
+        frame = source.video_frame()
+        if frame is not None and frame.shape != (2, 2, 4):
+            shapes.add(frame.shape)
+        time.sleep(0.005)
+    assert shapes == {(48, 64, 4)} and source.size == (64, 48)
+    source.sleep()
+    source.asleep = True
+    deadline = time.monotonic() + 3
+    while source._native.info().thread and time.monotonic() < deadline:
+        time.sleep(0.01)
+    source.play()  # asleep: play starts no thread
+    assert not source._native.info().thread
+    source.asleep = False
+    source.wake()
+    source.stop()
+
+
+def test_media_source_keeps_the_python_player_otherwise(player_lib, files, monkeypatch):
+    from sprigcast.sources.media import MediaSource
+
+    monkeypatch.delenv("SPRIGCAST_ENGINE", raising=False)
+    assert MediaSource("m2", {**MediaSource.defaults, "path": files["video"]})._native is None
+    monkeypatch.setenv("SPRIGCAST_ENGINE", "native")
+    on_card = MediaSource("m3", {**MediaSource.defaults, "path": files["video"], "hw_decode": True})
+    assert on_card._native is None  # decoding on the graphics card stays with the Python player
+    switched = MediaSource("m4", {**MediaSource.defaults, "path": files["video"]})
+    assert switched._native is not None
+    switched.update({**switched.settings, "hw_decode": True})
+    assert switched._native is None
+    switched.stop()

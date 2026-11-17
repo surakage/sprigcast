@@ -16,6 +16,11 @@ and the right-click menu call them directly.
 
 Hidden with its eye (still in a bloom on screen), a video pauses; shown again it starts over or carries on
 (restart_on_show). The renderer tells it with set_hidden() (Engine._show_hidden).
+
+With the native engine (SPRIGCAST_ENGINE=native, docs/native-engine.md phase 3) the engine plays the file itself:
+native/core/src/media.cpp is this player moved to C++ method for method, on a thread that never needs Python's
+lock. This class then only passes the controls on and hands the renderer and mixer what the engine has ready
+(self._native). Decoding on the graphics card (hw_decode) stays with the player below for now.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast import sprigcore
 from sprigcast.core.frames import owned
 from sprigcast.core.source import Source, register
 from sprigcast.render.stinger import LIBVPX, fit_size
@@ -253,6 +259,52 @@ class MediaSource(Source):
         self.status = "starting" if settings.get("path") else "no file"
         if not self.has_video and not settings.get("play_on_start"):
             self._state = "stopped"
+        self._native = self._open_native()  # the engine's own player (sprigcore.MediaPlayer), or None: this one
+        self._fault_logged = False
+
+    # The native engine's player ----------------------------------------------------------------------
+
+    def _open_native(self):
+        if self.settings.get("hw_decode") or not sprigcore.use_native_media():
+            return None
+        try:
+            player = sprigcore.MediaPlayer(playing=self._state == "playing")
+            self._send_options(player)
+            player.set_file(str(self.settings.get("path", "")), self.has_video, self._state == "playing")
+            return player
+        except Exception as exc:  # noqa: BLE001 (any refusal: the Python player plays it)
+            log.warning("media %s: the engine's player isn't available (%s); playing it in Python", self.id, exc)
+            return None
+
+    def _send_options(self, player) -> None:
+        s = self.settings
+        player.set_options(bool(s.get("loop")), bool(s.get("clear_on_end")), bool(s.get("restart_on_show", True)),
+                           clamp_speed(s.get("speed", 1.0)))
+
+    def _control(self, what: int, value: float = 0.0, ensure: bool = False) -> None:
+        """A control passed to the engine's player; `ensure` then starts its decoder thread if it has ended."""
+        try:
+            self._native.control(what, value)
+            if ensure and not self.asleep:
+                self._native.control(sprigcore.MEDIA_START, 1)
+            self._sync()
+        except sprigcore.NativeError as exc:
+            log.warning("media %s: %s", self.id, exc)
+
+    def _sync(self):
+        """What the engine's player knows, copied to where the rest of SprigCast reads it."""
+        info = self._native.info()
+        self.has_video = bool(info.has_video)
+        self.duration = info.duration if info.duration > 0 else None
+        self._size = (info.width, info.height)
+        self.status = info.status_text
+        self._speed = info.speed
+        self._hidden = bool(info.hidden)
+        if info.faulted and not self._fault_logged:
+            self._fault_logged = True
+            log.error("media %s: the engine's decoder faulted on %s; the file is given up, SprigCast goes on",
+                      self.id, self.settings.get("path"))
+        return info
 
     # A video sleeps while its bloom is off screen; a sound file belongs to Sound and keeps playing.
     @property
@@ -266,6 +318,10 @@ class MediaSource(Source):
 
     def _ensure_thread(self) -> None:
         """After a control: start a decoder thread if the last one ended (it does once the file played out)."""
+        if self._native is not None:
+            if not self.asleep:
+                self._control(sprigcore.MEDIA_START, 1)
+            return
         if self.asleep or self._parked:
             return  # wake starts one
         with self._lock:
@@ -282,6 +338,8 @@ class MediaSource(Source):
     def set_shrink(self, shrink: float) -> None:
         """Render thread: shown at most `shrink` of its size; the next pictures decoded are made that small."""
         self.shrink = shrink
+        if self._native is not None:
+            self._native.set_shrink(shrink)
 
     @property
     def gain(self) -> float:
@@ -295,6 +353,8 @@ class MediaSource(Source):
         """Start a decoder thread. Never waits for an old one: a thread that is no longer self._thread
         stops on its own at its next check (waiting here froze the picture, and a join that timed out
         used to leave two threads decoding the same file, each with its own decoder threads)."""
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_START, 0)
         if self._thread is not None and self._thread.is_alive() and not self._stop.is_set():
             return
         self._stop.clear()
@@ -309,6 +369,8 @@ class MediaSource(Source):
         return self._thread is threading.current_thread()
 
     def stop(self) -> None:
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_CLOSE)
         self._parked = False
         self._stop.set()
         with self._wake:
@@ -325,6 +387,8 @@ class MediaSource(Source):
         """Let every frame go. The decoder thread keeps its file and decoder open for PARK_S (a bloom that
         comes back soon reuses them: no new FFmpeg threads each time), then closes them and ends by itself.
         Nothing waits for it here."""
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_SLEEP)
         with self._lock:
             position = self._position()
             self._pause_clock()
@@ -338,6 +402,8 @@ class MediaSource(Source):
             self._wake.notify_all()
 
     def wake(self) -> None:
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_WAKE)
         with self._lock:
             resume = self._paused_by_hide  # its eye was off when it went to sleep: it plays again when shown
             self._hidden = self._paused_by_hide = False  # the renderer says again if its eye is off
@@ -358,6 +424,24 @@ class MediaSource(Source):
         new_file = settings.get("path") != self.settings.get("path")
         reopen = bool(settings.get("hw_decode")) != bool(self.settings.get("hw_decode"))
         super().update(settings)
+        if self._native is not None and settings.get("hw_decode"):
+            # Decoding on the graphics card is the Python player's: it takes the file over from its start.
+            native, self._native = self._native, None
+            native.close()
+            new_file = True
+        if self._native is not None:
+            try:
+                self._send_options(self._native)
+                if new_file:
+                    self.has_video = not is_sound_file(settings.get("path", ""))
+                    self._native.set_file(str(settings.get("path", "")), self.has_video,
+                                          bool(self.has_video or settings.get("play_on_start")))
+                    self._control(sprigcore.MEDIA_START, 1)
+                elif clamp_speed(settings.get("speed", 1.0)) != self._speed:
+                    self._control(sprigcore.MEDIA_RESPEED, ensure=True)
+            except sprigcore.NativeError as exc:
+                log.warning("media %s: %s", self.id, exc)
+            return
         if new_file:
             self.has_video = not is_sound_file(settings.get("path", ""))
             self.duration = None
@@ -379,6 +463,8 @@ class MediaSource(Source):
         """Its eye went off (pause) or on again (start over, or carry on). Any thread."""
         if not self.has_video:
             return
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_HIDE if hidden else sprigcore.MEDIA_SHOW, ensure=not hidden)
         with self._lock:
             if hidden == self._hidden:
                 return
@@ -401,6 +487,8 @@ class MediaSource(Source):
     # Controls (any thread) -----------------------------------------------------------------------
 
     def play(self) -> None:
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_PLAY, ensure=True)
         with self._lock:
             self._paused_by_hide = False
             if self._state in ("ended", "stopped"):
@@ -411,6 +499,8 @@ class MediaSource(Source):
         self._ensure_thread()
 
     def pause(self) -> None:
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_PAUSE)
         with self._lock:
             self._paused_by_hide = False
             if self._state == "playing":
@@ -425,14 +515,20 @@ class MediaSource(Source):
             self.play()
 
     def restart(self) -> None:
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_RESTART, ensure=True)
         self._jump(0.0, "playing")
         self._ensure_thread()
 
     def stop_playing(self) -> None:
         """Stop and show nothing; play starts from the beginning."""
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_STOP)
         self._jump(0.0, "stopped")
 
     def seek(self, seconds: float) -> None:
+        if self._native is not None:
+            return self._control(sprigcore.MEDIA_SEEK, float(seconds), ensure=True)
         with self._lock:
             state = "paused" if self._state == "paused" else "playing"
             limit = self.duration if self.duration else seconds
@@ -443,12 +539,16 @@ class MediaSource(Source):
 
     @property
     def state(self) -> str:
+        if self._native is not None:
+            return self._sync().state_name
         with self._lock:
             self._check_end()
             return self._state
 
     @property
     def position(self) -> float:
+        if self._native is not None:
+            return self._sync().position
         with self._lock:
             p = self._position()
         return p % self.duration if self.duration and self.settings.get("loop") else p
@@ -507,6 +607,16 @@ class MediaSource(Source):
     # Render thread -----------------------------------------------------------------------------------
 
     def video_frame(self) -> np.ndarray | None:
+        if self._native is not None:
+            got = self._native.video_frame()
+            self._sync()
+            if got is None:
+                return None
+            if isinstance(got, str):  # "blank": show nothing from now on
+                self.channel_order = "RGBA"
+                return np.zeros((2, 2, 4), dtype=np.uint8)
+            self.channel_order = got[1]
+            return got[0]
         with self._lock:
             if self._blank is not None:
                 blank, self._blank = self._blank, None
@@ -534,6 +644,11 @@ class MediaSource(Source):
     # Mixer thread -------------------------------------------------------------------------------------
 
     def read_block(self, count: int) -> np.ndarray:
+        if self._native is not None:
+            self._blocks = (getattr(self, "_blocks", 0) + 1) % 25
+            if not self._blocks:  # a sound file has no picture to ask for: keep its state and status current
+                self._sync()
+            return self._native.read_audio(count, self.asleep)
         out = np.zeros((count, 2), dtype=np.float32)
         with self._lock:
             if self._state != "playing" or self.asleep:
