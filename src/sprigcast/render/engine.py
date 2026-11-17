@@ -27,7 +27,7 @@ from sprigcast.core.events import (
     Stats,
 )
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
-from sprigcast.core import retire
+from sprigcast.core import pacing, retire
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
@@ -50,6 +50,7 @@ CAMERA_SLEEP_MAX = 300.0
 CAMERA_BACK_SOON_S = 600.0
 GRAPHICS_LOST_TICKS = 30  # frames failing this many ticks in a row: the graphics driver reset, start graphics again
 GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again this often
+SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thread is (the late-frame line says)
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
@@ -433,6 +434,7 @@ class Engine:
                 try:
                     self._tick(compositor, started)
                     failed_run = 0
+                    pacing.frame_ended()  # housekeeping on the window's thread waits for this (pacing.at_frame_end)
                 except Exception as exc:  # one bad frame must not end rendering for the whole session
                     failed_run += 1
                     problem = f"{type(exc).__name__}: {exc}"
@@ -1075,7 +1077,9 @@ class Engine:
         shown = self._shown_sources()
         visible = self._visible = self._visible_sources()
         self._visible_fresh = True
+        slowest = ("", "", 0.0)  # (source, wake or sleep, seconds): named in the late-frame line
         for source_id, source in self._sources.items():
+            began = time.perf_counter()
             if source_id in visible or not self._may_sleep(source):
                 self._last_shown[source_id] = now
                 if source.asleep:
@@ -1092,6 +1096,12 @@ class Engine:
                     self._slept_at[source_id] = now
                 self._safely(source_id, source, "sleep", source.sleep)
                 compositor.forget(source_id)
+            else:
+                continue
+            spent = time.perf_counter() - began
+            if spent > slowest[2]:
+                slowest = (source_id, "sleep" if source.asleep else "wake", spent)
+        self._slowest_rest = slowest
 
     # Lifecycle safety ---------------------------------------------------------------------------------
 
@@ -1455,6 +1465,9 @@ class Engine:
         self.readbacks += 1
         size = self._preview_size(target_id, canvas_size)
         if size is None:  # shown big: a full-size copy
+            keep = getattr(compositor, "previewed_full", None)  # test stand-ins may not have it
+            if keep is not None:
+                keep(target_id)
             data, drawn = self._read_full(compositor, target_id, now)
             return None if data is None else Frame(target_id, *canvas_size, data, drawn)
         if self.wait_free:
@@ -1566,7 +1579,13 @@ class Engine:
                 log.info("source %s (%s) back to every frame (%.1f ms a frame)", source_id, source.kind, avg)
 
     def _mark(self, name: str) -> None:
-        self._marks.append((name, time.perf_counter()))
+        now = time.perf_counter()
+        marks = self._marks
+        if marks and now - marks[-1][1] >= SLOW_STEP_S and not getattr(self, "_window_at", ""):
+            # Settings opening made "sprigs" take 14 ms on the PC (2026-11-17) with nothing slow in the step
+            # itself: it waited for Python's lock. Where the window's thread is right after says who held it.
+            self._window_at = pacing.window_at()
+        marks.append((name, now))
 
     def _where(self) -> str:
         """The last frame's slowest steps, for the late-frame log line."""
@@ -1578,21 +1597,34 @@ class Engine:
         slow = getattr(self, "_slowest_source", None)
         if slow and slow[1] >= 0.002:
             text += f"; slowest source {slow[0]} {1000 * slow[1]:.1f}"
+        rest = getattr(self, "_slowest_rest", None)
+        if rest and rest[2] >= 0.002:
+            text += f"; {rest[1]} {rest[0]} {1000 * rest[2]:.1f}"
+        pruned = getattr(self, "_pruned", 0)
+        if pruned and any(name == "letting go of idle copies" for name, _t in marks):
+            text += f"; let go of {pruned} idle copies"
+        window = getattr(self, "_window_at", "")
+        if window:  # a step held up by Python's lock: what the window's thread was doing then
+            text += f"; window at {window}"
         return f" ({text})" if text else ""
 
     def _tick(self, compositor, now: float) -> None:
         self._marks = [("start", time.perf_counter())]
+        self._window_at = ""
         compositor.time = now
         if self._release_later:
             self._release_unused(compositor)
+            self._mark("letting go of textures")
         if now - self._pruned_at > 1.0:  # a recording or source record that ended leaves its targets idle
             self._pruned_at = now
             prune = getattr(compositor, "prune", None)  # test stand-ins may not have it
             if prune is not None:
-                prune()
+                self._pruned = prune()
+                self._mark("letting go of idle copies")
         self._rest_sources(compositor, now)
-        self._show_hidden()
         self._mark("waking and pausing")
+        self._show_hidden()
+        self._mark("telling sources shown or hidden")
         slowest = ("", 0.0)
         self._ticks = getattr(self, "_ticks", 0) + 1
         frozen = self._freezes(compositor)

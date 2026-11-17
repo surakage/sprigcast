@@ -370,9 +370,13 @@ def run() -> None:
     beat.start(pacing.UI_BEAT_MS)
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
-    tidy.timeout.connect(pacing.tidy)
-    tidy.timeout.connect(pacing.watch_threads)  # which threads come and go, for the next long test
-    tidy.timeout.connect(pacing.watch_memory)  # and where memory goes, every 10 minutes
+    # Each piece waits for the end of a frame and they run seconds apart (see pacing.housekeeping): together, at
+    # once, they made a late frame on the same second of the minute on the PC (2026-11-17).
+    tidy.timeout.connect(lambda: pacing.housekeeping("tidy", pacing.tidy))
+    tidy.timeout.connect(lambda: QTimer.singleShot(  # which threads come and go, for the next long test
+        20_000, lambda: pacing.housekeeping("thread count", pacing.watch_threads)))
+    tidy.timeout.connect(lambda: QTimer.singleShot(  # and where memory goes, every 10 minutes
+        40_000, lambda: pacing.housekeeping("memory line", pacing.watch_memory)))
     tidy.start(pacing.TIDY_EVERY_MS)
     from sprigcast.core import warm, workers
 

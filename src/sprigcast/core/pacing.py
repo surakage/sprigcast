@@ -95,6 +95,66 @@ def tidy() -> tuple[int, float]:
     return gc.get_freeze_count(), ms
 
 
+# The minute's housekeeping (tidy, the thread count, the memory line) runs on the window's thread and holds
+# Python's lock while it works. On the PC (2026-11-17) frames 20 and 18 ms late landed on it, always at the same
+# second of the minute. Each piece now starts right after the render thread finishes a frame, so it uses the
+# frame's idle time, and the pieces run seconds apart rather than back to back.
+_frame_done = None  # threading.Event the render thread sets after each frame
+_frame_at = 0.0  # perf_counter time of the last frame
+FRAME_WAIT_S = 0.05  # wait at most this for the frame in progress (3 frames at 60 fps)
+HOUSEKEEPING_SLOW_MS = 5.0
+_housekeeping_logged = float("-inf")
+
+
+def frame_ended() -> None:
+    """The render thread finished a frame (cheap: called every frame)."""
+    global _frame_done, _frame_at
+    if _frame_done is None:
+        import threading
+
+        _frame_done = threading.Event()
+    _frame_at = time.perf_counter()
+    _frame_done.set()
+
+
+def at_frame_end(wait_s: float = FRAME_WAIT_S) -> None:
+    """Wait (briefly) for the render thread to finish the frame it's on, so work that holds Python's lock starts
+    with a whole frame's idle time ahead of it. Returns at once when nothing is rendering."""
+    done = _frame_done
+    if done is None or time.perf_counter() - _frame_at > 1.0:
+        return
+    done.clear()
+    done.wait(wait_s)
+
+
+def housekeeping(name: str, work) -> None:
+    """Run one piece of the minute's housekeeping at a frame's end; log it when it held things up."""
+    at_frame_end()
+    began = time.perf_counter()
+    work()
+    global _housekeeping_logged
+    ms = 1000 * (time.perf_counter() - began)
+    if ms >= HOUSEKEEPING_SLOW_MS and began - _housekeeping_logged >= 60.0:
+        _housekeeping_logged = began
+        log.info("housekeeping: %s took %.1f ms", name, ms)
+
+
+def window_at() -> str:
+    """Where the window's thread is right now (its three innermost lines), or "" when unknown."""
+    import os
+    import traceback
+
+    ident = _ui.get("ident")
+    frame = sys._current_frames().get(ident) if ident is not None else None
+    if frame is None:
+        return ""
+    try:
+        stack = traceback.extract_stack(frame, limit=None)[::-1][:3]
+    finally:
+        del frame
+    return " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack)
+
+
 THREADS_MOVED = 20  # log the thread count when it moved this much since the last line
 THREADS_EVERY_S = 600.0  # and every 10 minutes anyway
 _threads_logged: tuple[float, int] | None = None

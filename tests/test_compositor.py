@@ -295,3 +295,26 @@ def test_a_preview_copy_waits_for_the_window_to_come_back(compositor):
     assert ("pv", (32, 18)) not in compositor.scaled_targets
     compositor.read_scaled_later("pv", (32, 18), "p", time.monotonic())  # not a preview: let go soon as before
     assert compositor.prune(now=time.monotonic() + 100) >= 1 and ("pv", (32, 18)) not in compositor.scaled_targets
+
+
+def test_a_full_size_preview_keeps_its_read_back_buffers_through_a_visit_to_settings(compositor):
+    """PC 2026-11-17: the full-size buffers went 3 s after the preview paused; the first copy into fresh ones when
+    Settings closed held a frame 27 ms. A preview's stay a few minutes; an output's go after a few seconds."""
+    import time
+
+    compositor.ctx.__enter__()
+    compositor.prune(now=time.monotonic() + 10_000)
+    canvas = Canvas(id="fv", width=64, height=36)
+    compositor.render(canvas, None, {})
+    now = time.monotonic()
+    compositor.previewed_full("fv")
+    compositor.read_full_later("fv", "p", now)
+    kept = compositor.full_pbos["fv"]
+    compositor.prune(now=now + 60)  # a minute in Settings
+    assert compositor.full_pbos.get("fv") is kept
+    compositor.prune(now=now + compositor.PREVIEW_FULL_KEEP_S + 1)
+    assert "fv" not in compositor.full_pbos
+    compositor.render(canvas, None, {})
+    compositor.read_full_later("fv", "p", time.monotonic())  # an output's copy, not a preview's
+    compositor.prune(now=time.monotonic() + 100)
+    assert "fv" not in compositor.full_pbos

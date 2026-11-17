@@ -136,6 +136,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   (handing over waits on the render thread), so it's now OFF unless SPRIGCAST_GPU_SHARE=1, with a log line
   each minute saying where its time goes.
 - Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
+- Fewer late frames while live: the once-a-minute tidy, thread count and memory line now wait for a frame to end
+  and run 20 s apart (together they made a 17-20 ms late frame on the same second of the minute). A full-size
+  preview keeps its read-back buffers for 3 minutes, so closing Settings no longer costs a 27 ms frame. A late
+  frame's log line now names what the window was doing when a step waited for Python's lock.
 - Fixed: after the Settings freeze fix, any restyled label on the Live screen kept Python's quick lock hand-over
   on for good, which doubled SprigCast's CPU and dropped the heavy run to 14-41 fps. Only a window or pop-up
   being shown starts it now, for 3 seconds at most.
