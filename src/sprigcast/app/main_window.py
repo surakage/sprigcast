@@ -497,6 +497,10 @@ class MainWindow(QMainWindow):
         self.camera = None  # SprigCast Camera (Settings → Output → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
         self._camera_timer.timeout.connect(self._poll_camera)
+        self._rest_check = QTimer(self, interval=2000)  # rest mode (app/priority.py): step down when nothing goes out
+        self._rest_check.timeout.connect(self._check_rest)
+        self._quiet_since: float | None = None
+        QTimer.singleShot(20_000, self._rest_check.start)  # after start-up, which wants the boost
         QTimer.singleShot(1500, self._sync_camera)
 
         self.mode = "build"
@@ -5333,6 +5337,7 @@ class MainWindow(QMainWindow):
                     return {"problem": "Cancelled."}
         self._say("Starting the recording…")
         self._set_encoder_tracks()
+        self._wake_up()
         try:
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
@@ -5415,6 +5420,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
                 return
             self._set_encoder_tracks()
+            self._wake_up()
             try:
                 self.replay = SharedReplay.start(  # clips go in Clips/<day> (output/replay.py replay_path)
                     self.encoders, canvases, self._recordings_folder() / "Clips", settings.replay_seconds,
@@ -5702,6 +5708,7 @@ class MainWindow(QMainWindow):
         elif not self._doctor_says_go():
             return {"problem": "Cancelled."}
         self._say("Connecting…")
+        self._wake_up()
         try:
             from sprigcast.app.settings_window import stream_delay
 
@@ -6201,6 +6208,34 @@ class MainWindow(QMainWindow):
         trimmed = pacing.trim_working_set()
         log.info("at rest: let go of what the show held%s; memory: %s",
                  " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line())
+
+    REST_AFTER_QUIET_S = 10.0
+
+    def _going_out(self) -> bool:
+        """Anything leaving SprigCast that wants the boosts: live, recording, clips, or SprigCast Camera watched."""
+        camera = self.camera
+        return self._busy_with_outputs() or bool(camera is not None and getattr(camera, "watched", False))
+
+    def _wake_up(self) -> None:
+        from sprigcast.app import priority
+
+        self._quiet_since = None
+        if priority.wake():
+            log.info("rest mode over: something is going out")
+
+    def _check_rest(self) -> None:
+        """Every 2 s: rest mode once nothing has gone out for REST_AFTER_QUIET_S, awake as soon as something does;
+        Windows' power saving only while the window is out of sight."""
+        from sprigcast.app import priority
+
+        if self._going_out():
+            self._wake_up()
+            return
+        now = time.monotonic()
+        if self._quiet_since is None:
+            self._quiet_since = now
+        if now - self._quiet_since >= self.REST_AFTER_QUIET_S:
+            priority.rest(save_power=self.isMinimized() or not self.isVisible())
 
     def _busy_with_outputs(self) -> bool:
         return self.recording is not None or self.streaming is not None or self.replay is not None
