@@ -218,7 +218,7 @@ struct Core : std::enable_shared_from_this<Core> {
     // the serial it last took, so a newcomer gets the picture at once and nobody takes one twice.
     PicturePtr on_screen;
     bool on_screen_blank = false;
-    uint64_t serial = 0;
+    uint64_t screen_serial = 0;
     bool hidden = false, paused_by_hide = false;
     float speed = 1.0f;          // the speed the decoder and clock run at now
     bool blank = false;
@@ -282,7 +282,7 @@ struct Core : std::enable_shared_from_this<Core> {
             blank = false;
             on_screen = nullptr;
             on_screen_blank = true;
-            ++serial;
+            ++screen_serial;
             return;
         }
         if (state != SC_MEDIA_PLAYING && has_shown) return;
@@ -298,7 +298,7 @@ struct Core : std::enable_shared_from_this<Core> {
             if (fresh) {
                 on_screen = frames[0].second;
                 on_screen_blank = false;
-                ++serial;
+                ++screen_serial;
                 has_shown = true;
                 shown = at;
             }
@@ -1075,8 +1075,8 @@ void media_due(const std::shared_ptr<void> &player, uint64_t *seen, MediaDue *ou
     Core &c = *static_cast<Core *>(player.get());
     std::lock_guard<std::mutex> hold(c.lock);
     c.advance();
-    if (*seen == c.serial) return;
-    *seen = c.serial;
+    if (*seen == c.screen_serial) return;
+    *seen = c.screen_serial;
     if (c.on_screen_blank || !c.on_screen) {
         if (c.on_screen_blank) out->what = SC_MEDIA_BLANK;
         return;
@@ -1245,16 +1245,16 @@ SC_API int sc_media_video_frame(sc_media *media, uint64_t *seen, sc_media_pictur
         {
             std::lock_guard<std::mutex> hold(c.lock);
             c.advance();
-            if (*seen == c.serial) return SC_MEDIA_NO_PICTURE;
+            if (*seen == c.screen_serial) return SC_MEDIA_NO_PICTURE;
             if (c.on_screen_blank || !c.on_screen) {
-                *seen = c.serial;
+                *seen = c.screen_serial;
                 return c.on_screen_blank ? SC_MEDIA_BLANK : SC_MEDIA_NO_PICTURE;
             }
             if (!out || capacity < c.on_screen->data.size()) {
                 picture->bytes = c.on_screen->data.size();
                 return SC_MEDIA_TOO_SMALL;
             }
-            *seen = c.serial;
+            *seen = c.screen_serial;
             found = c.on_screen;
             at = c.shown;
         }
