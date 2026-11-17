@@ -269,20 +269,27 @@ class EncoderPool:
     def users(self, canvas_id: str) -> set[str]:
         return set(self._users.get(canvas_id, ()))
 
-    def release(self, user: str, canvas_id: str) -> None:
+    def release(self, user: str, canvas_id: str, later: list | None = None) -> None:
+        """`later`, when given, takes an encoder nobody uses any more instead of stopping it here: the caller
+        stops it (enc.stop()) on a thread of its own. Stopping waits for the frames still queued to be encoded
+        and the file to close: half a second and more, which froze the window when a recording ended (PC test
+        2026-11-17, 583 ms). It gets no more frames or sound from here on either way."""
         users = self._users.get(canvas_id)
         if users is None:
             return
         users.discard(user)
         if not users:
-            self._drop(canvas_id)
+            self._drop(canvas_id, later)
 
-    def _drop(self, canvas_id: str) -> None:
+    def _drop(self, canvas_id: str, later: list | None = None) -> None:
         enc = self.encoders.pop(canvas_id)
         self._users.pop(canvas_id, None)
         self.engine.remove_frame_tap(canvas_id, enc.push_frame)
         self.engine.mixer.remove_tap(enc.push_audio)
-        enc.stop()
+        if later is None:
+            enc.stop()
+        else:
+            later.append(enc)
 
 
 class SharedRecording:
@@ -398,7 +405,8 @@ class SharedRecording:
         written = [p for files in self.parts for p in files]
         return written if written else list(self._paths)
 
-    def stop(self) -> None:
+    def stop(self, later: list | None = None) -> None:
+        """`later`: see EncoderPool.release. The files are finished once every encoder in it has stopped."""
         for canvas_id, enc in self.recorders:
             if canvas_id in self.borrowed:  # the stream's encoder: finish the file, and it ends if the stream has
                 try:
@@ -412,7 +420,7 @@ class SharedRecording:
                     enc.stop_file()
                 except Exception as exc:
                     log.warning("finishing %s: %s", canvas_id, exc)
-            self.pool.release("recording", canvas_id)  # if last: the encoder flushes into the file and stops
+            self.pool.release("recording", canvas_id, later)  # if last: the encoder flushes into the file and stops
 
 
 class SharedReplay:
