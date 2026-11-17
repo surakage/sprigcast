@@ -138,8 +138,13 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   picture it took last, so whoever starts looking gets the one on screen at once. A sleeping or frozen source is
   detached and keeps the picture it has. The engine holds the player for as long as it is attached, so a source
   closing its player first is safe.
-- **Still Python's:** decoding on the graphics card (`hw_decode`; such a source keeps the Python player), stinger
-  clips and instant replay playback.
+- **Stinger clips.** A stinger transition's clip is played by the same player (`render/stinger.py`
+  `NativeStinger`): asked for RGBA pictures with straight alpha, shrunk to fit the canvas while decoding
+  (`sc_media_set_picture`), which is what the transition draws. It waits paused with its first pictures decoded
+  and starts its clock with the transition's first frame, so picture and sound stay in step. A clip that can't be
+  played, or faults the decoder, falls back to a fade as before.
+- **Still Python's:** decoding on the graphics card (`hw_decode`; such a source keeps the Python player) and
+  instant replay playback.
 - **Checks:** `tests/test_native_media.py` plays real files made with PyAV: a video with sound, a GIF looping
   from memory, a see-through WebM, a sound file, seeking, pausing, speed, shrink, sleep and wake, broken and
   missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone
@@ -153,7 +158,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
-| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Next: decoding on the graphics card, stinger and replay playback, browser pages |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips play through it too. Next: instant replay playback, decoding on the graphics card, browser pages |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |

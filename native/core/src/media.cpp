@@ -232,6 +232,8 @@ struct Core : std::enable_shared_from_this<Core> {
     uint64_t decoded = 0, passes = 0, picture_bytes = 0;
 
     std::atomic<float> shrink{1.0f};
+    std::atomic<bool> rgba{false};                   // sc_media_set_picture
+    std::atomic<int> max_w{MAX_W}, max_h{MAX_H};
     std::atomic<int> fault{0};
 
     // threads: `thread` is the serial of the decoder thread that counts (0 = none). An older one that is still
@@ -690,9 +692,9 @@ bool Core::push_audio(double t, std::shared_ptr<std::vector<float>> samples, uin
 }
 
 // The video's size shrunk (never grown) to fit inside the limit, kept even (render/stinger.py fit_size).
-void fit_size(int w, int h, int &out_w, int &out_h) {
-    const double scale = std::min({1.0, static_cast<double>(MAX_W) / std::max(1, w),
-                                   static_cast<double>(MAX_H) / std::max(1, h)});
+void fit_size(int w, int h, int max_w, int max_h, int &out_w, int &out_h) {
+    const double scale = std::min({1.0, static_cast<double>(max_w) / std::max(1, w),
+                                   static_cast<double>(max_h) / std::max(1, h)});
     out_w = std::max(2, static_cast<int>(w * scale) / 2 * 2);
     out_h = std::max(2, static_cast<int>(h * scale) / 2 * 2);
 }
@@ -741,7 +743,8 @@ void scale(Held &held, const AVFrame *f, int ow, int oh, AVPixelFormat to, bool 
 // The picture to show for a decoded frame, ow x oh (even). 4:2:0 video stays as it is, packed into one
 // 1-channel picture for the card to convert (sources/media.py pack_i420): Y rows, then rows of U | V side by
 // side, then the alpha rows. Anything else becomes RGBA.
-PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller) {
+// as_rgba: RGBA whatever the file holds (straight alpha), for whoever can't draw planar pictures.
+PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller, bool as_rgba) {
     auto pic = std::make_shared<Picture>();
     int kind = 0;
     AVPixelFormat to = AV_PIX_FMT_RGBA;
@@ -752,6 +755,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
     case AV_PIX_FMT_YUVA420P: kind = 2; to = AV_PIX_FMT_YUVA420P; break;
     default: break;
     }
+    if (as_rgba) kind = 0;
     if (!kind) {
         int strides[4];
         scale(held, f, ow, oh, AV_PIX_FMT_RGBA, smaller, strides);
@@ -896,7 +900,8 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
         const AVStream *video = held.vi >= 0 ? held.fmt->streams[held.vi] : nullptr;
         const AVStream *sound = held.ai >= 0 ? held.fmt->streams[held.ai] : nullptr;
         int size_w = 0, size_h = 0;
-        if (video) fit_size(held.vdec->width, held.vdec->height, size_w, size_h);
+        const bool as_rgba = rgba.load();
+        if (video) fit_size(held.vdec->width, held.vdec->height, max_w.load(), max_h.load(), size_w, size_h);
         {
             std::lock_guard<std::mutex> hold(lock);
             has_video = video != nullptr;
@@ -957,7 +962,7 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 const float shrink_now = shrink.load();  // a new size shows from the next picture on
                 int ow, oh;
                 shrunk(size_w, size_h, shrink_now, ow, oh);
-                PicturePtr picture = make_picture(held, f, ow, oh, ow < f->width || oh < f->height);
+                PicturePtr picture = make_picture(held, f, ow, oh, ow < f->width || oh < f->height, as_rgba);
                 ff.av_frame_unref(f);
                 if (keeping && shrink_now != kept_shrink) keeping = false;  // pictures of two sizes: not kept
                 if (keeping) {
@@ -1172,6 +1177,17 @@ SC_API int sc_media_set_options(sc_media *media, const sc_media_options *options
         c.clear_on_end = options->clear_on_end != 0;
         c.restart_on_show = options->restart_on_show != 0;
         c.speed_setting = clamp_speed(options->speed);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_media_set_picture(sc_media *media, int rgba, int max_width, int max_height) {
+    return sc::guarded("sc_media_set_picture", [&]() -> int {
+        if (!media) return sc::fail(SC_ERR_ARGUMENT, "sc_media_set_picture: no player");
+        Core &c = *media->core;
+        c.rgba = rgba != 0;
+        c.max_w = max_width > 0 ? std::max(2, max_width) : MAX_W;
+        c.max_h = max_height > 0 ? std::max(2, max_height) : MAX_H;
         return SC_OK;
     });
 }
