@@ -120,6 +120,7 @@ class Engine:
         self._part_textures: dict = {}
         self._parts_used: set[str] = set()
         self._collection = collection.model_copy(deep=True)
+        self._plan = None  # see _sprig_plan
         self._sources: dict[str, Source] = {}
         self._stopped_unknown: set[str] = set()  # sources whose plugin was removed while they ran
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
@@ -306,7 +307,8 @@ class Engine:
             return canvas, Scene(id=f"view:{name}", name=name, canvas=canvas_id, items=[item])
         return canvas, None
 
-    def _render_views(self, compositor, sizes, now: float, taps: dict) -> None:
+    def _render_views(self, compositor, sizes, now: float, taps: dict, drawn: dict | None = None) -> None:
+        """Draw each view something taps. drawn: canvas id -> its frames, for canvases drawn this tick."""
         for name in list(self.views):
             outputs = taps.get(f"view:{name}", ())
             if not outputs:
@@ -318,9 +320,13 @@ class Engine:
             canvas, scene = self._view_scene(name, sizes)
             if canvas is None:
                 continue
-            target = canvas.model_copy(update={"id": f"view:{name}"})
-            compositor.render(target, scene, sizes)
-            frames: dict = {}
+            frames = self._on_air_view(name, canvas, drawn)
+            if frames is not None:
+                target = canvas  # the bloom on air there, drawn already this tick: no second drawing of it
+            else:
+                target = canvas.model_copy(update={"id": f"view:{name}"})
+                compositor.render(target, scene, sizes)
+                frames = {}
             for callback, nv12_size in outputs:
                 frame = self._output_frame(compositor, target, callback, nv12_size, now, frames)
                 if frame is None:
@@ -329,6 +335,19 @@ class Engine:
                     callback(frame)
                 except Exception:
                     log.exception("frame tap for view %s failed", name)
+
+    def _on_air_view(self, name: str, canvas, drawn: dict | None) -> dict | None:
+        """A view of the bloom on air on a canvas drawn this tick: that canvas's frames this tick, to share.
+
+        The heavy run (2026-11-17) had SprigCast Camera show the vertical bloom on air: the view drew the whole
+        bloom a second time every frame, 5-20 ms of it. The canvas's own picture is the same (mid transition
+        it shows the transition, as the stream does)."""
+        if not drawn or canvas.id not in drawn:
+            return None
+        _canvas_id, kind, ref = self.views[name]
+        if kind != "bloom" or ref != self._collection.active_scenes.get(canvas.id):
+            return None
+        return drawn[canvas.id]
 
     def stop(self, timeout: float = 2.0, wait: bool = True) -> None:
         """Stop drawing and sound. wait=False (closing the window): the render thread finishes its tick and lets
@@ -1266,33 +1285,30 @@ class Engine:
                     used.add(inner.id)
                     stack.append(inner)
         textures = {}
-        for part in collection.part_order():
+        plan = self._sprig_plan(collection)
+        for part, size, tweaks in plan.order:
             if part.id not in used:
                 continue
-            if any(collection.contains(inner, part.id) for inner in collection.parts_inside(part)):
-                continue  # a part inside itself: never drawn
-            canvas = next((c for c in collection.canvases if c.id == part.canvas), None)
-            if canvas is None:
-                continue
             compositor.parts = self._part_sources(textures, compositor)
-            size = (canvas.width, canvas.height)
             if part.id == self.editing_part:
                 view, fades = part, None  # being edited: show every item, whatever its Live state
             else:
-                view, fades = self._state_view(collection, part)
+                view, fades = self._sprig_view(plan, collection, part)
             textures[part.id] = compositor.render_part(part.id, size, view, sizes, fades)
             if part.id == self.editing_part and self._preview_due("part", now):
                 self.readbacks += 1
                 data, drawn = self._read_full(compositor, f"part:{part.id}", now)
                 if data is not None:
-                    self.part_frames.put(Frame(f"part:{part.id}", canvas.width, canvas.height, data, drawn))
+                    self.part_frames.put(Frame(f"part:{part.id}", size[0], size[1], data, drawn))
             # Placements of this layout with their own tweaks (hidden items) get their own copy.
-            main = collection.main_part(part)
-            for source in collection.sources:
-                if collection.part_of(source) is main and collection.hidden_here(source):
+            for source in tweaks:
+                key = (source.id, part.id)
+                tweaked = plan.tweaked.get(key) if fades is None and view is plan.views.get(part.id) else None
+                if tweaked is None:
                     tweaked = collection.placement_view(source, view)
-                    textures[(source.id, part.id)] = compositor.render_part(
-                        f"{part.id}~{source.id}", size, tweaked, sizes, fades)
+                    if fades is None and view is plan.views.get(part.id):
+                        plan.tweaked[key] = tweaked
+                textures[key] = compositor.render_part(f"{part.id}~{source.id}", size, tweaked, sizes, fades)
         compositor.parts = self._part_sources(textures, compositor)
         self._part_textures, self._parts_used = textures, used  # for screenshots (see _render_shot)
 
@@ -1516,29 +1532,68 @@ class Engine:
         self._preview_at[key] = now
         return True
 
-    def _part_sources(self, textures: dict, compositor=None) -> dict:
-        """(placement source id, canvas id) -> texture of the part's layout for that canvas. A frozen placement
-        gets the copy made the first time this tick's picture of it was ready (see _freezes)."""
-        collection = self._collection
-        out = {}
-        frozen = self._frozen
+    def _sprig_plan(self, collection: SceneCollection) -> _SprigPlan:
+        """What the sprigs pass needs that only changes with the collection, worked out once per collection.
+
+        The heavy run (2026-11-17, 17 sprigs on two canvases) spent 11-120 ms a frame in this pass. Most of it
+        was Python, not drawing: every frame made a deep copy of each sprig as its Live state shows it, and
+        looked up every placement of every sprig once per sprig drawn. The engine gets a new collection object
+        for every change, so all of that holds until the next one."""
+        plan = getattr(self, "_plan", None)
+        if plan is not None and plan.collection is collection:
+            return plan
+        order = []
+        for part in collection.part_order():
+            if any(collection.contains(inner, part.id) for inner in collection.parts_inside(part)):
+                continue  # a part inside itself: never drawn
+            canvas = next((c for c in collection.canvases if c.id == part.canvas), None)
+            if canvas is None:
+                continue
+            main = collection.main_part(part)
+            tweaks = [s for s in collection.sources if collection.part_of(s) is main and collection.hidden_here(s)]
+            order.append((part, (canvas.width, canvas.height), tweaks))
+        placements = []  # (placement source id, canvas id, shape id) for every sprig placement
         for source in collection.sources:
             part = collection.part_of(source)
             if part is None:
                 continue
-            freeze = frozen.get(source.id) if frozen and getattr(compositor, "held", None) is not None else None
             for canvas in collection.canvases:
-                shape = collection.shape_for(part, canvas.id)
-                texture = textures.get((source.id, shape.id), textures.get(shape.id))
-                if texture is None:
-                    continue
-                if freeze is not None:
-                    held = compositor.held.get((source.id, canvas.id))
-                    if held is not None and held[0] == freeze:
-                        texture = held[1]
-                    else:
-                        texture = compositor.hold_copy((source.id, canvas.id), freeze, texture)
-                out[(source.id, canvas.id)] = texture
+                placements.append((source.id, canvas.id, collection.shape_for(part, canvas.id).id))
+        self._plan = plan = _SprigPlan(collection, order, placements)
+        return plan
+
+    def _sprig_view(self, plan: _SprigPlan, collection: SceneCollection, part):
+        """_state_view, kept for the collection while no state fade runs (a fade's view changes every frame)."""
+        if self._state_fades.get(collection.main_part(part).id) is not None:
+            return self._state_view(collection, part)
+        view = plan.views.get(part.id)
+        if view is None:
+            view, fades = self._state_view(collection, part)
+            if fades is not None:
+                return view, fades
+            plan.views[part.id] = view
+        return view, None
+
+    def _part_sources(self, textures: dict, compositor=None) -> dict:
+        """(placement source id, canvas id) -> texture of the part's layout for that canvas. A frozen placement
+        gets the copy made the first time this tick's picture of it was ready (see _freezes)."""
+        out = {}
+        if not textures:
+            return out
+        frozen = self._frozen
+        holds = frozen and getattr(compositor, "held", None) is not None
+        for source_id, canvas_id, shape_id in self._sprig_plan(self._collection).placements:
+            texture = textures.get((source_id, shape_id), textures.get(shape_id))
+            if texture is None:
+                continue
+            freeze = frozen.get(source_id) if holds else None
+            if freeze is not None:
+                held = compositor.held.get((source_id, canvas_id))
+                if held is not None and held[0] == freeze:
+                    texture = held[1]
+                else:
+                    texture = compositor.hold_copy((source_id, canvas_id), freeze, texture)
+            out[(source_id, canvas_id)] = texture
         return out
 
     def _freezes(self, compositor) -> dict[str, object]:
@@ -1719,6 +1774,7 @@ class Engine:
             if compositor.parts:
                 compositor.parts = {}
         self._mark("sprigs")
+        drawn_now: dict[str, dict] = {}  # canvas id -> its frames this tick, for canvases drawn this tick
         for canvas in self._collection.canvases:
             if not canvas.enabled:
                 continue
@@ -1758,6 +1814,7 @@ class Engine:
             compositor.render(canvas, held or self._collection.active_scene(canvas.id), sizes, **extra)
             self._mark(f"{canvas.id} drawn")
             frames: dict = {}  # nv12 size (None = RGBA) -> Frame, so outputs of one size share one readback
+            drawn_now[canvas.id] = frames  # a view of this same picture (the virtual camera) reads it from here
             if preview:
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height))
                 if size is None:  # full size: shares the RGBA copy with any output that wants one
@@ -1780,11 +1837,24 @@ class Engine:
                     log.exception("frame tap for %s failed", canvas.id)
                 self._mark(f"{canvas.id} {getattr(callback, '__qualname__', 'output')}")
         self._mark("canvases")
-        self._render_views(compositor, sizes, now, taps)
+        self._render_views(compositor, sizes, now, taps, drawn_now)
         self._mark("virtual camera")
         if self._grabs:
             self._serve_grabs(compositor, sizes)
             self._mark("snapshots")
+
+
+class _SprigPlan:
+    """Engine._sprig_plan: the sprigs pass's lookups for one collection object."""
+
+    __slots__ = ("collection", "order", "placements", "views", "tweaked")
+
+    def __init__(self, collection, order, placements):
+        self.collection = collection
+        self.order = order  # (layout, canvas size, placements with their own hidden items), inner ones first
+        self.placements = placements
+        self.views: dict = {}  # layout id -> the layout as its Live state shows it (no fade running)
+        self.tweaked: dict = {}  # (placement source id, layout id) -> that view with the placement's hidden items
 
 
 MOST_DETAIL_PIXELS = 4096  # a sharp source's picture is never drawn wider or taller than this
