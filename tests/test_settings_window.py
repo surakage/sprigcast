@@ -475,3 +475,11 @@ def test_the_audio_page_waits_for_its_device_scan_on_a_worker(app):
     threading.Timer(0.05, lambda: scan.set_result({"audio_input": ["USB Mic"], "audio_output": []})).start()
     w.tabs.setCurrentRow(TABS.index("Audio"))  # clicked before the scan is done: waits, the window drawing
     assert "Audio" in w._built and w.current_tab() == "Audio"
+
+
+def test_general_ends_with_clear_all_my_data(app):
+    w = _window(_collection())
+    asked = []
+    w.on_clear_data = asked.append
+    w.clear_data_button.click()
+    assert asked == [w] and w.clear_data_button.text() == "Clear all my data…"
