@@ -12,6 +12,7 @@ shipped in open-source code; it can also be overridden in QSettings ("twitch/cli
 from __future__ import annotations
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -28,6 +29,9 @@ DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 HELIX = "https://api.twitch.tv/helix"
 TIMEOUT = 10
+# Twitch hands public apps (no client secret) a refresh token that works once. Two refreshes at the same
+# moment (going live while a chat message goes out) would spend it twice and sign you out: one at a time.
+_refresh_lock = threading.Lock()
 
 
 class TwitchAuthError(Exception):
@@ -214,14 +218,19 @@ def _load() -> dict | None:
 
 
 def _refresh(tokens: dict, cid: str) -> dict:
-    if not tokens.get("refresh_token"):
-        raise TwitchAuthError("Twitch sign-in expired. Reconnect in Settings → Stream.")
-    reply = _post(
-        TOKEN_URL, {"client_id": cid, "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]}
-    )
-    if "error" in reply:
-        raise TwitchAuthError("Twitch sign-in expired. Reconnect in Settings → Stream.")
-    return _save_tokens(reply, cid, {"login": tokens["login"], "user_id": tokens["user_id"]})
+    with _refresh_lock:
+        latest = _load() or tokens
+        if latest.get("refresh_token") != tokens.get("refresh_token") and latest.get("access_token"):
+            return latest  # another refresh finished while this one waited: its token is the fresh one
+        if not latest.get("refresh_token"):
+            raise TwitchAuthError("Twitch sign-in expired. Reconnect in Settings → Stream.")
+        reply = _post(
+            TOKEN_URL, {"client_id": cid, "grant_type": "refresh_token", "refresh_token": latest["refresh_token"]}
+        )
+        if "error" in reply:
+            raise TwitchAuthError("Twitch sign-in expired. Reconnect in Settings → Stream.")
+        reply.setdefault("refresh_token", latest["refresh_token"])  # not every answer repeats it
+        return _save_tokens(reply, cid, {"login": latest["login"], "user_id": latest["user_id"]})
 
 
 def fetch_stream_key(cid: str | None = None) -> str:

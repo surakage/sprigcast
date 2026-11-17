@@ -442,7 +442,8 @@ def _amf_options(enc, k: int) -> dict[str, str]:
     if enc.rate_control == "cqp":
         opts.update(rc="cqp", qp_i=str(enc.cq_level), qp_p=str(enc.cq_level))
     elif enc.rate_control == "cbr":
-        opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k")
+        # filler_data: a still scene still sends the bitrate; enforce_hrd: no bursts over it (as OBS does)
+        opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k", filler_data="1", enforce_hrd="1")
     else:
         opts.update(rc="vbr_peak", maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
     return opts

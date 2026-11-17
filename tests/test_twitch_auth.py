@@ -104,3 +104,24 @@ def test_disconnect_and_errors(twitch, store):
 
 def test_shipped_client_id():
     assert len(t.DEFAULT_CLIENT_ID) == 30
+
+
+def test_refresh_token_is_spent_once_when_two_refreshes_meet(twitch, store):
+    """Twitch's refresh tokens for public apps work once: a second refresh with the old one must not
+    sign the streamer out (going live while a chat message goes out)."""
+    twitch.approved = True
+    t.poll_device_flow(t.start_device_flow("cid"), "cid")
+    stale = json.loads(store[("SprigCast", t.TOKEN_REF)])  # both callers read these tokens
+    first = t._refresh(stale, "cid")
+    second = t._refresh(stale, "cid")  # waited behind the first: takes its fresh tokens instead
+    assert second["access_token"] == first["access_token"] == "tok2" and twitch.issued == 2
+    spent = [f for _, f in twitch.calls if f.get("grant_type") == "refresh_token"]
+    assert [f["refresh_token"] for f in spent] == ["ref1"]
+
+
+def test_refresh_keeps_the_old_refresh_token_when_the_answer_leaves_it_out(twitch, store, monkeypatch):
+    twitch.approved = True
+    t.poll_device_flow(t.start_device_flow("cid"), "cid")
+    tokens = json.loads(store[("SprigCast", t.TOKEN_REF)])
+    monkeypatch.setattr(t, "_post", lambda url, fields: {"access_token": "new", "expires_in": 100})
+    assert t._refresh(tokens, "cid")["refresh_token"] == "ref1"

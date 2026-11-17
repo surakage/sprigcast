@@ -127,6 +127,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Finishing a recording as a plain MP4 waits when there's no room for the second copy (the file plays as it is).
 - The Stream doctor adds up every place you go live to and checks the total against your upload (Optimize's test,
   or what your last clean stream carried). Far over asks before going live.
+- AMD's encoder keeps a steady bitrate on still scenes in constant bitrate mode, as NVENC already did (like OBS).
+- Twitch sign-in no longer signs you out when going live and sending a chat message refresh it at the same moment.
 
 ### Get started
 

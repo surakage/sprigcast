@@ -304,6 +304,8 @@ def test_amd_intel_and_windows_encoders_get_their_own_options(monkeypatch):
     amf = video_options("h264_amf", cbr, 4500)
     assert amf["rc"] == "cbr" and amf["maxrate"] == "4500k" and amf["usage"] == "lowlatency"
     assert amf["quality"] == "speed" and amf["profile"] == "constrained_baseline"
+    assert amf["filler_data"] == amf["enforce_hrd"] == "1"  # steady bitrate on still scenes, like OBS
+    assert "filler_data" not in video_options("h264_amf", EncoderSettings(rate_control="vbr"), 4500)
     assert video_options("h264_amf", EncoderSettings(rate_control="cqp", cq_level=20), 4500)["qp_p"] == "20"
     qsv = video_options("h264_qsv", cbr, 4500)
     assert qsv["maxrate"] == qsv["bufsize"] == "4500k" and qsv["async_depth"] == "1" and qsv["preset"] == "veryfast"
