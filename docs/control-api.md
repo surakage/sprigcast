@@ -187,7 +187,7 @@ for. The connection closes next. Look again in a second or two: it's often a res
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `clip.save` | Save the last seconds as a clip (gets clips ready first if they're off). | none |
+| `clip.save` | Save the last seconds as a clip (gets clips ready first if they're off). Answers with the file names at once; the clip.saved event says when they are written. | none |
 | `clips.set` | Keep clips ready (on) or stop (off). | `on`: true or false |
 | `clips.status` | Whether clips are ready and how long a clip is. | none |
 

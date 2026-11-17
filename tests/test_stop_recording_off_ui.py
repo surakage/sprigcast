@@ -93,3 +93,33 @@ def test_the_next_recording_waits_for_the_last_ones_files(monkeypatch):
     assert w.done == []
     w._wait_for_stopped_recording()
     assert w.done == [(session, True, True)]
+
+
+def test_saving_a_clip_answers_with_the_names_and_says_saved_later(monkeypatch):
+    """The clip's files are written on another thread (1.3 s with the window waiting, PC 2026-11-17)."""
+    from pathlib import Path
+
+    from sprigcast.app.main_window import MainWindow
+
+    said, told = [], []
+    paths = [Path("Clips/a horizontal.mkv"), Path("Clips/a vertical.mkv")]
+
+    class Replay:
+        def save_later(self, done):
+            self.done = done
+            return paths
+
+    w = types.SimpleNamespace(
+        replay=Replay(), _clip_written=Signal(), statusBar=lambda: types.SimpleNamespace(
+            showMessage=lambda text, ms=0: said.append(text)),
+        _saved_note=lambda *a, **k: told.append("note"), _tidy_saves=lambda: None,
+        live_side=types.SimpleNamespace(clip_saved=lambda n: told.append(("side", n))),
+        control=types.SimpleNamespace(replay_saved=lambda p: told.append(("event", list(p)))))
+    w._clip_saved = types.MethodType(MainWindow._clip_saved, w)
+    assert MainWindow._save_replay(w) == paths  # what the Control API answers with
+    assert said == ["Saving clip…"] and told == []  # nothing says "saved" before it is
+    w.replay.done(paths, [])
+    assert said[-1].startswith("Saved clip: ") and ("event", paths) in told and ("side", 2) in told
+    told.clear()
+    w.replay.done([], ["horizontal: disk full"])
+    assert "disk full" in said[-1] and told == []  # no clip.saved event for a clip that wasn't
