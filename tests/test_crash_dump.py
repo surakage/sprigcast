@@ -34,10 +34,14 @@ def test_a_real_crash_writes_a_dump_on_windows(tmp_path):
         return
     import subprocess
 
-    # No "stopped working" box from Windows; then a real access violation (ctypes' own calls would catch it).
-    code = ("import ctypes, faulthandler, pathlib; ctypes.windll.kernel32.SetErrorMode(0x8003); "
+    # No "stopped working" box from Windows; then a real access violation on a native thread (one started at a bad
+    # address), the way a driver or Qt crashes: ctypes' own calls would catch it, faulthandler's raise() wouldn't
+    # reach the filter.
+    code = ("import ctypes, pathlib, time; k = ctypes.windll.kernel32; k.SetErrorMode(0x8003); "
             "from sprigcast.app import crash_dump; "
-            f"crash_dump.install(pathlib.Path({str(tmp_path)!r})); faulthandler._sigsegv()")
+            f"crash_dump.install(pathlib.Path({str(tmp_path)!r})); "
+            "k.CreateThread.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p, "
+            "ctypes.c_uint32, ctypes.c_void_p]; k.CreateThread(None, 0, 0x10, None, 0, None); time.sleep(20)")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
     subprocess.run([sys.executable, "-c", code], env=env, timeout=60, capture_output=True)
     dumps = list(tmp_path.glob("crash *.dmp"))
