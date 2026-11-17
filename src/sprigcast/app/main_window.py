@@ -2735,6 +2735,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_meter(self) -> None:
         self.last_resources = self.meter.sample()
+        self._watch_encoders()
         self.meter_label.setText(describe(self.last_resources))
         self.live_side.stats.setText(describe(self.last_resources))
         warning = ram_warning(self.last_resources)
@@ -6514,7 +6515,7 @@ class MainWindow(QMainWindow):
         word = getattr(self, "_render_word", "Smooth")
         rec_warning = getattr(self, "_rec_warning", "") if self.recording is not None else ""
         level = ("bad" if ram_high or word == "Struggling" else
-                 "warning" if dropped or word == "Busy" or rec_warning else "good")
+                 "warning" if dropped or word == "Busy" or rec_warning or self._overload_text() else "good")
         self.live_side.garden.setToolTip("Garden check: how SprigCast and your streams are doing. Click for everything."
                                          + (f" Recording: {rec_warning}" if rec_warning else ""))
         self.live_side.garden.set_numbers("  ·  ".join(parts), level, sample.get("cpu"))
@@ -6525,7 +6526,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.garden_check import garden_check_popup
 
         pop = garden_check_popup(self._garden_snapshot, self._health_records(), self, self._open_logs,
-                                 "health" if tab == "health" else "now")
+                                 "health" if tab == "health" else "now", make_lighter=self._make_encoding_lighter)
         pop.open()
         return pop
 
@@ -6574,7 +6575,48 @@ class MainWindow(QMainWindow):
             snap.rows.append(("Recording", "  ·  ".join(filter(None, [codec, f"{dropped} dropped"])),
                               "warning" if dropped else "good", "Busy" if dropped else "Good"))
         snap.checks = self._garden_checks(snap)
+        snap.overload = self._overload_text()
         return snap
+
+    def _watch_encoders(self) -> None:
+        """Every meter tick: is each running encoder keeping up? (Garden check offers a lighter one if not.)"""
+        from sprigcast.output.encoder_load import EncoderWatch
+
+        watch = getattr(self, "_encoder_watch", None)
+        if watch is None:
+            watch = self._encoder_watch = EncoderWatch()
+        try:
+            streamers = self.streaming.streamers if self.streaming is not None else None
+            watch.tick(streamers, self.recording, self.replay)
+        except Exception:
+            log.exception("encoder watch")
+            return
+        busy = watch.overloaded()
+        if busy and busy != getattr(self, "_overload_logged", None):
+            log.warning("encoder can't keep up: %s (codec %s)", " and ".join(busy),
+                        ", ".join(watch.codecs.get(k, "?") for k in busy))
+        self._overload_logged = busy
+
+    def _overload_text(self) -> str:
+        watch = getattr(self, "_encoder_watch", None)
+        busy = watch.overloaded() if watch is not None else []
+        if not busy:
+            return ""
+        return f"The encoder can't keep up with the {' and '.join(busy)}."
+
+    def _make_encoding_lighter(self) -> str:
+        """Garden check's one tap: faster encoder settings for what was overloaded, from the next start."""
+        from sprigcast.output.encoder_load import make_lighter
+
+        watch = getattr(self, "_encoder_watch", None)
+        busy = watch.overloaded() if watch is not None else []
+        done = make_lighter(self.collection, busy or ["stream", "recording"], watch.codecs if watch else None)
+        if not done:
+            return "Already as light as it goes. Try a smaller size in Settings → Stream."
+        self._changed()
+        log.info("Garden check: made the %s encoder lighter: stream %s, recording %s", " and ".join(done),
+                 self.collection.stream_encoder.preset, self.collection.recording.encoder.preset)
+        return f"Lighter settings saved. They start with your next {' and '.join(done)}."
 
     def _garden_checks(self, snap) -> list[tuple[str, bool, str]]:
         """Quick yes/no checks, only for things this setup has (no camera: no camera check)."""

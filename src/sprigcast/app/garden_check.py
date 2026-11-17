@@ -57,9 +57,12 @@ class GardenSnapshot:
     recording: str = ""  # "1:55:04" while recording
     rows: list[tuple[str, str, str, str]] = field(default_factory=list)  # (name, detail, level, word)
     checks: list[tuple[str, bool | None, str]] = field(default_factory=list)  # (label, ok, tooltip); None: just quiet
+    overload: str = ""  # "The encoder can't keep up with the stream." when it can't (output/encoder_load.py)
 
     def level(self) -> str:
         levels = [r[2] for r in self.rows] + ["warning" for _label, ok, _tip in self.checks if ok is False]
+        if self.overload:
+            levels.append("warning")
         if "bad" in levels:
             return "bad"
         return "warning" if "warning" in levels or self.dropped else "good"
@@ -102,12 +105,13 @@ class GardenCheckPage(QWidget):
              ("dropped", "Frames dropped"), ("render", "Render time"), ("upload", "Upload"), ("recording", "Recording"))
 
     def __init__(self, snapshot: Callable[[], GardenSnapshot], records: list, open_logs: Callable[[], None] | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, make_lighter: Callable[[], str] | None = None):
         super().__init__(parent)
         from sprigcast.app.empty import ArtPicture
         from sprigcast.app.health_page import HealthPage
 
         self.snapshot = snapshot
+        self.make_lighter = make_lighter  # the one tap: returns what it did, in words
         self.setMinimumWidth(620)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -154,6 +158,7 @@ class GardenCheckPage(QWidget):
         self.rows = QVBoxLayout()
         self.rows.setSpacing(0)
         body.addLayout(self.rows)
+        body.addWidget(self._overload_bar())
         body.addSpacing(4)
         body.addWidget(_section("Things we checked"))
         self.checks = QGridLayout()
@@ -228,6 +233,7 @@ class GardenCheckPage(QWidget):
         put("upload", f"{s.upload_kbps / 1000:.1f} Mbps" if s.upload_kbps else "Not live",
             theme.MUTED if s.upload_kbps is None else theme.TEXT_BRIGHT)
         put("recording", s.recording or "Off", theme.LIVE_TEXT if s.recording else theme.MUTED)
+        self._show_overload(s.overload)
 
         # Rows and chips are made again only when what they say changes, not every second.
         lists = (tuple(s.rows), tuple(s.checks))
@@ -262,6 +268,45 @@ class GardenCheckPage(QWidget):
             self.checks.addWidget(chip, i // 4, i % 4)
             chip.show()
 
+    def _overload_bar(self) -> QFrame:
+        """Shown while the encoder can't keep up: says so, with one tap to make encoding lighter."""
+        bar = self.overload_bar = QFrame()
+        bar.setObjectName("overloadBar")
+        bar.setStyleSheet(f"#overloadBar {{ background: {theme.RAISED}; border-radius: 14px; }}")
+        line = QHBoxLayout(bar)
+        line.setContentsMargins(14, 10, 10, 10)
+        line.setSpacing(12)
+        self.overload_text = QLabel("")
+        self.overload_text.setWordWrap(True)
+        self.overload_text.setStyleSheet(f"color: {theme.WARN}; font-weight: 600; background: transparent;")
+        line.addWidget(self.overload_text, 1)
+        self.lighter = QPushButton("Make it lighter")
+        self.lighter.setStyleSheet(theme.PILL_STYLE)
+        self.lighter.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lighter.setToolTip("A faster encoder preset, with no look-ahead or B-frames")
+        self.lighter.clicked.connect(self._lighter_clicked)
+        line.addWidget(self.lighter)
+        self._lightened = ""  # what the tap did: shown instead of the warning from then on
+        bar.hide()
+        return bar
+
+    def _show_overload(self, text: str) -> None:
+        if self._lightened:
+            return
+        if self.overload_text.text() != text:
+            self.overload_text.setText(text)
+        self.lighter.setVisible(self.make_lighter is not None)
+        self.overload_bar.setVisible(bool(text))
+
+    def _lighter_clicked(self) -> None:
+        if self.make_lighter is None:
+            return
+        self._lightened = self.make_lighter() or "Already as light as it goes."
+        self.overload_text.setText(self._lightened)
+        self.overload_text.setStyleSheet(f"color: {theme.ACCENT}; font-weight: 600; background: transparent;")
+        self.lighter.hide()
+        self.overload_bar.show()
+
     @staticmethod
     def _row(name: str, detail: str, level: str, word: str, first: bool) -> QWidget:
         row = QFrame()
@@ -295,12 +340,13 @@ class GardenCheckPage(QWidget):
 
 
 def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, parent: QWidget | None = None,
-                       open_logs: Callable[[], None] | None = None, view: str = "now"):
+                       open_logs: Callable[[], None] | None = None, view: str = "now",
+                       make_lighter: Callable[[], str] | None = None):
     """The pop-up, refreshed once a second while it's open. `view`: "now" or "health" (the last streams)."""
     from sprigcast.app.transitions_panel import PopUp
 
     pop = PopUp("Garden check", parent, bare=True)  # the page has its own title (with the sloth) and buttons
-    pop.garden = GardenCheckPage(snapshot, records, open_logs)
+    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter)
     pop.page = pop.garden.page  # the last streams' HealthPage
     pop.add_tab("garden", "Garden check", pop.garden)
     pop.show_tab("garden")
