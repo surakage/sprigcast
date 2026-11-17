@@ -371,3 +371,28 @@ def test_a_picture_shown_again_is_decoded_on_a_worker(monkeypatch, tmp_path):
     assert frame is not None and frame.shape == (6, 8, 4)
     assert where and where[0].startswith("sprigcast-work")
     assert src.video_frame() is None  # handed over once
+
+
+def test_a_sleeping_sources_texture_waits_for_it_to_wake(compositor):
+    """PC 2026-11-17: switching back to a bloom of 15 sources every 30 s made all their textures again, and the first
+    draw with fresh ones held the frame 140-225 ms. A forgotten texture waits a while for a picture of its size."""
+    import time
+
+    import numpy as np
+
+    compositor.ctx.__enter__()
+    compositor.prune(now=time.monotonic() + 10_000)
+    compositor.prune(now=time.monotonic() + 20_000)
+    picture = np.full((6, 8, 4), 50, np.uint8)
+    compositor.upload("gif", picture)
+    tex = compositor.textures["gif"]
+    compositor.forget("gif")  # its bloom left the screen: it sleeps
+    assert "gif" not in compositor.textures  # a switch still waits for the source's own new picture
+    compositor.upload("gif", np.full((6, 8, 4), 90, np.uint8))  # awake again
+    assert compositor.textures["gif"] is tex
+    assert np.frombuffer(tex.read(), np.uint8)[0] == 90  # holds the new picture, nothing of the old
+    compositor.forget("gif")
+    compositor.upload("other", np.zeros((4, 4, 3), np.uint8))  # another size or kind: a texture of its own
+    assert compositor.textures["other"] is not tex
+    compositor.prune(now=time.monotonic() + compositor.SPARE_KEEP_S + 1)  # not wanted for a minute: freed
+    assert compositor._take_spare_texture((8, 6), 4) is None

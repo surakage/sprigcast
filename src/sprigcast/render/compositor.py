@@ -824,6 +824,7 @@ class Compositor:
         self._detailed: dict[tuple[int, float], tuple[VideoEffects, VideoEffects]] = {}
         self.targets: dict[str, _CanvasTarget] = {}
         self._spare: list[tuple[_CanvasTarget, float]] = []  # sprig targets let go of, kept for reuse (prune)
+        self._spare_textures: list[tuple] = []  # sleeping sources' textures, kept for reuse (forget)
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
         self.nv12_targets: dict[tuple[str, tuple[int, int]], _Nv12Target] = {}
@@ -886,8 +887,10 @@ class Compositor:
         if tex is None or tex.size != (w, h) or tex.components != components:
             if tex is not None:
                 tex.release()
-            tex = self.ctx.texture((w, h), components, alignment=1)
-            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex = self._take_spare_texture((w, h), components)
+            if tex is None:
+                tex = self.ctx.texture((w, h), components, alignment=1)
+                tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
             self.textures[source_id] = tex
         tex.swizzle = SWIZZLES.get(channel_order, "RGBA")
         if channel_order == "pBGRA":
@@ -906,7 +909,28 @@ class Compositor:
         self.detail.pop(source_id, None)
         tex = self.textures.pop(source_id, None)
         if tex is not None:
-            tex.release()
+            self._keep_spare_texture(tex, time.monotonic())
+
+    # A source that sleeps (its bloom left the screen) lets go of its texture. Switching back to a bloom of 15
+    # sources every 30 s on the PC (2026-11-17) made all their textures again, and the first draw with fresh ones
+    # held the frame 140-225 ms while the driver set their memory aside. They wait a while instead, and a source
+    # whose next picture has the same size and kind takes one (its own, usually); every upload overwrites it whole.
+    SPARE_TEXTURE_BYTES = 256 * 1024 * 1024
+
+    def _take_spare_texture(self, size: tuple[int, int], components: int):
+        for i, (tex, _since) in enumerate(self._spare_textures):
+            if tex.size == size and tex.components == components:
+                del self._spare_textures[i]
+                return tex
+        return None
+
+    def _keep_spare_texture(self, tex, now: float) -> None:
+        self._spare_textures.append((tex, now))
+        total = sum(t.size[0] * t.size[1] * t.components for t, _ in self._spare_textures)
+        while total > self.SPARE_TEXTURE_BYTES and self._spare_textures:
+            old, _since = self._spare_textures.pop(0)
+            total -= old.size[0] * old.size[1] * old.components
+            old.release()
 
     # Canvases ------------------------------------------------------------
 
@@ -1536,6 +1560,11 @@ class Compositor:
                 self._keep_spare(target, now)
             else:
                 target.release()
+        textures = [entry for entry in self._spare_textures if now - entry[1] > self.SPARE_KEEP_S]
+        if textures:
+            self._spare_textures = [e for e in self._spare_textures if now - e[1] <= self.SPARE_KEEP_S]
+            for tex, _since in textures:
+                tex.release()
         old = [entry for entry in self._spare if now - entry[1] > self.SPARE_KEEP_S]
         if old:
             self._spare = [entry for entry in self._spare if now - entry[1] <= self.SPARE_KEEP_S]
@@ -1553,6 +1582,9 @@ class Compositor:
         for target, _since in self._spare:
             target.release()
         self._spare = []
+        for tex, _since in self._spare_textures:
+            tex.release()
+        self._spare_textures = []
         for nv12 in self.nv12_targets.values():
             nv12.release()
         for scaled in self.scaled_targets.values():
