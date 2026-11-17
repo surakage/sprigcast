@@ -136,6 +136,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   (handing over waits on the render thread), so it's now OFF unless SPRIGCAST_GPU_SHARE=1, with a log line
   each minute saying where its time goes.
 - Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
+- Heavy scenes draw faster: the sprigs pass works out each sprig's Live look once per change instead of copying
+  every sprig every frame (7.7 to 0.7 ms a frame with 17 sprigs on two canvases in a test). SprigCast Camera
+  showing the bloom on air shares that canvas's picture instead of drawing the whole bloom again. A text that
+  changes (a clock, Now playing) is drawn again on a worker, not on the render thread.
 - Fewer late frames while live: the once-a-minute tidy, thread count and memory line now wait for a frame to end
   and run 20 s apart (together they made a 17-20 ms late frame on the same second of the minute). A full-size
   preview keeps its read-back buffers for 3 minutes, so closing Settings no longer costs a 27 ms frame. A late

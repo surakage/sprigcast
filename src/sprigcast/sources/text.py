@@ -7,6 +7,7 @@ color, outline_color, outline_width, file (optional path; its contents replace `
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ DEFAULTS = {
     "file": "",
 }
 FALLBACK_FONTS = ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"]
+DRAW_ASIDE = True  # a text that changes is drawn again on a worker, not on the render thread (tests turn it off)
 
 
 def load_font(name: str, size: int) -> ImageFont.ImageFont:
@@ -93,6 +95,8 @@ class TextSource(Source):
         self._layout: tuple[int, int] | None = None  # the text's box at its own size: what `size` says
         self._next_check = 0.0
         self._pending = False  # a rendered frame the compositor hasn't received yet
+        self._aside = None  # a redraw running on a worker (DRAW_ASIDE)
+        self._lock = threading.Lock()  # one drawing at a time: the render thread's first, or a worker's
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
@@ -112,7 +116,9 @@ class TextSource(Source):
     @property
     def size(self) -> tuple[int, int]:
         if self._frame is None or self._layout is None:
-            self._render()
+            with self._lock:
+                if self._frame is None or self._layout is None:
+                    self._render()
         return self._layout
 
     def _current_text(self) -> str:
@@ -143,7 +149,7 @@ class TextSource(Source):
         font_key = (str(self._get("font")), size)
         if font_key != self._font_key:
             self._font, self._font_key = load_font(*font_key), font_key
-        self._layout = text_size(text, self._font, width)
+        layout = text_size(text, self._font, width)
         if detail == 1.0:
             drawn_font, drawn_width = self._font, width
         else:  # the same text with the font made bigger (or smaller): sharp at the size it's shown
@@ -151,7 +157,8 @@ class TextSource(Source):
             if drawn_key != self._drawn_font_key:
                 self._drawn_font, self._drawn_font_key = load_font(*drawn_key), drawn_key
             drawn_font, drawn_width = self._drawn_font, round(width * detail)
-        self._frame = render_text(text, drawn_font, color, outline, drawn_width)
+        frame = render_text(text, drawn_font, color, outline, drawn_width)
+        self._layout, self._frame = layout, frame  # together: a worker's drawing lands whole (DRAW_ASIDE)
         self._shown = key
         self._pending = True
         if not self._get("file") or self.status != "file not found":
@@ -160,10 +167,26 @@ class TextSource(Source):
 
     def video_frame(self) -> np.ndarray | None:
         now = time.monotonic()
-        if now >= self._next_check:
+        aside = self._aside
+        if aside is not None and aside.done():
+            self._aside = aside = None
+        if now >= self._next_check and aside is None:
             self._next_check = now + 1.0  # clocks and text files refresh once a second
-            self._render()
+            if self._frame is None or not DRAW_ASIDE:
+                with self._lock:
+                    self._render()
+            else:
+                # Drawn on a worker: a big clock or "now playing" line with an outline took 10-13 ms of the
+                # render thread each time it changed in the heavy run (2026-11-17). The picture shown until then
+                # is the one before, a frame or two longer.
+                from sprigcast.core import workers
+
+                self._aside = workers.run(self._render_aside, name="text drawing")
         if not self._pending:
             return None
         self._pending = False
         return self._frame
+
+    def _render_aside(self) -> None:
+        with self._lock:
+            self._render()
