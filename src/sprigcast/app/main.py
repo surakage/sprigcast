@@ -182,6 +182,9 @@ def run() -> None:
 
     logbook.setup()  # Documents\SprigCast\Logs: today's log, one report per stream, crashes
     logbook.catch_unhandled()  # errors nobody caught reach the log, not a console that isn't there
+    from sprigcast.app import crash_dump
+
+    crash_dump.install(logbook.log_dir())  # a native crash leaves a small dump beside crash.log (Windows)
     package = inside_package()
     if package:
         logging.warning("started inside the Windows app package %s (by a Microsoft Store app): settings and "

@@ -176,7 +176,7 @@ HIGHEST, ABOVE_NORMAL = 2, 1  # Windows' THREAD_PRIORITY_* values
 STALL_MS = 200.0
 STALL_EVERY_S = 10.0
 _IDLE_CALLS = {"wait", "sleep", "get", "select", "_wait_for_tstate_lock", "join", "acquire", "run_forever",
-               "_run_once", "accept", "recv", "read", "readinto", "wait_for", "exec", "_worker"}
+               "_run_once", "_poll", "accept", "recv", "read", "readinto", "wait_for", "exec", "_worker"}
 
 
 def busy_stacks(skip: set[int] | None = None) -> str:

@@ -229,3 +229,16 @@ def test_tiktok_direct_never_imports_the_heavy_library_on_the_ui_thread(monkeypa
     assert scheduled and reader.via == "direct"
     assert not any(n == "TikTokLive" or n.startswith("TikTokLiveProto") for n in sys.modules)
     reader.stop()
+
+
+def test_tiktok_chat_uses_the_plain_select_loop_not_windows_completion_ports():
+    """SprigCast died idle on the PC (2026-11-16, access violation) with this thread in the Proactor loop's _poll."""
+    import asyncio
+
+    from sprigcast.chat import tiktok
+
+    thread = tiktok._LoopThread()
+    try:
+        assert isinstance(thread.loop, asyncio.SelectorEventLoop)
+    finally:
+        thread.loop.close()

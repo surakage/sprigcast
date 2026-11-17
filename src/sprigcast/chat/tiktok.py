@@ -114,7 +114,11 @@ class _LoopThread(threading.Thread):
 
     def __init__(self) -> None:
         super().__init__(name="tiktok-chat", daemon=True)
-        self.loop = asyncio.new_event_loop()
+        # The plain select() loop, not Windows' default completion-port (Proactor) one: SprigCast died idle on
+        # the PC (2026-11-16, access violation in native code) with this thread waiting in the Proactor's _poll.
+        # Proactor hands buffers to Windows that must outlive every pending read, and its rough edges have
+        # crashed Python before; a few chat sockets need none of what it adds.
+        self.loop = asyncio.SelectorEventLoop()
 
     def run(self) -> None:
         asyncio.set_event_loop(self.loop)
