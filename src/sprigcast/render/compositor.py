@@ -846,6 +846,7 @@ class Compositor:
         # prune() lets go of the ones nobody has drawn for a while (see prune).
         self._used: dict[tuple, float] = {}
         self._previewed: set[tuple] = set()  # scaled copies a preview reads (kept longer by prune)
+        self._previewed_full: set[str] = set()  # canvases a preview reads at full size (their buffers too)
 
     # Sources -------------------------------------------------------------
 
@@ -1034,6 +1035,14 @@ class Compositor:
 
     TRANSITION_KEEP_S = 30.0
     PREVIEW_KEEP_S = 600.0  # a preview's small copy (and its read-back buffers) waits this long for the window
+    # A full-size preview's read-back buffers are canvas-sized (3 x 8 MB for 1080x1920), so they wait less: long
+    # enough for a visit to Settings. Let go after 3 s, the first copy into fresh ones when Settings closed held a
+    # frame 27 ms on the PC (2026-11-17).
+    PREVIEW_FULL_KEEP_S = 180.0
+
+    def previewed_full(self, canvas_id: str) -> None:
+        """A preview reads this canvas at full size: prune keeps its read-back buffers through short pauses."""
+        self._previewed_full.add(canvas_id)
 
     def end_transition(self, canvas_id: str) -> None:
         """A canvas's transition finished. Its two extra textures stay for the next switch (prune() frees
@@ -1476,6 +1485,8 @@ class Compositor:
                 # first copy into fresh read-back buffers held the renderer 330 ms on the PC (2026-11-16, at
                 # rest): the driver set aside their memory then. A few MB kept a while is cheaper.
                 return max(idle_s, self.PREVIEW_KEEP_S)
+            if kind == "full" and key in self._previewed_full:
+                return max(idle_s, self.PREVIEW_FULL_KEEP_S)
             return idle_s
 
         stale = [(kind, key) for (kind, key), when in self._used.items() if now - when > keep(kind, key)]
@@ -1489,6 +1500,8 @@ class Compositor:
                     "full": self.full_pbos}[kind]
             target = pool.pop(key, None)
             self._previewed.discard(key)
+            if kind == "full":
+                self._previewed_full.discard(key)
             if target is not None:
                 target.release()
         return len(stale)

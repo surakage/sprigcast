@@ -260,3 +260,48 @@ def threading_ident():
     import threading
 
     return threading.get_ident()
+
+
+def test_housekeeping_waits_for_the_end_of_a_frame_and_says_when_it_was_slow(monkeypatch, caplog):
+    """PC 2026-11-17: the minute's tidy, thread count and memory line, run at once on the window's thread, made a
+    late frame on the same second of the minute. Each now starts as a frame ends and is logged when slow."""
+    import logging
+    import threading
+
+    from sprigcast.core import pacing
+
+    pacing.at_frame_end()  # nothing rendering yet in this process, or long ago: returns at once
+    monkeypatch.setattr(pacing, "_housekeeping_logged", float("-inf"))
+    order: list[str] = []
+    stop = threading.Event()
+
+    def render():
+        while not stop.is_set():
+            time.sleep(0.005)
+            order.append("frame")
+            pacing.frame_ended()
+
+    thread = threading.Thread(target=render, daemon=True)
+    thread.start()
+    try:
+        time.sleep(0.03)
+        order.clear()
+        with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
+            pacing.housekeeping("tidy", lambda: (order.append("work"), time.sleep(0.006)))
+    finally:
+        stop.set()
+        thread.join(1)
+    assert order[0] == "frame" and "work" in order  # it waited for a frame to finish first
+    assert "housekeeping: tidy took" in caplog.text
+
+
+def test_a_slow_frame_step_names_where_the_window_was(monkeypatch):
+    from sprigcast.render.engine import SLOW_STEP_S, Engine
+
+    monkeypatch.setitem(pacing._ui, "ident", threading.get_ident())
+    engine = Engine.__new__(Engine)
+    engine._marks = [("start", time.perf_counter() - 2 * SLOW_STEP_S)]
+    engine._window_at = ""
+    engine._mark("sprigs")
+    assert "test_a_slow_frame_step_names_where_the_window_was" in engine._window_at
+    assert "window at " in engine._where()
