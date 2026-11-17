@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,15 +108,18 @@ class PeakWatch:
 
     def __init__(self, window: float = LISTEN_SECONDS):
         self.window = window
-        self._peaks: dict[str, list[tuple[float, float]]] = {}
+        self._peaks: dict[str, deque[tuple[float, float]]] = {}
 
     def feed(self, levels: dict[str, tuple[float, float]], now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
+        oldest = now - self.window
         for sid, (peak, _rms) in levels.items():
-            history = self._peaks.setdefault(sid, [])
+            history = self._peaks.get(sid)
+            if history is None:
+                history = self._peaks[sid] = deque()
             history.append((now, peak))
-            while history and history[0][0] < now - self.window:
-                history.pop(0)
+            while history[0][0] < oldest:
+                history.popleft()
 
     def loudest(self) -> dict[str, float]:
         return {sid: max(p for _, p in h) for sid, h in self._peaks.items() if h}
