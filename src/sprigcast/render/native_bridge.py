@@ -7,7 +7,9 @@ thread no longer draws a canvas just to show it.
 
 Transitions (fade, slide, swipe, wipe, leaf and bloom) run in the native engine on its own clock; the outgoing
 bloom is in the snapshot while one runs. Recordings and streams take NV12 frames the native engine makes on its
-own thread (up to ENGINE_OUTPUTS sizes a canvas), timed by when it drew them. Python's compositor still draws
+own thread (up to ENGINE_OUTPUTS sizes a canvas), timed by when it drew them. An output whose encoder is
+SprigCast's own NVENC, opened on the native engine's device (encoder_device), gets its frames as NV12 textures
+on the card (CardFrame): nothing is copied back at all. Python's compositor still draws
 whatever the native engine can't do yet: stinger and move transitions, Build's edited bloom, screenshots, source
 record and the virtual camera, and the outputs of a canvas while it draws one of those. If the native engine faults for
 good, this steps aside and Python's compositor draws the previews again, as before.
@@ -93,6 +95,46 @@ def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, 
     return draws, parts, shows
 
 
+class CardPool:
+    """The engine's texture pool a CardFrame's texture belongs to. An encoder registers each of its textures
+    once and lets go of them all when a frame of another pool arrives (output/nvenc_d3d11.py encode_texture)."""
+
+    def __init__(self, pool_id: int):
+        self.id = pool_id
+
+
+class CardFrame:
+    """A finished canvas as an NV12 texture on the native engine's device (fmt "gpu"), for SprigCast's own
+    NVENC encoder: shaped like render/gpu_share.py GpuFrame. Its texture goes back to the engine when the last
+    reference to the frame goes (encoded, dropped, replaced)."""
+
+    __slots__ = ("canvas_id", "width", "height", "time", "fmt", "canvas_size", "pool", "texture", "entry",
+                 "_give_back", "__weakref__")
+
+    data = None  # no bytes: see texture
+
+    def __init__(self, canvas_id: str, size: tuple[int, int], drawn: float, pool: CardPool, texture: int,
+                 entry: int, give_back):
+        self.canvas_id, self.width, self.height, self.time = canvas_id, size[0], size[1], drawn
+        self.fmt = "gpu"
+        self.canvas_size = size
+        self.pool, self.texture, self.entry = pool, texture, entry
+        self._give_back = give_back
+
+    @property
+    def key(self) -> tuple:
+        """The same for the same texture for as long as its pool lives (encoders register each once)."""
+        return "native", self.pool.id if self.pool is not None else 0, self.entry
+
+    def __del__(self):
+        pool, self.pool = self.pool, None
+        if pool is not None:
+            try:
+                self._give_back(pool.id, self.entry, self.texture)
+            except Exception:  # noqa: BLE001 (never from a destructor)
+                pass
+
+
 class NativeCanvases:
     """The native engine as the render thread uses it. Every call is safe: a failure turns it off (``failed``)
     and the Python compositor carries on alone."""
@@ -107,7 +149,10 @@ class NativeCanvases:
         self._shown: dict[int, str | None] = {}
         self._watching: dict[int, tuple[int, int, int]] = {}
         self._sent_transitions: dict[int, int | None] = {}  # slot -> id() of the Running handed over
-        self._outputs: dict[int, dict[tuple[int, int], int]] = {}  # canvas slot -> output size -> output slot
+        # canvas slot -> output key ((width, height), on the card) -> output slot
+        self._outputs: dict[int, dict[tuple, int]] = {}
+        self.can_share = True  # until the engine says its device can't draw NV12 textures
+        self._pools: dict[int, CardPool] = {}  # the engine's pool id -> its CardPool (the newest few)
         self._output_scale: dict[int, str] = {}
         self._last_out: dict[tuple[str, tuple[int, int]], float] = {}  # newest frame time handed on, per output
         self._dropped: dict[tuple[int, int], int] = {}  # (canvas slot, output slot) -> frames the engine dropped
@@ -250,59 +295,112 @@ class NativeCanvases:
 
     # ---- recordings and streams ---------------------------------------------------------------------------------
 
-    def serves(self, canvas_id: str, outputs) -> bool:
-        """Whether the native engine can make every one of these frame taps ((callback, NV12 size) pairs): NV12
-        only, at most ENGINE_OUTPUTS sizes, on a canvas it draws."""
-        sizes = {nv12 for _callback, nv12 in outputs}
-        return bool(sizes) and None not in sizes and len(sizes) <= sprigcore.ENGINE_OUTPUTS and self.draws(canvas_id)
+    def output_key(self, size: tuple[int, int] | None, on_card: bool) -> tuple | None:
+        """What names an output the native engine makes: its NV12 size and whether its frames stay on the
+        card (asked for and possible). None: a full-size RGBA tap, which only Python's compositor makes."""
+        return None if size is None else (tuple(size), bool(on_card and self.can_share))
 
-    def set_outputs(self, canvas_id: str, sizes, scale: str = "bilinear") -> None:
-        """The NV12 sizes the native engine makes for this canvas from now on (empty: none). A size kept keeps
-        its slot, so its frames go on without a gap."""
+    def serves(self, canvas_id: str, keys) -> bool:
+        """Whether the native engine can make every one of these outputs (output_key): NV12 only, at most
+        ENGINE_OUTPUTS different ones, on a canvas it draws."""
+        keys = set(keys)
+        return bool(keys) and None not in keys and len(keys) <= sprigcore.ENGINE_OUTPUTS and self.draws(canvas_id)
+
+    def set_outputs(self, canvas_id: str, keys, scale: str = "bilinear") -> None:
+        """The outputs (output_key) the native engine makes for this canvas from now on (empty: none). One
+        kept keeps its slot, so its frames go on without a gap."""
         slot = self._slots.get(canvas_id)
         if slot is None or self.failed:
             return
-        want = sorted(set(sizes))[:sprigcore.ENGINE_OUTPUTS]
+        want = sorted(set(keys))[:sprigcore.ENGINE_OUTPUTS]
         current = self._outputs.setdefault(slot, {})
         if want and self._output_scale.get(slot, scale) != scale:  # every output is scaled again: start over
             self.set_outputs(canvas_id, ())
             current = self._outputs.setdefault(slot, {})
         if want:
             self._output_scale[slot] = scale
-        for size in [s for s in current if s not in want]:
-            out = current.pop(size)
+        for key in [k for k in current if k not in want]:
+            out = current.pop(key)
             self._dropped.pop((slot, out), None)
-            self._last_out.pop((canvas_id, size), None)
+            if not any(k[0] == key[0] for k in current):
+                self._last_out.pop((canvas_id, key[0]), None)
             self._guard("output", self.engine.set_output, slot, out, 0, 0)
         free = [o for o in range(sprigcore.ENGINE_OUTPUTS) if o not in current.values()]
-        for size in want:
-            if size not in current and free:
-                out = current[size] = free.pop(0)
-                self._guard("output", self.engine.set_output, slot, out, size[0], size[1], scale)
+        for key in want:
+            if key not in current and free:
+                out = current[key] = free.pop(0)
+                self._guard("output", self.engine.set_output, slot, out, key[0][0], key[0][1], scale, key[1])
 
-    def take_outputs(self, canvas_id: str, size: tuple[int, int]) -> list[tuple[bytearray, float]]:
-        """Every NV12 frame of this size the native engine finished since the last call, oldest first:
-        (data, when it was drawn in time.perf_counter() seconds). Never a frame older than one handed on."""
+    def take_outputs(self, canvas_id: str, key: tuple) -> list:
+        """Every frame of this output (output_key) the native engine finished since the last call, oldest
+        first: (NV12 data, when it was drawn in time.perf_counter() seconds), or CardFrames for an output on the
+        card. Never a frame older than one handed on."""
         slot = self._slots.get(canvas_id)
-        out = self._outputs.get(slot, {}).get(size) if slot is not None else None
+        out = self._outputs.get(slot, {}).get(key) if slot is not None else None
         if out is None or self.failed:
             return []
+        size, on_card = key
         frames = []
         last = self._last_out.get((canvas_id, size), 0.0)
         for _ in range(sprigcore.ENGINE_OUTPUTS * 2):  # the queue holds a few; never loop for ever
-            got = self._guard("output frame", self.engine.take_output, slot, out, size[0], size[1])
-            if got is None:
-                break
-            data, drawn, dropped = got
-            gone = dropped - self._dropped.get((slot, out), 0)
-            if gone > 0:
-                self._dropped[(slot, out)] = dropped
-                self.output_drops += gone
+            if on_card:
+                got = self._guard("output frame", self.engine.take_texture, slot, out)
+                if got is None:
+                    break
+                state, taken, dropped = got
+                if state < 0 and self.can_share:
+                    self.can_share = False  # outputs are named again next tick: this one goes through memory
+                    log.warning("native engine: this graphics card can't keep frames on it for the encoder; "
+                                "they go through memory")
+                if taken is None:
+                    self._count_drops(slot, out, dropped)
+                    break
+                texture, pool_id, entry, drawn = taken
+                frame = CardFrame(canvas_id, size, drawn, self._pool(pool_id), texture, entry,
+                                  lambda p, e, t, slot=slot, out=out: self._give_back(slot, out, p, e, t))
+            else:
+                got = self._guard("output frame", self.engine.take_output, slot, out, size[0], size[1])
+                if got is None:
+                    break
+                data, drawn, dropped = got
+                frame = (data, drawn)
+            self._count_drops(slot, out, dropped)
             if drawn > last:
-                frames.append((data, drawn))
+                frames.append(frame)
                 last = drawn
         self._last_out[(canvas_id, size)] = last
         return frames
+
+    def _count_drops(self, slot: int, out: int, dropped: int) -> None:
+        gone = dropped - self._dropped.get((slot, out), 0)
+        if gone > 0:
+            self._dropped[(slot, out)] = dropped
+            self.output_drops += gone
+
+    def _pool(self, pool_id: int) -> CardPool:
+        pool = self._pools.get(pool_id)
+        if pool is None:
+            pool = self._pools[pool_id] = CardPool(pool_id)
+            for old in sorted(self._pools)[:-8]:  # frames and encoders keep the ones they still use alive
+                del self._pools[old]
+        return pool
+
+    def _give_back(self, slot: int, out: int, pool_id: int, entry: int, texture: int) -> None:
+        """A CardFrame was let go (on any thread): its texture is the engine's to draw into again."""
+        try:
+            self.engine.give_back(slot, out, pool_id, entry)
+        finally:
+            sprigcore.com_release(texture)
+
+    def encoder_device(self) -> int | None:
+        """The native engine's Direct3D 11 device for an encoder that takes its frames on the card (an
+        ID3D11Device pointer with a reference of the caller's), or None: it can't share frames."""
+        if self.failed or not self.can_share:
+            return None
+        try:
+            return self.engine.device()[0] or None
+        except Exception:  # noqa: BLE001 (no device right now, mid-rebuild: this encoder takes frames from memory)
+            return None
 
     def served(self, canvas_id: str, size: tuple[int, int], drawn: float) -> None:
         """Python's compositor handed on a frame of this output drawn at `drawn`: a native frame from before

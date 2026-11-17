@@ -323,6 +323,12 @@ SC_API int sc_device_create(int index, int flags, sc_device **out) {
                                        static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &dev->device,
                                        &dev->level, &dev->context);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "D3D11CreateDevice", hr);
+        // An encoder session on this device works from its own thread: Direct3D keeps the two apart.
+        ComPtr<ID3D11Multithread> guard;
+        if (SUCCEEDED(dev->device.As(&guard))) guard->SetMultithreadProtected(TRUE);
+        UINT support = 0;
+        dev->nv12_targets = SUCCEEDED(dev->device->CheckFormatSupport(DXGI_FORMAT_NV12, &support)) &&
+                            (support & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0;
         sc_adapter_info info;
         int level = 0;
         if (sc_device_info(dev.get(), &info, &level) == SC_OK) {

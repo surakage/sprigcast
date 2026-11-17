@@ -142,14 +142,23 @@ class FakeNative:
         size = self.watching.get(canvas_id)
         return (b"n" * (size[0] * size[1] * 4), *size) if size else None
 
-    def serves(self, canvas_id, outputs):
-        return native_bridge.NativeCanvases.serves(self, canvas_id, outputs)
+    can_share = True
 
-    def set_outputs(self, canvas_id, sizes, scale="bilinear"):
-        self.outputs[canvas_id] = (sorted(set(sizes)), scale)
+    def output_key(self, size, on_card):
+        return native_bridge.NativeCanvases.output_key(self, size, on_card)
 
-    def take_outputs(self, canvas_id, size):
+    def serves(self, canvas_id, keys):
+        return native_bridge.NativeCanvases.serves(self, canvas_id, keys)
+
+    def set_outputs(self, canvas_id, keys, scale="bilinear"):
+        self.outputs[canvas_id] = (sorted(set(keys)), scale)
+
+    def take_outputs(self, canvas_id, key):
         self.clock += 1.0  # one frame a tick, each drawn later than the last
+        size, on_card = key
+        if on_card:
+            return [native_bridge.CardFrame(canvas_id, size, self.clock, native_bridge.CardPool(1), 0xABC, 0,
+                                            lambda *a: None)]
         return [(b"o" * (size[0] * size[1] * 3 // 2), self.clock)]
 
     def served(self, canvas_id, size, drawn):
@@ -208,8 +217,38 @@ def test_recordings_and_streams_take_the_native_engines_frames():
     assert len(big) == 60 and len(small) == 60
     assert (big[0].fmt, big[0].width, big[0].height, len(big[0].data)) == ("nv12", 64, 36, 64 * 36 * 3 // 2)
     assert [f.time for f in big] == sorted(f.time for f in big) and big[0].time < big[-1].time
-    assert engine._native.outputs["h"] == ([(32, 18), (64, 36)], "bicubic")
+    assert engine._native.outputs["h"] == ([((32, 18), False), ((64, 36), False)], "bicubic")
     assert engine._native.outputs["v"] == ([], "bicubic")
+
+
+class CardRecorder:
+    """Stands in for a Recorder whose NVENC takes frames on the card."""
+
+    def __init__(self):
+        self.frames = []
+
+    def wants_gpu_frames(self):
+        return True
+
+    def push_frame(self, frame):
+        self.frames.append(frame)
+
+
+def test_an_encoder_on_the_card_gets_the_native_engines_textures():
+    engine, fake = _engine(), FakeCompositor()
+    card, memory = CardRecorder(), []
+    engine.add_frame_tap("h", card.push_frame, nv12_size=(64, 36))
+    engine.add_frame_tap("h", memory.append, nv12_size=(64, 36))  # the same size through memory: its own output
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered == [] and engine.readbacks == 0
+    assert card.frames and all(f.fmt == "gpu" and f.data is None and f.texture == 0xABC for f in card.frames)
+    assert (card.frames[0].width, card.frames[0].height, card.frames[0].key) == (64, 36, ("native", 1, 0))
+    assert memory and all(f.fmt == "nv12" for f in memory)
+    assert engine._native.outputs["h"] == ([((64, 36), False), ((64, 36), True)], "bicubic")
+    engine._native.can_share = False  # the card can't: the same recorder gets bytes from then on
+    card.frames.clear()
+    _run(engine, fake, seconds=0.1)
+    assert card.frames and all(f.fmt == "nv12" for f in card.frames)
 
 
 def test_outputs_go_back_to_python_while_it_draws_the_canvas():
@@ -226,10 +265,13 @@ def test_outputs_go_back_to_python_while_it_draws_the_canvas():
 
 
 def test_more_output_sizes_than_the_native_engine_has_room_for_stay_with_python():
-    outputs = [(None, (2 * n, 2 * n)) for n in range(1, sprigcore.ENGINE_OUTPUTS + 2)]
+    keys = [((2 * n, 2 * n), False) for n in range(1, sprigcore.ENGINE_OUTPUTS + 2)]
     fake = FakeNative()
-    assert not fake.serves("h", outputs) and fake.serves("h", outputs[:-1])
-    assert not fake.serves("h", [(None, None)]) and not fake.serves("h", [])
+    assert not fake.serves("h", keys) and fake.serves("h", keys[:-1])
+    assert not fake.serves("h", [None]) and not fake.serves("h", [])
+    assert fake.output_key(None, True) is None and fake.output_key((4, 4), True) == ((4, 4), True)
+    fake.can_share = False
+    assert fake.output_key((4, 4), True) == ((4, 4), False)
 
 
 def test_a_failed_native_engine_hands_the_previews_back_to_python():
@@ -285,13 +327,22 @@ class FakeEngine:
     """Stands in for sprigcore.Engine: remembers the outputs it was set and hands back queued frames."""
 
     def __init__(self, **_):
-        self.set, self.queue = [], []
+        self.set, self.queue, self.back = [], [], []
 
-    def set_output(self, index, slot, width, height, scale="bilinear"):
-        self.set.append((index, slot, width, height))
+    def set_output(self, index, slot, width, height, scale="bilinear", share=False):
+        self.set.append((index, slot, width, height) + (("card",) if share else ()))
 
     def take_output(self, index, slot, width, height):
         return self.queue.pop(0) if self.queue else None
+
+    def take_texture(self, index, slot):
+        return self.queue.pop(0) if self.queue else (0, None, 0)
+
+    def give_back(self, index, slot, pool, entry):
+        self.back.append((index, slot, pool, entry))
+
+    def device(self):
+        return 0x1234, 0
 
     def close(self):
         pass
@@ -301,19 +352,58 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
     bridge = native_bridge.NativeCanvases(_collection())
     bridge._slots["h"] = 0
-    bridge.set_outputs("h", [(64, 36), (32, 18), (64, 36)], "area")
+    big, small, tiny = ((64, 36), False), ((32, 18), False), ((16, 8), False)
+    bridge.set_outputs("h", [big, small, big], "area")
     assert bridge.engine.set == [(0, 0, 32, 18), (0, 1, 64, 36)]
-    bridge.set_outputs("h", [(64, 36), (16, 8)], "area")  # one gone, one new: the kept one isn't touched
+    bridge.set_outputs("h", [big, tiny], "area")  # one gone, one new: the kept one isn't touched
     assert bridge.engine.set[2:] == [(0, 0, 0, 0), (0, 0, 16, 8)]
     bridge.engine.queue = [(b"a", 5.0, 0), (b"b", 6.0, 0), (b"c", 7.0, 3)]
     bridge.served("h", (64, 36), 5.5)  # Python handed on a frame drawn at 5.5: the one from 5.0 is let go
-    assert bridge.take_outputs("h", (64, 36)) == [(b"b", 6.0), (b"c", 7.0)]
-    assert bridge.output_drops == 3 and bridge.take_outputs("h", (64, 36)) == []
-    assert bridge.take_outputs("h", (2, 2)) == []  # not an output it makes
-    bridge.set_outputs("h", [(64, 36)], "lanczos")  # scaled another way: every output starts over
+    assert bridge.take_outputs("h", big) == [(b"b", 6.0), (b"c", 7.0)]
+    assert bridge.output_drops == 3 and bridge.take_outputs("h", big) == []
+    assert bridge.take_outputs("h", ((2, 2), False)) == []  # not an output it makes
+    bridge.set_outputs("h", [big], "lanczos")  # scaled another way: every output starts over
     assert bridge.engine.set[-3:] == [(0, 1, 0, 0), (0, 0, 0, 0), (0, 0, 64, 36)]
     bridge.set_outputs("h", ())
     assert bridge.engine.set[-1] == (0, 0, 0, 0) and not bridge.failed
+
+
+def test_frames_on_the_card_go_back_to_the_engine_when_let_go(monkeypatch):
+    monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
+    released = []
+    monkeypatch.setattr(sprigcore, "com_release", released.append)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    card = bridge.output_key((64, 36), True)
+    assert bridge.encoder_device() == 0x1234
+    bridge.set_outputs("h", [card])
+    assert bridge.engine.set == [(0, 0, 64, 36, "card")]
+    bridge.engine.queue = [(1, (0xA, 7, 2, 5.0), 0), (1, (0xB, 7, 3, 6.0), 1)]
+    first, second = bridge.take_outputs("h", card)
+    assert (first.fmt, first.texture, first.key, first.time) == ("gpu", 0xA, ("native", 7, 2), 5.0)
+    assert first.pool is second.pool and bridge.output_drops == 1  # one pool: an encoder registers each texture once
+    del first
+    assert bridge.engine.back == [(0, 0, 7, 2)] and released == [0xA]
+    bridge.engine.queue = [(-1, None, 0)]  # the card can't draw NV12 textures: outputs go through memory
+    assert bridge.take_outputs("h", card) == [] and not bridge.can_share and not bridge.failed
+    assert bridge.output_key((64, 36), True) == ((64, 36), False) and bridge.encoder_device() is None
+    del second
+    assert released == [0xA, 0xB]
+
+
+def test_an_encoder_opens_on_the_native_engines_device_while_it_draws(monkeypatch):
+    from sprigcast.render import gpu_share
+
+    monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    assert gpu_share.native_device() is None
+    gpu_share.set_native(bridge)
+    try:
+        assert gpu_share.native_device().value == 0x1234
+        gpu_share.native_give_up("a check")
+        assert gpu_share.native_device() is None and not bridge.can_share
+    finally:
+        gpu_share.set_native(None)
 
 
 # ---- the real engine (Windows) ------------------------------------------------------------------------------
@@ -347,10 +437,10 @@ def test_the_bridge_draws_a_collection_like_the_device():
         img = np.frombuffer(got[0], np.uint8).reshape(18, 32, 4)
         assert (img[2:10, 4:12] == pic).all()
         assert (img[0, 0] == 0).all()  # see-through where nothing is
-        bridge.set_outputs("h", [(32, 18)])
+        bridge.set_outputs("h", [((32, 18), False)])
         frames, deadline = [], time.monotonic() + 3
         while not frames and time.monotonic() < deadline:
-            frames = bridge.take_outputs("h", (32, 18))
+            frames = bridge.take_outputs("h", ((32, 18), False))
             time.sleep(0.01)
         assert frames and not bridge.failed
         data, drawn = frames[0]
@@ -358,5 +448,19 @@ def test_the_bridge_draws_a_collection_like_the_device():
         y = np.frombuffer(bytes(data), np.uint8)[:32 * 18].reshape(18, 32)
         luma = 16 + 219 * (pic[..., :3].astype(float) @ [0.2126, 0.7152, 0.0722]) / 255
         assert np.abs(y[2:10, 4:12] - luma).max() <= 1.5 and (y[0] == 16).all()
+        # On the card: textures come out (where the device can draw NV12) and go back when let go.
+        card = bridge.output_key((32, 18), True)
+        bridge.set_outputs("h", [card])
+        frames, deadline = [], time.monotonic() + 3
+        while not frames and bridge.can_share and time.monotonic() < deadline:
+            frames = bridge.take_outputs("h", card)
+            time.sleep(0.01)
+        assert not bridge.failed and (frames or not bridge.can_share)
+        if frames:
+            assert frames[0].fmt == "gpu" and frames[0].texture and frames[0].key[0] == "native"
+            device = bridge.encoder_device()
+            assert device
+            sprigcore.com_release(device)
+        del frames
     finally:
         bridge.close()

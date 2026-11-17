@@ -89,8 +89,19 @@ limited range, with a port of the Python NV12 shader and its four scaling filter
 tests/native_golden/nv12_*.png), and copies it back without waiting on the card. Finished frames wait in a short
 queue, each stamped with the performance counter when it was drawn (Python's `time.perf_counter()`, the clock
 recorders time frames by), so a late Python tick doesn't lose a frame: it hands on every frame that queued up.
-Past four waiting frames the oldest is dropped and counted. The encoders are still Python's; handing the
-engine's textures straight to the card's encoder is next.
+Past four waiting frames the oldest is dropped and counted.
+
+SprigCast's own NVENC takes its frames on the card instead (`SC_OUTPUT_SHARE`): while the native engine draws,
+a recorder opens its NVENC session on the engine's Direct3D device (`sc_engine_device`, render/gpu_share.py
+`native_device`) and its output is drawn straight into one of five NV12 textures (R8 and R8G8 views of the
+texture's two planes), which the encoder's thread registers once, maps and encodes
+(output/nvenc_d3d11.py `encode_texture`, as for the OpenGL hand-off). Nothing is copied back and nothing
+waits: the frame thread only draws, and a texture is the encoder's until its frame is let go
+(`sc_engine_output_give_back`); with every texture out the frame is missed and counted, never overwritten.
+Fallbacks: a card that can't draw into NV12 textures, an encoder that won't open on the device or a frame it
+refuses (the engine rebuilt its device since) all send that output through memory as above. Other encoders
+(x264, AMF, QSV, FFmpeg's NVENC) take the frames from memory. The encoder session itself is still Python's
+ctypes one; it moves into the engine with recording and streaming (phase 4).
 
 Python's compositor still draws stinger and move transitions, Build's edited bloom, the Part editor, screenshots,
 source record, full-size RGBA taps and the virtual camera until those move, and a canvas's outputs while it
@@ -104,7 +115,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | Phase | What moves | State |
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
-| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. Next: its textures straight to the card's encoder |
+| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |

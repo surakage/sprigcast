@@ -50,7 +50,7 @@ def card(monkeypatch):
         fail_at = None
 
         def encode_texture(self, frame, keyframe=False):
-            assert self.settings.get("shared") is True
+            assert self.settings.get("shared") is True or self.settings.get("device") is not None
             if OnCard.fail_at is not None and self.n >= OnCard.fail_at:
                 raise nvenc_d3d11.NvencError("NVENC mapping a texture failed: MAP_FAILED")
             return self.encode_frame(PICTURES[frame.key], keyframe)
@@ -112,6 +112,80 @@ def test_a_refused_texture_turns_sharing_off_and_frames_come_through_memory(tmp_
     assert rec._gpu_failed and gpu_share.broken() and not gpu_share.usable()
     gc.collect()
     assert pool.in_use() == 0
+
+
+class NativeBridge:
+    """Stands in for render/native_bridge.py NativeCanvases: a device for encoders, and frames on it."""
+
+    can_share = True
+
+    def __init__(self):
+        self.pool, self.back, self.out = None, [], 0
+
+    def encoder_device(self):
+        return 0x77 if self.can_share else None
+
+    def hand(self, i, w=320, h=180):
+        from sprigcast.render.native_bridge import CardFrame, CardPool
+
+        self.pool = self.pool or CardPool(9)
+        frame = CardFrame("horizontal", (w, h), 1000.0 + i / 30, self.pool, 5000 + i % 5, i % 5,
+                          lambda pool, entry, texture: self.back.append((pool, entry, texture)))
+        PICTURES[frame.key] = bytes([(i * 8) % 256]) * (w * h) + bytes([128]) * (w * h // 2)
+        self.out += 1
+        return frame
+
+
+@pytest.fixture
+def native(monkeypatch, card):
+    monkeypatch.setattr(gpu_share, "_gl_ok", False)  # the OpenGL hand-off isn't what's used here
+    bridge = NativeBridge()
+    gpu_share.set_native(bridge)
+    yield bridge
+    gpu_share.set_native(None)
+
+
+def test_with_the_native_engine_the_encoder_opens_on_its_device_and_takes_its_frames(tmp_path, card, native):
+    rec = _recorder(tmp_path)
+    rec.start()
+    assert rec._opened.wait(10)
+    settings = card.made[0].settings
+    assert rec.wants_gpu_frames() and settings["device"].value == 0x77 and settings["shared"] is False
+    for i in range(30):
+        rec.push_frame(native.hand(i))
+        _wait_queue(rec)
+    rec.stop()
+    assert rec.error is None and rec.frames == 30 and rec.dropped == 0
+    gc.collect()
+    assert len(native.back) == native.out == 30  # every texture went back to the engine
+    with av.open(str(tmp_path / "g.mkv")) as f:
+        assert sum(1 for _ in f.decode(video=0)) == 30
+
+
+def test_a_native_frame_the_encoder_refuses_sends_that_recording_through_memory(tmp_path, card, native):
+    card.fail_at = 5  # as after the engine rebuilt its device: its new textures are no use to this session
+    rec = _recorder(tmp_path)
+    rec.start()
+    assert rec._opened.wait(10)
+    for i in range(12):
+        frame = native.hand(i) if rec.wants_gpu_frames() else \
+            Frame("horizontal", 320, 180, bytes(320 * 180 * 3 // 2), 1000.0 + i / 30, "nv12")
+        rec.push_frame(frame)
+        _wait_queue(rec)
+    rec.stop()
+    assert rec.error is None and rec._gpu_failed and 1 <= rec.dropped <= 2 and rec.frames + rec.dropped == 12
+    assert native.can_share and gpu_share.broken() is None  # the next recording opens on the new device
+    gc.collect()
+    assert len(native.back) == native.out
+
+
+def test_no_native_device_and_the_encoder_opens_as_before(tmp_path, card, native):
+    native.can_share = False
+    rec = _recorder(tmp_path)
+    rec.start()
+    assert rec._opened.wait(10)
+    assert not rec.wants_gpu_frames() and card.made[0].settings.get("device") is None
+    rec.stop()
 
 
 def test_an_encoder_opened_after_a_failure_stays_off_the_card(tmp_path, card):

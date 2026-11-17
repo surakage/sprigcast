@@ -5,6 +5,7 @@
 #include "sprigcore.h"
 
 #include <d3d11.h>
+#include <d3d11_4.h>
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <windows.h>
@@ -115,6 +116,7 @@ struct sc_device {
     D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
     std::mutex lock;  // the immediate context is used by one thread at a time
     std::atomic<bool> faulted{false};
+    bool nv12_targets = false;  // the card draws into NV12 textures (frames shared with an encoder)
 
     // The phase 1 drawing (sc_canvas_draw_bgra), made the first time it's used.
     ComPtr<ID3D11VertexShader> vs;

@@ -180,7 +180,7 @@ class DirectVideo:
     """
 
     def __init__(self, width: int, height: int, fps: int, bitrate_kbps: int, enc, codec: str = "h264_nvenc",
-                 shared: bool = False):
+                 shared: bool = False, device=None):
         import io
 
         import av
@@ -196,9 +196,11 @@ class DirectVideo:
             width, height, fps, enc.preset, bitrate_kbps=bitrate_kbps, rate_control=enc.rate_control,
             max_kbps=max_kbps, buffer_kbits=buffer_kbits, cq_level=enc.cq_level,
             gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning, adaptive_quant=enc.adaptive_quant,
-            multipass=enc.multipass, codec=raw, shared=shared,
+            multipass=enc.multipass, codec=raw, shared=shared, device=device,
         )
-        self.shared = shared  # can also take frames on the card (encode_texture, render/gpu_share.py)
+        # Can also take frames on the card (encode_texture): the OpenGL hand-off's (render/gpu_share.py) or,
+        # opened on the native engine's device, the native engine's (render/native_bridge.py CardFrame).
+        self.shared = shared or device is not None
         self._enc = enc
         try:
             black = bytes(width * height) + bytes([128]) * (width * height // 2)
@@ -833,17 +835,24 @@ class Recorder:
         if self.uses_direct():
             from sprigcast.render import gpu_share
 
-            shared = gpu_share.usable() and self.gpu_size is not None
+            # With the native engine drawing, the encoder opens on its device and takes its frames there.
+            device = gpu_share.native_device() if self.gpu_size is not None else None
+            shared = device is not None or (gpu_share.usable() and self.gpu_size is not None)
             try:
                 try:
                     self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps,
-                                               self.encoder, self.codec, shared=shared)
+                                               self.encoder, self.codec, shared=shared and device is None,
+                                               device=device)
                     log.info("%s: SprigCast's own NVENC%s", self.path.stem,
-                             ", frames on the graphics card" if shared else "")
+                             ", frames on the graphics card" + (" (native engine)" if device is not None else "")
+                             if shared else "")
                 except Exception as exc:
                     if not shared:
                         raise
-                    gpu_share.give_up(f"NVENC on the shared device: {exc}")
+                    if device is not None:
+                        gpu_share.native_give_up(f"NVENC on the native engine's device: {exc}")
+                    else:
+                        gpu_share.give_up(f"NVENC on the shared device: {exc}")
                     self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps,
                                                self.encoder, self.codec)
             except Exception as exc:  # fall back to FFmpeg's encoder for this recording
@@ -1056,7 +1065,11 @@ class Recorder:
             from sprigcast.render import gpu_share
 
             self._gpu_failed, self._force_key = True, True
-            gpu_share.give_up(f"NVENC couldn't take a frame on the card: {exc}")
+            if str(getattr(frame, "key", ("",))[0]) == "native":  # this recording only: the engine may have
+                log.warning("NVENC couldn't take the native engine's frame on the card (%s); this output's "
+                            "frames go through memory", str(exc))  # rebuilt its device since the encoder opened
+            else:
+                gpu_share.give_up(f"NVENC couldn't take a frame on the card: {exc}")
             if self._counts_drops():
                 self.dropped += 1
             return False

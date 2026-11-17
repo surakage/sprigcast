@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 5
+#define SC_INTERFACE_VERSION 6
 
 enum {
     SC_OK = 0,
@@ -294,6 +294,9 @@ enum {
 #define SC_ENGINE_CANVASES 4  /* canvas slots: the horizontal and vertical canvases and room for more */
 #define SC_ENGINE_OUTPUTS 4  /* NV12 outputs per canvas: a recording and streams of different sizes */
 #define SC_ENGINE_OUTPUT_QUEUE 4  /* finished output frames kept waiting for Python */
+#define SC_ENGINE_SHARE_POOL 5    /* NV12 textures of an output shared on the card: being encoded, waiting, spares */
+#define SC_ENGINE_SHARE_QUEUE 2   /* shared frames kept waiting for Python (each holds a texture) */
+#define SC_OUTPUT_SHARE 1         /* sc_engine_output_set flag: frames stay on the card as NV12 textures */
 
 /* An engine on adapter `adapter` (-1 = Windows' default) or the software renderer (SC_DEVICE_WARP). It starts
  * drawing at 60 frames a second with no canvases. */
@@ -342,14 +345,35 @@ SC_API int sc_engine_canvas_take(sc_engine *engine, int index, uint8_t *out, int
 /* An output of canvas `index` (a recording or stream), in output slot `slot` (0 .. SC_ENGINE_OUTPUTS - 1): every
  * frame the engine draws the canvas scaled to width x height (both even) as NV12 (sc_canvas_read_nv12) and copies
  * it back without waiting on the graphics card. Finished frames queue up (at most SC_ENGINE_OUTPUT_QUEUE; past
- * that the oldest is dropped and counted) until taken. 0 x 0 stops it and empties its queue. */
-SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int width, int height, int scale_mode);
+ * that the oldest is dropped and counted) until taken. 0 x 0 stops it and empties its queue.
+ * With SC_OUTPUT_SHARE in `flags` nothing is copied back: each frame is drawn into one of SC_ENGINE_SHARE_POOL
+ * NV12 textures for an encoder on the same device (sc_engine_output_take_texture). */
+SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int width, int height, int scale_mode,
+                                int flags);
 /* The oldest finished frame of an output, if there is one of width x height: copies it into `out` (`bytes` must
  * be width * height * 3 / 2), sets *fresh = 1 and *drawn to when it was drawn in seconds of the performance
  * counter (Python's time.perf_counter() on Windows). Otherwise *fresh = 0. *dropped (optional) gets how many
  * frames this output has dropped so far. Never waits. */
 SC_API int sc_engine_output_take(sc_engine *engine, int index, int slot, uint8_t *out, size_t bytes, int *fresh,
                                  double *drawn, uint64_t *dropped);
+/* The engine's Direct3D 11 device (an ID3D11Device* with a reference of the caller's, let go with
+ * sc_com_release), for an encoder session that takes shared output frames, and how many times the engine has
+ * rebuilt its device (a texture from before a rebuild is no use to a session opened after it, nor the other way
+ * round). SC_ERR_DEVICE while the engine has no device. The device is safe to use from several threads. */
+SC_API int sc_engine_device(sc_engine *engine, void **device, int *rebuilds);
+/* The oldest finished frame of a shared output (SC_OUTPUT_SHARE). *state: 1 = a frame: *texture is an NV12
+ * ID3D11Texture2D* with a reference of the caller's (sc_com_release), *pool and *entry name it (the same for the
+ * same texture as long as the output keeps its size: an encoder registers each once) and *drawn is when it was
+ * drawn (performance counter seconds). 0 = none waiting. -1 = this device can't draw NV12 textures: use a plain
+ * output. The texture is the caller's until sc_engine_output_give_back. *dropped (optional) as
+ * sc_engine_output_take. Never waits. */
+SC_API int sc_engine_output_take_texture(sc_engine *engine, int index, int slot, void **texture, uint64_t *pool,
+                                         int *entry, double *drawn, int *state, uint64_t *dropped);
+/* Gives a shared frame's texture back for the engine to draw into again. A texture of a pool that is gone (the
+ * output changed or the device was rebuilt) is simply forgotten. Works on a stopped engine too. */
+SC_API int sc_engine_output_give_back(sc_engine *engine, int index, int slot, uint64_t pool, int entry);
+/* IUnknown::Release on a pointer one of the calls above gave. */
+SC_API void sc_com_release(void *unknown);
 /* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++
  * exception, 2 writes through a null pointer, 3 acts as if the graphics card was lost (the engine rebuilds),
  * 4 stalls the frame for 3 s (the watchdog reports it hung, then it goes on). */
