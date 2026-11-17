@@ -924,6 +924,52 @@ class SceneCollection(BaseModel):
             boxes.append((left, top, left + w * k, top + h * placed.sy))
         return boxes
 
+    def starting_place(self, item: SceneItem, kind: str, layout: Scene) -> None:
+        """Give an item that's about to go into this layout the place and size the + menu gives it, for things
+        added another way (the Control API's item.add, OBS's CreateInput and CreateSceneItem): a plugin's card
+        starts readable in a free corner (see _free_spot), a band along the bottom, an overlay like Snap fills
+        the canvas, and text is the same share of the canvas at 720p, 1080p or 4K. Anything else keeps its
+        place (0, 0, as big as the source), as in OBS."""
+        from sprigcast.core.source import source_class  # plugin kinds register at run time
+
+        cls = source_class(kind)
+        if cls is None:
+            return
+        canvas = self.canvas(layout.canvas)
+        size = getattr(cls, "own_sprig", None)
+        corner = getattr(cls, "own_sprig_corner", None)
+        if size and corner:
+            taken = self.overlay_boxes(layout, layout.canvas) + self.plugin_boxes(layout)
+            spot = _free_spot(canvas, tuple(size), corner, getattr(cls, "own_sprig_height", None),
+                              getattr(cls, "own_sprig_band", None), taken, item.source)
+            item.x, item.y, item.scale, item.scale_y = spot.x, spot.y, spot.scale, None
+        elif size:
+            item.scale, item.scale_y = min(canvas.width / size[0], canvas.height / size[1]), None
+            item.x = (canvas.width - size[0] * item.scale) / 2
+            item.y = (canvas.height - size[1] * item.scale) / 2
+        elif getattr(cls, "sharp", False):
+            item.scale, item.scale_y = min(canvas.width, canvas.height) / 1080, None
+
+    def plugin_boxes(self, layout: Scene) -> list[tuple[float, float, float, float]]:
+        """Where the plugin cards placed straight in this layout (not in a sprig of their own) sit, as (left,
+        top, right, bottom): what starting_place keeps clear of. Overlays that fill the canvas don't count."""
+        from sprigcast.core.source import source_class
+
+        canvas = self.canvas(layout.canvas)
+        configs = {s.id: s for s in self.sources}
+        boxes = []
+        for placed in layout.items:
+            config = configs.get(placed.source)
+            cls = source_class(config.kind) if config is not None else None
+            size = getattr(cls, "own_sprig", None)
+            if not size or not getattr(cls, "own_sprig_corner", None):
+                continue
+            w, h = placed.drawn_size(tuple(size))
+            if w * h >= 0.6 * canvas.width * canvas.height:
+                continue
+            boxes.append((placed.x, placed.y, placed.x + w, placed.y + h))
+        return boxes
+
     def new_bloom(self, name: str, canvas_ids: list[str]) -> Scene:
         """A new empty bloom (what the API's bloom.new and OBS's CreateScene make): one bloom per canvas, switching
         together, holding one sprig named after it placed full canvas, so things added to the bloom go in its

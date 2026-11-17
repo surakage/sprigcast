@@ -594,7 +594,7 @@ class NativeApi:
                 inner.append(shape)
         return holder, inner
 
-    @action("item.add", "Put a source in a bloom (in its sprig) or a sprig, on top. Answers the item's id.",
+    @action("item.add", "Put a source in a bloom (in its sprig) or a sprig, on top (a plugin starts readable, in a free corner). Answers the item's id.",
             source="name or id", bloom="?bloom to add to", sprig="?sprig to add to",
             shape="?both (default), horizontal or vertical", visible="?true (default) or false")
     def item_add(self, data):
@@ -602,7 +602,9 @@ class NativeApi:
         visible = _get(data, "visible", bool, optional=True, default=True)
         holder, layouts = self._add_to(data)
         for layout in layouts:
-            layout.items.append(SceneItem(source=source.id, visible=visible))  # last is on top
+            item = SceneItem(source=source.id, visible=visible)
+            self.col.starting_place(item, source.kind, layout)  # a plugin starts readable, as from the + menu
+            layout.items.append(item)  # last is on top
         self.host.commit("items")
         return {"item": source.id, "name": source.name, "shapes": [layout.canvas for layout in layouts]}
 
