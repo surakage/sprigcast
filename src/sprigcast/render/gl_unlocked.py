@@ -48,7 +48,6 @@ SIGNATURES = {  # name: (result, arguments)
 }
 STREAMING = {  # uploads through a pixel buffer, so sending a picture never waits for the card (see write_texture)
     "glBufferData": (None, [_u, _z, _p, _u]),
-    "glBufferSubData": (None, [_u, _z, _z, _p]),
 }
 GL_STREAM_DRAW = 0x88E0
 FENCES = {  # OpenGL 3.2 sync objects: without them read-backs are fetched without asking first, as before
@@ -109,7 +108,7 @@ class UnlockedGL:
         self.ok = False
         self.fences_ok = False  # fence()/done() work: a read-back is fetched only once the card has made it
         self.streaming_ok = False  # write_texture goes through a pixel buffer (never waits for the card)
-        self._upload = None  # that buffer (a moderngl Buffer: only its OpenGL name is used)
+        self._uploads: dict[int, object] = {}  # size in bytes -> its upload buffer (moderngl Buffers), newest last
         try:
             resolvers = resolvers if resolvers is not None else _resolvers()
             for name, (result, arguments) in SIGNATURES.items():
@@ -190,11 +189,9 @@ class UnlockedGL:
         self.glBindTexture(GL_TEXTURE_2D, texture.glo)
         self.glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
         if self.streaming_ok:
-            if self._upload is None:
-                self._upload = self.ctx.buffer(reserve=1)
-            self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, self._upload.glo)
-            self.glBufferData(GL_PIXEL_UNPACK_BUFFER, data.nbytes, None, GL_STREAM_DRAW)  # fresh memory
-            self.glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, data.nbytes, data.ctypes.data)
+            buffer = self._upload_buffer(data.nbytes)
+            self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, buffer.glo)
+            self.glBufferData(GL_PIXEL_UNPACK_BUFFER, data.nbytes, data.ctypes.data, GL_STREAM_DRAW)  # fresh memory
             self.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, FORMATS[texture.components], GL_UNSIGNED_BYTE, None)
             self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
             return
@@ -202,14 +199,34 @@ class UnlockedGL:
         self.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, FORMATS[texture.components], GL_UNSIGNED_BYTE,
                              data.ctypes.data)
 
+    UPLOAD_SIZES = 6  # upload buffers kept, one per picture size (a camera, a video, a few plugins)
+
+    def _upload_buffer(self, nbytes: int):
+        """The upload buffer for pictures of this many bytes. One per size, not one for all: each upload hands
+        the driver's memory for the old picture back and takes fresh memory of the same size, which the driver
+        recycles. One shared buffer took a 3 MB camera frame, then a 40 KB plugin picture, then the camera again
+        many times a second, so the driver kept spare memory of every size it was handed (the likely reason the
+        2026-11-17 retest sat about 55 MB higher than before uploads went through a buffer)."""
+        buffer = self._uploads.pop(nbytes, None)
+        if buffer is None:
+            buffer = self.ctx.buffer(reserve=1)
+            while len(self._uploads) >= self.UPLOAD_SIZES:  # the size used longest ago goes
+                self._let_go(self._uploads.pop(next(iter(self._uploads))))
+        self._uploads[nbytes] = buffer  # newest last
+        return buffer
+
+    @staticmethod
+    def _let_go(buffer) -> None:
+        try:
+            buffer.release()
+        except Exception:  # noqa: BLE001 (a lost context: nothing to let go)
+            pass
+
     def release(self) -> None:
-        """Let go of the upload buffer (the compositor is closing, or starting graphics again)."""
-        upload, self._upload = self._upload, None
-        if upload is not None:
-            try:
-                upload.release()
-            except Exception:  # noqa: BLE001 (a lost context: nothing to let go)
-                pass
+        """Let go of the upload buffers (the compositor is closing, or starting graphics again)."""
+        uploads, self._uploads = self._uploads, {}
+        for buffer in uploads.values():
+            self._let_go(buffer)
 
     def read_into(self, framebuffer, target, components: int, write_offset: int = 0) -> None:
         """framebuffer.read_into(target, components, alignment=1, write_offset): target a moderngl Buffer

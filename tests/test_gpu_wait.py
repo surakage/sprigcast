@@ -165,3 +165,30 @@ def test_uploads_go_through_fresh_buffer_memory_and_leave_moderngl_working(compo
     assert texture.read(alignment=1) == plain.tobytes()
     for obj in (fbo, texture, other):
         obj.release()
+
+
+def test_each_picture_size_has_its_own_upload_buffer_and_only_a_few_are_kept(compositor):
+    """One shared buffer handed the driver fresh memory of a different size on every other upload (a camera
+    frame, then a plugin's small picture), and the driver kept spare memory of each."""
+    import numpy as np
+
+    gl = compositor.gl
+    assert gl.streaming_ok
+    ctx = compositor.ctx
+    big, small = ctx.texture((48, 30), 4, alignment=1), ctx.texture((8, 4), 4, alignment=1)
+    rng = np.random.default_rng(4)
+    for _ in range(3):
+        gl.write_texture(big, rng.integers(0, 256, (30, 48, 4), dtype=np.uint8))
+        gl.write_texture(small, rng.integers(0, 256, (4, 8, 4), dtype=np.uint8))
+    assert sorted(gl._uploads) == [8 * 4 * 4, 48 * 30 * 4]  # one each, reused
+    made = []
+    for n in range(1, gl.UPLOAD_SIZES + 3):
+        tex = ctx.texture((n, 1), 1, alignment=1)
+        pixels = rng.integers(0, 256, (1, n, 1), dtype=np.uint8)
+        gl.write_texture(tex, pixels)
+        assert tex.read(alignment=1) == pixels.tobytes()
+        made.append(tex)
+    assert len(gl._uploads) == gl.UPLOAD_SIZES  # the sizes used longest ago were let go
+    assert list(gl._uploads)[-1] == gl.UPLOAD_SIZES + 2
+    for tex in (big, small, *made):
+        tex.release()
