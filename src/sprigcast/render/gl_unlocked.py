@@ -59,6 +59,16 @@ FENCES = {  # OpenGL 3.2 sync objects: without them read-backs are fetched witho
 GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117
 GL_SYNC_FLUSH_COMMANDS_BIT = 0x00000001
 GL_TIMEOUT_EXPIRED = 0x911B
+MAPPING = {  # OpenGL 4.4 (or ARB_buffer_storage): read-back buffers the CPU reads straight from memory
+    "glGenBuffers": (None, [_i, ctypes.POINTER(_u)]),
+    "glDeleteBuffers": (None, [_i, ctypes.POINTER(_u)]),
+    "glBufferStorage": (None, [_u, _z, _p, _u]),
+    "glMapBufferRange": (_p, [_u, _z, _z, _u]),
+    "glUnmapBuffer": (ctypes.c_ubyte, [_u]),
+}
+GL_MAP_READ_BIT, GL_MAP_PERSISTENT_BIT, GL_MAP_COHERENT_BIT = 0x0001, 0x0040, 0x0080
+GL_CLIENT_STORAGE_BIT = 0x0200
+_memmove = ctypes.memmove  # a ctypes call: lets go of Python's lock while it copies
 
 
 def _resolvers():
@@ -91,6 +101,7 @@ class UnlockedGL:
         self.fences_ok = False  # fence()/done() work: a read-back is fetched only once the card has made it
         self.streaming_ok = False  # write_texture goes through a pixel buffer (never waits for the card)
         self._upload = None  # that buffer (a moderngl Buffer: only its OpenGL name is used)
+        self.mapping_ok = False  # mapped(): read-back buffers fetched with no OpenGL call at all
         try:
             resolvers = resolvers if resolvers is not None else _resolvers()
             for name, (result, arguments) in SIGNATURES.items():
@@ -104,6 +115,7 @@ class UnlockedGL:
                 for name, (result, arguments) in FENCES.items():
                     setattr(self, name, _FUNCTYPE(result, *arguments)(found[name]))
                 self.fences_ok = True
+                self.mapping_ok = self._find_mapping(resolvers)
             found = {name: self._find(name, resolvers) for name in STREAMING}
             if all(found.values()):
                 for name, (result, arguments) in STREAMING.items():
@@ -130,6 +142,43 @@ class UnlockedGL:
             return int(self._reset_status())
         except Exception:  # noqa: BLE001
             return 0
+
+    def _find_mapping(self, resolvers) -> bool:
+        try:
+            if self.ctx.version_code < 440 and "GL_ARB_buffer_storage" not in self.ctx.extensions:
+                return False
+        except Exception:  # noqa: BLE001 (a context that can't say: the usual buffers)
+            return False
+        found = {name: self._find(name, resolvers) for name in MAPPING}
+        if not all(found.values()):
+            return False
+        for name, (result, arguments) in MAPPING.items():
+            setattr(self, name, _FUNCTYPE(result, *arguments)(found[name]))
+        return True
+
+    def mapped(self, nbytes: int):
+        """A read-back buffer kept mapped for good (MappedBuffer), or None when the driver won't make one."""
+        if not self.mapping_ok:
+            return None
+        name = _u(0)
+        try:
+            self.glGenBuffers(1, ctypes.byref(name))
+            self.glBindBuffer(GL_PIXEL_PACK_BUFFER, name.value)
+            self.glBufferStorage(GL_PIXEL_PACK_BUFFER, nbytes, None,
+                                 GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT | GL_CLIENT_STORAGE_BIT)
+            pointer = self.glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, nbytes,
+                                            GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT)
+            self.glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+        except Exception as exc:  # noqa: BLE001
+            log.info("graphics: mapped read-back buffers unavailable (%s)", exc)
+            pointer = None
+        if not pointer:
+            if name.value:
+                self.glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+                self.glDeleteBuffers(1, ctypes.byref(name))
+            self.mapping_ok = False  # it failed once: the usual buffers from now on
+            return None
+        return MappedBuffer(self, name.value, nbytes, pointer)
 
     @staticmethod
     def _find(name: str, resolvers):
@@ -196,8 +245,7 @@ class UnlockedGL:
         """framebuffer.read_into(target, components, alignment=1, write_offset): target a moderngl Buffer
         (the copy is queued on the card) or a writable bytearray (filled now)."""
         w, h = framebuffer.size
-        was = _i(0)
-        self.glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, ctypes.byref(was))
+        was = self._read_binding()
         self.glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.glo)
         self.glReadBuffer(GL_COLOR_ATTACHMENT0)
         self.glPixelStorei(GL_PACK_ALIGNMENT, 1)
@@ -209,12 +257,50 @@ class UnlockedGL:
             self.glBindBuffer(GL_PIXEL_PACK_BUFFER, target.glo)
             self.glReadPixels(0, 0, w, h, FORMATS[components], GL_UNSIGNED_BYTE, write_offset)
             self.glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
-        self.glBindFramebuffer(GL_READ_FRAMEBUFFER, was.value)
+        self.glBindFramebuffer(GL_READ_FRAMEBUFFER, was)
+
+    def _read_binding(self) -> int:
+        """The framebuffer to put back after a read: the one moderngl last used (ctx.fbo, what moderngl's own
+        reads put back). Asking the driver (glGetIntegerv) makes a threaded driver (NVIDIA's) catch up with
+        everything queued first, which is a wait; only when moderngl hasn't used one yet."""
+        fbo = getattr(self.ctx, "fbo", None)
+        if fbo is not None:
+            return fbo.glo
+        was = _i(0)
+        self.glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, ctypes.byref(was))
+        return was.value
 
     def read_buffer(self, buffer) -> bytes:
-        """buffer.read(): the whole buffer's bytes."""
+        """buffer.read(): the whole buffer's bytes (a MappedBuffer's straight from memory)."""
+        if isinstance(buffer, MappedBuffer):
+            return buffer.read()
         out = ctypes.create_string_buffer(buffer.size)
         self.glBindBuffer(GL_COPY_READ_BUFFER, buffer.glo)
         self.glGetBufferSubData(GL_COPY_READ_BUFFER, 0, buffer.size, out)
         self.glBindBuffer(GL_COPY_READ_BUFFER, 0)
         return out.raw
+
+
+class MappedBuffer:
+    """A read-back buffer the CPU reads straight from memory (persistent, coherent mapping), so fetching a
+    finished copy is a memory copy and no OpenGL call: none the driver can hold up (the 2026-11-16 heavy run
+    waited 59 ms in glGetBufferSubData). Its fence must be done before read(); _Pbos makes sure of that.
+    Has what read_into and _Pbos use of a moderngl Buffer: glo, size, read(), release()."""
+
+    def __init__(self, gl: UnlockedGL, glo: int, size: int, pointer: int):
+        self.gl, self.glo, self.size, self.pointer = gl, glo, size, pointer
+
+    def read(self) -> bytes:
+        out = ctypes.create_string_buffer(self.size)
+        _memmove(out, self.pointer, self.size)
+        return out.raw
+
+    def release(self) -> None:
+        if not self.glo:
+            return
+        name = _u(self.glo)
+        self.glo, self.pointer = 0, None
+        self.gl.glBindBuffer(GL_PIXEL_PACK_BUFFER, name.value)
+        self.gl.glUnmapBuffer(GL_PIXEL_PACK_BUFFER)
+        self.gl.glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+        self.gl.glDeleteBuffers(1, ctypes.byref(name))
