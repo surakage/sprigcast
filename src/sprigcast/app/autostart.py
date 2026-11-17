@@ -28,7 +28,10 @@ def command() -> str:
     """The command line Windows runs at sign-in."""
     exe = Path(sys.executable)
     launcher = exe.with_name("SprigCast.exe")
-    if launcher.exists():
+    # In a development checkout's virtual environment "SprigCast.exe" is pip's console script for `sprigcast`
+    # (Windows names aren't case-sensitive): it would start with a console window. Only the installed one counts.
+    in_venv = (exe.parent.parent / "pyvenv.cfg").exists()
+    if launcher.exists() and not in_venv:
         return f'"{launcher}" {MINIMIZED_FLAG}'
     windowless = exe.with_name("pythonw.exe")
     if windowless.exists():

@@ -20,6 +20,15 @@ from sprigcast.core.source import Source, register
 log = logging.getLogger(__name__)
 
 RETRY_SECONDS = 2.0
+_PACING_OK: bool | None = None  # does this Windows take minimum_update_interval? None until a capture tried
+
+
+def _paced(ok: bool, error: Exception | None = None) -> None:
+    global _PACING_OK
+    if _PACING_OK is None:
+        _PACING_OK = ok
+        log.info("capture: Windows %s the picture rate limit%s", "takes" if ok else "doesn't take",
+                 f" ({error})" if error is not None else "")
 
 
 def _load_backend():
@@ -109,6 +118,15 @@ class _CaptureSource(Source):
     def video_frame(self) -> np.ndarray | None:
         return self._frames.take()
 
+    # The renderer sets this to the fastest canvas's frame rate: more pictures than that are never shown.
+    canvas_fps = 60
+
+    def _min_interval_ms(self) -> int:
+        """The least time between two pictures worth asking Windows for (a little under one frame)."""
+        limit = float(self.settings.get("fps_limit", 0) or 0)
+        fps = min(limit, float(self.canvas_fps)) if limit > 0 else float(self.canvas_fps)
+        return max(1, int(900 / fps)) if fps > 0 else 0
+
     # Capture thread -------------------------------------------------------------
 
     def _on_frame(self, frame) -> None:
@@ -149,16 +167,27 @@ class _CaptureSource(Source):
             # Hide the yellow capture border by default. Windows 10 does not allow that, so if
             # starting with border=False fails, try once more with the Windows default.
             border = self.settings.get("border", False)
-            attempts = [border, None] if border is False else [border]
+            borders = [border, None] if border is False else [border]
+            # Ask Windows for no more pictures than are used (Windows 11 24H2+). Each picture it hands over is
+            # copied from the graphics card first, used or not: a 240 fps game copied 240 a second for a 60 fps
+            # canvas. Older Windows refuses the setting: then without it, and _due() skips the extras.
+            interval = self._min_interval_ms()
+            paces = [interval, None] if interval and _PACING_OK is not False else [None]
+            attempts = [(b, p) for p in paces for b in borders]
             control, error = None, None
-            for draw_border in attempts:
+            for draw_border, pace in attempts:
                 try:
                     capture = windows_capture_cls(
-                        cursor_capture=bool(self.settings.get("cursor", True)), draw_border=draw_border, **target
+                        cursor_capture=bool(self.settings.get("cursor", True)), draw_border=draw_border,
+                        **({"minimum_update_interval": pace} if pace else {}), **target
                     )
                     capture.event(on_frame_arrived)
                     capture.event(on_closed)
                     control = capture.start_free_threaded()
+                    if pace:
+                        _paced(True)
+                    elif interval and _PACING_OK is None and error is not None:
+                        _paced(False, error)  # it only started without the setting
                     break
                 except Exception as exc:  # target vanished, border not supported, access denied, ...
                     error = exc

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.modal import modal
 from sprigcast.app import theme, tester_report
 from sprigcast.app.card import CardDialog, field_label
 
@@ -188,7 +189,7 @@ class ReportCard(CardDialog):
         except OSError as exc:
             log.warning("report: couldn't build it to show: %s", exc)
             return
-        ContentsCard(path, self).exec()
+        modal(ContentsCard(path, self))
 
 
 def contents(path: Path) -> list[tuple[str, str]]:
@@ -302,7 +303,7 @@ def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threadi
     """Show the card; on Send report, build the zip and upload it in the background, then say how it went.
     Returns the upload thread (tests join it), or None when the card was closed."""
     card = ReportCard(window, crash)
-    if not card.exec():
+    if not modal(card):
         log.info("report: %s card closed without sending", card.kind())
         return None
     folder = Path(tempfile.mkdtemp(prefix="sprigcast-report-"))
@@ -324,7 +325,7 @@ def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threadi
         if report_id:
             log.info("report: %s report sent as %s", kind, report_id)
             if show_result:
-                sent_card(window, report_id).exec()
+                modal(sent_card(window, report_id))
             return
         log.warning("report: couldn't send (%s); saving it to the Desktop", why)
         saved = tester_report.default_folder() / path.name
@@ -337,7 +338,7 @@ def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threadi
             log.warning("report: couldn't save it either: %s", exc)
             saved = path
         if show_result:
-            saved_card(window, saved, _reveal).exec()
+            modal(saved_card(window, saved, _reveal))
 
     carrier.done.connect(finished, Qt.ConnectionType.QueuedConnection)
 

@@ -342,6 +342,11 @@ class AppAudioSource(Source):
             self._thread = None
         self._close_all()
 
+    def needs_new(self, settings: dict[str, Any]) -> bool:
+        """From apps to an output, back, or another output: a new source opens while this one closes (closing
+        waits for its threads, which froze the picture when it happened on the render thread)."""
+        return settings.get("device") != self.settings.get("device")
+
     def update(self, settings: dict[str, Any]) -> None:
         moved = settings.get("device") != self.settings.get("device")
         changed = any(settings.get(k) != self.settings.get(k) for k in ("apps", "preset", "auto_game"))

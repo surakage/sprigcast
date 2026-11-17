@@ -288,6 +288,7 @@ def shrunk_size(src: tuple[int, int], want: tuple[int, int]) -> tuple[int, int] 
     return max(2, round(src[0] * scale / 2) * 2), max(2, round(src[1] * scale / 2) * 2)
 
 
+PACKS_AS_IS = ("yuv420p", "yuvj420p", "nv12")  # pixel formats media.pack_i420 takes without a conversion
 PLANAR = not os.environ.get("SPRIGCAST_CAMERA_RGB")  # escape hatch: BGR from the CPU, as before
 
 
@@ -304,7 +305,9 @@ def camera_picture(frame, target: tuple[int, int] | None) -> tuple[np.ndarray, s
 
         name = frame.format.name
         full = name.startswith("yuvj") or int(getattr(frame, "color_range", 0) or 0) == 2
-        if name != "yuv420p" or (frame.width, frame.height) != (w, h):
+        # 4:2:0 the camera already sends (NV12 raw, or MJPEG's yuvj420p) is packed as it is: converting it to
+        # yuv420p first was one more whole-picture pass and copy per frame (1080p60: 180 MB a second) for nothing.
+        if name not in PACKS_AS_IS or (frame.width, frame.height) != (w, h):
             # MJPEG decodes to full-range YUV: keep that range rather than squeeze it (it's labelled below).
             frame = reformat(frame, width=w, height=h, format="yuv420p", interpolation="BILINEAR",
                              **({"src_color_range": 2, "dst_color_range": 2} if full else {}))
@@ -605,10 +608,15 @@ class CameraSource(Source):
                 key = next((k for k, f in _feeds.items() if f is feed), None)
                 if key is not None:
                     del _feeds[key]
-                    if not wait:
-                        _closing[key] = feed
+                    # Remembered while it closes, waited for or not (a removed camera closes on the closing
+                    # helper now): the same camera opened again meanwhile waits for it on its own thread.
+                    _closing[key] = feed
         if last:
             feed.stop(wait)
+            if wait and key is not None:
+                with _feeds_lock:
+                    if _closing.get(key) is feed:
+                        del _closing[key]
 
     def stop(self) -> None:
         self._leave(wait=True)

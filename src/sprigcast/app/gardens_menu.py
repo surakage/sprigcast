@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app.modal import modal
 from sprigcast.app.terms import COLLECTION, COLLECTIONS, PROFILE, PROFILES, cap
 from sprigcast.core import convert, pack
 from sprigcast.core.gardens import (
@@ -425,7 +426,7 @@ class GardenControl:
             if problem:
                 return problem
         if notes and show_notes:
-            ImportNotes(self.w, entry.name, notes).exec()
+            modal(ImportNotes(self.w, entry.name, notes))
         return None
 
     def _export(self, kind: str) -> None:
@@ -491,13 +492,13 @@ class GardenControl:
         except OSError as exc:
             return self._report(f"Couldn't save it: {exc.strerror or exc}")
         if left_out:
-            ImportNotes(self.w, current.name, [f"Not found, left out: {f}" for f in left_out]).exec()
+            modal(ImportNotes(self.w, current.name, [f"Not found, left out: {f}" for f in left_out]))
         self.w.statusBar().showMessage(f"Exported {current.name} to {target}", 8000)
 
     # Missing files ------------------------------------------------------------------------------
 
     def show_missing(self) -> None:
-        MissingFiles(self.w).exec()
+        modal(MissingFiles(self.w))
 
 
 class MissingFiles(QDialog):

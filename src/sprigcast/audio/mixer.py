@@ -40,6 +40,7 @@ BLOCK = 1024
 FLOOR_DB = -60.0
 LEVELS_EVERY = 3  # blocks between level reports (about 15 per second)
 BLOOM_FADE_S = 0.25  # a sound fading out or in as its blooms go off or on air
+SAY_AGAIN_S = 60.0  # the same problem with one sound (or one output) is logged at most this often
 
 
 def to_db(value: float) -> float:
@@ -182,6 +183,31 @@ class Mixer:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
+        # One sound (or one output) failing is silent (or skipped) for that block only: the mix, the other
+        # sounds and every other output carry on, and this thread never ends over it. what -> last said.
+        self._said: dict[str, tuple[str, float]] = {}
+
+    def _problem(self, what: str, exc: Exception) -> None:
+        """Log a problem once, and again only if it changes or SAY_AGAIN_S passed (never every block)."""
+        problem = f"{type(exc).__name__}: {exc}"
+        now = time.monotonic()
+        said = self._said.get(what)
+        if said is None or said[0] != problem or now - said[1] >= SAY_AGAIN_S:
+            self._said[what] = (problem, now)
+            log.error("sound: %s failed: %s", what, problem, exc_info=exc)
+
+    def _read(self, source) -> np.ndarray:
+        """The source's next block, or silence if it fails or hands back something that isn't one."""
+        try:
+            block = source.read_block(BLOCK)
+            if getattr(block, "shape", None) != (BLOCK, 2):
+                block = np.asarray(block, dtype=np.float32).reshape(BLOCK, 2)
+            elif block.dtype != np.float32:
+                block = block.astype(np.float32)
+            return block
+        except Exception as exc:
+            self._problem(f"source {getattr(source, 'id', '?')}", exc)
+            return np.zeros((BLOCK, 2), dtype=np.float32)
 
     def set_sources(self, sources: list) -> None:
         """Called by the engine whenever sources change. Only sources with read_block() are mixed."""
@@ -272,7 +298,7 @@ class Mixer:
         heard = listen.LISTENERS  # plugins hearing a sound (the audio visualizer); usually empty
         voice_db = FLOOR_DB
         for source in sources:
-            block = source.read_block(BLOCK)
+            block = self._read(source)
             chain = getattr(source, "audio_chain", None)
             if chain is not None:
                 try:
@@ -287,7 +313,11 @@ class Mixer:
             gate = self._bloom_gate(source.id) if (self.bloom_out or self._bloom_gates) else 1.0
             if isinstance(gate, np.ndarray) or gate != 1.0:
                 block = block * gate
-            gain = source.gain
+            try:
+                gain = float(source.gain)
+            except Exception as exc:  # a plugin's sound: quiet this block rather than the whole mix
+                self._problem(f"source {getattr(source, 'id', '?')} volume", exc)
+                gain = 0.0
             if source.id in listened:  # a Ducking filter follows this sound
                 SOUND_LEVELS[source.id] = float(np.max(np.abs(block))) * gain if gain and len(block) else 0.0
             if heard and source.id in heard:
@@ -328,11 +358,17 @@ class Mixer:
             meters["duck"] = (duck_db, duck_db)
             self._meters = meters
         for tap, tracks in taps:
-            tap(mixes[tracks[0]] if len(tracks) == 1 else tuple(mixes[t] for t in tracks))
+            try:
+                tap(mixes[tracks[0]] if len(tracks) == 1 else tuple(mixes[t] for t in tracks))
+            except Exception as exc:  # one output's problem: the others still get this block
+                self._problem(f"output {getattr(tap, '__qualname__', '?')}", exc)
         if monitor_taps:
             monitor_mix = mix(monitored)
             for tap in monitor_taps:
-                tap(monitor_mix)
+                try:
+                    tap(monitor_mix)
+                except Exception as exc:
+                    self._problem("monitoring", exc)
         return mixed
 
     def _run(self) -> None:
@@ -341,9 +377,12 @@ class Mixer:
         count = 0
         while not self._stop.is_set():
             count += 1
-            self.tick(measure=count % LEVELS_EVERY == 0)
-            if count % LEVELS_EVERY == 0:
-                self.report(self._meters)
+            try:
+                self.tick(measure=count % LEVELS_EVERY == 0)
+                if count % LEVELS_EVERY == 0:
+                    self.report(self._meters)
+            except Exception as exc:  # never end the sound thread: the next block tries again
+                self._problem("mixing", exc)
             next_at += interval
             delay = next_at - time.perf_counter()
             if delay > 0:

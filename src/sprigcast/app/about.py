@@ -8,6 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.app.support import TIP_URL
 
@@ -71,5 +72,4 @@ def show_about(parent: QWidget | None = None) -> None:
 
     dialog = PopUp("About SprigCast", parent)
     dialog.add_tab("about", "About", about_page())
-    dialog.exec()
-    dialog.deleteLater()
+    modal(dialog)

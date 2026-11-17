@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast import __version__, update
+from sprigcast.app.modal import modal
 from sprigcast.app import theme
 
 log = logging.getLogger(__name__)
@@ -289,7 +290,7 @@ class Updater(QObject):
         dialog.done_button.setText("OK")
         self._dialog = dialog
         try:
-            dialog.exec()
+            modal(dialog)
         finally:
             self._dialog = None
 
@@ -303,7 +304,7 @@ class Updater(QObject):
         dialog.finished.connect(lambda _code: setattr(self, "_cancel", self._downloading()))
         self._dialog, self._prompt = dialog, prompt
         try:
-            dialog.exec()
+            modal(dialog)
         finally:
             self._dialog = self._prompt = None
 

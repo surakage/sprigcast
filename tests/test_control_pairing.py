@@ -129,7 +129,11 @@ def test_secrets_are_encrypted_and_old_plain_ones_moved_over(monkeypatch):
     from sprigcast.app import control_server
 
     # Off Windows they stay as they are; a value encrypted elsewhere can't be read.
-    assert secret_store.protect("leafy") == ("leafy" if not secret_store.available() else secret_store.protect("leafy"))
+    if secret_store.available():  # Windows: encrypted (differently each time, DPAPI salts it) and read back
+        saved = secret_store.protect("leafy")
+        assert saved.startswith("dpapi:") and "leafy" not in saved and secret_store.unprotect(saved) == "leafy"
+    else:
+        assert secret_store.protect("leafy") == "leafy"
     if not secret_store.available():
         assert secret_store.unprotect("dpapi:AAAA") == "" and secret_store.unprotect("leafy") == "leafy"
     # As on Windows: a plain password from an older SprigCast is encrypted on first read.

@@ -19,10 +19,21 @@ def qapp():
     return app
 
 
-def test_command_runs_this_python_minimised():
+def test_command_runs_this_python_minimised(tmp_path, monkeypatch):
+    python = tmp_path / "python.exe"  # a Python with no SprigCast launcher beside it
+    monkeypatch.setattr(sys, "executable", str(python))
     cmd = autostart.command()
-    assert cmd.endswith("-m sprigcast.app.main --minimized")
-    assert cmd.startswith('"') and str(sys.executable).rsplit("python", 1)[0] in cmd
+    assert cmd == f'"{python}" -m sprigcast.app.main --minimized'
+
+
+def test_a_development_venv_runs_python_not_its_console_script(tmp_path, monkeypatch):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (tmp_path / "pyvenv.cfg").write_text("home = x")
+    (scripts / "SprigCast.exe").write_bytes(b"")  # pip's console script (sprigcast.exe on a real disk)
+    (scripts / "pythonw.exe").write_bytes(b"")
+    monkeypatch.setattr(sys, "executable", str(scripts / "python.exe"))
+    assert autostart.command() == f'"{scripts / "pythonw.exe"}" -m sprigcast.app.main --minimized'
 
 
 def test_installed_copy_starts_through_the_launcher(tmp_path, monkeypatch):

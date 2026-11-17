@@ -54,11 +54,23 @@ def listen(on_show: Callable[[], None], parent=None, name: str | None = None) ->
             log.warning("single copy check off: %s", server.errorString())
             return None
 
+    def asked(conn, done: list) -> None:
+        if done or not conn.bytesAvailable():
+            return
+        done.append(True)  # once per launch, however the bytes arrive
+        conn.readAll()
+        on_show()
+
     def arrived() -> None:
+        # On Windows (a named pipe) the second copy's "show" can already be waiting by the time the connection is
+        # picked up, and the second copy may have hung up too: then readyRead never comes. Look straight away and
+        # again as it hangs up, not only on readyRead (a second launch did nothing on the PC, 2026-11-16).
         while server.hasPendingConnections():
             conn = server.nextPendingConnection()
-            conn.readyRead.connect(lambda c=conn: (c.readAll(), on_show()))
-            conn.disconnected.connect(conn.deleteLater)
+            done: list = []
+            conn.readyRead.connect(lambda c=conn, d=done: asked(c, d))
+            conn.disconnected.connect(lambda c=conn, d=done: (asked(c, d), c.deleteLater()))
+            asked(conn, done)
 
     server.newConnection.connect(arrived)
     return server

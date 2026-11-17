@@ -6,6 +6,7 @@ from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QAbstractButton, QButtonGroup, QHBoxLayout, QLabel, QWidget
 
+from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, field_label
 from sprigcast.app.labels import literal
@@ -115,7 +116,7 @@ class NewPartDialog(CardDialog):
     @staticmethod
     def ask(collection: SceneCollection, show: Scene | None, parent: QWidget | None = None) -> tuple[str, str, bool] | None:
         dialog = NewPartDialog(collection, show, parent)
-        if not dialog.exec():
+        if not modal(dialog):
             return None
         name, canvas_id, add = dialog.values()
         return (name, canvas_id, add) if name else None

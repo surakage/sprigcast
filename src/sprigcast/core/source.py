@@ -27,6 +27,15 @@ class Source(ABC):
     def update(self, settings: dict[str, Any]) -> None:
         self.settings = dict(settings)
 
+    def needs_new(self, settings: dict[str, Any]) -> bool:
+        """True when these settings mean closing this source and opening a new one instead of update()
+        (another device, say): the old one then closes off the render thread while the new one opens."""
+        return False
+
+    # stop() may wait (for a device, a thread, a file). The renderer closes removed sources on a helper thread
+    # (core/retire.py) so it never waits for one; a kind whose stop() only sends a message sets this False.
+    stop_may_wait = True
+
     # Sources nothing on screen shows are put to sleep by the renderer (see Engine._rest_sources): a
     # sleeping source does no work and holds no frames, and its texture is dropped. Kinds that can
     # come back quickly set `sleeps = True`. A sleeping source may never have been started.
