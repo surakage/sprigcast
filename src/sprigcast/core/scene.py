@@ -872,13 +872,10 @@ class SceneCollection(BaseModel):
         already in that corner it takes the next free one, and a band narrows, then rises, to clear what's
         there (see _free_spot). Returns the sprig."""
         def fitted(canvas_id: str, there: Scene | None) -> SceneItem:
-            canvas = self.canvas(canvas_id)
-            if corner:
-                return _free_spot(canvas, size, corner, height_share, band_share,
-                                  self.overlay_boxes(there, canvas_id) if there is not None else [], source_id)
-            scale = min(canvas.width / size[0], canvas.height / size[1])
-            return SceneItem(source=source_id, scale=scale, x=(canvas.width - size[0] * scale) / 2,
-                             y=(canvas.height - size[1] * scale) / 2)
+            if there is None:
+                there = Scene(id="", name="", canvas=canvas_id)
+            taken = self.overlay_boxes(there, canvas_id) if corner else []
+            return self.readable_place(size, corner, height_share, band_share, there, source_id, taken)
 
         blooms = self.linked_with(scene.id) if scene.kind == "show" else [scene]
         part = Scene(id=self.new_id("part"), name=name, canvas=scene.canvas, kind="part",
@@ -924,6 +921,82 @@ class SceneCollection(BaseModel):
             boxes.append((left, top, left + w * k, top + h * placed.sy))
         return boxes
 
+    def shown_view(self, layout: Scene) -> tuple[float, float, float]:
+        """How a sprig's layout shows on its canvas: (k, x, y), its point (u, v) lands at (x + k u, y + k v).
+        Taken from the bloom on air (else the bloom showing it biggest), through every sprig it sits in; a
+        bloom, or a sprig no bloom shows, is (1, 0, 0). Used so a plugin added to a sprig shown at a third of
+        the size starts big enough to read where it shows (PC test 2026-11-17: "miniscule")."""
+        if layout.kind != "part":
+            return 1.0, 0.0, 0.0
+        configs = {s.id: s for s in self.sources}
+        canvases = {c.id: (c.width, c.height) for c in self.canvases}
+        found: list[tuple[float, float, float]] = []
+
+        def walk(scene: Scene, k: float, x: float, y: float, path: tuple[str, ...]) -> None:
+            for placed in scene.items:
+                config = configs.get(placed.source)
+                part = self.part_of(config) if config is not None else None
+                if part is None or part.id in path or len(path) >= 16:
+                    continue
+                shape = self.shape_for(part, scene.canvas)
+                size = canvases.get(shape.canvas)
+                if not size:
+                    continue
+                left, top, _, _ = placed.picture_rect(size)
+                sx, _ = placed.picture_scale(size)
+                view = (k * abs(sx), x + k * (placed.x + left), y + k * (placed.y + top))
+                if shape.id == layout.id:
+                    found.append(view)
+                else:
+                    walk(shape, *view, (*path, part.id))
+
+        on_air = self.active_scenes.get(layout.canvas)
+        blooms = [b for b in self.scenes if b.kind == "show" and b.canvas == layout.canvas]
+        blooms.sort(key=lambda b: b.id != on_air)
+        for bloom in blooms:
+            walk(bloom, 1.0, 0.0, 0.0, (bloom.id,))
+            if found and bloom.id == on_air:
+                return found[0]
+        return max(found, key=lambda v: v[0]) if found else (1.0, 0.0, 0.0)
+
+    def view_region(self, layout: Scene) -> tuple[float, float, float, float, float, float, float]:
+        """Where a layout shows on its canvas: (k, x, y) from shown_view, and the part of the canvas it covers
+        (left, top, width, height), in canvas pixels."""
+        canvas = self.canvas(layout.canvas)
+        k, x, y = self.shown_view(layout)
+        left, top = max(0.0, x), max(0.0, y)
+        right, bottom = min(float(canvas.width), x + k * canvas.width), min(float(canvas.height), y + k * canvas.height)
+        if right - left < 1 or bottom - top < 1:  # shown off the canvas: as if it filled it
+            return 1.0, 0.0, 0.0, 0.0, 0.0, float(canvas.width), float(canvas.height)
+        return k, x, y, left, top, right - left, bottom - top
+
+    def readable_place(self, size: tuple[int, int], corner: str | None, height_share: float | None,
+                       band_share: float | None, layout: Scene, source_id: str,
+                       taken: list[tuple[float, float, float, float]] | None = None) -> SceneItem:
+        """A plugin's starting place in this layout (see _free_spot): its size and corner as on the canvas, then
+        turned into the layout's own units, so in a sprig shown small it still starts readable where it
+        shows, inside the part of the canvas the sprig covers. taken: boxes in the layout's units."""
+        canvas = self.canvas(layout.canvas)
+        k, vx, vy, left, top, width, height = self.view_region(layout)
+        whole = k == 1.0 and vx == 0.0 and vy == 0.0
+        to_canvas = [(vx + k * b[0], vy + k * b[1], vx + k * b[2], vy + k * b[3]) for b in (taken or [])]
+        if whole:
+            room, short = canvas, None
+        else:  # the part of the canvas the sprig covers, with sizes still taken from the whole canvas
+            room, short = Canvas(id=canvas.id, width=max(1, round(width)), height=max(1, round(height))), \
+                min(canvas.width, canvas.height)
+            to_canvas = [(b[0] - left, b[1] - top, b[2] - left, b[3] - top) for b in to_canvas]
+        if corner:
+            spot = _free_spot(room, size, corner, height_share, band_share, to_canvas, source_id, short)
+        else:  # an overlay (Snap): fills what shows
+            scale = min(room.width / size[0], room.height / size[1])
+            spot = SceneItem(source=source_id, scale=scale, x=(room.width - size[0] * scale) / 2,
+                             y=(room.height - size[1] * scale) / 2)
+        if whole:
+            return spot
+        gx, gy = left + spot.x, top + spot.y  # on the canvas, then in the sprig's own units
+        return SceneItem(source=source_id, scale=spot.scale / k, x=(gx - vx) / k, y=(gy - vy) / k)
+
     def starting_place(self, item: SceneItem, kind: str, layout: Scene) -> None:
         """Give an item that's about to go into this layout the place and size the + menu gives it, for things
         added another way (the Control API's item.add, OBS's CreateInput and CreateSceneItem): a plugin's card
@@ -938,17 +1011,14 @@ class SceneCollection(BaseModel):
         canvas = self.canvas(layout.canvas)
         size = getattr(cls, "own_sprig", None)
         corner = getattr(cls, "own_sprig_corner", None)
-        if size and corner:
-            taken = self.overlay_boxes(layout, layout.canvas) + self.plugin_boxes(layout)
-            spot = _free_spot(canvas, tuple(size), corner, getattr(cls, "own_sprig_height", None),
-                              getattr(cls, "own_sprig_band", None), taken, item.source)
+        if size:
+            taken = self.overlay_boxes(layout, layout.canvas) + self.plugin_boxes(layout) if corner else []
+            spot = self.readable_place(tuple(size), corner, getattr(cls, "own_sprig_height", None),
+                                       getattr(cls, "own_sprig_band", None), layout, item.source, taken)
             item.x, item.y, item.scale, item.scale_y = spot.x, spot.y, spot.scale, None
-        elif size:
-            item.scale, item.scale_y = min(canvas.width / size[0], canvas.height / size[1]), None
-            item.x = (canvas.width - size[0] * item.scale) / 2
-            item.y = (canvas.height - size[1] * item.scale) / 2
-        elif getattr(cls, "sharp", False):
-            item.scale, item.scale_y = min(canvas.width, canvas.height) / 1080, None
+        elif getattr(cls, "sharp", False):  # text: the same share of the canvas, however big the sprig shows
+            k = self.shown_view(layout)[0]
+            item.scale, item.scale_y = min(canvas.width, canvas.height) / 1080 / max(k, 0.01), None
 
     def plugin_boxes(self, layout: Scene) -> list[tuple[float, float, float, float]]:
         """Where the plugin cards placed straight in this layout (not in a sprig of their own) sit, as (left,
@@ -1154,6 +1224,8 @@ class SceneCollection(BaseModel):
 
 
 CORNERS = ("top_left", "top_right", "bottom_left", "bottom_right")
+PART_CORNER_W = 0.45  # in a sprig shown small, a corner plugin is at most this share of the part's width
+PART_CORNER_H = 0.3  # ...and of its height
 SIDE_BUTTONS = 0.15  # share of a portrait canvas's width TikTok, Shorts and Reels use for buttons down the right
 SIDE_BUTTONS_FROM = 0.36  # ...from this share of its height down
 
@@ -1163,14 +1235,18 @@ def _overlaps(a, b, gap: float = 0.0) -> bool:
 
 
 def _free_spot(canvas: Canvas, size: tuple[int, int], corner: str, height_share: float | None,
-               band_share: float | None, taken: list, source_id: str) -> SceneItem:
+               band_share: float | None, taken: list, source_id: str, short: float | None = None) -> SceneItem:
     """A plugin's starting place (SceneCollection.own_sprig): its corner, or the next free corner when another
     plugin is there, and with every corner taken it stacks above (or below) what's in its own; a band along the
     bottom narrows (to 60% of its width at most), then rises (up to under the top corners' cards) to clear
-    them. If nothing is free it takes its own spot anyway."""
-    short = min(canvas.width, canvas.height)
-    margin = short * 0.035
-    portrait = canvas.height > canvas.width
+    them. If nothing is free it takes its own spot anyway. short: the whole canvas's short side, when `canvas`
+    is only the part of it a sprig covers (sizes follow the whole canvas, but never more than fits the part)."""
+    room = min(canvas.width, canvas.height)
+    part = short is not None  # only part of the canvas: TikTok's bars are the whole canvas's, not this part's
+    short = room if short is None else short
+    margin = min(short * 0.035, room * 0.05)
+    portrait = canvas.height > canvas.width and not part
+    card_row = min(short * CARD_ROW, PART_CORNER_H * canvas.height) if part else short * CARD_ROW  # corner cards' height
     top = max(margin, canvas.height * PORTRAIT_TOP) if portrait else margin
     bottom = max(margin, canvas.height * PORTRAIT_BOTTOM) if portrait else margin
 
@@ -1178,10 +1254,15 @@ def _free_spot(canvas: Canvas, size: tuple[int, int], corner: str, height_share:
         return SceneItem(source=source_id, scale=scale, x=x, y=y)
 
     if "center" in corner:  # a wide band across the middle (captions): most of the width
-        scale = canvas.width * (0.9 if portrait else band_share or 0.72) / size[0]
+        tall = canvas.height > canvas.width  # a phone canvas, or a tall part of one
+        scale = canvas.width * (0.9 if tall else band_share or 0.72) / size[0]
+        if part:
+            scale = min(scale, PART_CORNER_H * canvas.height / size[1])
         if "bottom" in corner:  # above the bottom corners' cards (now playing), not on them
-            bottom += short * CARD_ROW + margin
+            bottom += card_row + margin
         floor = canvas.height - bottom
+        if floor - size[1] * scale < margin:  # a small part: no room above the cards, so at its bottom
+            floor = canvas.height - margin
 
         def band(k: float, y_bottom: float):
             w, h = size[0] * k, size[1] * k
@@ -1199,21 +1280,28 @@ def _free_spot(canvas: Canvas, size: tuple[int, int], corner: str, height_share:
             box = band(min(scale, narrow), floor)
             if not any(_overlaps(box, b) for b in taken):
                 return placed(min(scale, narrow), box[0], box[1])
-        y_bottom = floor  # rise above them
-        for _ in range(len(taken) + 1):
-            box = band(scale, y_bottom)
-            hit = [b for b in taken if _overlaps(box, b)]
-            if not hit:
-                if box[1] >= top + short * CARD_ROW + margin - 0.5:  # still under the top corners' cards
-                    return placed(scale, box[0], box[1])
-                break
-            y_bottom = min(b[1] for b in hit) - margin
+        for k in ((1.0,) if not part else (1.0, 0.8, 0.64, 0.5)):  # a crowded small part: a smaller band
+            y_bottom = floor  # rise above them
+            for _ in range(len(taken) + 1):
+                box = band(scale * k, y_bottom)
+                hit = [b for b in taken if _overlaps(box, b)]
+                if not hit:
+                    if box[1] >= top + (0 if part else card_row + margin) - 0.5:  # under the top corners' cards
+                        return placed(scale * k, box[0], box[1])
+                    break
+                y_bottom = min(b[1] for b in hit) - margin
         return placed(scale, first[0], first[1])
 
     if height_share:
         scale = short * height_share / size[1]
     else:
         scale = short * 0.36 / size[0]  # about a third of the short side
+    if part:  # in a small part, small enough that the four corners still fit side by side
+        if canvas.height > canvas.width:  # a tall part: cards stack down its sides instead
+            wide, tall = 0.9, PART_CORNER_H
+        else:
+            wide, tall = PART_CORNER_W * (1.4 if size[0] > 4 * size[1] else 1.0), PART_CORNER_H  # a long card hugs its words
+        scale = min(scale, wide * canvas.width / size[0], tall * canvas.height / size[1])
     w, h = size[0] * scale, size[1] * scale
 
     def at(spot: str):
