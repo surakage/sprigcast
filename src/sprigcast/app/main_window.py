@@ -507,7 +507,10 @@ class MainWindow(QMainWindow):
         self._load_thumbs()
         self._build_mode_bar()
         self._refresh_all()
-        custom_docks.apply(self, custom_docks.load())  # before the saved panels are put back
+        from sprigcast.app import safe_mode
+
+        # Before the saved panels are put back. None in safe mode (a web panel may be what crashed).
+        custom_docks.apply(self, [] if safe_mode.on() else custom_docks.load())
         self._restore_layout()
         self._sync_canvas_choice()
         self._show_part_editor()
@@ -5346,6 +5349,7 @@ class MainWindow(QMainWindow):
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
                 encoder=settings.encoder, short_side=settings.short_side, stream_encoders=borrowed,
+                split_seconds=settings.split_minutes * 60, split_bytes=int(settings.split_gb * 1e9),
             )
         except Exception as exc:
             self.recording = None
@@ -5499,6 +5503,9 @@ class MainWindow(QMainWindow):
                  names or "no files", session.dropped, f", {eased} eased" if eased else "",
                  f"; errors: {errors}" if errors else "", memory_line())
         self._rest_soon()
+        from sprigcast.output.naming import finish_later
+
+        finish_later(session.paths)  # MP4s were written crash-safe: now plain MP4s, in the background
         if errors:
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))

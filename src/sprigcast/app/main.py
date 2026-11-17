@@ -21,10 +21,29 @@ def config_dir() -> Path:
 
 
 SET_ASIDE: list[Path] = []  # garden files load_collection couldn't read and moved aside (this run)
+RESTORED: list[Path] = []  # the backup copy it opened instead, if any (this run)
+
+
+def _from_backup(path: Path) -> SceneCollection | None:
+    """The newest backup of this garden that can be read (core/backups.py), put back in its place."""
+    from sprigcast.core import backups
+
+    for copy in backups.candidates(path):
+        try:
+            collection = SceneCollection.load(copy)
+        except Exception as exc:
+            logging.warning("backup %s can't be read either: %s", copy.name, exc)
+            continue
+        collection.save(path)
+        RESTORED.append(copy)
+        logging.warning("opened %s instead", copy)
+        return collection
+    return None
 
 
 def load_collection(path: Path) -> SceneCollection:
-    """Load the user's scene collection, or start from the bundled example on first run."""
+    """Load the user's scene collection, or start from the bundled example on first run. If it can't be
+    read, it's moved aside and its newest readable backup opens instead; with none, it starts fresh."""
     if path.exists():
         try:
             collection = SceneCollection.load(path)
@@ -32,7 +51,12 @@ def load_collection(path: Path) -> SceneCollection:
             backup = path.with_suffix(".broken.json")
             path.replace(backup)
             SET_ASIDE.append(backup)
-            logging.warning("could not read %s (%s); moved it to %s and started fresh", path, exc, backup)
+            logging.warning("could not read %s (%s); moved it to %s", path, exc, backup)
+            collection = _from_backup(path)
+            if collection is not None:
+                collection.wrap_blooms()
+                return collection
+            logging.warning("no backup of %s could be read: starting fresh", path.name)
         else:
             if collection.wrap_blooms():  # blooms hold sprigs only: older blooms' sources move into one each
                 backup = path.with_suffix(".before-sprigs.json")
@@ -219,6 +243,9 @@ def run() -> None:
     server = single_instance.listen(lambda: shown and single_instance.bring_forward(shown[0]), app)
     crashed = crash_report.check(config_dir(), logbook.crash_log())  # did the last run close cleanly?
     app.aboutToQuit.connect(lambda: crash_report.closed_cleanly(config_dir()))
+    from sprigcast.app import autostart, safe_mode
+
+    safe = safe_mode.choose(sys.argv, crashed, autostart.start_minimized(sys.argv), safe_mode.ask)
 
     from sprigcast.app import priority
     from sprigcast.app.theme import apply_theme
@@ -231,17 +258,22 @@ def run() -> None:
 
     wheel_guard.install(app)  # the wheel scrolls the page, not a drop-down you didn't click
     plugins_dir = config_dir() / "plugins"
-    try:
-        ensure_example(plugins_dir)
-    except OSError as exc:
-        logging.warning("could not create %s: %s", plugins_dir, exc)
-    try:
-        from sprigcast.plugin_store import refresh_installed
+    if safe:
+        from sprigcast.plugins import PluginReport
 
-        refresh_installed(plugins_dir)  # store plugins you added get this version's fixes
-    except OSError as exc:
-        logging.warning("could not update store plugins: %s", exc)
-    plugins = load_plugins(plugins_dir)
+        plugins = PluginReport()  # none this time (app/safe_mode.py)
+    else:
+        try:
+            ensure_example(plugins_dir)
+        except OSError as exc:
+            logging.warning("could not create %s: %s", plugins_dir, exc)
+        try:
+            from sprigcast.plugin_store import refresh_installed
+
+            refresh_installed(plugins_dir)  # store plugins you added get this version's fixes
+        except OSError as exc:
+            logging.warning("could not update store plugins: %s", exc)
+        plugins = load_plugins(plugins_dir)
 
     from sprigcast.app.main_window import MainWindow
 
@@ -263,8 +295,9 @@ def run() -> None:
     changed = lean_stream(collection) or changed
     if changed:
         collection.save(scenes_path)
-    broken = scenes_path.with_suffix(".broken.json") in SET_ASIDE  # unreadable: it started fresh just now
-    fresh = not had_garden or broken
+    broken = scenes_path.with_suffix(".broken.json") in SET_ASIDE  # unreadable: a backup or a fresh start
+    restored = RESTORED[-1] if broken and RESTORED else None
+    fresh = not had_garden or (broken and restored is None)
     if fresh and shelf.path_file().exists():
         try:  # a new or rebuilt garden: your path's settings go into it, not the other way round
             shelf.load_path(shelf.path()).apply_to(collection)
@@ -278,15 +311,18 @@ def run() -> None:
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
     shown.append(window)
     window._single_copy = server  # kept alive with the window
-    if broken:  # its file couldn't be read: say so once, and where the old one is kept
+    if broken:  # its file couldn't be read: say so once, what opened instead, and where the old one is kept
         from PySide6.QtCore import QTimer
 
+        from sprigcast.core import backups
+
+        opened = f"so SprigCast opened {backups.when(restored)}" if restored else "so it started fresh"
         QTimer.singleShot(1500, lambda: QMessageBox.warning(
-            window, "SprigCast", f"{shelf.garden().name} couldn't be read, so it started fresh.\n"
+            window, "SprigCast", f"{shelf.garden().name} couldn't be read, {opened}.\n"
                                  f"The old file is kept as:\n{scenes_path.with_suffix('.broken.json')}"))
     window.plugin_report = plugins
-    from sprigcast.app import autostart
-
+    if safe:
+        window.setWindowTitle(f"{window.windowTitle()} (safe mode)")
     autostart.refresh()
     if autostart.start_minimized(sys.argv):
         window.show_minimized_drawn()  # drawn once first: opening it later shows it at once

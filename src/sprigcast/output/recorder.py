@@ -753,7 +753,11 @@ class Recorder:
         import av
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind])
+        from sprigcast.output.replay import FRAGMENTED
+
+        # An MP4 in fragments survives a crash (see PacketFile); naming.finish_mp4() makes it plain afterwards.
+        options = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else {}
+        return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind], options=options)
 
     @staticmethod
     def default_encoder():

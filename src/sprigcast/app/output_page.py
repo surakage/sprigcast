@@ -282,6 +282,11 @@ class SpaceBox(QGroupBox):
         collection.recording.keep_clips = self.keep_clips.value()
 
 
+# Settings → Output → Recording → Split files: (label, minutes, GB)
+SPLITS = (("Never", 0, 0.0), ("Every 30 min", 30, 0.0), ("Every hour", 60, 0.0), ("Every 2 hours", 120, 0.0),
+          ("Every 4 hours", 240, 0.0), ("At 4 GB (FAT32 drives)", 0, 3.9))
+
+
 class OutputPage(QWidget):
     """Streaming and Recording sub-tabs. The Recording sub-tab holds the RecordingPage passed in."""
 
@@ -335,6 +340,27 @@ class OutputPage(QWidget):
         self.same_as_stream.setChecked(collection.recording.same_as_stream)
         self.same_as_stream.setEnabled(not recording)
         box.addWidget(self.same_as_stream)
+        split_row = QHBoxLayout()
+        split_row.setSpacing(10)
+        split_label = QLabel("Split files")
+        split_row.addWidget(split_label)
+        self.split = QComboBox()
+        for label, minutes, gb in SPLITS:
+            self.split.addItem(label, (minutes, gb))
+        rec = collection.recording
+        here = next((i for i, (_l, m, g) in enumerate(SPLITS) if (m, g) == (rec.split_minutes, rec.split_gb)), None)
+        if here is None:  # set some other way (a file edited by hand): shown as it is
+            self.split.addItem(f"Every {rec.split_minutes} min" if rec.split_minutes else f"At {rec.split_gb:g} GB",
+                               (rec.split_minutes, rec.split_gb))
+            here = self.split.count() - 1
+        self.split.setCurrentIndex(here)
+        self.split.setFixedWidth(220)
+        self.split.setToolTip("A new file starts with nothing lost between them.\n"
+                              "Drives formatted FAT32 can't hold a file over 4 GB.")
+        self.split.setEnabled(not recording)
+        split_row.addWidget(self.split)
+        split_row.addStretch(1)
+        box.addLayout(split_row)
         from sprigcast.app.source_record_box import SourceRecordBox
 
         self.source_record = SourceRecordBox(collection)
@@ -370,6 +396,7 @@ class OutputPage(QWidget):
             collection.recording.encoder = self.record_form.values()
             self.source_record.apply_to(collection)
             collection.recording.same_as_stream = self.same_as_stream.isChecked()
+            collection.recording.split_minutes, collection.recording.split_gb = self.split.currentData()
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()

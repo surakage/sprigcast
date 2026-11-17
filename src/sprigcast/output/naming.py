@@ -105,3 +105,51 @@ def remux_later(paths: list[Path], delete_original: bool = False, done=None) -> 
     thread = threading.Thread(target=work, name="remux", daemon=True)
     thread.start()
     return thread
+
+
+def finish_mp4(path: Path) -> bool:
+    """A recording's MP4 is written in fragments so it survives a crash (output/replay.py PacketFile). Once
+    it's closed properly, rewrite it as a plain MP4 (no re-encoding), which every editor opens. On any
+    problem the fragmented file stays: it plays as it is. True when it was rewritten."""
+    import av
+
+    import time
+
+    temp = path.with_name(f"{path.stem}.finishing.mp4")
+    began = time.monotonic()
+    try:
+        with av.open(str(path)) as src, av.open(str(temp), "w", format="mp4", options={"movflags": "faststart"}) as dst:
+            pairs = {s.index: dst.add_stream_from_template(s) for s in src.streams if s.type in ("video", "audio")}
+            for stream in src.streams:
+                title = stream.metadata.get("title")
+                if title and stream.index in pairs:
+                    pairs[stream.index].metadata["title"] = title
+            for packet in src.demux(*[s for s in src.streams if s.index in pairs]):
+                if packet.size == 0:
+                    continue
+                packet.stream = pairs[packet.stream.index]
+                dst.mux(packet)
+        temp.replace(path)
+    except Exception as exc:  # noqa: BLE001 (the fragmented MP4 is kept and plays)
+        log.warning("couldn't finish %s as a plain MP4 (it plays as it is): %s", path.name, exc)
+        temp.unlink(missing_ok=True)
+        return False
+    log.info("finished %s as a plain MP4 in %.1f s", path.name, time.monotonic() - began)
+    return True
+
+
+def finish_later(paths: list[Path], done=None) -> threading.Thread | None:
+    """finish_mp4() each MP4 on a background thread (a big file takes a few seconds of disk)."""
+    mp4s = [p for p in paths if p.suffix.lower() == ".mp4"]
+    if not mp4s:
+        return None
+
+    def work():
+        for path in mp4s:
+            finish_mp4(path)
+        if done:
+            done(mp4s)
+    # Not a daemon: closing SprigCast right after waits for the file to be whole.
+    thread = threading.Thread(target=work, name="finish-mp4")
+    thread.start()
+    return thread

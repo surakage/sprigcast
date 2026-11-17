@@ -295,18 +295,26 @@ def audio_kind(index: int) -> str:
     return "audio" if index == 0 else f"audio{index}"
 
 
+FRAGMENTED = "frag_keyframe+empty_moov+default_base_moof"
+
+
 class PacketFile:
     """A video file written from already-encoded packets, with time 0 at `zero` seconds.
 
     templates is (video stream, audio stream per track); `audio` picks which audio tracks go in, by
     packet kind, in order. Packets of other kinds are left out."""
 
-    def __init__(self, path: Path, container: str, templates, zero: float, audio: tuple[str, ...] = ("audio",)):
+    def __init__(self, path: Path, container: str, templates, zero: float, audio: tuple[str, ...] = ("audio",),
+                 crash_safe: bool = False):
         import av
 
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path, self.zero = path, zero
-        self._out = av.open(str(path), "w", format=CONTAINERS[container])
+        # crash_safe (recordings): an MP4 is written in fragments, each playable as soon as it's written, so
+        # a crash or power cut leaves a file that plays up to that moment. finish_mp4() makes it a plain MP4
+        # once it's closed properly. MKV plays after a crash anyway.
+        options = {"movflags": FRAGMENTED, "flush_packets": "1"} if crash_safe and container == "mp4" else {}
+        self._out = av.open(str(path), "w", format=CONTAINERS[container], options=options)
         video_t, *audio_t = templates
         self._streams = {"video": self._out.add_stream_from_template(video_t)}
         for kind in audio:
