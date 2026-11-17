@@ -196,12 +196,22 @@ def test_a_second_launch_brings_the_first_forward(qapp):
     asked = []
     server = single_instance.listen(lambda: asked.append(1), name=name)
     assert server is not None
-    assert single_instance.ask_running_copy(name) is True
+    # The second launch is its own program (a thread would hold Python's lock in Qt's blocking wait).
+    import subprocess
+    import sys
+
+    code = ("import time; from sprigcast.app import single_instance as s; t = time.monotonic(); "
+            f"print(s.ask_running_copy({name!r}), time.monotonic() - t)")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    second = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, env=env)
     clock = QElapsedTimer()
     clock.start()
-    while not asked and clock.elapsed() < 2000:
+    while (second.poll() is None or not asked) and clock.elapsed() < 15000:
         qapp.processEvents()
-    assert asked == [1]
+    out = second.communicate(timeout=5)[0]
+    answer, took = out.split()
+    assert answer == "True" and asked == [1]
+    assert float(took) < 1.5  # it quit once the first copy answered, not after its whole two-second wait
     server.close()
     assert single_instance.ask_running_copy(name, wait_ms=100) is False  # nobody running: start normally
 
