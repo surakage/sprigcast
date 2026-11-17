@@ -73,6 +73,13 @@ minute, or no device after ten tries, and the engine stops and reports `faulted`
 engine. A watchdog thread reports `hung` while one frame has taken more than 2 s. `sc_engine_debug_fault`
 triggers each of these in the checks.
 
+To try the gates on a real PC, start SprigCast with `SPRIGCAST_ENGINE_FAULT` set as well (never in normal use):
+`kind@seconds` items separated by commas, each optionally `xN` to repeat. `3@60` loses the graphics card a minute
+in (expect "rebuilding the device" then "the device is rebuilt" in the log, and the picture back within a
+moment); `2@60` is an access violation; `4@60` a stuck frame (the log says so, then that it is going again);
+`1@60x7` faults seven times running, so the engine stops and the log says the Python compositor draws again.
+Recordings and streams should carry on through all of them.
+
 ## In the app (`SPRIGCAST_ENGINE=native`)
 
 render/native_bridge.py: the render thread hands every new source picture to the native engine too, and a

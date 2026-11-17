@@ -406,6 +406,36 @@ def test_an_encoder_opens_on_the_native_engines_device_while_it_draws(monkeypatc
         gpu_share.set_native(None)
 
 
+def test_deliberate_faults_for_the_pc_crash_test(monkeypatch):
+    plan = native_bridge.planned_faults
+    assert plan(None) == [] and plan("") == [] and plan("nonsense, 9@5, 1@-2, 2@x") == []
+    assert plan("3@60") == [(60.0, 3)]
+    assert plan("1@30x3, 4@10") == [(10.0, 4), (30.0, 1), (31.0, 1), (32.0, 1)]
+
+    class Faulting(FakeEngine):
+        def __init__(self, **_):
+            super().__init__()
+            self.faults = []
+
+        def debug_fault(self, kind):
+            self.faults.append(kind)
+
+        def stats(self):
+            return {"rebuilds": 0, "faulted": 0, "hung": 0}
+
+    monkeypatch.setattr(sprigcore, "Engine", Faulting)
+    monkeypatch.setenv("SPRIGCAST_ENGINE_FAULT", "3@5x2")
+    bridge = native_bridge.NativeCanvases(_collection())
+    for second in range(100, 110):
+        bridge.check(float(second))
+    assert bridge.engine.faults == [3, 3] and not bridge.failed  # at 5 s and 6 s after the first check
+    monkeypatch.delenv("SPRIGCAST_ENGINE_FAULT")
+    quiet = native_bridge.NativeCanvases(_collection())
+    quiet.check(100.0)
+    quiet.check(200.0)
+    assert quiet.engine.faults == []
+
+
 # ---- the real engine (Windows) ------------------------------------------------------------------------------
 
 needs_engine = pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")

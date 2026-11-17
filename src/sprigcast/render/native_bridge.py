@@ -18,6 +18,7 @@ good, this steps aside and Python's compositor draws the previews again, as befo
 from __future__ import annotations
 
 import logging
+import os
 import time
 
 from sprigcast import sprigcore
@@ -29,6 +30,29 @@ log = logging.getLogger(__name__)
 
 STILL_AFTER_S = 1.0  # a source that sent nothing for this long is treated as a still picture (kept for rebuilds)
 STATS_EVERY_S = 1.0
+
+
+FAULT_KINDS = {1: "a C++ exception", 2: "an access violation", 3: "a lost graphics card", 4: "a frame stuck for 3 s"}
+
+
+def planned_faults(text: str | None) -> list[tuple[float, int]]:
+    """SPRIGCAST_ENGINE_FAULT, for testing the crash gates on a real PC (never set in normal use):
+    "kind@seconds" items separated by commas, each optionally "xN" to repeat it N times a second apart. Kinds
+    as sprigcore.Engine.debug_fault: 1 exception, 2 access violation, 3 lost card, 4 stuck frame. "3@60" loses
+    the card a minute in (the engine rebuilds); "1@60x7" faults seven times in a row (more than five a minute:
+    the engine stops and Python's compositor takes over). Returns (seconds after start, kind), soonest first;
+    anything that doesn't read as that is left out."""
+    plan = []
+    for item in (text or "").split(","):
+        try:
+            kind, _, rest = item.strip().partition("@")
+            when, _, times = rest.partition("x")
+            kind, when, times = int(kind), float(when), int(times or 1)
+        except ValueError:
+            continue
+        if kind in FAULT_KINDS and when >= 0:
+            plan.extend((when + n, kind) for n in range(max(1, min(times, 20))))
+    return sorted(plan)
 
 
 def canvas_key(canvas_id: str) -> str:
@@ -162,6 +186,10 @@ class NativeCanvases:
         self._last_upload: dict[str, float] = {}
         self._stats_at = 0.0
         self._rebuilds = 0
+        self._faults = planned_faults(os.environ.get("SPRIGCAST_ENGINE_FAULT"))  # crash gate test on a PC
+        self._began: float | None = None
+        if self._faults:
+            log.warning("native engine: SPRIGCAST_ENGINE_FAULT is set: %d deliberate faults planned", len(self._faults))
         log.info("native engine: drawing the previews (%s)", "software" if warp else "graphics card")
 
     # ---- what goes in ------------------------------------------------------------------------------------------
@@ -413,6 +441,13 @@ class NativeCanvases:
         if self.failed or now - self._stats_at < STATS_EVERY_S:
             return
         self._stats_at = now
+        if self._faults:
+            self._began = now if self._began is None else self._began
+            if now - self._began >= self._faults[0][0]:  # one a check, so repeats land about a second apart
+                _when, kind = self._faults.pop(0)
+                log.warning("native engine: deliberate fault now (%s), as SPRIGCAST_ENGINE_FAULT asks",
+                            FAULT_KINDS[kind])
+                self._guard("deliberate fault", self.engine.debug_fault, kind)
         stats = self._guard("stats", self.engine.stats)
         if stats is None:
             return
