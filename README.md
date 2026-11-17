@@ -65,7 +65,7 @@ SprigCast has two screens. Switch with the buttons at the top left, or Ctrl+1 an
 - **Sound** belongs to the whole show, not one bloom, so it never plays twice when both canvases are live.
   Each sound has a *Tune* page with filters, and you pick which tracks it goes to: Stream, Recording,
   Voice or Clips. Turn on *Mic first* to dip other sounds while you talk.
-- **Chat** mixes Twitch, YouTube, Kick and TikTok in one panel. You can reply on Twitch and put chat on
+- **Chat** mixes Twitch, YouTube and Kick in one panel. You can reply on Twitch and put chat on
   your stream as a source.
 - **Settings** (Ctrl+,): General, Stream, Output, Audio, Video, Hotkeys, Connections, Advanced and Plugins.
   Stream keys are saved in Windows Credential Manager, never in the scenes file.
