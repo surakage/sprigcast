@@ -1428,8 +1428,12 @@ class Engine:
         """With the native engine drawing the previews: does Python's compositor still draw anything this tick
         (an output, a screenshot, a transition, Build's edited bloom, the Part editor, a canvas the native engine
         doesn't show)? If not, it skips the sprigs too."""
-        if taps or self._transitions or self._waking or self.editing_part or self._grabs:
+        from sprigcast.render.native_bridge import native_transition
+
+        if taps or self._waking or self.editing_part or self._grabs:
             return True
+        if any(not native_transition(r) for r in self._transitions.values()):
+            return True  # a stinger or move transition: still Python's
         active = self._collection.active_scenes
         if any(scene_id != active.get(canvas_id) for canvas_id, scene_id in self.staged.items()):
             return True
@@ -1637,7 +1641,8 @@ class Engine:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
         if native is not None:
             native.forget_gone(self._sources)
-            native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades))
+            native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
+                        {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map)
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")
@@ -1664,7 +1669,7 @@ class Engine:
                     outputs = (*outputs, *shots)  # the canvas as it is: shares its copy
             preview = self._preview_due(canvas.id, now)
             if native is not None:
-                native_shows = held is None and not extra and native.draws(canvas.id)
+                native_shows = held is None and (not extra or native.handles(extra)) and native.draws(canvas.id)
                 wanted = self.previews is None or canvas.id in self.previews
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height)) or (canvas.width, canvas.height)
                 native.watch(canvas.id, size if native_shows and wanted else None, self.preview_fps)

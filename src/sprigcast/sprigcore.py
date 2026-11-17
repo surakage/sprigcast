@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 3  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 4  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -114,6 +114,31 @@ class SceneEntry(ctypes.Structure):
                 ("first_item", ctypes.c_int), ("item_count", ctypes.c_int)]
 
 
+TRANSITION_MODES = {"fade": 1, "slide": 2, "swipe": 3, "wipe": 4, "leaf": 5, "bloom": 6}  # the rest stay in Python
+DIRECTIONS = {"left": (-1.0, 0.0), "right": (1.0, 0.0), "up": (0.0, -1.0), "down": (0.0, 1.0)}
+
+
+class TransitionSpec(ctypes.Structure):
+    """include/sprigcore.h sc_transition."""
+
+    _fields_ = [("mode", ctypes.c_int), ("seconds", ctypes.c_float), ("direction", ctypes.c_float * 2),
+                ("softness", ctypes.c_float), ("reserved", ctypes.c_int), ("wipe_map", ctypes.c_uint64)]
+
+
+def transition_spec(transition, wipe_map: str | None = None) -> TransitionSpec | None:
+    """core/scene.py Transition as the engine takes it, or None for a kind it doesn't draw (cut, stinger, move)."""
+    mode = TRANSITION_MODES.get(transition.kind)
+    if mode is None:
+        return None
+    spec = TransitionSpec()
+    spec.mode = mode
+    spec.seconds = max(0.001, transition.duration_ms / 1000)
+    spec.direction[:] = DIRECTIONS.get(transition.direction, (-1.0, 0.0))
+    spec.softness = max(0.0, min(1.0, float(transition.softness)))
+    spec.wipe_map = key(wipe_map) if wipe_map else 0
+    return spec
+
+
 class EngineStats(ctypes.Structure):
     _fields_ = [
         ("ticks", ctypes.c_uint64), ("late", ctypes.c_uint64), ("presented", ctypes.c_uint64),
@@ -191,6 +216,9 @@ def _lib():
         "sc_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
         "sc_canvas_render": (c_int, [vp, ctypes.c_uint64, ctypes.c_double]),
         "sc_debug_fault": (c_int, [vp, c_int]),
+        "sc_canvas_render_transition": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_double,
+                                                ctypes.POINTER(TransitionSpec), c_float]),
+        "sc_engine_canvas_transition": (c_int, [vp, c_int, ctypes.c_uint64, ctypes.POINTER(TransitionSpec)]),
         "sc_engine_create": (c_int, [c_int, c_int, out]),
         "sc_engine_destroy": (None, [vp]),
         "sc_engine_set_rate": (c_int, [vp, c_int, c_int]),
@@ -404,6 +432,12 @@ class Canvas:
         """Draws the snapshot's scene (by its key name) onto this canvas, sprigs first."""
         _check(_need().sc_canvas_render(self.handle, key(scene), float(time)))
 
+    def render_transition(self, previous: str, scene: str, spec: TransitionSpec, progress: float,
+                          time: float = 0.0) -> None:
+        """Draws the change from `previous` to `scene` at `progress` (0 .. 1)."""
+        _check(_need().sc_canvas_render_transition(self.handle, key(previous), key(scene), float(time),
+                                                   ctypes.byref(spec), float(progress)))
+
     def read_bgra(self) -> bytes:
         """The canvas as BGRA bytes, top row first. For tests and screenshots, never the frame path."""
         out = ctypes.create_string_buffer(self.width * self.height * 4)
@@ -515,6 +549,14 @@ class Engine:
         out = ctypes.create_string_buffer(w * h * 4)
         _check(_need().sc_engine_canvas_read(self.handle, index, out, w, h))
         return out.raw
+
+    def transition(self, index: int, previous: str | None, spec: TransitionSpec | None) -> None:
+        """Starts a transition on canvas ``index`` from scene ``previous`` to the one it shows, timed by the
+        engine from its next frame. None stops one that is running."""
+        if previous is None or spec is None:
+            _check(_need().sc_engine_canvas_transition(self.handle, index, 0, None))
+        else:
+            _check(_need().sc_engine_canvas_transition(self.handle, index, key(previous), ctypes.byref(spec)))
 
     def watch(self, index: int, width: int, height: int, max_fps: int = 0) -> None:
         """Have the engine copy canvas ``index`` back shrunk to width x height (premultiplied RGBA, as previews

@@ -31,6 +31,8 @@ class Case:
     effects: dict = field(default_factory=dict)
     parts: dict = field(default_factory=dict)  # (source id, scene key) -> sprig scene key
     times: tuple = (0.0,)  # drawn at each, the last one compared (barrel rolls keep state)
+    # A transition onto the last scene: (outgoing SceneDraw, core/scene.py Transition, progress, wipe picture)
+    transition: tuple | None = None
 
 
 def picture(w: int, h: int, seed: int = 0, alpha: bool = False) -> np.ndarray:
@@ -196,6 +198,29 @@ def cases(folder: Path) -> list[Case]:
                             SceneItem(source="b", x=100, y=40, align="center")])],
                     {"a": VideoEffects(scroll=(20.0, -10.0)), "b": VideoEffects(spin=(1.0, 2.0, 1))},
                     times=(10.0, 10.5)))
+
+    # Transitions: a busy bloom changing to one that is partly see-through (the outgoing one shows through it).
+    from sprigcast.core.scene import Transition
+
+    old = SceneDraw("from", scene("from", [SceneItem(source="a", x=0, y=0, scale=2.6, align="top_left"),
+                                           SceneItem(source="e", x=100, y=20, align="top_left")]), (W, H))
+    new = [SceneItem(source="b", x=20, y=10, scale=1.5, align="top_left"),
+           SceneItem(source="e", x=8, y=30, scale=1.2, align="top_left")]
+    y, x = np.mgrid[0:54, 0:96]
+    wipe = np.round(np.clip(np.hypot(x - 30, y - 30) / 70, 0, 1) * 255).astype(np.uint8)
+    wipe = np.repeat(wipe[..., None], 3, axis=-1)
+    for name, transition, progress, map_ in [
+        ("t_fade", Transition(kind="fade"), 0.4, None),
+        ("t_slide", Transition(kind="slide", direction="left"), 0.35, None),
+        ("t_swipe", Transition(kind="swipe", direction="up"), 0.6, None),
+        ("t_wipe", Transition(kind="wipe", direction="right", softness=0.2), 0.5, None),
+        ("t_wipe_map", Transition(kind="wipe", softness=0.3), 0.45, wipe),
+        ("t_leaf", Transition(kind="leaf"), 0.4, None),
+        ("t_bloom", Transition(kind="bloom", softness=0.25), 0.55, None),
+    ]:
+        out.append(Case(name, [("a", pic, "RGBA", None), ("b", picture(64, 40, seed=5), "RGBA", None),
+                               ("e", soft, "RGBA", None)],
+                        [bloom(new)], transition=(old, transition, progress, map_)))
     return out
 
 
@@ -225,10 +250,22 @@ def draw_python(compositor, case: Case) -> np.ndarray:
         compositor.parts = {k: textures[v] for k, v in case.parts.items()}
         for (source_id, _), part_key in case.parts.items():
             sizes.setdefault(source_id, textures[part_key].size)
-        compositor.render(Canvas(id=main.key, width=main.size[0], height=main.size[1]), main.scene, sizes)
+        canvas = Canvas(id=main.key, width=main.size[0], height=main.size[1])
+        if case.transition is None:
+            compositor.render(canvas, main.scene, sizes)
+        else:
+            old, transition, progress, wipe = case.transition
+            if wipe is not None:
+                compositor.upload("wipe", wipe, "RGB")
+            compositor.render(canvas, main.scene, sizes, previous=old.scene, progress=progress,
+                              transition=transition, wipe_map="wipe" if wipe is not None else None)
     data = np.frombuffer(compositor.read(main.key), dtype=np.uint8).reshape(main.size[1], main.size[0], 4).copy()
     for source_id, *_ in case.uploads:
         compositor.forget(source_id)
+    if case.transition is not None:
+        if case.transition[3] is not None:
+            compositor.forget("wipe")
+        compositor.end_transition(main.key)
     compositor.parts = {}
     compositor.effects = {}
     compositor._spins.clear()
@@ -242,12 +279,21 @@ def draw_native(device, case: Case) -> np.ndarray:
 
     for source_id, array, order, size in case.uploads:
         device.upload(source_id, array, order, size)
-    built = native_snapshot.build(case.scenes, case.effects, case.parts)
+    old = case.transition[0] if case.transition else None
+    built = native_snapshot.build(case.scenes + ([old] if old else []), case.effects, case.parts)
     native_snapshot.hand_over(device, built, native_snapshot.Resources())
     main = case.scenes[-1]
     with sprigcore.Canvas(device, main.size[0], main.size[1]) as canvas:
         for t in case.times:
-            canvas.render(main.key, t)
+            if case.transition is None:
+                canvas.render(main.key, t)
+                continue
+            _old, transition, progress, wipe = case.transition
+            if wipe is not None:
+                rgba = np.concatenate([wipe, np.full(wipe.shape[:2] + (1,), 255, np.uint8)], axis=-1)
+                device.set_mask("wipe", rgba, True)
+            spec = sprigcore.transition_spec(transition, "wipe" if wipe is not None else None)
+            canvas.render_transition(old.key, main.key, spec, progress, t)
         bgra = np.frombuffer(canvas.read_bgra(), dtype=np.uint8).reshape(main.size[1], main.size[0], 4)
     for source_id, *_ in case.uploads:
         device.forget(source_id)
