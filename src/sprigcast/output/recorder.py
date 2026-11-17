@@ -707,8 +707,9 @@ class Recorder:
                 except queue.Full:
                     break
         elif last is not None and before >= 0 and max(1, self.fps // 2) < pts - before <= FILL_LONG_S * self.fps \
-                and not self._opening and getattr(self, "_easing_since", None) is None \
-                and self._video.qsize() < VIDEO_QUEUE // 2:
+                and not self._opening and getattr(self, "_easing_since", None) is None:
+            # Whatever the queue holds (after a stall the engine hands over its waiting frames at once, and the PC's
+            # stuck-frame retest left a 2.22 s hole that way): the encoder stops filling when real frames wait.
             # A long hole (crash run 3 on 2026-11-17: a stuck frame left 3.02 s missing from the file and the
             # stream). One queue item fills it: this picture for every slot up to its own. Not the picture before:
             # after an engine rebuild that one's texture may be on a device that's gone.
@@ -803,8 +804,8 @@ class Recorder:
                 lost = max(0, round(gap * self.fps) - (mark[0] - self._flow[1]) - filled)
                 if self._counts_drops():
                     self.dropped += max(0, lost - self._stall_counted)
-                log.warning("%s: frames are written again after %.1f s; %d counted as dropped", self.path.name,
-                            gap, max(lost, self._stall_counted))
+                log.warning("%s: frames are written again after %.1f s; %d filled with the picture that ended it, "
+                            "%d counted as dropped", self.path.name, gap, filled, max(lost, self._stall_counted))
             self._flow, self._stalled_since, self._stall_counted = (now, *mark), None, 0
             return None
         if self._stalled_since is not None:
@@ -1014,9 +1015,7 @@ class Recorder:
                         break
                     continue
                 if isinstance(pts, range):  # a hole filled with one picture (push_frame)
-                    for slot in pts:
-                        self._write_video(container, video, frame, slot)
-                        self._write_audio(container, audio)
+                    self._fill(container, video, audio, frame, pts)
                 else:
                     self._write_video(container, video, frame, pts)
             self._write_audio(container, audio)
@@ -1038,6 +1037,23 @@ class Recorder:
                         raise  # the file's ending could not be written (disk full, drive removed)
                     log.warning("closing %s failed: %s", self.path, exc)
 
+    def _fill(self, container, video, audio, frame, slots: range) -> None:
+        """Writes a hole's picture for each of its slots, then the picture's own slot. Stops filling when the real
+        frames waiting meanwhile nearly fill the queue (a fill must never cost one): the rest stays a gap and
+        counts as dropped. The PC's stuck-frame retest (2026-11-17) dropped 164 stream frames behind a fill."""
+        for n, slot in enumerate(slots[:-1]):
+            if self._video.qsize() >= VIDEO_QUEUE - 3:  # nearly full: the next real frame would be dropped
+                left = len(slots) - 1 - n
+                self.repeated -= left
+                self.fill_cut += left
+                if self._counts_drops():
+                    self.dropped += left
+                break
+            self._write_video(container, video, frame, slot)
+            self._write_audio(container, audio)
+        self._write_video(container, video, frame, slots[-1])
+
+    fill_cut = 0  # hole slots left unfilled because real frames were waiting (counted as dropped)
     _frames_closed = False  # the encoder has finished: frames pushed now are ignored
     _gpu_failed = False  # a frame on the card failed to encode: frames come through memory from then on
 
