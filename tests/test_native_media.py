@@ -552,11 +552,39 @@ def test_media_source_keeps_the_python_player_otherwise(player_lib, files, monke
 
     monkeypatch.delenv("SPRIGCAST_ENGINE", raising=False)
     assert MediaSource("m2", {**MediaSource.defaults, "path": files["video"]})._native is None
+
+
+def test_decoding_on_the_graphics_card_is_the_engines_too(player_lib, files, monkeypatch):
+    """hw_decode: the engine's player asks for the graphics card (Direct3D 11 on Windows) and falls back to the CPU
+    where there is none (this container): the video plays either way, and turning it on or off reopens the file
+    with the other decoder, keeping the same player."""
+    from sprigcast.sources.media import MediaSource
+
     monkeypatch.setenv("SPRIGCAST_ENGINE", "native")
     on_card = MediaSource("m3", {**MediaSource.defaults, "path": files["video"], "hw_decode": True})
-    assert on_card._native is None  # decoding on the graphics card stays with the Python player
+    assert on_card._native is not None
+    on_card.start()
+    frames, deadline = [], time.monotonic() + 5
+    while on_card.state != "ended" and time.monotonic() < deadline:
+        frame = on_card.video_frame()
+        if frame is not None:
+            frames.append(frame)
+        on_card.read_block(240)
+        time.sleep(0.005)
+    assert on_card.state == "ended" and len(frames) >= 50 and on_card.status == "ok"
+    hardware = on_card._native.info().hardware
+    assert hardware in (0, 1) and frames[0].shape in ((360, 320), (240, 320, 4))
+    on_card.stop()
     switched = MediaSource("m4", {**MediaSource.defaults, "path": files["video"]})
-    assert switched._native is not None
+    player = switched._native
+    assert player is not None and not player.info().hardware
     switched.update({**switched.settings, "hw_decode": True})
-    assert switched._native is None
+    assert switched._native is player
+    switched.start()
+    got, deadline = None, time.monotonic() + 5
+    while got is None and time.monotonic() < deadline:
+        got = switched.video_frame()
+        switched.read_block(240)
+        time.sleep(0.005)
+    assert got is not None
     switched.stop()

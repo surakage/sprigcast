@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 11
+#define SC_INTERFACE_VERSION 12
 
 enum {
     SC_OK = 0,
@@ -445,6 +445,7 @@ typedef struct sc_media_info {
     uint64_t passes;       /* times the file was read through (loops) */
     uint64_t picture_bytes;  /* the largest picture handed out so far: a buffer this big always fits */
     char status[96];       /* "starting", "no file", "ok" or "can't play: ..." */
+    int hardware;          /* the pictures now are decoded on the graphics card (sc_media_set_decode) */
 } sc_media_info;
 
 /* What sc_media_video_frame answered. */
@@ -481,6 +482,10 @@ SC_API int sc_media_set_options(sc_media *media, const sc_media_options *options
  * replay: drawn as they are); 0 as the file has them. max_width, max_height: bigger videos are shrunk to fit
  * while decoding (0 = 1920). grow: 1 also enlarges smaller ones to fit that box. */
 SC_API int sc_media_set_picture(sc_media *media, int format, int max_width, int max_height, int grow);
+/* hardware: 1 decodes videos on the graphics card where it can (Direct3D 11 on Windows; one device for every
+ * player), from the next time the file is opened (call before sc_media_set_file). A file the card can't decode
+ * (libvpx's see-through WebM, a codec it lacks) or a PC without it decodes on the CPU, as with 0. */
+SC_API int sc_media_set_decode(sc_media *media, int hardware);
 /* Another file (UTF-8 path; "" = none) from its start. video: 1 when it should have a picture (told by its
  * name until the file is open). playing: as sc_media_create. */
 SC_API int sc_media_set_file(sc_media *media, const char *path, int video, int playing);
