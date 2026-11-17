@@ -16,6 +16,7 @@ Developer → Create app, redirect URL exactly REDIRECT below; scopes user:read 
 
 from __future__ import annotations
 
+import logging
 import threading
 import urllib.error
 import urllib.parse
@@ -23,7 +24,19 @@ import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sprigcast.output.oauth_loopback import SignInError, Waiter, free_port, get_json, pkce_pair, post_form
+from sprigcast.output.oauth_loopback import (
+    HEADERS,
+    Cancelled,
+    SignInError,
+    Waiter,
+    free_port,
+    get_json,
+    pkce_pair,
+    post_form,
+    problem_text,
+)
+
+log = logging.getLogger(__name__)
 
 WAIT_SECONDS = 300
 
@@ -78,29 +91,82 @@ def _swap(service: str, code: str, verifier: str, redirect: str, who: str) -> st
     reply = post_form(helper_url(), {"service": service, "code": code, "code_verifier": verifier,
                                      "redirect_uri": redirect}, "SprigCast's sign-in helper")
     if "error" in reply or not reply.get("access_token"):
-        raise SignInError(f"{who} sign-in failed: {reply.get('error_description') or reply.get('error')}")
+        raise SignInError(f"{who} sign-in failed: {problem_text(reply).rstrip('.')}.")
     return reply["access_token"]
 
 
-def _browser_code(auth_url: str, params: dict, waiter: Waiter, cancelled: threading.Event | None,
-                  open_url: Callable[[str], object]) -> str:
-    waiter.start()
-    open_url(f"{auth_url}?{urllib.parse.urlencode(params)}")
-    return waiter.wait(WAIT_SECONDS, cancelled)
+@dataclass
+class Flow:
+    """One sign-in. ``begin`` makes it on the UI thread (settings, the loopback server, the page to open);
+    the browser is opened there too; ``finish`` then runs on a worker. It holds no Qt objects, so a worker
+    that outlives its window never frees one off the UI thread."""
+
+    service: str
+    url: str  # the sign-in page to open in the browser
+    waiter: Waiter
+    verifier: str
+
+    def finish(self, cancelled: threading.Event | None = None) -> Fetched:
+        """Wait for the browser, then read the account and key. Raises SignInError / Cancelled."""
+        who = {"youtube": "Google", "kick": "Kick"}[self.service]
+        try:
+            code = self.waiter.wait(WAIT_SECONDS, cancelled, who)
+            fetched = (_youtube_rest if self.service == "youtube" else _kick_rest)(self, code)
+        except Cancelled:
+            log.info("sign-in: %s cancelled", self.service)
+            raise
+        except SignInError as exc:
+            log.info("sign-in: %s failed: %s", self.service, exc)
+            raise
+        except Exception:
+            log.exception("sign-in: %s failed", self.service)
+            raise
+        log.info("sign-in: %s done, key fetched for %s", self.service, fetched.account)
+        return fetched
+
+
+def begin(service: str) -> Flow:
+    """Start a sign-in: read the Client ID and open the loopback server. Run it on the UI thread."""
+    cid = setting(f"{service}/client_id")
+    label = {"youtube": "YouTube", "kick": "Kick"}[service]
+    if not cid:
+        raise SignInError(f"{label} sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
+    verifier, challenge = pkce_pair()
+    if service == "youtube":
+        waiter = Waiter(free_port())
+        params = {"client_id": cid, "redirect_uri": waiter.url, "response_type": "code", "scope": YOUTUBE_SCOPE,
+                  "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state,
+                  "prompt": "select_account"}
+        auth = YOUTUBE_AUTH
+    else:
+        waiter = Waiter(KICK_PORT, host="localhost")
+        params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url, "scope": KICK_SCOPES,
+                  "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state}
+        auth = KICK_AUTH
+    try:
+        waiter.start()
+    except OSError as exc:  # the port is taken
+        log.info("sign-in: %s couldn't listen on port %d: %s", service, waiter.port, exc)
+        raise SignInError(f"Port {waiter.port} is busy, so {label} sign-in can't finish. Close what uses it and "
+                          "try again.") from exc
+    log.info("sign-in: %s started, waiting on port %d", service, waiter.port)
+    return Flow(service, f"{auth}?{urllib.parse.urlencode(params)}", waiter, verifier)
+
+
+def _run(service: str, cancelled: threading.Event | None, open_url: Callable[[str], object]) -> Fetched:
+    flow = begin(service)
+    open_url(flow.url)
+    return flow.finish(cancelled)
 
 
 def youtube(cancelled: threading.Event | None = None, open_url: Callable[[str], object] = webbrowser.open) -> Fetched:
     """Sign in with Google: your channel name and a reusable stream key (one is made if there's none)."""
-    cid = setting("youtube/client_id")
-    if not cid:
-        raise SignInError("YouTube sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
-    verifier, challenge = pkce_pair()
-    waiter = Waiter(free_port())
-    code = _browser_code(YOUTUBE_AUTH, {
-        "client_id": cid, "redirect_uri": waiter.url, "response_type": "code", "scope": YOUTUBE_SCOPE,
-        "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state,
-        "prompt": "select_account"}, waiter, cancelled, open_url)
-    token = _swap("youtube", code, verifier, waiter.url, "Google")
+    return _run("youtube", cancelled, open_url)
+
+
+def _youtube_rest(flow: Flow, code: str) -> Fetched:
+    token = _swap("youtube", code, flow.verifier, flow.waiter.url, "Google")
+    log.info("sign-in: youtube token received")
     channels = get_json(f"{YOUTUBE_API}/channels?part=snippet&mine=true", token, "YouTube").get("items") or []
     if not channels:
         raise SignInError("That Google account has no YouTube channel yet.")
@@ -120,13 +186,16 @@ def _youtube_key(token: str) -> str:
     usable = [s for s in streams if (s.get("contentDetails") or {}).get("isReusable", True)
               and (s.get("cdn") or {}).get("ingestionType", "rtmp") == "rtmp"]
     if usable:
+        log.info("sign-in: youtube using an existing reusable stream key")
         return usable[0]["cdn"]["ingestionInfo"]["streamName"]
+    log.info("sign-in: youtube has no reusable stream key, making one")
     body = {"snippet": {"title": "SprigCast"},
             "cdn": {"frameRate": "variable", "ingestionType": "rtmp", "resolution": "variable"},
             "contentDetails": {"isReusable": True}}
     request = urllib.request.Request(f"{YOUTUBE_API}/liveStreams?part=snippet,cdn,contentDetails",
                                      data=json.dumps(body).encode(), method="POST",
-                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                                              **HEADERS})
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             made = json.loads(response.read() or b"{}")
@@ -143,20 +212,12 @@ def _youtube_key(token: str) -> str:
 
 def kick(cancelled: threading.Event | None = None, open_url: Callable[[str], object] = webbrowser.open) -> Fetched:
     """Sign in with Kick: your username, stream URL and stream key."""
-    cid = setting("kick/client_id")
-    if not cid:
-        raise SignInError("Kick sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
-    verifier, challenge = pkce_pair()
-    waiter = Waiter(KICK_PORT, host="localhost")
-    try:
-        code = _browser_code(KICK_AUTH, {
-            "response_type": "code", "client_id": cid, "redirect_uri": waiter.url, "scope": KICK_SCOPES,
-            "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state},
-            waiter, cancelled, open_url)
-    except OSError as exc:  # the port is taken
-        raise SignInError(f"Port {KICK_PORT} is busy, so Kick sign-in can't finish. Close what uses it and "
-                          "try again.") from exc
-    token = _swap("kick", code, verifier, waiter.url, "Kick")
+    return _run("kick", cancelled, open_url)
+
+
+def _kick_rest(flow: Flow, code: str) -> Fetched:
+    token = _swap("kick", code, flow.verifier, flow.waiter.url, "Kick")
+    log.info("sign-in: kick token received")
     channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
     if not channels:
         raise SignInError("Kick didn't return your channel.")

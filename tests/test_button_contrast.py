@@ -1,7 +1,6 @@
 """Every button reads as a button: its edge stands out from the card, pop-up or panel behind it."""
 
 import os
-import time
 
 import pytest
 
@@ -64,21 +63,14 @@ def test_sign_in_error_cancel_stands_out(app):
     from sprigcast.app.signin_dialog import SignInDialog
     from sprigcast.output.oauth_loopback import SignInError
 
-    def fail(_cancel):
+    def refused(_service):
         raise SignInError("Sign-in was refused.")
 
-    dialog = SignInDialog("youtube", run=fail)
+    dialog = SignInDialog("youtube", begin=refused, open_url=lambda u: True)
     dialog.show()
-    for _ in range(50):
-        app.processEvents()
-        if not dialog._thread.is_alive():
-            break
-        time.sleep(0.01)
-    dialog._check()
     app.processEvents()
     assert dialog.message.text() == "Sign-in was refused."
-    cancel = next(b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel")
-    assert _edge_contrast(dialog, cancel) >= MIN_EDGE
+    assert _edge_contrast(dialog, dialog.cancel_button) >= MIN_EDGE
     dialog.reject()
 
 

@@ -101,6 +101,10 @@ def _line_up_labels(forms: list[QFormLayout]) -> None:
                 item.widget().setStyleSheet(theme.MUTED_STYLE)
 
 
+NEW_PLACE = "New place"
+PICK_SERVICE = "Pick a service"
+
+
 def place_card_text(output: Output) -> str:
     """Two lines for a place card: the service, then shape and quality (and off)."""
     service = SERVICES.get(output.service or "custom", SERVICES["custom"])
@@ -127,6 +131,7 @@ class StreamPage(QWidget):
         self.keys = {o.key_ref: get_key(o.key_ref) or "" for o in self.outputs if o.key_ref}
         self._saved_keys = dict(self.keys)  # only keys that change are written back
         self._loading = False
+        self._unpicked: set[str] = set()  # places just added: no service chosen yet, nothing filled in
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -186,10 +191,12 @@ class StreamPage(QWidget):
         # Account: which service and how SprigCast signs in.
         destination, form = _section("Account")
         self.service = QComboBox()
+        self.service.addItem(PICK_SERVICE, "")  # a new place starts here: you choose, nothing is assumed
         for key, service in SERVICES.items():
             self.service.addItem(service.label, key)
         self.service.currentIndexChanged.connect(self._service_changed)
         form.addRow("Service", self.service)
+        self._account_form = form
         self.server = QLineEdit()
         self.server.setPlaceholderText("rtmp://… or rtmps://…")
         self.server.textEdited.connect(self._edited)
@@ -262,6 +269,7 @@ class StreamPage(QWidget):
         form.addRow("", self.video_note)
         self.video_box = video
         groups.addWidget(video)
+        self._picture_section = video
 
         # Twitch Enhanced Broadcasting: Twitch picks several qualities for this PC, all sent at once.
         self.enhanced_box, form = _section("Twitch Enhanced Broadcasting")
@@ -314,6 +322,7 @@ class StreamPage(QWidget):
         note.setStyleSheet(f"color: {theme.MUTED}")
         form.addRow("", note)
         groups.addWidget(advanced)
+        self._extras_section = advanced
 
         groups.addStretch(1)
         scroll = QScrollArea()
@@ -353,7 +362,7 @@ class StreamPage(QWidget):
         self._loading = True
         self.list.clear()
         for output in self.outputs:
-            self.list.addItem(place_card_text(output))
+            self.list.addItem(self._card_text(output))
         self._loading = False
         self.form_widget.setEnabled(bool(self.outputs))
         if not self.outputs:
@@ -379,10 +388,10 @@ class StreamPage(QWidget):
         while f"out-{n}" in taken:
             n += 1
         output_id = f"out-{n}"
-        self.outputs.append(
-            Output(id=output_id, type="stream", service="twitch", canvas="horizontal",
-                   bitrate_kbps=6000, key_ref=f"sprigcast/{output_id}", enabled=True)
-        )
+        # Blank: no service until you pick one (it then fills in that service's usual settings).
+        self.outputs.append(Output(id=output_id, type="stream", service=None, canvas="horizontal",
+                                   key_ref=f"sprigcast/{output_id}", enabled=False))
+        self._unpicked.add(output_id)
         self._refresh_list(len(self.outputs) - 1)
 
     def _remove(self) -> None:
@@ -402,8 +411,16 @@ class StreamPage(QWidget):
             return
         self._loading = True
         self.enabled.setChecked(output.enabled)
+        if output.id in self._unpicked:
+            self.hero.setText(NEW_PLACE)
+            self.service.setCurrentIndex(0)
+            self.key.setText("")
+            self._show_unpicked(True)
+            self._loading = False
+            return
+        self._show_unpicked(False)
         self.hero.setText(SERVICES.get(output.service or "custom", SERVICES["custom"]).label)
-        self.service.setCurrentIndex(max(0, self.service.findData(output.service or "custom")))
+        self.service.setCurrentIndex(max(1, self.service.findData(output.service or "custom")))
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(output.canvas)))
         self._fill_size_and_fps(output.size, output.fps)
         self.bitrate.setValue(output.bitrate_kbps)
@@ -474,10 +491,31 @@ class StreamPage(QWidget):
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
             self.twitch_button.setText("Disconnect Account" if account else "Connect Account (recommended)")
 
+    def _card_text(self, output: Output) -> str:
+        return f"{NEW_PLACE}\n{PICK_SERVICE}" if output.id in self._unpicked else place_card_text(output)
+
+    def _show_unpicked(self, unpicked: bool) -> None:
+        """A new place shows only the service to pick; the rest appears once one is picked."""
+        for widget in (self.server, self.twitch_row, self.use_account, self.key_row, self.help):
+            self._account_form.setRowVisible(widget, not unpicked)
+        for widget in (self._picture_section, self._extras_section, self.enabled, self.enabled_label):
+            widget.setVisible(not unpicked)
+        if unpicked:
+            self.enhanced_box.setVisible(False)
+
     def _service_changed(self) -> None:
         output = self._current()
         if output is None or self._loading:
             return
+        if not self.service.currentData():  # back to "Pick a service": nothing to fill in
+            return
+        if output.id in self._unpicked:  # first pick: the place comes alive with that service's settings
+            self._unpicked.discard(output.id)
+            output.enabled = True
+            self._loading = True
+            self.enabled.setChecked(True)
+            self._loading = False
+            self._show_unpicked(False)
         output.service = self.service.currentData()
         service = SERVICES[output.service]
         # Apply the platform's preset: canvas, resolution, frame rate and bitrate.
@@ -499,11 +537,11 @@ class StreamPage(QWidget):
 
     def _edited(self) -> None:
         output = self._current()
-        if output is None or self._loading:
+        if output is None or self._loading or output.id in self._unpicked:
             return
         service = SERVICES.get(self.service.currentData(), SERVICES["custom"])
         output.enabled = self.enabled.isChecked()
-        output.service = self.service.currentData()
+        output.service = self.service.currentData() or output.service  # "Pick a service" changes nothing
         output.server = "" if service.server else self.server.text().strip()
         output.canvas = self.canvas.currentData()
         size = self.size.currentData() or ""
@@ -522,7 +560,7 @@ class StreamPage(QWidget):
             output.key_ref = f"sprigcast/{output.id}"
         self.keys[output.key_ref] = self.key.text().strip()
         self._show_service(output)
-        self.list.item(self.list.currentRow()).setText(place_card_text(output))
+        self.list.item(self.list.currentRow()).setText(self._card_text(output))
         self.hero.setText(SERVICES.get(output.service or "custom", SERVICES["custom"]).label)
 
     def _twitch_clicked(self) -> None:
@@ -575,5 +613,6 @@ class StreamPage(QWidget):
             QMessageBox.critical(self, "SprigCast", f"Could not save the stream key:\n{exc}")
             return False
         others = [o for o in collection.outputs if o.type != "stream"]
-        collection.outputs = others + [o.model_copy() for o in self.outputs]  # copies: later edits wait for Apply
+        picked = [o for o in self.outputs if o.id not in self._unpicked]  # a place left blank isn't kept
+        collection.outputs = others + [o.model_copy() for o in picked]  # copies: later edits wait for Apply
         return True
