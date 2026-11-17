@@ -47,11 +47,14 @@ class CpuWatch:
         now, after = time.monotonic(), self._times()
         seconds = max(1e-6, now - self._at)
         names = {t.native_id: t.name for t in threading.enumerate()}
-        for tid in after:
-            if tid not in names:
-                label = native_thread_label(tid)
-                if label:
-                    names[tid] = label
+        labels = getattr(self, "_labels", {})
+        for tid, total in after.items():  # only threads that ran, each looked up once (340 ms for all, 2026-11-17)
+            if tid not in names and total > self._before.get(tid, 0.0):
+                if tid not in labels:
+                    labels[tid] = native_thread_label(tid)
+                if labels[tid]:
+                    names[tid] = labels[tid]
+        self._labels = {tid: label for tid, label in labels.items() if tid in after}  # thread ids get reused
         used: dict[str, float] = {}
         for tid, total in after.items():
             spent = total - self._before.get(tid, 0.0)
