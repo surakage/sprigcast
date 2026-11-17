@@ -14,9 +14,6 @@
     # Right-click on something in a bloom: add(menu_label, callback) for each entry you want there.
     register_item_menu(lambda api, source, add: add("Barrel roll", lambda: ...))
 
-    # Look at a source's frames while it has your filter on and shows (the background remover).
-    register_frame_watcher("background", lambda source_id: MyWatcher())
-
     # Sound levels, about 15 times a second: {source id: (peak dBFS, RMS dBFS)}, plus "master".
     register_level_watcher(lambda api, levels: ...)
 
@@ -59,39 +56,6 @@ def register_hotkeys(list_fn: Callable[[Any], list[tuple[str, str]]], run_fn: Ca
 def register_item_menu(fn: Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]) -> None:
     _ITEM_MENUS[:] = [f for f in _ITEM_MENUS if not _same(f, fn)]
     _ITEM_MENUS.append(fn)
-
-
-class FrameWatcher:
-    """Sees a source's frames while one of the plugin's filters is on it and it shows on screen.
-
-    offer() runs on the render thread for each new frame: copy the little you need (a small picture) and
-    hand it to your own thread, well under a millisecond. take() is asked every frame for a finished
-    result: {"mask": H x W uint8 (255 = keep), "backdrop": h x w x 3 uint8 RGB or None}, or None when
-    nothing new. close() when the filter goes, or nothing offered a frame for a while (let go of
-    everything then; a new watcher is made if it's needed again).
-    """
-
-    def offer(self, frame, channel_order: str, settings: dict) -> None:  # pragma: no cover - interface
-        pass
-
-    def take(self) -> dict | None:  # pragma: no cover - interface
-        return None
-
-    def close(self) -> None:  # pragma: no cover - interface
-        pass
-
-
-_FRAME_WATCHERS: dict[str, Callable[[str], FrameWatcher]] = {}
-
-
-def register_frame_watcher(kind: str, factory: Callable[[str], FrameWatcher]) -> None:
-    """factory(source_id) makes a watcher for a source with an enabled filter of this kind."""
-    _FRAME_WATCHERS[kind] = factory
-
-
-def frame_watchers() -> dict[str, Callable[[str], FrameWatcher]]:
-    """Filter kind -> factory, for plugins still added."""
-    return {kind: fn for kind, fn in _FRAME_WATCHERS.items() if _alive(fn)}
 
 
 _LEVEL_WATCHERS: list[Callable[[Any, dict], None]] = []

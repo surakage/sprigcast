@@ -268,9 +268,9 @@ def test_a_sharp_source_with_more_pixels_fills_the_same_box(compositor):
 def test_filters_in_source_pixels_look_the_same_at_any_detail(compositor):
     from sprigcast.core.filters import VideoEffects
 
-    fx = VideoEffects(blur=3.0, pixelate=4.0, cutout_blur=2.0)
+    fx = VideoEffects(blur=3.0, pixelate=4.0)
     doubled = compositor._in_detail(fx, 2.0)
-    assert (doubled.blur, doubled.pixelate, doubled.cutout_blur) == (6.0, 8.0, 4.0)
+    assert (doubled.blur, doubled.pixelate) == (6.0, 8.0)
     assert compositor._in_detail(fx, 2.0) is doubled  # made once, not every frame
     plain = VideoEffects()
     assert compositor._in_detail(plain, 2.0) is plain

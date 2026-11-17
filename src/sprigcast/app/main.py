@@ -241,6 +241,12 @@ def run() -> None:
         refresh_installed(plugins_dir)  # store plugins you added get this version's fixes
     except OSError as exc:
         logging.warning("could not update store plugins: %s", exc)
+    try:
+        from sprigcast.app.leftovers import clean_up
+
+        clean_up(config_dir())  # what features taken out of SprigCast left on this PC, once
+    except Exception as exc:  # noqa: BLE001 (never stops SprigCast from opening)
+        logging.warning("could not tidy up after removed features: %s", exc)
     plugins = load_plugins(plugins_dir)
 
     from sprigcast.app.main_window import MainWindow

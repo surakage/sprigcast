@@ -7,9 +7,9 @@ A source class can also give:
     choices = {"language": (("en", "English"), ("es", "Spanish"))}  # a drop-down instead of a text box
               (or a function returning that list, read each time the form opens: devices plugged in now;
               a function taking one argument gets the garden, to list its sounds)
-    secrets = {"google_key": "captions/google_key"}  # a hidden box whose value is kept DPAPI-encrypted in
+    secrets = {"api_key": "myplugin/api_key"}  # a hidden box whose value is kept DPAPI-encrypted in
               SprigCast's settings under that name, never in the garden file (so it isn't shared or exported);
-    secrets_after = "engine"  # where those boxes go in the form (at the end without it)
+    secrets_after = "language"  # where those boxes go in the form (at the end without it)
 """
 
 from __future__ import annotations
@@ -61,10 +61,6 @@ LABELS = {
     "save_polaroid_copy": "Save a polaroid copy",
     "freeze_screen": "Freeze the screen while it prints",
     "listen_to": "Mic",
-    "engine": "Captions by",
-    "google_key": "Google key",
-    "lines": "Lines",
-    "run_on": "Run on",
     "color": "Colour",
     "peak_color": "Peak colour",
     "talk_at": "Talks above (dB)",
