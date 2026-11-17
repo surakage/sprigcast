@@ -2043,7 +2043,7 @@ class MainWindow(QMainWindow):
             note = (notes or {}).get(output.id) or issue or ("Ready" if output.enabled else "Off")
             name = service.label
             if sum(1 for o in streams if o.service == output.service) > 1:  # two Twitch rows: say which shape
-                name += f" · {output.canvas}"
+                name += f" · {output.canvas.capitalize()}"
             places.append(Destination(output.id, name, output.enabled, note, output.canvas,
                                       output.bandwidth_test if service.bandwidth_test else None,
                                       output.service or "custom"))
@@ -6263,7 +6263,7 @@ class MainWindow(QMainWindow):
         for canvas in self.collection.canvases:
             for scene in self.collection.scenes_for(canvas.id):
                 if scene.kind == "show":
-                    commands.append(Command(scene.name if canvas.id in scene.name.lower() else f"{scene.name}  ·  {canvas.id}", "Scene",
+                    commands.append(Command(scene.name if canvas.id in scene.name.lower() else f"{scene.name}  ·  {canvas.id.capitalize()}", "Scene",
                                             lambda sid=scene.id: self._switch_to_scene(sid),
                                             hotkeys.get(SCENE_PREFIX + scene.id, ""),
                                             scene.id == self.collection.active_scenes.get(canvas.id)))
@@ -6287,7 +6287,7 @@ class MainWindow(QMainWindow):
             commands.append(Command(f"Show {label.lower()}", "Canvas",
                                     lambda k=key: self.show_canvases(k), checked=key == choice))
         for canvas in self.collection.canvases:
-            commands.append(Command(f"Pop out {canvas.id}", "Canvas",
+            commands.append(Command(f"Pop out {canvas.id.capitalize()}", "Canvas",
                                     lambda cid=canvas.id: self.open_projector(cid, None)))
         for tab, label in (("General", "General"), ("Stream", "Stream outputs"), ("Output", "Output (encoder)"),
                            ("Audio", "Audio devices"), ("Video", "Canvases"), ("Hotkeys", "Hotkeys"),

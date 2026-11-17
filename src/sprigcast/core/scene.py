@@ -277,6 +277,7 @@ class Output(BaseModel):
     id: str
     type: Literal["stream", "recording"]
     service: str | None = None
+    account: str = ""  # YouTube channel or Kick username after Sign in ("" = not signed in): shown, never used to sign in
     canvas: str
     bitrate_kbps: int = 6000
     key_ref: str | None = None  # name of the secret in the OS keyring, never the key itself

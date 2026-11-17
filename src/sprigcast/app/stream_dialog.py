@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -101,6 +103,8 @@ def _line_up_labels(forms: list[QFormLayout]) -> None:
                 item.widget().setStyleSheet(theme.MUTED_STYLE)
 
 
+log = logging.getLogger(__name__)
+
 NEW_PLACE = "New place"
 PICK_SERVICE = "Pick a service"
 
@@ -108,15 +112,15 @@ PICK_SERVICE = "Pick a service"
 def place_card_text(output: Output) -> str:
     """Two lines for a place card: the service, then shape and quality (and off)."""
     service = SERVICES.get(output.service or "custom", SERVICES["custom"])
-    detail = output.canvas
+    detail = output.canvas.capitalize()
     if output.enhanced and output.service == "twitch":
         detail += " · Enhanced"
     elif output.size:
         detail += f" · {output.size[1]}p"
     if output.bandwidth_test and service.bandwidth_test:
-        detail += " · test"
+        detail += " · Test"
     if not output.enabled:
-        detail += " · off"
+        detail += " · Off"
     return f"{service.label}\n{detail}"
 
 
@@ -128,10 +132,13 @@ class StreamPage(QWidget):
         self.collection = collection
         self.outputs = [o.model_copy() for o in collection.outputs if o.type == "stream"]
         self.other_paths_ids: set[str] = set()  # places in other paths (their ids name their keys)
-        self.keys = {o.key_ref: get_key(o.key_ref) or "" for o in self.outputs if o.key_ref}
-        self._saved_keys = dict(self.keys)  # only keys that change are written back
+        # Keys are read from the password store when a place is first shown, not all up front: each read can
+        # take a while on Windows, and opening a place from Live waited for every one (2026-11-17).
+        self.keys: dict[str, str] = {}
+        self._saved_keys: dict[str, str | None] = {}  # what the store held (None: never read); only changes are written
         self._loading = False
         self._unpicked: set[str] = set()  # places just added: no service chosen yet, nothing filled in
+        self._error_for = ""  # the place the last sign-in error belongs to
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -227,10 +234,23 @@ class StreamPage(QWidget):
         )
         key_row.addWidget(self.key, 1)
         key_row.addWidget(show)
-        self.sign_in_button = QPushButton("Sign in")  # YouTube and Kick: fetch the key instead of pasting it
+        # YouTube and Kick: sign in to fetch the key; the place then says who it's signed in as.
+        self.signin_row = QWidget()
+        signin = QHBoxLayout(self.signin_row)
+        signin.setContentsMargins(0, 0, 0, 0)
+        self.sign_in_button = QPushButton("Sign in")
         self.sign_in_button.setToolTip("Sign in to fill in the stream key")
         self.sign_in_button.clicked.connect(self._sign_in_clicked)
-        key_row.addWidget(self.sign_in_button)
+        self.signin_state = QLabel()
+        signin.addWidget(self.sign_in_button)
+        signin.addWidget(self.signin_state, 1)
+        self.signin_label = QLabel("Account")
+        form.addRow(self.signin_label, self.signin_row)
+        self.signin_error = QLabel()
+        self.signin_error.setWordWrap(True)
+        self.signin_error.setStyleSheet(f"color: {theme.WARN}")
+        self.signin_error.hide()
+        form.addRow("", self.signin_error)
         self.key_label = QLabel("Stream key")
         form.addRow(self.key_label, self.key_row)
         self.help = QLabel()
@@ -243,7 +263,7 @@ class StreamPage(QWidget):
         video, form = _section("Picture")
         self.canvas = QComboBox()
         for canvas in collection.canvases:
-            self.canvas.addItem(f"{canvas.id} ({canvas.width}×{canvas.height})", canvas.id)
+            self.canvas.addItem(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})", canvas.id)
         self.canvas.currentIndexChanged.connect(self._canvas_changed)
         form.addRow("Canvas", self.canvas)
         self.size = QComboBox()
@@ -400,6 +420,7 @@ class StreamPage(QWidget):
             return
         self.outputs.remove(output)
         if output.key_ref:
+            self._saved_keys.setdefault(output.key_ref, None)  # unread: still delete it
             self.keys[output.key_ref] = ""  # delete the saved key too
         self._refresh_list(self.list.currentRow())
 
@@ -435,7 +456,7 @@ class StreamPage(QWidget):
             spin.setEnabled(bool(value))
         self.ignore_recommendations.setChecked(output.ignore_recommendations)
         self.auto_bitrate.setChecked(output.auto_bitrate)
-        self.key.setText(self.keys.get(output.key_ref or "", ""))
+        self.key.setText(self._key_text(output))
         self._show_service(output)
         self._loading = False
 
@@ -480,13 +501,23 @@ class StreamPage(QWidget):
             widget.setEnabled(output.enhanced)
         self.enhanced_kbps.setEnabled(output.enhanced and bool(output.enhanced_max_kbps))
         self.enhanced_tracks.setEnabled(output.enhanced and bool(output.enhanced_max_tracks))
-        account = twitch_auth.connected_account() if is_twitch else None
+        account = self._twitch_account() if is_twitch else None
         self.use_account.setVisible(is_twitch and account is not None)
         # With the key fetched from the account there is nothing to paste, as in OBS.
         hide_key = is_twitch and account is not None and output.twitch_account
         self.key_row.setVisible(not hide_key)
         self.key_label.setVisible(not hide_key)
-        self.sign_in_button.setVisible(service_signin.available(output.service or ""))
+        can_sign_in = service_signin.available(output.service or "")
+        self.signin_row.setVisible(can_sign_in)
+        self.signin_label.setVisible(can_sign_in)
+        if can_sign_in:
+            signed_in = bool(output.account)
+            self.signin_state.setText(f"Signed in as {output.account}" if signed_in else "Not signed in")
+            self.sign_in_button.setText("Sign out" if signed_in else "Sign in")
+            self.sign_in_button.setToolTip("Forget this account and its stream key" if signed_in
+                                           else "Sign in to fill in the stream key")
+        if not can_sign_in or output.id != self._error_for:
+            self.signin_error.hide()
         if is_twitch:
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
             self.twitch_button.setText("Disconnect Account" if account else "Connect Account (recommended)")
@@ -496,7 +527,7 @@ class StreamPage(QWidget):
 
     def _show_unpicked(self, unpicked: bool) -> None:
         """A new place shows only the service to pick; the rest appears once one is picked."""
-        for widget in (self.server, self.twitch_row, self.use_account, self.key_row, self.help):
+        for widget in (self.server, self.twitch_row, self.use_account, self.signin_row, self.key_row, self.help):
             self._account_form.setRowVisible(widget, not unpicked)
         for widget in (self._picture_section, self._extras_section, self.enabled, self.enabled_label):
             widget.setVisible(not unpicked)
@@ -516,10 +547,17 @@ class StreamPage(QWidget):
             self.enabled.setChecked(True)
             self._loading = False
             self._show_unpicked(False)
+        changed = output.service != self.service.currentData()
         output.service = self.service.currentData()
         service = SERVICES[output.service]
         # Apply the platform's preset: canvas, resolution, frame rate and bitrate.
         self._loading = True
+        if changed:  # the old service's server means nothing here: its own (fixed) one, or blank to fill in
+            output.server = ""
+            output.account = ""  # signed in to the old service, not this one
+            if self._error_for == output.id:
+                self._error_for = ""
+            self.server.setText(service.server or "")
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(service.canvas)))
         canvas = self._canvas()
         size = preset_size(service, canvas)
@@ -586,16 +624,53 @@ class StreamPage(QWidget):
         self.use_account.setChecked(True)
         self._edited()
 
+    def _twitch_account(self) -> str | None:
+        """The connected Twitch login: from settings (instant), the password store only on older installs."""
+        login = twitch_auth.remembered_login()
+        if login is None:
+            login = twitch_auth.connected_account() or ""
+        return login or None
+
+    def _key_text(self, output: Output) -> str:
+        """This place's stream key, read from the password store the first time it's shown."""
+        ref = output.key_ref
+        if not ref:
+            return ""
+        if ref not in self.keys:
+            value = get_key(ref) or ""
+            self.keys[ref] = value
+            self._saved_keys.setdefault(ref, value)
+        return self.keys[ref]
+
     def _sign_in_clicked(self) -> None:
-        """YouTube or Kick: sign in once, fill in the key (and Kick's server)."""
+        """YouTube or Kick: sign in once, fill in the key (and Kick's server); signed in, sign out."""
         output = self._current()
         if output is None:
             return
-        from sprigcast.app.signin_dialog import sign_in
-
-        fetched = sign_in(output.service or "", self)
-        if fetched is None:
+        if output.account:  # Sign out: forget who it was and the key it fetched
+            log.info("sign-in: %s place signed out", output.service)
+            output.account = ""
+            self.key.setText("")
+            self.signin_error.hide()
+            self._edited()
             return
+        from sprigcast.app.signin_dialog import SignInDialog
+
+        dialog = SignInDialog(output.service or "", self)
+        try:
+            ok = bool(dialog.exec())
+            fetched, error = dialog.fetched if ok else None, dialog.error
+        finally:
+            dialog.deleteLater()
+        if fetched is None:
+            if error:  # stays on the place, so it's still there once the window has closed
+                self._error_for = output.id
+                self.signin_error.setText(error)
+                self.signin_error.show()
+            return
+        self._error_for = ""
+        self.signin_error.hide()
+        output.account = fetched.account
         self.key.setText(fetched.key)
         if fetched.server and not self.server.isReadOnly():
             self.server.setText(fetched.server)
