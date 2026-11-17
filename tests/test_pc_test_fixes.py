@@ -46,7 +46,7 @@ def test_the_wheel_leaves_boxes_alone_until_clicked(qapp):
     qapp.processEvents()
     if combo.hasFocus():
         assert guard.eventFilter(combo, _wheel_event()) is False  # clicked into: the wheel changes it
-    assert guard.eventFilter(other, _wheel_event()) is False
+    assert not other.property("_sprigcast_wheel_guard")  # only drop-downs and number boxes get the guard
     page.close()
 
 
@@ -242,7 +242,11 @@ def test_a_wheel_over_an_unclicked_drop_down_never_changes_it(qapp):
 
     from sprigcast.app import wheel_guard
 
+    from sprigcast.app import theme
+
     wheel_guard.install(qapp)
+    before = qapp.style().name()
+    qapp.setStyle(theme.guarded_style(before))  # the system look: the guard still comes with polishing
     page = QWidget()
     lay = QVBoxLayout(page)
     other, combo, spin = QLineEdit(), QComboBox(), QSpinBox()
@@ -258,3 +262,31 @@ def test_a_wheel_over_an_unclicked_drop_down_never_changes_it(qapp):
     qapp.sendEvent(combo, _wheel_event())
     assert combo.currentIndex() == 0 and not combo.hasFocus()
     page.close()
+    qapp.setStyle(before)
+
+
+def test_no_app_wide_python_hooks_and_the_ui_gets_the_lock_while_building(qapp):
+    """PC test 2026-11-17: opening Settings or any pop-up while live froze SprigCast for seconds. An app-wide
+    wheel filter ran Python for each of ~36,000 events while worker threads held Python's lock. Now each
+    drop-down and number box has its own guard, and Python hands the lock over quickly while widgets are made."""
+    import sys
+
+    from PySide6.QtWidgets import QComboBox
+
+    from sprigcast.app import theme, wheel_guard
+
+    the_guard = wheel_guard.install(qapp)
+    combo = QComboBox()
+    wheel_guard.guard(combo)
+    wheel_guard.guard(combo)  # once per widget
+    assert combo.property(wheel_guard.GUARDED)
+    assert the_guard.eventFilter(combo, _wheel_event()) is True
+
+    theme._burst_until = 0.0
+    theme._burst_over()  # any burst left over from widgets made earlier
+    usual = sys.getswitchinterval()
+    theme.ui_burst()
+    assert sys.getswitchinterval() <= theme.BURST_SWITCH_S
+    theme._burst_until = 0.0
+    theme._burst_over()
+    assert sys.getswitchinterval() == usual

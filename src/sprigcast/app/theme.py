@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen, QTransform
@@ -276,6 +277,23 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
     app.setFont(font)
 
 
+def guarded_style(base: str):
+    """The system look, with what every SprigCast style does as widgets are made: the wheel guard on each
+    drop-down and number box, and the quick lock hand-over (ui_burst)."""
+    from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QProxyStyle
+
+    class GuardedStyle(QProxyStyle):
+        def polish(self, target, *rest):
+            ui_burst()
+            if not rest and isinstance(target, (QComboBox, QAbstractSpinBox)):
+                from sprigcast.app import wheel_guard
+
+                wheel_guard.guard(target)
+            return super().polish(target, *rest)
+
+    return GuardedStyle(base)
+
+
 def roomy_style():
     """Fusion, plus room inside every number box in the app.
 
@@ -283,16 +301,21 @@ def roomy_style():
     left edge), so numbers would touch the edge of their rounded box. Every spin box gets text margins
     when it is polished instead: one place, so no number box anywhere can miss it.
     """
-    from PySide6.QtWidgets import QAbstractSpinBox, QMenu, QProxyStyle, QStyleFactory
+    from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QMenu, QProxyStyle, QStyleFactory
 
     class RoomyStyle(QProxyStyle):
         def polish(self, target, *rest):
+            ui_burst()  # a window, page or pop-up is being built: get Python's lock back quickly meanwhile
             if not rest and isinstance(target, QMenu) and not target.testAttribute(
                     Qt.WidgetAttribute.WA_TranslucentBackground):
                 # Every menu is a true rounded card: no square window corners or square shadow behind it.
                 target.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
                 target.setWindowFlags(target.windowFlags() | Qt.WindowType.FramelessWindowHint
                                       | Qt.WindowType.NoDropShadowWindowHint)
+            if not rest and isinstance(target, (QComboBox, QAbstractSpinBox)):
+                from sprigcast.app import wheel_guard
+
+                wheel_guard.guard(target)  # its own filter: no app-wide one (see wheel_guard)
             if not rest and isinstance(target, QAbstractSpinBox):
                 edit = target.lineEdit()
                 if edit is not None:
@@ -303,6 +326,43 @@ def roomy_style():
 
     # A new one each time: QApplication.setStyle takes ownership and deletes the style it replaces.
     return RoomyStyle(QStyleFactory.create("Fusion"))
+
+
+# While the window builds widgets (Settings, any pop-up), Qt calls back into Python thousands of times
+# (style polish, ~7,000 calls for Settings). Each call needs Python's lock, and while streaming and recording
+# other threads hold it: with the usual 1 ms hand-over each call could wait about that long, so Settings
+# took seconds to open and the whole window froze (PC test, 2026-11-17). For the moment widgets are being
+# made, the lock changes hands every 0.1 ms instead; then the usual interval comes back.
+BURST_SWITCH_S = 0.0001
+BURST_HOLD_S = 0.4
+_burst_until = 0.0
+_usual_switch: float | None = None
+
+
+def ui_burst() -> None:
+    """Widgets are being made on the window's thread: hand Python's lock over quickly until it settles."""
+    global _burst_until, _usual_switch
+    starting = _usual_switch is None
+    _burst_until = time.monotonic() + BURST_HOLD_S
+    if starting:
+        _usual_switch = sys.getswitchinterval()
+        sys.setswitchinterval(min(_usual_switch, BURST_SWITCH_S))
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(int(BURST_HOLD_S * 1000), _burst_over)
+
+
+def _burst_over() -> None:
+    global _usual_switch
+    left = _burst_until - time.monotonic()
+    if left > 0:  # still making widgets: look again then
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(int(left * 1000) + 10, _burst_over)
+        return
+    if _usual_switch is not None:
+        sys.setswitchinterval(_usual_switch)
+        _usual_switch = None
 
 
 def ticked(action, on: bool) -> None:
@@ -329,7 +389,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
         _set_symbol_fallbacks(app)
     if wanted == "system":
         app.setStyleSheet("")
-        app.setStyle(_system_style)
+        app.setStyle(guarded_style(_system_style))  # the system look, still with the wheel guard
         app.setPalette(app.style().standardPalette())
         return False
     app.setStyle(roomy_style())

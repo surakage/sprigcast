@@ -222,10 +222,6 @@ def _hint(text: str) -> QLabel:
     return label
 
 
-def _scanning(devices) -> bool:
-    return hasattr(devices, "done") and not devices.done()
-
-
 def _devices(devices) -> dict[str, list[str]]:
     """The audio devices: a dict, or a Future of one (scanned on a worker); waited for with the window drawing."""
     if hasattr(devices, "result"):
@@ -321,8 +317,8 @@ class SettingsWindow(QDialog):
         self.search.setCompleter(completer)
         self.search.returnPressed.connect(lambda: self.find(self.search.text()))
 
-        self.open_tab(tab)
-        QTimer.singleShot(0, self, self._make_next)
+        self.open_tab(tab)  # only this page is made now; the others when their tab is picked (making them all
+        # up front held SprigCast up for seconds while live)
 
         side = QVBoxLayout()
         side.setSpacing(14)
@@ -440,15 +436,18 @@ class SettingsWindow(QDialog):
                 "connections_page": "Connections"}
 
     def __getattr__(self, name: str):
-        """A page's widgets asked for before the page was made: make it (or, not knowing which, all of them)."""
+        """A page's widgets asked for before the page was made: make that page (not knowing which: up to the one)."""
         makers = self.__dict__.get("_makers")
         if makers is None or name.startswith("_") or len(self.__dict__.get("_built", ())) == len(TABS):
             raise AttributeError(name)
         page = self._PAGE_OF.get(name)
         if page is not None and page not in self._built:
             self.ensure(page)
-        else:
-            self.ensure_all()
+        else:  # page by page, stopping at the one that has it
+            for page in TABS:
+                if name in self.__dict__:
+                    break
+                self.ensure(page)
         return object.__getattribute__(self, name)
 
     def ensure(self, name: str) -> None:
@@ -485,19 +484,6 @@ class SettingsWindow(QDialog):
     def ensure_all(self) -> None:
         for name in TABS:
             self.ensure(name)
-
-    def _make_next(self) -> None:
-        """Once the window is up: the next page not made yet, then the one after on the next turn. The Audio
-        page waits for its device scan (on a worker) to be done."""
-        if getattr(self, "_closed", False):
-            return  # closed before every page was made: nothing more to make (it used to make them all anyway)
-        left = [name for name in TABS if name not in self._built]
-        scanning = _scanning(self._audio_devices)
-        ready = [name for name in left if not (name == "Audio" and scanning)]
-        if ready:
-            self.ensure(ready[0])
-        if len(left) > 1 or (left and not ready):
-            QTimer.singleShot(0 if len(ready) > 1 else 50, self, self._make_next)  # cancelled if it's deleted
 
     def _show_row(self, row: int) -> None:
         if 0 <= row < len(TABS):
@@ -825,37 +811,7 @@ class SettingsWindow(QDialog):
 
     # Restart -----------------------------------------------------------------------
 
-    def _show_restart_note(self) -> None:
-        waiting = bool(pending_video())
-        self.restart_note.setText("Canvas changes wait for a restart" if waiting else "")
-        self.restart_note.setVisible(waiting)
-        self.restart_button.setVisible(waiting and not (self.streaming or self.recording))
-
-    def _restart(self) -> None:
-        if self.apply():
-            self.restart_requested.emit()
-            self.accept()
-
-    # Saving ------------------------------------------------------------------------
-
-    def _ok(self) -> None:
-        if self.apply():
-            self.accept()
-
-    def apply(self) -> bool:
-        """Write every page back. Returns False (and shows why) if something can't be saved."""
-        self.ensure_all()
-        if not self.streaming and not self.stream_page.apply_to(self.collection):
-            self.open_tab("Stream/Places")
-            return False
-        if not self.recording:
-            self.recording_page.apply_to(self.collection.recording, self.default_recordings_folder)
-        self.stream_quality.apply_to(self.collection)
-        self.recording_tabs.apply_to(self.collection)
-        self.camera_tab.apply()
-        self.connections_page.apply()
-        self.audio_page.apply_to(self.collection, recording=self.recording)
-
+    def _apply_general(self) -> None:
         settings = QSettings()
         settings.setValue("general/theme", self.theme.currentData())
         settings.setValue(CONFIRM_STREAM, self.confirm_stream.isChecked())
@@ -881,30 +837,73 @@ class SettingsWindow(QDialog):
         if level != priority.chosen():
             settings.setValue(priority.SETTING, level)
             priority.set_cpu_priority(level)
-        if not (self.streaming or self.recording):
-            on = {cid for cid, fields in self.video_fields.items() if fields[0].isChecked()}
-            if on:  # switching a canvas on or off happens right away; at least one stays on
-                for canvas in self.collection.canvases:
-                    canvas.enabled = canvas.id in on
-            changes = {}
+
+    def _apply_video(self) -> None:
+        settings = QSettings()
+        on = {cid for cid, fields in self.video_fields.items() if fields[0].isChecked()}
+        if on:  # switching a canvas on or off happens right away; at least one stays on
             for canvas in self.collection.canvases:
-                enabled, width, height, fps = self.video_fields[canvas.id]
-                wanted = {
-                    "width": width.value(),
-                    "height": height.value(),
-                    "fps": fps.currentData(),
-                }
-                current = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps}
-                if wanted != current:
-                    changes[canvas.id] = wanted
-            for canvas in self.collection.canvases:
-                out, downscale = self.video_output[canvas.id]
-                canvas.output_short_side = out.currentData()
-                canvas.downscale = downscale.currentData()
-            if changes:
-                settings.setValue(PENDING_VIDEO, json.dumps(changes))
-            else:
-                settings.remove(PENDING_VIDEO)
+                canvas.enabled = canvas.id in on
+        changes = {}
+        for canvas in self.collection.canvases:
+            enabled, width, height, fps = self.video_fields[canvas.id]
+            wanted = {
+                "width": width.value(),
+                "height": height.value(),
+                "fps": fps.currentData(),
+            }
+            current = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps}
+            if wanted != current:
+                changes[canvas.id] = wanted
+        for canvas in self.collection.canvases:
+            out, downscale = self.video_output[canvas.id]
+            canvas.output_short_side = out.currentData()
+            canvas.downscale = downscale.currentData()
+        if changes:
+            settings.setValue(PENDING_VIDEO, json.dumps(changes))
+        else:
+            settings.remove(PENDING_VIDEO)
+
+    def _show_restart_note(self) -> None:
+        waiting = bool(pending_video())
+        self.restart_note.setText("Canvas changes wait for a restart" if waiting else "")
+        self.restart_note.setVisible(waiting)
+        self.restart_button.setVisible(waiting and not (self.streaming or self.recording))
+
+    def _restart(self) -> None:
+        if self.apply():
+            self.restart_requested.emit()
+            self.accept()
+
+    # Saving ------------------------------------------------------------------------
+
+    def _ok(self) -> None:
+        if self.apply():
+            self.accept()
+
+    def apply(self) -> bool:
+        """Write back every page that was made (one never opened still matches what's saved). Returns False
+        (and shows why) if something can't be saved. Making every page here held Save up for seconds while live."""
+        built = self._built
+        if "Stream" in built:
+            if not self.streaming and not self.stream_page.apply_to(self.collection):
+                self.open_tab("Stream/Places")
+                return False
+            self.stream_quality.apply_to(self.collection)
+        if "Recording" in built:
+            if not self.recording:
+                self.recording_page.apply_to(self.collection.recording, self.default_recordings_folder)
+            self.recording_tabs.apply_to(self.collection)
+        if "Video" in built:
+            self.camera_tab.apply()
+        if "Connections" in built:
+            self.connections_page.apply()
+        if "Audio" in built:
+            self.audio_page.apply_to(self.collection, recording=self.recording)
+        if "General" in built:
+            self._apply_general()
+        if "Video" in built and not (self.streaming or self.recording):
+            self._apply_video()
         self._show_restart_note()
         self.applied.emit()
         return True
