@@ -86,3 +86,33 @@ def test_text_refreshes_clock_once_a_second():
     assert src.video_frame() is None  # nothing changed within the same second
     time.sleep(1.05)
     assert src.video_frame() is not None
+
+
+def test_a_changed_text_is_drawn_on_a_worker(monkeypatch):
+    """Heavy run 2026-11-17: a text redraw took 10-13 ms of the render thread. Only the first picture is drawn
+    there now; a change is drawn on a worker and handed over on a later frame."""
+    import threading
+    import time as _time
+
+    from sprigcast.sources import text as text_mod
+
+    monkeypatch.setattr(text_mod, "DRAW_ASIDE", True)
+    src = text_mod.TextSource("t", {"text": "one", "size": 20})
+    assert src.video_frame() is not None  # the first picture: in place
+    drawn_on: list = []
+    real = src._render
+
+    def render():
+        drawn_on.append(threading.current_thread().name)
+        return real()
+
+    monkeypatch.setattr(src, "_render", render)
+    src.update({"text": "a much longer line", "size": 20})
+    first = src.video_frame()  # starts the worker's drawing; the old picture stays meanwhile
+    deadline = _time.monotonic() + 5
+    frame = first
+    while frame is None and _time.monotonic() < deadline:
+        _time.sleep(0.005)
+        frame = src.video_frame()
+    assert frame is not None and frame.shape[1] > 60
+    assert drawn_on and drawn_on[0].startswith("sprigcast-work")

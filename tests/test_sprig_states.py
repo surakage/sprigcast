@@ -156,3 +156,25 @@ def test_gpu_fading_item_is_drawn_at_its_opacity():
     r, g, b, a = (int(v) for v in img[4, 24])
     assert abs(a - 128) <= 2 and abs(b - 128) <= 2  # half way, premultiplied
     comp.release()
+
+
+def test_the_sprigs_pass_works_out_each_sprigs_look_once_per_collection():
+    """Heavy run 2026-11-17: 17 sprigs on two canvases cost 11-120 ms a frame, mostly a deep copy of every sprig
+    as its Live state shows it, every frame. It's kept until the collection changes."""
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    col.set_state("p-cam", "Quiet")
+    engine = Engine(col)
+    fake = FakeCompositor()
+    seen = []
+    fake.render_part = lambda key, size, scene, sizes, fades=None: seen.append(scene) or key
+    engine._render_parts(fake, {}, 0.0)
+    engine._render_parts(fake, {}, 0.0)
+    assert len(seen) == 2 and seen[0] is seen[1]  # the same view, not a fresh copy each frame
+    assert [i.source for i in seen[0].items if i.visible] == ["frame"]
+    new = engine._collection.model_copy(deep=True)
+    new.set_state("p-cam", None)
+    engine._collection = new  # a change: worked out again
+    engine._render_parts(fake, {}, 0.0)
+    assert [i.source for i in seen[-1].items if i.visible] == ["frame", "alert"]

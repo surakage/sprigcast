@@ -755,3 +755,39 @@ def test_encoder_room_from_the_measured_load():
     assert encoder_room(1.0, 1) == 16  # a near-zero reading counts as 5% each
     assert room_line(30.0, 2) == (True, "Encoder 30% busy · room for about 3 more")
     assert room_line(84.0, 4) == (False, "Encoder 84% busy · no room for more")
+
+
+def test_a_view_of_the_bloom_on_air_shares_the_canvas_already_drawn():
+    """Heavy run 2026-11-17: SprigCast Camera showed the vertical bloom on air, and the view drew all of it a second
+    time every frame (5-20 ms). Drawn this tick already, the canvas's picture is used; anything else still draws."""
+    from types import SimpleNamespace
+
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection
+    from sprigcast.render.engine import Engine
+
+    class Fake:
+        def __init__(self):
+            self.drawn = []
+
+        def render(self, canvas, *a, **k):
+            self.drawn.append(canvas.id)
+
+        def read(self, key):
+            return b"" + key.encode()
+
+    engine = Engine(SceneCollection(canvases=[Canvas(id="v", width=16, height=9)],
+                                    scenes=[Scene(id="a", name="A", canvas="v"), Scene(id="b", name="B", canvas="v")],
+                                    active_scenes={"v": "a"}))
+    read_from = []
+    engine._output_frame = lambda comp, canvas, cb, size, now, made: read_from.append((canvas.id, id(made))) or \
+        made.setdefault(size, SimpleNamespace(fmt="nv12"))
+    fake, got, shared = Fake(), [], {}
+    engine.set_view("camera", "v", "bloom", "a")
+    taps = {"view:camera": [(got.append, (8, 4))]}
+    engine._render_views(fake, {}, 10.0, taps, {"v": shared})
+    assert fake.drawn == [] and read_from == [("v", id(shared))] and len(got) == 1
+    engine._render_views(fake, {}, 10.1, taps, {})  # the canvas wasn't drawn this tick: the view draws it
+    assert fake.drawn == ["view:camera"]
+    engine.set_view("camera", "v", "bloom", "b")  # a bloom that isn't on air: drawn on its own
+    engine._render_views(fake, {}, 10.2, taps, {"v": shared})
+    assert fake.drawn == ["view:camera", "view:camera"]
