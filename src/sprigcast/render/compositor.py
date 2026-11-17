@@ -658,6 +658,11 @@ class _Pbos:
         """The card hasn't finished a copy older than the last one asked for: it's busy with something."""
         return self.fences is not None and any(not self.fences.done(p[3]) for p in self.pending[:-1])
 
+    def stuck(self, now: float, after_s: float = 0.1) -> bool:
+        """A copy asked for more than after_s ago still isn't done: the card is stuck, not merely busy."""
+        return self.fences is not None and any(now - p[2] > after_s and not self.fences.done(p[3])
+                                               for p in self.pending)
+
     def _drop(self) -> None:
         index, _tag, _when, sync = self.pending.pop(0)
         self.free.append(index)
@@ -759,6 +764,8 @@ class _CanvasTarget:
 
 class Compositor:
     """Owns the GL context, one framebuffer per canvas, and one texture per source."""
+
+    STUCK_S = 0.1  # an output's copy not done after this long: the card is stuck, ask it for no more (read_nv12_later)
 
     def __init__(self, ctx: moderngl.Context | None = None):
         self.ctx = ctx or create_context()
@@ -1336,6 +1343,9 @@ class Compositor:
             pbos = self.full_pbos[canvas_id] = _Pbos(self.ctx, w * h * 4, self.gl)
             pbos.size = (w, h)
         self._used[("full", canvas_id)] = time.monotonic()
+        if pbos.stuck(now, self.STUCK_S):  # see read_nv12_later
+            pbos.late += 1
+            return pbos.take(now, self.gl.read_buffer if self.gl is not None else None)
         if self.gl is not None:
             pbos.fill(tag, now, lambda buf: self.gl.read_into(fbo, buf, 4))
             return pbos.take(now, self.gl.read_buffer)
@@ -1379,7 +1389,16 @@ class Compositor:
 
     def read_nv12_later(self, canvas_id: str, size: tuple[int, int], tag: object,
                         now: float) -> tuple[bytes | None, object]:
-        """Like read_nv12 without waiting for the GPU: returns the previous call's frame and tag (see _Pbos)."""
+        """Like read_nv12 without waiting for the GPU: returns the previous call's frame and tag (see _Pbos).
+
+        While the card is stuck on an earlier copy (over STUCK_S), no new one is asked for: asking anyway held
+        the renderer 345 ms on the PC (2026-11-16) and every canvas missed 20 frames; now only this output
+        misses the frames the card couldn't make anyway, and nothing else waits."""
+        known = self.nv12_targets.get((canvas_id, size))
+        if known is not None and known.pbos.stuck(now, self.STUCK_S):
+            known.pbos.late += 1
+            self._used[("nv12", (canvas_id, size))] = time.monotonic()
+            return known.pbos.take(now, self.gl.read_buffer if self.gl is not None else None)
         target = self._draw_nv12(canvas_id, size)
         w, h = size
 

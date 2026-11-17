@@ -229,3 +229,30 @@ def test_an_optional_preview_copy_isnt_asked_for_while_the_card_is_behind(compos
     assert draws == [] and target.pbos.late == 1  # nothing new drawn or queued
     compositor.read_scaled_later("c", (32, 18), "c", 1.033)  # an output's copy is always made
     assert len(draws) == 1
+
+
+def test_stuck_means_a_copy_older_than_the_limit_isnt_done():
+    from sprigcast.render.compositor import _Pbos
+
+    fences = _Fences()
+    pbos = _Pbos(_Ctx(), 16, fences)
+    pbos.fill("a", 1.0, lambda buffer: None)
+    assert not pbos.stuck(1.05, 0.1)  # busy, not stuck
+    assert pbos.stuck(1.2, 0.1)
+    fences.finished.add(1)
+    assert not pbos.stuck(1.2, 0.1)
+
+
+def test_an_output_copy_isnt_asked_for_while_the_card_is_stuck(compositor, monkeypatch):
+    _picture(compositor)
+    compositor.read_nv12_later("c", (32, 18), "a", 1.0)
+    target = compositor.nv12_targets[("c", (32, 18))]
+    monkeypatch.setattr(target.pbos, "stuck", lambda now, after_s=0.1: True)
+    draws = []
+    real = compositor._draw_nv12
+    monkeypatch.setattr(compositor, "_draw_nv12", lambda *a: draws.append(a) or real(*a))
+    compositor.read_nv12_later("c", (32, 18), "b", 1.3)
+    assert draws == [] and target.pbos.late == 1
+    monkeypatch.setattr(target.pbos, "stuck", lambda now, after_s=0.1: False)
+    compositor.read_nv12_later("c", (32, 18), "c", 1.33)
+    assert len(draws) == 1
