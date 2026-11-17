@@ -140,3 +140,89 @@ def test_add_starts_a_blank_place_until_a_service_is_picked(fake_keyring):
     assert d.apply_to(col) and [o.service for o in col.outputs] == ["twitch", "youtube"]
     d.list.setCurrentRow(0)
     assert d.service.currentData() == "twitch" and d._picture_section.isVisibleTo(d)
+
+
+def test_switching_service_clears_the_old_server(fake_keyring):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import StreamPage
+
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="yt", type="stream", service="youtube", canvas="horizontal", key_ref="sprigcast/yt")],
+    )
+    d = StreamPage(col)
+    assert "youtube.com" in d.server.text()
+    d.service.setCurrentIndex(d.service.findData("kick"))
+    assert d.server.text() == "" and d.outputs[0].server == ""
+    d.service.setCurrentIndex(d.service.findData("custom"))
+    d.server.setText("rtmp://mine.example/live")
+    d.server.textEdited.emit("")
+    assert d.outputs[0].server == "rtmp://mine.example/live"
+    d.service.setCurrentIndex(d.service.findData("kick"))
+    assert d.outputs[0].server == ""
+
+
+def test_a_signed_in_place_says_who_and_signs_out(fake_keyring, monkeypatch):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app import signin_dialog
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import service_signin
+
+    monkeypatch.setattr(service_signin, "available", lambda s: s in ("youtube", "kick"))
+    outcome = {"fetched": service_signin.Fetched(account="Sloth Bloom", key="yt-key"), "error": None}
+
+    class FakeDialog:
+        def __init__(self, service, parent):
+            self.fetched, self.error = outcome["fetched"], outcome["error"]
+
+        def exec(self):
+            return self.fetched is not None
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr(signin_dialog, "SignInDialog", FakeDialog)
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="yt", type="stream", service="youtube", canvas="horizontal", key_ref="sprigcast/yt")],
+    )
+    d = StreamPage(col)
+    assert d.signin_state.text() == "Not signed in" and d.sign_in_button.text() == "Sign in"
+    d._sign_in_clicked()
+    assert d.signin_state.text() == "Signed in as Sloth Bloom" and d.sign_in_button.text() == "Sign out"
+    assert d.key.text() == "yt-key" and d.apply_to(col) and col.outputs[0].account == "Sloth Bloom"
+    d._sign_in_clicked()  # sign out
+    assert d.signin_state.text() == "Not signed in" and d.key.text() == ""
+    outcome.update(fetched=None, error="YouTube said 403: Live streaming isn't on for this YouTube channel yet.")
+    d._sign_in_clicked()
+    assert d.signin_error.isVisibleTo(d) and "isn't on" in d.signin_error.text()
+    d.service.setCurrentIndex(d.service.findData("kick"))  # the error and the account belong to the old service
+    assert not d.signin_error.isVisibleTo(d) and d.outputs[0].account == ""
+
+
+def test_keys_are_read_only_when_a_place_is_shown(fake_keyring, monkeypatch):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app import stream_dialog
+
+    reads = []
+    real = stream_dialog.get_key
+    monkeypatch.setattr(stream_dialog, "get_key", lambda ref: reads.append(ref) or real(ref))
+    fake_keyring[("SprigCast", "k/b")] = "bee"
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id=i, type="stream", service="custom", canvas="horizontal", key_ref=f"k/{i}") for i in "abc"],
+    )
+    d = stream_dialog.StreamPage(col)
+    assert reads == ["k/a"]
+    d.list.setCurrentRow(1)
+    assert reads == ["k/a", "k/b"] and d.key.text() == "bee"
+    d.list.setCurrentRow(2)
+    d._remove()  # never shown before removing? still deleted from the store
+    fake_keyring[("SprigCast", "k/c")] = "sea"
+    d2 = stream_dialog.StreamPage(col)
+    d2.list.setCurrentRow(2)
+    d2.list.setCurrentRow(0)
+    d2.outputs.pop(2)
+    d2._saved_keys.setdefault("k/c", None)
+    d2.keys["k/c"] = ""
+    assert d2.apply_to(col) and fake_keyring.get(("SprigCast", "k/c"), "") == ""

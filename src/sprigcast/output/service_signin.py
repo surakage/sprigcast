@@ -58,6 +58,10 @@ KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this 
 KICK_REDIRECT = f"http://localhost:{KICK_PORT}/callback"
 
 
+LIVE_NOT_ON = ("Live streaming isn't on for this YouTube channel yet. Turn it on at youtube.com/features "
+               "(it can take up to a day), then sign in again.")
+
+
 @dataclass
 class Fetched:
     account: str
@@ -133,13 +137,13 @@ def begin(service: str) -> Flow:
         raise SignInError(f"{label} sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
     verifier, challenge = pkce_pair()
     if service == "youtube":
-        waiter = Waiter(free_port())
+        waiter = Waiter(free_port(), label="YouTube")
         params = {"client_id": cid, "redirect_uri": waiter.url, "response_type": "code", "scope": YOUTUBE_SCOPE,
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state,
                   "prompt": "select_account"}
         auth = YOUTUBE_AUTH
     else:
-        waiter = Waiter(KICK_PORT, host="localhost")
+        waiter = Waiter(KICK_PORT, host="localhost", label="Kick")
         params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url, "scope": KICK_SCOPES,
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state}
         auth = KICK_AUTH
@@ -181,8 +185,13 @@ def _youtube_key(token: str) -> str:
     import json
     import urllib.request
 
-    streams = get_json(f"{YOUTUBE_API}/liveStreams?part=cdn,snippet,contentDetails&mine=true&maxResults=50",
-                       token, "YouTube").get("items") or []
+    try:
+        streams = get_json(f"{YOUTUBE_API}/liveStreams?part=cdn,snippet,contentDetails&mine=true&maxResults=50",
+                           token, "YouTube").get("items") or []
+    except SignInError as exc:
+        if "not enabled for live streaming" in str(exc).lower():
+            raise SignInError(LIVE_NOT_ON) from exc
+        raise
     usable = [s for s in streams if (s.get("contentDetails") or {}).get("isReusable", True)
               and (s.get("cdn") or {}).get("ingestionType", "rtmp") == "rtmp"]
     if usable:
@@ -202,8 +211,7 @@ def _youtube_key(token: str) -> str:
     except urllib.error.HTTPError as exc:
         text = exc.read().decode(errors="replace")
         if "liveStreamingNotEnabled" in text or "livePermissionBlocked" in text:
-            raise SignInError("Live streaming isn't on for this channel yet: turn it on in YouTube Studio "
-                              "(it can take a day).") from exc
+            raise SignInError(LIVE_NOT_ON) from exc
         raise SignInError(f"YouTube said {exc.code} making a stream key.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise SignInError(f"Couldn't reach YouTube: {exc}") from exc
@@ -218,7 +226,13 @@ def kick(cancelled: threading.Event | None = None, open_url: Callable[[str], obj
 def _kick_rest(flow: Flow, code: str) -> Fetched:
     token = _swap("kick", code, flow.verifier, flow.waiter.url, "Kick")
     log.info("sign-in: kick token received")
-    channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
+    try:
+        channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
+    except SignInError as exc:
+        if (" 403" in str(exc) or " 401" in str(exc)) and "Cloudflare" not in str(exc):
+            raise SignInError(f"{exc}. Sign in again and allow every permission Kick asks for "
+                              "(channel and stream key).") from exc
+        raise
     if not channels:
         raise SignInError("Kick didn't return your channel.")
     channel = channels[0]

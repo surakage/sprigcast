@@ -44,7 +44,7 @@ def test_readiness_and_summary():
     tt.server = "rtmp://example/live"
     col.canvases[1].enabled = False
     assert "vertical canvas is off" in problem(tt, col, lambda ref: True)
-    assert what_goes(tw, col) == "horizontal · 1920×1080 · 60 fps · 6000 kbps"
+    assert what_goes(tw, col) == "Horizontal · 1920×1080 · 60 fps · 6000 kbps"
     tw.enhanced, tw.enhanced_vertical = True, True
     assert what_goes(tw, col) == "Enhanced · horizontal + vertical"
 
@@ -405,10 +405,10 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         switch = side.place_rows["tt"][3]
         assert side.place_rows["tw"][3].isChecked() and not switch.isChecked()
         switch.click()  # turn TikTok on from Live
-        assert col.outputs[1].enabled and not side.place_rows["tt"][2].text().endswith(">off</span>")
+        assert col.outputs[1].enabled and not side.place_rows["tt"][2].text().endswith(">Off</span>")
         side.place_rows["tw"][3].click()
         note = side.place_rows["tw"][2].text()  # the shape, then how it's doing
-        assert not col.outputs[0].enabled and note.startswith("Horizontal") and note.endswith(">off</span>")
+        assert not col.outputs[0].enabled and note.startswith("Horizontal") and note.endswith(">Off</span>")
         assert side.place_rows["tw"][0].text() == "Tw"  # the platform's little tile
         # Edit opens the list on the first one; only + Add makes a new one.
         w._edit_destination(None)
@@ -450,7 +450,7 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         # Two Twitch destinations say which shape each one sends.
         col.outputs.append(Output(id="tw2", type="stream", service="twitch", canvas="vertical", key_ref="k/tw2"))
         w._live_destinations()
-        assert side.place_rows["tw2"][1].text() == "Twitch · vertical"
+        assert side.place_rows["tw2"][1].text() == "Twitch · Vertical"
     finally:
         w.close()
         QSettings().clear()

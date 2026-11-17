@@ -55,9 +55,68 @@ def problem_text(reply: dict) -> str:
     if error in (None, ""):
         return "no answer"
     return f"{error}" + (f" ({reply['status']})" if reply.get("status") else "")
-DONE_PAGE = """<!doctype html><meta charset="utf-8"><title>SprigCast</title>
-<body style="background:#0e1311;color:#e6ede8;font:16px system-ui;display:grid;place-items:center;height:90vh">
-<div style="text-align:center"><h2 style="color:#4fd88f">{title}</h2><p>{text}</p></div>"""
+def _logo() -> str:
+    """SprigCast's app icon (data/logo.svg), inline, or "" if it isn't there."""
+    from importlib import resources
+
+    try:
+        svg = resources.files("sprigcast.data").joinpath("logo.svg").read_text(encoding="utf-8")
+    except (OSError, ModuleNotFoundError):
+        return ""
+    return svg.replace('width="512" height="512"', 'width="56" height="56" aria-hidden="true"', 1)
+
+
+PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{title} · SprigCast</title>
+<style>
+:root {{ color-scheme: dark; }}
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  background: radial-gradient(1200px 600px at 50% -10%, #16261e 0%, #0e1311 60%) #0e1311;
+  color: #e6ede8; font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }}
+.card {{ width: 100%; max-width: 420px; background: #151c19; border: 1px solid #1f2825; border-radius: 22px;
+  padding: 36px 32px 30px; text-align: center; box-shadow: 0 24px 60px rgba(0, 0, 0, .45); }}
+.brand {{ display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 28px;
+  color: #8b9a92; font-size: 13px; letter-spacing: .04em; }}
+.brand svg {{ width: 28px; height: 28px; }}
+.mark {{ width: 64px; height: 64px; margin: 0 auto 18px; border-radius: 50%; display: grid; place-items: center;
+  background: {mark_bg}; color: {mark_fg}; }}
+.mark svg {{ width: 30px; height: 30px; }}
+h1 {{ margin: 0 0 8px; font-size: 22px; font-weight: 600; color: #f2f7f3; }}
+p {{ margin: 0; color: #a9b7b0; }}
+.reason {{ margin-top: 14px; padding: 10px 14px; border-radius: 12px; background: #1c2420; color: #e6ede8;
+  font-size: 14px; }}
+.next {{ margin-top: 26px; padding-top: 18px; border-top: 1px solid #1f2825; color: #8b9a92; font-size: 13px; }}
+</style></head><body><main class="card">
+<div class="brand">{logo}<span>SprigCast</span></div>
+<div class="mark">{icon}</div>
+<h1>{title}</h1><p>{text}</p>{reason}
+<div class="next">You can close this tab and go back to SprigCast.</div>
+</main></body></html>"""
+
+TICK = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" '
+        'stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>')
+CROSS = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">'
+         '<path d="M7 7l10 10M17 7L7 17"/></svg>')
+
+
+def result_page(ok: bool, label: str = "", reason: str = "") -> str:
+    """The page the browser shows when it comes back to SprigCast: signed in, or why not."""
+    import html
+
+    where = html.escape(label) if label else ""
+    if ok:
+        title = f"Signed in to {where}" if where else "You're signed in"
+        text = "SprigCast is fetching your stream key now."
+        mark = ("#1d3428", "#4fd88f", TICK)
+    else:
+        title = "Sign-in didn't finish"
+        text = "Nothing was changed. Go back to SprigCast and try again, or paste the stream key instead."
+        mark = ("#3a2a1c", "#f0b35a", CROSS)
+    box = f'<div class="reason">{html.escape(reason)}</div>' if reason and not ok else ""
+    return PAGE.format(title=title, text=text, reason=box, logo=_logo(), icon=mark[2], mark_bg=mark[0],
+                       mark_fg=mark[1])
+
 
 
 class SignInError(Exception):
@@ -89,6 +148,7 @@ class Waiter:
     path: str = "/callback"
     host: str = "127.0.0.1"  # in the redirect URL; Kick wants "localhost" (its sign-in page rewrites 127.0.0.1)
     state: str = field(default_factory=lambda: secrets.token_urlsafe(24))
+    label: str = ""  # "YouTube", "Kick": named on the page the browser comes back to
     result: dict | None = None
     _done: threading.Event = field(default_factory=threading.Event)
     _servers: list = field(default_factory=list)
@@ -108,10 +168,12 @@ class Waiter:
                     return
                 query = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
                 ok = "code" in query and query.get("state") == waiter.state
-                page = DONE_PAGE.format(title="You're signed in" if ok else "Sign-in didn't finish",
-                                        text="You can close this tab and go back to SprigCast." if ok
-                                        else "Go back to SprigCast and try again.")
-                body = page.encode()
+                reason = ""
+                if query.get("error") == "access_denied":
+                    reason = f"{waiter.label or 'The service'} didn't allow the sign-in."
+                elif query.get("error"):
+                    reason = query.get("error_description") or query["error"]
+                body = result_page(ok, waiter.label, reason).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -170,6 +232,33 @@ class Waiter:
             server.server_close()
 
 
+def refusal_reason(raw: bytes) -> str:
+    """Why a service refused, from its reply body: its own message, Cloudflare's error title, or an HTML
+    page's title. "" when the body says nothing."""
+    import re
+
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])  # Google: {"error": {"message": ...}}
+        for name in ("message", "error_description", "title", "detail"):  # Kick, OAuth, Cloudflare
+            if isinstance(body.get(name), str) and body[name].strip():
+                text = body[name].strip()
+                return f"{text} (Cloudflare)" if name == "title" and "Error 1" in text else text
+        if isinstance(error, str) and error:
+            return error
+        return ""
+    text = raw.decode(errors="replace")
+    match = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    if match:
+        return " ".join(match.group(1).split())[:120]
+    return " ".join(text.split())[:120]
+
+
 def post_form(url: str, fields: dict, who: str) -> dict:
     """POST a form; the JSON reply, or {"error": ...} with the status on an HTTP error."""
     request = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(), method="POST",
@@ -202,12 +291,9 @@ def get_json(url: str, token: str, who: str, headers: dict | None = None) -> dic
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise PermissionError("token rejected") from exc
-        try:
-            detail = json.loads(exc.read() or b"{}")
-        except ValueError:
-            detail = {}
-        message = (detail.get("error") or {}).get("message") if isinstance(detail.get("error"), dict) \
-            else detail.get("message")
+        raw = exc.read() or b""
+        message = refusal_reason(raw)
+        log.info("sign-in: %s answered %d: %s", who, exc.code, message or raw[:200].decode(errors="replace"))
         raise SignInError(f"{who} said {exc.code}" + (f": {message}" if message else "")) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise SignInError(f"Couldn't reach {who}: {exc}") from exc

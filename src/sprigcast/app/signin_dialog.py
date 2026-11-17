@@ -64,6 +64,7 @@ class SignInDialog(CardDialog):
         self._cancel = threading.Event()
         self._job = Job()
         self._thread: threading.Thread | None = None
+        self._start_error: str | None = None
         layout = self.body
         self.message = QLabel(f"Finish signing in to {label} in your browser.")
         self.message.setWordWrap(True)
@@ -88,6 +89,7 @@ class SignInDialog(CardDialog):
         try:
             flow = (begin or service_signin.begin)(service)
         except SignInError as exc:
+            self._start_error = str(exc)
             self._show_error(str(exc))
             return
         opened = (open_url or open_in_browser)(flow.url)
@@ -98,6 +100,11 @@ class SignInDialog(CardDialog):
                                         name=f"{service}-sign-in", daemon=True)
         self._thread.start()
         self._timer.start()
+
+    @property
+    def error(self) -> str | None:
+        """What went wrong, worded for the person, once the sign-in ended without a key."""
+        return self._job.error or self._start_error
 
     def _show_error(self, text: str) -> None:
         self.message.setText(text)

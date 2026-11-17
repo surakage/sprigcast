@@ -164,7 +164,7 @@ class CustomDocksDialog(QDialog):
         self.preset.addItems(list(PRESETS))
         self.preset.currentTextChanged.connect(self._preset_changed)
         self.channel = QLineEdit()
-        self.channel.setPlaceholderText("your Twitch name")
+        self.channel.setPlaceholderText("Your Twitch name")
         self.channel.textEdited.connect(self._channel_edited)
         self.name = QLineEdit()
         self.name.textEdited.connect(self._edited)

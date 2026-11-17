@@ -206,3 +206,31 @@ def test_a_cloudflare_refusal_reads_as_words_not_a_dict(monkeypatch):
     assert "{" not in text and "developers.cloudflare" not in text and text.endswith(".")
     assert oauth_loopback.problem_text({"error": "slow_down", "error_description": "x"}).startswith("too many")
     assert oauth_loopback.problem_text({"error": "invalid_grant", "status": 400}) == "invalid_grant (400)"
+
+
+def test_a_refusal_shows_the_reason_from_the_body():
+    r = oauth_loopback.refusal_reason
+    assert r(b'{"data": {}, "message": "Forbidden: missing scope streamkey:read"}') == \
+        "Forbidden: missing scope streamkey:read"
+    assert r(b'{"error": {"code": 403, "message": "The user is not enabled for live streaming."}}') == \
+        "The user is not enabled for live streaming."
+    assert r(b'{"title": "Error 1010: Access denied", "status": 403}') == "Error 1010: Access denied (Cloudflare)"
+    assert r(b"<html><head><title>Attention Required! | Cloudflare</title></head></html>") == \
+        "Attention Required! | Cloudflare"
+    assert r(b"") == ""
+
+
+def test_youtube_without_live_streaming_says_how_to_turn_it_on(monkeypatch):
+    def refused(url, token, who, headers=None):
+        raise SignInError("YouTube said 403: The user is not enabled for live streaming.")
+
+    monkeypatch.setattr(service_signin, "get_json", refused)
+    with pytest.raises(SignInError, match="youtube.com/features"):
+        service_signin._youtube_key("tok")
+
+
+def test_the_browser_page_names_the_service_and_escapes_what_comes_back():
+    ok = oauth_loopback.result_page(True, "YouTube")
+    assert "Signed in to YouTube" in ok and "<svg" in ok and "close this tab" in ok
+    bad = oauth_loopback.result_page(False, "Kick", "<script>alert(1)</script>")
+    assert "Sign-in didn't finish" in bad and "<script>" not in bad and "&lt;script&gt;" in bad

@@ -336,8 +336,8 @@ PLATFORM_TILES = {
 
 
 def _sentence(note: str) -> str:
-    """ "Ready" -> "ready" after the shape; numbers and names like "OBS" stay as they are."""
-    return note[:1].lower() + note[1:] if note[:1].isupper() and not note[1:2].isupper() else note
+    """Each part of a tile's line starts with a capital: "Horizontal · Ready" (the user's call, 2026-11-17)."""
+    return note[:1].upper() + note[1:]
 
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),

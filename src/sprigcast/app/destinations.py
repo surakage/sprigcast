@@ -21,7 +21,7 @@ def what_goes(output: Output, collection: SceneCollection) -> str:
     canvas = next((c for c in collection.canvases if c.id == output.canvas), None)
     w, h = output.size or ((canvas.width, canvas.height) if canvas else (0, 0))
     fps = output.fps or (canvas.fps if canvas else 0)
-    return f"{output.canvas} · {w}×{h} · {fps} fps · {output.bitrate_kbps} kbps"
+    return f"{output.canvas.capitalize()} · {w}×{h} · {fps} fps · {output.bitrate_kbps} kbps"
 
 
 def problem(output: Output, collection: SceneCollection, has_key: Callable[[str | None], bool]) -> str | None:
