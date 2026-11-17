@@ -181,6 +181,16 @@ class StreamPage(QWidget):
         hero.setSpacing(12)
         self.hero = _heading("", 22)
         hero.addWidget(self.hero, 1)
+        # Twitch's bandwidth test, up top beside Go live here so it's found at once (it sat in Extras).
+        self.bandwidth_test = Switch()
+        self.bandwidth_test.setToolTip("On: the stream reaches Twitch so you can check it, but viewers don't see it")
+        self.bandwidth_test.toggled.connect(self._edited)
+        self.bandwidth_label = QLabel("Test only")
+        self.bandwidth_label.setStyleSheet(theme.MUTED_STYLE)
+        self.bandwidth_label.setToolTip(self.bandwidth_test.toolTip())
+        hero.addWidget(self.bandwidth_label)
+        hero.addWidget(self.bandwidth_test)
+        hero.addSpacing(6)
         self.enabled = Switch()
         self.enabled.setToolTip("On: Go live sends here. Off: skipped.")
         self.enabled.toggled.connect(self._edited)
@@ -330,9 +340,6 @@ class StreamPage(QWidget):
 
         # Advanced options.
         advanced, form = _section("Extras")
-        self.bandwidth_test = QCheckBox("Enable bandwidth test mode (send to Twitch without going live)")
-        self.bandwidth_test.toggled.connect(self._edited)
-        form.addRow("", self.bandwidth_test)
         self.ignore_recommendations = QCheckBox("Ignore streaming service setting recommendations")
         self.ignore_recommendations.toggled.connect(self._edited)
         form.addRow("", self.ignore_recommendations)
@@ -494,6 +501,7 @@ class StreamPage(QWidget):
         self.limits.setText(f"Maximum video bitrate: {service.max_kbps} kbps\nMaximum audio bitrate: 320 kbps")
         self.limits.setVisible(not output.ignore_recommendations)
         self.bandwidth_test.setVisible(service.bandwidth_test)
+        self.bandwidth_label.setVisible(service.bandwidth_test)
         is_twitch = (output.service or "") == "twitch"
         self.twitch_row.setVisible(is_twitch)
         self.account_label.setVisible(is_twitch)
@@ -534,6 +542,8 @@ class StreamPage(QWidget):
             widget.setVisible(not unpicked)
         if unpicked:
             self.enhanced_box.setVisible(False)
+            self.bandwidth_test.setVisible(False)
+            self.bandwidth_label.setVisible(False)
 
     def _service_changed(self) -> None:
         output = self._current()
