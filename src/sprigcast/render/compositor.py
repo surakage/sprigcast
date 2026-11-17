@@ -823,6 +823,7 @@ class Compositor:
         self.detail: dict[str, tuple[float, tuple[int, int]]] = {}
         self._detailed: dict[tuple[int, float], tuple[VideoEffects, VideoEffects]] = {}
         self.targets: dict[str, _CanvasTarget] = {}
+        self._spare: list[tuple[_CanvasTarget, float]] = []  # sprig targets let go of, kept for reuse (prune)
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
         self.nv12_targets: dict[tuple[str, tuple[int, int]], _Nv12Target] = {}
@@ -917,9 +918,29 @@ class Compositor:
         if target is None or target.size != size:
             if target is not None:
                 target.release()
-            target = _CanvasTarget(self.ctx, size)
+            target = self._take_spare(size) or _CanvasTarget(self.ctx, size)
             self.targets[key] = target
         return target
+
+    # A sprig's canvas-sized target goes 3 s after nothing shows it. The heavy run (PC, 2026-11-17) switched to a
+    # bloom of 17 sprigs every 15 s: every switch made all their targets again, and the first draw into fresh ones
+    # held the frame 80-130 ms while the driver set their memory aside. Targets let go of are kept a while and
+    # handed to the next sprig of the same size: any sprig can use any, each frame clears it first.
+    SPARE_KEEP_S = 60.0
+    SPARE_MAX = 48  # at most this many kept (8 MB each at 1080p)
+
+    def _take_spare(self, size: tuple[int, int]) -> _CanvasTarget | None:
+        for i, (target, _since) in enumerate(self._spare):
+            if target.size == size:
+                del self._spare[i]
+                return target
+        return None
+
+    def _keep_spare(self, target: _CanvasTarget, now: float) -> None:
+        target.release_transition()
+        self._spare.append((target, now))
+        while len(self._spare) > self.SPARE_MAX:
+            self._spare.pop(0)[0].release()
 
     def render_part(self, part_id: str, size: tuple[int, int], scene: Scene,
                     source_sizes: dict[str, tuple[int, int]], fades: dict[str, float] | None = None) -> moderngl.Texture:
@@ -1509,7 +1530,16 @@ class Compositor:
             self._previewed.discard(key)
             if kind == "full":
                 self._previewed_full.discard(key)
-            if target is not None:
+            if target is None:
+                continue
+            if kind == "canvas" and key.startswith("part:"):
+                self._keep_spare(target, now)
+            else:
+                target.release()
+        old = [entry for entry in self._spare if now - entry[1] > self.SPARE_KEEP_S]
+        if old:
+            self._spare = [entry for entry in self._spare if now - entry[1] <= self.SPARE_KEEP_S]
+            for target, _since in old:
                 target.release()
         return len(stale)
 
@@ -1520,6 +1550,9 @@ class Compositor:
             tex.release()
         for target in self.targets.values():
             target.release()
+        for target, _since in self._spare:
+            target.release()
+        self._spare = []
         for nv12 in self.nv12_targets.values():
             nv12.release()
         for scaled in self.scaled_targets.values():

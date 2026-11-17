@@ -136,6 +136,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   (handing over waits on the render thread), so it's now OFF unless SPRIGCAST_GPU_SHARE=1, with a log line
   each minute saying where its time goes.
 - Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
+- Switching to a heavy bloom no longer costs a 100-220 ms frame: sprig targets that were let go are kept a minute
+  and reused, pictures shown again are decoded on a worker (the switch waits for them, as for a camera), and a
+  sprig's Live look is a light copy instead of a deep one.
 - Heavy scenes draw faster: the sprigs pass works out each sprig's Live look once per change instead of copying
   every sprig every frame (7.7 to 0.7 ms a frame with 17 sprigs on two canvases in a test). SprigCast Camera
   showing the bloom on air shares that canvas's picture instead of drawing the whole bloom again. A text that
