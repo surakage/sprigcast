@@ -1,0 +1,160 @@
+"""Browser pages in their own process (app/browser_helper.py): a page that takes its time to copy never
+freezes SprigCast's window or renderer (the 2026-11-17 heavy run: 280-360 ms each time)."""
+
+import os
+import time
+
+import numpy as np
+import pytest
+
+from sprigcast.app import browser_helper
+from sprigcast.app.browser_helper import FrameSlot, RemoteHost
+
+
+def test_pictures_pass_through_shared_memory_whole():
+    owner = FrameSlot.create(f"sprigcast-test-{os.getpid()}", 8 * 4)
+    reader = FrameSlot(browser_helper._attach(owner.shm.name), owner=False)
+    try:
+        assert reader.read() is None  # nothing yet
+        a = np.full((4, 8, 4), 7, dtype=np.uint8)
+        b = np.arange(2 * 3 * 4, dtype=np.uint8).reshape(2, 3, 4)
+        assert owner.write(a)
+        got = reader.read()
+        assert got.shape == (4, 8, 4) and (got == 7).all()
+        assert reader.read() is None  # taken: no repeat
+        owner.write(a)
+        owner.write(b)  # two pictures before a read: the newest is taken
+        got = reader.read()
+        assert got.shape == (2, 3, 4) and (got == b).all()
+        assert not owner.write(np.zeros((10, 10, 4), dtype=np.uint8))  # bigger than its block: a new one is made
+    finally:
+        reader.close()
+        owner.close()
+
+
+def _wait(check, seconds=40.0, app=None):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if app is not None:
+            app.processEvents()
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@pytest.fixture
+def qt():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+def test_a_page_is_drawn_in_the_helper_and_comes_back_after_it_stops(tmp_path, qt, monkeypatch):
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("Chromium doesn't paint under Qt's offscreen platform on Windows")
+    monkeypatch.setattr(browser_helper, "RESTART_AFTER_S", 0.2)
+    page = tmp_path / "overlay.html"
+    page.write_text("<body style='margin:0'><div style='width:50px;height:40px;background:rgb(255,0,0)'></div>"
+                    "<script>setInterval(() => document.title = Date.now(), 100)</script></body>")
+    host = RemoteHost()
+    states = []
+    host.state_of = lambda: states.append(1) or {"streaming": True, "blooms": {}, "shapes": {}}
+    settings = {"file": str(page), "width": 120, "height": 80, "fps": 30}
+    try:
+        host.open("b", settings)
+        frames = []
+        assert _wait(lambda: (f := host.take("b")) is not None and frames.append(f) is None
+                     and f[10, 10, 0] == 255, app=qt), "the page never drew"
+        frame = frames[-1]
+        assert frame.shape == (80, 120, 4) and tuple(frame[10, 10]) == (255, 0, 0, 255) and frame[70, 100, 3] == 0
+        assert _wait(lambda: bool(states), 3.0, app=qt)  # the window's state goes to the page
+        first = host.proc
+        first.kill()  # the helper stops (a crash): it starts again with the same page
+        assert _wait(lambda: host.starts == 2 and host.take("b") is not None, app=qt)
+        host.close("b")
+        assert "b" not in host._wanted and host.take("b") is None
+    finally:
+        host.shutdown()
+    assert host.proc is None and first.poll() is not None
+
+
+def test_the_helper_ends_once_no_page_is_left(tmp_path, qt, monkeypatch):
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("Chromium doesn't paint under Qt's offscreen platform on Windows")
+    monkeypatch.setattr(browser_helper, "LINGER_S", 0.5)
+    page = tmp_path / "p.html"
+    page.write_text("<body style='background:rgb(0,0,255)'></body>")
+    host = RemoteHost()
+    try:
+        host.open("b", {"file": str(page), "width": 40, "height": 30, "fps": 10})
+        assert _wait(lambda: host.take("b") is not None, app=qt)
+        proc = host.proc
+        host.close("b")
+        assert _wait(lambda: proc.poll() is not None, 10.0, app=qt) and host.proc is None
+        host.open("b", {"file": str(page), "width": 40, "height": 30, "fps": 10})  # back: a new helper
+        assert _wait(lambda: host.take("b") is not None, app=qt) and host.starts == 2
+    finally:
+        host.shutdown()
+
+
+def test_without_a_helper_it_says_so_and_the_window_carries_on(monkeypatch, qt):
+    host = RemoteHost(command=["/no/such/program"])
+    try:
+        host.open("b", {"url": "https://example.com"})
+        assert host.proc is None and host.take("b") is None and host.read_audio("b", 10) is None
+        host.pause("b", True)
+        host.close("b")
+    finally:
+        host.shutdown()
+
+
+def test_start_host_uses_the_helper_unless_told_not_to(monkeypatch, qt):
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from sprigcast.app import browser_host
+
+    monkeypatch.delenv("SPRIGCAST_BROWSER_IN_PROCESS", raising=False)
+    host = browser_host.start_host()
+    try:
+        assert isinstance(host, RemoteHost) and host.proc is None  # nothing started until a page opens
+    finally:
+        host.shutdown()
+    monkeypatch.setenv("SPRIGCAST_BROWSER_IN_PROCESS", "1")
+    host = browser_host.start_host()
+    try:
+        assert isinstance(host, browser_host.BrowserHost)
+    finally:
+        host.shutdown()
+
+
+def test_page_sound_comes_through_the_pipe_to_the_mixer(tmp_path, qt):
+    pytest.importorskip("soxr")
+    from sprigcast.sources.browser import BrowserSource, set_host
+
+    page = tmp_path / "beep.html"
+    page.write_text("<script>const ctx = new AudioContext({sampleRate: 44100}); const o = ctx.createOscillator();"
+                    " o.connect(ctx.destination); o.start();</script>")
+    host = RemoteHost()
+    set_host(host)
+    try:
+        settings = {"file": str(page), "width": 64, "height": 64, "fps": 10}
+        host.open("b", settings)
+        source = BrowserSource("b", settings)
+        source._open = True
+        heard = [0.0]
+
+        def loud():
+            heard[0] = max(heard[0], float(np.abs(source.read_block(1024)).max()))
+            return heard[0] > 0.5
+        assert _wait(loud, app=qt), "no sound reached the mixer"
+        assert host.sound_note("b") == ""
+    finally:
+        set_host(None)
+        host.shutdown()

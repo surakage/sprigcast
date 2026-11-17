@@ -21,6 +21,7 @@ Hidden with its eye (still in a bloom on screen), a video pauses; shown again it
 from __future__ import annotations
 
 import logging
+import math
 import sys
 import threading
 import time
@@ -42,6 +43,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".ts", ".
 AHEAD_FRAMES = 3  # pictures decoded ahead of the one on screen (a 1080p picture is 8 MB)
 AHEAD_AUDIO_S = 1.0  # sound decoded ahead of what's playing
 SYNC_S = 0.08  # sound further off the clock than this is skipped or waited for
+LOOP_KEEP_BYTES = 48 * 1024 * 1024  # a silent looping clip (a GIF) whose pictures fit in this is decoded once
 MAX_SIZE = (1920, 1920)  # bigger videos are shrunk while decoding: no canvas needs more
 STATES = ("playing", "paused", "stopped", "ended")
 SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
@@ -168,7 +170,31 @@ def sound_resampler(rate: int = SAMPLE_RATE):
     return av.AudioResampler(format="flt", layout="stereo", rate=rate, threads=1)
 
 
-def _picture(frame, size: tuple[int, int]) -> tuple[np.ndarray, str]:
+def shrunk(size: tuple[int, int], shrink: float) -> tuple[int, int]:
+    """The picture size for a video shown at `shrink` of its size (1, 1/2 or 1/4), even on both sides."""
+    if shrink >= 1.0:
+        return size
+    return max(2, math.ceil(size[0] * shrink / 2) * 2), max(2, math.ceil(size[1] * shrink / 2) * 2)
+
+
+def _picture(frame, size: tuple[int, int], out: tuple[int, int] | None = None) -> tuple[np.ndarray, str]:
+    """The picture to show for a decoded frame, `size` its full size. `out`, when smaller: shown small on every
+    canvas, it's made that size here, on the decoder thread (FFmpeg's area filter, without Python's lock), so
+    the render thread sends the card a quarter or a sixteenth of the pixels. The 2026-11-17 heavy run showed
+    two 1080p videos at 0.3 of their size: 5-6 ms a frame each, mostly sending pixels nobody saw."""
+    if out is not None and tuple(out) != tuple(size):
+        kind = {"yuv420p": "yuv420p", "yuvj420p": "yuvj420p", "yuva420p": "yuva420p", "nv12": "yuv420p"}.get(
+            frame.format.name)
+        if kind is not None:
+            from sprigcast.core.frames import reformat
+
+            small = reformat(frame, width=out[0], height=out[1], format=kind, interpolation="AREA")
+            packed = pack_i420(small, out)
+            if packed is not None:
+                return packed
+        from sprigcast.core.frames import picture_array
+
+        return picture_array(frame, width=out[0], height=out[1], format="rgba", interpolation="AREA"), "RGBA"
     packed = pack_i420(frame, size)
     if packed is not None:
         return packed
@@ -218,6 +244,7 @@ class MediaSource(Source):
         self._speed = clamp_speed(settings.get("speed", 1.0))  # the speed the decoder and clock run at now
         self._blank: np.ndarray | None = None
         self._size = (0, 0)
+        self.shrink = 1.0  # shown at most this part of its size anywhere (1, 1/2, 1/4): decoded that small
         self.duration: float | None = None
         self.has_video = not is_sound_file(settings.get("path", ""))
         self._stop = threading.Event()
@@ -249,6 +276,12 @@ class MediaSource(Source):
     @property
     def size(self) -> tuple[int, int]:
         return self._size
+
+    shrinks = True  # the renderer says how small it's shown (set_shrink); `size` stays the layout box
+
+    def set_shrink(self, shrink: float) -> None:
+        """Render thread: shown at most `shrink` of its size; the next pictures decoded are made that small."""
+        self.shrink = shrink
 
     @property
     def gain(self) -> float:
@@ -627,6 +660,11 @@ class MediaSource(Source):
         # The file stays open from one pass (and one play) to the next: it seeks back to the start instead.
         container, decoder = held.container, held.decoder  # decoder: libvpx (see-through webm), flushed each pass
         resampler = None  # faster or slower: the sound is resampled to fit, so it plays in step (higher or lower)
+        # A silent looping clip small enough (LOOP_KEEP_BYTES): its first whole pass is kept and later passes play
+        # from memory, with the file and decoder closed. OBS's image source does the same for GIFs: the
+        # heavy run (2026-11-17) looped three GIFs, each decoded again on every pass.
+        kept: list | None = None  # [(time in the pass, picture)] while the first pass is collected
+        kept_bytes, kept_shrink, replay = 0, self.shrink, None
         try:
             while self._current(generation):
                 if self.state == "stopped":  # waiting for play: just learn what the file is
@@ -637,6 +675,13 @@ class MediaSource(Source):
                                 self.duration = max(0.04, probe.duration / 1_000_000)
                     self.status = "ok"
                     return True  # play starts a thread again
+                if replay is not None and kept_shrink == self.shrink and self.settings.get("loop"):
+                    for at, picture in replay:  # from memory: nothing opened, nothing decoded
+                        if not self._push_frame(offset + at, picture, generation):
+                            return False
+                    offset += self.duration or 0.0
+                    continue
+                replay = None  # shown at another size now (or loop turned off): decode as before
                 if container is None:
                     container = held.container = self._open(path)
                 elif not _rewind(container):  # the next pass: from the top of the open file
@@ -674,6 +719,10 @@ class MediaSource(Source):
                 if audio is not None and resampler is None:  # one per play: a loop's next pass carries on with it
                     resampler = sound_resampler(max(8000, round(SAMPLE_RATE / speed)))
                 skip_to = start_at if offset == 0.0 else 0.0
+                kept, kept_bytes, kept_shrink = None, 0, self.shrink
+                if (audio is None and video is not None and skip_to <= 0.0 and self.settings.get("loop")
+                        and (self.duration or 0.0) > 0.05):
+                    kept = []
                 if skip_to > 0.5:
                     target = video or audio
                     container.seek(int(skip_to / target.time_base), stream=target)
@@ -706,7 +755,16 @@ class MediaSource(Source):
                         at = t - origin
                         if at < skip_to - 0.001:
                             continue
-                        if not self._push_frame(offset + at, _picture(frame, size), generation):
+                        shrink = self.shrink  # a new size shows from the next picture on
+                        picture = _picture(frame, size, shrunk(size, shrink))
+                        if kept is not None and shrink != kept_shrink:
+                            kept = None  # pictures of two sizes: this pass isn't kept
+                        if kept is not None:
+                            kept_bytes += picture[0].nbytes
+                            kept = kept if kept_bytes <= LOOP_KEEP_BYTES else None  # too big: decoded each pass
+                            if kept is not None:
+                                kept.append((at, picture))
+                        if not self._push_frame(offset + at, picture, generation):
                             return
                 if decoder is not None:
                     try:
@@ -715,13 +773,20 @@ class MediaSource(Source):
                         tail = []
                     for frame in tail:
                         at = float((frame.pts or 0) * video.time_base) - origin
-                        self._push_frame(offset + at, _picture(frame, size), generation)
+                        picture = _picture(frame, size, shrunk(size, self.shrink))
+                        if kept is not None:
+                            kept = kept + [(at, picture)] if self.shrink == kept_shrink else None
+                        self._push_frame(offset + at, picture, generation)
                 length = self.duration or 0.0
                 if not self.settings.get("loop") or length <= 0.05:
                     with self._lock:
                         if self._generation == generation:
                             self._finished_at = offset + length
                     return True  # played out: the thread closes the file and ends (_run)
+                if kept:  # the whole pass was kept: later passes play from memory, the file and decoder close
+                    replay, kept = kept, None
+                    container = decoder = None
+                    held.release()
                 offset += length
             return False
         finally:

@@ -342,3 +342,35 @@ def test_a_switch_waits_for_a_slow_waking_source_too(monkeypatch):
     tuber.video_frame = lambda: np.zeros((8, 8, 4), dtype=np.uint8)
     engine._tick(fake, 40.1)
     assert fake.rendered[-1] == "b"
+
+
+def test_a_source_near_its_budget_settles_instead_of_flapping(monkeypatch):
+    """Instant replay at 5.1-5.2 ms switched between every frame and every 2nd one 6 times in 6 s (heavy run,
+    2026-11-17). Back to every frame only once it's well under the budget."""
+    from sprigcast.render import engine as module
+
+    engine, col = _engine()
+    fake = FakeCompositor()
+    clock = [0.0]
+    slow = engine._sources["game"]
+    cost = [0.0053]
+
+    def frame():
+        clock[0] += cost[0]
+        return np.zeros((8, 8, 4), dtype=np.uint8)
+    slow.video_frame = frame
+    real = module.time.perf_counter
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0] + real() * 0)
+    changes, last = 0, 1
+    for phase in range(12):
+        cost[0] = 0.0053 if phase % 2 == 0 else 0.0047
+        for i in range(120):
+            engine._tick(fake, 1.0 + phase * 2 + i / 60)
+            now = engine._source_every.get("game", 1)
+            changes += now != last
+            last = now
+    assert changes == 1 and last == 2
+    cost[0] = 0.002  # well under: back to every frame
+    for i in range(300):
+        engine._tick(fake, 40.0 + i / 60)
+    assert engine._source_every.get("game", 1) == 1
