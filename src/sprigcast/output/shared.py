@@ -68,13 +68,16 @@ class FileTap:
 
         def job():
             if self.file is not None or self.file_path is not None:
+                self.file_error = "already writing a file"
                 raise RuntimeError("already writing a file")
             self.file_path, self.file_container, self.file_error = path, container, None
             self.split_seconds, self.split_bytes, self.file_parts = split_seconds, split_bytes, parts
             self._paused = self._resuming = False
             self._marks, self.file_chapters, self._last_rel = [], {}, 0.0
             self._force_key = True
-        self._ask(job)
+        # Handed over without waiting: a new encoder only takes it once it's open (270 ms on the PC,
+        # 2026-11-16, with the window waiting). Later requests (pause, stop) queue behind it, in order.
+        self._ask(job, wait=False)
         return parts
 
     def pause_file(self) -> bool:
@@ -323,8 +326,7 @@ class SharedRecording:
                 paths.append(path)
         except Exception:
             for canvas_id, enc in encoders:
-                if enc.file_path is not None:
-                    enc.stop_file()
+                enc.stop_file()  # queued after its start_file (which doesn't wait): ends whatever that began
                 if canvas_id in borrowed:
                     enc.let_go("recording")
                 else:
