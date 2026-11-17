@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 10  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 11  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0

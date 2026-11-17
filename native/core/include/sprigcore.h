@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 10
+#define SC_INTERFACE_VERSION 11
 
 enum {
     SC_OK = 0,
@@ -294,9 +294,12 @@ enum {
 
 #define SC_ENGINE_CANVASES 4  /* canvas slots: the horizontal and vertical canvases and room for more */
 #define SC_ENGINE_OUTPUTS 4  /* NV12 outputs per canvas: a recording and streams of different sizes */
-#define SC_ENGINE_OUTPUT_QUEUE 4  /* finished output frames kept waiting for Python */
-#define SC_ENGINE_SHARE_POOL 5    /* NV12 textures of an output shared on the card: being encoded, waiting, spares */
-#define SC_ENGINE_SHARE_QUEUE 2   /* shared frames kept waiting for Python (each holds a texture) */
+/* Frames wait for Python's render tick to take them. A tick of 35-40 ms (a heavy bloom, a slow source) left 2-3
+ * frames waiting and the oldest went: 482 recording frames over 10 minutes in the first native PC run
+ * (2026-11-17). Room for about 100 ms at 60 fps now. */
+#define SC_ENGINE_OUTPUT_QUEUE 8  /* finished output frames kept waiting for Python (buffers reused) */
+#define SC_ENGINE_SHARE_POOL 9    /* NV12 textures of an output shared on the card: being encoded, waiting, spares */
+#define SC_ENGINE_SHARE_QUEUE 6   /* shared frames kept waiting for Python (each holds a texture) */
 #define SC_OUTPUT_SHARE 1         /* sc_engine_output_set flag: frames stay on the card as NV12 textures */
 
 /* An engine on adapter `adapter` (-1 = Windows' default) or the software renderer (SC_DEVICE_WARP). It starts
