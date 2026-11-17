@@ -176,3 +176,26 @@ def test_without_the_voice_track_a_recording_has_one_sound(tmp_path):
     _feed(engine, time.perf_counter(), 20, pool=pool)
     rec.stop()
     assert [level for _, level in _audio_tracks(rec.paths[0])] == [0.5]
+
+
+def test_starting_a_recording_doesnt_wait_for_the_encoder_to_open(tmp_path, monkeypatch):
+    """Each start_file used to wait for its new encoder to open and take the request: 270 ms of the window
+    not answering on the PC (2026-11-16) when recording and clips started together."""
+    from sprigcast.output import replay
+
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    real_open = replay.ReplayBuffer._open
+
+    def slow_open(self):
+        time.sleep(0.5)  # an encoder that takes a while to open
+        return real_open(self)
+
+    monkeypatch.setattr(replay.ReplayBuffer, "_open", slow_open)
+    began = time.perf_counter()
+    rec = SharedRecording.start(pool, CANVASES, tmp_path / "a", 800, codec="libx264")
+    assert time.perf_counter() - began < 0.3  # handed over, not waited for
+    _wait_open(pool)
+    _feed(engine, time.perf_counter(), 20, pool=pool)
+    rec.stop()
+    assert rec.errors == [] and [_frames(p) for p in rec.paths] == [20, 20]

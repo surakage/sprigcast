@@ -143,13 +143,16 @@ class ReplayBuffer(Recorder):
         self._ask(lambda: self._write_clip(path), timeout)
         return path
 
-    def _ask(self, job, timeout: float = 20.0):
-        """Run job() on the encoder thread, between frames, and wait for it. Raises what it raised."""
+    def _ask(self, job, timeout: float = 20.0, wait: bool = True):
+        """Run job() on the encoder thread, between frames, and wait for it. Raises what it raised.
+        wait=False: just hand it over (it runs in order with the rest; a failure is logged there)."""
         done: dict = {}
         finished = threading.Event()
         if not self.running:
             raise RuntimeError(self.error or "the encoder has stopped")
         self._requests.put((job, done, finished))
+        if not wait:
+            return None
         if not finished.wait(timeout):
             raise TimeoutError("the encoder did not answer in time")
         if "error" in done:
