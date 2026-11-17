@@ -5,6 +5,7 @@ import threading
 import time
 import types
 
+import numpy as np
 import pytest
 
 from sprigcast.control.native import ApiError, NativeApi
@@ -42,6 +43,7 @@ class FakeWatcher:
 def fake(np_mod, monkeypatch):
     FakeWatcher.made = []
     monkeypatch.setattr(np_mod, "make_watcher", FakeWatcher)
+    monkeypatch.setattr(np_mod, "run_job", lambda job, *args, name="": job(*args))  # frames made straight away
     return np_mod
 
 
@@ -122,7 +124,7 @@ def test_it_fades_in_holds_still_and_fades_out_when_paused(fake, monkeypatch):
     assert source.video_frame() is None
     FakeWatcher.made[-1].on_track(fake.Track("Song", "Band", app="Spotify.exe"))
     half = source.video_frame()
-    assert half is not None and not half[..., 3].any()  # the fade starts from nothing
+    assert half is None or not half[..., 3].any()  # the fade starts from nothing
     now[0] += fake.FADE / 2
     middle = source.video_frame()[..., 3].max()
     now[0] += fake.FADE
@@ -144,12 +146,14 @@ def test_apps_can_ask_what_is_playing(fake):
     col = _collection()
     col.sources.append(SourceConfig(id="np", kind="now_playing", name="Now playing"))
     api = NativeApi(Host(col))
-    assert api.run("nowplaying.get", {}) == {"playing": False, "title": "", "artist": "", "album": "", "app": ""}
+    assert api.run("nowplaying.get", {}) == {"playing": False, "title": "", "artist": "", "album": "", "app": "",
+                                             "length": 0, "position": 0}
     source = create_source("now_playing", "np", {})
     source.wake()
-    FakeWatcher.made[-1].on_track(fake.Track("Song", "Band", "Album", "Spotify.exe"))
+    FakeWatcher.made[-1].on_track(fake.Track("Song", "Band", "Album", "Spotify.exe", length=200.0, position=30.0,
+                                             at=time.time() - 10))
     assert api.run("nowplaying.get", {}) == {"playing": True, "title": "Song", "artist": "Band", "album": "Album",
-                                             "app": "Spotify.exe"}
+                                             "app": "Spotify.exe", "length": 200, "position": 40}
     source.sleep()
     assert api.run("nowplaying.get", {})["playing"] is False
     with pytest.raises(ApiError) as err:
@@ -290,21 +294,107 @@ def test_stopping_straight_after_starting_never_leaves_it_running(np_mod, window
     assert _until(lambda: not any(t.name == "now-playing" for t in threading.enumerate()))
 
 
-def test_a_long_song_shows_whole(np_mod):
-    """PC test 2026-11-17: "Shy Guy - Live - Sp..." was cut off at any size. A title gets smaller to fit, then
-    takes two lines; the artist gets smaller; nothing usual is cut short."""
-    from PySide6.QtGui import QFont
-
-    room = 960  # a card with no cover
-    lines, _ = np_mod.fit_title("Shy Guy - Live - Spotify Singles", QFont(), room, True)
-    assert lines == ["Shy Guy - Live - Spotify Singles"]
+def test_a_long_song_slides_by_so_it_all_shows(np_mod):
+    """PC test 2026-11-17: "Shy Guy - Live - Sp..." was cut off at any size. A title longer than the card rests
+    at its start, then slides by at Slide speed (2: 80 box units a second) and comes round again."""
+    speed = np_mod.slide_speed({"slide_speed": 2})
+    assert speed == 80 and np_mod.slide_speed({}) == 80
+    assert np_mod.slide_speed({"slide_speed": 9}) == 200 and np_mod.slide_speed({"slide_speed": "x"}) == 80
+    assert np_mod.slid(5.0, 400, 500, speed) == 0  # it fits: still
+    assert np_mod.slid(1.0, 900, 500, speed) == 0  # resting at its start
+    assert np_mod.slid(np_mod.SLIDE_REST + 2.0, 900, 500, speed) == pytest.approx(160)
+    turn = np_mod.SLIDE_REST + (900 + np_mod.SLIDE_GAP) / speed
+    assert np_mod.slid(turn + 0.5, 900, 500, speed) == 0  # round again
     long = 'Lose Yourself (From "8 Mile" Soundtrack) - Remastered 2022 Extended Version'
-    lines, _ = np_mod.fit_title(long, QFont(), room, True)
-    assert len(lines) == 2 and " ".join(lines) == long and "…" not in "".join(lines)
-    under, _ = np_mod.fit_line("Eminem, Dr. Dre, 50 Cent, Obie Trice", QFont(), room)
-    assert under == "Eminem, Dr. Dre, 50 Cent, Obie Trice"
-    card = np_mod.paint(np_mod.Track(long, "Eminem"), dict(np_mod.NowPlayingSource.defaults))
-    assert (card.width(), card.height()) == (np_mod.W, np_mod.H)
+    for style, _ in np_mod.STYLES:
+        settings = {**np_mod.NowPlayingSource.defaults, "style": style}
+        lay = np_mod.look(np_mod.Track(long, "Eminem", length=200.0), settings, True, True)
+        assert np_mod.moving(lay), style  # too long for the card: it slides
+        assert lay.card[0] >= 0 and lay.card[0] + lay.card[2] <= np_mod.W and lay.card[1] + lay.card[3] <= np_mod.H
+        short = np_mod.look(np_mod.Track("Song", "Band", length=200.0), settings, True, True)
+        assert not np_mod.moving(short) and short.card[2] < lay.card[2], style  # short: the card hugs it, still
+        for t in (0.0, 3.0):
+            card = np_mod.paint(np_mod.Track(long, "Eminem", art=_png(), length=200.0, position=50.0), settings,
+                                1.5, t, None, np.full(64, 0.5, np.float32))
+            assert (card.width(), card.height()) == (np_mod.W * 1.5, np_mod.H * 1.5)
+
+
+def test_the_time_from_windows(np_mod):
+    from datetime import datetime, timedelta, timezone
+
+    now = time.time()
+    props = types.SimpleNamespace(start_time=timedelta(0), end_time=timedelta(seconds=203),
+                                  position=timedelta(seconds=74),
+                                  last_updated_time=datetime.fromtimestamp(now - 2, timezone.utc))
+    session = types.SimpleNamespace(get_timeline_properties=lambda: props)
+    length, position, at = np_mod.timeline(session)
+    assert (length, position) == (203, 74) and at == pytest.approx(now - 2)
+    props.last_updated_time = datetime(1601, 1, 1, tzinfo=timezone.utc)  # what some apps send: as of now
+    assert np_mod.timeline(session)[2] == pytest.approx(time.time(), abs=1)
+    props.end_time = timedelta(0)  # no length
+    assert np_mod.timeline(session)[:2] == (0, 0)
+    assert np_mod.timeline(types.SimpleNamespace())[:2] == (0, 0)  # an app with no timeline at all
+    track = np_mod.Track("Song", length=200.0, position=50.0, at=100.0)
+    assert track.now(110.0) == 60 and track.now(1000.0) == 200  # moves on while playing, stops at the end
+    assert np_mod.Track("Song", playing=False, length=200.0, position=50.0, at=100.0).now(110.0) == 50
+    assert np_mod.clock(74) == "1:14" and np_mod.clock(3725) == "1:02:05"
+
+
+def test_four_styles_and_the_settings(np_mod):
+    from sprigcast.app.settings_dialog import SettingsDialog  # noqa: F401  (the form reads choices and defaults)
+
+    cls = np_mod.NowPlayingSource
+    labels = [label for _, label in cls.choices["style"]]
+    assert labels == sorted(labels) == ["Canopy card", "Cover glow", "Slim band", "Sprig ring"]
+    assert cls.defaults["style"] == "canopy" and cls.defaults["slide_speed"] == 2
+    assert [v for v, _ in cls.choices["slide_speed"]] == [1, 2, 3, 4, 5]
+    assert np_mod.style_of({"style": "nope"}) == "canopy"
+
+
+def test_the_bars_listen_only_while_the_music_plays_on_screen(fake, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(fake.time, "monotonic", lambda: now[0])
+    heard = []
+    monkeypatch.setattr(fake.listen, "add", lambda sound, fn: heard.append(("add", sound)))
+    monkeypatch.setattr(fake.listen, "remove", lambda sound, fn: heard.append(("remove", sound)))
+    source = create_source("now_playing", "np", {})
+    source.wake()
+    source.video_frame()
+    assert not heard  # nothing playing: not listening
+    FakeWatcher.made[-1].on_track(fake.Track("Song", "Band", app="Spotify.exe"))
+    source.video_frame()
+    now[0] += fake.FADE / 2  # showing
+    source.video_frame()
+    assert heard == [("add", "mix")]
+    source.update({**source.settings, "sound_bars": False})
+    source.video_frame()
+    assert heard[-1] == ("remove", "mix")
+    source.update({**source.settings, "sound_bars": True})
+    source.video_frame()
+    source.sleep()
+    assert heard[-1] == ("remove", "mix")
+
+
+def test_frames_are_made_off_the_render_thread(np_mod, monkeypatch):
+    """video_frame only hands over finished frames and asks for the next; a slow worker means a later frame,
+    never a wait."""
+    FakeWatcher.made = []
+    monkeypatch.setattr(np_mod, "make_watcher", FakeWatcher)
+    jobs = []
+    monkeypatch.setattr(np_mod, "run_job", lambda job, *args, name="": jobs.append((job, args)))
+    now = [100.0]
+    monkeypatch.setattr(np_mod.time, "monotonic", lambda: now[0])
+    source = create_source("now_playing", "np", {})
+    source.wake()
+    source.video_frame()
+    FakeWatcher.made[-1].on_track(np_mod.Track("Song", "Band", app="Spotify.exe"))
+    source.video_frame()  # the fade starts from nothing
+    now[0] += 1.0
+    assert source.video_frame() is None and len(jobs) == 1  # asked for; nothing ready yet
+    assert source.video_frame() is None and len(jobs) == 1  # still being made: not asked again
+    job, args = jobs.pop()
+    job(*args)
+    assert source.video_frame() is not None
 
 
 def test_added_through_the_api_it_starts_readable(np_mod):

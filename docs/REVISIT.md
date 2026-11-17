@@ -89,7 +89,8 @@ These were reviewed and kept. Each still needs a pass on the real PC.
 ### Now playing (store plugin)
 - **Kept:** it adds under 1 MB to the install (the `winrt` packages). It uses one thread only while the card
   is on screen, and it waits for Windows to say the song changed instead of asking.
-- **Risk:** it was only tested against a stand-in, never on real Windows. Check it with Spotify and a browser.
+- **Tested** with Spotify on the PC (2026-11-17): it follows song changes with no errors. Still to check: the
+  four styles, the time bar (Windows' timeline) and the sound bars on the PC, and a browser player.
 
 ### YouTube and Kick sign-in
 - **Kept:** it makes setting up a stream key easier (the user's decision, 2026-11-17).
