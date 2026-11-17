@@ -47,13 +47,8 @@ GROUP_COLOURS = {"Voice": theme.ACCENT, "Game": theme.INFO, "Alerts": theme.WARN
                  "Other": theme.MUTED}
 HEARD_DB = -50.0  # RMS above this counts as playing
 LINGER_S = 4.0  # a sound stays listed this long after it goes quiet
-CHIP_STYLE = (
-    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 11px;"
-    f" padding: 3px 11px; min-height: 16px; font-size: 11px; }}"
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
-)
-MUTED_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; }}"
+CHIP_STYLE = theme.button_style(11, "3px 11px", extra="min-height: 16px; font-size: 11px;")
+MUTED_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; border-color: {theme.LIVE_EDGE}; }}"
 _MUSIC = re.compile(r"music|spotify|song|pretzel|playlist|radio", re.IGNORECASE)
 _ALERTS = re.compile(r"alert|tts|speech|ad break|chat|tikfinity|streamer\.?bot|speaker\.?bot|sound ?alert|browser|"
                      r"donat|sub|follow|bits", re.IGNORECASE)

@@ -33,8 +33,9 @@ class ShapeTile(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         on = self.isChecked()
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        p.setPen(QColor(theme.ACCENT if on else theme.EDGE_STRONG))
-        p.setBrush(QColor(theme.SELECT_BG if on else (theme.RAISED if self.underMouse() else theme.CARD)))
+        hover = self.underMouse()
+        p.setPen(QColor(theme.ACCENT if on else (theme.BUTTON_EDGE_HOVER if hover else theme.BUTTON_EDGE)))
+        p.setBrush(QColor(theme.SELECT_BG if on else (theme.BUTTON_HOVER if hover else theme.BUTTON)))
         p.drawRoundedRect(r, 16, 16)
         box_h = 34.0
         box_w = box_h * self.w / self.h

@@ -128,9 +128,7 @@ class GardenCheckPage(QWidget):
         head.addLayout(words, 1)
         self.close_button = QPushButton("×")
         self.close_button.setStyleSheet(
-            f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 14px;"
-            f" font-weight: 600; font-size: 15px; padding: 0; min-height: 0; }}"
-            f" QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+            theme.button_style(13, "0", extra="font-size: 15px; min-height: 0;"))
         self.close_button.setFixedSize(28, 28)
         self.close_button.setToolTip("Close")
         self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -180,7 +178,7 @@ class GardenCheckPage(QWidget):
         buttons.addWidget(self.history)
         buttons.addStretch(1)
         self.again = QPushButton("Check again")
-        self.again.setStyleSheet(theme.PILL_STYLE.replace(theme.PANEL, theme.RAISED, 1))
+        self.again.setStyleSheet(theme.PILL_STYLE)
         self.again.setCursor(Qt.CursorShape.PointingHandCursor)
         self.again.clicked.connect(self.refresh)
         buttons.addWidget(self.again)

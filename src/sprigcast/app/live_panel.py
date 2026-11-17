@@ -208,9 +208,8 @@ class BloomTile(QPushButton):
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         radius = min(outer.height(), self.HEIGHT - 2) / 2  # a two-line tile keeps the pill's round ends
         hover = self.underMouse() and self.isEnabled()
+        theme.paint_button(p, outer, radius, hover)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(theme.RAISED_HOVER if hover else theme.RAISED))
-        p.drawRoundedRect(outer, radius, radius)
         on_air = self.isChecked()
         dot = QColor(theme.LIVE if on_air else (self.colour or theme.LEAF_OFF))
         if not on_air and self.colour:

@@ -238,10 +238,8 @@ class FilterForm(QWidget):
                 self.setters[key](value)
 
 
-# On a PANEL pop-up, pills and number boxes are one step lighter so they read as things to press.
-RAISED_PILL = theme.SMALL_PILL_STYLE + (
-    f"QPushButton, QToolButton {{ background: {theme.RAISED}; }}"
-    f"QPushButton:hover, QToolButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+# On a PANEL pop-up, pills use the shared button look and number boxes are one step lighter.
+RAISED_PILL = theme.SMALL_PILL_STYLE
 NUMBER_STYLE = (
     f"QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {{ background: {theme.RAISED}; color: {theme.TEXT};"
     f" border: none; border-radius: 12px; padding: 5px 10px; }}"

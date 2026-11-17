@@ -20,12 +20,10 @@ class ZoomControl(QFrame):
         self.setObjectName("zoomControl")
         self.setStyleSheet(
             f"#zoomControl {{ background: {theme.PANEL}; border-radius: 19px; }}"
-            f"#zoomControl QPushButton {{ background: transparent; border: none; border-radius: 15px;"
-            f" color: {theme.TEXT}; font-weight: 600; padding: 0 10px; min-height: 30px; }}"
-            f"#zoomControl QPushButton:hover {{ background: {theme.RAISED}; }}")
+            + theme.button_style(15, "0 10px", "#zoomControl QPushButton", "min-height: 28px;"))
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 4, 4, 4)
-        row.setSpacing(0)
+        row.setSpacing(4)
         self.out = QPushButton("−")
         self.label = QPushButton("100%")
         self.label.setMinimumWidth(64)

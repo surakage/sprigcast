@@ -37,6 +37,15 @@ SELECT_TEXT = "#bff3d6"
 LIVE = "#f0477f"  # on air and recording only
 LIVE_HOVER = "#f4699a"
 LIVE_EDGE = "#c2305f"
+# Buttons: one look everywhere, a lighter fill with a visible rounded edge and a faintly lit top, so a
+# button always reads as a button on any surface (BG, CHROME, PANEL, CARD or RAISED). See button_style().
+BUTTON = "#2a3731"
+BUTTON_HOVER = "#34433c"
+BUTTON_PRESSED = "#222d28"
+BUTTON_EDGE = "#4a5a52"  # about 2.2:1 against PANEL and CARD, where RAISED and EDGE_STRONG were 1.1-1.4:1
+BUTTON_EDGE_HOVER = "#62766c"
+BUTTON_TOP = "#5a6b62"  # the lit top edge
+BUTTON_OFF_EDGE = "#36433d"  # a disabled button keeps its shape, just quieter
 WARN = "#e6c55a"
 BAD = "#f2665e"
 INFO = "#7fb8ff"
@@ -52,7 +61,7 @@ GO_LIVE_STYLE = (  # Go live waits in calm green; once on air the button turns L
     f"QPushButton {{ background: {ACCENT}; color: {ACCENT_TEXT}; font-weight: bold; border: 1px solid {ACCENT};"
     f" border-radius: 14px; }}"
     f"QPushButton:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}"
-    f"QPushButton:disabled {{ background: {PANEL}; color: {MUTED}; border-color: {EDGE}; }}"
+    f"QPushButton:disabled {{ background: transparent; color: {MUTED}; border-color: {BUTTON_OFF_EDGE}; }}"
 )
 PRIMARY_STYLE = (  # the one big "do it" button on a panel, such as Go
     f"QPushButton {{ font-weight: bold; padding: 6px 28px; }}"
@@ -62,32 +71,50 @@ PRIMARY_STYLE = (  # the one big "do it" button on a panel, such as Go
 NOTE_STYLE = f"background: {SELECT_BG}; color: {SELECT_TEXT}; border-radius: 12px;"  # inline notes and banners
 MUTED_STYLE = f"color: {MUTED}"
 
-# Live screen (see live_stage.py): pill buttons, no borders.
+
+def button_style(radius: int = 13, padding: str = "6px 14px", selector: str = "QPushButton", extra: str = "") -> str:
+    """The one SprigCast button: a lighter rounded fill with a visible edge, so it never blends into the
+    card, pop-up or panel behind it. Hover lifts it, pressed sinks it, checked turns it green-tinted,
+    disabled keeps the shape but goes quiet. `selector` may list several ("QPushButton, QToolButton").
+    Every one-off button style in the app builds on this rather than painting its own fill."""
+    parts = [x.strip() for x in selector.split(",")]
+    sel = lambda state: ", ".join(f"{x}{state}" for x in parts)  # noqa: E731
+    return (
+        f"{sel('')} {{ background: {BUTTON}; color: {TEXT}; border: 1px solid {BUTTON_EDGE};"
+        f" border-top-color: {BUTTON_TOP}; border-radius: {radius}px; padding: {padding}; font-weight: 600; {extra} }}"
+        f"{sel(':hover')} {{ background: {BUTTON_HOVER}; border-color: {BUTTON_EDGE_HOVER}; }}"
+        f"{sel(':pressed')} {{ background: {BUTTON_PRESSED}; border-color: {BUTTON_EDGE}; }}"
+        f"{sel(':checked')} {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}"
+        f"{sel(':disabled')} {{ background: transparent; color: {MUTED}; border-color: {BUTTON_OFF_EDGE}; }}"
+        + "".join(f"{x}::menu-indicator {{ width: 0; image: none; }}" for x in parts)
+    )
+
+
+def paint_button(p: QPainter, rect: QRectF, radius: float, hover: bool = False) -> None:
+    """Draw the shared button shape (fill, edge, lit top) for painted widgets such as bloom tiles."""
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
+    p.setPen(QPen(QColor(BUTTON_EDGE_HOVER if hover else BUTTON_EDGE), 1))
+    p.setBrush(QColor(BUTTON_HOVER if hover else BUTTON))
+    p.drawRoundedRect(r, radius, radius)
+    p.restore()
+
+
+# Live screen (see live_stage.py) and pop-ups: round pill buttons in the shared button look.
 TRACK = "#1a221e"  # the empty part of thin level bars
 STAGE_EMPTY = "#1d3428"  # a bloom tile before it has a picture
 LIVE_TEXT = "#ff8fb4"  # pink text on dark, for the on-air clock
-PILL_STYLE = (
-    f"QPushButton {{ background: {PANEL}; color: {TEXT}; border: none; border-radius: 19px; padding: 10px 14px;"
-    f" font-weight: 600; }}"
-    f"QPushButton:hover {{ background: {RAISED}; }}"
-    f"QPushButton:pressed {{ background: {PRESSED}; }}"
-    f"QPushButton:disabled {{ color: {MUTED}; }}"
-)
-SMALL_PILL_STYLE = (  # chips and small tools; Qt draws square corners if the radius is over half the height
-    f"QPushButton, QToolButton {{ background: {PANEL}; color: {TEXT}; border: none; border-radius: 13px;"
-    f" padding: 6px 13px; font-weight: 600; }}"
-    f"QPushButton:hover, QToolButton:hover {{ background: {RAISED}; }}"
-    f"QPushButton:disabled {{ color: {MUTED}; }}"
-    "QPushButton::menu-indicator, QToolButton::menu-indicator { width: 0; image: none; }"
-)
-PILL_SELECTED_STYLE = PILL_STYLE + f"QPushButton {{ background: {SELECT_BG}; color: {SELECT_TEXT}; }}"
-PILL_ON_AIR_STYLE = PILL_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; }}" \
-    f"QPushButton:hover {{ background: {LIVE_HOVER}; }}"
+PILL_STYLE = button_style(19, "10px 14px")
+SMALL_PILL_STYLE = button_style(13, "6px 13px", "QPushButton, QToolButton")  # chips and small tools
+PILL_SELECTED_STYLE = PILL_STYLE + f"QPushButton {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}"
+PILL_ON_AIR_STYLE = PILL_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; border-color: {LIVE_EDGE}; }}" \
+    f"QPushButton:hover {{ background: {LIVE_HOVER}; border-color: {LIVE_HOVER}; }}"
 BIG_GO_STYLE = (
     f"QPushButton {{ background: {ACCENT}; color: {ACCENT_TEXT}; border: none; border-radius: 24px; padding: 14px;"
     f" font-size: 16px; font-weight: 700; }}"
     f"QPushButton:hover {{ background: {ACCENT_HOVER}; }}"
-    f"QPushButton:disabled {{ background: {PANEL}; color: {MUTED}; }}"
+    f"QPushButton:disabled {{ background: transparent; color: {MUTED}; border: 1px solid {BUTTON_OFF_EDGE}; }}"
 )
 BIG_END_STYLE = BIG_GO_STYLE + f"QPushButton {{ background: {LIVE}; color: #ffffff; }}" \
     f"QPushButton:hover {{ background: {LIVE_HOVER}; }}"
@@ -107,10 +134,8 @@ SOFT_FIELD_STYLE = (  # borderless inputs on the Build inspector
     "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {"
     " subcontrol-origin: margin; width: 0px; height: 0px; border: none; }"
 )
-LINK_STYLE = (
-    f"QPushButton {{ background: transparent; border: none; color: {MUTED}; padding: 2px 4px; }}"
-    f"QPushButton:hover {{ color: {ACCENT}; }}"
-)
+# Small header buttons (a card's Edit, + Add, ⚙; a pop-up's "Last streams"): a compact button, never bare text.
+LINK_STYLE = button_style(12, "4px 11px")
 
 STYLESHEET = f"""
 QWidget {{ selection-background-color: {SELECT_BG}; selection-color: {SELECT_TEXT}; }}
@@ -120,21 +145,21 @@ QDockWidget {{ color: {MUTED}; }}
 QDockWidget::title {{ background: {CHROME}; padding: 6px 8px; border-bottom: 1px solid {EDGE}; }}
 QToolBar {{ background: {CHROME}; border: none; border-bottom: 1px solid {EDGE}; spacing: 4px; padding: 2px; }}
 QPushButton {{
-    background: {RAISED}; color: {TEXT};
-    border: 1px solid {EDGE_STRONG}; border-top-color: {HIGHLIGHT}; border-bottom-color: {CHROME};
+    background: {BUTTON}; color: {TEXT};
+    border: 1px solid {BUTTON_EDGE}; border-top-color: {BUTTON_TOP};
     border-radius: 13px; padding: 6px 14px; min-height: 18px; text-align: center;
 }}
-QPushButton:hover {{ background: {RAISED_HOVER}; }}
-QPushButton:pressed {{ background: {PRESSED}; border-top-color: {CHROME}; padding-top: 7px; padding-bottom: 5px; }}
+QPushButton:hover {{ background: {BUTTON_HOVER}; border-color: {BUTTON_EDGE_HOVER}; }}
+QPushButton:pressed {{ background: {BUTTON_PRESSED}; border-color: {BUTTON_EDGE}; padding-top: 7px; padding-bottom: 5px; }}
 QPushButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}
 QPushButton:default {{ background: {ACCENT}; color: {ACCENT_TEXT}; border-color: {ACCENT}; font-weight: 600; }}
 QPushButton:default:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
-QPushButton:disabled {{ color: {MUTED}; background: {PANEL}; border-color: {EDGE}; }}
+QPushButton:disabled {{ color: {MUTED}; background: transparent; border-color: {BUTTON_OFF_EDGE}; }}
 QPushButton::menu-indicator {{ subcontrol-position: right center; right: 6px; }}
 QToolButton {{ border: 1px solid transparent; border-radius: 10px; padding: 3px 6px; color: {TEXT}; }}
 QToolButton:hover {{ background: {RAISED_HOVER}; border-color: {EDGE_STRONG}; }}
 QToolButton[autoRaise="false"] {{
-    background: {RAISED}; border: 1px solid {EDGE_STRONG}; border-top-color: {HIGHLIGHT}; padding: 3px 10px;
+    background: {BUTTON}; border: 1px solid {BUTTON_EDGE}; border-top-color: {BUTTON_TOP}; padding: 3px 10px;
 }}
 QToolButton:pressed {{ background: {PRESSED}; }}
 QToolButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}

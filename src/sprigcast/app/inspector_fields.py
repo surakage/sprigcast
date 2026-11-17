@@ -83,9 +83,7 @@ def link_button(on: bool, on_toggle: Callable[[bool], None]) -> QPushButton:
     button.setFixedSize(28, 28)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setStyleSheet(
-        f"QPushButton {{ background: transparent; border: none; border-radius: 14px; }}"
-        f"QPushButton:hover {{ background: {theme.RAISED}; }}"
-        f"QPushButton:checked {{ background: {theme.SELECT_BG}; }}")
+        theme.button_style(13, "0"))
 
     def paint(checked: bool) -> None:
         button.setIcon(icons.icon("link", theme.ACCENT if checked else theme.MUTED, 16))

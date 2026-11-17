@@ -291,10 +291,7 @@ class GardenControl:
         chip.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         chip.setCursor(Qt.CursorShape.PointingHandCursor)
         chip.setStyleSheet(
-            f"QToolButton#shelfChip {{ background: {theme.PANEL}; border: none; border-radius: 18px;"
-            f" padding: 8px 16px; color: {theme.TEXT}; }}"
-            f"QToolButton#shelfChip:hover {{ background: {theme.RAISED}; }}"
-            "QToolButton#shelfChip::menu-indicator { image: none; width: 0; }")
+            theme.button_style(18, "7px 16px", "QToolButton#shelfChip", extra="font-weight: 500;"))
         menu = QMenu(chip)
         menu.aboutToShow.connect(lambda: self._fill_chip(menu))
         chip.setMenu(menu)

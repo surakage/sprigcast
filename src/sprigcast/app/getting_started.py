@@ -201,11 +201,7 @@ class Choice(QPushButton):
         self.setIcon(icons.icon(icon_name, theme.TEXT, 18))
         self.setIconSize(QSize(18, 18))
         self.setStyleSheet(
-            f"QPushButton {{ background: {theme.CARD}; color: {theme.TEXT}; border: 1px solid {theme.EDGE_STRONG};"
-            " border-radius: 18px; padding: 8px 16px; font-weight: 600; text-align: left; min-height: 20px; }"
-            f"QPushButton:hover {{ border-color: {theme.ACCENT}; background: {theme.RAISED_HOVER}; }}"
-            f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
-            f" border-color: {theme.ACCENT}; }}")
+            theme.button_style(18, "8px 16px", extra="text-align: left; min-height: 20px;"))
 
 
 class PlaceCard(QPushButton):

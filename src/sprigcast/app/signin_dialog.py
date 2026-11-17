@@ -13,9 +13,10 @@ import threading
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from sprigcast.app import theme
+from sprigcast.app.card import CardDialog
 from sprigcast.output import service_signin
 from sprigcast.output.oauth_loopback import Cancelled, SignInError
 from sprigcast.output.stream import SERVICES
@@ -50,38 +51,36 @@ def open_in_browser(url: str) -> bool:
     return QDesktopServices.openUrl(QUrl.fromEncoded(url.encode()))
 
 
-class SignInDialog(QDialog):
+class SignInDialog(CardDialog):
     """exec(); on success `fetched` holds the account, key and server.
 
     ``begin`` makes the Flow (service_signin.begin); ``open_url`` opens the browser (both on the UI thread)."""
 
     def __init__(self, service: str, parent: QWidget | None = None, begin=None, open_url=None):
-        super().__init__(parent)
         label = SERVICES[service].label
+        super().__init__(f"Sign in to {label}", parent, width=440)  # a rounded card like every pop-up
         self.service = service
-        self.setWindowTitle(f"Sign in to {label}")
-        self.setMinimumWidth(420)
         self.fetched: service_signin.Fetched | None = None
         self._cancel = threading.Event()
         self._job = Job()
         self._thread: threading.Thread | None = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 20)
-        layout.setSpacing(12)
+        layout = self.body
         self.message = QLabel(f"Finish signing in to {label} in your browser.")
         self.message.setWordWrap(True)
+        self.message.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
         layout.addWidget(self.message)
         self.hint = QLabel("If the browser shows an error, cancel and paste the stream key instead.")
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet(f"color: {theme.MUTED}")
+        self.hint.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         layout.addWidget(self.hint)
         row = QHBoxLayout()
         row.addStretch(1)
         self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.cancel_button.setStyleSheet(theme.button_style(17, "9px 18px"))
         self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_button.clicked.connect(self.reject)
         row.addWidget(self.cancel_button)
+        layout.addSpacing(4)
         layout.addLayout(row)
         self._timer = QTimer(self)
         self._timer.setInterval(150)
@@ -102,7 +101,7 @@ class SignInDialog(QDialog):
 
     def _show_error(self, text: str) -> None:
         self.message.setText(text)
-        self.message.setStyleSheet(f"color: {theme.WARN}")
+        self.message.setStyleSheet(f"color: {theme.WARN}; background: transparent;")
         self.hint.hide()
         self.cancel_button.setText("Close")
 

@@ -59,12 +59,7 @@ EMOTE_SIZE = 22
 
 URL_RE = re.compile(r"(https?://[^\s<]+)")
 
-CHIP_STYLE = (
-    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 15px;"
-    f" padding: 7px 16px; font-weight: 600; }}"
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-    "QPushButton::menu-indicator { width: 0; image: none; }"
-)
+CHIP_STYLE = theme.button_style(15, "7px 16px")
 FIELD_STYLE = (
     f"QLineEdit {{ background: {theme.CHROME}; border: none; border-radius: 14px; padding: 8px 12px;"
     f" color: {theme.TEXT}; }}"
