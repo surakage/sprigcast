@@ -275,10 +275,15 @@ def test_no_bounce_when_bounce_is_off(tuber, monkeypatch, tmp_path):
 def test_it_blinks(tuber, monkeypatch, tmp_path):
     folder = _model(tmp_path / "m", blink=((40, 40, 40, 255), None))
     source, clock, level = _ready(tuber, monkeypatch, folder, blink=True)
+    import random
+
+    source.blinker = tuber.Blinker(random.Random(4))  # the same blinks every run (the clock is fake too)
     centre = (tuber.H - 30, tuber.W // 2)
     assert tuple(source.video_frame()[centre][:3]) == (100, 150, 200)
     sent = _run(source, clock, 8.0)
     assert any(tuple(f[centre][:3]) == (40, 40, 40) for f in sent)  # eyes shut at least once
+    source.blinker._next = clock.now + 60  # no blink starts now: whatever the last one was, it ends
+    sent += _run(source, clock, 0.5)
     assert tuple(sent[-1][centre][:3]) == (100, 150, 200)  # and open again
 
 
