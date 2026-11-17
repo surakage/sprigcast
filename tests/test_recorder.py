@@ -419,3 +419,21 @@ def test_an_eased_recording_plays_at_the_right_length(tmp_path):
         last = float(frames[-1].pts * stream.time_base)
     assert len(frames) == 90
     assert abs(last - 119 / 60) < 0.03
+
+
+def test_missed_ticks_are_filled_with_the_picture_before(tmp_path):
+    """As OBS does with lagged frames: a canvas that ran late doesn't leave holes, so the frame rate stays steady.
+    A long stall (over half a second) stays a gap, and a repeat never pushes out a real frame."""
+    rec = Recorder(tmp_path / "r.mkv", 16, 16, 60, 500, "libx264", 0.0)  # not started: nothing drains the queue
+    first, late = (Frame("h", 16, 16, bytes([n]) * (16 * 16 * 4), t) for n, t in ((1, 0.0), (2, 4 / 60)))
+    rec.push_frame(first)
+    rec.push_frame(late)  # three ticks missed
+    queued = [rec._video.get_nowait() for _ in range(rec._video.qsize())]
+    assert [pts for pts, _ in queued] == [0, 1, 2, 3, 4]
+    assert [f.data[0] for _, f in queued] == [1, 1, 1, 1, 2] and rec.repeated == 3 and rec.dropped == 0
+    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 2.0))  # a 2-second stall: a gap, as before
+    assert [pts for pts, _ in [rec._video.get_nowait()]] == [120] and rec.repeated == 3
+    for i in range(VIDEO_QUEUE // 2):
+        rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (121 + i) / 60))
+    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (121 + VIDEO_QUEUE // 2 + 5) / 60))
+    assert rec.repeated == 3 and rec.dropped == 0  # queue half full: no repeats, the real frame got in

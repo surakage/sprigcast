@@ -136,3 +136,30 @@ def test_a_card_stuck_past_the_limit_is_left_alone_for_the_tick():
     gpu.wait(limit_s=0.001)
     assert not gpu.behind and deleted == [1] and len(gpu._syncs) == 1
     del keep
+
+
+def test_uploads_go_through_fresh_buffer_memory_and_leave_moderngl_working(compositor):
+    """Like OBS's dynamic textures: each upload gets fresh pixel-buffer memory, so it never waits for the card
+    to finish drawing the old picture. moderngl's own writes still work afterwards (nothing left bound)."""
+    import numpy as np
+
+    gl = compositor.gl
+    assert gl.streaming_ok
+    ctx = compositor.ctx
+    texture = ctx.texture((48, 30), 4, alignment=1)
+    fbo = ctx.framebuffer(color_attachments=[texture])
+    rng = np.random.default_rng(9)
+    for _ in range(3):  # each one replaces the last, even while the draw reading it may still be queued
+        pixels = rng.integers(0, 256, (30, 48, 4), dtype=np.uint8)
+        gl.write_texture(texture, pixels)
+        fbo.use()  # something reads the texture between uploads
+        assert texture.read(alignment=1) == pixels.tobytes()
+    small = rng.integers(0, 256, (30, 48, 1), dtype=np.uint8)
+    other = ctx.texture((48, 30), 1, alignment=1)
+    gl.write_texture(other, small)  # a different size of buffer: still right
+    assert other.read(alignment=1) == small.tobytes()
+    plain = rng.integers(0, 256, (30, 48, 4), dtype=np.uint8)
+    texture.write(plain.tobytes())  # moderngl's own call, after ours
+    assert texture.read(alignment=1) == plain.tobytes()
+    for obj in (fbo, texture, other):
+        obj.release()

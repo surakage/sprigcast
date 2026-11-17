@@ -343,6 +343,24 @@ def test_bigger_camera_frames_are_shrunk_to_the_chosen_size(fake_av):
         src.stop()
 
 
+def test_a_camera_shown_small_sends_small_frames_but_keeps_its_size(fake_av):
+    """Shown at a quarter of its size or less, frames are made that small on the capture thread (the heavy run
+    on 2026-11-17: the camera took 10 ms a frame); its size, which places it, stays the same."""
+    src = create_source("camera", "c", {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 30})
+    src.set_shrink(0.25)
+    src.start()
+    try:
+        assert wait_for(lambda: src._frames.peek() is not None)
+        frame = src.video_frame()
+        assert frame.shape == (10 + 5, 16) and src.size == (64, 36)
+        src.set_shrink(1.0)
+        src._frames.take()
+        assert wait_for(lambda: (f := src._frames.peek()) is not None and f[0].shape == (36 + 18, 64))
+        assert src.size == (64, 36)
+    finally:
+        src.stop()
+
+
 def test_two_sources_on_one_camera_share_one_open_device(fake_cv2):
     from sprigcast.sources import camera
 

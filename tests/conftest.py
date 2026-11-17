@@ -6,6 +6,9 @@ import pytest
 # Tests draw with Qt's "offscreen" platform. On Windows it finds no fonts of its own (Qt no longer ships any) and
 # draws every letter as the same box, so "hi chat" and "HI CHAT" came out alike on the PC (2026-11-17). Point it at
 # Windows' fonts, as the real app's Windows platform uses, before anything starts Qt.
+# Browser pages are drawn in SprigCast itself in tests (the helper process has tests of its own, which start
+# one on purpose): a window test with a browser source doesn't start Chromium in another process.
+os.environ.setdefault("SPRIGCAST_BROWSER_IN_PROCESS", "1")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 

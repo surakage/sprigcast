@@ -341,3 +341,50 @@ def test_text_and_api_plugins_in_a_sprig_shown_small(all_plugins):
     shown = 0.5 * item.scale * 200  # its box's height on the canvas
     assert 0.5 * 1080 * 0.14 * 1.4 < shown <= 1080 * 0.14 + 0.5  # much more than the half size it started at
     assert 0 <= item.x and item.x + item.scale * 1100 <= 1920 + 0.5  # inside the sprig
+
+
+def test_videos_shown_small_are_told_to_decode_small_and_filters_keep_their_look():
+    """The heavy run (2026-11-17): two 1080p videos placed at 0.3 were sent to the card at full size."""
+    from sprigcast.render.engine import Engine
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=1920, height=1080), Canvas(id="v", width=1080, height=1920)],
+        sources=[SourceConfig(id="vid", kind="media", name="Clip")],
+        scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="vid", scale=0.3)]),
+                Scene(id="b", name="B", canvas="v", items=[SceneItem(source="vid", scale=0.25)])],
+        active_scenes={"h": "a", "v": "b"},
+    )
+    engine = Engine(col)
+
+    class Video:
+        shrinks, shrink, size = True, 1.0, (1920, 1080)
+
+        def set_shrink(self, step):
+            told.append(step)
+            self.shrink = step
+
+    told = []
+    engine._sources = {"vid": Video()}
+    engine._sync_detail()
+    assert told == [0.5]  # the biggest it's shown (0.3) still gets a pixel per canvas pixel
+    col = engine._collection
+    col.scene("a").items[0].scale = 0.9
+    engine._sync_detail()
+    assert told == [0.5, 1.0]
+
+
+def test_a_small_planar_picture_keeps_its_layout_size_for_filters():
+    from sprigcast.render.compositor import Compositor
+
+    try:
+        comp = Compositor()
+    except Exception as exc:
+        pytest.skip(f"no OpenGL context: {exc}")
+    try:
+        packed = np.zeros((18 + 9, 32), dtype=np.uint8)  # a 32x18 I420 picture of a 64x36 video
+        comp.upload("vid", packed, "I420/709/tv", (64, 36))
+        assert comp.detail["vid"] == (0.5, (64, 36)) and comp.planar["vid"][2] == (32, 18)
+        comp.upload("vid", np.zeros((36 + 18, 64), dtype=np.uint8), "I420/709/tv", (64, 36))
+        assert "vid" not in comp.detail
+    finally:
+        comp.release()
