@@ -108,3 +108,34 @@ def test_a_new_sound_keeps_the_other_strips(monkeypatch):
     strips.show_sound([mic], kinds)
     assert list(strips.strips) == ["mic"] and strips.strips["mic"] is first["mic"]
     assert strips.row.count() == 2  # the strip and the stretch
+
+
+def test_changes_save_once_they_settle_and_closing_saves_what_waits(tmp_path, monkeypatch):
+    """2026-11-17 heavy run: every bloom switch and hotkey wrote the whole garden on the window's thread."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    _app = QApplication.instance() or QApplication([])
+    QCoreApplication.setOrganizationName("SprigCastStripsTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          scenes=[Scene(id="a", name="A", canvas="horizontal")], active_scenes={"horizontal": "a"})
+    path = tmp_path / "scenes.json"
+    w = MainWindow(col, path)
+    try:
+        before = path.read_text(encoding="utf-8") if path.exists() else ""
+        col.scenes[0].name = "Renamed"
+        w._changed()
+        w._changed()
+        assert w._save_timer.isActive()
+        assert (path.read_text(encoding="utf-8") if path.exists() else "") == before  # not yet
+        w._save_pending()  # what closing does
+        assert not w._save_timer.isActive()
+        assert SceneCollection.load(path).scenes[0].name == "Renamed"
+    finally:
+        w.close()

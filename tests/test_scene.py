@@ -91,3 +91,15 @@ def test_snapshot_and_text_are_full_copies_made_in_compiled_code():
     assert col.sources[0].settings["list"][1]["x"] == 2
     text = col.to_text()
     assert "-Infinity" in text and SceneCollection.model_validate_json(text) == col  # not null
+
+
+def test_a_later_save_queued_on_a_worker_never_overwrites_a_newer_one(tmp_path):
+    from sprigcast.core.scene import Canvas, SceneCollection, next_save, write_garden
+
+    path = tmp_path / "garden.json"
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)])
+    old_ticket = next_save(path)  # queued on a worker with the text as it was then
+    col.canvases[0].width = 1280
+    col.save(path)  # a newer save, here
+    assert not write_garden(path, "old", old_ticket)  # the worker gets to it late: skipped
+    assert SceneCollection.load(path).canvases[0].width == 1280
