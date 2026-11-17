@@ -89,7 +89,7 @@ def register_filter(kind: str, label: str, media: Literal["video", "audio"], fie
     """Register an audio filter class (used as a decorator).
 
     Video filters are drawn by the GPU, so a plugin can only switch on one the drawing already knows:
-    "pixelate", "blackout", "barrel_roll", "background" and "freeze" (see PLUGIN_VIDEO_KINDS). Register them with
+    "pixelate", "blackout", "barrel_roll" and "freeze" (see PLUGIN_VIDEO_KINDS). Register them with
     `register_filter(kind, label, "video", fields)(None)`; until a plugin does, they do nothing.
     status(source_id) can return a short note shown beside the filter's name ("Downloading 40%").
     """
@@ -206,10 +206,7 @@ _video("shape", "Shape", [
 ])
 
 
-PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "background", "freeze")  # drawn by the GPU, offered by plugins
-# The background filter: its "mode" setting -> VideoEffects.cutout. The plugin sends the person mask
-# (and, for blur, the blurred background) through a frame watcher (plugin_hooks.register_frame_watcher).
-CUTOUT_MODES = {"remove": 1, "blur": 2, "replace": 3}
+PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze")  # drawn by the GPU, offered by plugins
 
 
 def parse_color(text: str) -> tuple[float, float, float]:
@@ -266,9 +263,6 @@ class VideoEffects:
     halos: tuple[Halo, ...] = ()  # shadow, glow and stroke, drawn behind in this order
     blackout: float = 0.0  # 0 .. 1 toward black (Hide it plugin)
     spin: tuple[float, float, int] = (0.0, 0.0, 0)  # (turns, seconds, run): a barrel roll (Barrel Roll plugin)
-    cutout: int = 0  # background remover plugin: 0 off, 1 remove the background, 2 blur it, 3 a picture behind
-    cutout_picture: str = ""  # cutout 3: the picture's path
-    cutout_blur: float = 0.0  # cutout 2: blur size in source pixels, until the plugin's blurred copy arrives
     active: bool = field(default=False, compare=False)
 
 
@@ -345,12 +339,6 @@ def video_effects(filters) -> VideoEffects:
                 fx.pixelate = max(1.0, float(s.get("size", 24)))
             elif flt.kind == "blackout":
                 fx.blackout = max(0.0, min(1.0, float(s.get("amount", 100)) / 100))
-            elif flt.kind == "background":
-                fx.cutout = CUTOUT_MODES.get(str(s.get("mode", "remove")), 1)
-                fx.cutout_picture = str(s.get("picture_file", "") or "").strip()
-                if fx.cutout == 3 and not fx.cutout_picture:
-                    fx.cutout = 1  # no picture chosen yet: see-through behind you
-                fx.cutout_blur = 4.0 + 0.6 * max(0.0, min(100.0, float(s.get("blur", 60))))
             else:
                 turns = float(s.get("turns", 1)) * (-1.0 if s.get("direction") == "anticlockwise" else 1.0)
                 fx.spin = (turns, max(0.1, float(s.get("seconds", 2.0))), int(flt.settings.get("run", 0)))  # run isn't a field: each trigger bumps it

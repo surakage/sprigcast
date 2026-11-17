@@ -308,10 +308,17 @@ def describe(item: dict[str, Any]) -> dict[str, Any]:
 
 # Settings ------------------------------------------------------------------------------------------
 
-def settings_path() -> Path:
-    from sprigcast import models
+SETTINGS_FILE: Path | None = None  # tests keep it somewhere else
 
-    return models.folder().parent / "auto_clip.json"
+
+def settings_path() -> Path:
+    """auto_clip.json beside SprigCast's settings (on Windows, AppData/Local/SprigCast)."""
+    if SETTINGS_FILE is not None:
+        return SETTINGS_FILE
+    from PySide6.QtCore import QStandardPaths
+
+    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation)
+    return Path(base or Path.home() / ".sprigcast") / "auto_clip.json"
 
 
 def load_settings() -> dict[str, Any]:
