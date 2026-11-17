@@ -2,10 +2,17 @@
 // Exit code 0 = all passed. Pixel checks against Python's reference drawing live in tests/test_sprigcore.py.
 #include "sprigcore.h"
 
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 static int failures = 0;
@@ -18,13 +25,32 @@ static int failures = 0;
         }                                                                                \
     } while (0)
 
-static bool near(int a, int b, int tolerance = 2) { return std::abs(a - b) <= tolerance; }
+static bool close_to(int a, int b, int tolerance = 2) { return std::abs(a - b) <= tolerance; }
 
 struct Pixel { int b, g, r, a; };
 
 static Pixel at(const std::vector<uint8_t> &img, int width, int x, int y) {
     const uint8_t *p = &img[(static_cast<size_t>(y) * width + x) * 4];
     return {p[0], p[1], p[2], p[3]};
+}
+
+// Polls the engine's numbers until `ok` says yes or `ms` pass.
+template <typename F>
+static bool wait_until(sc_engine *engine, F ok, int ms, sc_engine_stats &s) {
+    for (int waited = 0;; waited += 10) {
+        if (sc_engine_stats_get(engine, &s) == SC_OK && ok(s)) return true;
+        if (waited >= ms) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+static void print_stats(const char *when, const sc_engine_stats &s) {
+    std::printf("engine %s: ticks %llu late %llu presented %llu skips %llu render %.2f/%.2f/%.2f ms running %d "
+                "faulted %d hung %d rebuilds %d canvases %d previews %d sources %d\n",
+                when, static_cast<unsigned long long>(s.ticks), static_cast<unsigned long long>(s.late),
+                static_cast<unsigned long long>(s.presented), static_cast<unsigned long long>(s.preview_skips),
+                s.render_ms_last, s.render_ms_avg, s.render_ms_max, s.running, s.faulted, s.hung, s.rebuilds,
+                s.canvases, s.previews, s.sources);
 }
 
 int main() {
@@ -63,7 +89,7 @@ int main() {
     CHECK(sc_canvas_clear(canvas, 0.0f, 0.5f, 1.0f, 1.0f) == SC_OK);
     CHECK(sc_canvas_read_bgra(canvas, img.data(), W * 4) == SC_OK);
     Pixel p = at(img, W, 10, 10);
-    CHECK(p.b == 255 && near(p.g, 128) && p.r == 0 && p.a == 255);
+    CHECK(p.b == 255 && close_to(p.g, 128) && p.r == 0 && p.a == 255);
     CHECK(sc_canvas_read_bgra(canvas, img.data(), W * 4 - 1) == SC_ERR_ARGUMENT);
 
     // A solid red 4x4 picture drawn into 16,8 .. 48,24 covers exactly that rectangle.
@@ -88,7 +114,7 @@ int main() {
     CHECK(sc_canvas_draw_bgra(canvas, red.data(), 4, 4, 16, 0, 0, W, H, 0.5f) == SC_OK);
     CHECK(sc_canvas_read_bgra(canvas, img.data(), W * 4) == SC_OK);
     p = at(img, W, 20, 20);
-    CHECK(near(p.r, 128) && p.g == 0 && p.a == 255);
+    CHECK(close_to(p.r, 128) && p.g == 0 && p.a == 255);
 
     CHECK(sc_canvas_draw_bgra(canvas, red.data(), 4, 4, 8, 0, 0, W, H, 1.0f) == SC_ERR_ARGUMENT);  // stride too small
 
@@ -174,6 +200,124 @@ int main() {
     sc_canvas_destroy(c2);
     sc_device_destroy(d2);
     sc_device_destroy(nullptr);
+
+    // ---- The engine: its own frame thread draws the same picture, shows it in a window, and survives faults.
+    sc_engine *eng = nullptr;
+    CHECK(sc_engine_create(-1, SC_DEVICE_WARP, &eng) == SC_OK);
+    if (!eng) return 1;
+    sc_engine_stats st;
+    CHECK(sc_engine_set_rate(eng, 30, 1) == SC_OK);
+    CHECK(sc_engine_set_rate(eng, 0, 1) == SC_ERR_ARGUMENT);
+    CHECK(sc_engine_canvas_set(eng, 9, 32, 16) == SC_ERR_ARGUMENT);
+    CHECK(sc_engine_canvas_set(eng, 0, 32, 16) == SC_OK);
+    CHECK(sc_engine_source_upload(eng, 11, quad.data(), &how, SC_UPLOAD_KEEP) == SC_OK);
+    CHECK(sc_engine_snapshot_set(eng, &snap) == SC_OK);
+    CHECK(sc_engine_snapshot_set(eng, &bad_snap) == SC_ERR_ARGUMENT);
+    CHECK(sc_engine_canvas_show(eng, 0, 1) == SC_OK);
+    std::vector<uint8_t> got(32 * 16 * 4);
+    CHECK(sc_engine_canvas_read(eng, 0, got.data(), 16, 32) == SC_ERR_ARGUMENT);  // not its size
+    auto engine_draws_it = [&](const char *when) {
+        std::fill(got.begin(), got.end(), uint8_t(7));
+        int code = sc_engine_canvas_read(eng, 0, got.data(), 32, 16);
+        CHECK(code == SC_OK);
+        if (code == SC_OK && got != out) {
+            std::printf("FAILED the engine's drawing %s differs from the device's\n", when);
+            ++failures;
+        }
+    };
+    engine_draws_it("at first");
+    // Watched pictures come back without waiting: RGBA at the size asked, the same picture at full size.
+    CHECK(sc_engine_canvas_watch(eng, 0, 32, 16, 0) == SC_OK);
+    {
+        std::vector<uint8_t> rgba(32 * 16 * 4);
+        uint64_t seq = 0;
+        int fresh = 0;
+        double drawn = -1;
+        for (int waited = 0; waited < 2000 && !fresh; waited += 10) {
+            CHECK(sc_engine_canvas_take(eng, 0, rgba.data(), 32, 16, &seq, &fresh, &drawn) == SC_OK);
+            if (!fresh) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(fresh == 1 && seq >= 1 && drawn >= 0);
+        bool same = fresh == 1;
+        for (size_t i = 0; same && i < rgba.size(); i += 4)
+            same = rgba[i] == out[i + 2] && rgba[i + 1] == out[i + 1] && rgba[i + 2] == out[i] && rgba[i + 3] == out[i + 3];
+        if (!same) {
+            std::printf("FAILED the watched picture differs from the canvas\n");
+            ++failures;
+        }
+        int again = 1;
+        const uint64_t had = seq;
+        CHECK(sc_engine_canvas_take(eng, 0, rgba.data(), 8, 8, &seq, &again, &drawn) == SC_OK);
+        CHECK(again == 0 && seq == had);  // not that size
+        CHECK(sc_engine_canvas_watch(eng, 0, 8, 4, 30) == SC_OK);
+        fresh = 0;
+        for (int waited = 0; waited < 2000 && !fresh; waited += 10) {
+            CHECK(sc_engine_canvas_take(eng, 0, rgba.data(), 8, 4, &seq, &fresh, &drawn) == SC_OK);
+            if (!fresh) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(fresh == 1);
+        CHECK(sc_engine_canvas_watch(eng, 0, 0, 0, 0) == SC_OK);
+    }
+    CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.ticks >= 3; }, 2000, st));
+    print_stats("running", st);
+    CHECK(st.running == 1 && st.faulted == 0 && st.canvases == 1 && st.sources == 1);
+
+    // A preview window (hidden; Windows still takes the frames).
+    HWND window = CreateWindowExW(0, L"STATIC", L"sprigcore preview check", WS_OVERLAPPEDWINDOW, 0, 0, 200, 120,
+                                  nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    CHECK(window != nullptr);
+    int preview = 0;
+    CHECK(sc_engine_preview_attach(eng, 0, nullptr, 0, 0x101820, &preview) == SC_ERR_ARGUMENT);
+    if (window) {
+        CHECK(sc_engine_preview_attach(eng, 0, window, 0, 0x101820, &preview) == SC_OK);
+        int again = 0;
+        CHECK(sc_engine_preview_attach(eng, 0, window, 0, 0, &again) == SC_ERR_ARGUMENT);  // one per window
+        CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.presented + s.preview_skips >= 3; }, 3000, st));
+        print_stats("previewing", st);
+        CHECK(st.previews == 1 && st.faulted == 0);
+        CHECK(sc_engine_preview_detach(eng, preview) == SC_OK);
+        CHECK(sc_engine_preview_detach(eng, preview) == SC_ERR_ARGUMENT);
+        DestroyWindow(window);
+    }
+
+    // Crash gates: a C++ exception, a lost card and an access violation inside a frame each rebuild the device,
+    // and the kept picture and snapshot come back by themselves.
+    int expected = 0;
+    for (int kind : {1, 3, 2}) {
+#ifdef SPRIGCORE_ASAN
+        if (kind == 2) continue;
+#endif
+#ifndef _MSC_VER
+        if (kind == 2) continue;  // only MSVC's /EHa turns the fault into an exception
+#endif
+        ++expected;
+        CHECK(sc_engine_debug_fault(eng, kind) == SC_OK);
+        const bool rebuilt = wait_until(eng, [&](const sc_engine_stats &s) { return s.rebuilds >= expected; }, 3000, st);
+        CHECK(rebuilt);
+        print_stats("after a fault", st);
+        CHECK(st.faulted == 0 && st.running == 1);
+        engine_draws_it("after a rebuild");
+    }
+    // A stuck frame: the watchdog says so, and the engine goes on afterwards.
+    CHECK(sc_engine_debug_fault(eng, 4) == SC_OK);
+    CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.hung == 1; }, 3000, st));
+    CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.hung == 0; }, 5000, st));
+    print_stats("after a stuck frame", st);
+    CHECK(st.late > 0 && st.faulted == 0);
+    engine_draws_it("after a stuck frame");
+    // Faulting over and over: the engine gives up (Python's engine takes over) and says so.
+    for (int i = 0; i < 10 && !st.faulted; ++i) {
+        const int before = st.rebuilds;
+        sc_engine_debug_fault(eng, 3);
+        wait_until(eng, [&](const sc_engine_stats &s) { return s.rebuilds > before || s.faulted; }, 3000, st);
+    }
+    print_stats("after many faults", st);
+    CHECK(st.faulted == 1);
+    CHECK(sc_engine_source_upload(eng, 11, quad.data(), &how, 0) == SC_ERR_FAULTED);
+    CHECK(sc_engine_canvas_read(eng, 0, got.data(), 32, 16) == SC_ERR_FAULTED);
+    sc_engine_destroy(eng);
+    sc_engine_destroy(nullptr);
+    for (int lines; (lines = sc_log_drain(buf, sizeof buf)) > 0;) std::printf("%.*s", lines, buf);
 
     if (failures) {
         std::printf("%d check(s) failed\n", failures);

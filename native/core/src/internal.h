@@ -103,6 +103,8 @@ struct Compositor {
 
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
 int make_target(ID3D11Device *device, int width, int height, Target &out);
+// Checks an upload's description; gives the bytes its data spans (the last row needs only its own pixels).
+int upload_bytes(const sc_upload &how, size_t &bytes);
 
 }  // namespace sc
 
@@ -131,8 +133,18 @@ struct sc_canvas {
     int width = 0, height = 0;
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11RenderTargetView> target;
+    ComPtr<ID3D11ShaderResourceView> view;  // previews draw the canvas from this
     ComPtr<ID3D11Texture2D> staging;  // made on the first read
 };
+
+namespace sc {
+
+// Draws `picture` into the rectangle x, y, w, h of a target `tw` x `th` (the phase 1 drawing: bilinear, "over"
+// blending, or a plain copy with blend = false). The device's lock must be held.
+int draw_view(sc_device &dev, ID3D11RenderTargetView *target, int tw, int th, ID3D11ShaderResourceView *picture,
+              float x, float y, float w, float h, float opacity, bool blend);
+
+}  // namespace sc
 
 namespace sc {
 

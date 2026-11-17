@@ -187,6 +187,8 @@ class Engine:
         # the sound carry on. source id -> when to ask it for a picture again, and the last problem said.
         self._failing: dict[str, float] = {}
         self._failed_said: dict[str, tuple[str, str]] = {}
+        # SPRIGCAST_ENGINE=native: the native engine draws the canvases for the previews (render/native_bridge.py).
+        self._native = None
 
     # Called from the UI thread ----------------------------------------------
 
@@ -368,8 +370,17 @@ class Engine:
             self.events.put(EngineError(f"Could not start the GPU compositor: {exc}", graphics=True))
             return
 
+        from sprigcast import sprigcore
         from sprigcast.core import pacing
 
+        if sprigcore.use_native():
+            from sprigcast.render.native_bridge import NativeCanvases
+
+            try:
+                self._native = NativeCanvases(self._collection)
+            except Exception as exc:  # no native engine: Python's compositor draws everything
+                log.warning("native engine: couldn't start (%s); the Python compositor draws everything", exc)
+            sprigcore.drain_log()
         if pacing.raise_thread_priority():  # wake on time even while the window or a game keeps the CPU busy
             log.info("render thread priority raised")
         self._sync_sources(compositor)
@@ -493,6 +504,9 @@ class Engine:
             if gpu is not None:
                 gpu.release()
             compositor.release()
+            if self._native is not None:
+                self._native.close()
+                self._native = None
 
     @staticmethod
     def _graphics_reset(compositor) -> bool:
@@ -1410,6 +1424,17 @@ class Engine:
         data, drawn = later(target_id, now, now)
         return data, (drawn if data is not None else 0.0)
 
+    def _python_draws(self, native, taps: dict) -> bool:
+        """With the native engine drawing the previews: does Python's compositor still draw anything this tick
+        (an output, a screenshot, a transition, Build's edited bloom, the Part editor, a canvas the native engine
+        doesn't show)? If not, it skips the sprigs too."""
+        if taps or self._transitions or self._waking or self.editing_part or self._grabs:
+            return True
+        active = self._collection.active_scenes
+        if any(scene_id != active.get(canvas_id) for canvas_id, scene_id in self.staged.items()):
+            return True
+        return any(c.enabled and not native.draws(c.id) for c in self._collection.canvases)
+
     def _preview_size(self, key: str, canvas_size: tuple[int, int]) -> tuple[int, int] | None:
         """The size to copy a preview at, or None for full size (shown big, or size unknown)."""
         want = self.preview_sizes.get(key)
@@ -1568,6 +1593,7 @@ class Engine:
         self._ticks = getattr(self, "_ticks", 0) + 1
         frozen = self._freezes(compositor)
         textures = getattr(compositor, "textures", {})
+        native = self._native if self._native is not None and not self._native.failed else None
         for source_id, source in self._sources.items():
             freeze = frozen.get(source_id) if frozen else None
             if source.asleep or not self._budget_allows(source_id) or (
@@ -1597,25 +1623,34 @@ class Engine:
             if frame is None and missed is not None:
                 frame = missed
             if frame is not None:
-                compositor.upload(source_id, frame, source.channel_order,
-                                  source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False)
-                                  else None)
+                layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
+                compositor.upload(source_id, frame, source.channel_order, layout)
+                if native is not None:
+                    native.upload(source_id, frame, source.channel_order, layout)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
             if spent > slowest[1]:
                 slowest = (source_id, spent)
         self._slowest_source = slowest
         self._mark("sources")
+        with self._taps_lock:
+            taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
+        if native is not None:
+            native.forget_gone(self._sources)
+            native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades))
+            native.check(now)
+            sprigcore_drain()
+            self._mark("native engine")
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
-        if self._collection.parts():
+        if native is not None and not self._python_draws(native, taps):
+            self._part_textures, self._parts_used = {}, set()  # nothing Python draws this tick shows a sprig
+        elif self._collection.parts():
             self._render_parts(compositor, sizes, now)
         else:
             self._part_textures, self._parts_used = {}, set()
             if compositor.parts:
                 compositor.parts = {}
         self._mark("sprigs")
-        with self._taps_lock:
-            taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
         for canvas in self._collection.canvases:
             if not canvas.enabled:
                 continue
@@ -1628,6 +1663,18 @@ class Engine:
                 if not (hidden and self._render_shot(compositor, canvas, held, extra, sizes, now, shots, hidden)):
                     outputs = (*outputs, *shots)  # the canvas as it is: shares its copy
             preview = self._preview_due(canvas.id, now)
+            if native is not None:
+                native_shows = held is None and not extra and native.draws(canvas.id)
+                wanted = self.previews is None or canvas.id in self.previews
+                size = self._preview_size(canvas.id, (canvas.width, canvas.height)) or (canvas.width, canvas.height)
+                native.watch(canvas.id, size if native_shows and wanted else None, self.preview_fps)
+                if native_shows and preview:
+                    preview = False  # the native engine drew it: Python's compositor needn't
+                    got = native.take(canvas.id)
+                    if got is not None:
+                        data, w, h = got
+                        self.frames[canvas.id].put(Frame(canvas.id, w, h, data, now,
+                                                         canvas_size=(canvas.width, canvas.height)))
             self._render_staged(compositor, canvas, sizes, now)
             self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))
             if not outputs and not preview:
@@ -1668,6 +1715,13 @@ DETAIL_RANGE = (0.125, 4.0)
 
 
 SHRINK_STEPS = (1.0, 0.5, 0.25)  # a video is decoded at its size, half or a quarter (never smaller than shown)
+
+
+def sprigcore_drain() -> None:
+    """The native engine's log lines into SprigCast's log."""
+    from sprigcast import sprigcore
+
+    sprigcore.drain_log()
 
 
 def shrink_step(scale: float) -> float:

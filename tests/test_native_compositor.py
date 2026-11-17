@@ -3,15 +3,17 @@
 The pictures in tests/native_golden are today's compositor's drawing of the cases in tests/native_cases.py.
 The engine must draw the same; today's compositor must still draw them too, or they are remade."""
 
+import time
+
 import numpy as np
 import pytest
 from PIL import Image
 
-from tests import native_cases as nc
 from sprigcast import sprigcore
 from sprigcast.core.filters import VideoEffects
 from sprigcast.core.scene import Scene, SceneItem
 from sprigcast.render import native_snapshot
+from tests import native_cases as nc
 
 CASES = nc.cases(nc.GOLDEN)
 IDS = [c.name for c in CASES]
@@ -132,3 +134,60 @@ def test_a_sprig_snapshot_is_the_engines_own_copy(device):
         got = np.frombuffer(c.read_bgra(), np.uint8).reshape(16, 16, 4)[..., [2, 1, 0, 3]]
     assert np.abs(got.astype(int) - pic.astype(int)).max() <= 1
     device.forget("a")
+
+
+# ---- the engine's own frame loop (phase 2, part 2) ------------------------------------------------------------------
+
+STILL_CASES = [c for c in CASES if c.times == (0.0,)]  # the engine draws at its own clock
+
+
+@needs_engine
+@pytest.mark.parametrize("case", STILL_CASES, ids=[c.name for c in STILL_CASES])
+def test_the_engines_frame_loop_draws_like_todays_compositor(case, tmp_path):
+    """The same cases, drawn by the engine's frame thread from work handed over without waiting."""
+    main = case.scenes[-1]
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        for source_id, array, order, size in case.uploads:
+            eng.upload(source_id, array, order, size, keep=True)
+        native_snapshot.hand_over(eng, native_snapshot.build(case.scenes, case.effects, case.parts),
+                                  native_snapshot.Resources())
+        eng.set_canvas(0, *main.size)
+        eng.show(0, main.key)
+        bgra = np.frombuffer(eng.read_bgra(0), np.uint8).reshape(main.size[1], main.size[0], 4)
+        stats = eng.stats()
+    got = np.ascontiguousarray(bgra[..., [2, 1, 0, 3]])
+    diff = nc.compare(got, golden(case))
+    if not nc.close_enough(diff):
+        Image.fromarray(got, "RGBA").save(tmp_path / f"{case.name}-engine.png")
+    assert nc.close_enough(diff), f"{case.name}: {diff} (engine picture in {tmp_path})"
+    assert stats["running"] and not stats["faulted"] and stats["ticks"] >= 2
+
+
+@needs_engine
+def test_the_engine_rebuilds_after_faults_and_its_kept_pictures_come_back(device):
+    pic = nc.picture(16, 16)
+    scene = Scene(id="b", name="b", canvas="h", items=[SceneItem(source="a", align="top_left")])
+    built = native_snapshot.build([native_snapshot.SceneDraw("b", scene, (16, 16))], {})
+    device.upload("a", pic)
+    device.set_snapshot(built.struct)
+    with sprigcore.Canvas(device, 16, 16) as c:
+        c.render("b")
+        want = c.read_bgra()
+    device.forget("a")
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        eng.upload("a", pic, keep=True)
+        eng.set_snapshot(built.struct)
+        eng.set_canvas(0, 16, 16)
+        eng.show(0, "b")
+        assert eng.read_bgra(0) == want
+        for n, kind in enumerate((1, 3), start=1):  # a C++ exception, a lost graphics card
+            eng.debug_fault(kind)
+            deadline = time.monotonic() + 3
+            while eng.stats()["rebuilds"] < n and time.monotonic() < deadline:
+                time.sleep(0.02)
+            stats = eng.stats()
+            assert stats["rebuilds"] == n and not stats["faulted"]
+            assert eng.read_bgra(0) == want
+        eng.set_canvas(0, 0, 0)
+        with pytest.raises(sprigcore.NativeError):
+            eng.read_bgra(0)

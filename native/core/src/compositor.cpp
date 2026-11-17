@@ -381,6 +381,19 @@ int make_target(ID3D11Device *device, int width, int height, Target &out) {
 
 }  // namespace sc
 
+int sc::upload_bytes(const sc_upload &how, size_t &bytes) {
+    const int fmt = how.format, w = how.width, h = how.height, stride = how.stride;
+    if (fmt < SC_FMT_RGBA || fmt > SC_FMT_I420A) return fail(SC_ERR_ARGUMENT, "Upload: unknown format");
+    const bool planar = fmt == SC_FMT_I420 || fmt == SC_FMT_I420A;
+    const bool three = fmt == SC_FMT_RGB || fmt == SC_FMT_BGR;
+    const int bpp = planar ? 1 : (three ? 3 : 4);
+    if (w < 1 || h < 1 || w > 16384 || h > 16384 || stride < w * bpp || stride > 16384 * 4)
+        return fail(SC_ERR_ARGUMENT, "Upload: bad size or stride");
+    if (planar && (w % 2 || h < 3)) return fail(SC_ERR_ARGUMENT, "Upload: bad planar size");
+    bytes = static_cast<size_t>(h - 1) * stride + static_cast<size_t>(w) * bpp;
+    return SC_OK;
+}
+
 int sc_device::prepare_compositor() {
     if (comp.vs) return SC_OK;
     int ready = prepare_drawing();  // the blend and rasterizer states
@@ -422,14 +435,12 @@ extern "C" {
 SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data, const sc_upload *how) {
     return device_call(device, "sc_source_upload", [&]() -> int {
         if (!data || !how || !id) return fail(SC_ERR_ARGUMENT, "sc_source_upload: no id, data or description");
+        size_t bytes = 0;
+        int ok = upload_bytes(*how, bytes);
+        if (ok != SC_OK) return ok;
         const int fmt = how->format, w = how->width, h = how->height, stride = how->stride;
-        if (fmt < SC_FMT_RGBA || fmt > SC_FMT_I420A) return fail(SC_ERR_ARGUMENT, "sc_source_upload: unknown format");
         const bool planar = fmt == SC_FMT_I420 || fmt == SC_FMT_I420A;
         const bool three = fmt == SC_FMT_RGB || fmt == SC_FMT_BGR;
-        const int bpp = planar ? 1 : (three ? 3 : 4);
-        if (w < 1 || h < 1 || w > 16384 || h > 16384 || stride < w * bpp)
-            return fail(SC_ERR_ARGUMENT, "sc_source_upload: bad size or stride");
-        if (planar && (w % 2 || h < 3)) return fail(SC_ERR_ARGUMENT, "sc_source_upload: bad planar size");
 
         std::lock_guard<std::mutex> lock(device->lock);
         Source &s = device->comp.sources[id];
