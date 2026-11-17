@@ -199,6 +199,7 @@ class Engine:
         # SPRIGCAST_ENGINE=native: the native engine draws the canvases for the previews (render/native_bridge.py).
         self._native = None
         self._python_drew = True  # last tick Python's compositor drew something (always, without the native engine)
+        self._held_back: dict = {}  # source id -> (frame, channel order, layout): pictures Python's compositor skipped
 
     # Called from the UI thread ----------------------------------------------
 
@@ -1816,7 +1817,14 @@ class Engine:
                 frame = missed
             if frame is not None:
                 layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
-                compositor.upload(source_id, frame, source.channel_order, layout)
+                if native is not None and not self._python_drew and not self._waking and freeze is None:
+                    # Python's compositor drew nothing last tick: only the engine gets it. Python's copy waits
+                    # here (the newest only) for a tick it draws again. The native simple run (2026-11-17) had
+                    # every camera picture sent to both, ~3x the default engine's CPU.
+                    self._held_back[source_id] = (frame, source.channel_order, layout)
+                else:
+                    self._held_back.pop(source_id, None)
+                    compositor.upload(source_id, frame, source.channel_order, layout)
                 if native is not None and not direct:
                     native.upload(source_id, frame, source.channel_order, layout)
             spent = time.perf_counter() - began
@@ -1841,6 +1849,14 @@ class Engine:
         else:
             self._engine_views, self._riders = {}, {}
         self._python_drew = native is None or self._python_draws(native, taps)
+        if self._held_back:
+            if self._python_drew or native is None:  # it draws again: it gets the newest pictures it skipped
+                for source_id, (frame, order, layout) in self._held_back.items():
+                    if source_id in self._sources:
+                        compositor.upload(source_id, frame, order, layout)
+                self._mark("pictures held back")
+            self._held_back = {} if self._python_drew or native is None else \
+                {sid: held for sid, held in self._held_back.items() if sid in self._sources}
         if not self._python_drew:
             self._part_textures, self._parts_used = {}, set()  # nothing Python draws this tick shows a sprig
         elif self._collection.parts():

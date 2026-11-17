@@ -402,7 +402,10 @@ void Core::start(bool ensure) {
     auto self = shared_from_this();
     hold.unlock();
     try {
-        std::thread([self, serial] { self->run(serial); }).detach();
+        std::thread([self, serial] {
+            sc::name_thread(L"SprigCast media player");
+            self->run(serial);
+        }).detach();
     } catch (...) {
         std::lock_guard<std::mutex> again(lock);
         if (thread == serial) thread = 0;
