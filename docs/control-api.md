@@ -123,7 +123,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
 | `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed`, `effect.ended` (source, sourceId, effect: hide.pixelate, hide.blackout, roll.spin or freeze.start, reason: ended or replaced) |
 | `source` | `source.changed` (source, sourceId, settings), `sources.changed` (sources: [{id, name, kind}], added, removed, renamed: [{from, to}]) |
-| `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `clip.saved` (files) |
+| `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `record.paused` (paused), `clip.saved` (files) |
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `garden` | `garden.changed` (garden), `gardens.changed` (gardens) |

@@ -310,6 +310,24 @@ class Record extends SprigCastAction {
 	paint(action) { return action.setState(sprigcast.state.record ? 1 : 0); }
 }
 
+class RecordPause extends SprigCastAction {
+	constructor() { super("record-pause"); }
+	press(s) {
+		const verb = { pause: "record.pause", resume: "record.resume" }[s.mode] ?? "record.toggle_pause";
+		return sprigcast.run(verb);
+	}
+	paint(action) { return action.setState(sprigcast.state.recordPaused ? 1 : 0); }
+}
+
+class RecordChapter extends SprigCastAction {
+	constructor() { super("chapter", 1); this.okAfterPress = true; }
+	press(s) {
+		const name = String(s.name ?? "").trim();
+		return sprigcast.run("record.chapter", name ? { name } : {});
+	}
+	said() { return "Marked"; }
+}
+
 class SaveClip extends SprigCastAction {
 	constructor() { super("clip", 1); this.okAfterPress = true; }
 	press() { return sprigcast.run("clip.save"); }
@@ -421,7 +439,7 @@ class RunAction extends SprigCastAction {
 	}
 }
 
-const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(),
+const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(), new RecordPause(), new RecordChapter(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
 	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new Pngtuber(),
 	new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(), new FreezeKey(),

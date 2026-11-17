@@ -102,6 +102,11 @@ GLYPHS = {
     # Freeze: a snowflake (holds the picture still).
     "freeze": f'<path d="M50 10v80M15.4 30l69.2 40M15.4 70l69.2-40" {SW}/>'
               f'<path d="M40 16l10 10 10-10M40 84l10-10 10 10M17 42l14-4-4-14M83 58l-14 4 4 14M17 58l14 4-4 14M83 42l-14-4 4-14" {SW}/>',
+    # Pause recording: the record ring with pause bars.
+    "record-pause": f'<circle cx="50" cy="50" r="34" {SW}/>'
+                    '<rect x="37" y="34" width="9" height="32" rx="3" fill="{c}"/><rect x="54" y="34" width="9" height="32" rx="3" fill="{c}"/>',
+    # Add chapter: a bookmark on a timeline (a mark in the recording).
+    "chapter": f'<path d="M34 12h32v46L50 46 34 58z" fill="{{c}}"/><path d="M12 78h76" {SW}/><path d="M50 70v16" {SW}/>',
     # Run action: braces round a play mark (runs any SprigCast action).
     "run": f'<path d="M30 16q-12 0-12 12v10q0 12-10 12q10 0 10 12v10q0 12 12 12M70 16q12 0 12 12v10q0 12 10 12q-10 0-10 12v10q0 12-12 12" {SW}/>'
            '<path d="M42 36l22 14-22 14z" fill="{c}"/>',
@@ -131,6 +136,8 @@ KEYS = {
     "timer-add": (("timer-add", MINT), None),
     "replay": (("replay", MINT), None),
     "freeze": (("freeze", MINT), None),
+    "record-pause": (("record-pause", DIM), ("record-pause", MINT)),
+    "chapter": (("chapter", MINT), None),
     "pngtuber": (("pngtuber", MINT), None),
     "run": (("run", MINT), None),
 }
@@ -142,7 +149,8 @@ GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", 
          "live": "live", "record": "live",
          "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
          "filter": "fx", "deaths": "fx", "pngtuber": "fx", "run": "fx",
-         "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture", "freeze": "fx"}
+         "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture", "freeze": "fx",
+         "record-pause": "capture", "chapter": "capture"}
 GROUP_TILE = {"scene": ("#1f7a4d", "#0b3322"), "sound": ("#1f6f86", "#0a2b38"), "capture": ("#8a6a1e", "#3a2a08"),
               "fx": ("#5b4a9a", "#221a45"), "live": ("#b4305f", "#4a0f26")}
 

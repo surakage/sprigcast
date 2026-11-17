@@ -39,7 +39,7 @@ export function readInfo(path) {
 function freshState() {
 	return {
 		onAir: {}, sounds: {}, volumes: {}, items: {}, media: {}, filters: {}, sprigs: {},
-		stream: false, record: false, clips: false, camera: false,
+		stream: false, record: false, recordPaused: false, clips: false, camera: false,
 		garden: null, path: null, transition: null, deaths: null, timer: null,
 	};
 }
@@ -302,6 +302,7 @@ export class SprigCast extends EventEmitter {
 		}
 		st.stream = Boolean(stream?.on);
 		st.record = Boolean(record?.on);
+		st.recordPaused = Boolean(record?.on && record?.paused);
 		st.clips = Boolean(clips?.on);
 		st.camera = Boolean(camera?.on);
 		st.garden = gardens?.garden ?? null;
@@ -338,7 +339,10 @@ export class SprigCast extends EventEmitter {
 			st.stream = Boolean(message.on);
 			if (st.timer?.mode === "uptime") this._askTimer();
 		}
-		else if (event === "record.changed") st.record = Boolean(message.on);
+		else if (event === "record.changed") {
+			st.record = Boolean(message.on);
+			if (!st.record) st.recordPaused = false;
+		} else if (event === "record.paused") st.recordPaused = Boolean(message.paused);
 		else if (event === "clips.changed") st.clips = Boolean(message.on);
 		else if (event === "camera.changed") st.camera = Boolean(message.on);
 		else if (event === "garden.changed") st.garden = message.garden;

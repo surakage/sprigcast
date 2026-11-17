@@ -189,6 +189,46 @@
       "DisableAutomaticStates": true
     },
     {
+      "Name": "Pause recording",
+      "UUID": "com.sprigcast.sprigcast.record-pause",
+      "Icon": "imgs/actions/record-pause/icon",
+      "Tooltip": "Pause the recording, or carry on in the same file. Lights while paused.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/record-pause/key0",
+          "Name": "Recording",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/record-pause/key1",
+          "Name": "Paused",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Add chapter",
+      "UUID": "com.sprigcast.sprigcast.chapter",
+      "Icon": "imgs/actions/chapter/icon",
+      "Tooltip": "Add a chapter mark to the recording at this moment.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/chapter/key0",
+          "TitleAlignment": "bottom",
+          "ShowTitle": true
+        }
+      ]
+    },
+    {
       "Name": "Clips",
       "UUID": "com.sprigcast.sprigcast.clips",
       "Icon": "imgs/actions/clips/icon",

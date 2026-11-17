@@ -60,6 +60,7 @@ FEATURES = (
     "notfound.what",       # not_found errors carry what and name
     "page.api",            # Web page sources: window.sprigcast (app, version, visible, bloom...) and its events
     "effects.freeze",      # freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start"
+    "record.pause",        # record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event
 )
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
@@ -1315,6 +1316,7 @@ class NativeApi:
             "plugins": self._plugin_ids(),
             "stream": self.host.stream_status() is not None,
             "record": self.host.record_status() is not None,
+            "recordPaused": bool((self.host.record_status() or {}).get("paused")),
             "clips": self.host.clips_ready(),
             "camera": bool(getattr(self.host, "camera_on", lambda: False)()),
             "transition": (col.transition.kind, col.transition.duration_ms),
@@ -1432,6 +1434,8 @@ class NativeApi:
                           ("camera", "camera.changed")):
             if now.get(key) != last.get(key):
                 out.append((name, {"on": now[key]}))
+        if "recordPaused" in last and now["recordPaused"] != last["recordPaused"] and now["record"]:
+            out.append(("record.paused", {"paused": now["recordPaused"]}))
         if now["transition"] != last["transition"]:
             out.append(("transition.changed", {"kind": now["transition"][0], "ms": now["transition"][1]}))
         for pid, state in now["states"].items():

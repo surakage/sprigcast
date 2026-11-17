@@ -12,7 +12,7 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 
 ## Two ways in
 
-- **As OBS (no code).** In Streamer.bot, Stream Apps → OBS Studio → Add: host `127.0.0.1`, the port and password from SprigCast's Settings → Connections. Streamer.bot's own OBS sub-actions then work on SprigCast: switch scene (bloom), show or hide a source, set a text (Set GDI Text), turn a filter on or off, play or restart a media source, mute, start and stop the stream, recording and replay buffer, save a replay, take a source screenshot of the bloom on air. This is the quickest start.
+- **As OBS (no code).** In Streamer.bot, Stream Apps → OBS Studio → Add: host `127.0.0.1`, the port and password from SprigCast's Settings → Connections. Streamer.bot's own OBS sub-actions then work on SprigCast: switch scene (bloom), show or hide a source, set a text (Set GDI Text), turn a filter on or off, play or restart a media source, mute, start and stop the stream, recording and replay buffer, pause and resume the recording, add a chapter marker, save a replay, take a source screenshot of the bloom on air. This is the quickest start.
 - **The SprigCast pack (everything, including plugins).** One Execute C# Code action, below, calls any SprigCast action by name, with ready-made methods for the common ones.
 
 ## The SprigCast pack for Streamer.bot
@@ -31,6 +31,8 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 | `FilterOn`, `FilterOff`, `ToggleFilter` | `source`, `filter` |
 | `PlayMedia` (from the start), `StopMedia` | `media` |
 | `Screenshot`, `SaveClip`, `ToggleStream`, `ToggleRecord` | none |
+| `PauseRecord`, `ResumeRecord`, `TogglePauseRecord` | none (the recording carries on in the same file) |
+| `ChapterMark` | optional `name` (a chapter mark in the recording) |
 | `SwitchGarden` / `SwitchPath` | `garden` / `path` |
 | `DeathAdd`, `DeathRemove`, `DeathReset`, `DeathShow` | none (Death count plugin) |
 | `Pixelate`, `Blackout` | `source`, optional `seconds` (Hide it plugin) |
@@ -77,6 +79,8 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Raid or big sub train: mark it as a suggested clip (Auto clip) | `http://127.0.0.1:4455/api/autoclip.mark?password=…` |
 | Redeem: turn the audio visualizer into a blue circle | `http://127.0.0.1:4455/api/visualizer.set?style=circle&color=%237fb8ff&password=…` |
 | Change some text on screen | `http://127.0.0.1:4455/api/source.set?source=Goal%20text&settings=…&password=…` (or POST JSON, below) |
+| Pause the recording for a break (and carry on in the same file) | `http://127.0.0.1:4455/api/record.toggle_pause?password=…` |
+| Raid or boss fight: a chapter mark in the recording | `http://127.0.0.1:4455/api/record.chapter?name=Boss%20fight&password=…` |
 | Switch bloom | `http://127.0.0.1:4455/api/bloom.show?bloom=Just%20Chatting&password=…` |
 | Mute the mic | `http://127.0.0.1:4455/api/sound.mute?sound=Mic&password=…` |
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
