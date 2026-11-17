@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
@@ -261,6 +262,8 @@ class GearWatch(QObject):
         return False
 
 class MainWindow(QMainWindow):
+    _record_finished = Signal(object, bool)  # a recording's files are closed (from the thread that waited)
+
     def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None,
                  shelf=None):
         super().__init__()
@@ -3088,7 +3091,8 @@ class MainWindow(QMainWindow):
         if self.streaming is not None:
             self._stop_streaming()
         if self.recording is not None:
-            self._stop_recording()
+            self._stop_recording(wait=True)
+        self._wait_for_stopped_recording()
         if self.replay is not None:
             self.replay.stop()
             self.replay = None
@@ -5425,6 +5429,7 @@ class MainWindow(QMainWindow):
     def _start_recording(self, remote: bool = False, force: bool = False) -> dict:
         """Start recording. From an app (remote) nothing waits on a pop-up: a problem or the low-space warning
         comes back in the answer ({"problem"} / {"warnings"}), and force records anyway."""
+        self._wait_for_stopped_recording()
         settings = self.collection.recording
         canvases = [c for c in self.collection.canvases if c.enabled and c.id in settings.canvases]
         if not canvases:
@@ -5613,15 +5618,54 @@ class MainWindow(QMainWindow):
         self._saved_note("Recording stopped: the drive is almost full", self._recordings_folder(),
                          detail="Your files are saved. Free up space to record again.", kind="warn", ms=30000)
 
-    def _stop_recording(self, low_disk: bool = False) -> None:
+    def _stop_recording(self, low_disk: bool = False, wait: bool = False) -> None:
+        """Stop recording. The encoders get no more frames at once; waiting for what they still hold to be
+        written and the files to close happens on a thread of its own (it took 583 ms on the PC, 2026-11-17, and
+        the window didn't answer meanwhile), then _recording_stopped finishes up here. wait: finish before
+        returning (SprigCast is closing)."""
         session, self.recording = self.recording, None
         if session is None:
             return
         plugin_hooks.output_changed("record", None)
         self._say("Finishing files…")
-        session.stop()
+        finishing: list = []
+        session.stop(None if wait else finishing)
         self.live_side.set_recording(False)
         self._side_status("rec", None)
+        if not finishing:
+            self._recording_stopped(session, low_disk)
+            return
+
+        def finish() -> None:
+            for enc in finishing:
+                try:
+                    enc.stop()
+                except Exception:  # noqa: BLE001 (its error shows in session.errors)
+                    log.exception("finishing a recording")
+            self._record_finished.emit(session, low_disk)
+
+        if not getattr(self, "_record_finished_wired", False):
+            self._record_finished_wired = True
+            self._record_finished.connect(self._recording_stopped)
+        self._record_pending = (session, low_disk)
+        self._record_stopping = threading.Thread(target=finish, name="record-finish", daemon=True)
+        self._record_stopping.start()
+
+    def _wait_for_stopped_recording(self) -> None:
+        """Before another recording starts or SprigCast closes: the last one's files are closed first."""
+        thread = getattr(self, "_record_stopping", None)
+        if thread is not None and thread.is_alive():
+            thread.join(20)
+        pending = getattr(self, "_record_pending", None)
+        if pending is not None and not (thread is not None and thread.is_alive()):  # its thread's word may still be on its way (or never come, when closing)
+            self._recording_stopped(*pending)
+
+    def _recording_stopped(self, session, low_disk: bool = False) -> None:
+        """The recording's files are closed: say so, and do what follows (plain MP4s, repotting)."""
+        if getattr(session, "_wrapped_up", False):
+            return
+        session._wrapped_up = True
+        self._record_pending = None
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
         from sprigcast.core.pacing import memory_line

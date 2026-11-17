@@ -199,3 +199,27 @@ def test_starting_a_recording_doesnt_wait_for_the_encoder_to_open(tmp_path, monk
     _feed(engine, time.perf_counter(), 20, pool=pool)
     rec.stop()
     assert rec.errors == [] and [_frames(p) for p in rec.paths] == [20, 20]
+
+
+def test_stopping_a_recording_can_leave_the_wait_to_another_thread(tmp_path):
+    """PC test 2026-11-17: the window didn't answer for 583 ms when a recording stopped (Recorder.stop joined
+    its thread there). With `later`, stop() only unhooks the encoder and hands it over; whoever waits for the
+    file to close does so on a thread of their own."""
+    pytest.importorskip("av")
+    from sprigcast.output.shared import EncoderPool, SharedRecording
+
+    engine = TrackEngine()
+    pool = EncoderPool(engine)
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 800, codec="libx264")
+    enc = pool.encoders["horizontal"]
+    assert enc.wait_open(30)
+    _feed(engine, time.perf_counter(), 40, pool=pool)
+    later: list = []
+    began = time.perf_counter()
+    rec.stop(later)
+    assert time.perf_counter() - began < 0.25  # nothing waited for the encoder
+    assert later == [enc] and pool.encoders == {} and enc.running  # unhooked, still finishing its file
+    for waiting in later:
+        waiting.stop()
+    assert not enc.running and rec.errors == []
+    assert rec.paths and rec.paths[0].stat().st_size > 0
