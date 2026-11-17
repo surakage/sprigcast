@@ -5339,9 +5339,12 @@ class MainWindow(QMainWindow):
         self._set_encoder_tracks()
         self._wake_up()
         try:
+            borrowed = None
+            if settings.same_as_stream and self.streaming is not None and hasattr(self.streaming, "encoders_by_canvas"):
+                borrowed = self.streaming.encoders_by_canvas()
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
-                encoder=settings.encoder, short_side=settings.short_side,
+                encoder=settings.encoder, short_side=settings.short_side, stream_encoders=borrowed,
             )
         except Exception as exc:
             self.recording = None
@@ -5714,7 +5717,8 @@ class MainWindow(QMainWindow):
 
             self.streaming = StreamSession.start(self.engine, targets,
                                                  resolve_codec(self.collection.stream_encoder, streaming=True),
-                                                 self.collection.stream_encoder, delay_s=stream_delay())
+                                                 self.collection.stream_encoder, delay_s=stream_delay(),
+                                                 share_all=self.collection.recording.same_as_stream)
         except Exception as exc:
             self.streaming = None
             if not remote:

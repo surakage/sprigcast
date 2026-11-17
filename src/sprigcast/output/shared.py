@@ -23,43 +23,36 @@ from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, replay_pa
 log = logging.getLogger(__name__)
 
 
-class CanvasEncoder(ReplayBuffer):
-    """A canvas's encoder: keeps `seconds` of packets for replays (0 = replay off) and can write a file."""
+class FileTap:
+    """Writes an encoder's packets to a file on the side, from a keyframe asked for on the spot.
 
-    def __init__(self, canvas_id, width, height, fps, bitrate_kbps, codec, start_time, container="mkv", encoder=None,
-                 out_size=None, tracks: tuple[str, ...] = ("recording", "clips")):
-        super().__init__(canvas_id, width, height, fps, bitrate_kbps, codec, start_time, 0.0, container, encoder,
-                         out_size, tracks)
+    Mixed into an encoder (a ReplayBuffer): the canvas encoder that recordings and clips share, and the
+    stream's encoder when a recording is "Same as stream". Call _init_file_tap() from __init__ and send each
+    packet to _to_file() while file_path is set.
+    """
+
+    def _init_file_tap(self, tracks: tuple[str, ...]) -> None:
         self.file: PacketFile | None = None  # the recording being written, on the encoder thread
         self.file_path: Path | None = None  # asked for; the file opens at the next keyframe
+        self.file_container: str | None = None  # None: the encoder's own container
         self.file_error: str | None = None
         self._closing = False  # end the file at the next keyframe
         self._file_done = threading.Event()
-        self.file_tracks: tuple[str, ...] = tuple(t for t in tracks if t != "clips")  # what a recording keeps
-
-    def _video_options(self) -> dict[str, str]:
-        from sprigcast.output.recorder import family
-
-        opts = super()._video_options()
-        if family(self.codec) == "nvenc":
-            opts["forced-idr"] = "1"  # a keyframe asked for (a recording starting) is a clean IDR frame
-        elif family(self.codec) in ("amf", "qsv") and opts:  # same for AMD and Intel
-            opts["forced_idr"] = "1"
-        return opts
+        self.file_tracks: tuple[str, ...] = tracks  # what a recording keeps
 
     # Called from other threads ----------------------------------------------------------
 
-    def start_file(self, path: Path) -> None:
+    def start_file(self, path: Path, container: str | None = None) -> None:
         """Start writing everything from the next keyframe (asked for right away) to `path`."""
         def job():
             if self.file is not None or self.file_path is not None:
                 raise RuntimeError("already writing a file")
-            self.file_path, self.file_error = path, None
+            self.file_path, self.file_container, self.file_error = path, container, None
             self._force_key = True
         self._ask(job)
 
     def stop_file(self, timeout: float = 10.0) -> None:
-        """Finish the file while the encoder keeps running (the replay buffer still needs it).
+        """Finish the file while the encoder keeps running (the replay buffer or a stream still needs it).
 
         A keyframe is asked for and the file ends just before it: everything shown before a keyframe
         has left the encoder by the time it comes out, so no frame is lost in the encoder's lookahead.
@@ -80,10 +73,6 @@ class CanvasEncoder(ReplayBuffer):
 
     # Encoder thread ---------------------------------------------------------------------
 
-    def _on_packet(self, p: _Packet) -> None:
-        if self.file_path is not None:
-            self._to_file(p)
-
     def _to_file(self, p: _Packet) -> None:
         try:
             if self._closing and p.kind == "video" and p.keyframe:
@@ -92,14 +81,14 @@ class CanvasEncoder(ReplayBuffer):
             if self.file is None:
                 if not (p.kind == "video" and p.keyframe):
                     return  # the file starts at a keyframe
-                self.file = PacketFile(self.file_path, self.container_kind, self._templates, p.seconds,
-                                       self.audio_kinds(*self.file_tracks) or ("audio",))
+                self.file = PacketFile(self.file_path, self.file_container or self.container_kind, self._templates,
+                                       p.seconds, self.audio_kinds(*self.file_tracks) or ("audio",))
             began = time.perf_counter()
             self.file.write(p)
             waited = time.perf_counter() - began
             self.mux_seconds += waited
             self.longest_stall = max(self.longest_stall, waited)
-        except Exception as exc:  # disk full, drive removed: stop the file, keep the encoder for replays
+        except Exception as exc:  # disk full, drive removed: stop the file, keep the encoder going
             log.exception("recording %s failed", self.file_path)
             self.file_error = str(exc) or exc.__class__.__name__
             self._close_file()
@@ -116,6 +105,30 @@ class CanvasEncoder(ReplayBuffer):
     def _before_close(self, container) -> bool:
         self._close_file()  # after the encoder's last packets are flushed into it
         return super()._before_close(container)
+
+
+class CanvasEncoder(FileTap, ReplayBuffer):
+    """A canvas's encoder: keeps `seconds` of packets for replays (0 = replay off) and can write a file."""
+
+    def __init__(self, canvas_id, width, height, fps, bitrate_kbps, codec, start_time, container="mkv", encoder=None,
+                 out_size=None, tracks: tuple[str, ...] = ("recording", "clips")):
+        super().__init__(canvas_id, width, height, fps, bitrate_kbps, codec, start_time, 0.0, container, encoder,
+                         out_size, tracks)
+        self._init_file_tap(tuple(t for t in tracks if t != "clips"))
+
+    def _video_options(self) -> dict[str, str]:
+        from sprigcast.output.recorder import family
+
+        opts = super()._video_options()
+        if family(self.codec) == "nvenc":
+            opts["forced-idr"] = "1"  # a keyframe asked for (a recording starting) is a clean IDR frame
+        elif family(self.codec) in ("amf", "qsv") and opts:  # same for AMD and Intel
+            opts["forced_idr"] = "1"
+        return opts
+
+    def _on_packet(self, p: _Packet) -> None:
+        if self.file_path is not None:
+            self._to_file(p)
 
 
 class EncoderPool:
@@ -185,9 +198,11 @@ class EncoderPool:
 class SharedRecording:
     """Records the chosen canvases, each to its own file, from the shared encoders."""
 
-    def __init__(self, pool: EncoderPool, encoders: list[tuple[str, CanvasEncoder]], paths: list[Path]):
+    def __init__(self, pool: EncoderPool, encoders: list[tuple[str, CanvasEncoder]], paths: list[Path],
+                 borrowed: dict | None = None):
         self.pool = pool
         self.recorders = encoders  # (canvas id, encoder): what the stats panel reads
+        self.borrowed = dict(borrowed or {})  # canvas id -> the stream's encoder this records from ("Same as stream")
         self._paths = paths
         self.started_at = time.monotonic()
         self._dropped_before = {cid: enc.dropped for cid, enc in encoders}
@@ -195,24 +210,39 @@ class SharedRecording:
 
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, bitrate_kbps: int, container: str = "mkv",
-              codec: str | None = None, encoder=None, short_side: int | None = None) -> SharedRecording:
+              codec: str | None = None, encoder=None, short_side: int | None = None,
+              stream_encoders: dict | None = None) -> SharedRecording:
+        """stream_encoders (canvas id -> a live stream's encoder): "Same as stream", those canvases are written
+        from the packets already encoded for the stream, with no encoder of their own."""
         codec = codec or resolve_codec(encoder)
         now = datetime.now()
-        encoders, paths = [], []
+        encoders, paths, borrowed = [], [], {}
         try:
             for canvas in canvases:
-                enc = pool.acquire("recording", canvas, bitrate_kbps, container, codec, encoder, short_side)
-                encoders.append((canvas.id, enc))
                 path = recording_path(folder, canvas.id, now, container)
-                enc.start_file(path)
+                shared = (stream_encoders or {}).get(canvas.id)
+                if shared is not None and shared.running:
+                    shared.hold("recording")
+                    borrowed[canvas.id] = shared
+                    encoders.append((canvas.id, shared))
+                    shared.start_file(path, container)
+                else:
+                    enc = pool.acquire("recording", canvas, bitrate_kbps, container, codec, encoder, short_side)
+                    encoders.append((canvas.id, enc))
+                    enc.start_file(path)
                 paths.append(path)
         except Exception:
             for canvas_id, enc in encoders:
                 if enc.file_path is not None:
                     enc.stop_file()
-                pool.release("recording", canvas_id)
+                if canvas_id in borrowed:
+                    enc.let_go("recording")
+                else:
+                    pool.release("recording", canvas_id)
             raise
-        return cls(pool, encoders, paths)
+        if borrowed:
+            log.info("recording %s from the stream's encoder (Same as stream)", ", ".join(borrowed))
+        return cls(pool, encoders, paths, borrowed)
 
     @property
     def elapsed(self) -> float:
@@ -237,6 +267,13 @@ class SharedRecording:
 
     def stop(self) -> None:
         for canvas_id, enc in self.recorders:
+            if canvas_id in self.borrowed:  # the stream's encoder: finish the file, and it ends if the stream has
+                try:
+                    enc.stop_file()
+                except Exception as exc:
+                    log.warning("finishing %s: %s", canvas_id, exc)
+                enc.let_go("recording")
+                continue
             if self.pool.users(canvas_id) != {"recording"}:  # the replay buffer keeps the encoder running
                 try:
                     enc.stop_file()
