@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 12  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 13  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -38,7 +38,7 @@ ENGINE_CANVASES = 4
 ENGINE_OUTPUTS = 4  # NV12 outputs per canvas (SC_ENGINE_OUTPUTS)
 OUTPUT_SHARE = 1  # an output whose frames stay on the card as NV12 textures (SC_OUTPUT_SHARE)
 SCALE_MODES = {"bilinear": 0, "area": 1, "bicubic": 2, "lanczos": 3}  # render/compositor.py SCALE_MODES
-FORMATS = {"RGBA": 0, "BGRA": 1, "RGB": 2, "BGR": 3, "BGRX": 4, "pBGRA": 5, "I420": 6, "I420A": 7}
+FORMATS = {"RGBA": 0, "BGRA": 1, "RGB": 2, "BGR": 3, "BGRX": 4, "pBGRA": 5, "I420": 6, "I420A": 7, "NV12": 8}
 MAX_HALOS = 4
 _LEVELS = {10: logging.DEBUG, 20: logging.INFO, 30: logging.WARNING, 40: logging.ERROR}
 VENDORS = {0x10DE: "NVIDIA", 0x1002: "AMD", 0x1022: "AMD", 0x8086: "Intel", 0x1414: "Microsoft"}
@@ -344,10 +344,10 @@ def _upload_args(frame, channel_order: str, size):
     how.stride = pixels.strides[0]
     if size and size[0] > 0 and size[1] > 0:
         how.layout_width, how.layout_height = int(size[0]), int(size[1])
-    if kind.startswith("I420"):
+    if kind.startswith("I420") or kind == "NV12":  # NV12: Y rows, then UVUV rows (the engine repacks it)
         from sprigcast.render.compositor import planar_layout
 
-        how.yuv[:] = planar_layout(channel_order)[1]
+        how.yuv[:] = planar_layout("I420/" + _rest if kind == "NV12" else channel_order)[1]
     return pixels, how
 
 

@@ -156,6 +156,35 @@ def test_a_sprig_snapshot_is_the_engines_own_copy(device):
     device.forget("a")
 
 
+def _nv12(i420_rows: np.ndarray, w: int, h: int) -> np.ndarray:
+    """The same picture as NV12: Y rows, then U and V interleaved (UVUV...)."""
+    uv = i420_rows[h:]
+    inter = np.empty_like(uv)
+    inter[:, 0::2], inter[:, 1::2] = uv[:, : w // 2], uv[:, w // 2:]
+    return np.concatenate([i420_rows[:h], inter])
+
+
+@needs_engine
+def test_an_nv12_picture_draws_exactly_as_its_i420_twin(device):
+    """Zero-copy, step 1: an NV12 picture (repacked on the card, or here on a card that can't read NV12)
+    lands in the compositor line for line the same as the I420 upload of it."""
+    w, h = 48, 32
+    i420 = nc.i420(nc.picture(w, h, seed=3))
+    nv12 = _nv12(i420, w, h)
+    drawn = []
+    for key, rows, order in (("i", i420, "I420/709/tv"), ("n", nv12, "NV12/709/tv"), ("n", nv12, "NV12/709/tv")):
+        device.upload(key, rows, order)
+        scene = Scene(id="s" + key, name="s", canvas="h", items=[SceneItem(source=key, align="top_left")])
+        built = native_snapshot.build([native_snapshot.SceneDraw("s" + key, scene, (w, h))], {})
+        device.set_snapshot(built.struct)
+        with sprigcore.Canvas(device, w, h) as c:
+            c.render("s" + key)
+            drawn.append(c.read_bgra())
+    assert drawn[0] == drawn[1] == drawn[2]  # the second NV12 upload reuses the source's textures
+    device.forget("i")
+    device.forget("n")
+
+
 # ---- the engine's own frame loop (phase 2, part 2) ------------------------------------------------------------------
 
 STILL_CASES = [c for c in CASES if c.times == (0.0,) and c.transition is None]  # the engine draws at its own clock

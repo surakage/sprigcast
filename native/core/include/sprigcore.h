@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 12
+#define SC_INTERFACE_VERSION 13
 
 enum {
     SC_OK = 0,
@@ -121,6 +121,7 @@ enum {
     SC_FMT_PBGRA = 5,  /* BGRA with colours already multiplied by alpha */
     SC_FMT_I420 = 6,   /* 1 byte a pixel: Y rows, then half as many rows of U | V side by side */
     SC_FMT_I420A = 7,  /* as I420, then as many alpha rows as Y rows */
+    SC_FMT_NV12 = 8,   /* 1 byte a pixel: Y rows, then half as many rows of U and V interleaved (UVUV...) */
 };
 
 typedef struct sc_upload {
