@@ -6,11 +6,13 @@
 #  define NOMINMAX
 #endif
 #include <windows.h>
+#include <d3d11.h>
 
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -310,10 +312,10 @@ int main() {
     // Outputs: NV12 frames queue up without waiting on the card, the same as the device's, timed by the
     // performance counter; past the queue's length the oldest are dropped and counted.
     {
-        CHECK(sc_engine_output_set(eng, 0, 0, 31, 16, SC_SCALE_BILINEAR) == SC_ERR_ARGUMENT);
-        CHECK(sc_engine_output_set(eng, 0, SC_ENGINE_OUTPUTS, 32, 16, SC_SCALE_BILINEAR) == SC_ERR_ARGUMENT);
-        CHECK(sc_engine_output_set(eng, 0, 0, 32, 16, 9) == SC_ERR_ARGUMENT);
-        CHECK(sc_engine_output_set(eng, 0, 1, 32, 16, SC_SCALE_BILINEAR) == SC_OK);
+        CHECK(sc_engine_output_set(eng, 0, 0, 31, 16, SC_SCALE_BILINEAR, 0) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_output_set(eng, 0, SC_ENGINE_OUTPUTS, 32, 16, SC_SCALE_BILINEAR, 0) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_output_set(eng, 0, 0, 32, 16, 9, 0) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_output_set(eng, 0, 1, 32, 16, SC_SCALE_BILINEAR, 0) == SC_OK);
         std::vector<uint8_t> frame(32 * 16 * 3 / 2);
         int fresh = 0;
         double drawn = -1;
@@ -341,9 +343,94 @@ int main() {
         } while (fresh && queued < 100);
         std::printf("output queue: %d waiting, %llu dropped\n", queued, static_cast<unsigned long long>(dropped));
         CHECK(queued >= 1 && queued <= SC_ENGINE_OUTPUT_QUEUE && dropped >= 1);
-        CHECK(sc_engine_output_set(eng, 0, 1, 0, 0, SC_SCALE_BILINEAR) == SC_OK);
+        CHECK(sc_engine_output_set(eng, 0, 1, 0, 0, SC_SCALE_BILINEAR, 0) == SC_OK);
         CHECK(sc_engine_output_take(eng, 0, 1, frame.data(), 0, &fresh, &drawn, &dropped) == SC_OK);
         CHECK(fresh == 0 && dropped == 0);
+    }
+    // Shared outputs: frames stay on the card as NV12 textures of a small pool, for an encoder on the engine's
+    // device. A texture is the taker's until given back; with all of them out, frames are missed, not overwritten.
+    {
+        void *device = nullptr;
+        int rebuilds = -1;
+        CHECK(sc_engine_device(eng, &device, &rebuilds) == SC_OK && device != nullptr && rebuilds == 0);
+        CHECK(sc_engine_output_set(eng, 0, 2, 32, 16, SC_SCALE_BILINEAR, SC_OUTPUT_SHARE) == SC_OK);
+        struct Held {
+            void *texture;
+            uint64_t pool;
+            int entry;
+        };
+        std::vector<Held> held;
+        int state = 0;
+        double drawn = 0;
+        uint64_t dropped = 0;
+        auto take = [&](int ms) {
+            Held h = {nullptr, 0, -1};
+            state = 0;
+            for (int waited = 0; waited <= ms && state == 0; waited += 10) {
+                CHECK(sc_engine_output_take_texture(eng, 0, 2, &h.texture, &h.pool, &h.entry, &drawn, &state,
+                                                    &dropped) == SC_OK);
+                if (state == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (state == 1) held.push_back(h);
+            return state == 1;
+        };
+        take(2000);
+        if (state == -1) {
+            std::printf("shared outputs: this device can't draw NV12 textures (not checked here)\n");
+        } else {
+            CHECK(state == 1 && !held.empty() && held[0].texture && held[0].pool >= 1 && drawn > 0);
+            if (!held.empty()) {  // the texture holds the same NV12 as the read-back path gives
+                auto *d3d = static_cast<ID3D11Device *>(device);
+                auto *texture = static_cast<ID3D11Texture2D *>(held[0].texture);
+                ID3D11DeviceContext *context = nullptr;
+                d3d->GetImmediateContext(&context);
+                D3D11_TEXTURE2D_DESC td;
+                texture->GetDesc(&td);
+                CHECK(td.Format == DXGI_FORMAT_NV12 && td.Width == 32 && td.Height == 16);
+                td.Usage = D3D11_USAGE_STAGING;
+                td.BindFlags = 0;
+                td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                ID3D11Texture2D *copy = nullptr;
+                D3D11_MAPPED_SUBRESOURCE m;
+                if (SUCCEEDED(d3d->CreateTexture2D(&td, nullptr, &copy))) {
+                    context->CopyResource(copy, texture);
+                    if (SUCCEEDED(context->Map(copy, 0, D3D11_MAP_READ, 0, &m))) {
+                        const auto *rows = static_cast<const uint8_t *>(m.pData);
+                        bool same = true;
+                        for (int row = 0; row < 24 && same; ++row)  // 16 rows of Y, then 8 of CbCr
+                            same = std::memcmp(rows + static_cast<size_t>(row) * m.RowPitch, nv12.data() + row * 32, 32) == 0;
+                        if (!same) {
+                            std::printf("FAILED the shared NV12 texture differs from the read-back frame\n");
+                            ++failures;
+                        }
+                        context->Unmap(copy, 0);
+                    } else {
+                        std::printf("shared outputs: the NV12 copy can't be read here (pixels not checked)\n");
+                    }
+                    copy->Release();
+                } else {
+                    std::printf("shared outputs: no NV12 copy here (pixels not checked)\n");
+                }
+                context->Release();
+            }
+            while (take(300)) {}  // keep every texture: the pool runs dry
+            std::printf("shared outputs: %d textures out, %llu frames missed\n", static_cast<int>(held.size()),
+                        static_cast<unsigned long long>(dropped));
+            CHECK(static_cast<int>(held.size()) == SC_ENGINE_SHARE_POOL);
+            for (size_t a = 0; a < held.size(); ++a)
+                for (size_t b = a + 1; b < held.size(); ++b) CHECK(held[a].entry != held[b].entry);
+            CHECK(!take(200) && dropped >= 1);
+            const Held back = held[0];
+            CHECK(sc_engine_output_give_back(eng, 0, 2, back.pool, back.entry) == SC_OK);
+            CHECK(take(2000) && held.back().entry == back.entry && held.back().texture == back.texture);
+            CHECK(sc_engine_output_give_back(eng, 0, 2, back.pool, 99) == SC_ERR_ARGUMENT);
+        }
+        CHECK(sc_engine_output_set(eng, 0, 2, 0, 0, SC_SCALE_BILINEAR, 0) == SC_OK);
+        for (const Held &h : held) {
+            CHECK(sc_engine_output_give_back(eng, 0, 2, h.pool, h.entry) == SC_OK);  // a pool that's gone: forgotten
+            sc_com_release(h.texture);
+        }
+        sc_com_release(device);
     }
     CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.ticks >= 3; }, 2000, st));
     print_stats("running", st);

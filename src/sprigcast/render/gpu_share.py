@@ -96,6 +96,32 @@ def usable() -> bool:
     return _gl_ok and _broken is None and not turned_off()
 
 
+_native = None  # the native engine's bridge (render/native_bridge.py NativeCanvases) while it runs
+
+
+def set_native(bridge) -> None:
+    """The render thread says the native engine is drawing (or, with None, has stopped): encoders opened from
+    now on take their frames on its device instead of the OpenGL hand-off's."""
+    global _native
+    _native = bridge
+
+
+def native_device():
+    """With the native engine drawing: its Direct3D 11 device for an encoder that takes frames on the card (a
+    c_void_p holding a reference of the caller's), else None."""
+    bridge = _native
+    pointer = bridge.encoder_device() if bridge is not None else None
+    return c_void_p(pointer) if pointer else None
+
+
+def native_give_up(reason: str) -> None:
+    """An encoder couldn't open on the native engine's device or take its frames: they go through memory."""
+    bridge = _native
+    if bridge is not None and bridge.can_share:
+        bridge.can_share = False
+        log.warning("native engine: frames on the card turned off: %s (they go through memory)", reason)
+
+
 def give_up(reason: str) -> None:
     """Turn sharing off for the rest of the run: frames go back through memory, as before."""
     global _broken

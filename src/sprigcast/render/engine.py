@@ -379,6 +379,9 @@ class Engine:
 
             try:
                 self._native = NativeCanvases(self._collection)
+                from sprigcast.render import gpu_share
+
+                gpu_share.set_native(self._native)  # encoders opened from now on take its frames on the card
             except Exception as exc:  # no native engine: Python's compositor draws everything
                 log.warning("native engine: couldn't start (%s); the Python compositor draws everything", exc)
             sprigcore.drain_log()
@@ -507,6 +510,9 @@ class Engine:
                 gpu.release()
             compositor.release()
             if self._native is not None:
+                from sprigcast.render import gpu_share
+
+                gpu_share.set_native(None)
                 self._native.close()
                 self._native = None
 
@@ -1396,7 +1402,7 @@ class Engine:
         """_frame for one output. An encoder that takes frames on the card (SprigCast's NVENC, see
         render/gpu_share.py) gets a GpuFrame instead, with no read-back; when none can be made this tick it gets
         the read-back frame as before. Outputs of one size share one of each."""
-        if nv12_size is not None and _wants_gpu(callback):
+        if nv12_size is not None and getattr(self, "_native", None) is None and _wants_gpu(callback):
             key = ("gpu", nv12_size)
             if key not in made:
                 share = getattr(compositor, "share_nv12", None)
@@ -1434,15 +1440,22 @@ class Engine:
         data, drawn = later(target_id, now, now)
         return data, (drawn if data is not None else 0.0)
 
+    @staticmethod
+    def _output_keys(native, outputs) -> list:
+        """Each frame tap as the native engine names its output (native_bridge output_key): its NV12 size and
+        whether its encoder takes frames on the card. None for a full-size RGBA tap."""
+        return [native.output_key(size, size is not None and _wants_gpu(callback)) for callback, size in outputs]
+
     def _native_outputs(self, native, canvas, outputs) -> None:
-        """Hand each output every NV12 frame the native engine finished for its size, oldest first, each with
-        the time the engine drew it (outputs of one size share the frames)."""
+        """Hand each output every frame the native engine finished for it, oldest first, each with the time
+        the engine drew it: NV12 bytes, or the frame on the card for an encoder that takes it there (outputs
+        alike share the frames)."""
         made: dict = {}
-        for callback, nv12_size in outputs:
-            if nv12_size not in made:
-                made[nv12_size] = [Frame(canvas.id, nv12_size[0], nv12_size[1], data, drawn, "nv12")
-                                   for data, drawn in native.take_outputs(canvas.id, nv12_size)]
-            for frame in made[nv12_size]:
+        for (callback, _size), key in zip(outputs, self._output_keys(native, outputs)):
+            if key not in made:
+                made[key] = [frame if key[1] else Frame(canvas.id, key[0][0], key[0][1], frame[0], frame[1], "nv12")
+                             for frame in native.take_outputs(canvas.id, key)]
+            for frame in made[key]:
                 try:
                     callback(frame)
                 except Exception:
@@ -1457,7 +1470,8 @@ class Engine:
         if self._waking or self.editing_part or self._grabs:
             return True
         canvases = {c.id for c in self._collection.canvases if c.enabled}
-        if any(key not in canvases or not native.serves(key, outputs) for key, outputs in taps.items()):
+        if any(key not in canvases or not native.serves(key, self._output_keys(native, outputs))
+               for key, outputs in taps.items()):
             return True  # a screenshot, source record, the virtual camera, or an output only Python can make
         if any(not native_transition(r) for r in self._transitions.values()):
             return True  # a stinger or move transition: still Python's
@@ -1729,8 +1743,9 @@ class Engine:
                         data, w, h = got
                         self.frames[canvas.id].put(Frame(canvas.id, w, h, data, now,
                                                          canvas_size=(canvas.width, canvas.height)))
-                native_out = native_shows and native.serves(canvas.id, outputs)
-                native.set_outputs(canvas.id, [size for _cb, size in outputs] if native_out else (), canvas.downscale)
+                keys = self._output_keys(native, outputs)
+                native_out = native_shows and native.serves(canvas.id, keys)
+                native.set_outputs(canvas.id, keys if native_out else (), canvas.downscale)
                 if native_out:  # recordings and streams: the frames the native engine finished since last tick
                     self._native_outputs(native, canvas, outputs)
                     self._mark(f"{canvas.id} native outputs")

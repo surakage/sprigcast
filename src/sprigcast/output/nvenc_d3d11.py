@@ -348,30 +348,47 @@ class D3D11Encoder:
     Never uses B-frames, so every packet comes out as soon as its frame went in, in order.
 
     shared=True opens it on the process's shared device (shared_device), so it can also encode NV12 textures
-    handed over on the card (encode_texture, render/gpu_share.py) besides bytes.
+    handed over on the card (encode_texture, render/gpu_share.py) besides bytes. device (a c_void_p holding a
+    reference this encoder takes over) opens it on that Direct3D 11 device instead: the native engine's, whose
+    frames it then takes on the card (render/native_bridge.py CardFrame).
     """
 
     def __init__(self, width: int, height: int, fps: int, preset: GUID | str = PRESET_P4, *,
                  bitrate_kbps: int = 0, rate_control: str = "vbr", max_kbps: int = 0, buffer_kbits: int = 0,
                  cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll", adaptive_quant: bool = False,
-                 multipass: str = "disabled", codec: str = "h264", shared: bool = False):
+                 multipass: str = "disabled", codec: str = "h264", shared: bool = False,
+                 device: c_void_p | None = None):
+        self.device = device if device is not None else c_void_p()  # ours to let go from here on
+        self.encoder = c_void_p()
+        self.input = self.output = None
+        self._registered = {}
+        self._pool = None
+        try:
+            self._start(width, height, fps, preset, bitrate_kbps, rate_control, max_kbps, buffer_kbits, cq_level,
+                        gop_frames, tuning, adaptive_quant, multipass, codec, shared, device is not None)
+        except Exception:
+            self.close()
+            raise
+
+    def _start(self, width, height, fps, preset, bitrate_kbps, rate_control, max_kbps, buffer_kbits, cq_level,
+               gop_frames, tuning, adaptive_quant, multipass, codec, shared, given) -> None:
         if codec not in CODECS:
             raise NvencError(f"no {codec} in SprigCast's own NVENC encoder")
         self.codec = codec
         self.width, self.height = width, height
-        self.device = c_void_p()
         self.encoder = c_void_p()
         self.input = self.output = None
         self._settings = self._init = None
         self.frame = 0
         self.api = (API_MAJOR, API_MINOR)
-        self.shared = shared
+        self.shared = shared or given
         self._registered: dict = {}  # (pool id, texture index) -> registered resource, for encode_texture
         self._pool = None  # the texture pool those belong to (kept alive while registered)
         _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
         preset = PRESETS.get(preset, PRESET_P4) if isinstance(preset, str) else preset
         tuning_info = TUNINGS.get(tuning, TUNINGS["ll"])
-        self.device = shared_device() if shared else d3d11_device()
+        if not given:
+            self.device = shared_device() if shared else d3d11_device()
         try:
             self._open_session()
             config = None

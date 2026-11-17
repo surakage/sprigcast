@@ -125,17 +125,43 @@ struct OutFrame {
     double drawn = 0;
 };
 
+struct SharedFrame {  // a frame kept on the card: one of its pool's textures, with a reference held
+    uint64_t pool = 0;
+    int entry = 0;
+    double drawn = 0;
+    ID3D11Texture2D *texture = nullptr;
+};
+
 struct Output {  // shared: an output Python asked for and its finished frames
     int width = 0, height = 0, scale = 0;
+    bool share = false;   // frames stay on the card as NV12 textures (SC_OUTPUT_SHARE)
     uint64_t serial = 0;  // bumped on every change: frames made for an older setting are let go
     std::deque<OutFrame> ready;
     std::vector<std::vector<uint8_t>> spare;  // buffers to reuse
     uint64_t dropped = 0;
+    int share_state = 0;  // 1: shared frames are being drawn, -1: this device can't
+    uint64_t pool = 0;    // the texture pool the frame thread draws into now (0: none)
+    bool busy[SC_ENGINE_SHARE_POOL] = {};  // waiting in `shared`, or out with Python until given back
+    std::deque<SharedFrame> shared;
 };
+
+// Lets go of an output's shared frames and forgets its pool. `state` must be held.
+void clear_shared(Output &o) {
+    for (SharedFrame &f : o.shared) f.texture->Release();
+    o.shared.clear();
+    std::fill(std::begin(o.busy), std::end(o.busy), false);
+    o.pool = 0;
+}
 
 struct OutputWant {  // the frame thread's copy of what Python asked for
     int width = 0, height = 0, scale = 0;
     uint64_t serial = 0;
+    bool share = false;
+};
+
+struct PoolEntry {
+    ComPtr<ID3D11Texture2D> texture;  // NV12
+    ComPtr<ID3D11RenderTargetView> y, uv;
 };
 
 struct OutReader {  // the frame thread's: an output's two planes and three copies of them on their way back
@@ -145,6 +171,10 @@ struct OutReader {  // the frame thread's: an output's two planes and three copi
     double drawn[3] = {0, 0, 0};
     uint64_t serial[3] = {0, 0, 0};
     int next = 0;
+    // A shared output's instead: NV12 textures an encoder reads on the card.
+    uint64_t pool = 0;
+    int pool_w = 0, pool_h = 0;
+    PoolEntry entries[SC_ENGINE_SHARE_POOL];
 };
 
 struct PreviewGpu {
@@ -186,6 +216,7 @@ struct sc_engine {
     std::vector<PreviewCfg> previews;
     int next_preview = 1;
     int fault = 0;
+    ComPtr<ID3D11Device> device_out;  // the device as encoders get it (sc_engine_device); none while rebuilding
     uint64_t detach_asked = 0, detach_done = 0;
     sc_engine_stats stats{};
 
@@ -202,6 +233,7 @@ struct sc_engine {
     std::unordered_map<uint64_t, MaskData> kept_masks;
     std::shared_ptr<const SnapData> kept_snapshot;
     std::deque<int64_t> rebuild_times;
+    uint64_t next_pool = 1;
     bool lost = false;
     int build_failures = 0;
     int64_t next_build = 0;
@@ -248,6 +280,12 @@ void drop_gpu(sc_engine &e) {
     for (auto &r : e.readers) r = Reader();
     for (auto &row : e.out_readers)
         for (auto &r : row) r = OutReader();
+    {
+        std::lock_guard<std::mutex> lock(e.state);
+        for (auto &row : e.outputs)
+            for (Output &o : row) clear_shared(o);
+        e.device_out.Reset();
+    }
     for (auto &c : e.gpu) {
         sc_canvas_destroy(c);
         c = nullptr;
@@ -329,6 +367,8 @@ bool build(sc_engine &e) {
         log_line(SC_LOG_WARNING, "engine: the device is rebuilt (rebuild " + std::to_string(rebuilds) +
                                      "); kept pictures, looks, shapes and the snapshot are back");
     }
+    std::lock_guard<std::mutex> lock(e.state);
+    e.device_out = e.dev->device;
     return true;
 }
 
@@ -506,16 +546,108 @@ void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &wa
     r.last = now;
 }
 
+// A shared output's frame: drawn as NV12 into a free texture of its pool and queued for the encoder, which reads
+// it on the card. No free texture (the encoder is behind): this frame is missed and counted.
+void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, const OutputWant &want, double drawn) {
+    OutReader &r = e.out_readers[index][slot];
+    sc_device &dev = *e.dev;
+    auto cannot = [&] {
+        r = OutReader();
+        std::lock_guard<std::mutex> st(e.state);
+        Output &out = e.outputs[index][slot];
+        clear_shared(out);
+        if (out.serial == want.serial) out.share_state = -1;
+    };
+    if (!dev.nv12_targets) return cannot();
+    if (!r.pool || r.pool_w != want.width || r.pool_h != want.height) {
+        r = OutReader();
+        {
+            std::lock_guard<std::mutex> st(e.state);
+            clear_shared(e.outputs[index][slot]);
+        }
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width = static_cast<UINT>(want.width);
+        td.Height = static_cast<UINT>(want.height);
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_NV12;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_RENDER_TARGET;
+        for (PoolEntry &entry : r.entries) {
+            HRESULT hr = dev.device->CreateTexture2D(&td, nullptr, &entry.texture);
+            D3D11_RENDER_TARGET_VIEW_DESC rd = {};
+            rd.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            rd.Format = DXGI_FORMAT_R8_UNORM;  // the Y plane
+            if (SUCCEEDED(hr)) hr = dev.device->CreateRenderTargetView(entry.texture.Get(), &rd, &entry.y);
+            rd.Format = DXGI_FORMAT_R8G8_UNORM;  // the CbCr plane
+            if (SUCCEEDED(hr)) hr = dev.device->CreateRenderTargetView(entry.texture.Get(), &rd, &entry.uv);
+            if (is_lost(hr) || (FAILED(hr) && FAILED(dev.device->GetDeviceRemovedReason())))
+                throw Gone("the graphics card was reset or removed (shared output)");
+            if (FAILED(hr)) {
+                fail_hr(SC_ERR_DEVICE, "Making an output's NV12 textures", hr);
+                return cannot();
+            }
+        }
+        r.pool = e.next_pool++;
+        r.pool_w = want.width;
+        r.pool_h = want.height;
+        std::lock_guard<std::mutex> st(e.state);
+        Output &out = e.outputs[index][slot];
+        if (out.serial == want.serial) {
+            out.pool = r.pool;
+            out.share_state = 1;
+        }
+    }
+    int free = -1;
+    {
+        std::lock_guard<std::mutex> st(e.state);
+        Output &out = e.outputs[index][slot];
+        if (out.pool != r.pool) return;  // Python changed the output: the next frame starts over
+        for (int i = 0; i < SC_ENGINE_SHARE_POOL && free < 0; ++i) {
+            if (!out.busy[i]) free = i;
+        }
+        if (free < 0) {
+            ++out.dropped;
+            return;
+        }
+    }
+    const int drew = draw_nv12(dev, canvas->view.Get(), canvas->width, canvas->height, r.entries[free].y.Get(),
+                               r.entries[free].uv.Get(), want.width, want.height, want.scale);
+    check(drew);
+    if (drew != SC_OK) return;  // nothing worth encoding in that texture
+    dev.context->Flush();  // sent to the card before the encoder's thread asks for it
+    std::lock_guard<std::mutex> st(e.state);
+    Output &out = e.outputs[index][slot];
+    if (out.pool != r.pool) return;
+    out.busy[free] = true;
+    r.entries[free].texture->AddRef();
+    out.shared.push_back(SharedFrame{r.pool, free, drawn, r.entries[free].texture.Get()});
+    while (out.shared.size() > SC_ENGINE_SHARE_QUEUE) {  // Python fell behind: the oldest goes
+        SharedFrame old = out.shared.front();
+        out.shared.pop_front();
+        out.busy[old.entry] = false;
+        old.texture->Release();
+        ++out.dropped;
+    }
+}
+
 // An output's frames: collect the copies that are done into its queue, then draw this frame as NV12 and start its
 // copy back, never waiting on the card (a copy still on its way is looked at again next frame).
 void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, const OutputWant &want, double drawn) {
     OutReader &r = e.out_readers[index][slot];
     sc_device &dev = *e.dev;
     std::lock_guard<std::mutex> lock(dev.lock);
-    if (!canvas || want.width <= 0) {
+    if (!canvas || want.width <= 0 || want.share != (r.pool != 0)) {
+        const bool shared = r.pool != 0;
         r = OutReader();
-        return;
+        if (shared) {
+            std::lock_guard<std::mutex> st(e.state);
+            clear_shared(e.outputs[index][slot]);
+        }
+        if (!canvas || want.width <= 0) return;
     }
+    if (want.share) return share_back(e, index, slot, canvas, want, drawn);
     const int w = r.planes.width, h = r.planes.height;
     for (int k = 0; k < 3; ++k) {  // oldest first
         const int s = (r.next + k) % 3;
@@ -639,7 +771,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             watches[i].max_fps = e.watches[i].max_fps;
             for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) {
                 const Output &out = e.outputs[i][o];
-                outputs[i][o] = OutputWant{out.width, out.height, out.scale, out.serial};
+                outputs[i][o] = OutputWant{out.width, out.height, out.scale, out.serial, out.share};
             }
         }
         uploads.swap(e.uploads);
@@ -939,6 +1071,7 @@ SC_API int sc_engine_create(int adapter, int flags, sc_engine **out) {
             sc_device_destroy(e->dev);
             return fail(SC_ERR_INTERNAL, "sc_engine_create: no events");
         }
+        e->device_out = e->dev->device;
         e->stats.running = 1;  // from now: a call made before the thread's first moment still waits for frames
         e->threads[0] = CreateThread(nullptr, 0, frame_main, e.get(), 0, nullptr);
         e->threads[1] = e->threads[0] ? CreateThread(nullptr, 0, watchdog_main, e.get(), 0, nullptr) : nullptr;
@@ -1248,7 +1381,8 @@ SC_API int sc_engine_canvas_take(sc_engine *engine, int index, uint8_t *out, int
     });
 }
 
-SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int width, int height, int scale_mode) {
+SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int width, int height, int scale_mode,
+                                int flags) {
     return engine_call(engine, "sc_engine_output_set", [&]() -> int {
         if (index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS)
             return fail(SC_ERR_ARGUMENT, "sc_engine_output_set: no such canvas or output slot");
@@ -1259,14 +1393,18 @@ SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int widt
             return fail(SC_ERR_ARGUMENT, "sc_engine_output_set: width and height must be even, 2 to 16384");
         std::lock_guard<std::mutex> lock(engine->state);
         Output &out = engine->outputs[index][slot];
-        if (out.width == width && out.height == height && out.scale == scale_mode) return SC_OK;
+        const bool share = !off && (flags & SC_OUTPUT_SHARE) != 0;
+        if (out.width == width && out.height == height && out.scale == scale_mode && out.share == share) return SC_OK;
         out.width = width;
         out.height = height;
         out.scale = scale_mode;
+        out.share = share;
         ++out.serial;
         out.ready.clear();
         out.spare.clear();
         out.dropped = 0;
+        out.share_state = 0;
+        clear_shared(out);
         return SC_OK;
     });
 }
@@ -1298,6 +1436,58 @@ SC_API int sc_engine_output_take(sc_engine *engine, int index, int slot, uint8_t
         if (o.spare.size() < 2 && frame.data.size() == bytes) o.spare.push_back(std::move(frame.data));
         return SC_OK;
     });
+}
+
+SC_API int sc_engine_device(sc_engine *engine, void **device, int *rebuilds) {
+    return engine_call(engine, "sc_engine_device", [&]() -> int {
+        if (!device) return fail(SC_ERR_ARGUMENT, "sc_engine_device: no output");
+        *device = nullptr;
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (!engine->device_out) return fail(SC_ERR_DEVICE, "sc_engine_device: the engine has no device right now");
+        engine->device_out->AddRef();
+        *device = engine->device_out.Get();
+        if (rebuilds) *rebuilds = engine->stats.rebuilds;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_take_texture(sc_engine *engine, int index, int slot, void **texture, uint64_t *pool,
+                                         int *entry, double *drawn, int *state, uint64_t *dropped) {
+    return engine_call(engine, "sc_engine_output_take_texture", [&]() -> int {
+        if (!texture || !pool || !entry || !state || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 ||
+            slot >= SC_ENGINE_OUTPUTS)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_take_texture: bad slot or output");
+        *texture = nullptr;
+        std::lock_guard<std::mutex> lock(engine->state);
+        Output &o = engine->outputs[index][slot];
+        *state = o.share_state < 0 ? -1 : 0;
+        if (dropped) *dropped = o.dropped;
+        if (o.shared.empty()) return SC_OK;
+        const SharedFrame frame = o.shared.front();  // its reference becomes the caller's
+        o.shared.pop_front();
+        *texture = frame.texture;
+        *pool = frame.pool;
+        *entry = frame.entry;
+        if (drawn) *drawn = frame.drawn;
+        *state = 1;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_give_back(sc_engine *engine, int index, int slot, uint64_t pool, int entry) {
+    return guarded("sc_engine_output_give_back", [&]() -> int {
+        if (!engine || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS ||
+            entry < 0 || entry >= SC_ENGINE_SHARE_POOL)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_give_back: bad slot or texture");
+        std::lock_guard<std::mutex> lock(engine->state);
+        Output &o = engine->outputs[index][slot];
+        if (pool && o.pool == pool) o.busy[entry] = false;
+        return SC_OK;
+    });
+}
+
+SC_API void sc_com_release(void *unknown) {
+    if (unknown) static_cast<IUnknown *>(unknown)->Release();
 }
 
 SC_API int sc_engine_debug_fault(sc_engine *engine, int kind) {

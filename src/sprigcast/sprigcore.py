@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 5  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 6  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -36,6 +36,7 @@ FAULTED, DEVICE_LOST, TIMEOUT = -6, -7, -8  # FAULTED, DEVICE_LOST: the device i
 UPLOAD_KEEP = 1
 ENGINE_CANVASES = 4
 ENGINE_OUTPUTS = 4  # NV12 outputs per canvas (SC_ENGINE_OUTPUTS)
+OUTPUT_SHARE = 1  # an output whose frames stay on the card as NV12 textures (SC_OUTPUT_SHARE)
 SCALE_MODES = {"bilinear": 0, "area": 1, "bicubic": 2, "lanczos": 3}  # render/compositor.py SCALE_MODES
 FORMATS = {"RGBA": 0, "BGRA": 1, "RGB": 2, "BGR": 3, "BGRX": 4, "pBGRA": 5, "I420": 6, "I420A": 7}
 MAX_HALOS = 4
@@ -240,7 +241,13 @@ def _lib():
                                           ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_double)]),
         "sc_engine_debug_fault": (c_int, [vp, c_int]),
         "sc_canvas_read_nv12": (c_int, [vp, vp, c_int, c_int, c_int]),
-        "sc_engine_output_set": (c_int, [vp, c_int, c_int, c_int, c_int, c_int]),
+        "sc_engine_output_set": (c_int, [vp, c_int, c_int, c_int, c_int, c_int, c_int]),
+        "sc_engine_device": (c_int, [vp, out, ctypes.POINTER(c_int)]),
+        "sc_engine_output_take_texture": (c_int, [vp, c_int, c_int, out, ctypes.POINTER(ctypes.c_uint64),
+                                                  ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_double),
+                                                  ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_uint64)]),
+        "sc_engine_output_give_back": (c_int, [vp, c_int, c_int, ctypes.c_uint64, c_int]),
+        "sc_com_release": (None, [vp]),
         "sc_engine_output_take": (c_int, [vp, c_int, c_int, vp, ctypes.c_size_t, ctypes.POINTER(c_int),
                                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint64)]),
     }
@@ -469,6 +476,13 @@ class Canvas:
         self.close()
 
 
+def com_release(pointer: int) -> None:
+    """IUnknown::Release on a device or texture pointer the engine gave."""
+    lib = _lib()
+    if pointer and lib is not None:
+        lib.sc_com_release(pointer)
+
+
 class Engine:
     """The engine's own frame loop (phase 2): a frame thread in the DLL draws every canvas at the frame rate and
     shows them in preview windows. Every call only hands work over and returns at once; the frame thread takes it
@@ -586,11 +600,39 @@ class Engine:
                                              ctypes.byref(fresh), ctypes.byref(drawn)))
         return (out.raw, drawn.value) if fresh.value else None
 
-    def set_output(self, index: int, slot: int, width: int, height: int, scale: str = "bilinear") -> None:
+    def set_output(self, index: int, slot: int, width: int, height: int, scale: str = "bilinear",
+                   share: bool = False) -> None:
         """Have the engine make NV12 frames of canvas ``index`` at width x height (even) for an encoder, in
-        output slot ``slot`` (0 .. ENGINE_OUTPUTS - 1), scaled the way Canvas.downscale says. 0 x 0 stops."""
+        output slot ``slot`` (0 .. ENGINE_OUTPUTS - 1), scaled the way Canvas.downscale says. 0 x 0 stops.
+        share: the frames stay on the card as NV12 textures (take_texture) instead of coming back as bytes."""
         _check(_need().sc_engine_output_set(self.handle, index, slot, int(width), int(height),
-                                            SCALE_MODES.get(scale, 0)))
+                                            SCALE_MODES.get(scale, 0), OUTPUT_SHARE if share else 0))
+
+    def device(self) -> tuple[int, int]:
+        """The engine's Direct3D 11 device for an encoder session that takes its shared frames: (an
+        ID3D11Device pointer with a reference of the caller's, see com_release; how many times the engine has
+        rebuilt its device)."""
+        device, rebuilds = ctypes.c_void_p(), ctypes.c_int(0)
+        _check(_need().sc_engine_device(self.handle, ctypes.byref(device), ctypes.byref(rebuilds)))
+        return device.value or 0, rebuilds.value
+
+    def take_texture(self, index: int, slot: int) -> tuple[int, tuple | None, int]:
+        """The oldest finished frame of a shared output: (state, frame, frames dropped so far). state 1: frame
+        is (NV12 texture pointer with a reference of the caller's, pool id, entry, when it was drawn in
+        time.perf_counter() seconds), the caller's until give_back; 0: none waiting; -1: this device can't
+        share frames. Never waits."""
+        texture, pool, entry = ctypes.c_void_p(), ctypes.c_uint64(0), ctypes.c_int(0)
+        drawn, state, dropped = ctypes.c_double(0.0), ctypes.c_int(0), ctypes.c_uint64(0)
+        _check(_need().sc_engine_output_take_texture(
+            self.handle, index, slot, ctypes.byref(texture), ctypes.byref(pool), ctypes.byref(entry),
+            ctypes.byref(drawn), ctypes.byref(state), ctypes.byref(dropped)))
+        frame = (texture.value, pool.value, entry.value, drawn.value) if state.value == 1 else None
+        return state.value, frame, dropped.value
+
+    def give_back(self, index: int, slot: int, pool: int, entry: int) -> None:
+        """Hands a shared frame's texture back to the engine to draw into again."""
+        if self._handle:
+            _need().sc_engine_output_give_back(self._handle, index, slot, pool, entry)
 
     def take_output(self, index: int, slot: int, width: int, height: int) -> tuple[bytearray, float, int] | None:
         """The oldest finished NV12 frame of an output: (data, when it was drawn in time.perf_counter()
