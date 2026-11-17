@@ -48,6 +48,8 @@ CAMERA_SLEEP_AFTER = 30.0
 # an hour as blooms switched, each time starting Camera Hub again. Left closed that long, it's back to 30 s.
 CAMERA_SLEEP_MAX = 300.0
 CAMERA_BACK_SOON_S = 600.0
+GRAPHICS_LOST_TICKS = 30  # frames failing this many ticks in a row: the graphics driver reset, start graphics again
+GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again this often
 WATCHER_PARK_S = 60.0  # a frame watcher (background remover) nothing fed for this long lets go of everything
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
@@ -373,6 +375,7 @@ class Engine:
         readbacks_at = 0
 
         late_logged, late_held = float("-inf"), 0
+        failed_run, reset_checked, rebuild_after = 0, 0.0, 0.0
         gpu = self._gpu_wait(compositor)
         gpu_waited = 0.0
         skipped_gpu, gpu_logged = 0, float("-inf")
@@ -410,12 +413,25 @@ class Engine:
                 pacing.busy_begin("render")  # a tick that runs long: the stall watch notes where it was
                 try:
                     self._tick(compositor, started)
+                    failed_run = 0
                 except Exception as exc:  # one bad frame must not end rendering for the whole session
+                    failed_run += 1
                     problem = f"{type(exc).__name__}: {exc}"
                     if problem != last_problem:
                         last_problem = problem
                         log.exception("a frame failed to render")
                         self.events.put(EngineError(f"A frame failed to render: {problem}"))
+                if started - reset_checked >= 1.0 or failed_run >= GRAPHICS_LOST_TICKS:
+                    reset_checked = started
+                    if (failed_run >= GRAPHICS_LOST_TICKS or self._graphics_reset(compositor)) \
+                            and started >= rebuild_after:
+                        fresh = self._restart_graphics(compositor, gpu)
+                        if fresh is None:
+                            rebuild_after = started + GRAPHICS_RETRY_S
+                        else:
+                            compositor, gpu = fresh
+                            failed_run, last_problem = 0, None
+                            continue
                 if gpu is not None:
                     gpu.mark()
                 held_at = pacing.busy_end("render")
@@ -471,6 +487,50 @@ class Engine:
             if gpu is not None:
                 gpu.release()
             compositor.release()
+
+    @staticmethod
+    def _graphics_reset(compositor) -> bool:
+        """Has the graphics driver reset under this context (OpenGL's own reset status, where it says)?"""
+        gl = getattr(compositor, "gl", None)
+        status = getattr(gl, "reset_status", None)
+        return bool(status and status())
+
+    def _restart_graphics(self, compositor, gpu):
+        """The graphics driver reset (a driver update, a game crashing the card, Windows' hang recovery): every
+        texture and target on the card is gone. Like OBS rebuilding its device, start the graphics again and
+        have every source send its picture afresh, instead of a black canvas until SprigCast restarts.
+        Returns (compositor, gpu wait) or None when the card can't start yet (tried again shortly)."""
+        from sprigcast.render.compositor import Compositor
+
+        log.warning("graphics driver reset: starting the graphics again")
+        for step in (lambda: [self._finish_transition(c, compositor) for c in list(self._transitions)],
+                     lambda: [self._close_watcher(compositor, s) for s in list(self._watchers)],
+                     lambda: gpu.release() if gpu is not None else None,
+                     compositor.release,
+                     lambda: compositor.ctx.release()):
+            try:
+                step()
+            except Exception:  # noqa: BLE001 (the old context is gone: letting go of it may fail too)
+                pass
+        try:
+            fresh = Compositor()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("graphics didn't start again yet: %s", exc)
+            return None
+        for source in list(self._sources.values()):  # pictures that only come once (images, text) come again
+            self._retire(source)
+        self._sources.clear()
+        for held in (self._last_shown, self._failing, self._failed_said, self._camera_wait, self._slept_at,
+                     self._caught, self._missed):
+            held.clear()
+        self._part_textures, self._parts_used = {}, set()
+        try:
+            self._sync_sources(fresh)
+            self._warm_up(fresh)
+        except Exception:  # noqa: BLE001 (the next ticks try again, and restart again if they keep failing)
+            log.exception("graphics: setting the picture up again failed")
+        self.events.put(EngineError("The graphics card restarted. SprigCast set the picture up again."))
+        return fresh, self._gpu_wait(fresh)
 
     @staticmethod
     def _gpu_wait(compositor):
