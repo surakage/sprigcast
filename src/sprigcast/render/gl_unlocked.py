@@ -46,6 +46,11 @@ SIGNATURES = {  # name: (result, arguments)
     "glGetBufferSubData": (None, [_u, _z, _z, _p]),
     "glGetIntegerv": (None, [_u, ctypes.POINTER(_i)]),
 }
+STREAMING = {  # uploads through a pixel buffer, so sending a picture never waits for the card (see write_texture)
+    "glBufferData": (None, [_u, _z, _p, _u]),
+    "glBufferSubData": (None, [_u, _z, _z, _p]),
+}
+GL_STREAM_DRAW = 0x88E0
 FENCES = {  # OpenGL 3.2 sync objects: without them read-backs are fetched without asking first, as before
     "glFenceSync": (_p, [_u, _u]),
     "glClientWaitSync": (_u, [_p, _u, ctypes.c_uint64]),
@@ -84,6 +89,8 @@ class UnlockedGL:
         self.ctx = ctx
         self.ok = False
         self.fences_ok = False  # fence()/done() work: a read-back is fetched only once the card has made it
+        self.streaming_ok = False  # write_texture goes through a pixel buffer (never waits for the card)
+        self._upload = None  # that buffer (a moderngl Buffer: only its OpenGL name is used)
         try:
             resolvers = resolvers if resolvers is not None else _resolvers()
             for name, (result, arguments) in SIGNATURES.items():
@@ -97,6 +104,11 @@ class UnlockedGL:
                 for name, (result, arguments) in FENCES.items():
                     setattr(self, name, _FUNCTYPE(result, *arguments)(found[name]))
                 self.fences_ok = True
+            found = {name: self._find(name, resolvers) for name in STREAMING}
+            if all(found.values()):
+                for name, (result, arguments) in STREAMING.items():
+                    setattr(self, name, _FUNCTYPE(result, *arguments)(found[name]))
+                self.streaming_ok = True
         except Exception as exc:  # noqa: BLE001 (no OpenGL library to call directly: moderngl as before)
             log.info("graphics: direct OpenGL calls unavailable (%s); using moderngl's", exc)
         self._reset_status = None
@@ -148,14 +160,37 @@ class UnlockedGL:
             self.glDeleteSync(sync)
 
     def write_texture(self, texture, data) -> None:
-        """texture.write(data) for a whole 8-bit texture, data a C-contiguous numpy array (alignment 1)."""
+        """texture.write(data) for a whole 8-bit texture, data a C-contiguous numpy array (alignment 1).
+
+        Like OBS's dynamic textures (Map with WRITE_DISCARD): the picture goes into fresh pixel-buffer memory
+        (the old memory is let go, not waited for) and the card copies it into the texture in its own time, in
+        order after the draws still reading the old picture. Sent straight from our memory instead, the driver
+        could wait for those draws first: 160-350 ms in the 2026-11-17 heavy run, now and then."""
         w, h = texture.size
         self.glActiveTexture(GL_TEXTURE0 + self.ctx.default_texture_unit)  # where moderngl's own write binds
         self.glBindTexture(GL_TEXTURE_2D, texture.glo)
-        self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
         self.glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+        if self.streaming_ok:
+            if self._upload is None:
+                self._upload = self.ctx.buffer(reserve=1)
+            self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, self._upload.glo)
+            self.glBufferData(GL_PIXEL_UNPACK_BUFFER, data.nbytes, None, GL_STREAM_DRAW)  # fresh memory
+            self.glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, data.nbytes, data.ctypes.data)
+            self.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, FORMATS[texture.components], GL_UNSIGNED_BYTE, None)
+            self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
+            return
+        self.glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
         self.glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, FORMATS[texture.components], GL_UNSIGNED_BYTE,
                              data.ctypes.data)
+
+    def release(self) -> None:
+        """Let go of the upload buffer (the compositor is closing, or starting graphics again)."""
+        upload, self._upload = self._upload, None
+        if upload is not None:
+            try:
+                upload.release()
+            except Exception:  # noqa: BLE001 (a lost context: nothing to let go)
+                pass
 
     def read_into(self, framebuffer, target, components: int, write_offset: int = 0) -> None:
         """framebuffer.read_into(target, components, alignment=1, write_offset): target a moderngl Buffer

@@ -396,10 +396,16 @@ class _Feed:
                 self.status = "camera not found, retrying" if device is None else self.status
             self._restart.wait(RETRY_SECONDS)
 
-    def _deliver(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None) -> None:
+    def _deliver(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None,
+                 full: tuple[int, int] | None = None) -> None:
+        """full: the picture's size before it was made smaller for being shown small (sources keep it)."""
         frame = np.ascontiguousarray(frame)
         for source in list(self.subscribers):
-            source._receive(frame, order, size)
+            source._receive(frame, order, size, full)
+
+    def shrink(self) -> float:
+        """The least any source of this camera may be shrunk (one shown big keeps it full size for all)."""
+        return max((getattr(s, "shrink", 1.0) for s in list(self.subscribers)), default=1.0)
 
     # FFmpeg (PyAV) DirectShow: the default ---------------------------------------------
 
@@ -478,7 +484,14 @@ class _Feed:
                         continue
                     last = now
                 for frame in packet.decode():
-                    self._deliver(*camera_picture(frame, target))
+                    base = target or (frame.width, frame.height)
+                    shrink = self.shrink()
+                    if shrink < 1.0:  # shown small everywhere: made that small here, as videos are
+                        from sprigcast.sources.media import shrunk
+
+                        self._deliver(*camera_picture(frame, shrunk(base, shrink)), full=base)
+                    else:
+                        self._deliver(*camera_picture(frame, target))
             else:
                 self.status = "camera disconnected, retrying"
         except Exception as exc:  # unplugged mid-stream
@@ -658,10 +671,19 @@ class CameraSource(Source):
         frame, self.channel_order = item
         return frame
 
-    def _receive(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None) -> None:
+    shrinks = True  # the renderer says how small it's shown (set_shrink); `size` stays the full picture's
+    shrink = 1.0
+
+    def set_shrink(self, shrink: float) -> None:
+        """Render thread: shown at most `shrink` of its size; the feed makes its next frames that small (unless
+        another source of the same camera is shown bigger)."""
+        self.shrink = shrink
+
+    def _receive(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None,
+                 full: tuple[int, int] | None = None) -> None:
         """A frame from the feed's capture thread. The array is shared with other sources: read only."""
         size = size or (frame.shape[1], frame.shape[0])
         if self.settings.get("mirror"):
             frame = mirror_picture(frame, order, size)
-        self._size = size
+        self._size = full or size
         self._frames.put((frame, order))

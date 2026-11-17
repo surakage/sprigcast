@@ -662,9 +662,25 @@ class Recorder:
         """
         if self.error is not None or self._stop.is_set() or self.paused_since is not None:
             return
+        before = self._last_queued
         pts = self._assign_pts(frame)
         if pts is None:
             return
+        last, self._last_frame = getattr(self, "_last_frame", None), frame
+        if last is not None and before >= 0 and 1 < pts - before <= max(1, self.fps // 2) \
+                and not self._opening and getattr(self, "_easing_since", None) is None:
+            # The canvas ran late and missed ticks. As OBS does with its lagged frames, the last picture fills
+            # the missed slots, so viewers and the file get a steady frame rate (the heavy run on 2026-11-17
+            # sent about 54 of 60 a second). Longer than half a second, or with the encoder's queue half full: left
+            # as a gap, as before.
+            for missing in range(before + 1, pts):
+                if self._video.qsize() >= VIDEO_QUEUE // 2:
+                    break  # the encoder is busy: a repeat must never push out a real frame
+                try:
+                    self._video.put_nowait((missing, last))
+                    self.repeated += 1
+                except queue.Full:
+                    break
         if self._opening:
             # The encoder is still opening (up to half a second for a GPU encoder): keep only the
             # newest couple of frames instead of filling the queue (~45 MB at 1080p) and then
@@ -685,6 +701,7 @@ class Recorder:
             if self._counts_drops():
                 self.dropped += 1
 
+    repeated = 0  # missed ticks filled with the picture before (see push_frame)
     eases = True  # recordings and clips ease off when the encoder falls behind; streams have their own steering
 
     def _ease(self, now: float) -> bool:
