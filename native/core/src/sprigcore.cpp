@@ -12,11 +12,6 @@
 
 namespace {
 
-thread_local std::string g_last_error;
-std::mutex g_log_mutex;
-std::deque<std::string> g_log;
-constexpr size_t LOG_KEEP = 512;
-
 std::string hr_text(HRESULT hr) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "0x%08lX", static_cast<unsigned long>(hr));
@@ -28,20 +23,6 @@ std::string hr_text(HRESULT hr) {
 namespace sc {
 
 HRESULT compile_now(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
-
-void set_last_error(const std::string &message) { g_last_error = message; }
-
-void log_line(int level, const std::string &message) {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    g_log.push_back(std::to_string(level) + " " + message);
-    while (g_log.size() > LOG_KEEP) g_log.pop_front();
-}
-
-int fail(int code, const std::string &message) {
-    g_last_error = message;
-    log_line(code == SC_ERR_ARGUMENT ? SC_LOG_WARNING : SC_LOG_ERROR, message);
-    return code;
-}
 
 int fail_hr(int code, const char *what, HRESULT hr) {
     return fail(code, std::string(what) + " failed (" + hr_text(hr) + ")");
@@ -231,48 +212,6 @@ int draw_view(sc_device &dev, ID3D11RenderTargetView *target, int tw, int th, ID
 // ---- exports ------------------------------------------------------------------------------------------------
 
 extern "C" {
-
-SC_API int sc_interface_version(void) { return SC_INTERFACE_VERSION; }
-
-SC_API const char *sc_build_info(void) {
-#if defined(_MSC_VER)
-#  define SC_COMPILER "MSVC " SC_STR(_MSC_VER)
-#elif defined(__clang__)
-#  define SC_COMPILER "clang " __clang_version__
-#elif defined(__GNUC__)
-#  define SC_COMPILER "gcc " __VERSION__
-#else
-#  define SC_COMPILER "unknown compiler"
-#endif
-#define SC_STR2(x) #x
-#define SC_STR(x) SC_STR2(x)
-    return "sprigcore interface " SC_STR(SC_INTERFACE_VERSION) ", " SC_COMPILER ", built " __DATE__;
-}
-
-SC_API const char *sc_last_error(void) { return g_last_error.c_str(); }
-
-SC_API int sc_log_drain(char *buffer, int size) {
-    if (!buffer || size <= 0) return 0;
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    int used = 0;
-    while (!g_log.empty()) {
-        const std::string &line = g_log.front();
-        int need = static_cast<int>(line.size()) + 1;
-        if (need > size) {  // longer than the whole buffer: cut it rather than block the queue forever
-            if (used) break;
-            std::memcpy(buffer, line.data(), size - 1);
-            buffer[size - 1] = '\n';
-            g_log.pop_front();
-            return size;
-        }
-        if (used + need > size) break;
-        std::memcpy(buffer + used, line.data(), line.size());
-        buffer[used + line.size()] = '\n';
-        used += need;
-        g_log.pop_front();
-    }
-    return used;
-}
 
 SC_API int sc_adapter_count(void) {
     return guarded("sc_adapter_count", []() -> int {

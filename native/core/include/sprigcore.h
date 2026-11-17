@@ -17,6 +17,7 @@
 #ifndef SPRIGCORE_H
 #define SPRIGCORE_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <wchar.h>
 
@@ -35,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 6
+#define SC_INTERFACE_VERSION 7
 
 enum {
     SC_OK = 0,
@@ -378,6 +379,111 @@ SC_API void sc_com_release(void *unknown);
  * exception, 2 writes through a null pointer, 3 acts as if the graphics card was lost (the engine rebuilds),
  * 4 stalls the frame for 3 s (the watchdog reports it hung, then it goes on). */
 SC_API int sc_engine_debug_fault(sc_engine *engine, int kind);
+
+/* ---- Video and sound files (phase 3) -------------------------------------------------------------------------
+ *
+ * A player for one video, GIF or sound file, the way sources/media.py plays one, on a thread of the engine's
+ * own: it decodes a little ahead (a few pictures, about a second of sound) and hands out what is due on the
+ * file's own clock, so picture and sound stay together. Nothing here needs Python's lock.
+ *
+ * It uses the FFmpeg that SprigCast already ships with PyAV, loaded once with sc_media_ffmpeg_load: no second
+ * copy. Until that has worked every player call answers SC_ERR_DEVICE and Python plays the file itself.
+ *
+ * Crash gate: a fault while a file is being read or decoded ends that file ("can't play"), never the app. A
+ * player whose thread faulted says so in sc_media_info.faulted and plays nothing more.
+ *
+ * Every call is safe from any thread. */
+
+typedef struct sc_media sc_media;
+
+enum { SC_MEDIA_PLAYING = 0, SC_MEDIA_PAUSED = 1, SC_MEDIA_STOPPED = 2, SC_MEDIA_ENDED = 3 };
+
+/* sc_media_control: what to do (sources/media.py MediaSource, method for method). */
+enum {
+    SC_MEDIA_PLAY = 1,        /* from the start when it ended or was stopped, else carry on */
+    SC_MEDIA_PAUSE = 2,
+    SC_MEDIA_RESTART = 3,
+    SC_MEDIA_STOP = 4,        /* stop and show nothing; play starts from the beginning */
+    SC_MEDIA_SEEK = 5,        /* value: seconds */
+    SC_MEDIA_SLEEP = 6,       /* its bloom went off air: let every picture go; the thread closes the file and ends */
+    SC_MEDIA_WAKE = 7,        /* on air again: start over or carry on (restart_on_show) */
+    SC_MEDIA_HIDE = 8,        /* its eye went off: pause */
+    SC_MEDIA_SHOW = 9,        /* its eye is on again: start over, or carry on */
+    SC_MEDIA_RESPEED = 10,    /* the speed changed: decode again from here */
+    SC_MEDIA_START = 11,      /* start the decoder thread if none is running. value 1: not while asleep */
+    SC_MEDIA_CLOSE = 12,      /* end the thread and let everything go (the source is being removed) */
+};
+
+typedef struct sc_media_options {
+    int loop;
+    int clear_on_end;      /* show nothing once it ends instead of the last picture */
+    int restart_on_show;   /* start over each time it comes on screen or is shown again */
+    float speed;           /* 0.1 .. 4; sound is resampled to fit, so it plays higher or lower */
+} sc_media_options;
+
+typedef struct sc_media_info {
+    int state;             /* SC_MEDIA_PLAYING ... */
+    int has_video;
+    int width, height;     /* the picture's layout size (0 x 0 until the file is open) */
+    int hidden;
+    int thread;            /* a decoder thread is running */
+    int faulted;           /* the decoder thread faulted (crash gate): this player is finished */
+    int replaying;         /* a short silent loop (a GIF) is playing from memory, its file closed */
+    double position;       /* seconds, within the file when looping */
+    double duration;       /* seconds; 0 while unknown */
+    double speed;
+    uint64_t decoded;      /* pictures decoded so far */
+    uint64_t passes;       /* times the file was read through (loops) */
+    uint64_t picture_bytes;  /* the largest picture handed out so far: a buffer this big always fits */
+    char status[96];       /* "starting", "no file", "ok" or "can't play: ..." */
+} sc_media_info;
+
+/* What sc_media_video_frame answered. */
+enum {
+    SC_MEDIA_NO_PICTURE = 0,  /* nothing new is due */
+    SC_MEDIA_PICTURE = 1,     /* a new picture was copied into the buffer */
+    SC_MEDIA_BLANK = 2,       /* show nothing from now on (stopped, or ended with clear_on_end) */
+    SC_MEDIA_TOO_SMALL = 3,   /* a picture is due but needs `bytes` bytes: call again with a buffer that big */
+};
+
+typedef struct sc_media_picture {
+    int format;            /* SC_FMT_I420, SC_FMT_I420A or SC_FMT_RGBA (sc_upload) */
+    int width, height;     /* of the data: for I420 the packed rows */
+    int stride;
+    int matrix;            /* I420: 601, 709 or 2020 */
+    int full_range;        /* I420: 1 for full range ("pc"), 0 for limited ("tv") */
+    uint64_t bytes;
+    double time;           /* where in the timeline the picture belongs, seconds */
+} sc_media_picture;
+
+/* Loads FFmpeg from these five library files (UTF-8 paths): libavutil, libavcodec, libavformat, libswscale and
+ * libswresample, of the major versions this engine was built for. Loading again once it has worked does nothing. */
+SC_API int sc_media_ffmpeg_load(const char *avutil, const char *avcodec, const char *avformat, const char *swscale,
+                                const char *swresample);
+SC_API int sc_media_ffmpeg_ready(void);
+
+/* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
+SC_API int sc_media_create(int playing, sc_media **out);
+/* Ends its thread (waits up to 2 s for it; a thread stuck in a file read is left behind) and frees it. */
+SC_API void sc_media_destroy(sc_media *media);
+SC_API int sc_media_set_options(sc_media *media, const sc_media_options *options);
+/* Another file (UTF-8 path; "" = none) from its start. video: 1 when it should have a picture (told by its
+ * name until the file is open). playing: as sc_media_create. */
+SC_API int sc_media_set_file(sc_media *media, const char *path, int video, int playing);
+SC_API int sc_media_control(sc_media *media, int what, double value);
+/* Shown at most `shrink` of its size anywhere (1, 1/2, 1/4): the next pictures are made that small. */
+SC_API int sc_media_set_shrink(sc_media *media, float shrink);
+SC_API int sc_media_info_get(sc_media *media, sc_media_info *out);
+/* The picture due now on the file's clock, if it is a new one: copied into `out` (`capacity` bytes) and described
+ * in *picture. Returns SC_MEDIA_NO_PICTURE ... SC_MEDIA_TOO_SMALL, or a negative SC_ERR_*. Never waits for the
+ * decoder. */
+SC_API int sc_media_video_frame(sc_media *media, sc_media_picture *picture, uint8_t *out, size_t capacity);
+/* The next `count` stereo samples (interleaved floats at 48 kHz) due on the file's clock; silence where there is
+ * none. asleep: 1 while the source is off air. Never waits for the decoder. */
+SC_API int sc_media_read_audio(sc_media *media, float *out, int count, int asleep);
+/* A check of the crash gate (tests only): the decoder thread faults at its next step. kind 1 throws a C++
+ * exception, kind 2 writes through a null pointer. */
+SC_API int sc_media_debug_fault(sc_media *media, int kind);
 
 #ifdef __cplusplus
 }
