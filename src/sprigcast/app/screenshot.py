@@ -38,6 +38,16 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
 
     Only a frame from a tick that started after this call counts: one already being drawn may have begun
     before a freeze asked for just now (Snap's), and the picture must be the frozen one exactly."""
+    native_shot = getattr(engine, "native_shot", None)
+    read = {}
+    for canvas_id in canvas_ids if native_shot is not None else ():
+        shot = native_shot(canvas_id)  # the native engine's own canvas: Python's compositor needn't draw it
+        if shot is not None:
+            data, w, h = shot
+            read[canvas_id] = QImage(data, w, h, w * 4, QImage.Format.Format_ARGB32_Premultiplied).copy()
+    canvas_ids = [c for c in canvas_ids if c not in read]
+    if not canvas_ids:
+        return read
     got: dict = {}
     since = getattr(engine, "_ticks", None)  # taps run inside a tick: frames from ticks after this one count
     done = threading.Event()
@@ -64,9 +74,9 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
             engine.remove_frame_tap(f"shot:{canvas_id}", tap)
     with lock:
         frames = dict(got)
-    return {canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
-                              QImage.Format.Format_RGBA8888_Premultiplied).copy()
-            for canvas_id, f in frames.items()}
+    return {**read, **{canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
+                                         QImage.Format.Format_RGBA8888_Premultiplied).copy()
+                       for canvas_id, f in frames.items()}}
 
 
 def grab_one(engine, source_id: str, timeout: float = WAIT_S * 2) -> QImage | None:

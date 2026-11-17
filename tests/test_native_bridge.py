@@ -752,3 +752,40 @@ def test_views_take_the_free_canvas_slots_and_give_them_back(monkeypatch):
     many = {f"v{n}": (h, camera) for n in range(sprigcore.ENGINE_CANVASES)}
     bridge.sync(col, {}, _plain_state, False, views=many)  # more than there are slots: the rest stay with Python
     assert sum(key.startswith("view:") for key in bridge._slots) == sprigcore.ENGINE_CANVASES - 2
+
+
+def test_a_screenshot_of_a_canvas_the_engine_draws_is_read_from_the_engine():
+    """PC heavy run (2026-11-17): each Control API screenshot woke Python's compositor to draw the whole canvas
+    (573-602 ms held, then the graphics restarted). Now it's read from the engine; Python draws only what the
+    engine doesn't."""
+    from types import SimpleNamespace
+
+    from PySide6.QtGui import QImage
+
+    from sprigcast.app import screenshot
+
+    engine = _engine()
+    native = engine._native
+    native._slots = {"h": 0}
+    native.draws = lambda canvas_id: canvas_id == "h"
+    reads = []
+
+    def read_bgra(slot):
+        reads.append(slot)
+        return bytes([10, 20, 30, 255]) * (64 * 36)
+
+    native.engine = SimpleNamespace(_sizes={0: (64, 36)}, read_bgra=read_bgra)
+    assert engine.native_shot("h")[1:] == (64, 36) and engine.native_shot("v") is None
+    taps = []
+    engine.add_frame_tap = lambda key, tap: taps.append(key)
+    engine.remove_frame_tap = lambda key, tap: None
+    images = screenshot.grab(engine, ["h"], timeout=0.1)
+    assert taps == [] and reads == [0, 0]  # never asked Python to draw it
+    image = images["h"]
+    assert (image.width(), image.height()) == (64, 36)
+    assert image.pixelColor(3, 3).getRgb() == (30, 20, 10, 255)  # BGRA in, the right colours out
+    assert isinstance(image, QImage)
+    screenshot.grab(engine, ["h", "v"], timeout=0.05)
+    assert taps == ["shot:v"]  # the one the engine doesn't draw comes from Python, as before
+    engine._sources["snap"] = SimpleNamespace(in_screenshots=False)
+    assert engine.native_shot("h") is None  # something stays out of screenshots: Python draws without it

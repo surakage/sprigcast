@@ -1408,6 +1408,27 @@ class Engine:
             except Exception:
                 log.exception("frame tap for %s failed", target.id)
 
+    def native_shot(self, canvas_id: str) -> tuple[bytes, int, int] | None:
+        """A screenshot of a canvas the native engine draws, read from the engine (any thread; waits for its
+        next frames): (BGRA premultiplied, width, height). None when Python must draw it: no engine, a canvas
+        it doesn't show, or sources that stay out of screenshots. Before, every Control API screenshot on the
+        native engine woke Python's compositor to draw the whole canvas on its own (PC heavy run, 2026-11-17:
+        573-602 ms held each minute, twice followed by the graphics restarting)."""
+        native = self._native
+        if native is None or native.failed or not native.draws(canvas_id):
+            return None
+        try:
+            if self._not_in_screenshots():
+                return None
+            slot = native._slots.get(canvas_id)
+            size = native.engine._sizes.get(slot) if slot is not None else None
+            if size is None:
+                return None
+            return native.engine.read_bgra(slot), size[0], size[1]
+        except Exception as exc:  # noqa: BLE001 (the engine stopped, or the canvas changed: Python draws it)
+            log.info("screenshot of %s from the native engine failed (%s): drawn here instead", canvas_id, exc)
+            return None
+
     def _not_in_screenshots(self) -> frozenset[str]:
         """Sources that are only for show on stream and stay out of screenshots (Snap: its polaroid is the
         screenshot being shown off; a screenshot taken while one is up shouldn't have it in)."""

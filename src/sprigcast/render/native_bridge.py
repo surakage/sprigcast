@@ -425,8 +425,17 @@ class NativeCanvases:
         stats = self._guard("stats", self.engine.stats)
         if stats is not None and stats.get("hung"):
             return False
+        now = time.perf_counter()
+        made = []  # what each output had made, to tell a feed that stopped from one whose frames weren't taken
+        for canvas_id, slot in self._slots.items():
+            for (size, on_card), out in self._outputs.get(slot, {}).items():
+                last = self._last_out.get((canvas_id, size))
+                made.append(f"{canvas_id} {size[0]}x{size[1]}{' on the card' if on_card else ''}: last frame "
+                            f"{f'{now - last:.1f} s ago' if last else 'never'}, "
+                            f"{self._dropped.get((slot, out), 0)} missed by the engine")
         log.warning("native engine: making every output again (%d frames on the card not given back yet, "
-                    "%d not taken in time so far)", CardFrame.held, self.output_drops)
+                    "%d not taken in time so far; %s)", CardFrame.held, self.output_drops,
+                    "; ".join(made) or "no outputs")
         for canvas_id in list(self._slots):
             self.set_outputs(canvas_id, ())
         self._last_out.clear()
