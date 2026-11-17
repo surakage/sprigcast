@@ -81,6 +81,9 @@ def test_opens_by_path_even_after_renumbering(fake_cv2):
     try:
         assert wait_for(lambda: FakeCapture.opened)
         cap = FakeCapture.opened[0]
+        # The camera thread opens the capture, then sets its mode: wait for the last setting (asserting at once
+        # failed now and then in a full run, KeyError FOURCC)
+        assert wait_for(lambda: "BUF" in cap.props)
         assert cap.index == 0 and cap.backend == 700  # Cam B is now first
         assert cap.props["FOURCC"] == "MJPG" and cap.props["W"] == 64 and cap.props["BUF"] == 1
         assert wait_for(lambda: src._frames.peek() is not None)
@@ -401,7 +404,7 @@ def test_changing_the_mode_of_an_unshared_camera_reopens_on_the_same_thread(fake
         assert wait_for(lambda: src._frames.peek() is not None)
         feed = src._feed
         src.update({**settings, "width": 32, "height": 18})
-        assert wait_for(lambda: len(FakeCapture.opened) == 2 and FakeCapture.opened[1].props["W"] == 32)
+        assert wait_for(lambda: len(FakeCapture.opened) == 2 and FakeCapture.opened[1].props.get("W") == 32)
         assert src._feed is feed and list(camera._feeds.values()) == [feed]
     finally:
         src.stop()
