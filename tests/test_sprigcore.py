@@ -120,7 +120,7 @@ def test_scaling_matches_bilinear(canvas):
 @needs_engine
 def test_opacity_blends_over(canvas):
     pic = _picture(8, 8, seed=11)
-    canvas.clear(0.0, 0.0, 1.0)  # red underneath
+    canvas.clear(1.0, 0.0, 0.0)  # red underneath (clear takes r, g, b; the picture is B, G, R)
     canvas.draw_bgra(pic.tobytes(), 8, 8, 0, 0, 8, 8, opacity=0.25)
     got = _read(canvas)[:8, :8, :3]
     want = np.rint(pic[..., :3] * 0.25 + np.array([0, 0, 255]) * 0.75)
