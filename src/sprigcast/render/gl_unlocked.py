@@ -99,6 +99,25 @@ class UnlockedGL:
                 self.fences_ok = True
         except Exception as exc:  # noqa: BLE001 (no OpenGL library to call directly: moderngl as before)
             log.info("graphics: direct OpenGL calls unavailable (%s); using moderngl's", exc)
+        self._reset_status = None
+        try:
+            for name in ("glGetGraphicsResetStatus", "glGetGraphicsResetStatusARB", "glGetGraphicsResetStatusKHR"):
+                address = self._find(name, resolvers)
+                if address:
+                    self._reset_status = _FUNCTYPE(_u)(address)
+                    break
+        except Exception:  # noqa: BLE001 (older drivers: a reset is still noticed by frames failing)
+            pass
+
+    def reset_status(self) -> int:
+        """Non-zero once the graphics driver has reset (a driver update, a crash or Windows' 2-second hang
+        recovery) and this context's work is lost; 0 when fine or the driver can't say."""
+        if self._reset_status is None:
+            return 0
+        try:
+            return int(self._reset_status())
+        except Exception:  # noqa: BLE001
+            return 0
 
     @staticmethod
     def _find(name: str, resolvers):

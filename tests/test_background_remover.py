@@ -369,3 +369,36 @@ def test_real_models_find_a_person_shaped_blob(plugin):
         out = model.person(np.full((180, 320, 3), 128, np.uint8))
         w, h = plugin.MODELS[which][3]
         assert out.shape == (h, w) and 0 <= out.min() and out.max() <= 1
+
+
+def test_the_model_runs_in_a_helper_that_ends_when_it_lets_go(plugin):
+    """Starting the model (DirectML on the PC) holds Python's lock a second or more, so it runs in a helper
+    program; when the remover lets go (a minute off screen, or Better edges switched), the helper ends and
+    every byte it used goes back."""
+    pytest.importorskip("onnxruntime")
+    which = "wide"
+    model = plugin.HelperModel(MODELS_DIR / plugin.MODELS[which][0], which)
+    try:
+        assert model.where in ("graphics card", "processor") and model.proc.poll() is None
+        out = model.person(np.full((180, 320, 3), 128, np.uint8))
+        w, h = plugin.MODELS[which][3]
+        assert out.shape == (h, w) and 0 <= out.min() and out.max() <= 1
+    finally:
+        model.close()
+    assert model.proc.poll() is not None  # the helper is gone
+    with pytest.raises(RuntimeError):
+        plugin.HelperModel(MODELS_DIR / "missing.onnx", which)  # a model that won't start says so
+
+
+def test_switching_models_or_parking_ends_the_old_helper(plugin):
+    closed = []
+
+    class Closing(FakeModel):
+        def close(self):
+            closed.append(self.which)
+
+    cut = plugin.Cutout("cam", loader=lambda which, sid, cancel: Closing(which))
+    assert cut._model("wide").which == "wide"
+    assert cut._model("better").which == "better" and closed == ["wide"]  # Better edges on: wide's helper ends
+    cut._let_go()
+    assert closed == ["wide", "better"] and cut.model is None

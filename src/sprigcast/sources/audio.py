@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,7 @@ SAMPLE_RATE = 48_000
 CHANNELS = 2
 MAX_BUFFER = SAMPLE_RATE // 5  # keep at most 200 ms queued, so latency never builds up
 RETRY_SECONDS = 2.0
+DEFAULT_CHECK_S = 2.0  # how often a "Default" sound asks Windows whether its default device changed
 DEFAULT = "default"  # follow the Windows default device
 
 
@@ -249,9 +251,28 @@ class _WasapiSource(Source):
         if device_changed:
             self._restart.set()
 
+    def _windows_default(self) -> tuple[str, str] | None:
+        """(ID, name) of the device Windows uses as the default now, when this sound follows the default."""
+        if str(self.settings.get("device", DEFAULT)) != DEFAULT:
+            return None
+        from sprigcast.audio import default_device
+
+        try:
+            return default_device.default_endpoint(render=self.loopback)
+        except Exception as exc:  # noqa: BLE001 (asking Windows must never stop the sound)
+            log.debug("%s: default device check failed: %s", self.id, exc)
+            return None
+
     def _find(self, pa, pa_mod) -> dict | None:
         wanted = str(self.settings.get("device", DEFAULT))
         if wanted == DEFAULT:
+            # PortAudio only knows the default from when it started; Windows says what it is now.
+            now = self._windows_default()
+            if now and now[1]:
+                for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
+                    name = str(info["name"]).replace(" [Loopback]", "")
+                    if name == now[1] and bool(info.get("isLoopbackDevice")) == self.loopback:
+                        return info
             return pa.get_default_wasapi_loopback() if self.loopback else pa.get_default_wasapi_device(d_in=True)
         fallback = None
         for info in pa.get_device_info_generator_by_host_api(host_api_type=pa_mod.paWASAPI):
@@ -292,11 +313,21 @@ class _WasapiSource(Source):
                 self.status = f"capturing {str(info['name']).replace(' [Loopback]', '')}"
                 if channels > 2:
                     self.status += f" ({channels} channels mixed to stereo)"
+                following = self._windows_default()
+                checked = time.monotonic()
                 while not (self._stop.is_set() or self._restart.is_set()):
                     if not stream.is_active():
                         self.status = "device lost, retrying"
                         rescan = True
                         break
+                    if following is not None and time.monotonic() - checked >= DEFAULT_CHECK_S:
+                        checked = time.monotonic()
+                        now = self._windows_default()
+                        if now is not None and now[0] != following[0]:  # Windows switched its default device
+                            log.info("%s: Windows default changed to %s, following it", self.id, now[1])
+                            rescan = True
+                            self._restart.set()  # straight over, no retry pause
+                            break
                     self._restart.wait(0.5)
             except Exception as exc:  # unplugged mid-open, exclusive mode, unsupported format, driver errors
                 self.status = f"error: {exc}"

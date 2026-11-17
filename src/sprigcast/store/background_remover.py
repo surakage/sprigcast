@@ -8,7 +8,9 @@ How it stays light: a small AI model looks at a small copy of the camera (about 
 times a second, on its own thread. It runs on the graphics card through DirectML (NVIDIA, AMD or Intel),
 or on two processor threads when that can't start. The GPU scales its mask up and mixes the picture, as
 part of drawing the camera. It only runs while the camera shows on screen, and lets go of the model a
-minute after it stops showing. The model downloads the first time it's needed (0.5 MB, or 16 MB for
+minute after it stops showing. The model runs in a small helper program of its own: starting it on the
+graphics card holds Python's lock for a second or more (it froze the stream for the captions' model), and
+when the helper ends every byte it used goes back to Windows. The model downloads the first time it's needed (0.5 MB, or 16 MB for
 Better edges) and is checked before use.
 
 Models: Google's MediaPipe Selfie Segmentation (wide and square) and Selfie Multiclass Segmentation,
@@ -31,9 +33,9 @@ import numpy as np
 from sprigcast.core.filters import Field, register_filter
 from sprigcast.plugin_hooks import FrameWatcher, register_frame_watcher
 
-PLUGIN = {"id": "background_remover", "name": "Background remover", "version": 1, "adds": "Effect",
+PLUGIN = {"id": "background_remover", "name": "Background remover", "version": 2, "adds": "Effect",
           "about": "Remove, blur or replace the room behind you on a camera. No green screen needed.",
-          "new": "First version."}
+          "new": "Starting it no longer stutters the stream, and all its memory goes back once it's off screen."}
 
 log = logging.getLogger(__name__)
 
@@ -226,6 +228,125 @@ class Model:
         return out[..., 0]
 
 
+def _send(stream, message) -> None:
+    import pickle
+    import struct
+
+    data = pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL)
+    stream.write(struct.pack("<I", len(data)) + data)
+    stream.flush()
+
+
+def _receive(stream):
+    import pickle
+    import struct
+
+    head = stream.read(4)
+    if len(head) < 4:
+        raise EOFError("the background helper closed")
+    size = struct.unpack("<I", head)[0]
+    data = stream.read(size)
+    if len(data) < size:
+        raise EOFError("the background helper closed")
+    return pickle.loads(data)
+
+
+def serve(stdin=None, stdout=None) -> None:
+    """The helper's side: start the model when asked, then turn small pictures into masks until SprigCast
+    closes the pipe."""
+    import os
+    import sys
+
+    stdin = stdin or sys.stdin.buffer
+    if stdout is None:  # keep the real stdout for replies; anything else printed goes to stderr
+        stdout = os.fdopen(os.dup(1), "wb")
+        os.dup2(2, 1)
+        sys.stdout = sys.stderr
+    model = None
+    while True:
+        try:
+            message = _receive(stdin)
+        except EOFError:
+            return
+        try:
+            if message.get("op") == "load":
+                model = Model(message["path"], message["which"])
+                _send(stdout, {"where": model.where})
+            elif message.get("op") == "person":
+                _send(stdout, {"person": model.person(message["rgb"]) if model else None})
+        except Exception as exc:  # noqa: BLE001 (said to SprigCast, which logs it)
+            _send(stdout, {"error": f"{exc.__class__.__name__}: {exc}"})
+
+
+def helper_command() -> list[str]:
+    """Python running serve() from this very file (the installed copy in the plugins folder)."""
+    import sys
+    from pathlib import Path
+
+    here = str(Path(__file__).resolve())
+    code = ("import runpy, sys; sys.path[:0] = [p for p in sys.argv[1:] if p]; "
+            f"runpy.run_path({here!r})['serve']()")
+    return [sys.executable, "-I", "-c", code, *[p for p in sys.path if p and Path(p).is_dir()]]
+
+
+class HelperModel:
+    """The model in its own helper program; person() waits on a pipe, with Python's lock free."""
+
+    def __init__(self, path, which: str):
+        import subprocess
+        import sys
+
+        flags = 0
+        if sys.platform == "win32":
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        self.which = which
+        self.proc = subprocess.Popen(helper_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+        reply = self._ask({"op": "load", "path": str(path), "which": which})
+        if "error" in reply:
+            self.close()
+            raise RuntimeError(reply["error"])
+        self.where = str(reply.get("where", ""))
+        log.info("background remover: %s model on the %s, in its helper", which, self.where)
+
+    def _ask(self, message: dict) -> dict:
+        try:
+            _send(self.proc.stdin, message)
+            return _receive(self.proc.stdout)
+        except (OSError, EOFError, ValueError) as exc:
+            return {"error": f"the background helper stopped ({exc})"}
+
+    def person(self, rgb: np.ndarray) -> np.ndarray:
+        reply = self._ask({"op": "person", "rgb": np.ascontiguousarray(rgb)})
+        if reply.get("person") is None:
+            raise RuntimeError(reply.get("error", "no mask"))
+        return reply["person"]
+
+    def close(self) -> None:
+        """End the helper: its memory, graphics memory included, goes back to Windows at once."""
+        proc = self.proc
+        try:
+            proc.stdin.close()  # it reads the end and quits
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+            proc.wait(timeout=2)
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
+
+    def __del__(self):
+        try:
+            if self.proc.poll() is None:
+                self.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def model_for(better: bool, aspect: float) -> str:
     if better:
         return "better"
@@ -246,7 +367,7 @@ def load(which: str, source_id: str, cancel: threading.Event) -> Model:
     else:
         path = models.path_for(name)
     _STATUS[source_id] = "Starting"
-    return Model(path, which)
+    return HelperModel(path, which)
 
 
 class Cutout(FrameWatcher):
@@ -317,8 +438,17 @@ class Cutout(FrameWatcher):
                         self._result = result
                     self._busy = False
         finally:
-            self.model = None  # lets go of the model and its graphics memory
+            self._let_go()
             self._previous = None
+
+    def _let_go(self) -> None:
+        """Let go of the model and its graphics memory (a helper program ends)."""
+        model, self.model = self.model, None
+        if model is not None and hasattr(model, "close"):
+            try:
+                model.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _model(self, which: str) -> Model | None:
         if self.model is not None and self.model.which == which:
@@ -326,7 +456,7 @@ class Cutout(FrameWatcher):
         now = time.monotonic()
         if self._failed_for == which and now - self._failed_at < RETRY_AFTER_S:
             return None
-        self.model = None
+        self._let_go()  # the other model (Better edges switched): its helper ends first
         try:
             self.model = self._loader(which, self.source_id, self._stop)
         except InterruptedError:

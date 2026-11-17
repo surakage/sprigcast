@@ -205,6 +205,9 @@ def run() -> None:
     app.setOrganizationName("Slothbloom")
     app.setApplicationVersion(__version__)
     app.setWindowIcon(app_icon())
+    from sprigcast.core.painted import brand_fonts
+
+    brand_fonts()  # Nunito for the text plugins (captions, timer, clock, Now playing)
     from sprigcast.app import crash_report, single_instance
 
     if single_instance.ask_running_copy():  # already open: that window comes forward instead

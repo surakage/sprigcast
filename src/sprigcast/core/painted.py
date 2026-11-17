@@ -18,6 +18,31 @@ from pathlib import Path
 
 import numpy as np
 
+_FONTS_LOADED: list[str] = []
+
+
+def brand_fonts() -> list[str]:
+    """Load SprigCast's own font (Nunito, data/fonts, SIL Open Font License) into Qt once, so captions, the
+    stream timer, the clock and Now playing look the same on every PC (it isn't on Windows: they fell back to
+    Segoe UI, and to plain Segoe UI on Windows 10). Returns the family names it added (empty if it couldn't)."""
+    if _FONTS_LOADED:
+        return [f for f in _FONTS_LOADED if f]
+    from importlib import resources
+
+    from PySide6.QtGui import QFontDatabase
+
+    try:
+        data = resources.files("sprigcast.data").joinpath("fonts", "Nunito.ttf").read_bytes()
+        from PySide6.QtCore import QByteArray
+
+        font_id = QFontDatabase.addApplicationFontFromData(QByteArray(data))
+        _FONTS_LOADED.extend(QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else [])
+    except Exception:  # noqa: BLE001 (a missing font only means the next one in the list is used)
+        pass
+    _FONTS_LOADED.append("")  # tried: don't try again
+    return [f for f in _FONTS_LOADED if f]
+
+
 _ART: dict[tuple, object] = {}  # (file, w, h) -> QImage
 _SVG: dict[Path, bytes] = {}
 MOST_ART = 64
@@ -74,6 +99,7 @@ def canvas(width: int, height: int, detail: float = 1.0):
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
 
+    brand_fonts()  # once: Nunito ready for any card's text
     k = detail if detail > 0 else 1.0
     image = QImage(max(1, round(width * k)), max(1, round(height * k)), QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)

@@ -223,3 +223,46 @@ def test_falls_back_to_stereo_when_device_refuses_its_channel_count(fake_pyaudio
         assert fake_pyaudio[-1][1] == 2
     finally:
         src.stop()
+
+
+def test_default_desktop_sound_follows_a_windows_switch(fake_pyaudio, monkeypatch):
+    """PortAudio only knows the default from when it started: a "Default" desktop sound asks Windows every couple
+    of seconds and moves to the new device (speakers to headphones) without SprigCast restarting, like OBS."""
+    from sprigcast.audio import default_device
+    from sprigcast.sources import audio
+
+    mod = sys.modules["pyaudiowpatch"]
+    base = mod.PyAudio
+    phones = {"index": 2, "name": "Headphones [Loopback]", "maxInputChannels": 2, "defaultSampleRate": 48000,
+              "isLoopbackDevice": True}
+
+    class TwoOutputs(base):
+        def get_device_info_generator_by_host_api(self, host_api_type):
+            return iter([*super().get_device_info_generator_by_host_api(host_api_type), phones])
+
+    mod.PyAudio = TwoOutputs
+    audio.PortAudio._pa = None
+    windows = {"now": ("{speakers}", "Speakers")}
+    asked = []
+    monkeypatch.setattr(default_device, "default_endpoint", lambda render: asked.append(render) or windows["now"])
+    monkeypatch.setattr(audio, "DEFAULT_CHECK_S", 0.05)
+    src = create_source("audio_output", "desk", {"device": "default"})
+    src.start()
+    try:
+        assert wait_for(lambda: [i for i, _c, _r in fake_pyaudio] == [1])
+        windows["now"] = ("{phones}", "Headphones")  # the streamer switched Windows to their headphones
+        assert wait_for(lambda: [i for i, _c, _r in fake_pyaudio] == [1, 2])
+        assert wait_for(lambda: src.status.startswith("capturing Headphones"))
+        assert set(asked) == {True}  # desktop sound asks about speakers, not microphones
+    finally:
+        src.stop()
+    named = create_source("audio_output", "desk2", {"device": "Speakers"})
+    asked.clear()
+    assert named._windows_default() is None and not asked  # a chosen device never moves
+
+
+def test_asking_windows_for_the_default_is_harmless_elsewhere():
+    from sprigcast.audio import default_device
+
+    if sys.platform != "win32":
+        assert default_device.default_endpoint(render=True) is None

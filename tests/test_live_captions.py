@@ -821,3 +821,15 @@ def test_a_helper_that_cant_load_says_why(cap, tmp_path):
     reasons = "NoSuchFile|No such file|FileNotFound|doesn't exist|INVALID|Load model|No module named 'onnxruntime"
     with pytest.raises(RuntimeError, match=reasons):
         cap.ProcessEngine(tmp_path, "tiny", "en", "cpu")
+
+
+def test_sprigcasts_own_font_is_used_on_every_pc(cap):
+    """Nunito ships with SprigCast (data/fonts): the default caption look no longer falls back to whatever the PC
+    has (Segoe UI on Windows 11, plain Segoe UI on 10)."""
+    from PySide6.QtGui import QFontInfo
+
+    from sprigcast.core import painted
+
+    assert "Nunito" in painted.brand_fonts()
+    base = cap.LiveCaptionsSource.defaults
+    assert QFontInfo(cap._font(base, 76)).family() == "Nunito"

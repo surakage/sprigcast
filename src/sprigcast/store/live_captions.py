@@ -741,6 +741,9 @@ def _fonts() -> list[tuple[str, str]]:
 def _font(settings: dict[str, Any], pixels: float):
     from PySide6.QtGui import QFont
 
+    from sprigcast.core import painted
+
+    painted.brand_fonts()  # SprigCast's own Nunito, so the default look is the same on every PC
     font = QFont()
     chosen = str(settings.get("font", "") or "").strip()
     font.setFamilies([chosen, *DEFAULT_FONTS] if chosen else DEFAULT_FONTS)
