@@ -1,6 +1,7 @@
-"""Now playing: the song you're listening to, on stream, with its cover.
+"""Now playing: the song you're listening to, on stream, with its cover, how far in it is, and bars that move
+with the music.
 
-Add Now playing (+ → Plugins → Now playing): it gets a sprig of its own with a small card in the bottom left
+Add Now playing (+ → Plugins → Now playing): it gets a sprig of its own with a card in the bottom left
 corner of your bloom, in every shape. Move or resize it like anything else.
 
 It reads what Windows already knows is playing (the media keys and the volume pop-up use the same thing),
@@ -8,11 +9,16 @@ so it works with Spotify, YouTube Music, Apple Music, Tidal, browsers and most p
 sign-in and nothing to set up. When the music pauses or stops, the card fades away; it comes back with the
 next song.
 
-Settings: Show art (the cover), Show album, Only from (app names, e.g. "Spotify, Chrome": leave it empty
-for any app), Text colour and Card colour (a colour ending in 00 is see-through: no card).
+Settings: Style (Canopy card, Cover glow, Slim band, Sprig ring), Show art (the cover), Show album, Show
+time (a time bar with how far in the song is and how long it is, when the app tells Windows), Sound bars
+(and the Sound they move with), Slide speed (a title too long for the card slides by, 1 slow to 5 fast),
+Only from (app names, e.g. "Spotify, Chrome": leave it empty for any app), Accent colour, Text colour and
+Card colour (a colour ending in 00 is see-through: no card).
 
-It's light: it listens for Windows saying the song changed instead of asking over and over, and it only
-listens while the card is on screen. The card is drawn again only when the song changes.
+It's light: it listens for Windows saying the song changed instead of asking over and over, and only while
+the card is on screen. The card is drawn once per song; each frame only adds what moves, on a worker,
+never on the render thread. The time moves once a second; a sliding title and the bars move up to 30
+times a second, and only while they move (in silence the bars settle and nothing is drawn).
 
 Apps can ask with {"do": "nowplaying.get"} and hear "nowplaying.changed" (when the card is on screen).
 
@@ -21,7 +27,6 @@ A SprigCast store plugin: add it from Tools → Plugin store.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
@@ -30,20 +35,20 @@ from typing import Any, Callable
 
 import numpy as np
 
+from sprigcast.audio import listen
 from sprigcast.control.native import ApiError, register_action, send_event
-from sprigcast.core import painted
+from sprigcast.core import painted, workers
 from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 3, "adds": "Source",
-          "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover. No keys needed.",
-          "new": "Shows the whole song and artist: a long title gets smaller, then takes two lines."}
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 4, "adds": "Source",
+          "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover, a time bar and "
+                   "sound bars. No keys needed.",
+          "new": "Four styles, a time bar, sound bars, and a long title slides by so it all shows."}
 
 KIND = "now_playing"
 W, H = 1100, 200  # the card's box (the card hugs the words, from the left); scale it on the canvas like anything else
-TITLE_PX = (54, 46, 40)  # the title shrinks a step at a time to fit on one line, then wraps onto two
-UNDER_PX = (36, 32, 28)
 ACCENT = "#4fd88f"
 HIDE_AFTER = 2.0  # seconds paused before the card goes (skipping songs doesn't flicker it)
 FADE = 0.3  # seconds to fade in or out
@@ -51,6 +56,15 @@ SETTLE = 0.15  # Windows sends a few changes at once when a song starts: read on
 MOST_ART = 8 * 1024 * 1024
 PLAYING = 4  # GlobalSystemMediaTransportControlsSessionPlaybackStatus.PLAYING
 NEEDS = "Now playing needs Windows 10 (1809 or newer)."
+STYLES = (("canopy", "Canopy card"), ("glow", "Cover glow"), ("band", "Slim band"), ("ring", "Sprig ring"))  # A-Z
+SPEEDS = tuple((n, str(n)) for n in range(1, 6))
+SLIDE_PX = 40  # box units a second for each step of Slide speed (2: 80, about two letters a second)
+SLIDE_GAP = 140  # box units between the end of a sliding title and its start coming round again
+SLIDE_REST = 1.5  # seconds a sliding title rests at its start each time round
+BAR_FPS = 30  # at most this many frames a second while something moves
+RATE = 48_000
+N = 2048  # the bars' FFT size
+STILL = 0.004  # every bar below this: silence
 
 
 @dataclass(frozen=True)
@@ -61,6 +75,14 @@ class Track:
     app: str = ""  # the app playing it, as Windows names it ("Spotify.exe", "Chrome")
     playing: bool = True
     art: bytes | None = None  # the cover, as the app gave it (PNG or JPEG)
+    length: float = 0.0  # seconds; 0 when the app doesn't say
+    position: float = 0.0  # seconds in, when Windows last heard (at)
+    at: float = 0.0  # time.time() then
+
+    def now(self, wall: float) -> float:
+        """How far in it is at this wall-clock time: it moves on while playing."""
+        moved = max(0.0, wall - self.at) if self.playing and self.at else 0.0
+        return min(self.length, self.position + moved) if self.length else self.position + moved
 
 
 def app_matches(app: str, only_from: str) -> bool:
@@ -80,6 +102,36 @@ def pick(tracks: list[Track], current_app: str, only_from: str) -> Track | None:
     if current is not None and current.playing:
         return current
     return next((t for t in allowed if t.playing), None) or current
+
+
+def _seconds(value) -> float:
+    """A WinRT TimeSpan (a timedelta, or 100 ns ticks) in seconds."""
+    if value is None:
+        return 0.0
+    if hasattr(value, "total_seconds"):
+        return float(value.total_seconds())
+    duration = getattr(value, "duration", None)
+    return float(duration if duration is not None else value) / 10_000_000
+
+
+def timeline(session) -> tuple[float, float, float]:
+    """(length, position, when) from Windows' timeline for this app's song: seconds, seconds, time.time() it
+    was true. (0, 0, now) when the app doesn't say (some browsers and players)."""
+    wall = time.time()
+    try:
+        props = session.get_timeline_properties()
+        start = _seconds(props.start_time)
+        length = _seconds(props.end_time) - start
+        position = _seconds(props.position) - start
+        updated = getattr(props, "last_updated_time", None)
+        when = updated.timestamp() if hasattr(updated, "timestamp") else 0.0
+    except Exception:
+        return 0.0, 0.0, wall
+    if not 1.0 < length < 24 * 3600:
+        return 0.0, 0.0, wall
+    if not wall - 24 * 3600 < when <= wall + 5:  # a time from 1601, or none: as of now
+        when = wall
+    return length, min(max(0.0, position), length), when
 
 
 # Listening to Windows --------------------------------------------------------------------------------
@@ -136,6 +188,8 @@ class MediaWatcher:
                 joined = True
             except Exception:
                 pass  # already set up on this thread
+            import asyncio  # here, on its own thread: loading it froze the window 0.66 s when added (PC test)
+
             asyncio.run(self._main())
         except ImportError:
             log.info("now playing: the Windows media session isn't available here")
@@ -154,6 +208,8 @@ class MediaWatcher:
         from winrt.windows.media.control import (  # noqa: PLC0415 - Windows only, loaded when on screen
             GlobalSystemMediaTransportControlsSessionManager as Manager,
         )
+
+        import asyncio
 
         self._loop = asyncio.get_running_loop()
         self._stop, self._poke = asyncio.Event(), asyncio.Event()
@@ -192,14 +248,21 @@ class MediaWatcher:
                     for session in sessions:
                         hook(session, "media_properties_changed")
                         hook(session, "playback_info_changed")
+                        hook(session, "timeline_properties_changed")  # a jump to another part of the song
                     sessions_key = key
                 current = manager.get_current_session()
                 current_app = str(current.source_app_user_model_id or "") if current is not None else ""
                 tracks = [t for t in [await self._read(s) for s in sessions] if t is not None]
                 track = pick(tracks, current_app, self.only_from)
                 what = None if track is None else (track.title, track.artist, track.album, track.app, track.playing,
-                                                   len(track.art or b""))
+                                                   len(track.art or b""), round(track.length),
+                                                   round(track.at - track.position))  # moves only on a jump
                 if what != shown and not self._quit.is_set():
+                    if track is None:
+                        log.info("now playing: nothing playing")
+                    elif shown is None or not shown or shown[:4] != what[:4]:  # a new song (not a pause or a jump)
+                        log.info("now playing: %s - %s (%s, %s)", track.title, track.artist or "?", track.app or "?",
+                                 clock(track.length) if track.length else "no length")
                     shown = what
                     self.on_track(track)
                 await self._wait()
@@ -209,6 +272,8 @@ class MediaWatcher:
 
     async def _wait(self) -> None:
         """Until Windows says something changed (or stop), then a moment more for the rest of it to land."""
+        import asyncio
+
         stop = asyncio.ensure_future(self._stop.wait())
         poke = asyncio.ensure_future(self._poke.wait())
         try:
@@ -233,7 +298,9 @@ class MediaWatcher:
             playing = True
         title, artist, album = (props.title or "").strip(), (props.artist or "").strip(), (props.album_title or "").strip()
         app = str(session.source_app_user_model_id or "")
-        return Track(title, artist, album, app, playing, await self._art(props, (app, title, artist, album)))
+        length, position, at = timeline(session)
+        return Track(title, artist, album, app, playing, await self._art(props, (app, title, artist, album)),
+                     length, position, at)
 
     async def _art(self, props, key: tuple) -> bytes | None:
         """The cover's bytes: read once per song."""
@@ -266,6 +333,11 @@ class MediaWatcher:
 
 
 # Drawing ---------------------------------------------------------------------------------------------
+#
+# A card is drawn in two parts. The still part (the card, the cover, the label, the time bar's track) is
+# drawn once per song, look and size. Each frame then adds only what moves on top of it: the words (from
+# pictures made once, so a sliding title is one picture drawn at an offset), the sound bars, the time bar
+# and the times. Frames are made on a shared worker, never on the render thread (see the source).
 
 
 def _colour(text: str, fallback: str):
@@ -288,135 +360,499 @@ def lines(track: Track, settings: dict[str, Any]) -> tuple[str, str]:
     return track.title, "  ·  ".join(under)
 
 
-def fit_line(text: str, font, room: float):
-    """One line in `room` pixels: the font a step smaller at a time (UNDER_PX) until it fits, and cut short
-    with ... only if it's still too long at the smallest. Sets the font's size; answers (text, its metrics)."""
-    from PySide6.QtCore import Qt
+def clock(seconds: float) -> str:
+    """1:05, or 1:02:05 past an hour."""
+    s = max(0, int(seconds))
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def style_of(settings: dict[str, Any]) -> str:
+    style = str(settings.get("style") or "canopy")
+    return style if style in dict(STYLES) else "canopy"
+
+
+def slide_speed(settings: dict[str, Any]) -> float:
+    """Box units a second a long title slides (Slide speed 1-5)."""
+    try:
+        step = int(settings.get("slide_speed", 2))
+    except (TypeError, ValueError):
+        step = 2
+    return SLIDE_PX * min(5, max(1, step))
+
+
+def slid(t: float, width: float, room: float, speed: float) -> float:
+    """How far a line `width` wide slides left in `room` after t seconds: not at all if it fits; else it
+    rests at the start for SLIDE_REST, then slides by at `speed`, round and round (a copy follows SLIDE_GAP
+    behind, so the start comes back in from the right)."""
+    if width <= room or speed <= 0:
+        return 0.0
+    loop = width + SLIDE_GAP
+    turn = SLIDE_REST + loop / speed
+    phase = t % turn
+    return 0.0 if phase < SLIDE_REST else (phase - SLIDE_REST) * speed
+
+
+@dataclass
+class Look:
+    """Where everything goes for one song in one style, in box units (W x H)."""
+
+    style: str
+    card: tuple[float, float, float, float]  # x, y, w, h
+    radius: float
+    cover: tuple[float, float, float, float] | None  # a rounded square, or the ring style's circle
+    title: tuple[float, float, float, float]  # where the title shows (it slides inside this when longer)
+    title_px: int
+    under: tuple[float, float, float, float] | None
+    under_px: int
+    bars: tuple[float, float, float, float] | None
+    bar_count: int
+    time_bar: tuple[float, float, float, float] | None  # the time bar's track
+    times: tuple[float, float, float, float] | None  # where the times go
+    times_px: int
+    title_w: float = 0.0  # the words' own widths
+    under_w: float = 0.0
+
+
+def _text_w(text: str, px: int, bold: bool = True) -> float:
     from PySide6.QtGui import QFontMetricsF
 
-    for px in UNDER_PX:
-        font.setPixelSize(px)
-        metrics = QFontMetricsF(font)
-        if metrics.horizontalAdvance(text) <= room:
-            return text, metrics
-    return metrics.elidedText(text, Qt.TextElideMode.ElideRight, room), metrics
+    return QFontMetricsF(_font(px, bold)).horizontalAdvance(text) if text else 0.0
 
 
-def fit_title(title: str, font, room: float, with_under: bool):
-    """The title's lines in `room` pixels: one line, a step smaller at a time (TITLE_PX), then two lines
-    broken between words at the smallest size; only a title too long for two lines is cut short with ...
-    Sets the font's size; answers (lines, their metrics)."""
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QFontMetricsF
+def _font(px: int, bold: bool = True):
+    from PySide6.QtGui import QFont
 
-    sizes = TITLE_PX if with_under else (60, *TITLE_PX)
-    for px in sizes:
-        font.setPixelSize(px)
-        metrics = QFontMetricsF(font)
-        if metrics.horizontalAdvance(title) <= room:
-            return [title], metrics
-    words, first = title.split(" "), ""
-    for n in range(len(words), 0, -1):  # as much as fits on the first line, broken at a space
-        candidate = " ".join(words[:n])
-        if metrics.horizontalAdvance(candidate) <= room:
-            first = candidate
-            rest = " ".join(words[n:])
-            break
-    if not first:  # one very long word: break it where it stops fitting
-        cut = len(title)
-        while cut > 1 and metrics.horizontalAdvance(title[:cut]) > room:
-            cut -= 1
-        first, rest = title[:cut], title[cut:]
-    if not rest:
-        return [first], metrics
-    return [first, metrics.elidedText(rest.strip(), Qt.TextElideMode.ElideRight, room)], metrics
+    font = QFont()
+    font.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
+    font.setPixelSize(max(1, int(px)))
+    font.setWeight(QFont.Weight.Bold if bold else QFont.Weight.DemiBold)
+    return font
 
 
-def paint(track: Track, settings: dict[str, Any], detail: float = 1.0):
-    """The card as a QImage (premultiplied), W x H: the cover at the left, the title, the artist under it.
-    The card hugs the words and sits at the left of the box, so it grows to the right. detail: pixels drawn
-    per box unit."""
-    from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainterPath
-
-    image, p = painted.canvas(W, H, detail)
+def look(track: Track, settings: dict[str, Any], has_cover: bool, timed: bool) -> Look:
+    """Lay the card out for this song. The card hugs the words up to the box's width; past that the words
+    slide. timed: the app said how long the song is (and Show time is on), so the time bar shows."""
+    style = style_of(settings)
     title, under = lines(track, settings)
-    big = QFont()
-    big.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
-    big.setWeight(QFont.Weight.Bold)
-    small = QFont(big)
-    small.setWeight(QFont.Weight.DemiBold)
-    pad = 14
-    card_h = H - 2 * pad
-    inner = 22  # the space around the cover inside the card
-    cover = None
-    if settings.get("show_art", True) and track.art:
-        cover = QImage.fromData(track.art)
-        if cover.isNull():
-            cover = None
-    art_side = card_h - 2 * inner
-    lead = (inner + art_side + 28) if cover is not None else 70  # where the words start
-    right = 40
-    room = W - 2 * pad - lead - right
-    title_lines, big_m = fit_title(title, big, room, bool(under))
-    under, small_m = fit_line(under, small, room) if under else ("", QFontMetricsF(small))
-    text_w = max(max(big_m.horizontalAdvance(t) for t in title_lines),
-                 small_m.horizontalAdvance(under) + 4 if under else 0)
-    card_w = min(W - 2 * pad, lead + text_w + right)
-    x0, y0 = pad, pad
+    bars_on = bool(settings.get("sound_bars", True))
+    edge = 3.0  # keeps the card's outline inside the box
+    if style == "band":  # one slim line: cover, bars, the words, the time left; the time bar along the bottom
+        h = 120.0
+        y0 = H - edge - h
+        x = 16.0 + (88 + 18 if has_cover else 14)
+        bars = (x, y0 + 32, 56.0, 50.0) if bars_on else None
+        x += 76 if bars_on else 0
+        words = title + (f"  ·  {under}" if under else "")
+        words_w = _text_w(title, 46) + (_text_w(f"  ·  {under}", 34, False) if under else 0.0)
+        right = 30 + (_text_w("-0:00:00", 26, False) + 18 if timed else 0)
+        room = W - edge - x - right
+        card_w = min(W - 2 * edge, x - edge + min(words_w, room) + right)
+        times = (edge + card_w - right + 12, y0, right - 30, h - 8) if timed else None
+        return Look(style, (edge, y0, card_w, h), 30, (16, y0 + 16, 88, 88) if has_cover else None,
+                    (x, y0, min(words_w, room), h - 8), 46, None, 34, bars, 5,
+                    (edge, y0 + h - 8, card_w, 8) if timed else None, times, 26, words_w, 0.0)
+    h = H - 2 * edge
+    if style == "ring":
+        x = 214.0
+        right = 72.0  # the pill's round end
+        room = W - edge - x - right
+        title_w, under_w = _text_w(title, 46), _text_w(under, 30, False)
+        least = 360.0 if (timed or bars_on) else 0.0
+        content = min(room, max(title_w, under_w, least))
+        card_w = x - edge + content + right
+        time_w = _text_w("0:00:00 / 0:00:00", 24, False) if timed else 0.0
+        times = (x, 128, time_w, 40) if timed else None
+        bx = x + (time_w + 24 if timed else 0)
+        bars = (bx, 130, x + content - bx, 36) if bars_on and x + content - bx > 60 else None
+        middle = 0 if (timed or bars) else 26
+        return Look(style, (edge, edge, card_w, h), h / 2, (100 - 70, 100 - 70, 140, 140) if has_cover else None,
+                    (x, 16 + middle, min(title_w, content), 60), 46,
+                    (x, 74 + middle, min(under_w, content), 42) if under else None, 30,
+                    bars, max(6, int((bars[2] if bars else 0) // 16)), (100 - 86, 100 - 86, 172, 172) if timed else None,
+                    times, 24, title_w, under_w)
+    x = 200.0 if has_cover else 60.0
+    right = 30.0
+    room = W - edge - x - right
+    if style == "glow":  # a label, the words, a row of bars, the time bar with the times at its end
+        title_w, under_w = _text_w(title, 40), _text_w(under, 26, False)
+        least = 440.0 if (timed or bars_on) else _text_w("Now playing", 18) + 40
+        content = min(room, max(title_w, under_w, least))
+        card_w = x - edge + content + right
+        times_w = _text_w("0:00:00 / 0:00:00", 18, False) if timed else 0.0
+        return Look(style, (edge, edge, card_w, h), 36, (20, 20, 156, 156) if has_cover else None,
+                    (x, 38, min(title_w, content), 52), 40, (x, 88, min(under_w, content), 36) if under else None, 26,
+                    (x, 126, content, 32) if bars_on else None, max(8, int(content // 24)),
+                    (x, 170, content - times_w - 20, 7) if timed else None,
+                    (x + content - times_w, 156, times_w, 34) if timed else None, 18, title_w, under_w)
+    # Canopy card: the words, small bars at the end of the artist's line, the time bar with the times under it
+    title_w, under_w = _text_w(title, 46), _text_w(under, 30, False)
+    bars_w = 118.0 if bars_on else 0.0
+    least = 420.0 if timed else 0.0
+    content = min(room, max(title_w, under_w + (bars_w + 24 if bars_on else 0), least))
+    card_w = x - edge + content + right
+    drop = 0 if timed else 34  # no time bar: the words sit in the middle
+    under_room = content - (bars_w + 24 if bars_on else 0)
+    return Look(style, (edge, edge, card_w, h), 36, (20, 20, 156, 156) if has_cover else None,
+                (x, 14 + drop, min(title_w, content), 60), 46,
+                (x, 70 + drop, min(under_w, under_room), 42) if under else None, 30,
+                (x + content - bars_w, 76 + drop, bars_w, 30) if bars_on else None, 9,
+                (x, 130, content, 8) if timed else None, (x, 144, content, 34) if timed else None, 22,
+                title_w, under_w)
+
+
+def _rect(r):
+    from PySide6.QtCore import QRectF
+
+    return QRectF(*r)
+
+
+_COVER: list = []  # [(the cover's bytes, its picture)]: the last one, read once per song
+
+
+def _cover_image(track: Track, settings: dict[str, Any]):
+    from PySide6.QtGui import QImage
+
+    if not settings.get("show_art", True) or not track.art:
+        return None
+    if _COVER and _COVER[0][0] is track.art:
+        return _COVER[0][1]
+    cover = QImage.fromData(track.art)
+    cover = None if cover.isNull() else cover
+    _COVER[:] = [(track.art, cover)]
+    return cover
+
+
+def still(track: Track, settings: dict[str, Any], detail: float, timed: bool):
+    """The part that doesn't move, as (QImage W x H at `detail`, Look, the words' pictures)."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QPainterPath, QPen, QRadialGradient
+
+    cover = _cover_image(track, settings)
+    lay = look(track, settings, cover is not None, timed)
+    image, p = painted.canvas(W, H, detail)
     card = _colour(settings.get("card_color"), "#151c19e0")
+    accent = _colour(settings.get("accent_color"), ACCENT)
     text_c = _colour(settings.get("text_color"), "#f2f7f3")
+    box = _rect(lay.card)
     if card.alpha():
+        shape = QPainterPath()
+        shape.addRoundedRect(box, lay.radius, lay.radius)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(card)
-        p.drawRoundedRect(QRectF(x0, y0, card_w, card_h), 40, 40)
-    if cover is not None:
-        box = QRectF(x0 + inner, y0 + inner, art_side, art_side)
+        p.drawPath(shape)
+        if lay.style == "glow":  # the accent glowing from behind the cover
+            glow = QRadialGradient(QPointF(98, 98), 340)
+            tint = QColor(accent)
+            tint.setAlpha(int(70 * card.alphaF()))
+            glow.setColorAt(0, tint)
+            tint.setAlpha(0)
+            glow.setColorAt(1, tint)
+            p.save()
+            p.setClipPath(shape)
+            p.fillRect(box, glow)
+            p.restore()
+        edge = QColor(255, 255, 255, int(22 * card.alphaF()))  # the hairline edge the app's cards have
+        p.setPen(QPen(edge, 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(shape)
+    if lay.style == "ring" and lay.time_bar is not None:
+        track_c = QColor(text_c)
+        track_c.setAlpha(46)
+        p.setPen(QPen(track_c, 9))
+        p.drawEllipse(_rect(lay.time_bar).adjusted(4.5, 4.5, -4.5, -4.5))
+    if lay.cover is not None and cover is not None:
+        spot = _rect(lay.cover)
         side = min(cover.width(), cover.height())  # square it from the middle (videos give wide pictures)
         source = QRectF((cover.width() - side) / 2, (cover.height() - side) / 2, side, side)
         clip = QPainterPath()
-        clip.addRoundedRect(box, 22, 22)
+        if lay.style == "ring":
+            clip.addEllipse(spot)
+        else:
+            clip.addRoundedRect(spot, 22 if lay.style != "band" else 16, 22 if lay.style != "band" else 16)
         p.save()
         p.setClipPath(clip)
-        p.drawImage(box, cover, source)
+        p.drawImage(spot, cover, source)
         p.restore()
+    elif card.alpha() and lay.style != "ring":  # no cover: the little sprig dot, like the clock's
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(accent)
+        cy = lay.card[1] + lay.card[3] / 2
+        p.drawEllipse(QRectF(lay.title[0] - 38, cy - 9, 18, 18))
     elif card.alpha():
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(ACCENT))  # the little sprig dot, like the clock's
-        p.drawEllipse(QRectF(x0 + 34, y0 + card_h / 2 - 9, 18, 18))
-    left = x0 + lead
+        p.setBrush(accent)
+        p.drawEllipse(QRectF(100 - 12, 100 - 12, 24, 24))
+    if lay.style == "glow":
+        p.setFont(_font(18))
+        p.setPen(accent)
+        p.drawText(QRectF(lay.title[0], 12, 300, 28), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                   "Now playing")
+        _leaf(p, QPointF(lay.title[0] + _text_w("Now playing", 18) + 22, 26), 9, accent)
+    if lay.time_bar is not None and lay.style != "ring":
+        track_c = QColor(text_c)
+        track_c.setAlpha(40)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track_c)
+        if lay.style == "band":
+            pass  # drawn with the fill, inside the card's rounded bottom
+        else:
+            r = _rect(lay.time_bar)
+            p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+    p.end()
+    words = _words(track, settings, lay, detail)
+    return image, lay, words
+
+
+def _leaf(p, c, s, colour) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPainterPath
+
+    path = QPainterPath()
+    path.moveTo(c.x() - s, c.y() + s * 0.3)
+    path.cubicTo(c.x() - s * 0.4, c.y() - s * 0.9, c.x() + s * 0.8, c.y() - s * 0.7, c.x() + s, c.y() - s * 0.6)
+    path.cubicTo(c.x() + s * 0.6, c.y() + s * 0.4, c.x() - s * 0.2, c.y() + s * 0.7, c.x() - s, c.y() + s * 0.3)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawPath(path)
+
+
+def _words(track: Track, settings: dict[str, Any], lay: Look, detail: float) -> tuple:
+    """The title (and the line under it) drawn once each into a picture of their own, at `detail`."""
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor
+
+    text_c = _colour(settings.get("text_color"), "#f2f7f3")
+    muted = QColor(text_c)
+    muted.setAlphaF(muted.alphaF() * 0.62)
+    title, under = lines(track, settings)
     flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-    two = len(title_lines) > 1  # two title lines sit closer, so the words keep clear of the card's edges
-    title_h = big_m.height() * (0.96 if two else 1.08)  # each title line
-    under_h = small_m.height() * (1.0 if two else 1.15) if under else 0.0
-    gap = (2 if two else 6) if under else 0
-    y = y0 + (card_h - title_h * len(title_lines) - gap - under_h) / 2  # the words, centred in the card
-    p.setFont(big)
-    p.setPen(text_c)
-    for line in title_lines:
-        p.drawText(QRectF(left, y, W, title_h), flags, line)
-        y += title_h
-    if under:
-        p.setFont(small)
-        muted = QColor(text_c)
-        muted.setAlphaF(muted.alphaF() * 0.62)
-        p.setPen(muted)
-        p.drawText(QRectF(left + 2, y + gap, W, under_h), flags, under)
+
+    def picture(parts: list[tuple[str, int, bool, Any]], width: float, height: float):
+        image, p = painted.canvas(max(1, int(width + 8)), max(1, int(height)), detail)
+        x = 0.0
+        for text, px, bold, colour in parts:
+            p.setFont(_font(px, bold))
+            p.setPen(colour)
+            p.drawText(QRectF(x, 0, width + 8, height), flags, text)
+            x += _text_w(text, px, bold)
+        p.end()
+        return image
+
+    if lay.style == "band":
+        parts = [(title, lay.title_px, True, text_c)] + ([(f"  ·  {under}", lay.under_px, False, muted)] if under else [])
+        return (picture(parts, lay.title_w, lay.title[3]), lay.title_w), None
+    first = (picture([(title, lay.title_px, True, text_c)], lay.title_w, lay.title[3]), lay.title_w)
+    second = (picture([(under, lay.under_px, False, muted)], lay.under_w, lay.under[3]), lay.under_w) \
+        if lay.under is not None else None
+    return first, second
+
+
+def moving(lay: Look) -> bool:
+    """Whether the words slide (they're longer than their room)."""
+    return lay.title_w > lay.title[2] + 0.5 or (lay.under is not None and lay.under_w > lay.under[2] + 0.5)
+
+
+def frame(base, lay: Look, words: tuple, settings: dict[str, Any], detail: float, t: float,
+          position: float | None, length: float, bands: np.ndarray | None):
+    """One frame: the still part, then the words (sliding by t seconds), the bars and the time."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+
+    image, p = painted.canvas(W, H, detail)
+    p.drawImage(QRectF(0, 0, W, H), base)
+    speed = slide_speed(settings)
+    for spot, made in ((lay.title, words[0]), (lay.under, words[1])):
+        if spot is None or made is None:
+            continue
+        picture, width = made
+        room = _rect(spot)
+        off = slid(t, width, room.width(), speed)
+        src_w, src_h = picture.width() / detail, picture.height() / detail
+        if not off and width <= room.width() + 0.5:
+            p.drawImage(QRectF(room.x(), room.y(), src_w, src_h), picture)
+            continue
+        # Slides inside its room, fading out at the edges: drawn on a small picture of its own first.
+        k = detail
+        strip, q = painted.canvas(max(1, int(room.width())), max(1, int(room.height())), k)
+        for x in (-off, -off + width + SLIDE_GAP):
+            q.drawImage(QRectF(x, 0, src_w, src_h), picture)
+        q.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        fade = QLinearGradient(0, 0, room.width(), 0)
+        edge = min(0.08, 28 / max(1.0, room.width()))
+        fade.setColorAt(0, QColor(0, 0, 0, 0 if off else 255))
+        fade.setColorAt(edge, QColor(0, 0, 0, 255))
+        fade.setColorAt(1 - edge, QColor(0, 0, 0, 255))
+        fade.setColorAt(1, QColor(0, 0, 0, 0))
+        q.fillRect(QRectF(0, 0, room.width(), room.height()), fade)
+        q.end()
+        p.drawImage(QRectF(room.x(), room.y(), room.width(), room.height()), strip)
+    accent = _colour(settings.get("accent_color"), ACCENT)
+    text_c = _colour(settings.get("text_color"), "#f2f7f3")
+    if lay.bars is not None:
+        _bars(p, _rect(lay.bars), lay.bar_count, bands, accent)
+    if lay.time_bar is not None and position is not None and length > 0:
+        share = min(1.0, max(0.0, position / length))
+        r = _rect(lay.time_bar)
+        if lay.style == "ring":
+            pen = QPen(accent, 9)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            if share > 0.002:
+                p.drawArc(r.adjusted(4.5, 4.5, -4.5, -4.5), 90 * 16, int(-360 * 16 * share))
+        elif lay.style == "band":
+            clip = QPainterPath()
+            clip.addRoundedRect(_rect(lay.card), lay.radius, lay.radius)
+            p.save()
+            p.setClipPath(clip)
+            under_c = QColor(text_c)
+            under_c.setAlpha(40)
+            p.fillRect(r, under_c)
+            p.fillRect(QRectF(r.x(), r.y(), r.width() * share, r.height()), _sweep(r, accent))
+            p.restore()
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(_sweep(r, accent))
+            if share > 0.002:
+                p.drawRoundedRect(QRectF(r.x(), r.y(), max(r.height(), r.width() * share), r.height()),
+                                  r.height() / 2, r.height() / 2)
+            if lay.style == "glow":
+                p.setBrush(text_c)
+                p.drawEllipse(QPointF(r.x() + r.width() * share, r.center().y()), r.height() * 1.3, r.height() * 1.3)
+        _times(p, lay, position, length, text_c, accent)
     p.end()
     return image
+
+
+def _sweep(r, accent):
+    from PySide6.QtGui import QColor, QLinearGradient
+
+    sweep = QLinearGradient(r.left(), 0, r.right(), 0)
+    dark = QColor(accent).darker(150)
+    sweep.setColorAt(0, dark)
+    sweep.setColorAt(1, accent)
+    return sweep
+
+
+def _times(p, lay: Look, position: float, length: float, text_c, accent) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor
+
+    if lay.times is None:
+        return
+    muted = QColor(text_c)
+    muted.setAlphaF(muted.alphaF() * 0.62)
+    r = _rect(lay.times)
+    left = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    right = int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    p.setFont(_font(lay.times_px, False))
+    if lay.style == "canopy":
+        p.setPen(muted)
+        p.drawText(r, left, clock(position))
+        p.drawText(r, right, clock(length))
+    elif lay.style == "ring":
+        p.setPen(accent)
+        p.drawText(r, left, f"{clock(position)} / {clock(length)}")
+    elif lay.style == "glow":
+        p.setPen(muted)
+        p.drawText(r, right, f"{clock(position)} / {clock(length)}")
+    else:
+        p.setPen(muted)
+        p.drawText(r, right, f"-{clock(length - position)}")
+
+
+def _bars(p, r, count: int, bands: np.ndarray | None, accent) -> None:
+    """Rounded bars standing on the bottom of r, the lowest a dot."""
+    from PySide6.QtCore import QRectF, Qt
+
+    count = max(1, count)
+    w = r.width() / count
+    bar = w * 0.62
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(accent)
+    for i in range(count):
+        level = float(bands[i]) if bands is not None and i < len(bands) else 0.0
+        h = max(bar, r.height() * min(1.0, level))
+        p.drawRoundedRect(QRectF(r.x() + i * w + (w - bar) / 2, r.bottom() - h, bar, h), bar / 2, bar / 2)
+
+
+def paint(track: Track, settings: dict[str, Any], detail: float = 1.0, t: float = 0.0,
+          position: float | None = None, bands: np.ndarray | None = None):
+    """The whole card for one moment, as a QImage (premultiplied), W x H at `detail`."""
+    timed = bool(settings.get("show_time", True)) and track.length > 0
+    base, lay, words = still(track, settings, detail, timed)
+    return frame(base, lay, words, settings, detail, t, track.position if position is None else position,
+                 track.length, bands)
+
+
+class Bands:
+    """The sound bars' heights (0..1) from the sound the mixer hands over: a small FFT, eased."""
+
+    def __init__(self):
+        self._chunks = (np.zeros((N // 2, 2), np.float32), np.zeros((N // 2, 2), np.float32))
+        self._fed = 0
+        self._used = 0
+        self._unheard = 0.0
+        self._window = np.hanning(N).astype(np.float32)
+        self.levels = np.zeros(0, np.float32)
+
+    def feed(self, block: np.ndarray) -> None:
+        """On the mixer thread: keep the newest block, nothing more."""
+        self._chunks = (self._chunks[1], block.copy())
+        self._fed += 1
+
+    def step(self, count: int, dt: float) -> np.ndarray:
+        a, b = self._chunks
+        samples = np.concatenate([c.mean(axis=1) if c.ndim == 2 else c for c in (a, b)])[-N:].astype(np.float32)
+        if len(samples) < N:
+            samples = np.pad(samples, (N - len(samples), 0))
+        if self._fed != self._used:
+            self._used, self._unheard = self._fed, 0.0
+        else:
+            self._unheard += dt
+            if self._unheard > 0.25:  # nothing handed over lately: fall away
+                samples = np.zeros(N, np.float32)
+        mags = np.abs(np.fft.rfft(samples * self._window)) * (4.0 / N)
+        freqs = np.geomspace(60.0, 12_000.0, count + 1)
+        edges = np.round(freqs / (RATE / N)).astype(int)
+        for i in range(1, len(edges)):  # the low bars are narrower than a bin: give each its own
+            edges[i] = max(edges[i], edges[i - 1] + 1)
+        edges = np.minimum(edges, len(mags) - 1)
+        peaks = np.maximum.reduceat(mags, edges[:-1])[:count]
+        centres = np.sqrt(freqs[:-1] * freqs[1:])
+        db = 20.0 * np.log10(peaks + 1e-9) + np.clip(3.0 * np.log2(centres / 500.0), 0.0, 18.0)
+        target = np.clip((db + 60.0) / 60.0, 0.0, 1.0).astype(np.float32)
+        if len(self.levels) != count:
+            self.levels = np.zeros(count, np.float32)
+        hold = 0.55 ** max(dt * BAR_FPS, 0.0)
+        rising = target > self.levels
+        self.levels = np.where(rising, self.levels + (target - self.levels) * 0.7,
+                               target + (self.levels - target) * hold).astype(np.float32)
+        return self.levels
 
 
 # The source ------------------------------------------------------------------------------------------
 
 make_watcher = MediaWatcher  # tests swap in a stand-in
+run_job = workers.run  # tests swap in one that runs straight away
 _LATEST: dict[str, Track | None] = {}  # source id -> what it shows, for nowplaying.get
+
+
+def _sounds() -> list[tuple[str, str]]:
+    return [(listen.MIX, "Everything (stream)"), *listen.sounds()]
 
 
 @register(KIND)
 class NowPlayingSource(Source):
+    """Frames are made on a shared worker, never on the render thread: video_frame hands over the last finished
+    one and, when something moves, asks for the next (at most BAR_FPS a second while the words slide or the
+    bars move, once a second for the time alone). Standing still, nothing is drawn or uploaded."""
+
     label = "Now playing"
-    defaults = {"show_art": True, "show_album": False, "only_from": "",
+    defaults = {"style": "canopy", "show_art": True, "show_album": False, "show_time": True, "sound_bars": True,
+                "sound": listen.MIX, "slide_speed": 2, "only_from": "", "accent_color": ACCENT,
                 "text_color": "#f2f7f3", "card_color": "#151c19e0"}
+    choices = {"style": STYLES, "sound": _sounds, "slide_speed": SPEEDS}
     sleeps = True  # off screen it stops listening to Windows altogether
     sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
@@ -429,12 +865,21 @@ class NowPlayingSource(Source):
         self._frame = painted.Frame()
         self._lock = threading.Lock()
         self._track: Track | None = None  # the newest from Windows
-        self._card: tuple | None = None  # (what it shows, its picture) drawn for the newest song
-        self._shown: tuple | None = None  # what the last frame was
+        self._since = 0.0  # when this song started showing (the words slide from then)
+        self._shown: tuple | None = None  # what the last frame asked for showed
         self._fade = (0.0, 0.0, 0.0)  # (from alpha, to alpha, start time)
         self._paused_at = 0.0
         self._watcher: MediaWatcher | None = None
         self._hidden = False
+        self._bands = Bands()
+        self._heard: str | None = None  # the sound the bars listen to now
+        self._still: tuple | None = None  # (key, picture, Look, words): the part that doesn't move
+        self._turn = 0  # goes up when it sleeps: frames asked for before then are dropped
+        self._busy = False
+        self._ready = None  # a finished frame (QImage) for the next video_frame
+        self._last = 0.0  # when the last frame was asked for
+        self._flat = False  # the bars were still (silence) in the last frame
+        self._slides = False  # the words are longer than their room
         self.status = "ok"
 
     @property
@@ -454,7 +899,8 @@ class NowPlayingSource(Source):
     def sleep(self) -> None:
         self._quiet()
         self._frame.release()
-        self._card = None
+        self._still = None
+        self._ready = None
         self._shown = None
 
     def stop(self) -> None:
@@ -468,34 +914,60 @@ class NowPlayingSource(Source):
             self._listen()
 
     def update(self, settings: dict[str, Any]) -> None:
-        only_before = self.settings.get("only_from", "")
+        only_before, sound_before = self.settings.get("only_from", ""), self._sound()
         super().update(settings)
-        self._card = None  # a new look: draw it again
+        self._still = None  # a new look: draw it again
         self._shown = None
         if self.settings.get("only_from", "") != only_before and self._watcher is not None:
             self._quiet()
             self._listen()
+        elif self._sound() != sound_before:
+            self._deaf()
+
+    def _sound(self) -> str:
+        return str(self.settings.get("sound") or listen.MIX)
 
     def _listen(self) -> None:
         if self._watcher is not None:
             return
-        self._watcher = make_watcher(self._heard, str(self.settings.get("only_from", "") or ""), self._problem)
+        self._watcher = make_watcher(self._heard_song, str(self.settings.get("only_from", "") or ""), self._problem)
         self._watcher.start()
 
     def _quiet(self) -> None:
         watcher, self._watcher = self._watcher, None
         if watcher is not None:
             watcher.stop()
+        self._deaf()
         with self._lock:
             self._track = None  # back on screen it shows the song as it is then
         _LATEST.pop(self.id, None)
         self._fade = (0.0, 0.0, 0.0)
         self._paused_at = 0.0
+        self._turn += 1
+        self._busy = False
 
-    def _heard(self, track: Track | None) -> None:
-        """From the watcher's thread: the song (or play / pause) changed."""
+    def _hear(self) -> None:
+        """The bars listen to their sound (only while they show and the music plays)."""
+        sound = self._sound()
+        if self._heard == sound:
+            return
+        self._deaf()
+        listen.add(sound, self._bands.feed)
+        self._heard = sound
+
+    def _deaf(self) -> None:
+        if self._heard is not None:
+            listen.remove(self._heard, self._bands.feed)
+            self._heard = None
+        self._bands = Bands()
+        self._flat = False
+
+    def _heard_song(self, track: Track | None) -> None:
+        """From the watcher's thread: the song (or play / pause, or where it's up to) changed."""
         with self._lock:
-            self._track = track
+            old, self._track = self._track, track
+            if track is not None and (old is None or (old.title, old.artist) != (track.title, track.artist)):
+                self._since = time.monotonic()
         _LATEST[self.id] = track
         self.status = "ok"
         _tell(self.id, track)
@@ -503,7 +975,7 @@ class NowPlayingSource(Source):
     def _problem(self, text: str) -> None:
         self.status = text
 
-    # Frames (render thread) ------------------------------------------------------------------------
+    # Frames ---------------------------------------------------------------------------------------
 
     def _alpha(self, now: float) -> float:
         a, b, t0 = self._fade
@@ -515,37 +987,78 @@ class NowPlayingSource(Source):
     def video_frame(self) -> np.ndarray | None:
         now = time.monotonic()
         with self._lock:
-            track = self._track
+            track, since = self._track, self._since
         showing = track is not None and track.playing
         if track is not None and not track.playing:
             if not self._paused_at:
                 self._paused_at = now
-            showing = now - self._paused_at < HIDE_AFTER and self._card is not None  # stays up a moment
+            showing = now - self._paused_at < HIDE_AFTER and self._still is not None  # stays up a moment
         else:
             self._paused_at = 0.0
-        if track is not None:
-            what = (track.title, track.artist, track.album, track.art, self.settings.get("show_art"),
-                    self.settings.get("show_album"), self.settings.get("text_color"), self.settings.get("card_color"),
-                    self.detail)
-            if self._card is None or self._card[0] != what:
-                self._card = (what, paint(track, self.settings, self.detail))
-        alpha = self._alpha(now)
         target = 1.0 if showing else 0.0
         if self._fade[1] != target:
-            self._fade = (alpha, target, now)
+            self._fade = (self._alpha(now), target, now)
         alpha = self._alpha(now)
-        key = (round(alpha, 3), self._card[0] if self._card is not None else None)
-        if key == self._shown:
-            return None  # standing still: nothing drawn, nothing uploaded
-        self._shown = key
-        if alpha <= 0.001 or self._card is None:
-            if not showing and track is None:
-                self._card = None
+        bars = bool(self.settings.get("sound_bars", True)) and track is not None and track.playing and alpha > 0
+        if bars and not self._hidden:
+            self._hear()
+        elif self._heard is not None:
+            self._deaf()
+        if alpha <= 0.001 or track is None:
+            self._ready = None
+            key = ("gone",)
+            if key == self._shown:
+                return None
+            self._shown = key
+            if track is None:
+                self._still = None
             self._frame.release()
             return painted.clear_frame(W, H)
-        if alpha >= 0.999:
-            return self._frame(self._card[1])
-        return self._frame(_faded(self._card[1], alpha))
+        timed = bool(self.settings.get("show_time", True)) and track.length > 0
+        position = track.now(time.time()) if timed else None
+        moves = 0.0 < alpha < 1.0 or self._slides or (bars and not self._flat)
+        what = (track.title, track.artist, track.album, track.art, track.length > 0, self.detail,
+                tuple(sorted(self.settings.items(), key=lambda kv: kv[0])))
+        key = (what, int(position) if position is not None else None, round(alpha, 3))
+        due = now - self._last >= 1.0 / BAR_FPS - 0.002
+        if (moves or key != self._shown) and due and not self._busy:
+            self._shown = key
+            self._last = now
+            self._busy = True
+            try:
+                run_job(self._draw, self._turn, track, dict(self.settings), self.detail, now - since, position,
+                        alpha, bars, what, name="now playing")
+            except RuntimeError:  # the pool is shutting down (SprigCast closing)
+                self._busy = False
+        ready, self._ready = self._ready, None
+        return self._frame(ready) if ready is not None else None
+
+    def _draw(self, turn: int, track: Track, settings: dict[str, Any], detail: float, t: float,
+              position: float | None, alpha: float, bars: bool, what: tuple) -> None:
+        """On a worker: the next frame, left for video_frame."""
+        try:
+            timed = position is not None
+            found = self._still
+            if found is None or found[0] != what:
+                base, lay, words = still(track, settings, detail, timed)
+                found = self._still = (what, base, lay, words)
+            _, base, lay, words = found
+            levels = None
+            if bars and lay.bars is not None:
+                levels = self._bands.step(lay.bar_count, 1.0 / BAR_FPS)
+                flat = float(levels.max(initial=0.0)) < STILL
+            else:
+                flat = True
+            image = frame(base, lay, words, settings, detail, t, position, track.length, levels)
+            if alpha < 0.999:
+                image = _faded(image, alpha)
+            if turn == self._turn:
+                self._slides = moving(lay)
+                self._flat = flat
+                self._ready = image
+        finally:
+            if turn == self._turn:
+                self._busy = False
 
 
 def _faded(card, alpha: float):
@@ -566,9 +1079,9 @@ def _faded(card, alpha: float):
 
 def _answer(track: Track | None) -> dict[str, Any]:
     if track is None:
-        return {"playing": False, "title": "", "artist": "", "album": "", "app": ""}
+        return {"playing": False, "title": "", "artist": "", "album": "", "app": "", "length": 0, "position": 0}
     return {"playing": track.playing, "title": track.title, "artist": track.artist, "album": track.album,
-            "app": track.app}
+            "app": track.app, "length": round(track.length), "position": round(track.now(time.time()))}
 
 
 def _window_api():
