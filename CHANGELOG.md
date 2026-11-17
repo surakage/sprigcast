@@ -20,7 +20,8 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it needs to come back.
 
 - TikTok chat (#431). Kick chat, VST3 sound filters and the Background remover store plugin (#430). The Live captions
-  store plugin, and with it the onnxruntime library (about 25 MB of the download, 70 MB installed). A Background
+  store plugin, and with it the onnxruntime library (about 25 MB of the download, 70 MB installed). Elgato Wave Link
+  sync (Wave Link's channels still work as sound devices). A Background
   remover or Live captions someone had added is deleted at start.
 
 ### Live screen
