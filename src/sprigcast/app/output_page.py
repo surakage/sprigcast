@@ -328,6 +328,13 @@ class OutputPage(QWidget):
         inner.addWidget(_hint("Which sound tracks a recording keeps (everything, VOD-safe, voice...) is in Audio."))
         recording_group.setEnabled(not recording)
         box.addWidget(recording_group)
+        self.same_as_stream = QCheckBox("Same as stream while live")
+        self.same_as_stream.setToolTip("Records what you stream (same size, bitrate and sound) without a second "
+                                       "encoder.\nLighter on your PC. Recording first and going live after uses "
+                                       "the settings below.")
+        self.same_as_stream.setChecked(collection.recording.same_as_stream)
+        self.same_as_stream.setEnabled(not recording)
+        box.addWidget(self.same_as_stream)
         from sprigcast.app.source_record_box import SourceRecordBox
 
         self.source_record = SourceRecordBox(collection)
@@ -362,6 +369,7 @@ class OutputPage(QWidget):
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
             self.source_record.apply_to(collection)
+            collection.recording.same_as_stream = self.same_as_stream.isChecked()
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()

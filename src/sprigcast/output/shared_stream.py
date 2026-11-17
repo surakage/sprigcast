@@ -20,6 +20,7 @@ import time
 from sprigcast.output.autopilot import Autopilot
 from sprigcast.output.recorder import measured_kbps, rate_limits
 from sprigcast.output.replay import ReplayBuffer, _Packet
+from sprigcast.output.shared import FileTap
 from sprigcast.output.stream import (
     GRACE_SECONDS,
     HOLD_SECONDS,
@@ -44,8 +45,13 @@ def share_key(target) -> tuple | None:
     return c.id, tuple(size), min(target.fps or c.fps, c.fps), target.bitrate_kbps, bool(target.auto_bitrate)
 
 
-class SharedStreamEncoder(ReplayBuffer):
-    """Encodes a canvas once for several StreamLinks. Keeps no replay (seconds=0)."""
+class SharedStreamEncoder(FileTap, ReplayBuffer):
+    """Encodes a canvas once for several StreamLinks. Keeps no replay (seconds=0).
+
+    A recording set to "Same as stream" writes these packets to its file too (FileTap). Whoever uses the
+    encoder holds it ("stream", "recording"): when the stream ends while the recording goes on, the encoder
+    keeps running until the recording lets go, then `on_last_let_go` takes it off the picture and stops it.
+    """
 
     eases = False  # a stream steers its bitrate instead (auto-pilot, backlog)
 
@@ -55,7 +61,12 @@ class SharedStreamEncoder(ReplayBuffer):
 
         super().__init__(f"stream-{canvas.id}", canvas.width, canvas.height, fps, bitrate_kbps, codec, start_time,
                          0.0, "flv", encoder or EncoderSettings(), out_size, tracks=("stream",))
+        self._init_file_tap(("stream",))
+        self.source_id = canvas.id  # the canvas it encodes
         self.links: list[StreamLink] = []
+        self.holders: set[str] = {"stream"}
+        self.on_last_let_go = None  # set when the stream has ended but a recording still holds the encoder
+        self._hold_lock = threading.Lock()
         self.autopilot = Autopilot(bitrate_kbps) if auto_bitrate and self.encoder.rate_control != "cqp" else None
         self._want_kbps = self._applied_kbps = bitrate_kbps
         self._autopilot_at = 0.0
@@ -86,9 +97,25 @@ class SharedStreamEncoder(ReplayBuffer):
     def _keep(self, p: _Packet) -> None:
         pass  # no replay to keep: packets only pass through to the links
 
+    def hold(self, who: str) -> None:
+        with self._hold_lock:
+            self.holders.add(who)
+
+    def let_go(self, who: str) -> bool:
+        """`who` is done with the encoder. Returns True when nobody else holds it (then on_last_let_go runs)."""
+        with self._hold_lock:
+            self.holders.discard(who)
+            last = not self.holders
+            finish, self.on_last_let_go = (self.on_last_let_go, None) if last else (None, self.on_last_let_go)
+        if finish is not None:
+            finish()
+        return last
+
     def _on_packet(self, p: _Packet) -> None:
         for link in self.links:
             link.offer(p)
+        if self.file_path is not None:
+            self._to_file(p)
 
     def _steer(self) -> None:
         now = time.monotonic()

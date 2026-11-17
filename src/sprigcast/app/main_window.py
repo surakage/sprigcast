@@ -497,6 +497,10 @@ class MainWindow(QMainWindow):
         self.camera = None  # SprigCast Camera (Settings → Output → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
         self._camera_timer.timeout.connect(self._poll_camera)
+        self._rest_check = QTimer(self, interval=2000)  # rest mode (app/priority.py): step down when nothing goes out
+        self._rest_check.timeout.connect(self._check_rest)
+        self._quiet_since: float | None = None
+        QTimer.singleShot(20_000, self._rest_check.start)  # after start-up, which wants the boost
         QTimer.singleShot(1500, self._sync_camera)
 
         self.mode = "build"
@@ -2731,6 +2735,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_meter(self) -> None:
         self.last_resources = self.meter.sample()
+        self._watch_encoders()
         self.meter_label.setText(describe(self.last_resources))
         self.live_side.stats.setText(describe(self.last_resources))
         warning = ram_warning(self.last_resources)
@@ -5333,10 +5338,14 @@ class MainWindow(QMainWindow):
                     return {"problem": "Cancelled."}
         self._say("Starting the recording…")
         self._set_encoder_tracks()
+        self._wake_up()
         try:
+            borrowed = None
+            if settings.same_as_stream and self.streaming is not None and hasattr(self.streaming, "encoders_by_canvas"):
+                borrowed = self.streaming.encoders_by_canvas()
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
-                encoder=settings.encoder, short_side=settings.short_side,
+                encoder=settings.encoder, short_side=settings.short_side, stream_encoders=borrowed,
             )
         except Exception as exc:
             self.recording = None
@@ -5415,6 +5424,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
                 return
             self._set_encoder_tracks()
+            self._wake_up()
             try:
                 self.replay = SharedReplay.start(  # clips go in Clips/<day> (output/replay.py replay_path)
                     self.encoders, canvases, self._recordings_folder() / "Clips", settings.replay_seconds,
@@ -5702,12 +5712,14 @@ class MainWindow(QMainWindow):
         elif not self._doctor_says_go():
             return {"problem": "Cancelled."}
         self._say("Connecting…")
+        self._wake_up()
         try:
             from sprigcast.app.settings_window import stream_delay
 
             self.streaming = StreamSession.start(self.engine, targets,
                                                  resolve_codec(self.collection.stream_encoder, streaming=True),
-                                                 self.collection.stream_encoder, delay_s=stream_delay())
+                                                 self.collection.stream_encoder, delay_s=stream_delay(),
+                                                 share_all=self.collection.recording.same_as_stream)
         except Exception as exc:
             self.streaming = None
             if not remote:
@@ -6202,6 +6214,34 @@ class MainWindow(QMainWindow):
         log.info("at rest: let go of what the show held%s; memory: %s",
                  " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line())
 
+    REST_AFTER_QUIET_S = 10.0
+
+    def _going_out(self) -> bool:
+        """Anything leaving SprigCast that wants the boosts: live, recording, clips, or SprigCast Camera watched."""
+        camera = self.camera
+        return self._busy_with_outputs() or bool(camera is not None and getattr(camera, "watched", False))
+
+    def _wake_up(self) -> None:
+        from sprigcast.app import priority
+
+        self._quiet_since = None
+        if priority.wake():
+            log.info("rest mode over: something is going out")
+
+    def _check_rest(self) -> None:
+        """Every 2 s: rest mode once nothing has gone out for REST_AFTER_QUIET_S, awake as soon as something does;
+        Windows' power saving only while the window is out of sight."""
+        from sprigcast.app import priority
+
+        if self._going_out():
+            self._wake_up()
+            return
+        now = time.monotonic()
+        if self._quiet_since is None:
+            self._quiet_since = now
+        if now - self._quiet_since >= self.REST_AFTER_QUIET_S:
+            priority.rest(save_power=self.isMinimized() or not self.isVisible())
+
     def _busy_with_outputs(self) -> bool:
         return self.recording is not None or self.streaming is not None or self.replay is not None
 
@@ -6475,7 +6515,7 @@ class MainWindow(QMainWindow):
         word = getattr(self, "_render_word", "Smooth")
         rec_warning = getattr(self, "_rec_warning", "") if self.recording is not None else ""
         level = ("bad" if ram_high or word == "Struggling" else
-                 "warning" if dropped or word == "Busy" or rec_warning else "good")
+                 "warning" if dropped or word == "Busy" or rec_warning or self._overload_text() else "good")
         self.live_side.garden.setToolTip("Garden check: how SprigCast and your streams are doing. Click for everything."
                                          + (f" Recording: {rec_warning}" if rec_warning else ""))
         self.live_side.garden.set_numbers("  ·  ".join(parts), level, sample.get("cpu"))
@@ -6486,7 +6526,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.garden_check import garden_check_popup
 
         pop = garden_check_popup(self._garden_snapshot, self._health_records(), self, self._open_logs,
-                                 "health" if tab == "health" else "now")
+                                 "health" if tab == "health" else "now", make_lighter=self._make_encoding_lighter)
         pop.open()
         return pop
 
@@ -6535,7 +6575,48 @@ class MainWindow(QMainWindow):
             snap.rows.append(("Recording", "  ·  ".join(filter(None, [codec, f"{dropped} dropped"])),
                               "warning" if dropped else "good", "Busy" if dropped else "Good"))
         snap.checks = self._garden_checks(snap)
+        snap.overload = self._overload_text()
         return snap
+
+    def _watch_encoders(self) -> None:
+        """Every meter tick: is each running encoder keeping up? (Garden check offers a lighter one if not.)"""
+        from sprigcast.output.encoder_load import EncoderWatch
+
+        watch = getattr(self, "_encoder_watch", None)
+        if watch is None:
+            watch = self._encoder_watch = EncoderWatch()
+        try:
+            streamers = self.streaming.streamers if self.streaming is not None else None
+            watch.tick(streamers, self.recording, self.replay)
+        except Exception:
+            log.exception("encoder watch")
+            return
+        busy = watch.overloaded()
+        if busy and busy != getattr(self, "_overload_logged", None):
+            log.warning("encoder can't keep up: %s (codec %s)", " and ".join(busy),
+                        ", ".join(watch.codecs.get(k, "?") for k in busy))
+        self._overload_logged = busy
+
+    def _overload_text(self) -> str:
+        watch = getattr(self, "_encoder_watch", None)
+        busy = watch.overloaded() if watch is not None else []
+        if not busy:
+            return ""
+        return f"The encoder can't keep up with the {' and '.join(busy)}."
+
+    def _make_encoding_lighter(self) -> str:
+        """Garden check's one tap: faster encoder settings for what was overloaded, from the next start."""
+        from sprigcast.output.encoder_load import make_lighter
+
+        watch = getattr(self, "_encoder_watch", None)
+        busy = watch.overloaded() if watch is not None else []
+        done = make_lighter(self.collection, busy or ["stream", "recording"], watch.codecs if watch else None)
+        if not done:
+            return "Already as light as it goes. Try a smaller size in Settings → Stream."
+        self._changed()
+        log.info("Garden check: made the %s encoder lighter: stream %s, recording %s", " and ".join(done),
+                 self.collection.stream_encoder.preset, self.collection.recording.encoder.preset)
+        return f"Lighter settings saved. They start with your next {' and '.join(done)}."
 
     def _garden_checks(self, snap) -> list[tuple[str, bool, str]]:
         """Quick yes/no checks, only for things this setup has (no camera: no camera check)."""

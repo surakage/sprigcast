@@ -341,6 +341,9 @@ class RecordingSettings(BaseModel):
     source_record: bool = False
     source_record_hide: list[str] = Field(default_factory=list)  # source ids left out
     short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
+    # Same as stream: while live, a canvas being streamed is recorded from the stream's own encoder (its size,
+    # bitrate and stream sound) instead of a second encoder. Lighter on the PC, like OBS's "Same as stream".
+    same_as_stream: bool = False
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,
     # and at recording bitrates the quality difference is invisible. Streams skip them too since 2026-11.

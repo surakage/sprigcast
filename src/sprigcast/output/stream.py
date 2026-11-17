@@ -450,7 +450,9 @@ class StreamSession:
 
     @classmethod
     def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None,
-              delay_s: float = 0.0) -> "StreamSession":
+              delay_s: float = 0.0, share_all: bool = False) -> "StreamSession":
+        """share_all: a destination on its own gets a shared encoder too, so a recording set to "Same as
+        stream" can write its packets (Settings → Output → Recording)."""
         from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
 
         start_time = time.perf_counter()
@@ -469,7 +471,7 @@ class StreamSession:
                 groups.setdefault(key, []).append(t)
         done: set[int] = set()
         for (canvas_id, size, fps, kbps, auto), group in groups.items():
-            if len(group) < 2:
+            if len(group) < 2 and not share_all:
                 continue
             c = group[0].canvas
             enc = SharedStreamEncoder(c, fps, kbps, codec, start_time, group[0].size, encoder, auto_bitrate=auto)
@@ -480,7 +482,8 @@ class StreamSession:
                 enc.links.append(link)
                 streamers.append((c.id, link))
                 done.add(id(t))
-            log.info("streams %s share one encoder", ", ".join(t.name for t in group))
+            if len(group) > 1:
+                log.info("streams %s share one encoder", ", ".join(t.name for t in group))
             enc.start()
             for link in enc.links:
                 link.start()
@@ -561,9 +564,14 @@ class StreamSession:
         if enc is not None and hasattr(enc, "links"):
             enc.links[:] = [link for link in enc.links if link is not st]
             if not enc.links:  # the last place on this encoder: the encoder goes too
-                gone += owned.pop(id(enc), [])
                 self.shared = [e for e in getattr(self, "shared", []) if e is not enc]
-                self.engine.mixer.remove_tap(enc.push_audio)
+                enc_taps = owned.pop(id(enc), [])
+                if self._keep_for_recording(enc, enc_taps):
+                    enc = None  # a recording still writes from it: it ends with the recording
+                    self.taps = [t for t in getattr(self, "taps", []) if all(t is not k for k in enc_taps)]
+                else:
+                    gone += enc_taps
+                    self.engine.mixer.remove_tap(enc.push_audio)
             else:
                 enc = None
         else:
@@ -585,10 +593,19 @@ class StreamSession:
         """Take the outputs off the picture and sound, then let each finish. wait=False (the window): they
         finish on a thread of their own, so ending a stream never holds the window (637 ms on the PC,
         2026-11-16, joining an encoder); finished() then waits, if anything needs to."""
-        taps = getattr(self, "taps", None) or [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
+        taps = getattr(self, "taps", None)
+        if taps is None:
+            taps = [(canvas_id, st.push_frame) for canvas_id, st in self.streamers]
+        owned = getattr(self, "owned", {})
+        kept = [enc for enc in getattr(self, "shared", []) if self._keep_for_recording(enc, owned.get(id(enc), []))]
+        kept_taps = [tap[1] for enc in kept for tap in owned.get(id(enc), [])]
+        shared = [enc for enc in getattr(self, "shared", []) if all(enc is not k for k in kept)]
         for canvas_id, callback, *_ in taps:
-            self.engine.remove_frame_tap(canvas_id, callback)
-        shared = getattr(self, "shared", [])
+            if not any(callback == k for k in kept_taps):
+                self.engine.remove_frame_tap(canvas_id, callback)
+        if kept:  # the recording owns those now: a later stop() mustn't touch them
+            self.taps = [t for t in taps if not any(t[1] == k for k in kept_taps)]
+            self.shared = list(shared)
         for _, st in self.streamers:
             self.engine.mixer.remove_tap(st.push_audio)
         for enc in shared:
@@ -597,6 +614,8 @@ class StreamSession:
         def finish():
             for _, st in self.streamers:
                 st.stop(timeout=5)
+            for enc in kept:
+                enc.links[:] = []  # the recording carries on alone
             for enc in shared:  # after the links: nothing is waiting on its packets any more
                 enc.stop(timeout=5)
 
@@ -606,6 +625,37 @@ class StreamSession:
         # Not a daemon: closing SprigCast right after still lets every connection end properly.
         self._finishing = threading.Thread(target=finish, name="sprigcast-stream-end")
         self._finishing.start()
+
+    def _keep_for_recording(self, enc, taps: list) -> bool:
+        """The stream is done with a shared encoder. If a recording ("Same as stream") still writes from it,
+        it keeps running and ends when the recording lets go. True when it was kept."""
+        lock = getattr(enc, "_hold_lock", None)
+        if lock is None:
+            return False
+        engine = self.engine
+
+        def retire():
+            for canvas_id, callback, *_ in taps:
+                engine.remove_frame_tap(canvas_id, callback)
+            engine.mixer.remove_tap(enc.push_audio)
+            # Not a daemon: closing SprigCast right after still lets the encoder finish.
+            threading.Thread(target=enc.stop, kwargs={"timeout": 5}, name="sprigcast-stream-encoder-end").start()
+
+        with lock:
+            if not enc.holders - {"stream"}:
+                return False
+            enc.holders.discard("stream")
+            enc.on_last_let_go = retire
+        log.info("stream ended; its encoder keeps going for the recording (Same as stream)")
+        return True
+
+    def encoders_by_canvas(self) -> dict:
+        """Canvas id -> a running shared encoder of this stream: what a "Same as stream" recording writes from."""
+        found: dict = {}
+        for enc in getattr(self, "shared", []):
+            if enc.running and "stream" in enc.holders:
+                found.setdefault(enc.source_id, enc)
+        return found
 
     def finished(self, timeout: float | None = None) -> bool:
         """Wait for a stop(wait=False) to be done. True when it is."""

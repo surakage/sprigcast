@@ -21,7 +21,7 @@ LEVELS = {"normal": "Normal", "above_normal": "Above normal (recommended)", "hig
 DEFAULT = "above_normal"
 
 # D3DKMT_SCHEDULINGPRIORITYCLASS
-_GPU_REALTIME, _GPU_HIGH = 5, 4
+_GPU_REALTIME, _GPU_HIGH, _GPU_NORMAL = 5, 4, 2
 
 
 def chosen() -> str:
@@ -67,8 +67,25 @@ def raise_gpu_priority() -> str:
     return ""
 
 
-def stop_power_throttling() -> bool:
-    """Opt out of EcoQoS and timer coarsening for this process. True if Windows accepted it."""
+def set_gpu_normal() -> bool:
+    """GPU work scheduled like any other app's again. True if Windows took it."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        fn = ctypes.WinDLL("gdi32").D3DKMTSetProcessSchedulingPriorityClass
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        fn.restype = ctypes.c_long
+        return fn(ctypes.windll.kernel32.GetCurrentProcess(), _GPU_NORMAL) == 0
+    except Exception as exc:
+        log.info("could not set GPU priority to normal: %s", exc)
+        return False
+
+
+def stop_power_throttling(off: bool = True) -> bool:
+    """Opt out of EcoQoS and timer coarsening for this process (off=False: hand both back to Windows, which
+    saves power on what's idle). True if Windows accepted it."""
     if sys.platform != "win32":
         return False
     try:
@@ -79,7 +96,7 @@ def stop_power_throttling() -> bool:
 
         execution_speed, ignore_timer_resolution = 0x1, 0x4
         # ControlMask says which policies we decide; StateMask 0 = throttling off for each of them.
-        state = State(1, execution_speed | ignore_timer_resolution, 0)
+        state = State(1, execution_speed | ignore_timer_resolution if off else 0, 0)
         kernel32 = ctypes.WinDLL("kernel32")
         kernel32.GetCurrentProcess.restype = ctypes.c_void_p
         kernel32.SetProcessInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
@@ -100,4 +117,41 @@ def apply(level: str | None = None) -> str:
     summary = (f"CPU priority {LEVELS[level].split(' (')[0].lower() if cpu else 'unchanged'}, "
                f"GPU priority {gpu or 'normal'}, power throttling {'off' if awake else 'unchanged'}")
     log.info(summary)
+    _state["resting"] = _state["saving"] = False
     return summary
+
+
+# Rest mode: the boosts above are for while something goes out. With nothing live, recorded, kept for clips or
+# watched through SprigCast Camera, SprigCast sits at normal CPU and GPU priority, so a game played without
+# streaming gets the PC as if SprigCast weren't open; anything starting wakes it. While the window is also out of
+# sight (minimized or in the tray), Windows' own power saving is let back in; with the window open it stays off,
+# so the canvases you're building still move smoothly.
+_state = {"resting": False, "saving": False}
+
+
+def resting() -> bool:
+    return _state["resting"]
+
+
+def rest(save_power: bool = False) -> bool:
+    """Step down to normal priority (and, save_power, Windows' power saving). True if it changed anything."""
+    changed = False
+    if not _state["resting"]:
+        _state["resting"] = changed = True
+        set_cpu_priority("normal")
+        set_gpu_normal()
+        log.info("rest mode: CPU and GPU priority normal until something goes out")
+    if save_power != _state["saving"]:
+        _state["saving"] = save_power
+        stop_power_throttling(off=not save_power)
+        log.info("rest mode: Windows power saving %s", "on (window out of sight)" if save_power else "off")
+        changed = True
+    return changed
+
+
+def wake() -> bool:
+    """Something is going out: the chosen CPU priority, GPU priority first, no power saving. True if it changed."""
+    if not _state["resting"]:
+        return False
+    apply()
+    return True
