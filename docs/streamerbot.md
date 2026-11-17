@@ -76,7 +76,6 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Redeem: one more minute on the countdown | `http://127.0.0.1:4455/api/timer.add?seconds=60&password=…` |
 | Start a fresh 10-minute "Starting soon" countdown | `http://127.0.0.1:4455/api/timer.start?minutes=10&password=…` |
 | Chat command `!song`: what's playing | `http://127.0.0.1:4455/api/nowplaying.get?password=…` |
-| Raid or big sub train: mark it as a suggested clip (Auto clip) | `http://127.0.0.1:4455/api/autoclip.mark?password=…` |
 | Redeem: turn the audio visualizer into a blue circle | `http://127.0.0.1:4455/api/visualizer.set?style=circle&color=%237fb8ff&password=…` |
 | Change some text on screen | `http://127.0.0.1:4455/api/source.set?source=Goal%20text&settings=…&password=…` (or POST JSON, below) |
 | Pause the recording for a break (and carry on in the same file) | `http://127.0.0.1:4455/api/record.toggle_pause?password=…` |
@@ -86,7 +85,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
 | Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
-Store plugins (Audio visualizer, Auto clip, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing, PNGtuber) must be added first in Tools → Plugin store.
+Store plugins (Audio visualizer, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing, PNGtuber) must be added first in Tools → Plugin store.
 
 `!song` answers `{"ok": true, "result": {"playing": true, "title": "…", "artist": "…", …}}`: save `title` and `artist` to variables and post them in chat. To switch blooms when the countdown ends, listen for the `timer.done` event (below).
 
