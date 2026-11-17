@@ -7,6 +7,7 @@
 // builds a new device and gives it everything again from its own copies. Five rebuilds within a minute and it
 // stops trying and says so (faulted), and Python switches to its own engine.
 #include "internal.h"
+#include "media.h"
 
 #include <mmsystem.h>
 
@@ -209,6 +210,7 @@ struct sc_engine {
     std::unordered_map<uint64_t, Pic> uploads;                  // the newest picture per source, not yet sent
     std::unordered_map<uint64_t, std::vector<uint8_t>> spare;   // buffers to reuse for the next picture
     std::set<uint64_t> forgets;
+    std::unordered_map<uint64_t, std::shared_ptr<void>> medias;  // sources shown straight from a media player
     std::unordered_map<uint64_t, LookData> looks;
     std::unordered_map<uint64_t, MaskData> masks;
     std::shared_ptr<const SnapData> snapshot;
@@ -229,6 +231,7 @@ struct sc_engine {
     OutReader out_readers[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     RunningTransition running[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> kept_sources;
+    std::unordered_map<uint64_t, std::pair<const void *, uint64_t>> media_seen;  // source -> (player, serial taken)
     std::unordered_map<uint64_t, LookData> kept_looks;
     std::unordered_map<uint64_t, MaskData> kept_masks;
     std::shared_ptr<const SnapData> kept_snapshot;
@@ -277,6 +280,7 @@ void check(int code) {
 
 void drop_gpu(sc_engine &e) {
     e.shown.clear();
+    e.media_seen.clear();  // a new device gets each player's picture again
     for (auto &r : e.readers) r = Reader();
     for (auto &row : e.out_readers)
         for (auto &r : row) r = OutReader();
@@ -760,9 +764,11 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::unordered_map<uint64_t, MaskData> masks;
     std::shared_ptr<const SnapData> snapshot;
     std::vector<PreviewCfg> previews;
+    std::vector<std::pair<uint64_t, std::shared_ptr<void>>> medias;
     uint64_t detach_seen;
     {
         std::lock_guard<std::mutex> lock(e.state);
+        medias.assign(e.medias.begin(), e.medias.end());
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
         std::copy(std::begin(e.transitions), std::end(e.transitions), transitions);
         for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
@@ -787,6 +793,30 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     for (uint64_t id : forgets) {
         e.kept_sources.erase(id);
         check(sc_source_forget(e.dev, id));
+    }
+    // Videos, GIFs and sound files the engine plays: the picture due now, straight from the player.
+    for (auto found = e.media_seen.begin(); found != e.media_seen.end();) {
+        const bool here = std::any_of(medias.begin(), medias.end(),
+                                      [&](const auto &m) { return m.first == found->first; });
+        found = here ? std::next(found) : e.media_seen.erase(found);
+    }
+    for (auto &[id, player] : medias) {
+        auto &seen = e.media_seen[id];
+        if (seen.first != player.get()) seen = {player.get(), 0};
+        MediaDue due;
+        media_due(player, &seen.second, &due);
+        if (due.what == SC_MEDIA_PICTURE) {
+            e.kept_sources.erase(id);
+            check(sc_source_upload(e.dev, id, due.data, &due.how));
+        } else if (due.what == SC_MEDIA_BLANK) {
+            static const uint8_t nothing[16] = {};
+            sc_upload how{};
+            how.format = SC_FMT_RGBA;
+            how.width = how.height = 2;
+            how.stride = 8;
+            e.kept_sources.erase(id);
+            check(sc_source_upload(e.dev, id, nothing, &how));
+        }
     }
     std::vector<std::pair<uint64_t, std::vector<uint8_t>>> used;
     for (auto &[id, pic] : uploads) {
@@ -1191,7 +1221,24 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         std::lock_guard<std::mutex> lock(engine->state);
         engine->uploads.erase(id);
         engine->spare.erase(id);
+        engine->medias.erase(id);
         engine->forgets.insert(id);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, sc_media *media) {
+    return engine_call(engine, "sc_engine_source_media", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_media: no id");
+        std::shared_ptr<void> player = media_hold(media);
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (player) {
+            engine->medias[id] = std::move(player);
+            engine->uploads.erase(id);  // a picture Python sent before isn't drawn over the player's
+            engine->forgets.erase(id);
+        } else {
+            engine->medias.erase(id);
+        }
         return SC_OK;
     });
 }

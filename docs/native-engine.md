@@ -130,11 +130,19 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
 - **Crash gate.** A fault while reading or decoding (FFmpeg or our code) ends that file: its status becomes
   "can't play: the decoder faulted", the log says so, and SprigCast goes on. The Python player has no such gate.
   A file whose sound has no decoder plays silent instead of not at all.
+- **Straight to the compositor.** While the engine also draws the canvases, a video's source is attached to its
+  player (`sc_engine_source_media`): each frame the frame thread takes the picture due from the player itself and
+  sends it to the card, so pictures go from the decoder thread to the screen without touching Python or its lock,
+  at the engine's own frame times. Python's render thread asks for a picture only on ticks where its own
+  compositor still draws something (a screenshot, a stinger, Build's edited bloom); each taker remembers the
+  picture it took last, so whoever starts looking gets the one on screen at once. A sleeping or frozen source is
+  detached and keeps the picture it has. The engine holds the player for as long as it is attached, so a source
+  closing its player first is safe.
 - **Still Python's:** decoding on the graphics card (`hw_decode`; such a source keeps the Python player), stinger
   clips and instant replay playback.
 - **Checks:** `tests/test_native_media.py` plays real files made with PyAV: a video with sound, a GIF looping
   from memory, a see-through WebM, a sound file, seeking, pausing, speed, shrink, sleep and wake, broken and
-  missing files, and the crash gate. The player needs no graphics card, so on Linux the test builds it alone
+  missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone
   with g++ and runs the same checks there; in CI they run against `sprigcore.dll`.
 
 ## Phases
@@ -145,7 +153,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
-| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). Next: pictures straight from the player to the compositor without passing Python, decoding on the graphics card, browser pages |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Next: decoding on the graphics card, stinger and replay playback, browser pages |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |

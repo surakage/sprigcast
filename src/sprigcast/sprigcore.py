@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 7  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 8  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -229,6 +229,7 @@ def _lib():
         "sc_engine_canvas_show": (c_int, [vp, c_int, ctypes.c_uint64]),
         "sc_engine_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload), c_int]),
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_engine_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
         "sc_engine_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
@@ -533,6 +534,16 @@ class Engine:
     def forget(self, source_id: str) -> None:
         _check(_need().sc_engine_source_forget(self.handle, key(source_id)))
 
+    def attach_media(self, source_id: str, player: "MediaPlayer | None") -> None:
+        """Source ``source_id`` shows what ``player`` plays: the frame thread takes each picture from the player
+        itself, so a video's pictures never pass through Python. None goes back to :meth:`upload` (the source
+        keeps the picture it has)."""
+        lib = _need()
+        if player is None:
+            _check(lib.sc_engine_source_media(self.handle, key(source_id), None))
+        else:
+            _check(player._call(lambda media: lib.sc_engine_source_media(self.handle, key(source_id), media)))
+
     def set_look(self, name: str, table) -> None:
         import numpy as np
 
@@ -718,7 +729,8 @@ def _media_sigs() -> dict:
         "sc_media_control": (c_int, [vp, c_int, ctypes.c_double]),
         "sc_media_set_shrink": (c_int, [vp, ctypes.c_float]),
         "sc_media_info_get": (c_int, [vp, ctypes.POINTER(MediaInfo)]),
-        "sc_media_video_frame": (c_int, [vp, ctypes.POINTER(MediaPicture), vp, ctypes.c_size_t]),
+        "sc_media_video_frame": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(MediaPicture), vp,
+                                         ctypes.c_size_t]),
         "sc_media_read_audio": (c_int, [vp, vp, c_int, c_int]),
         "sc_media_debug_fault": (c_int, [vp, c_int]),
     }
@@ -810,6 +822,7 @@ class MediaPlayer:
         self._lock = __import__("threading").Lock()  # close() against a call still using the handle
         self._capacity = 0
         self._picture = MediaPicture()
+        self._seen = ctypes.c_uint64(0)  # the picture video_frame took last (the engine keeps its own)
 
     def _call(self, fn, *args) -> int:
         with self._lock:
@@ -836,7 +849,7 @@ class MediaPlayer:
         return info
 
     def video_frame(self):
-        """The picture due now, if it is a new one: (array, channel order), with the order as the compositors
+        """The picture on screen now, if it isn't the one this took last: (array, channel order), with the order as the compositors
         take it ("I420/709/tv", "I420A/601/pc", "RGBA"). "blank" when nothing should show from now on. None when
         nothing new is due."""
         import numpy as np
@@ -844,7 +857,8 @@ class MediaPlayer:
         picture = self._picture
         for _ in range(2):
             out = np.empty(max(1, self._capacity), dtype=np.uint8)
-            got = self._call(self._lib.sc_media_video_frame, ctypes.byref(picture), out.ctypes.data, self._capacity)
+            got = self._call(self._lib.sc_media_video_frame, ctypes.byref(self._seen), ctypes.byref(picture),
+                             out.ctypes.data, self._capacity)
             if got == MEDIA_TOO_SMALL:
                 self._capacity = int(picture.bytes)
                 continue

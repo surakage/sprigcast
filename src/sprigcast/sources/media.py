@@ -291,6 +291,16 @@ class MediaSource(Source):
         except sprigcore.NativeError as exc:
             log.warning("media %s: %s", self.id, exc)
 
+    @property
+    def engine_player(self):
+        """The engine's player of a file with a picture: the native engine's compositor takes its pictures from
+        it directly (render/engine.py), and the render thread only calls :meth:`engine_tick`."""
+        return self._native if self.has_video else None
+
+    def engine_tick(self) -> None:
+        """Render thread, on a tick the engine showed the picture itself: keep status and size up to date."""
+        self._sync()
+
     def _sync(self):
         """What the engine's player knows, copied to where the rest of SprigCast reads it."""
         info = self._native.info()

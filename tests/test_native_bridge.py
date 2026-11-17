@@ -115,9 +115,17 @@ class FakeNative:
         self.failed = False
         self.uploads, self.watching, self.synced = [], {}, 0
         self.outputs, self.python_served, self.clock = {}, [], 0.0
+        self.attached = {}
 
     def upload(self, source_id, frame, order, size):
         self.uploads.append(source_id)
+
+    def attach_media(self, source_id, player):
+        if player is not None:
+            self.attached[source_id] = player
+        else:
+            self.attached.pop(source_id, None)
+        return player is not None
 
     def forget_gone(self, ids):
         pass
@@ -272,6 +280,78 @@ def test_more_output_sizes_than_the_native_engine_has_room_for_stay_with_python(
     assert fake.output_key(None, True) is None and fake.output_key((4, 4), True) == ((4, 4), True)
     fake.can_share = False
     assert fake.output_key((4, 4), True) == ((4, 4), False)
+
+
+class EngineVideo:
+    """Stands in for a MediaSource the engine's own player decodes."""
+
+    kind, asleep, channel_order, size, sleeps = "media", False, "RGBA", (8, 8), True
+
+    def __init__(self):
+        self.engine_player, self.asked, self.ticked = object(), 0, 0
+
+    def video_frame(self):
+        self.asked += 1
+        return np.zeros((8, 8, 4), np.uint8)
+
+    def engine_tick(self):
+        self.ticked += 1
+
+    def __getattr__(self, name):  # whatever else the render thread asks a source
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return lambda *a, **k: None
+
+
+def test_a_video_the_engine_plays_never_passes_through_python():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    video = engine._sources["clip"] = EngineVideo()
+    engine._collection.scenes[0].items.append(SceneItem(source="clip"))
+    _run(engine, fake, seconds=0.5)
+    native = engine._native
+    assert native.attached == {"clip": video.engine_player}
+    assert video.asked <= 1 and video.ticked >= 29  # only the first tick, before Python knew it draws nothing
+    assert "clip" not in native.uploads  # the engine takes them itself
+    # Python's compositor draws again (a screenshot): it takes the picture too, the engine keeps taking its own.
+    before = video.asked
+    engine._python_drew = True
+    engine._tick(fake, 20.0)
+    assert video.asked == before + 1 and "clip" in fake.uploaded and "clip" not in native.uploads
+    # Off screen it sleeps: the engine keeps the picture it has.
+    engine._collection.scenes[0].items.clear()
+    fake.forget = lambda source_id: None
+    engine._tick(fake, 20.1)
+    assert video.asleep and native.attached == {}
+    engine._collection.scenes[0].items.append(SceneItem(source="clip"))
+    # The native engine failed: every picture is Python's again.
+    native.failed, before = True, video.asked
+    engine._tick(fake, 20.2)
+    assert not video.asleep and video.asked == before + 1
+
+
+def test_the_bridge_tells_the_engine_once_which_player_a_source_shows(monkeypatch):
+    calls = []
+
+    class Attaching(FakeEngine):
+        def attach_media(self, source_id, player):
+            calls.append(("attach", source_id, player))
+
+        def forget(self, source_id):
+            calls.append(("forget", source_id))
+
+    monkeypatch.setattr(sprigcore, "Engine", Attaching)
+    bridge = native_bridge.NativeCanvases(_collection())
+    player = object()
+    assert bridge.attach_media("clip", player) and bridge.attach_media("clip", player)
+    assert not bridge.attach_media("other", None)
+    assert calls == [("attach", "clip", player)]
+    assert not bridge.attach_media("clip", None)
+    assert bridge.attach_media("clip", player)
+    bridge.forget_gone([])
+    assert calls[1:] == [("attach", "clip", None), ("attach", "clip", player), ("forget", "clip")]
+    bridge.failed = True
+    assert not bridge.attach_media("clip", player)
 
 
 def test_a_failed_native_engine_hands_the_previews_back_to_python():

@@ -265,3 +265,35 @@ def test_a_clip_that_cant_be_written_says_so(tmp_path):
     assert answered.wait(20)
     assert result[0] == [] and result[1] == ["horizontal: disk full"]
     replay.stop()
+
+
+def test_turning_clips_off_stops_the_encoder_on_its_own_thread(tmp_path, monkeypatch):
+    """Clips off: the window's thread only lets the encoder go; its stop (queued frames, the file of kept
+    seconds deleted: 314 ms on the PC) runs on a thread of its own. A recording that still uses it keeps it."""
+    import threading
+
+    from sprigcast.output.shared import CanvasEncoder
+
+    stopped_on = []
+    real = CanvasEncoder.stop
+
+    def stop(self, *a, **k):
+        stopped_on.append(threading.current_thread().name)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(CanvasEncoder, "stop", stop)
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    replay = SharedReplay.start(pool, CANVASES[:1], tmp_path, 10, 800, codec="libx264")
+    thread = replay.stop()
+    assert thread is not None and not pool.encoders
+    thread.join(10)
+    assert not thread.is_alive() and stopped_on == ["clips-end"]
+
+    replay = SharedReplay.start(pool, CANVASES[:1], tmp_path, 10, 800, codec="libx264")
+    assert replay.stop(wait=True) is None and stopped_on[-1] == threading.current_thread().name
+
+    replay = SharedReplay.start(pool, CANVASES[:1], tmp_path, 10, 800, codec="libx264")
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 800, codec="libx264")
+    assert replay.stop() is None and len(stopped_on) == 2  # the recording keeps the encoder
+    rec.stop()

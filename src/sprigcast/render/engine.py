@@ -191,6 +191,7 @@ class Engine:
         self._failed_said: dict[str, tuple[str, str]] = {}
         # SPRIGCAST_ENGINE=native: the native engine draws the canvases for the previews (render/native_bridge.py).
         self._native = None
+        self._python_drew = True  # last tick Python's compositor drew something (always, without the native engine)
 
     # Called from the UI thread ----------------------------------------------
 
@@ -1718,6 +1719,10 @@ class Engine:
         native = self._native if self._native is not None and not self._native.failed else None
         for source_id, source in self._sources.items():
             freeze = frozen.get(source_id) if frozen else None
+            # A video the engine's own player decodes: the native engine takes its pictures itself, frame by frame
+            # (not while it is frozen or asleep: then it keeps the picture it has).
+            direct = native is not None and native.attach_media(
+                source_id, None if source.asleep or freeze is not None else getattr(source, "engine_player", None))
             if source.asleep or not self._budget_allows(source_id) or (
                     self._failing and now < self._failing.get(source_id, 0.0)):
                 if freeze is not None and source_id in textures:
@@ -1728,7 +1733,11 @@ class Engine:
             began = time.perf_counter()
             missed = self._missed.pop(source_id, None) if self._missed and freeze is None else None
             try:
-                frame = source.video_frame()
+                if direct and not self._python_drew and not self._waking:
+                    source.engine_tick()  # nothing of Python's shows it this tick: no picture is copied at all
+                    frame = None
+                else:
+                    frame = source.video_frame()
             except Exception as exc:  # this source's problem only: the canvas keeps its last picture of it
                 self._failing[source_id] = now + FAIL_RETRY_S
                 self._source_failed(source_id, source, "video_frame", exc)
@@ -1747,7 +1756,7 @@ class Engine:
             if frame is not None:
                 layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
                 compositor.upload(source_id, frame, source.channel_order, layout)
-                if native is not None:
+                if native is not None and not direct:
                     native.upload(source_id, frame, source.channel_order, layout)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
@@ -1765,7 +1774,8 @@ class Engine:
             sprigcore_drain()
             self._mark("native engine")
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
-        if native is not None and not self._python_draws(native, taps):
+        self._python_drew = native is None or self._python_draws(native, taps)
+        if not self._python_drew:
             self._part_textures, self._parts_used = {}, set()  # nothing Python draws this tick shows a sprig
         elif self._collection.parts():
             self._render_parts(compositor, sizes, now)
