@@ -251,10 +251,10 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `place.set` | Switch a place on or off for the next Go live. | `place`: id from places.list, `on`: true or false |
+| `place.set` | Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream reaches Twitch but viewers never see it). | `place`: id from places.list, `on` (optional): true or false, `bandwidth_test` (optional): true or false (only places whose service has a test mode) |
 | `place.start` | While live: start sending to one more place (switched on for next time too). | `place`: id from places.list |
 | `place.stop` | While live: stop sending to one place (the others keep going; the last one ends the stream). | `place`: id from places.list |
-| `places.list` | Where the stream goes (Twitch, YouTube...), each one's shape and if it's on. | none |
+| `places.list` | Where the stream goes (Twitch, YouTube...), each one's shape and if it's on (and `bandwidth_test` where the service has a test mode). | none |
 
 ### path
 
