@@ -241,7 +241,10 @@ def pc_line() -> str:
 
 
 def _encoder_path(st) -> str:
-    if getattr(st, "_direct", None) is not None:
+    direct = getattr(st, "_direct", None)
+    if direct is not None:
+        if getattr(direct, "shared", False) is True and not getattr(st, "_gpu_failed", False):
+            return "SprigCast's own NVENC (frames handed over on the graphics card)"
         return "SprigCast's own NVENC"
     codec = getattr(st, "codec", "?")
     return f"FFmpeg {codec}"

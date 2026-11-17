@@ -36,11 +36,11 @@ from ctypes import (
 # Struct version numbers for each API version we speak (NV_ENC_*_VER in nvEncodeAPI.h), newest first.
 API_LAYOUTS: dict[tuple[int, int], dict[str, int]] = {
     (13, 0): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2,
-              "reconfigure": 2, "init_size": 1800},
+              "reconfigure": 2, "init_size": 1800, "register": 5, "map": 4},
     (12, 2): {"init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2,
-              "reconfigure": 2, "init_size": 1800},
+              "reconfigure": 2, "init_size": 1800, "register": 5, "map": 4},
     (12, 1): {"init": 6, "config": 8, "preset": 4, "pic": 6, "lock_bitstream": 1, "create_input": 1,
-              "reconfigure": 1, "init_size": 1808},
+              "reconfigure": 1, "init_size": 1808, "register": 4, "map": 4},
 }
 API_MAJOR, API_MINOR = min(API_LAYOUTS)  # the oldest we can speak: the driver must support at least this
 API_VERSION = API_MAJOR | (API_MINOR << 24)
@@ -119,6 +119,8 @@ class FunctionList(Structure):
 F_INITIALIZE, F_CREATE_INPUT, F_DESTROY_INPUT, F_CREATE_BITSTREAM, F_DESTROY_BITSTREAM = 11, 12, 13, 14, 15
 F_ENCODE, F_LOCK_BITSTREAM, F_UNLOCK_BITSTREAM, F_LOCK_INPUT, F_UNLOCK_INPUT = 16, 17, 18, 19, 20
 F_DESTROY_ENCODER, F_OPEN_SESSION_EX, F_RECONFIGURE, F_LAST_ERROR, F_PRESET_CONFIG_EX = 27, 29, 32, 37, 39
+F_MAP_INPUT, F_UNMAP_INPUT, F_REGISTER, F_UNREGISTER = 25, 26, 30, 31
+RESOURCE_TYPE_DIRECTX, BUFFER_USAGE_INPUT = 0, 0
 
 
 class OpenSessionParams(Structure):
@@ -159,6 +161,21 @@ class LockInputBuffer(Structure):
     _fields_ = [("version", c_uint32), ("bits", c_uint32), ("inputBuffer", c_void_p),
                 ("bufferDataPtr", c_void_p), ("pitch", c_uint32),
                 ("reserved1", c_uint32 * 251), ("reserved2", c_void_p * 64)]
+
+
+class RegisterResource(Structure):
+    """NV_ENC_REGISTER_RESOURCE (1,536 bytes in 12.1 to 13.0; 13.0 adds chromaOffsetIn inside the reserved part)."""
+    _fields_ = [("version", c_uint32), ("resourceType", c_int), ("width", c_uint32), ("height", c_uint32),
+                ("pitch", c_uint32), ("subResourceIndex", c_uint32), ("resourceToRegister", c_void_p),
+                ("registeredResource", c_void_p), ("bufferFormat", c_int), ("bufferUsage", c_int),
+                ("pInputFencePoint", c_void_p), ("chromaOffset", c_uint32 * 2), ("reserved1", c_uint32 * 245),
+                ("reserved2", c_void_p * 61)]
+
+
+class MapInputResource(Structure):
+    _fields_ = [("version", c_uint32), ("subResourceIndex", c_uint32), ("inputResource", c_void_p),
+                ("registeredResource", c_void_p), ("mappedResource", c_void_p), ("mappedBufferFmt", c_int),
+                ("reserved1", c_uint32 * 251), ("reserved2", c_void_p * 63)]
 
 
 class LockBitstream(Structure):
@@ -272,6 +289,43 @@ def d3d11_device() -> c_void_p:
     return device
 
 
+_shared_device: c_void_p | None = None
+_shared_lock = threading.Lock()
+MULTITHREAD_IID = (0x9B7E4E00, 0x342C, 0x4106, (0xA1, 0x9F, 0x4F, 0x27, 0x04, 0xF6, 0x89, 0xF0))  # ID3D10Multithread
+
+
+def shared_device() -> c_void_p:
+    """The process's one Direct3D 11 device for frames handed over on the card (render/gpu_share.py): OpenGL
+    writes into its textures and the NVENC sessions that read them are opened on it. Safe to use from several
+    threads (multithread protection on), made once and kept for the run. Each caller gets its own reference."""
+    global _shared_device
+    with _shared_lock:
+        if _shared_device is None:
+            device = d3d11_device()
+            try:
+                guard = c_void_p()
+                iid = _guid(*MULTITHREAD_IID)
+                vtable = ctypes.cast(device, POINTER(POINTER(c_void_p))).contents
+                hr = ctypes.WINFUNCTYPE(c_int, c_void_p, c_void_p, c_void_p)(vtable[0])(device, byref(iid), byref(guard))
+                if hr < 0 or not guard:
+                    raise NvencError(f"no multithread guard on the Direct3D device (0x{hr & 0xFFFFFFFF:08x})")
+                gtable = ctypes.cast(guard, POINTER(POINTER(c_void_p))).contents
+                ctypes.WINFUNCTYPE(c_int, c_void_p, c_int)(gtable[5])(guard, 1)  # SetMultithreadProtected(TRUE)
+                _release(guard)
+            except Exception:
+                _release(device)
+                raise
+            _shared_device = device
+        _add_ref(_shared_device)
+        return c_void_p(_shared_device.value)
+
+
+def _add_ref(com: c_void_p) -> None:
+    """IUnknown::AddRef (vtable slot 1)."""
+    vtable = ctypes.cast(com, POINTER(POINTER(c_void_p))).contents
+    ctypes.WINFUNCTYPE(c_uint32, c_void_p)(vtable[1])(com)
+
+
 def _release(com: c_void_p) -> None:
     """IUnknown::Release (vtable slot 2)."""
     if com:
@@ -292,12 +346,15 @@ class D3D11Encoder:
     """One H.264 or HEVC encoder on its own Direct3D 11 device. encode() takes NV12 bytes, returns packets.
 
     Never uses B-frames, so every packet comes out as soon as its frame went in, in order.
+
+    shared=True opens it on the process's shared device (shared_device), so it can also encode NV12 textures
+    handed over on the card (encode_texture, render/gpu_share.py) besides bytes.
     """
 
     def __init__(self, width: int, height: int, fps: int, preset: GUID | str = PRESET_P4, *,
                  bitrate_kbps: int = 0, rate_control: str = "vbr", max_kbps: int = 0, buffer_kbits: int = 0,
                  cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll", adaptive_quant: bool = False,
-                 multipass: str = "disabled", codec: str = "h264"):
+                 multipass: str = "disabled", codec: str = "h264", shared: bool = False):
         if codec not in CODECS:
             raise NvencError(f"no {codec} in SprigCast's own NVENC encoder")
         self.codec = codec
@@ -308,10 +365,13 @@ class D3D11Encoder:
         self._settings = self._init = None
         self.frame = 0
         self.api = (API_MAJOR, API_MINOR)
+        self.shared = shared
+        self._registered: dict = {}  # (pool id, texture index) -> registered resource, for encode_texture
+        self._pool = None  # the texture pool those belong to (kept alive while registered)
         _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
         preset = PRESETS.get(preset, PRESET_P4) if isinstance(preset, str) else preset
         tuning_info = TUNINGS.get(tuning, TUNINGS["ll"])
-        self.device = d3d11_device()
+        self.device = shared_device() if shared else d3d11_device()
         try:
             self._open_session()
             config = None
@@ -465,6 +525,64 @@ class D3D11Encoder:
         finally:
             _fn(F_UNLOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, self.output)
 
+    def encode_texture(self, frame, keyframe: bool = False) -> tuple[bytes, bool]:
+        """Encode a GpuFrame (an NV12 texture on the shared device, render/gpu_share.py), like encode_frame.
+
+        Each texture is registered with this session once; a frame from another pool (the output's size
+        changed) lets go of the old pool's registrations first."""
+        if not self.shared:
+            raise NvencError("this encoder isn't on the shared device")
+        pool = frame.pool
+        if pool is None:
+            raise NvencError("the frame was already handed back")
+        if self._pool is not None and self._pool is not pool:
+            self._unregister_all()
+        key = frame.key
+        registered = self._registered.get(key)
+        if registered is None:
+            reg = RegisterResource(version=self._v("register"), resourceType=RESOURCE_TYPE_DIRECTX,
+                                   width=frame.width, height=frame.height, pitch=0,
+                                   resourceToRegister=frame.texture, bufferFormat=BUFFER_FORMAT_NV12,
+                                   bufferUsage=BUFFER_USAGE_INPUT)
+            self._check(_fn(F_REGISTER, c_void_p, c_void_p)(self.encoder, ctypes.addressof(reg)),
+                        "registering a texture")
+            registered = self._registered[key] = reg.registeredResource
+            self._pool = pool
+        mapped = MapInputResource(version=self._v("map"), registeredResource=registered)
+        self._check(_fn(F_MAP_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(mapped)), "mapping a texture")
+        try:
+            pic = PicParams()
+            pic.head.version = self._v("pic", True)
+            pic.head.inputWidth, pic.head.inputHeight, pic.head.inputPitch = self.width, self.height, self.width
+            pic.head.inputBuffer, pic.head.outputBitstream = mapped.mappedResource, self.output
+            pic.head.bufferFmt, pic.head.pictureStruct = mapped.mappedBufferFmt, PIC_STRUCT_FRAME
+            pic.head.frameIdx = pic.head.inputTimeStamp = self.frame
+            if keyframe:
+                pic.head.encodePicFlags = PIC_FLAG_FORCEIDR | PIC_FLAG_OUTPUT_SPSPPS
+            self.frame += 1
+            self._check(_fn(F_ENCODE, c_void_p, c_void_p)(self.encoder, ctypes.addressof(pic)), "encoding")
+            lock = LockBitstream(version=self._v("lock_bitstream", True), outputBitstream=self.output)
+            self._check(_fn(F_LOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)),
+                        "reading the output")
+            try:
+                return (ctypes.string_at(lock.bitstreamBufferPtr, lock.bitstreamSizeInBytes),
+                        lock.pictureType == PIC_TYPE_IDR)
+            finally:
+                _fn(F_UNLOCK_BITSTREAM, c_void_p, c_void_p)(self.encoder, self.output)
+        finally:
+            _fn(F_UNMAP_INPUT, c_void_p, c_void_p)(self.encoder, mapped.mappedResource)
+
+    def _unregister_all(self) -> None:
+        if self.encoder:
+            unregister = _fn(F_UNREGISTER, c_void_p, c_void_p)
+            for registered in self._registered.values():
+                try:
+                    unregister(self.encoder, registered)
+                except Exception:  # noqa: BLE001 (closing anyway)
+                    pass
+        self._registered.clear()
+        self._pool = None
+
     def _fill(self, nv12) -> int:
         lock = LockInputBuffer(version=_struct_version(1, api=self.api), inputBuffer=self.input)
         self._check(_fn(F_LOCK_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(lock)), "locking the input")
@@ -486,6 +604,7 @@ class D3D11Encoder:
             _fn(F_UNLOCK_INPUT, c_void_p, c_void_p)(self.encoder, self.input)
 
     def close(self) -> None:
+        self._unregister_all()
         if self.encoder:
             if self.input:
                 _fn(F_DESTROY_INPUT, c_void_p, c_void_p)(self.encoder, self.input)

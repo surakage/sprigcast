@@ -128,6 +128,12 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - The Stream doctor adds up every place you go live to and checks the total against your upload (Optimize's test,
   or what your last clean stream carried). Far over asks before going live.
 - AMD's encoder keeps a steady bitrate on still scenes in constant bitrate mode, as NVENC already did (like OBS).
+- NVIDIA: SprigCast's own NVENC now takes each frame straight from the graphics card (OpenGL shares it with
+  Direct3D, as OBS's encoder reads its frames on the card), instead of copying it into memory and back: about
+  187 MB a second less per 1080p60 output, and no frames waiting in memory. Anything the driver refuses turns it
+  off for the rest of the run and frames go through memory as before; SPRIGCAST_NO_GPU_SHARE=1 turns it off.
+  The stream report says which way frames went. Needs a try on a real PC.
+- Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
 - Twitch sign-in no longer signs you out when going live and sending a chat message refresh it at the same moment.
 
 ### Get started
