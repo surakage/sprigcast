@@ -278,3 +278,37 @@ def test_outputs_made_again_while_a_frame_is_stuck_still_get_frames(share):
         time.sleep(3.0)
         assert _next_output_frame(eng, share, 5.0), "no frames after the stuck frame"
         assert not eng.stats()["faulted"]
+
+
+@needs_engine
+@pytest.mark.parametrize("shape", nc.NV12_SHAPES[:2], ids=[n for n, _s, _h in nc.NV12_SHAPES[:2]])
+def test_the_engines_outputs_in_memory_are_the_picture(shape, tmp_path):
+    """Virtual camera on native (PC, 2026-11-17): every frame flat dark green. Its frames come from an engine
+    output read back to memory: those frames must be the canvas, as Python's compositor gives encoders."""
+    name, size, how = shape
+    case = CASES[0]
+    main = case.scenes[-1]
+    want = np.asarray(Image.open(nc.GOLDEN / f"{name}.png").convert("L"))
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        for source_id, array, order, layout in case.uploads:
+            eng.upload(source_id, array, order, layout, keep=True)
+        native_snapshot.hand_over(eng, native_snapshot.build(case.scenes, case.effects, case.parts),
+                                  native_snapshot.Resources())
+        eng.set_canvas(0, *main.size)
+        eng.show(0, main.key)
+        eng.read_bgra(0)  # drawn by now
+        eng.set_output(0, 0, size[0], size[1], how)
+        got, end = None, time.monotonic() + 5.0
+        while time.monotonic() < end:
+            frame = eng.take_output(0, 0, size[0], size[1])
+            if frame is not None:
+                got = frame[0]  # the newest one wins: the first may predate the picture
+            elif got is not None:
+                break
+            time.sleep(0.05)
+    assert got is not None, "no output frame"
+    planes = nc.nv12_picture(got, size)
+    stats = nc.compare(planes[..., None], want[..., None])
+    if not nc.close_enough(stats):
+        Image.fromarray(planes, "L").save(tmp_path / f"{name}-engine-output.png")
+    assert nc.close_enough(stats), f"{name}: {stats} (engine output in {tmp_path})"
