@@ -1108,6 +1108,7 @@ class MainWindow(QMainWindow):
             self.engine.add_frame_tap(f"view:{view}", projector.tap)
         projector.target = (kind, ref or canvas_id)
         self.projectors.append(projector)
+        QTimer.singleShot(0, self._pace_poll)  # once it's shown: a projector wants every picture
         return projector
 
     def _projector_closed(self, projector) -> None:
@@ -1116,6 +1117,7 @@ class MainWindow(QMainWindow):
         if projector.view is not None:
             self.engine.remove_frame_tap(f"view:{projector.view}", projector.tap)
             self.engine.set_view(projector.view, None)
+        self._pace_poll()
 
     def _fill_capture_sound_menu(self, menu: QMenu, capture_id: str) -> None:
         """A capture's own sound, like OBS's Capture audio: none, the app's own, or an output such as
@@ -2972,6 +2974,9 @@ class MainWindow(QMainWindow):
         self.live_panel.show_scenes(self.collection)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if event.spontaneous() and not self._may_close():
+            event.ignore()
+            return
         self.hide()  # gone at once; what follows only tidies up
         from sprigcast.core import pacing
 
@@ -5754,7 +5759,20 @@ class MainWindow(QMainWindow):
         self._health = SessionHealth(self.streaming)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
+        self._record_with_stream()
         return {"started": True, "warnings": warnings}
+
+    def _record_with_stream(self) -> None:
+        """Settings → Output → Recording → "Record when I go live": the stream's own recording starts with it
+        (from the stream's encoder when "Same as stream" is on too) and ends with it."""
+        self._recording_for_stream = False
+        if not self.collection.recording.record_when_live or self.recording is not None:
+            return  # a recording you started yourself carries on as you left it
+        answer = self._start_recording(remote=True, force=True)  # no pop-ups in the middle of going live
+        self._recording_for_stream = bool(answer.get("started"))
+        if not self._recording_for_stream:
+            log.warning("record when live: %s", answer.get("problem", "didn't start"))
+            self.statusBar().showMessage(f"Live, but not recording: {answer.get('problem', '')}", 10000)
 
     def _stream_target(self, output, ask: bool = True, quiet: bool = False):
         """What going live sends to one place: (target, None), (None, problem), or (None, None) when the
@@ -5895,6 +5913,10 @@ class MainWindow(QMainWindow):
         plugin_hooks.output_changed("stream", None)
         self._say("Ending stream…")
         session.stop(wait=False)  # the encoders and connections finish on their own thread
+        if getattr(self, "_recording_for_stream", False):
+            self._recording_for_stream = False
+            if self.recording is not None:
+                self._stop_recording()  # it started with the stream: it ends with it
         delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)
         if delayed > 0:
             self.statusBar().showMessage(f"Stream delay: the last {delayed:g} s still go out to viewers.",
@@ -6278,10 +6300,46 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(settle_ms, minimize)
 
+    def _may_close(self) -> bool:
+        """Closing the window while live or recording ends them: ask first (like OBS)."""
+        doing = [what for what, on in (("live", self.streaming is not None),
+                                       ("recording", self.recording is not None)) if on]
+        if not doing:
+            return True
+        what = "live and recording" if len(doing) == 2 else doing[0]
+        answer = QMessageBox.question(self, "SprigCast", f"You're {what}. Close SprigCast and end it?")
+        return answer == QMessageBox.StandardButton.Yes
+
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
-            QTimer.singleShot(1000, self._sweep_if_due)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._pace_poll()
+            if self.isMinimized():
+                QTimer.singleShot(1000, self._sweep_if_due)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._pace_poll()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._pace_poll()
+
+    POLL_SHOWN_MS, POLL_HIDDEN_MS = 33, 250
+
+    def _pace_poll(self) -> None:
+        """Out of sight (minimised, or hidden to the tray) with no projector open, nothing needs 30 picture
+        updates a second: the window looks for news 4 times a second instead (OBS stops its preview too).
+        Shown again, it's back to 30 at once."""
+        timer = getattr(self, "timer", None)
+        if timer is None:
+            return
+        out_of_sight = self.isMinimized() or not self.isVisible()
+        projecting = any(p.isVisible() for p in getattr(self, "projectors", []))
+        wanted = self.POLL_HIDDEN_MS if out_of_sight and not projecting else self.POLL_SHOWN_MS
+        if timer.interval() != wanted:
+            timer.setInterval(wanted)
+            log.info("window %s: checking for news every %d ms", "out of sight" if wanted > 33 else "shown", wanted)
 
     def _show_render_health(self, event) -> None:
         """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""

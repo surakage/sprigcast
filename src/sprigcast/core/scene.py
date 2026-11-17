@@ -346,6 +346,7 @@ class RecordingSettings(BaseModel):
     same_as_stream: bool = False
     # Split long recordings into several files, with nothing lost between them (0: one file). FAT32 drives
     # can't hold a file over 4 GB.
+    record_when_live: bool = False  # going live starts a recording too, and ending the stream stops that one
     split_minutes: int = 0
     split_gb: float = 0.0
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))

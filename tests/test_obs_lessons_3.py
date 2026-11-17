@@ -162,3 +162,105 @@ def _no_leftover_safe_mode():
     from sprigcast.app import safe_mode
 
     safe_mode._on = False
+
+
+# Window: quieter while out of sight, record when live, ask before closing while live ---------
+
+
+class _Timer:
+    def __init__(self):
+        self.ms = 33
+
+    def interval(self):
+        return self.ms
+
+    def setInterval(self, ms):  # noqa: N802
+        self.ms = ms
+
+
+class _Projector:
+    def __init__(self, visible=True):
+        self.visible = visible
+
+    def isVisible(self):  # noqa: N802
+        return self.visible
+
+
+def _window(**kw):
+    from sprigcast.app.main_window import MainWindow
+
+    class Window:
+        POLL_SHOWN_MS, POLL_HIDDEN_MS = MainWindow.POLL_SHOWN_MS, MainWindow.POLL_HIDDEN_MS
+        _pace_poll = MainWindow._pace_poll
+        _record_with_stream = MainWindow._record_with_stream
+        _may_close = MainWindow._may_close
+        minimized, visible = False, True
+        recording = streaming = None
+
+        def __init__(self):
+            self.timer, self.projectors, self.started = _Timer(), [], []
+            self.__dict__.update(kw)
+
+        def isMinimized(self):  # noqa: N802
+            return self.minimized
+
+        def isVisible(self):  # noqa: N802
+            return self.visible
+
+        def _start_recording(self, remote=False, force=False):
+            self.started.append((remote, force))
+            self.recording = object()
+            return {"started": True}
+
+        def statusBar(self):  # noqa: N802
+            raise AssertionError("no message expected")
+
+    return Window()
+
+
+def test_out_of_sight_the_window_checks_four_times_a_second_unless_a_projector_shows():
+    w = _window()
+    w._pace_poll()
+    assert w.timer.ms == 33
+    w.minimized = True
+    w._pace_poll()
+    assert w.timer.ms == 250
+    w.projectors.append(_Projector())
+    w._pace_poll()
+    assert w.timer.ms == 33  # a projector keeps every picture
+    w.projectors.clear()
+    w.minimized, w.visible = False, False  # hidden to the tray
+    w._pace_poll()
+    assert w.timer.ms == 250
+    w.visible = True
+    w._pace_poll()
+    assert w.timer.ms == 33
+
+
+def test_record_when_live_starts_one_recording_and_leaves_yours_alone():
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(recording=SimpleNamespace(record_when_live=True))
+    w = _window(collection=settings)
+    w._record_with_stream()
+    assert w.started == [(True, True)] and w._recording_for_stream
+    w2 = _window(collection=settings)
+    w2.recording = "yours"
+    w2._record_with_stream()
+    assert w2.started == [] and not w2._recording_for_stream  # already recording: not its to stop
+    settings.recording.record_when_live = False
+    w3 = _window(collection=settings)
+    w3._record_with_stream()
+    assert w3.started == []
+
+
+def test_closing_while_live_asks_first(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: asked.append(a[2]) or QMessageBox.StandardButton.No)
+    w = _window()
+    assert w._may_close() and not asked
+    w.streaming, w.recording = object(), object()
+    assert not w._may_close()
+    assert asked == ["You're live and recording. Close SprigCast and end it?"]
