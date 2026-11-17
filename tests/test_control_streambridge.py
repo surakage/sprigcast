@@ -487,3 +487,28 @@ def test_record_paused_event_and_status():
     host.rec = None
     assert api.changes() == [("record.changed", {"on": False})]  # stopping says nothing about pausing
     assert event_group("record.paused") == "output" and "record.pause" in FEATURES
+
+
+def test_place_set_switches_twitch_test_mode():
+    """place.set bandwidth_test: test tooling switches Twitch's test mode without the window."""
+    from sprigcast.control.native import FEATURES
+
+    api, host = _native()
+    col = host.collection
+    out = col.outputs[0]
+    out.service = "twitch"
+    other = col.outputs[1]
+    other.service = "youtube"
+    places = {p["id"]: p for p in _ok(api, "places.list")["places"]}
+    assert places[out.id]["bandwidth_test"] is False and "bandwidth_test" not in places[other.id]
+    _ok(api, "place.set", place=out.id, bandwidth_test=True)
+    assert out.bandwidth_test is True and "places" in host.commits
+    _ok(api, "place.set", place=out.id, on=False)  # on alone still works, test mode kept
+    assert out.enabled is False and out.bandwidth_test is True
+    assert _ok(api, "places.list")["places"][0]["bandwidth_test"] is True
+    assert _fails(api, "place.set", place=other.id, bandwidth_test=True) == "bad_request"  # YouTube has none
+    assert _fails(api, "place.set", place=out.id) == "bad_request"  # nothing to change
+    assert _fails(api, "place.set", place=out.id, bandwidth_test="yes") == "bad_request"
+    host.start_stream()
+    assert _fails(api, "place.set", place=out.id, bandwidth_test=False) == "busy"
+    assert "place.bandwidth_test" in FEATURES
