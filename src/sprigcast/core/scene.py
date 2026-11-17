@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1226,14 +1227,45 @@ class SceneCollection(BaseModel):
         return to_json(self.model_dump(), indent=2, inf_nan_mode="constants").decode("utf-8")
 
     def save(self, path: Path, text: str | None = None) -> None:
-        path = Path(path)
+        """Write it now (on this thread). Any save of the same file queued earlier (save_later) is dropped."""
+        write_garden(path, text if text is not None else self.to_text(), next_save(path))
+
+    def save_later(self, path: Path) -> None:
+        """Write it on a worker: the text is taken now, the disk (and its backup copies) wait for the worker.
+        A newer save of the same file, now or later, wins over this one."""
+        from sprigcast.core import workers
+
+        text, ticket = self.to_text(), next_save(path)
+        workers.run(write_garden, path, text, ticket, name="garden-save")
+
+
+# Saves of a garden file: one at a time, newest wins. A save queued on a worker (save_later) that a newer one
+# (on any thread) overtook is skipped, so an older garden never lands on top of a newer one.
+_save_lock = threading.Lock()
+_save_tickets: dict[str, int] = {}
+
+
+def next_save(path: Path) -> int:
+    with _save_lock:
+        key = str(Path(path))
+        _save_tickets[key] = _save_tickets.get(key, 0) + 1
+        return _save_tickets[key]
+
+
+def write_garden(path: Path, text: str, ticket: int) -> bool:
+    """Write the file if this is still the newest save asked for. True if written."""
+    path = Path(path)
+    with _save_lock:
+        if _save_tickets.get(str(path), 0) != ticket:
+            return False  # a newer save came along: it writes (or wrote) the file
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(text if text is not None else self.to_text(), encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         from sprigcast.core import backups
 
         backups.keep(path)  # the last good save, and one copy a day (core/backups.py)
         tmp.replace(path)  # atomic on the same drive, so a crash never leaves half a file
+        return True
 
 
 CORNERS = ("top_left", "top_right", "bottom_left", "bottom_right")

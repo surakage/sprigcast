@@ -298,7 +298,7 @@ def _check_window(now: float) -> None:
     _ui["where"] += f"; meanwhile {others}"
 
 
-def _where(frame, depth: int = 5) -> str:
+def _where(frame, depth: int = 12) -> str:
     """Where a thread is: its innermost frames, file:line name, innermost first. Inside an import, Python's
     own import machinery is left out and the module being loaded is named (the PC saw 2.4 s and 5.7 s in
     "<frozen importlib…>" with no clue which module)."""

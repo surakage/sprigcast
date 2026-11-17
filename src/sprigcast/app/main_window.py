@@ -2955,14 +2955,34 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "_drag_send", None)
         if timer is not None:
             timer.stop()  # this full send carries the drag's end
-        text = self.collection.to_text()  # once, for the file and for undo
-        self.collection.save(self.scenes_path, text)
-        self._remember_for_undo(text)
+        self._save_soon()
+        self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.snapshot()))
         self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
+
+    SAVE_AFTER_MS = 2000  # the garden file is written this long after the last change
+
+    def _save_soon(self) -> None:
+        """Save the garden once changes settle, on a worker. Saving (and backing up) on every change was
+        most of the window's pauses in the 2026-11-17 heavy run: a bloom switch every 15 s, a plugin hotkey
+        every 5 s, each one wrote the whole garden on the window's thread."""
+        timer = getattr(self, "_save_timer", None)
+        if timer is None:
+            timer = self._save_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(self.SAVE_AFTER_MS)
+            timer.timeout.connect(lambda: self.collection.save_later(self.scenes_path))
+        timer.start()
+
+    def _save_pending(self) -> None:
+        """A save still waiting (_save_soon): write it now, here (closing, or before switching gardens)."""
+        timer = getattr(self, "_save_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+            self.collection.save(self.scenes_path)
 
     # Undo and redo ------------------------------------------------------------------------
 
@@ -3032,7 +3052,12 @@ class MainWindow(QMainWindow):
         self.panels.close_windows()
         self.chat_panel.shutdown()
         forgetting = getattr(self, "_forgetting", False)  # Clear all my data: save nothing on the way out
-        if not forgetting:
+        if forgetting:
+            timer = getattr(self, "_save_timer", None)
+            if timer is not None:
+                timer.stop()
+        else:
+            self._save_pending()
             self._save_layout()
             self._save_thumbs()
             self.gardens.close()
