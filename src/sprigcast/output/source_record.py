@@ -101,6 +101,27 @@ class WithSourceRecord:
     def paths(self) -> list[Path]:
         return self.main.paths + self.extra.paths
 
+    @property
+    def paused(self) -> bool:
+        return self.main.paused
+
+    def pause(self) -> bool:
+        for _, rec in self.extra.recorders:
+            rec.pause()
+        return self.main.pause()
+
+    def resume(self) -> bool:
+        for _, rec in self.extra.recorders:
+            rec.resume()
+        return self.main.resume()
+
+    def mark_chapter(self, name: str) -> bool:
+        return self.main.mark_chapter(name)  # the copy without some sources is for cutting, not chapters
+
+    @property
+    def chapters(self) -> dict:
+        return self.main.chapters
+
     def stop(self) -> None:
         try:
             self.extra.stop()

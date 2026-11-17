@@ -1019,7 +1019,7 @@ class NativeApi:
         output.enabled = _get(data, "on", bool)
         self.host.commit("places")
 
-    @action("record.status", "Recording or not, for how long, and the file.")
+    @action("record.status", "Recording or not, for how long, the file, and whether it's paused.")
     def record_status(self, data):
         return self._status(self.host.record_status())
 
@@ -1045,6 +1045,33 @@ class NativeApi:
             return self.record_start(data)
         self.host.stop_record()
         return {"on": False}
+
+    def _pause(self, pause):
+        problem = getattr(self.host, "pause_record", lambda _p: "Pausing isn't available here.")(pause)
+        if problem:
+            raise ApiError("not_allowed", problem)
+        return {"paused": bool((self.host.record_status() or {}).get("paused"))}
+
+    @action("record.pause", "Pause the recording. The file stays open; record.resume carries on in it.")
+    def record_pause(self, data):
+        return self._pause(True)
+
+    @action("record.resume", "Carry on recording in the same file after record.pause.")
+    def record_resume(self, data):
+        return self._pause(False)
+
+    @action("record.toggle_pause", "Pause, or carry on after a pause.")
+    def record_toggle_pause(self, data):
+        return self._pause(None)
+
+    @action("record.chapter", "Add a chapter mark to the recording at this moment (editors and players list them).",
+            name="?the chapter's name (default: Chapter 1, 2...)")
+    def record_chapter(self, data):
+        name = data.get("name", "") if isinstance(data, dict) else ""
+        problem = getattr(self.host, "mark_chapter", lambda _n="": "Chapters aren't available here.")(str(name or ""))
+        if problem:
+            raise ApiError("not_allowed", problem)
+        return {}
 
     @action("clips.status", "Whether clips are ready and how long a clip is.")
     def clips_status(self, data):

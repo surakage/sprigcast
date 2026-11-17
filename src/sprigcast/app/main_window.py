@@ -78,6 +78,8 @@ from sprigcast.app.hotkeys import (
     STATE_PREFIX,
     TOGGLE_RECORD,
     TOGGLE_STREAM,
+    PAUSE_RECORD,
+    CHAPTER_MARK,
     Hotkeys,
 )
 from sprigcast.app.build_stage import (
@@ -1885,6 +1887,7 @@ class MainWindow(QMainWindow):
                                   lambda: self._open_settings(), self._on_sound_changed,
                                   lambda sid: self._open_filters(sid, "audio"), self._set_mic_first,
                                   self._toggle_camera, self._camera_settings)
+        self.live_side.on_pause = lambda: self.pause_recording(None)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_side.on_health = lambda: self._open_health()
         self._show_last_stream()
@@ -5368,6 +5371,7 @@ class MainWindow(QMainWindow):
                  ", ".join(c.id for c in canvases), settings.bitrate_kbps, settings.container,
                  f"{settings.short_side}p" if settings.short_side else "canvas", settings.encoder.rate_control,
                  settings.encoder.preset)
+        self._chapters_marked = 0
         self.live_side.set_recording(True)
         self._refresh_recording_status()
         if space:
@@ -5510,7 +5514,8 @@ class MainWindow(QMainWindow):
         self._rest_soon()
         from sprigcast.output.naming import finish_later
 
-        finish_later(session.paths)  # MP4s were written crash-safe: now plain MP4s, in the background
+        # MP4s were written crash-safe: now plain MP4s (with their chapter marks), in the background.
+        finish_later(session.paths, chapters=getattr(session, "chapters", None))
         if errors:
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
@@ -5533,7 +5538,7 @@ class MainWindow(QMainWindow):
         clock = f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
         codec = codec_short(session.recorders[0][1].codec) if session.recorders else codec_short(pick_codec())
         dropped = session.dropped
-        text = f"● REC {clock}  ·  {codec}"
+        text = f"{'❚❚ PAUSED' if getattr(session, 'paused', False) else '● REC'} {clock}  ·  {codec}"
         notes = [f"{dropped} frames dropped: encoder busy"] if dropped else []
         warn = bool(notes)
         watch = getattr(self, "_space_watch", None)
@@ -5553,6 +5558,39 @@ class MainWindow(QMainWindow):
         self.live_panel.set_recording("  ·  ".join([text, *notes]))
         self._side_status("rec", seconds, "  ·  ".join(notes), warn)
         self.mode_clock.setToolTip("  ·  ".join([f"Recording with {codec}", *notes]))
+
+    def pause_recording(self, pause: bool | None = None) -> str | None:
+        """Pause the recording (pause=True), carry on in the same file (False), or switch (None). Returns a
+        problem, or None. The Live header's Pause button, the hotkey, the API and Stream Deck keys all come here."""
+        session = self.recording
+        if session is None:
+            return "Not recording."
+        if not hasattr(session, "pause"):
+            return "This recording can't pause."
+        pause = not session.paused if pause is None else pause
+        if pause == session.paused:
+            return None
+        (session.pause if pause else session.resume)()
+        log.info("recording %s at %.0f s", "paused" if pause else "resumed", session.elapsed)
+        self._say("Recording paused" if pause else "Recording again")
+        self.live_side.set_recording(True, paused=pause)
+        plugin_hooks.output_changed("record", getattr(session, "started_at", time.monotonic()))
+        self._refresh_recording_status()
+        return None
+
+    def mark_chapter(self, name: str = "") -> str | None:
+        """A chapter mark in the recording at this moment (hotkey, Stream Deck, API). Editors and players
+        list them, so a long VOD can jump straight to the good parts. Returns a problem, or None."""
+        session = self.recording
+        if session is None:
+            return "Not recording."
+        self._chapters_marked = getattr(self, "_chapters_marked", 0) + 1
+        name = (name or "").strip()[:80] or f"Chapter {self._chapters_marked}"
+        if not getattr(session, "mark_chapter", lambda _n: False)(name):
+            return "The recording hasn't started writing yet."
+        log.info("chapter mark %r at %.0f s", name, session.elapsed)
+        self._say(f"Marked: {name}")
+        return None
 
     def _side_status(self, kind: str, seconds: int | None, details: str = "", warn: bool = False) -> None:
         """The header's one clock while live or recording (whichever has run longest, no label: the pink
@@ -6964,6 +7002,10 @@ class MainWindow(QMainWindow):
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:
             self._toggle_recording()
+        elif action == PAUSE_RECORD:
+            self.pause_recording(None)
+        elif action == CHAPTER_MARK:
+            self.mark_chapter()
         elif action.startswith(STATE_PREFIX):
             part_id, _, name = action[len(STATE_PREFIX):].partition(":")
             part = next((p for p in self.collection.parts() if p.id == part_id), None)

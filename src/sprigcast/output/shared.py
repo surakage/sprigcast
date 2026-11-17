@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sprigcast.output.recorder import recording_path, resolve_codec, shrink_to
-from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, replay_path
+from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, chapter_list, replay_path
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,12 @@ class FileTap:
         self.file_parts: list[Path] = []  # every file this recording has written so far, in order
         self._file_zero = 0.0
         self._file_bytes = 0
+        # Pause: nothing is written until resume; the file then carries on from a keyframe as if no time passed.
+        self._paused = False
+        self._resuming = False
+        self._last_rel = 0.0  # seconds into the file of the last picture written
+        self._marks: list[tuple[float, str]] = []  # chapter marks in the file being written
+        self.file_chapters: dict[Path, list[dict]] = {}  # each finished part's chapters (for MP4s made plain)
 
     # Called from other threads ----------------------------------------------------------
 
@@ -65,9 +71,38 @@ class FileTap:
                 raise RuntimeError("already writing a file")
             self.file_path, self.file_container, self.file_error = path, container, None
             self.split_seconds, self.split_bytes, self.file_parts = split_seconds, split_bytes, parts
+            self._paused = self._resuming = False
+            self._marks, self.file_chapters, self._last_rel = [], {}, 0.0
             self._force_key = True
         self._ask(job)
         return parts
+
+    def pause_file(self) -> bool:
+        """Stop writing for now; the file stays open. False when no file is being written."""
+        def job():
+            if self.file_path is None or self._paused:
+                return False
+            self._paused, self._resuming = True, False
+            return True
+        return bool(self._ask(job))
+
+    def resume_file(self) -> bool:
+        """Carry on in the same file from the next keyframe (asked for at once)."""
+        def job():
+            if self.file_path is None or not self._paused:
+                return False
+            self._paused, self._resuming, self._force_key = False, True, True
+            return True
+        return bool(self._ask(job))
+
+    def mark_chapter(self, name: str) -> bool:
+        """A chapter mark at the newest picture written ("Boss fight"). False when no file is being written."""
+        def job():
+            if self.file is None:
+                return False
+            self._marks.append((self._last_rel, name))
+            return True
+        return bool(self._ask(job))
 
     def stop_file(self, timeout: float = 10.0) -> None:
         """Finish the file while the encoder keeps running (the replay buffer or a stream still needs it).
@@ -96,9 +131,18 @@ class FileTap:
             if self._closing and p.kind == "video" and p.keyframe:
                 self._close_file()
                 return
+            if self._paused:
+                return
+            if self._resuming and self.file is not None:
+                if not (p.kind == "video" and p.keyframe):
+                    return  # the file carries on at a keyframe
+                # Move this file's clock on by the pause, so this picture follows the last one written.
+                shift = (p.seconds - self.file.zero) - (self._last_rel + 1 / max(1, self.fps))
+                self.file.zero += shift
+                self._file_zero += shift
+                self._resuming = False
             if self.file is not None and p.kind == "video" and p.keyframe and self._split_due(p):
-                out, self.file = self.file, None
-                out.close()  # the next part starts with this keyframe
+                self._finish_part()  # the next part starts with this keyframe
             if self.file is None:
                 if not (p.kind == "video" and p.keyframe):
                     return  # the file starts at a keyframe
@@ -112,6 +156,8 @@ class FileTap:
             began = time.perf_counter()
             self._file_bytes += len(p.data or b"") or p.size
             self.file.write(p)
+            if p.kind == "video":
+                self._last_rel = p.seconds - self.file.zero
             waited = time.perf_counter() - began
             self.mux_seconds += waited
             self.longest_stall = max(self.longest_stall, waited)
@@ -125,11 +171,20 @@ class FileTap:
             return True
         return bool(self.split_bytes) and self._file_bytes >= self.split_bytes
 
+    def _finish_part(self) -> None:
+        out, self.file = self.file, None
+        chapters = chapter_list(self._marks, self._last_rel + 1 / max(1, self.fps))
+        self._marks = []
+        if chapters:
+            self.file_chapters[out.path] = chapters
+        out.close(chapters)
+
     def _close_file(self) -> None:
-        out, self.file, self.file_path, self._closing = self.file, None, None, False
+        out, self.file_path, self._closing = self.file, None, False
+        self._paused = self._resuming = False
         if out is not None:
             try:
-                out.close()
+                self._finish_part()
             except Exception as exc:
                 self.file_error = self.file_error or str(exc) or exc.__class__.__name__
         self._file_done.set()
@@ -281,9 +336,46 @@ class SharedRecording:
         made.parts = parts
         return made
 
+    paused_since: float | None = None
+    paused_total = 0.0
+
+    @property
+    def paused(self) -> bool:
+        return self.paused_since is not None
+
     @property
     def elapsed(self) -> float:
-        return time.monotonic() - self.started_at
+        """How long the files run: paused time doesn't count."""
+        now = time.monotonic()
+        return now - self.started_at - self.paused_total - ((now - self.paused_since) if self.paused else 0.0)
+
+    def pause(self) -> bool:
+        if self.paused:
+            return False
+        for _, enc in self.recorders:
+            enc.pause_file()
+        self.paused_since = time.monotonic()
+        return True
+
+    def resume(self) -> bool:
+        if not self.paused:
+            return False
+        for _, enc in self.recorders:
+            enc.resume_file()
+        self.paused_total += time.monotonic() - self.paused_since
+        self.paused_since = None
+        return True
+
+    def mark_chapter(self, name: str) -> bool:
+        """A chapter mark in every file at this moment. True when at least one file took it."""
+        return any([enc.mark_chapter(name) for _, enc in self.recorders])
+
+    @property
+    def chapters(self) -> dict[Path, list[dict]]:
+        found: dict[Path, list[dict]] = {}
+        for _, enc in self.recorders:
+            found.update(getattr(enc, "file_chapters", {}))
+        return found
 
     @property
     def dropped(self) -> int:

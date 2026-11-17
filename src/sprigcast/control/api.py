@@ -900,7 +900,7 @@ class ControlApi:
     def req_GetRecordStatus(self, data):
         out = self._output_status(self.host.record_status())
         del out["outputReconnecting"], out["outputCongestion"], out["outputSkippedFrames"], out["outputTotalFrames"]
-        out["outputPaused"] = False
+        out["outputPaused"] = bool((self.host.record_status() or {}).get("paused"))
         return out
 
     def req_StartRecord(self, data):
@@ -922,11 +922,34 @@ class ControlApi:
         self.host.stop_record()
         return {"outputActive": False}
 
-    def req_PauseRecord(self, data):
-        raise RequestError(Status.RESOURCE_ACTION_NOT_SUPPORTED, "SprigCast recordings can't pause.")
+    def _pause(self, pause):
+        status = self.host.record_status()
+        if status is None:
+            raise RequestError(Status.OUTPUT_NOT_RUNNING, "Not recording.")
+        if pause is not None and bool(status.get("paused")) == pause:
+            raise RequestError(Status.OUTPUT_PAUSED if pause else Status.OUTPUT_NOT_PAUSED,
+                               "Already paused." if pause else "Not paused.")
+        problem = getattr(self.host, "pause_record", lambda _p: "Pausing isn't available here.")(pause)
+        if problem:
+            raise RequestError(Status.RESOURCE_ACTION_NOT_SUPPORTED, problem)
 
-    req_ResumeRecord = req_PauseRecord
-    req_ToggleRecordPause = req_PauseRecord
+    def req_PauseRecord(self, data):
+        self._pause(True)
+
+    def req_ResumeRecord(self, data):
+        self._pause(False)
+
+    def req_ToggleRecordPause(self, data):
+        self._pause(None)
+        return {"outputPaused": bool((self.host.record_status() or {}).get("paused"))}
+
+    def req_CreateRecordChapter(self, data):
+        if self.host.record_status() is None:
+            raise RequestError(Status.OUTPUT_NOT_RUNNING, "Not recording.")
+        name = (data or {}).get("chapterName", "") if isinstance(data, dict) else ""
+        problem = getattr(self.host, "mark_chapter", lambda _n="": "Chapters aren't available here.")(str(name or ""))
+        if problem:
+            raise RequestError(Status.RESOURCE_ACTION_NOT_SUPPORTED, problem)
 
     def _camera_on(self) -> bool:
         return bool(getattr(self.host, "camera_on", lambda: False)())

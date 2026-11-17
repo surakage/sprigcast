@@ -285,7 +285,7 @@ def test_outputs_studio_and_vendor_requests():
     _ok(api, "StopStream")
     _ok(api, "StartRecord")
     assert _ok(api, "StopRecord") == {"outputPath": "C:/rec.mkv"}
-    assert _fails(api, "PauseRecord") == Status.RESOURCE_ACTION_NOT_SUPPORTED
+    assert _fails(api, "PauseRecord") == Status.OUTPUT_NOT_RUNNING  # recordings pause now; this one has stopped
     assert _fails(api, "SaveReplayBuffer") == Status.OUTPUT_NOT_RUNNING
     # SprigCast's SaveClip starts clips when they're off.
     out = _ok(api, "CallVendorRequest", {"vendorName": "sprigcast", "requestType": "SaveClip"})

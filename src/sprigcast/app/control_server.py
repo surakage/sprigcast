@@ -226,7 +226,15 @@ class WindowHost:
         if session is None:
             return None
         paths = getattr(session, "paths", [])
-        return {"seconds": session.elapsed, "path": str(paths[0]) if paths else ""}
+        return {"seconds": session.elapsed, "path": str(paths[0]) if paths else "",
+                "paused": bool(getattr(session, "paused", False))}
+
+    def pause_record(self, pause: bool | None) -> str | None:
+        """Pause (True), resume (False) or switch (None). A problem, or None."""
+        return self.w.pause_recording(pause)
+
+    def mark_chapter(self, name: str = "") -> str | None:
+        return self.w.mark_chapter(name)
 
     def clips_ready(self) -> bool:
         return self.w.replay is not None

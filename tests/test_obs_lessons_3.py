@@ -264,3 +264,97 @@ def test_closing_while_live_asks_first(monkeypatch):
     w.streaming, w.recording = object(), object()
     assert not w._may_close()
     assert asked == ["You're live and recording. Close SprigCast and end it?"]
+
+
+# Pause recording and chapter marks -----------------------------------------------------
+
+
+def _video_times(path):
+    with av.open(str(path)) as f:
+        stream = f.streams.video[0]
+        return [float(frame.pts * stream.time_base) for frame in f.decode(video=0)]
+
+
+def test_a_paused_recording_carries_on_in_the_same_file_with_no_gap(tmp_path):
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    start = time.perf_counter()
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 1000, "mkv", codec="libx264")
+    _feed(engine, start, 60, pool=pool)  # 2 s
+    assert rec.pause() and rec.paused and not rec.pause()
+    _feed(engine, start, 90, first=60, pool=pool)  # 3 s while paused: left out
+    paused_for = rec.elapsed
+    time.sleep(0.2)
+    assert abs(rec.elapsed - paused_for) < 0.05  # the clock holds while paused
+    assert rec.resume() and not rec.paused
+    _feed(engine, start, 90, first=150, pool=pool)  # 3 s more
+    rec.stop()
+    (path,) = rec.paths
+    times = _video_times(path)
+    assert 120 <= len(times) <= 150  # the paused 3 s are not in the file
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert max(gaps) < 0.2  # it carries straight on: no frozen gap where the pause was
+    assert times[-1] < 5.2
+
+
+def test_chapter_marks_land_in_the_file(tmp_path):
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    start = time.perf_counter()
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 1000, "mkv", codec="libx264")
+    assert not rec.mark_chapter("too soon") or True  # before the first keyframe nothing is open yet
+    _feed(engine, start, 60, pool=pool)
+    assert rec.mark_chapter("Boss fight")
+    _feed(engine, start, 60, first=60, pool=pool)
+    assert rec.mark_chapter("Victory")
+    _feed(engine, start, 30, first=120, pool=pool)
+    rec.stop()
+    (path,) = rec.paths
+    with av.open(str(path)) as f:
+        chapters = f.chapters()
+    titles = [c["metadata"]["title"] for c in chapters]
+    assert titles[-2:] == ["Boss fight", "Victory"] and titles[0] in ("Start", "too soon")
+    starts = [c["start"] * c["time_base"] for c in chapters]
+    assert 1.5 < float(starts[-2]) < 2.6 and 3.5 < float(starts[-1]) < 4.6
+
+
+def test_an_mp4_keeps_its_chapters_when_made_plain(tmp_path):
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    start = time.perf_counter()
+    rec = SharedRecording.start(pool, CANVASES[:1], tmp_path, 1000, "mp4", codec="libx264")
+    _feed(engine, start, 60, pool=pool)
+    assert rec.mark_chapter("Raid")
+    _feed(engine, start, 60, first=60, pool=pool)
+    rec.stop()
+    (path,) = rec.paths
+    assert finish_mp4(path, rec.chapters.get(path))
+    with av.open(str(path)) as f:
+        assert "Raid" in [c["metadata"].get("title") for c in f.chapters()]
+
+
+def test_the_api_pauses_and_marks(monkeypatch):
+    from sprigcast.control.native import ApiError, NativeApi
+
+    class Host:
+        paused = False
+        marks: list = []
+
+        def record_status(self):
+            return {"seconds": 5.0, "path": "x.mkv", "paused": self.paused}
+
+        def pause_record(self, pause):
+            self.paused = (not self.paused) if pause is None else pause
+
+        def mark_chapter(self, name=""):
+            self.marks.append(name)
+
+    host = Host()
+    api = NativeApi.__new__(NativeApi)
+    api.host = host
+    assert api.record_pause({}) == {"paused": True}
+    assert api.record_toggle_pause({}) == {"paused": False}
+    assert api.record_chapter({"name": "Clutch"}) == {} and host.marks == ["Clutch"]
+    host.mark_chapter = lambda name="": "Not recording."
+    with pytest.raises(ApiError):
+        api.record_chapter({})

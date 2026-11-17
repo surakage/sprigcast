@@ -459,6 +459,14 @@ class LiveSide(QWidget):
         self.record.setToolTip("Record the canvases ticked in Controls, to your recordings folder")
         self.record.clicked.connect(on_record)
         head.addWidget(self.record)
+        # Shown only while recording: pause and carry on in the same file.
+        self.on_pause: Callable[[], None] = lambda: None
+        self.pause = pill("Pause", HEADER_RECORD_STYLE)
+        self.pause.setToolTip("Pause the recording. Resume carries on in the same file.")
+        self.pause.clicked.connect(lambda: self.on_pause())
+        self.pause.setFixedHeight(HEADER_PILL_HEIGHT)
+        self.pause.hide()
+        head.addWidget(self.pause)
         self.live = pill("Go live", HEADER_GO_STYLE)
         self.live.setMinimumWidth(150)  # "End stream" fits, and Go live doesn't jump when it changes
         self.live.clicked.connect(on_live)
@@ -626,12 +634,16 @@ class LiveSide(QWidget):
         self.camera_note.setText(error)
         self.camera_note.setVisible(bool(error) and not on)
 
-    def set_recording(self, on: bool) -> None:
-        """The button always says Record: pink means on."""
-        self.record.setStyleSheet(HEADER_RECORDING_STYLE if on else HEADER_RECORD_STYLE)
-        self.record.setIcon(_dot_icon("#ffffff" if on else theme.MUTED))
-        self.record.setToolTip("Recording. Click to stop." if on else
+    def set_recording(self, on: bool, paused: bool = False) -> None:
+        """The button always says Record: pink means on (and plain again while paused). Pause shows beside it
+        while recording."""
+        lit = on and not paused
+        self.record.setStyleSheet(HEADER_RECORDING_STYLE if lit else HEADER_RECORD_STYLE)
+        self.record.setIcon(_dot_icon("#ffffff" if lit else theme.LIVE if on else theme.MUTED))
+        self.record.setToolTip("Paused. Click to stop and save." if paused else "Recording. Click to stop." if on else
                                "Record the canvases ticked in Controls, to your recordings folder")
+        self.pause.setVisible(on)
+        self.pause.setText("Resume" if paused else "Pause")
 
     def set_clip(self, on: bool, seconds: int) -> None:
         """The button always says Clip: highlighted when ready (a click saves the last `seconds`)."""

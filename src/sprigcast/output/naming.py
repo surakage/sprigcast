@@ -107,7 +107,7 @@ def remux_later(paths: list[Path], delete_original: bool = False, done=None) -> 
     return thread
 
 
-def finish_mp4(path: Path) -> bool:
+def finish_mp4(path: Path, chapters: list[dict] | None = None) -> bool:
     """A recording's MP4 is written in fragments so it survives a crash (output/replay.py PacketFile). Once
     it's closed properly, rewrite it as a plain MP4 (no re-encoding), which every editor opens. On any
     problem the fragmented file stays: it plays as it is. True when it was rewritten."""
@@ -129,6 +129,8 @@ def finish_mp4(path: Path) -> bool:
                     continue
                 packet.stream = pairs[packet.stream.index]
                 dst.mux(packet)
+            if chapters:
+                dst.set_chapters(chapters)  # the recording's chapter marks
         temp.replace(path)
     except Exception as exc:  # noqa: BLE001 (the fragmented MP4 is kept and plays)
         log.warning("couldn't finish %s as a plain MP4 (it plays as it is): %s", path.name, exc)
@@ -138,7 +140,7 @@ def finish_mp4(path: Path) -> bool:
     return True
 
 
-def finish_later(paths: list[Path], done=None) -> threading.Thread | None:
+def finish_later(paths: list[Path], done=None, chapters: dict | None = None) -> threading.Thread | None:
     """finish_mp4() each MP4 on a background thread (a big file takes a few seconds of disk)."""
     mp4s = [p for p in paths if p.suffix.lower() == ".mp4"]
     if not mp4s:
@@ -146,7 +148,7 @@ def finish_later(paths: list[Path], done=None) -> threading.Thread | None:
 
     def work():
         for path in mp4s:
-            finish_mp4(path)
+            finish_mp4(path, (chapters or {}).get(path))
         if done:
             done(mp4s)
     # Not a daemon: closing SprigCast right after waits for the file to be whole.

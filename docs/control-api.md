@@ -268,10 +268,14 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
+| `record.chapter` | Add a chapter mark to the recording at this moment (editors and players list them). | `name` (optional): the chapter's name (default: Chapter 1, 2...) |
+| `record.pause` | Pause the recording. The file stays open; record.resume carries on in it. | none |
+| `record.resume` | Carry on recording in the same file after record.pause. | none |
 | `record.start` | Start recording. If the drive is nearly full, nothing starts: doctor_warnings says so. | `force` (optional): true: record anyway |
-| `record.status` | Recording or not, for how long, and the file. | none |
+| `record.status` | Recording or not, for how long, the file, and whether it's paused. | none |
 | `record.stop` | Stop recording. | none |
 | `record.toggle` | Start or stop recording (starting answers like record.start). | `force` (optional): true: record anyway |
+| `record.toggle_pause` | Pause, or carry on after a pause. | none |
 
 ### screenshot
 

@@ -33,7 +33,7 @@ def test_actions_list_every_scene_and_the_toggles():
         scenes=[Scene(id="a", name="Live", canvas="horizontal"), Scene(id="b", name="Live V", canvas="vertical")],
     )
     ids = [a for a, _ in actions(col)]
-    assert ids == ["toggle_stream", "toggle_record", "save_replay", "toggle_clips",
+    assert ids == ["toggle_stream", "toggle_record", "pause_record", "chapter_mark", "save_replay", "toggle_clips",
                    "screenshot", "scene:a", "scene:b", "mute_all", "toggle_mode"]
 
 
