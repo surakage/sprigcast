@@ -41,6 +41,13 @@ jobs:
           & $py -c "import sys; from PySide6 import QtCore, QtWidgets, QtWebEngineCore; app = QtWidgets.QApplication(sys.argv); page = QtWebEngineCore.QWebEnginePage(); ok = []; page.loadFinished.connect(lambda r: (ok.append(r), app.quit())); QtCore.QTimer.singleShot(60000, app.quit); page.setHtml('<p>SprigCast</p>'); app.exec(); print('web page loads:', ok); sys.exit(0 if ok == [True] else 1)"
           if ($LASTEXITCODE -ne 0) { throw "Qt WebEngine can't open a page after pruning" }
           Remove-Item Env:QT_QPA_PLATFORM
+          # Browser sources run in a helper started from SprigCast.exe (#451): it must start, open a page and
+          # stay up (no restarts). Chromium doesn't paint offscreen on Windows, so frames aren't checked here.
+          $exe = (Resolve-Path "packaging\build\python\SprigCast.exe").Path
+          $page = Join-Path $env:RUNNER_TEMP "page.html"
+          Set-Content $page "<body style='background:#4fd88f'>SprigCast</body>"
+          & $py -c "import logging, sys, time; logging.basicConfig(level=logging.INFO, stream=sys.stdout); sys.executable = r'$exe'; from sprigcast.app import browser_helper as b; h = b.RemoteHost(); h.open('t', {'file': r'$page', 'width': 64, 'height': 36, 'fps': 10}); time.sleep(15); alive = h.proc is not None and h.proc.poll() is None; print('browser helper OK' if alive and h.starts == 1 else f'browser helper FAILED (starts {h.starts})'); h.shutdown(); sys.exit(0 if alive and h.starts == 1 else 1)"
+          if ($LASTEXITCODE -ne 0) { throw "The browser helper didn't stay up when started from SprigCast.exe" }
           $size = (Get-ChildItem packaging\build\python -Recurse -File | Measure-Object Length -Sum).Sum
           "Installed size: $([math]::Round($size / 1MB)) MB"
           # SprigCast.exe runs the same Python (a single-dash first argument passes straight to Python).
