@@ -242,6 +242,13 @@ def run() -> None:
     app.setApplicationName("SprigCast")
     app.setOrganizationName("Slothbloom")
     app.setApplicationVersion(__version__)
+    from sprigcast.app import settings_keeper
+
+    settings_keeper.restore(config_dir())  # any setting gone missing comes back from the copy (see there)
+    app.aboutToQuit.connect(lambda: settings_keeper.keep(config_dir()))
+    from PySide6.QtCore import QTimer
+
+    QTimer.singleShot(30_000, lambda: settings_keeper.keep(config_dir()))  # a copy even if closing is cut short
     app.setWindowIcon(app_icon())
     from sprigcast.core.painted import brand_fonts
 

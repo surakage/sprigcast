@@ -6531,6 +6531,10 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import apply_settings
 
         apply_settings(self.control, self)
+        from sprigcast.app import settings_keeper
+        from sprigcast.app.main import config_dir
+
+        settings_keeper.keep(config_dir())  # the copy that brings settings back if they go missing
 
     def _apply_features(self) -> None:
         """Settings → General → Features: a feature that's off leaves Live's bar and stops (nothing kept loaded)."""
