@@ -685,6 +685,7 @@ class LiveSide(QWidget):
                     widget.setParent(None)
                     widget.deleteLater()
             self.place_rows, self.place_tools = {}, {}
+            self._row_shown: dict[str, tuple] = {}
             if not places:
                 empty = QPushButton("+ Add a place to stream")
                 empty.setStyleSheet(theme.LINK_STYLE)
@@ -697,20 +698,33 @@ class LiveSide(QWidget):
             self.places_scroll._fit()
         from sprigcast.app.destinations import HEALTH_COLORS
 
+        shown = getattr(self, "_row_shown", None)
+        if shown is None:
+            shown = self._row_shown = {}
         for place in places:
             tile, name, note, switch = self.place_rows[place.id]
-            switch.blockSignals(True)
-            switch.setChecked(place.on)
-            switch.blockSignals(False)
-            switch.setEnabled(not self.is_live)
             level = levels.get(place.id, "idle" if place.on else "off")
             colour = HEALTH_COLORS.get(level, HEALTH_COLORS['idle'])
-            name.setText(place.name)
-            name.setStyleSheet(f"color: {theme.TEXT_BRIGHT if place.on else theme.TEXT}; font-weight: 600;"
-                               " background: transparent;")
             # The second line: the shape, then how it's doing (the live bitrate in its health colour).
             state = colour if place.on and level != "idle" else theme.MUTED
-            note.setText(f'{place.canvas.capitalize()}  ·  <span style="color:{state}">{_sentence(place.note)}</span>')
+            text = f'{place.canvas.capitalize()}  ·  <span style="color:{state}">{_sentence(place.note)}</span>'
+            key = (place.on, self.is_live, place.name, text, place.canvas, place.test)
+            if shown.get(place.id) == key:
+                continue  # every second while live: a restyle re-polishes the row (532 ms once on the PC)
+            before = shown.get(place.id)
+            shown[place.id] = key
+            if switch.isChecked() != place.on:
+                switch.blockSignals(True)
+                switch.setChecked(place.on)
+                switch.blockSignals(False)
+            switch.setEnabled(not self.is_live)
+            if name.text() != place.name:
+                name.setText(place.name)
+            if before is None or before[0] != place.on:
+                name.setStyleSheet(f"color: {theme.TEXT_BRIGHT if place.on else theme.TEXT}; font-weight: 600;"
+                                   " background: transparent;")
+            if note.text() != text:
+                note.setText(text)
             tools = self.place_tools.get(place.id)
             if tools:
                 tall = place.canvas == "vertical"
