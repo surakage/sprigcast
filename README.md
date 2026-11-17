@@ -81,7 +81,7 @@ Scenes save automatically to `scenes.json` in your AppData folder.
 
 ## Plugins
 
-A plugin is a Python file that adds a new source type. *File → Open plugins folder* opens the folder
+A plugin is a Python file that adds a new source type. The full guide is [Build your own plugin](docs/plugins.md). *File → Open plugins folder* opens the folder
 (`%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`). Every `.py` file there loads at startup; files whose
 name starts with `_` are skipped. Plugin sources appear under *Sources → + → Plugins*.
 
