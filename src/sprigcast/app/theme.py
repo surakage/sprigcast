@@ -284,7 +284,7 @@ def guarded_style(base: str):
 
     class GuardedStyle(QProxyStyle):
         def polish(self, target, *rest):
-            ui_burst()
+            ui_burst(starts=_opens_window(target, rest))
             if not rest and isinstance(target, (QComboBox, QAbstractSpinBox)):
                 from sprigcast.app import wheel_guard
 
@@ -305,7 +305,7 @@ def roomy_style():
 
     class RoomyStyle(QProxyStyle):
         def polish(self, target, *rest):
-            ui_burst()  # a window, page or pop-up is being built: get Python's lock back quickly meanwhile
+            ui_burst(starts=_opens_window(target, rest))  # a window or pop-up being built: hand the lock over quickly
             if not rest and isinstance(target, QMenu) and not target.testAttribute(
                     Qt.WidgetAttribute.WA_TranslucentBackground):
                 # Every menu is a true rounded card: no square window corners or square shadow behind it.
@@ -333,17 +333,45 @@ def roomy_style():
 # other threads hold it: with the usual 1 ms hand-over each call could wait about that long, so Settings
 # took seconds to open and the whole window froze (PC test, 2026-11-17). For the moment widgets are being
 # made, the lock changes hands every 0.1 ms instead; then the usual interval comes back.
+#
+# Only a window or pop-up being shown starts one (the window itself is polished before its widgets), and one
+# lasts at most BURST_MAX_S. Started by any restyle, a label recoloured every second on the Live screen kept
+# it on for good: every thread then swapped the lock every 0.1 ms, and the 2026-11-17 heavy run on build
+# 44094725157 fell from ~55 to 14-41 fps with SprigCast's CPU doubled (10 to 22%).
 BURST_SWITCH_S = 0.0001
 BURST_HOLD_S = 0.4
+BURST_MAX_S = 3.0
 _burst_until = 0.0
+_burst_began = 0.0
 _usual_switch: float | None = None
 
 
-def ui_burst() -> None:
-    """Widgets are being made on the window's thread: hand Python's lock over quickly until it settles."""
-    global _burst_until, _usual_switch
+def _opens_window(target, rest) -> bool:
+    """A polish of a window being shown (a dialog or pop-up opening): the start of a burst of widgets. Not a
+    widget styled before it's placed (no parent yet, so also a "window"): Live screen pieces are made again
+    on refreshes that way."""
+    if rest:
+        return False
+    try:
+        return bool(target.isWindow() and target.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide))
+    except (AttributeError, RuntimeError):  # not a widget, or one already deleted
+        return False
+
+
+def ui_burst(starts: bool = True) -> None:
+    """Widgets are being made on the window's thread: hand Python's lock over quickly until it settles.
+
+    starts=False only keeps a burst already running going (any widget polished meanwhile), up to BURST_MAX_S."""
+    global _burst_until, _burst_began, _usual_switch
+    now = time.monotonic()
     starting = _usual_switch is None
-    _burst_until = time.monotonic() + BURST_HOLD_S
+    if starting and not starts:
+        return
+    if starting:
+        _burst_began = now
+    elif now - _burst_began > BURST_MAX_S:
+        return  # long enough: let it end on time, whatever keeps restyling
+    _burst_until = now + BURST_HOLD_S
     if starting:
         _usual_switch = sys.getswitchinterval()
         sys.setswitchinterval(min(_usual_switch, BURST_SWITCH_S))
