@@ -360,8 +360,19 @@ def memory_line() -> str:
     kinds = collections.Counter(map(type, objects)).most_common(5)
     parts.append(f"python objects {len(objects):,} (" + ", ".join(f"{k.__name__} {n:,}" for k, n in kinds) + ")")
     del objects
-    parts.append(f"python threads {threading.active_count()}")
+    parts.append(f"python threads {threading.active_count()} ({thread_names()})")
     return "; ".join(parts)
+
+
+def thread_names(threads=None) -> str:
+    """"sprigcast-audio, sprigcast-worker ×4, Thread ×2": which threads run, to find ones idle for no reason."""
+    import collections
+    import re
+    import threading
+
+    names = collections.Counter(re.sub(r"[-_]\d+", "", t.name).strip() or "thread"
+                                for t in (threading.enumerate() if threads is None else threads))
+    return ", ".join(f"{name} ×{n}" if n > 1 else name for name, n in sorted(names.items()))
 
 
 TRIM_KEEP_MB = 160  # what stays in memory at rest: the pages touched last (the window, the render loop)

@@ -1,4 +1,9 @@
-"""Settings → Output: how streams and recordings are encoded, laid out like OBS's Output tab."""
+"""Encoding in Settings: the stream's quality (Stream → Quality), recordings and clips (Recording), and the
+virtual camera (Video → Virtual camera).
+
+Each encoder card leads with one Quality choice, Lightest to Best. The rows behind it (rate control,
+presets, B-frames...) show only with Expert settings on.
+"""
 
 from __future__ import annotations
 
@@ -64,8 +69,45 @@ X264_TUNES = {"": "None", "film": "Film", "animation": "Animation", "grain": "Gr
               "stillimage": "Still image", "zerolatency": "Zero latency"}
 
 
+# Quality, lightest first: what each step sets on graphics-card encoders and on x264 (the CPU).
+# "Balanced" is EncoderSettings' own defaults; "Lighter" is what Garden check's Make it lighter gives.
+QUALITY_STEPS = (
+    ("lightest", "Lightest", {"preset": "p1", "multipass": "disabled", "lookahead": False, "b_frames": 0},
+     {"x264_preset": "ultrafast"}),
+    ("lighter", "Lighter", {"preset": "p3", "multipass": "disabled", "lookahead": False, "b_frames": 0},
+     {"x264_preset": "superfast"}),
+    ("balanced", "Balanced", {"preset": "p5", "multipass": "disabled", "lookahead": False, "b_frames": 0},
+     {"x264_preset": "veryfast"}),
+    ("better", "Better looking", {"preset": "p6", "multipass": "qres", "lookahead": False, "b_frames": 0},
+     {"x264_preset": "faster"}),
+    ("best", "Best", {"preset": "p7", "multipass": "qres", "lookahead": False, "b_frames": 2},
+     {"x264_preset": "fast"}),
+)
+
+
+def quality_of(enc: EncoderSettings, codec: str = "") -> str:
+    """The Quality step these settings are, or "custom" when expert rows were set some other way."""
+    from sprigcast.output.recorder import family
+
+    cpu = family(codec) == "x264" if codec else False
+    for key, _label, gpu, x264 in QUALITY_STEPS:
+        wanted = x264 if cpu else gpu
+        if all(getattr(enc, k) == v for k, v in wanted.items()):
+            return key
+    return "custom"
+
+
+def quality_changes(key: str) -> dict:
+    """Everything one Quality step sets (both the graphics-card and the CPU rows)."""
+    for k, _label, gpu, x264 in QUALITY_STEPS:
+        if k == key:
+            return {**gpu, **x264}
+    return {}
+
+
 class EncoderForm(QGroupBox):
-    """The encoder settings card: every option shows, and only the rows the chosen encoder uses.
+    """The encoder settings card: the encoder and one Quality choice; with expert on, every row the chosen
+    encoder uses.
 
     values() returns a new EncoderSettings.
     """
@@ -89,6 +131,14 @@ class EncoderForm(QGroupBox):
         self.encoder.setCurrentIndex(self.encoder.findData(settings.encoder))
         self._best = best
         form.addRow("Video encoder", self.encoder)
+        self.quality = QComboBox()
+        for key, label, _gpu, _x264 in QUALITY_STEPS:
+            self.quality.addItem(label, key)
+        self.quality.addItem("Custom", "custom")
+        self.quality.setToolTip("Lighter leaves more of your PC for games. Better looking costs more of the "
+                                "graphics card (or the CPU with x264).")
+        form.addRow("Quality", self.quality)
+        self._expert = False
         self.rate_control = _combo(RATE_CONTROLS, settings.rate_control)
         form.addRow("Rate control", self.rate_control)
         self.cq_level = QSpinBox()
@@ -135,12 +185,65 @@ class EncoderForm(QGroupBox):
             self.audio.addItem(f"{kbps} kbps", kbps)
         self.audio.setCurrentIndex(self.audio.findData(settings.audio_kbps))
         form.addRow("Audio bitrate", self.audio)
-        form.setRowVisible(self.audio, False)  # set in Settings → Audio → Bitrate; kept so values() carries it
+        self.reset = QPushButton("Reset to defaults")
+        self.reset.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset.setAutoDefault(False)
+        self.reset.clicked.connect(self.reset_to_defaults)
+        form.addRow("", self.reset)
         self.note = _hint("")
         form.addRow("", self.note)
         self.rate_control.currentIndexChanged.connect(self._update_rows)
         self.encoder.currentIndexChanged.connect(self._update_rows)
+        self.encoder.currentIndexChanged.connect(self._show_quality)
+        self.quality.activated.connect(self._quality_picked)
+        for combo in (self.preset, self.x264_preset, self.multipass):
+            combo.currentIndexChanged.connect(self._show_quality)
+        self.b_frames.valueChanged.connect(self._show_quality)
+        self.lookahead.toggled.connect(self._show_quality)
+        self._show_quality()
         self._update_rows()
+
+    def set_expert(self, on: bool) -> None:
+        self._expert = on
+        self._update_rows()
+
+    def _quality_picked(self, _index: int = 0) -> None:
+        key = self.quality.currentData()
+        if key == "custom":
+            self._show_quality()  # not a step to pick: it's what the expert rows say
+            return
+        for name, value in quality_changes(key).items():
+            widget = getattr(self, name)
+            if isinstance(widget, QCheckBox):
+                widget.setChecked(value)
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(value)
+            else:
+                widget.setCurrentIndex(max(0, widget.findData(value)))
+        self._show_quality()
+
+    def _show_quality(self, *_):
+        key = quality_of(self.values(), self.codec())
+        self.quality.blockSignals(True)
+        self.quality.setCurrentIndex(self.quality.findData(key))
+        self.quality.blockSignals(False)
+        # "Custom" is only shown when the expert rows made it so
+        self.quality.view().setRowHidden(self.quality.findData("custom"), key != "custom")
+
+    def reset_to_defaults(self) -> None:
+        d = EncoderSettings()
+        self.encoder.setCurrentIndex(max(0, self.encoder.findData(d.encoder)))
+        for name in ("rate_control", "preset", "tuning", "multipass", "profile", "x264_preset", "x264_tune"):
+            combo = getattr(self, name)
+            combo.setCurrentIndex(max(0, combo.findData(getattr(d, name))))
+        self.cq_level.setValue(d.cq_level)
+        self.keyint.setValue(d.keyint_sec)
+        self.b_frames.setValue(d.b_frames)
+        self.lookahead.setChecked(d.lookahead)
+        self.adaptive_quant.setChecked(d.adaptive_quant)
+        self.audio.setCurrentIndex(max(0, self.audio.findData(d.audio_kbps)))
+        self._show_quality()
 
     def codec(self) -> str:
         chosen = self.encoder.currentData()
@@ -152,17 +255,22 @@ class EncoderForm(QGroupBox):
 
         fam = family(self.codec())
         gpu = fam != "x264"
+        x = self._expert
         rows = {
+            self.rate_control: x,
             self.cq_level: self.rate_control.currentData() == "cqp",
-            self.preset: gpu and fam != "mf",
-            self.tuning: fam in ("nvenc", "amf", "qsv"),
-            self.multipass: fam == "nvenc",
-            self.profile: self.codec() in ("h264_nvenc", "h264_amf", "h264_qsv", "libx264"),
-            self.b_frames: fam == "nvenc",
-            self.lookahead: fam in ("nvenc", "qsv"),
-            self.adaptive_quant: fam in ("nvenc", "amf", "x264"),
-            self.x264_preset: not gpu,
-            self.x264_tune: not gpu,
+            self.keyint: x,
+            self.preset: x and gpu and fam != "mf",
+            self.tuning: x and fam in ("nvenc", "amf", "qsv"),
+            self.multipass: x and fam == "nvenc",
+            self.profile: x and self.codec() in ("h264_nvenc", "h264_amf", "h264_qsv", "libx264"),
+            self.b_frames: x and fam == "nvenc",
+            self.lookahead: x and fam in ("nvenc", "qsv"),
+            self.adaptive_quant: x and fam in ("nvenc", "amf", "x264"),
+            self.x264_preset: x and not gpu,
+            self.x264_tune: x and not gpu,
+            self.audio: x,
+            self.reset: x,
         }
         for widget, visible in rows.items():
             self._form.setRowVisible(widget, visible)
@@ -218,8 +326,9 @@ class SpaceBox(QGroupBox):
         form.addRow("Screenshots", self.keep_screenshots)
         self.keep_clips = self._keep_box(rec.keep_clips, "clips")
         form.addRow("Clips", self.keep_clips)
-        form.addRow(_hint("Screenshots and clips go in a folder for each day. With a limit, the oldest are "
-                          "deleted as new ones arrive. Recordings are never deleted."))
+        self.keep_clips.setToolTip("Screenshots and clips go in a folder for each day. With a limit, the oldest "
+                                   "are deleted as new ones arrive.\nRecordings are never deleted.")
+        self.keep_screenshots.setToolTip(self.keep_clips.toolTip())
         self._result: list = []
         self._poll = QTimer(self, interval=200)
         self._poll.timeout.connect(self._show)
@@ -282,76 +391,198 @@ class SpaceBox(QGroupBox):
         collection.recording.keep_clips = self.keep_clips.value()
 
 
-# Settings → Output → Recording → Split files: (label, minutes, GB)
+# Settings → Recording → Split files: (label, minutes, GB)
 SPLITS = (("Never", 0, 0.0), ("Every 30 min", 30, 0.0), ("Every hour", 60, 0.0), ("Every 2 hours", 120, 0.0),
           ("Every 4 hours", 240, 0.0), ("At 4 GB (FAT32 drives)", 0, 3.9))
 
 
-class OutputPage(QWidget):
-    """Streaming and Recording sub-tabs. The Recording sub-tab holds the RecordingPage passed in."""
+def _tab_box(widget: QWidget) -> QVBoxLayout:
+    box = QVBoxLayout(widget)
+    box.setContentsMargins(0, 4, 0, 0)
+    box.setSpacing(14)
+    return box
 
-    def __init__(self, collection: SceneCollection, encoder_name: str, recording_page: QWidget,
-                 streaming: bool = False, recording: bool = False, parent: QWidget | None = None):
+
+def _scrolled(inner: QWidget) -> QWidget:
+    """A sub-tab that scrolls on its own (the Stream page doesn't scroll as a whole: its place list stays put)."""
+    from PySide6.QtWidgets import QScrollArea
+
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    holder = QWidget()
+    pad = QVBoxLayout(holder)
+    pad.setContentsMargins(0, 0, 14, 0)
+    pad.addWidget(inner)
+    scroll.setWidget(holder)
+    return scroll
+
+
+class StreamQuality(QWidget):
+    """Stream → Quality: the stream encoder (one for every place) and the stream delay."""
+
+    def __init__(self, collection: SceneCollection, encoder_name: str, streaming: bool = False,
+                 parent: QWidget | None = None):
         super().__init__(parent)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        box = _tab_box(self)
         self.banner = QLabel("Twitch Enhanced Broadcasting controls some of these settings")
         self.banner.setWordWrap(True)
         self.banner.setStyleSheet(theme.NOTE_STYLE + " padding: 10px;")
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.banner.setToolTip("Twitch picks the resolutions, bitrates, keyframes and B-frames of the Twitch "
-                               "output. The settings below still apply to your other streams.")
+                               "output. These settings still apply to your other streams.")
         self.banner.setVisible(enhanced_in_use(collection))
-        root.addWidget(self.banner)
-        self.tabs = QTabWidget()
-        root.addWidget(self.tabs)
-
-        stream_tab = QWidget()
-        box = QVBoxLayout(stream_tab)
-        box.setContentsMargins(0, 4, 0, 0)
-        box.setSpacing(14)
+        box.addWidget(self.banner)
         if streaming:
             box.addWidget(_hint("You're live. End the stream to change these."))
         self.stream_form = EncoderForm("Encoder", collection.stream_encoder, encoder_name, streaming=True)
         self.stream_form.setEnabled(not streaming)
         box.addWidget(self.stream_form)
-        box.addWidget(_hint("Bitrate and size are set for each place you stream to (Settings → Stream). "
-                            "Most sites want CBR and 2 s keyframes."))
+        delay = QGroupBox("Stream delay")
+        form = QFormLayout(delay)
+        from sprigcast.output.delay import MAX_DELAY
+
+        self.stream_delay = QSpinBox()
+        self.stream_delay.setRange(0, MAX_DELAY)
+        self.stream_delay.setSingleStep(5)
+        self.stream_delay.setSpecialValueText("Off")
+        self.stream_delay.setSuffix(" s")
+        self.stream_delay.setValue(int(stream_delay()))
+        self.stream_delay.setFixedWidth(130)
+        self.stream_delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stream_delay.setStyleSheet("QSpinBox { padding: 7px 14px; }"
+                                        " QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
+        self.stream_delay.setToolTip("Viewers see everything this many seconds late, so nobody can use your stream "
+                                     "to find you in a game.\nRecordings and clips aren't delayed.")
+        self.stream_delay.setEnabled(not streaming)
+        form.addRow("Delay", self.stream_delay)
+        box.addWidget(delay)
         box.addStretch(1)
-        self.tabs.addTab(stream_tab, "Streaming")
+        self.streaming = streaming
+
+    def set_expert(self, on: bool) -> None:
+        self.stream_form.set_expert(on)
+
+    def apply_to(self, collection: SceneCollection) -> None:
+        from PySide6.QtCore import QSettings
+
+        if not self.streaming:
+            collection.stream_encoder = self.stream_form.values()
+            QSettings().setValue(STREAM_DELAY, self.stream_delay.value())
+
+
+STREAM_DELAY = "advanced/stream_delay_s"  # QSettings (the name it has had since it lived on Advanced)
+FILENAME = "advanced/filename"
+REPLAY_PREFIX = "advanced/replay_prefix"
+
+
+def stream_delay() -> float:
+    """Seconds every stream waits before it goes out (0: no delay)."""
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.output.delay import MAX_DELAY
+
+    return float(min(MAX_DELAY, max(0, QSettings().value(STREAM_DELAY, 0, type=int))))
+
+
+def apply_naming() -> None:
+    """Hand the saved file-name patterns to the recorders (at startup and after Settings)."""
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.output import naming
+
+    q = QSettings()
+    naming.set_patterns(q.value(FILENAME, "", type=str), q.value(REPLAY_PREFIX, "", type=str))
+
+
+class FileNamesBox(QGroupBox):
+    """File names for recordings and clips (expert)."""
+
+    def __init__(self, parent: QWidget | None = None):
+        from PySide6.QtCore import QSettings
+        from PySide6.QtWidgets import QLineEdit
+
+        from sprigcast.output import naming
+
+        super().__init__("File names", parent)
+        q = QSettings()
+        form = QFormLayout(self)
+        self.filename = QLineEdit(q.value(FILENAME, naming.RECORDING_PATTERN, type=str))
+        self.filename.setPlaceholderText(naming.RECORDING_PATTERN)
+        self.filename.setToolTip("Use {date} {time} {canvas}, or {year} {month} {day} {hour} {minute} {second}.")
+        form.addRow("Recordings", self.filename)
+        self.replay_prefix = QLineEdit(q.value(REPLAY_PREFIX, naming.REPLAY_PREFIX, type=str))
+        self.replay_prefix.setPlaceholderText(naming.REPLAY_PREFIX)
+        form.addRow("Clips start with", self.replay_prefix)
+        self.filename_example = _hint("")
+        form.addRow("", self.filename_example)
+        self.filename.textChanged.connect(self._example)
+        self.replay_prefix.textChanged.connect(self._example)
+        self._example()
+
+    def _example(self, *_):
+        from datetime import datetime
+
+        from sprigcast.output import naming
+
+        saved = dict(naming._patterns)
+        naming.set_patterns(self.filename.text(), self.replay_prefix.text())
+        when = datetime(2026, 11, 14, 19, 30, 5)
+        self.filename_example.setText(f"{naming.recording_name('horizontal', when)}.mkv   ·   "
+                                      f"{naming.replay_name('vertical', when)}.mkv")
+        naming._patterns.update(saved)
+
+    def apply(self) -> None:
+        from PySide6.QtCore import QSettings
+
+        from sprigcast.output import naming
+
+        q = QSettings()
+        q.setValue(FILENAME, self.filename.text().strip() or naming.RECORDING_PATTERN)
+        q.setValue(REPLAY_PREFIX, self.replay_prefix.text().strip() or naming.REPLAY_PREFIX)
+        apply_naming()
+
+
+class RecordingTabs(QWidget):
+    """Settings → Recording: the Recording and Clips sub-tabs. The Recording one holds the RecordingPage
+    passed in."""
+
+    TABS = ("Recording", "Clips")
+
+    def __init__(self, collection: SceneCollection, encoder_name: str, recording_page: QWidget,
+                 recording: bool = False, parent: QWidget | None = None):
+        super().__init__(parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs)
 
         record_tab = QWidget()
-        box = QVBoxLayout(record_tab)
-        box.setContentsMargins(0, 4, 0, 0)
-        box.setSpacing(14)
+        box = _tab_box(record_tab)
         if recording:
             box.addWidget(_hint("Recording now. Stop the recording to change these."))
         recording_group = QGroupBox("Recording")
         inner = QVBoxLayout(recording_group)
         inner.setContentsMargins(0, 0, 0, 0)
         inner.addWidget(recording_page)
-        inner.addWidget(_hint("Which sound tracks a recording keeps (everything, VOD-safe, voice...) is in Audio."))
-        recording_group.setEnabled(not recording)
-        box.addWidget(recording_group)
+        rec = collection.recording
         self.same_as_stream = QCheckBox("Same as stream while live")
         self.same_as_stream.setToolTip("Records what you stream (same size, bitrate and sound) without a second "
                                        "encoder.\nLighter on your PC. Recording first and going live after uses "
                                        "the settings below.")
-        self.same_as_stream.setChecked(collection.recording.same_as_stream)
-        self.same_as_stream.setEnabled(not recording)
-        box.addWidget(self.same_as_stream)
+        self.same_as_stream.setChecked(rec.same_as_stream)
+        inner.addWidget(self.same_as_stream)
         self.record_when_live = QCheckBox("Record when I go live")
         self.record_when_live.setToolTip("Ending the stream stops that recording too.")
-        self.record_when_live.setChecked(collection.recording.record_when_live)
-        box.addWidget(self.record_when_live)
+        self.record_when_live.setChecked(rec.record_when_live)
+        inner.addWidget(self.record_when_live)
         split_row = QHBoxLayout()
         split_row.setSpacing(10)
-        split_label = QLabel("Split files")
-        split_row.addWidget(split_label)
+        split_row.addWidget(QLabel("Split files"))
         self.split = QComboBox()
         for label, minutes, gb in SPLITS:
             self.split.addItem(label, (minutes, gb))
-        rec = collection.recording
         here = next((i for i, (_l, m, g) in enumerate(SPLITS) if (m, g) == (rec.split_minutes, rec.split_gb)), None)
         if here is None:  # set some other way (a file edited by hand): shown as it is
             self.split.addItem(f"Every {rec.split_minutes} min" if rec.split_minutes else f"At {rec.split_gb:g} GB",
@@ -361,61 +592,60 @@ class OutputPage(QWidget):
         self.split.setFixedWidth(220)
         self.split.setToolTip("A new file starts with nothing lost between them.\n"
                               "Drives formatted FAT32 can't hold a file over 4 GB.")
-        self.split.setEnabled(not recording)
         split_row.addWidget(self.split)
         split_row.addStretch(1)
-        box.addLayout(split_row)
+        inner.addLayout(split_row)
+        recording_group.setEnabled(not recording)
+        box.addWidget(recording_group)
+        self.record_form = EncoderForm("Encoder", rec.encoder, encoder_name)
+        self.record_form.setEnabled(not recording)
+        box.addWidget(self.record_form)
         from sprigcast.app.source_record_box import SourceRecordBox
 
         self.source_record = SourceRecordBox(collection)
         self.source_record.setEnabled(not recording)
         box.addWidget(self.source_record)
-        self.record_form = EncoderForm("Encoder", collection.recording.encoder, encoder_name)
-        self.record_form.setEnabled(not recording)
-        box.addWidget(self.record_form)
         self.space = SpaceBox(collection, getattr(recording_page, "folder", None))
         box.addWidget(self.space)
+        self.names = FileNamesBox()
+        box.addWidget(self.names)
         box.addStretch(1)
         self.tabs.addTab(record_tab, "Recording")
 
         clips_tab = QWidget()
-        box = QVBoxLayout(clips_tab)
-        box.setContentsMargins(0, 4, 0, 0)
-        box.setSpacing(14)
+        box = _tab_box(clips_tab)
         box.addWidget(self._clips_group(collection))
-        box.addWidget(_hint("Clips use the Recording encoder and bitrate, so a clip looks exactly like a recording."))
         box.addStretch(1)
-        self.tabs.addTab(clips_tab, "Clips (replay buffer)")
-        self.camera_tab = CameraTab(collection)
-        self.tabs.addTab(self.camera_tab, "Virtual camera")
-        self.streaming, self.recording = streaming, recording
+        self.tabs.addTab(clips_tab, "Clips")
+        self.recording = recording
+        self.set_expert(False)
+
+    def set_expert(self, on: bool) -> None:
+        self.record_form.set_expert(on)
+        self.names.setVisible(on)
 
     def show_tab(self, name: str) -> None:
-        self.tabs.setCurrentIndex({"Recording": 1, "Clips": 2, "Replay": 2, "Camera": 3}.get(name, 0))
+        self.tabs.setCurrentIndex(1 if name in ("Clips", "Replay") else 0)
 
     def apply_to(self, collection: SceneCollection) -> None:
-        if not self.streaming:
-            collection.stream_encoder = self.stream_form.values()
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
             self.source_record.apply_to(collection)
             collection.recording.same_as_stream = self.same_as_stream.isChecked()
             collection.recording.split_minutes, collection.recording.split_gb = self.split.currentData()
-        collection.recording.record_when_live = self.record_when_live.isChecked()
+            collection.recording.record_when_live = self.record_when_live.isChecked()
         collection.recording.replay_seconds = self.clip_length.checkedId()
         collection.recording.clip_shapes = self.clip_shapes.checkedButton().property("shape")
         collection.recording.clips_on_start = self.clips_on_start.isChecked()
         collection.recording.clips_idle_minutes = int(self.clips_idle.currentData())
         self.space.apply_to(collection)
-        self.camera_tab.apply()
+        self.names.apply()
 
     def _clips_group(self, collection: SceneCollection) -> QGroupBox:
         """Clips: how long, which shapes, and whether they're ready from the start."""
         group = QGroupBox("Clips")
         form = QFormLayout(group)
         form.setVerticalSpacing(12)
-        form.addRow(_hint("Clip saves the last few seconds as a video, so a great moment is never missed. "
-                          "SprigCast keeps those seconds in memory (about 1 MB a second for each shape)."))
         lengths = QHBoxLayout()
         lengths.setSpacing(6)
         self.clip_length = QButtonGroup(group)
@@ -526,15 +756,23 @@ class CameraTab(QWidget):
         form.addRow("Shows", self.shows)
         self.sound = QComboBox()
         self.sound.addItem("Not sent", "")
-        from sprigcast.sources.audio import device_label, list_playback_devices
+        from sprigcast.sources.audio import device_label
 
         chosen = camera_sound()
-        names = list_playback_devices()
-        if chosen and chosen not in names:
-            names.append(chosen)  # not plugged in right now: still shown
-        for name in names:
-            self.sound.addItem(device_label(name), name)
+        if chosen:
+            self.sound.addItem(device_label(chosen), chosen)
         self.sound.setCurrentIndex(max(0, self.sound.findData(chosen)))
+        # The playback devices are listed on a worker: PortAudio's lock is held while Settings scans the sound
+        # devices, and waiting for it here froze the window 300 ms on the PC (2026-11-17).
+        self._devices: list = []
+        from sprigcast.core import workers
+        from sprigcast.sources.audio import list_playback_devices
+
+        found = self._devices
+        workers.run(lambda: found.append(list_playback_devices()), name="playback-devices")
+        self._device_poll = QTimer(self, interval=100)
+        self._device_poll.timeout.connect(self._fill_sound)
+        self._device_poll.start()
         form.addRow("Sound to", self.sound)
         inner.addLayout(form)
         inner.addWidget(_hint("TikTok LIVE Studio, Zoom, Discord, OBS and browsers list it as "
@@ -574,6 +812,18 @@ class CameraTab(QWidget):
         self._timer.timeout.connect(self._tick)
         self._ticks = 0
         self.refresh()
+
+    def _fill_sound(self) -> None:
+        if not self._devices:
+            return
+        self._device_poll.stop()
+        from sprigcast.sources.audio import device_label
+
+        chosen = self.sound.currentData()
+        for name in self._devices[0]:
+            if self.sound.findData(name) < 0:
+                self.sound.addItem(device_label(name), name)
+        self.sound.setCurrentIndex(max(0, self.sound.findData(chosen)))
 
     def _tick(self) -> None:
         self._ticks += 1

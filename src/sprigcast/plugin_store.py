@@ -1,4 +1,4 @@
-"""The plugin store: optional plugins you can add to SprigCast from Settings → Plugins.
+"""The plugin store: optional plugins you can add to SprigCast from Tools → Plugin store.
 
 Store plugins ship with SprigCast in sprigcast/store/ but stay switched off until you install one:
 installing copies its file into your plugins folder and loads it straight away, so nothing in the
@@ -40,7 +40,7 @@ class StorePlugin:
 
 # Store plugins brought up to date at this start (refresh_installed), for the "updated" note once the window is up.
 updated_at_start: list[str] = []
-# Updates asked for while live or recording, held until both stop (Settings → Plugins).
+# Updates asked for while live or recording, held until both stop (Tools → Plugin store).
 waiting: dict[str, StorePlugin] = {}
 
 

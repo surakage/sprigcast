@@ -1,4 +1,4 @@
-"""Settings → Plugins: the plugin store, and the plugins you added yourself.
+"""Tools → Plugin store: the plugin store, and the plugins you added yourself.
 
 Each store plugin is a soft card: its name, what it adds, one line about it and one pill (Add,
 Remove or Update). Adding loads it at once, so it shows up under + → Plugins without a restart.
@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast import plugin_store
 from sprigcast.app import theme
@@ -20,7 +20,7 @@ HOLD_ON_AIR = "plugins/hold_on_air"
 
 
 def hold_on_air() -> bool:
-    """Settings → Plugins: an Update pressed while live or recording waits until both stop (on unless switched off)."""
+    """Tools → Plugin store: an Update pressed while live or recording waits until both stop (on unless switched off)."""
     return QSettings().value(HOLD_ON_AIR, True, type=bool)
 
 
@@ -247,3 +247,33 @@ class PluginStorePage(QWidget):
         row.refresh()
         row.say("Removed. It's gone for good the next time SprigCast starts.")
         self.changed.emit()
+
+
+class PluginStoreWindow(QDialog):
+    """Tools → Plugin store: the store in a window of its own (it used to be a Settings page)."""
+
+    def __init__(self, plugins_dir: Path | None, report: PluginReport | None, open_plugins_folder=None,
+                 collection=None, on_air: bool = False, parent: QWidget | None = None):
+        from sprigcast.app.settings_window import window_style
+        from sprigcast.app.output_page import _scrolled
+
+        super().__init__(parent)
+        self.setWindowTitle("Plugin store")
+        self.setObjectName("settingsWindow")
+        self.setStyleSheet(window_style())
+        self.resize(820, 680)
+        self.store = PluginStorePage(plugins_dir, report, open_plugins_folder, collection, on_air=on_air)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 20)
+        root.setSpacing(16)
+        root.addWidget(heading("Plugin store", 20))
+        root.addWidget(_scrolled(self.store), 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.setStyleSheet(theme.PILL_STYLE)
+        close.setMinimumWidth(96)
+        close.setAutoDefault(False)
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        root.addLayout(row)

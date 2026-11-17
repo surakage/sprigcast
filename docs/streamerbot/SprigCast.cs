@@ -79,7 +79,7 @@ public class CPHInline
     public bool SwitchGarden() { return Call("garden.switch", Fields("garden")); }
     public bool SwitchPath() { return Call("path.switch", Fields("path")); }
 
-    // Store plugins (add them first in SprigCast Settings → Plugins)
+    // Store plugins (add them first in SprigCast Tools → Plugin store)
     public bool DeathAdd() { return Call("deaths.add", "{}"); }
     public bool DeathRemove() { return Call("deaths.remove", "{}"); }
     public bool DeathReset() { return Call("deaths.reset", "{}"); }

@@ -6,7 +6,7 @@ SprigCast is built to work hand in hand with [Streamer.bot](https://streamer.bot
 
 ## Set up (once)
 
-1. In SprigCast, open **Settings → Connections**, turn on the API and turn on **Allow web links**.
+1. In SprigCast, open **Settings → Connections** and turn on the API. Tick **Expert settings** at the bottom of Settings, then turn on **Allow web links**.
 2. Note the port shown there (4455 unless OBS already uses it; then pick another, e.g. 4456).
 3. Press **Pair a device**. Open `http://127.0.0.1:4455/api/pair?code=CODE&name=Streamer.bot` in a browser (your port, the 6 digits shown, within 2 minutes). Copy the `key` it answers with: that's Streamer.bot's own password from now on (use it wherever this guide says password). You can also copy the password itself, but a key can be removed on its own in Settings → Connections.
 
@@ -86,13 +86,13 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
 | Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
-Store plugins (Audio visualizer, Auto clip, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing, PNGtuber) must be added first in Settings → Plugins.
+Store plugins (Audio visualizer, Auto clip, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing, PNGtuber) must be added first in Tools → Plugin store.
 
 `!song` answers `{"ok": true, "result": {"playing": true, "title": "…", "artist": "…", …}}`: save `title` and `artist` to variables and post them in chat. To switch blooms when the countdown ends, listen for the `timer.done` event (below).
 
 ### Death count with Streamer.bot
 
-Add **Death count** in Settings → Plugins, then + → Plugins → Death count in a bloom. Point a Stream Deck button or a mod-only `!death` command at `deaths.add`. Every `deaths.*` link answers `{"ok": true, "result": {"count": 7}}`, so a Fetch URL sub-action can save the answer to a variable and post it in chat (for example "That's death number 7"). `deaths.get` reads the count without popping it up. To keep a Streamer.bot global in step, listen for the `deaths.changed` event (below).
+Add **Death count** in Tools → Plugin store, then + → Plugins → Death count in a bloom. Point a Stream Deck button or a mod-only `!death` command at `deaths.add`. Every `deaths.*` link answers `{"ok": true, "result": {"count": 7}}`, so a Fetch URL sub-action can save the answer to a variable and post it in chat (for example "That's death number 7"). `deaths.get` reads the count without popping it up. To keep a Streamer.bot global in step, listen for the `deaths.changed` event (below).
 
 To put words a viewer typed on screen, give a Text source a name and set it: `source.set` with `{"text": "…"}` (POST it as JSON, below).
 

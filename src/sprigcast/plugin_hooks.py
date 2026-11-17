@@ -2,7 +2,7 @@
 
     from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
 
-    # Hotkeys: list (id, label) pairs for Settings → Hotkeys; run(api, id) when one is pressed.
+    # Hotkeys: list (id, label) pairs for Tools → Hotkeys; run(api, id) when one is pressed.
     register_hotkeys(lambda collection: [("roll:cam", "Barrel roll: Cam")], lambda api, hid: ...)
     # run may return a short note for the status bar, e.g. not_here("Cam") when it isn't on air.
 

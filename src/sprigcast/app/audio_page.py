@@ -1,4 +1,4 @@
-"""Settings → Audio, in tabs: Devices, Tracks, Sounds (which go on each track) and Bitrate.
+"""Settings → Audio, in tabs: Devices, Tracks and Sounds (which go on each track).
 
 - Global devices: the Desktop audio and Mic every setup starts with. Switched off, they are not opened
   at all and leave the Sound list, so only the mics and desktop sounds you add yourself play.
@@ -6,7 +6,8 @@
   but the sounds you keep out of it, music by default), 3 is your voice, 4 and 5 are yours to fill.
 - Sounds: one row per sound, like OBS's Advanced Audio Properties: volume, mono, balance, sync
   offset, listeners and its tracks. The Sound card's ⚙ opens it.
-- Bitrate: how good the sound is on the stream and in recordings (clips and source record too).
+
+Sound bitrate sits with the rest of each encoder (Stream → Quality and Recording, expert rows).
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ def device_label(kind: str) -> str:
 
 
 class AudioPage(QWidget):
-    TABS = ("Devices", "Tracks", "Sounds", "Bitrate")
+    TABS = ("Devices", "Tracks", "Sounds")
 
     def __init__(self, collection: SceneCollection, audio_devices: dict[str, list[str]], recording: bool = False,
                  streaming: bool = False):
@@ -100,8 +101,7 @@ class AudioPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self.device_combos: dict[str, QComboBox] = {}
         self.tabs = QTabWidget()
-        for name, card in zip(self.TABS, (self._devices(audio_devices), self._tracks(recording), self._grid(),
-                                          self._bitrate())):
+        for name, card in zip(self.TABS, (self._devices(audio_devices), self._tracks(recording), self._grid())):
             tab = QWidget()
             box = QVBoxLayout(tab)
             box.setContentsMargins(0, 4, 0, 0)
@@ -126,41 +126,6 @@ class AudioPage(QWidget):
     def show_tab(self, name: str) -> None:
         if name in self.TABS:
             self.tabs.setCurrentIndex(self.TABS.index(name))
-
-    # Bitrate -----------------------------------------------------------------------------
-
-    def _kbps(self, value: int) -> QComboBox:
-        combo = QComboBox()
-        for kbps in sorted({*AUDIO_KBPS, value}):
-            combo.addItem(f"{kbps} kbps", kbps)
-        combo.setCurrentIndex(combo.findData(value))
-        return combo
-
-    def _bitrate(self) -> QWidget:
-        group = QGroupBox("Bitrate")
-        box = QVBoxLayout(group)
-        box.setContentsMargins(0, 0, 0, 0)  # the card's own padding (settings_window style) is enough
-        box.setSpacing(12)
-        form = QFormLayout()
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(10)
-        c = self.collection
-        self.stream_kbps = self._kbps(c.stream_encoder.audio_kbps)
-        self.stream_kbps.setEnabled(not self.streaming)
-        self.stream_kbps.setFixedWidth(180)
-        form.addRow("Stream", self.stream_kbps)
-        self.recording_kbps = self._kbps(c.recording.encoder.audio_kbps)
-        self.recording_kbps.setEnabled(not self.recording)
-        self.recording_kbps.setFixedWidth(180)
-        form.addRow("Recordings and clips", self.recording_kbps)
-        box.addLayout(form)
-        notes = ["160 kbps is plenty for a stream. Recordings can go higher: every track uses this bitrate."]
-        if self.streaming:
-            notes.append("End the stream to change the stream's.")
-        if self.recording:
-            notes.append("Stop the recording to change the recording's.")
-        box.addWidget(_hint(" ".join(notes)))
-        return group
 
     # Devices -----------------------------------------------------------------------------
 
@@ -361,12 +326,7 @@ class AudioPage(QWidget):
             audio.global_sources = collection.global_device_ids()
         audio.global_devices = self.global_on.isChecked()
         audio.track_names = [e.text().strip() or TRACK_NAMES[i] for i, e in enumerate(self.track_names)]
-        if not self.streaming:
-            collection.stream_encoder = collection.stream_encoder.model_copy(
-                update={"audio_kbps": self.stream_kbps.currentData()})
         if not recording:
-            collection.recording.encoder = collection.recording.encoder.model_copy(
-                update={"audio_kbps": self.recording_kbps.currentData()})
             collection.recording.audio_tracks = [n for n, keep in enumerate(self.track_kept, 1) if keep.isChecked()]
             collection.recording.voice_track = 3 in collection.recording.audio_tracks
         for source in collection.sources:

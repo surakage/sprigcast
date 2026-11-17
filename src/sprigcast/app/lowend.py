@@ -345,3 +345,34 @@ def waiting_fps() -> dict[str, int]:
     from sprigcast.app.settings_window import pending_video
 
     return {cid: int(change["fps"]) for cid, change in pending_video().items() if "fps" in change}
+
+
+# How much this PC can carry, shown on Settings → General → This PC. Optimize and Light settings store
+# the tier they set; until then it's worked out from the PC itself.
+TIERS = {"light": "Light", "balanced": "Balanced", "best": "Best"}
+TIER_SETTING = "general/pc_tier"
+
+
+def tier(facts: PcFacts) -> str:
+    """"light" for a weak or older PC, "best" for one with room to spare, else "balanced"."""
+    from sprigcast.output.recorder import is_hardware
+
+    if weak_reasons(facts):
+        return "light"
+    if facts.threads >= 12 and facts.memory_gb >= 15 and is_hardware(facts.codec):
+        return "best"
+    return "balanced"
+
+
+def stored_tier() -> str | None:
+    from PySide6.QtCore import QSettings
+
+    value = QSettings().value(TIER_SETTING, "", type=str)
+    return value if value in TIERS else None
+
+
+def store_tier(value: str) -> None:
+    from PySide6.QtCore import QSettings
+
+    if value in TIERS:
+        QSettings().setValue(TIER_SETTING, value)

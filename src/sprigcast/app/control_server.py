@@ -259,7 +259,7 @@ class WindowHost:
         """Like start_stream, for recording (the warning is low space on the drive)."""
         col = self.w.collection
         if not any(c.enabled and c.id in col.recording.canvases for c in col.canvases):
-            return "No canvas is ticked for recording (Settings → Output)."
+            return "No canvas is ticked for recording (Settings → Recording)."
         if self.w.recording is not None:
             return None
         return _outcome(self.w._start_recording(remote=True, force=force))
@@ -373,7 +373,7 @@ class WindowHost:
             from sprigcast.output import virtualcam
 
             if not (virtualcam.supported()[0] and virtualcam.installed()):  # never a setup prompt from an app
-                return "Set up SprigCast Camera first: Settings → Output → Virtual camera."
+                return "Set up SprigCast Camera first: Settings → Video → Virtual camera."
         if (self.w.camera is not None) != on:
             self.w._toggle_camera()
         if (self.w.camera is not None) != on:

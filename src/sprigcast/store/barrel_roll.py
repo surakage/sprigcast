@@ -5,9 +5,9 @@ spins and how many turns in the Barrel roll filter (a source's Filters window), 
     {"do": "roll.spin", "sprig": "Cam frame", "seconds": 15}
     {"do": "roll.spin", "source": "Logo", "turns": 3, "seconds": 2, "direction": "anticlockwise"}
 
-Right-click it in a bloom, give it a hotkey (Settings → Hotkeys → Plugins), or trigger it from an app.
+Right-click it in a bloom, give it a hotkey (Tools → Hotkeys → Plugins), or trigger it from an app.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ top of your bloom. In its settings pick what it replays:
 - In the corner (optional): a second one shown small in a corner over it, like your camera.
 
 While its bloom is on air it keeps the last Seconds of just that, encoded on the graphics card like
-the clips buffer. Press its hotkey (Settings → Hotkeys → Plugins), right-click it, or trigger it from
+the clips buffer. Press its hotkey (Tools → Hotkeys → Plugins), right-click it, or trigger it from
 an app or Stream Deck ({"do": "replay.play"}): canopy bands sweep across, REPLAY shows while the
 screen is covered, and the replay plays with a badge and a thin progress line, at normal speed or in
 slow motion. When it ends the bands sweep back and it hides itself. Apps hear replay.started and
@@ -16,7 +16,7 @@ Light by design: nothing is kept while the replay's bloom is off air or its eye 
 picked is encoded (720p unless you pick Sharp), and the replay is played from a temporary file that's
 deleted when it ends.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

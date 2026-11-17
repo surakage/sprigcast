@@ -4,13 +4,13 @@ For a camera, a game capture or a screen: a redeem that pixelates you for 15 sec
 privacy button (no time: stays hidden until you show it again). Hide it adds two filters, Pixelate
 and Blackout, that you can also tune in a source's Filters window (block size, how dark, how long).
 
-Trigger it from the right-click menu, a hotkey (Settings → Hotkeys → Plugins) or an app:
+Trigger it from the right-click menu, a hotkey (Tools → Hotkeys → Plugins) or an app:
     {"do": "hide.pixelate", "source": "Facecam", "seconds": 15}
     {"do": "hide.blackout", "source": "Game capture"}            (its usual time)
     {"do": "hide.toggle", "source": "Facecam", "how": "blackout"} (until toggled back)
     {"do": "hide.show", "source": "Facecam"}
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

@@ -306,7 +306,7 @@ class Output(BaseModel):
 
 
 class EncoderSettings(BaseModel):
-    """How video is encoded (Settings → Output), like OBS's NVENC options. x264 gets the closest match."""
+    """How video is encoded (Settings → Stream → Quality), like OBS's NVENC options. x264 gets the closest match."""
 
     encoder: str = "auto"  # an FFmpeg encoder name (h264_nvenc, hevc_amf, libx264...); auto = best on this PC
     x264_preset: str = "veryfast"  # x264 (CPU) only: ultrafast .. slow
@@ -353,7 +353,7 @@ class RecordingSettings(BaseModel):
     short_side: int | None = None  # record shrunk so the short side is this (720: 1280x720); None = canvas size
     # Same as stream: while live, a canvas being streamed is recorded from the stream's own encoder (its size,
     # bitrate and stream sound) instead of a second encoder. Lighter on the PC, like OBS's "Same as stream".
-    same_as_stream: bool = False
+    same_as_stream: bool = True  # on for everyone since the Settings review (2026-11-17): one encoder, not two
     # Split long recordings into several files, with nothing lost between them (0: one file). FAT32 drives
     # can't hold a file over 4 GB.
     record_when_live: bool = False  # going live starts a recording too, and ending the stream stops that one

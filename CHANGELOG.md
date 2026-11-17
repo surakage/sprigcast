@@ -68,6 +68,21 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Stopping a delayed stream sends its last seconds instead of dropping them (#216).
 - Number fields have room inside so numbers don't touch the edge (#224).
 - Names with & (like "SFX & alerts") show as typed in tick boxes and menus (#231).
+- Settings reorganised into six pages: General, Stream (Places, Quality), Recording (Recording, Clips), Audio,
+  Video (Canvases, Virtual camera) and Connections. Hotkeys and the plugin store have their own windows (Tools menu),
+  snapping moved to Build's right-click menu, and the read-only Colour box is gone.
+- Each encoder leads with one Quality choice (Lightest to Best). The rest (rate control, presets, B-frames, audio
+  bitrate, output scaling, ports...) show with **Expert settings** at the bottom of Settings, a tick that's remembered.
+- General → This PC: the tier Optimize picked (Light, Balanced or Best) with Optimize again, process priority, what
+  sources off screen do, and Preview while live (Smooth, Light at 15 fps, or Off).
+- A search box finds any setting, and canvas changes that wait for a restart get a Restart now button.
+- File → Export settings / Import settings: one file with your choices, never your keys, sign-ins or passwords.
+- Hotkeys Windows or every app already uses (Alt+Tab, Ctrl+C, Windows-key combos) are refused with the reason.
+- Recording "Same as stream" is on for new setups: one encoder while live instead of two.
+- The first time the encoder can't keep up, a note offers Make it lighter right away.
+- The mouse wheel no longer changes a drop-down you didn't click (it set a place's Resolution to 480p).
+- Settings no longer waits for the sound-device scan to list the virtual camera's speakers (a 300 ms freeze).
+- Browser sources and web docks share at most two Chromium page processes.
 
 ### Sound
 

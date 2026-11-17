@@ -21,7 +21,7 @@ goes quiet when you mute. It can also listen to a mic straight from Windows. Set
 and Yells above (dB), Hold (seconds it stays talking after you stop, so it doesn't flap between
 words), Bounce and Blink.
 
-Change expression with hotkeys (Settings → Hotkeys → Plugins), a right-click on it, the Stream Deck
+Change expression with hotkeys (Tools → Hotkeys → Plugins), a right-click on it, the Stream Deck
 PNGtuber key, or from an app:
     {"do": "pngtuber.expression", "expression": "happy"}                 until changed again
     {"do": "pngtuber.expression", "expression": "angry", "seconds": 10}  then back
@@ -31,7 +31,7 @@ PNGtuber key, or from an app:
 
 Hidden, or in a bloom that isn't showing, it stops listening; a minute later it lets the pictures go.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

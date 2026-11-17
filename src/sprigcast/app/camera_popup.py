@@ -1,6 +1,6 @@
 """The Live screen's Virtual camera pop-up: what SprigCast Camera shows, in two drop-downs.
 
-It reads and writes the same "Shows" setting as Settings → Output → Virtual camera (CAMERA_SHOWS),
+It reads and writes the same "Shows" setting as Settings → Video → Virtual camera (CAMERA_SHOWS),
 so the two always agree. The camera reads the setting on every poll, so a change shows at once.
 """
 

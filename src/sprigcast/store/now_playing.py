@@ -16,7 +16,7 @@ listens while the card is on screen. The card is drawn again only when the song 
 
 Apps can ask with {"do": "nowplaying.get"} and hear "nowplaying.changed" (when the card is on screen).
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

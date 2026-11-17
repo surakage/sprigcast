@@ -9,10 +9,10 @@ window), or per trigger:
     {"do": "freeze.toggle", "sprig": "Gameplay"}                 (until toggled back)
     {"do": "freeze.stop", "sprig": "Gameplay"}
 
-Right-click it in a bloom, give it a hotkey (Settings → Hotkeys → Plugins), or trigger it from an app.
+Right-click it in a bloom, give it a hotkey (Tools → Hotkeys → Plugins), or trigger it from an app.
 Freezing again while it's frozen restarts the time and keeps the same picture.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

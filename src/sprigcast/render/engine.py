@@ -139,6 +139,7 @@ class Engine:
         # so a 1080p canvas shown at 600x340 copies 0.8 MB per frame instead of 8 MB.
         self.preview_sizes: dict[str, tuple[int, int]] = {}
         self._preview_at: dict[str, float] = {}
+        self.preview_fps = PREVIEW_FPS  # 15 with Preview while live: Light (Settings → General → This PC)
         self.readbacks = 0  # canvases copied from the GPU, for Stats
         self.wait_free = True  # copy outputs and small previews back a tick late instead of waiting on the GPU
         # Sources nothing on screen shows rest: "not_cameras" (cameras stay ready, they take a second
@@ -296,7 +297,7 @@ class Engine:
             if not outputs:
                 continue
             if all(size is None for _cb, size in outputs):  # only screens watch it (a projector): ~30 fps is plenty
-                if now - self._view_at.get(name, -1.0) < 1 / PREVIEW_FPS - 0.002:
+                if now - self._view_at.get(name, -1.0) < 1 / self.preview_fps - 0.002:
                     continue
                 self._view_at[name] = now
             canvas, scene = self._view_scene(name, sizes)
@@ -1400,11 +1401,11 @@ class Engine:
         return Frame(target_id, size[0], size[1], compositor.read_scaled(target_id, size), now, canvas_size=canvas_size)
 
     def _preview_due(self, key: str, now: float) -> bool:
-        """True when the UI shows this preview and its last copy is at least 1/PREVIEW_FPS old."""
+        """True when the UI shows this preview and its last copy is at least 1/preview_fps old."""
         wanted = self.previews
         if wanted is not None and key not in wanted:
             return False
-        if now - self._preview_at.get(key, -1.0) < 1.0 / PREVIEW_FPS - 0.002:
+        if now - self._preview_at.get(key, -1.0) < 1.0 / self.preview_fps - 0.002:
             return False
         self._preview_at[key] = now
         return True

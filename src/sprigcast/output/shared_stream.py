@@ -176,7 +176,7 @@ class StreamLink:
         self._ready = False  # connected and has stream headers: packets are wanted
         self._started = False  # the first keyframe went out (everything before it is skipped)
         self._congested = False
-        self.delay_s = 0.0  # Settings → Advanced → Stream delay
+        self.delay_s = 0.0  # Settings → Stream → Quality → Stream delay
         self._delay_line = None
         self._zero = 0.0  # seconds of the first packet sent on this connection
         self._connected_at = 0.0

@@ -134,7 +134,7 @@ class Streamer(Recorder):
         self._backlog_bytes = 0
         self._congested = False
         self._sender: threading.Thread | None = None
-        self.delay_s = 0.0  # Settings → Advanced → Stream delay: packets wait this long before they're sent
+        self.delay_s = 0.0  # Settings → Stream → Quality → Stream delay: packets wait this long before they're sent
         self._delay_line = None
         self._connected_at = 0.0
         # Auto-pilot needs a target bitrate to steer; constant-quality encoding has none.
@@ -452,7 +452,7 @@ class StreamSession:
     def start(cls, engine, targets: list[StreamTarget], codec: str, encoder=None,
               delay_s: float = 0.0, share_all: bool = False) -> "StreamSession":
         """share_all: a destination on its own gets a shared encoder too, so a recording set to "Same as
-        stream" can write its packets (Settings → Output → Recording)."""
+        stream" can write its packets (Settings → Recording)."""
         from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
 
         start_time = time.perf_counter()

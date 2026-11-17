@@ -321,7 +321,7 @@ class VirtualCamera:
         self.engine = engine
         self.canvases = canvases  # callable: the collection's canvases (id, width, height, enabled)
         # callable: what to show: "auto" (the canvas shaped like the app's request), "canvas:<id>",
-        # "bloom:<scene id>" or "source:<source id>" (Settings → Output → Virtual camera)
+        # "bloom:<scene id>" or "source:<source id>" (Settings → Video → Virtual camera)
         self.choice = choice
         self.scenes = scenes  # callable: the collection's scenes (id, canvas), to find a bloom's canvas
         self._pad = None  # (size, numpy NV12 buffer) for letter/pillarboxing a picture of another shape

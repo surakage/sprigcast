@@ -1,6 +1,6 @@
 """A widget that shows one canvas and lets you edit the active scene's items with the mouse.
 
-- Click an item to select it; drag to move it (snapping options are in Settings → General).
+- Click an item to select it; drag to move it (snapping options are in the right-click menu → Snapping).
 - Drag a corner handle to scale; hold Alt while dragging a handle to crop instead.
 - Arrow keys nudge the selected item by 1 px, or 10 px with Shift.
 - Double-click a part to edit it in place: the show stays on screen, dimmed around the part, and the
@@ -24,7 +24,7 @@ SNAP_PX = 10  # default snap distance on screen
 
 
 def snap_settings() -> dict:
-    """Snapping options from Settings → General (QSettings "editing/..."), with OBS-like defaults."""
+    """Snapping options from Build's right-click → Snapping (QSettings "editing/..."), with OBS-like defaults."""
     from PySide6.QtCore import QSettings
 
     q = QSettings()
@@ -63,6 +63,7 @@ class Preview(QWidget):
         self.scene: Scene | None = None
         self.sizes: dict[str, tuple[int, int]] = {}
         self.statuses: dict[str, str] = {}  # source id -> status, from the engine (empty pages get a placeholder)
+        self.paused = False  # Preview while live: Off (the main window sets it; nothing is copied back meanwhile)
         self.selected_index: int | None = None
         self.transparent = True  # show see-through canvas areas as a checkerboard
         self.live_look = False  # Live's stage: no checkerboard frame, room for the on-air ring
@@ -270,10 +271,11 @@ class Preview(QWidget):
         band = 22 if self.show_title else 0  # zoomed in, the canvas stays under the title (when there is one)
         p.setClipRect(QRectF(0, band, self.width(), self.height() - band))
         # Square corners: the canvas is drawn exactly as it goes out to the stream and the recording.
-        if self._image is None:
+        if self._image is None or self.paused:
             p.fillRect(rect, QColor("#000000"))
             p.setPen(QColor(theme.MUTED))
-            p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.empty_text)
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+                       "Preview off while live" if self.paused else self.empty_text)
         else:
             if self.transparent:
                 self._paint_checker(p, rect)
