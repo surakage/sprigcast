@@ -286,6 +286,15 @@ SC_API int sc_engine_stats_get(sc_engine *engine, sc_engine_stats *out);
 /* Waits for a frame drawn after this call (up to 2 s) and copies that canvas into `out` as BGRA, width * 4 bytes a row. The
  * width and height must be the canvas's. Tests and screenshots only: the frame path never copies frames back. */
 SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int width, int height);
+/* Pictures of a canvas for Python's screens: each frame (at most `max_fps` a second, 0 = every frame) the engine
+ * draws canvas `index` shrunk to width x height as premultiplied RGBA, the way SprigCast's previews take it, and
+ * copies it back without waiting on the graphics card, so it arrives a frame or two later. 0 x 0 stops. */
+SC_API int sc_engine_canvas_watch(sc_engine *engine, int index, int width, int height, int max_fps);
+/* The newest watched picture of canvas `index`, if it is newer than *seq and width x height: copies it into `out`
+ * (width * 4 bytes a row), updates *seq, sets *fresh = 1 and *drawn to the engine time it was drawn. Otherwise
+ * *fresh = 0. Never waits. */
+SC_API int sc_engine_canvas_take(sc_engine *engine, int index, uint8_t *out, int width, int height, uint64_t *seq,
+                                 int *fresh, double *drawn);
 /* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++
  * exception, 2 writes through a null pointer, 3 acts as if the graphics card was lost (the engine rebuilds),
  * 4 stalls the frame for 3 s (the watchdog reports it hung, then it goes on). */

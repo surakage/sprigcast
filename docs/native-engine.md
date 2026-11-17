@@ -73,6 +73,16 @@ minute, or no device after ten tries, and the engine stops and reports `faulted`
 engine. A watchdog thread reports `hung` while one frame has taken more than 2 s. `sc_engine_debug_fault`
 triggers each of these in the checks.
 
+## In the app (`SPRIGCAST_ENGINE=native`)
+
+render/native_bridge.py: the render thread hands every new source picture to the native engine too, and a
+snapshot of what is on air (blooms and every sprig layout, as their Live state shows them) whenever that or the
+filters change. The native engine draws the canvases and copies preview-sized pictures back without waiting on
+the card (`sc_engine_canvas_watch` / `_take`); the screens show those, so Python's compositor no longer draws a
+canvas only to show it. It still draws recordings and streams, transitions, Build's edited bloom, the Part
+editor, screenshots and the virtual camera until those move. If the native engine stops (faulted), Python's
+compositor draws the previews again by itself.
+
 ## Phases
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7

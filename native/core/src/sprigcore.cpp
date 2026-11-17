@@ -27,6 +27,8 @@ std::string hr_text(HRESULT hr) {
 
 namespace sc {
 
+HRESULT compile_now(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
+
 void set_last_error(const std::string &message) { g_last_error = message; }
 
 void log_line(int level, const std::string &message) {
@@ -45,7 +47,30 @@ int fail_hr(int code, const char *what, HRESULT hr) {
     return fail(code, std::string(what) + " failed (" + hr_text(hr) + ")");
 }
 
+// Compiled shaders, kept for the life of the process: a new device (a rebuild after a fault, a second engine)
+// skips compiling again, which takes over a second on the software renderer and on slow PCs.
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
+    static std::mutex cache_lock;
+    static std::map<std::string, ComPtr<ID3DBlob>> cache;
+    const std::string key = std::to_string(reinterpret_cast<uintptr_t>(source)) + ":" + std::to_string(size) + ":" +
+                            entry + ":" + profile;
+    {
+        std::lock_guard<std::mutex> lock(cache_lock);
+        auto found = cache.find(key);
+        if (found != cache.end()) {
+            out = found->second;
+            return S_OK;
+        }
+    }
+    HRESULT hr = compile_now(source, size, entry, profile, out);
+    if (SUCCEEDED(hr)) {
+        std::lock_guard<std::mutex> lock(cache_lock);
+        cache[key] = out;
+    }
+    return hr;
+}
+
+HRESULT compile_now(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
     ComPtr<ID3DBlob> errors;
     HRESULT hr = D3DCompile(source, size, "sprigcore", nullptr, nullptr, entry, profile,
                             D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out.GetAddressOf(), errors.GetAddressOf());

@@ -89,6 +89,23 @@ struct PreviewCfg {
     float background[4] = {0, 0, 0, 1};
 };
 
+struct Watch {  // shared: what Python asked for and the newest picture
+    int width = 0, height = 0, max_fps = 0;
+    std::vector<uint8_t> latest;
+    int latest_w = 0, latest_h = 0;
+    double drawn = 0;
+    uint64_t seq = 0;
+};
+
+struct Reader {  // the frame thread's: a small picture and three copies on their way back
+    sc::Target target;
+    ComPtr<ID3D11Texture2D> staging[3];
+    bool pending[3] = {false, false, false};
+    double drawn[3] = {0, 0, 0};
+    int next = 0;
+    int64_t last = 0;
+};
+
 struct PreviewGpu {
     ComPtr<IDXGISwapChain1> chain;
     ComPtr<ID3D11RenderTargetView> target;
@@ -115,6 +132,7 @@ struct sc_engine {
     int rate_num = 60, rate_den = 1;
     bool rate_changed = true;
     CanvasCfg canvases[SC_ENGINE_CANVASES];
+    Watch watches[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> uploads;                  // the newest picture per source, not yet sent
     std::unordered_map<uint64_t, std::vector<uint8_t>> spare;   // buffers to reuse for the next picture
     std::set<uint64_t> forgets;
@@ -133,6 +151,7 @@ struct sc_engine {
     sc_device *dev = nullptr;
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
     std::unordered_map<int, PreviewGpu> shown;
+    Reader readers[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> kept_sources;
     std::unordered_map<uint64_t, LookData> kept_looks;
     std::unordered_map<uint64_t, MaskData> kept_masks;
@@ -181,6 +200,7 @@ void check(int code) {
 
 void drop_gpu(sc_engine &e) {
     e.shown.clear();
+    for (auto &r : e.readers) r = Reader();
     for (auto &c : e.gpu) {
         sc_canvas_destroy(c);
         c = nullptr;
@@ -366,6 +386,79 @@ void show_preview(sc_engine &e, const PreviewCfg &cfg, PreviewGpu &pg, int64_t n
     ++presented;
 }
 
+// Copies of watched canvases: draw the small picture, start its copy back, and collect copies that are done,
+// never waiting on the card (a copy still on its way is looked at again next frame).
+void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &want, double seconds, int64_t now) {
+    Reader &r = e.readers[index];
+    sc_device &dev = *e.dev;
+    std::lock_guard<std::mutex> lock(dev.lock);
+    if (!canvas || want.width <= 0) {
+        r = Reader();
+        return;
+    }
+    for (int k = 0; k < 3; ++k) {  // oldest first
+        const int s = (r.next + k) % 3;
+        if (!r.pending[s]) continue;
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT hr = dev.context->Map(r.staging[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
+        if (is_lost(hr)) throw Gone("the graphics card was reset or removed (read-back)");
+        r.pending[s] = false;
+        if (FAILED(hr)) {
+            fail_hr(SC_ERR_DEVICE, "Map (canvas picture)", hr);
+            continue;
+        }
+        const int w = r.target.width, h = r.target.height;
+        std::vector<uint8_t> picture;
+        {
+            std::lock_guard<std::mutex> st(e.state);
+            picture.swap(e.watches[index].latest);  // reuse the last buffer
+        }
+        picture.resize(static_cast<size_t>(w) * h * 4);
+        const auto *src = static_cast<const uint8_t *>(mapped.pData);
+        for (int y = 0; y < h; ++y)
+            std::memcpy(picture.data() + static_cast<size_t>(y) * w * 4, src + static_cast<size_t>(y) * mapped.RowPitch,
+                        static_cast<size_t>(w) * 4);
+        dev.context->Unmap(r.staging[s].Get(), 0);
+        std::lock_guard<std::mutex> st(e.state);
+        Watch &out = e.watches[index];
+        out.latest.swap(picture);
+        out.latest_w = w;
+        out.latest_h = h;
+        out.drawn = r.drawn[s];
+        ++out.seq;
+    }
+    if (want.max_fps > 0 && r.last && (now - r.last) < qpf() * 9 / (10 * want.max_fps)) return;
+    if (r.target.width != want.width || r.target.height != want.height) {
+        r = Reader();
+        check(make_target(dev.device.Get(), want.width, want.height, r.target));
+        if (!r.target.texture) return;
+        D3D11_TEXTURE2D_DESC td;
+        r.target.texture->GetDesc(&td);
+        td.Usage = D3D11_USAGE_STAGING;
+        td.BindFlags = 0;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        for (auto &staging : r.staging) {
+            HRESULT hr = dev.device->CreateTexture2D(&td, nullptr, &staging);
+            if (is_lost(hr)) throw Gone("the graphics card was reset or removed (read-back)");
+            if (FAILED(hr)) {
+                fail_hr(SC_ERR_DEVICE, "Creating a canvas picture's copy", hr);
+                r = Reader();
+                return;
+            }
+        }
+    }
+    const int s = r.next;
+    if (r.pending[s]) return;  // all three still on their way: the card is behind, skip this one
+    check(draw_view(dev, r.target.target.Get(), want.width, want.height, canvas->view.Get(), 0, 0,
+                    static_cast<float>(want.width), static_cast<float>(want.height), 1.0f, false));
+    dev.context->CopyResource(r.staging[s].Get(), r.target.texture.Get());
+    r.pending[s] = true;
+    r.drawn[s] = seconds;
+    r.next = (s + 1) % 3;
+    r.last = now;
+}
+
 // One frame: take Python's work, send it to the card, draw every canvas, show the previews.
 void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, uint64_t &skipped) {
     int fault;
@@ -392,6 +485,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
 
     CanvasCfg canvases[SC_ENGINE_CANVASES];
+    Watch watches[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> uploads;
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, LookData> looks;
@@ -402,6 +496,11 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     {
         std::lock_guard<std::mutex> lock(e.state);
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
+        for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
+            watches[i].width = e.watches[i].width;
+            watches[i].height = e.watches[i].height;
+            watches[i].max_fps = e.watches[i].max_fps;
+        }
         uploads.swap(e.uploads);
         forgets.swap(e.forgets);
         looks.swap(e.looks);
@@ -456,6 +555,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (cfg.scene) check(sc_canvas_render(c, cfg.scene, seconds));
         else check(sc_canvas_clear(c, 0, 0, 0, 0));
     }
+    for (int i = 0; i < SC_ENGINE_CANVASES; ++i) read_back(e, i, e.gpu[i], watches[i], seconds, now);
 
     for (auto it = e.shown.begin(); it != e.shown.end();) {
         const bool wanted = std::any_of(previews.begin(), previews.end(),
@@ -573,10 +673,6 @@ DWORD WINAPI frame_main(void *arg) {
             timeBeginPeriod(1);
             coarse = true;
         }
-        {
-            std::lock_guard<std::mutex> lock(e.state);
-            e.stats.running = 1;
-        }
         int num = 60, den = 1;
         int64_t start = qpc(), n = 0;
         bool restart = true;
@@ -681,6 +777,7 @@ SC_API int sc_engine_create(int adapter, int flags, sc_engine **out) {
             sc_device_destroy(e->dev);
             return fail(SC_ERR_INTERNAL, "sc_engine_create: no events");
         }
+        e->stats.running = 1;  // from now: a call made before the thread's first moment still waits for frames
         e->threads[0] = CreateThread(nullptr, 0, frame_main, e.get(), 0, nullptr);
         e->threads[1] = e->threads[0] ? CreateThread(nullptr, 0, watchdog_main, e.get(), 0, nullptr) : nullptr;
         if (!e->threads[1]) {
@@ -933,6 +1030,43 @@ SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int
         if (!canvas || canvas->width != width || canvas->height != height)
             return fail(SC_ERR_TIMEOUT, "sc_engine_canvas_read: the canvas isn't drawn yet");
         return sc_canvas_read_bgra(canvas, out, width * 4);
+    });
+}
+
+SC_API int sc_engine_canvas_watch(sc_engine *engine, int index, int width, int height, int max_fps) {
+    return engine_call(engine, "sc_engine_canvas_watch", [&]() -> int {
+        if (index < 0 || index >= SC_ENGINE_CANVASES || max_fps < 0)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_watch: bad slot or rate");
+        const bool off = width == 0 && height == 0;
+        if (!off && (width < 1 || height < 1 || width > 16384 || height > 16384))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_watch: size must be 1 to 16384 each way");
+        std::lock_guard<std::mutex> lock(engine->state);
+        Watch &w = engine->watches[index];
+        w.width = width;
+        w.height = height;
+        w.max_fps = max_fps;
+        if (off) {
+            w.latest = std::vector<uint8_t>();
+            w.latest_w = w.latest_h = 0;
+        }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_canvas_take(sc_engine *engine, int index, uint8_t *out, int width, int height, uint64_t *seq,
+                                 int *fresh, double *drawn) {
+    return engine_call(engine, "sc_engine_canvas_take", [&]() -> int {
+        if (!out || !seq || !fresh || index < 0 || index >= SC_ENGINE_CANVASES)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_take: bad slot or output");
+        *fresh = 0;
+        std::lock_guard<std::mutex> lock(engine->state);
+        const Watch &w = engine->watches[index];
+        if (w.seq <= *seq || w.latest_w != width || w.latest_h != height || w.latest.empty()) return SC_OK;
+        std::memcpy(out, w.latest.data(), w.latest.size());
+        *seq = w.seq;
+        *fresh = 1;
+        if (drawn) *drawn = w.drawn;
+        return SC_OK;
     });
 }
 

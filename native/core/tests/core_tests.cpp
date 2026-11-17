@@ -226,6 +226,38 @@ int main() {
         }
     };
     engine_draws_it("at first");
+    // Watched pictures come back without waiting: RGBA at the size asked, the same picture at full size.
+    CHECK(sc_engine_canvas_watch(eng, 0, 32, 16, 0) == SC_OK);
+    {
+        std::vector<uint8_t> rgba(32 * 16 * 4);
+        uint64_t seq = 0;
+        int fresh = 0;
+        double drawn = -1;
+        for (int waited = 0; waited < 2000 && !fresh; waited += 10) {
+            CHECK(sc_engine_canvas_take(eng, 0, rgba.data(), 32, 16, &seq, &fresh, &drawn) == SC_OK);
+            if (!fresh) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(fresh == 1 && seq >= 1 && drawn >= 0);
+        bool same = fresh == 1;
+        for (size_t i = 0; same && i < rgba.size(); i += 4)
+            same = rgba[i] == out[i + 2] && rgba[i + 1] == out[i + 1] && rgba[i + 2] == out[i] && rgba[i + 3] == out[i + 3];
+        if (!same) {
+            std::printf("FAILED the watched picture differs from the canvas\n");
+            ++failures;
+        }
+        int again = 1;
+        const uint64_t had = seq;
+        CHECK(sc_engine_canvas_take(eng, 0, rgba.data(), 8, 8, &seq, &again, &drawn) == SC_OK);
+        CHECK(again == 0 && seq == had);  // not that size
+        CHECK(sc_engine_canvas_watch(eng, 0, 8, 4, 30) == SC_OK);
+        fresh = 0;
+        for (int waited = 0; waited < 2000 && !fresh; waited += 10) {
+            CHECK(sc_engine_canvas_take(eng, 0, rgba.data(), 8, 4, &seq, &fresh, &drawn) == SC_OK);
+            if (!fresh) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        CHECK(fresh == 1);
+        CHECK(sc_engine_canvas_watch(eng, 0, 0, 0, 0) == SC_OK);
+    }
     CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.ticks >= 3; }, 2000, st));
     print_stats("running", st);
     CHECK(st.running == 1 && st.faulted == 0 && st.canvases == 1 && st.sources == 1);

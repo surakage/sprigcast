@@ -205,6 +205,9 @@ def _lib():
         "sc_engine_preview_detach": (c_int, [vp, c_int]),
         "sc_engine_stats_get": (c_int, [vp, ctypes.POINTER(EngineStats)]),
         "sc_engine_canvas_read": (c_int, [vp, c_int, vp, c_int, c_int]),
+        "sc_engine_canvas_watch": (c_int, [vp, c_int, c_int, c_int, c_int]),
+        "sc_engine_canvas_take": (c_int, [vp, c_int, vp, c_int, c_int, ctypes.POINTER(ctypes.c_uint64),
+                                          ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_double)]),
         "sc_engine_debug_fault": (c_int, [vp, c_int]),
     }
     try:
@@ -432,6 +435,7 @@ class Engine:
         self._handle = handle
         self._sizes: dict[int, tuple[int, int]] = {}
         self._previews: set[int] = set()
+        self._seen: dict[int, ctypes.c_uint64] = {}
         drain_log()
         self.set_rate(*fps)
 
@@ -511,6 +515,21 @@ class Engine:
         out = ctypes.create_string_buffer(w * h * 4)
         _check(_need().sc_engine_canvas_read(self.handle, index, out, w, h))
         return out.raw
+
+    def watch(self, index: int, width: int, height: int, max_fps: int = 0) -> None:
+        """Have the engine copy canvas ``index`` back shrunk to width x height (premultiplied RGBA, as previews
+        take it) at most ``max_fps`` times a second, without waiting on the card. 0 x 0 stops."""
+        _check(_need().sc_engine_canvas_watch(self.handle, index, int(width), int(height), int(max_fps)))
+
+    def take(self, index: int, width: int, height: int) -> tuple[bytes, float] | None:
+        """The newest watched picture of canvas ``index`` at width x height and the engine time it was drawn,
+        or None when nothing newer has come back. Never waits."""
+        seq = self._seen.setdefault(index, ctypes.c_uint64(0))
+        out = ctypes.create_string_buffer(width * height * 4)
+        fresh, drawn = ctypes.c_int(0), ctypes.c_double(0.0)
+        _check(_need().sc_engine_canvas_take(self.handle, index, out, width, height, ctypes.byref(seq),
+                                             ctypes.byref(fresh), ctypes.byref(drawn)))
+        return (out.raw, drawn.value) if fresh.value else None
 
     def debug_fault(self, kind: int) -> None:
         """Crash gate checks (tests only): 1 exception, 2 access violation, 3 lost card, 4 a 3 s stuck frame."""
