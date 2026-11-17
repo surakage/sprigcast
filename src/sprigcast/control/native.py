@@ -1128,7 +1128,8 @@ class NativeApi:
                 raise ApiError("not_allowed", problem)
         return {"on": on}
 
-    @action("clip.save", "Save the last seconds as a clip (gets clips ready first if they're off).")
+    @action("clip.save", "Save the last seconds as a clip (gets clips ready first if they're off). Answers with "
+                         "the file names at once; the clip.saved event says when they are written.")
     def clip_save(self, data):
         if not self.host.clips_ready():
             problem = self.host.set_clips(True)

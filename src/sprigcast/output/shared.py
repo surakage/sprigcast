@@ -446,6 +446,27 @@ class SharedReplay:
         when = datetime.now()
         return [enc.save(replay_path(self.folder, enc.canvas_id, when, self.container)) for enc in self.buffers]
 
+    def save_later(self, done) -> list[Path]:
+        """As save(), without waiting for the files: returns their names at once and writes them on a thread of
+        its own, then calls done(files written, problems) from that thread. Each encoder is only asked what
+        the clip holds (between two frames); it goes on encoding while the file is written."""
+        when = datetime.now()
+        jobs = [(enc, replay_path(self.folder, enc.canvas_id, when, self.container), enc.clip_snapshot())
+                for enc in self.buffers]
+
+        def write() -> None:
+            written, problems = [], []
+            for enc, path, snapshot in jobs:
+                try:
+                    written.append(enc.write_clip(path, snapshot))
+                except Exception as exc:  # noqa: BLE001 (this canvas's clip only)
+                    log.warning("saving the clip %s: %s", path.name, exc)
+                    problems.append(f"{enc.canvas_id}: {exc}")
+            done(written, problems)
+
+        threading.Thread(target=write, name="clip-save", daemon=True).start()
+        return [path for _enc, path, _snapshot in jobs]
+
     @property
     def errors(self) -> list[str]:
         return [f"{e.canvas_id}: {e.error}" for e in self.buffers if e.error]

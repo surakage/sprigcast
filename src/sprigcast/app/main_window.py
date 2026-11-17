@@ -263,6 +263,7 @@ class GearWatch(QObject):
 
 class MainWindow(QMainWindow):
     _record_finished = Signal(object, bool)  # a recording's files are closed (from the thread that waited)
+    _clip_written = Signal(list, list)  # a clip's files are written (files, problems), from the thread that wrote
 
     def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None,
                  shelf=None):
@@ -5593,19 +5594,32 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(features.OFF_NOTE["clips"] if not features.on("clips") else
                                          "Press Clip first to get clips ready.", 4000)
             return []
+        if not getattr(self, "_clip_written_wired", False):
+            self._clip_written_wired = True
+            self._clip_written.connect(self._clip_saved)
         try:
-            paths = self.replay.save()
+            # The files are written on a thread of their own (1.3 s with the window waiting on the PC,
+            # 2026-11-17); _clip_saved says so when they're there. The names are known now.
+            paths = self.replay.save_later(self._clip_written.emit)
         except Exception as exc:
             self.statusBar().showMessage(f"Couldn't save the replay: {exc}", 6000)
             return []
         self._clips_used_at = time.monotonic()
+        self.statusBar().showMessage("Saving clip…", 4000)
+        return paths
+
+    def _clip_saved(self, paths: list, problems: list) -> None:
+        """A clip's files are written (or couldn't be)."""
+        if problems:
+            self.statusBar().showMessage("Couldn't save the replay: " + "; ".join(problems), 6000)
+        if not paths:
+            return
         names = ", ".join(p.name for p in paths)
         self.statusBar().showMessage(f"Saved clip: {names}", 8000)
         self._saved_note("Clip saved", paths[0].parent if paths else None)
         self._tidy_saves()
         self.live_side.clip_saved(len(paths))
         self.control.replay_saved(paths)
-        return paths
 
     def _stop_for_space(self) -> None:
         """The recordings drive is nearly full: stop now, files closed properly, rather than let it fill."""

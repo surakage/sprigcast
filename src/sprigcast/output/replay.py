@@ -58,7 +58,8 @@ class _Packet:
         self.seconds = float((pts if pts is not None else dts or 0) * self.time_base)
 
     def payload(self) -> bytes:
-        return self.data if self.data is not None else self.spool.read(self.at, self.size)
+        data = self.data  # read once: the encoder thread may move the bytes to the spool meanwhile
+        return data if data is not None else self.spool.read(self.at, self.size)
 
 
 class Spool:
@@ -66,13 +67,15 @@ class Spool:
 
     Positions only ever grow; the byte in the file is at position % capacity. A packet never wraps
     around the end, so it may skip ahead to the next lap. Packets more than one lap behind the write
-    position have been overwritten (`oldest_kept`). Used from the encoder thread only.
+    position have been overwritten (`oldest_kept`). Written from the encoder thread; a clip being saved reads
+    it from its own thread (ReplayBuffer.write_clip), so each seek-and-read or seek-and-write holds `lock`.
     """
 
     def __init__(self, capacity: int, folder: str | None = None):
         self.capacity = capacity
         self.file = tempfile.TemporaryFile(prefix="sprigcast-replay-", dir=folder)
         self.end = 0
+        self.lock = threading.Lock()
 
     def place(self, size: int) -> int:
         """Where a packet of `size` bytes will go (call write() next)."""
@@ -84,19 +87,21 @@ class Spool:
         return at
 
     def write(self, at: int, data: bytes) -> None:
-        self.file.seek(at % self.capacity)
-        self.file.write(data)
-        self.end = at + len(data)
+        with self.lock:
+            self.file.seek(at % self.capacity)
+            self.file.write(data)
+            self.end = at + len(data)
 
     def oldest_kept(self) -> int:
         return self.end - self.capacity
 
     def read(self, at: int, size: int) -> bytes:
-        if at < self.oldest_kept():
-            raise RuntimeError("replay data was overwritten")
-        self.file.flush()
-        self.file.seek(at % self.capacity)
-        return self.file.read(size)
+        with self.lock:
+            if at < self.oldest_kept():
+                raise RuntimeError("replay data was overwritten")
+            self.file.flush()
+            self.file.seek(at % self.capacity)
+            return self.file.read(size)
 
     def close(self) -> None:
         self.file.close()
@@ -141,6 +146,25 @@ class ReplayBuffer(Recorder):
     def save(self, path: Path, timeout: float = 20.0) -> Path:
         """Write the buffered seconds to `path`. Blocks until written; raises if it couldn't be."""
         self._ask(lambda: self._write_clip(path), timeout)
+        return path
+
+    def clip_snapshot(self, timeout: float = 20.0):
+        """What a clip saved now would hold, taken on the encoder thread between two frames (a list of packets:
+        no bytes are read or copied). write_clip() makes the file from it, on any thread. The two steps let
+        the window ask for a clip without waiting for the file: saving on the encoder thread held the window
+        1.3 s on the PC (2026-11-17), and the encoder encoded nothing meanwhile."""
+        return self._ask(self._clip_packets, timeout)
+
+    def write_clip(self, path: Path, snapshot) -> Path:
+        """Write a clip_snapshot() to `path`. The packets' bytes are still in the buffer (it is overwritten only
+        after as many seconds again); if it has been by now, or the buffer was closed, this raises."""
+        packets, templates, kinds, zero = snapshot
+        out = PacketFile(path, self.container_kind, templates, zero, kinds)
+        try:
+            for p in packets:
+                out.write(p)
+        finally:
+            out.close()
         return path
 
     def _ask(self, job, timeout: float = 20.0, wait: bool = True):
@@ -279,19 +303,16 @@ class ReplayBuffer(Recorder):
                 done["error"] = str(exc) or exc.__class__.__name__
             finished.set()
 
-    def _write_clip(self, path: Path) -> None:
+    def _clip_packets(self):
         packets = list(self._packets)
         start = next((p for p in packets if p.kind == "video" and p.keyframe), None)
         if start is None or self._templates is None:
             raise RuntimeError("nothing buffered yet")
-        packets = packets[packets.index(start):]
-        out = PacketFile(path, self.container_kind, self._templates, start.seconds,
-                         self.audio_kinds("clips") or ("audio",))
-        try:
-            for p in packets:
-                out.write(p)
-        finally:
-            out.close()
+        return (packets[packets.index(start):], self._templates, self.audio_kinds("clips") or ("audio",),
+                start.seconds)
+
+    def _write_clip(self, path: Path) -> None:
+        self.write_clip(path, self._clip_packets())
 
 
 def audio_kind(index: int) -> str:

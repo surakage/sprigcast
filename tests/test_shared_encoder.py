@@ -223,3 +223,45 @@ def test_stopping_a_recording_can_leave_the_wait_to_another_thread(tmp_path):
         waiting.stop()
     assert not enc.running and rec.errors == []
     assert rec.paths and rec.paths[0].stat().st_size > 0
+
+
+def test_a_clip_is_saved_without_waiting_for_its_file(tmp_path):
+    """PC test 2026-11-17 (heavy run): saving a clip held the window 1.3 s, and the encoder encoded nothing
+    meanwhile. save_later() only asks each encoder what the clip holds and writes the files on its own thread."""
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    replay = SharedReplay.start(pool, CANVASES, tmp_path, 10, 800, codec="libx264")
+    t = time.perf_counter()
+    _feed(engine, t, 90, pool=pool)
+    answered = threading.Event()
+    result: list = []
+
+    def done(written, problems):
+        result.extend([written, problems, threading.current_thread()])
+        answered.set()
+
+    paths = replay.save_later(done)
+    assert len(paths) == 2 and len({p.name for p in paths}) == 2  # the names are known at once
+    _feed(engine, t, 30, first=90, pool=pool)  # the encoders go on encoding while the files are written
+    assert answered.wait(20)
+    written, problems, thread = result
+    assert problems == [] and written == paths and thread is not threading.current_thread()
+    assert all(_frames(p) >= 30 for p in paths)
+    both = replay.save()  # the waiting way still works (plugins use it)
+    assert all(_frames(p) >= 30 for p in both)
+    replay.stop()
+
+
+def test_a_clip_that_cant_be_written_says_so(tmp_path):
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    replay = SharedReplay.start(pool, CANVASES[:1], tmp_path, 10, 800, codec="libx264")
+    _feed(engine, time.perf_counter(), 60, pool=pool)
+    enc = replay.buffers[0]
+    enc.write_clip = lambda path, snapshot: (_ for _ in ()).throw(OSError("disk full"))
+    answered = threading.Event()
+    result: list = []
+    replay.save_later(lambda written, problems: (result.extend([written, problems]), answered.set()))
+    assert answered.wait(20)
+    assert result[0] == [] and result[1] == ["horizontal: disk full"]
+    replay.stop()
