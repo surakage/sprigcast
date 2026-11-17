@@ -65,11 +65,7 @@ def imports(dll: Path) -> set[str]:
 def prune_pyside(pyside: Path) -> None:
     dlls = {f.name.lower(): f for f in pyside.glob("*.dll")}
 
-    # Python modules (and their type hints) SprigCast never imports.
-    for f in pyside.glob("Qt*.pyd"):
-        if f.stem.split(".")[0] not in QT_MODULES:
-            remove(f)
-    for f in pyside.rglob("*.pyi"):
+    for f in pyside.rglob("*.pyi"):  # type hints, for editors only
         remove(f)
 
     # Plugins.
@@ -82,7 +78,7 @@ def prune_pyside(pyside: Path) -> None:
             remove(f)
 
     # Every DLL reachable from what's kept.
-    roots = [f for f in pyside.glob("*.pyd")] + [pyside / "QtWebEngineProcess.exe"]
+    roots = [pyside / f"{m}.pyd" for m in QT_MODULES] + [pyside / "QtWebEngineProcess.exe"]
     roots += [f for f in plugins.rglob("*.dll")] if plugins.is_dir() else []
     roots += [f for f in pyside.glob("*.dll") if not f.name.lower().startswith(("qt6",) + FFMPEG)]
     needed: set[str] = set(QT_ALWAYS)
@@ -94,6 +90,12 @@ def prune_pyside(pyside: Path) -> None:
                 todo.append(dlls[name])
     for name, f in dlls.items():
         if name.startswith("qt6") and name not in needed:
+            remove(f)
+    # Python modules: the ones SprigCast imports, plus each one whose Qt DLL stays (a kept module can
+    # import it, as QtWebEngineWidgets does QtPrintSupport).
+    for f in pyside.glob("Qt*.pyd"):
+        module = f.stem.split(".")[0]
+        if module not in QT_MODULES and f"qt6{module[2:].lower()}.dll" not in needed:
             remove(f)
     # Qt Multimedia's own FFmpeg (SprigCast uses PyAV's), unless something kept still needs it.
     for f in pyside.glob("*.dll"):
