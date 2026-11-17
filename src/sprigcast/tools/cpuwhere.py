@@ -32,6 +32,11 @@ class CpuWatch:
 
     @staticmethod
     def _times() -> dict[int, float]:
+        if sys.platform == "win32":
+            try:
+                return _windows_thread_times()
+            except Exception:  # noqa: BLE001 (psutil below)
+                pass
         try:
             import psutil
 
@@ -78,6 +83,58 @@ class CpuWatch:
         for name, share in threads[:top]:
             if share >= 0.05:
                 print(f"      {share:5.1f}%  {name}", flush=True)
+
+
+def _windows_thread_times() -> dict[int, float]:
+    """{thread id: CPU seconds} for this process's threads. psutil's own walk of every thread on the PC held
+    Python's lock 434 ms on the PC (2026-11-17), freezing the window even from another thread; ctypes lets go of
+    it at each call."""
+    import ctypes
+    from ctypes import wintypes
+
+    class THREADENTRY32(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD),
+                    ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", ctypes.c_long),
+                    ("tpDeltaPri", ctypes.c_long), ("dwFlags", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Thread32First.argtypes = kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(THREADENTRY32)]
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetThreadTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x4, 0)  # TH32CS_SNAPTHREAD: every thread on the PC
+    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
+        raise OSError("no thread snapshot")
+    pid, found = os.getpid(), {}
+    try:
+        entry = THREADENTRY32()
+        entry.dwSize = ctypes.sizeof(THREADENTRY32)
+        more = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        ours = []
+        while more:
+            if entry.th32OwnerProcessID == pid:
+                ours.append(entry.th32ThreadID)
+            more = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    times = [wintypes.FILETIME() for _ in range(4)]
+    for tid in ours:
+        handle = kernel32.OpenThread(0x0800, False, tid)  # THREAD_QUERY_LIMITED_INFORMATION
+        if not handle:
+            continue
+        try:
+            if kernel32.GetThreadTimes(handle, *(ctypes.byref(t) for t in times)):
+                kernel, user = times[2], times[3]
+                found[tid] = ((kernel.dwHighDateTime << 32 | kernel.dwLowDateTime)
+                              + (user.dwHighDateTime << 32 | user.dwLowDateTime)) / 1e7
+        finally:
+            kernel32.CloseHandle(handle)
+    if not found:
+        raise OSError("no thread times")
+    return found
 
 
 def native_thread_label(tid: int) -> str | None:
