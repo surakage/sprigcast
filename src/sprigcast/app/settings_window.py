@@ -582,7 +582,20 @@ class SettingsWindow(QDialog):
         self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
         lform.addRow("Keep logs for", self.keep_logs)
 
-        return _page(look, self._this_pc_card(), startup, updates, safety, logs, self._clear_data_card())
+        from sprigcast.app import features
+
+        used = QGroupBox("Features")
+        used_box = QVBoxLayout(used)
+        off = features.off()
+        self.feature_ticks: dict[str, QCheckBox] = {}
+        for name, label in sorted(features.FEATURES.items(), key=lambda kv: kv[1]):
+            tick = QCheckBox(label)
+            tick.setChecked(name not in off)
+            tick.setToolTip("Off: hidden from Live and nothing of it is loaded")
+            used_box.addWidget(tick)
+            self.feature_ticks[name] = tick
+
+        return _page(look, self._this_pc_card(), startup, used, updates, safety, logs, self._clear_data_card())
 
     def _clear_data_card(self) -> QGroupBox:
         """Clear all my data: keys, sign-ins, settings and files go, then SprigCast closes (app/clear_data.py)."""
@@ -858,6 +871,9 @@ class SettingsWindow(QDialog):
                 QMessageBox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
         settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
         settings.setValue(PREVIEW_LIVE, self.preview_live.currentData())
+        from sprigcast.app import features
+
+        features.set_off({name for name, tick in self.feature_ticks.items() if not tick.isChecked()}, settings)
         from sprigcast.app import logbook
 
         settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())

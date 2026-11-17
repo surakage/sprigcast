@@ -115,6 +115,12 @@ def finish_mp4(path: Path, chapters: list[dict] | None = None) -> bool:
 
     import time
 
+    from sprigcast.output.storage import room_to_copy
+
+    if not room_to_copy(path):
+        log.warning("not finishing %s as a plain MP4: the drive has no room for a second copy (it plays as it is)",
+                    path.name)
+        return False
     temp = path.with_name(f"{path.stem}.finishing.mp4")
     began = time.monotonic()
     try:

@@ -99,6 +99,7 @@ class Checkup:
     last_streams: dict[str, LastStream] = field(default_factory=dict)  # output id -> previous stream
     free_gb: float | None = None  # in the recordings folder
     recording_planned: bool = False
+    upload_kbps: int | None = None  # what the upload carries (Optimize's test, or what a clean stream carried)
 
 
 class PeakWatch:
@@ -190,10 +191,50 @@ def _upload(c: Checkup) -> list[Finding]:
         elif last.loss_pct > 1 and last.encode_pct > 60:
             found.append(Finding("bad", "Encoder", f"Last stream to {_label(o)} dropped {last.loss_pct:.0f}% because "
                                                    "encoding was too slow: lower its resolution or frame rate."))
+    found += _all_places(c)
     if not c.last_streams and any(o.enabled and o.type == "stream" for o in c.collection.outputs):
         found.append(Finding("info", "Upload", "No stream measured yet: a short test stream lets the doctor "
                                                "check your upload (Twitch has a bandwidth test mode in its ⚙)."))
     return found
+
+
+def planned_kbps(collection: SceneCollection) -> int:
+    """What every place that's on sends together, sound included. Enhanced Broadcasting counts its cap (or
+    its fallback bitrate when Twitch decides)."""
+    audio = collection.stream_encoder.audio_kbps
+    total = 0
+    for o in collection.outputs:
+        if o.type == "stream" and o.enabled:
+            video = o.enhanced_max_kbps if o.enhanced and o.enhanced_max_kbps else o.bitrate_kbps
+            total += video + audio
+    return total
+
+
+def usable_upload(settings) -> int | None:
+    """The upload to check against: the test's result with headroom, or what a clean stream carried."""
+    from sprigcast.app.optimize import MEASURED, UPLOAD_SHARE, load_proven
+
+    try:
+        measured = int(settings.value(MEASURED, 0) or 0)
+    except (TypeError, ValueError):
+        measured = 0
+    best = max(int(measured * UPLOAD_SHARE), load_proven(settings))
+    return best or None
+
+
+def _all_places(c: Checkup) -> list[Finding]:
+    """Multistreaming: each place alone may fit, but together they share one upload."""
+    if not c.upload_kbps:
+        return []
+    total = planned_kbps(c.collection)
+    places = sum(1 for o in c.collection.outputs if o.type == "stream" and o.enabled)
+    if total <= c.upload_kbps:
+        return []
+    many = f"Your {places} places add up to" if places > 1 else "This stream needs"
+    fix = ("lower their bitrates or go live to fewer places" if places > 1 else "lower its bitrate")
+    level = "bad" if total > c.upload_kbps * 1.25 else "warning"
+    return [Finding(level, "Upload", f"{many} {total / 1000:.1f} Mbps and your upload carries about "
+                                     f"{c.upload_kbps / 1000:.1f} Mbps: {fix}.")]
 
 
 def _encoder(c: Checkup) -> list[Finding]:
