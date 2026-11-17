@@ -10,6 +10,46 @@ if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 
 
+def pytest_configure(config):
+    """Settings written by tests go to .ini files in a temporary folder, never the registry. On the PC, tests
+    had left HKCU\\Software\\SprigCastTests and SprigCastAddMenuTest behind (2026-11-17), and a test that forgot
+    to change the app's name would have written into the user's real SprigCast settings."""
+    import atexit
+    import shutil
+    import tempfile
+
+    try:
+        from PySide6.QtCore import QSettings
+    except ImportError:
+        return
+    folder = tempfile.mkdtemp(prefix="sprigcast-test-settings-")
+    atexit.register(shutil.rmtree, folder, True)
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    for scope in (QSettings.Scope.UserScope, QSettings.Scope.SystemScope):
+        QSettings.setPath(QSettings.Format.IniFormat, scope, folder)
+
+
+@pytest.fixture(autouse=True)
+def _keys_kept_in_memory(monkeypatch):
+    """Stream keys and sign-ins saved by tests stay in memory, never in Windows Credential Manager (entries
+    like "sprigcast/out-1@SprigCast" outlived a test run on the PC). A test can still patch keyring itself."""
+    try:
+        import keyring
+    except ImportError:
+        yield
+        return
+    saved: dict[tuple[str, str], str] = {}
+
+    def delete_password(service, name):
+        if saved.pop((service, name), None) is None:
+            raise keyring.errors.PasswordDeleteError(name)
+
+    monkeypatch.setattr(keyring, "get_password", lambda service, name: saved.get((service, name)))
+    monkeypatch.setattr(keyring, "set_password", lambda service, name, value: saved.__setitem__((service, name), value))
+    monkeypatch.setattr(keyring, "delete_password", delete_password)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _frames_faster_than_real_time(monkeypatch):
     """Tests hand an encoder a second of frames in a few milliseconds, often before it has opened.
