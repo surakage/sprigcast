@@ -88,19 +88,16 @@ def pill(text: str, style: str = "") -> QPushButton:
 
 # The header's Record and Go live: shorter than the old card's big button, still round (radius = half).
 HEADER_PILL_HEIGHT = 40
-HEADER_RECORD_STYLE = (
-    f"QPushButton {{ background: {theme.PANEL}; color: {theme.TEXT}; border: none; border-radius: 20px;"
-    f" padding: 0 20px; font-weight: 600; }}"
-    f"QPushButton:hover {{ background: {theme.RAISED}; }}"
-)
+HEADER_RECORD_STYLE = theme.button_style(20, "0 20px")
 HEADER_RECORDING_STYLE = HEADER_RECORD_STYLE + (
-    f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; }} QPushButton:hover {{ background: {theme.LIVE_HOVER}; }}"
+    f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; border-color: {theme.LIVE_EDGE}; }}"
+    f" QPushButton:hover {{ background: {theme.LIVE_HOVER}; border-color: {theme.LIVE_HOVER}; }}"
 )
 HEADER_GO_STYLE = (
     f"QPushButton {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border: none; border-radius: 20px;"
     f" padding: 0 26px; font-size: 15px; font-weight: 700; }}"
     f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}"
-    f"QPushButton:disabled {{ background: {theme.PANEL}; color: {theme.MUTED}; }}"
+    f"QPushButton:disabled {{ background: transparent; color: {theme.MUTED}; border: 1px solid {theme.BUTTON_OFF_EDGE}; }}"
 )
 HEADER_END_STYLE = HEADER_GO_STYLE + (
     f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; }} QPushButton:hover {{ background: {theme.LIVE_HOVER}; }}"
@@ -135,6 +132,9 @@ BAR_BUTTON_STYLE = (
     f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
     f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
 )
+# Clip, Screenshot, Virtual Cam and its gear are actions, not a pick-one switch: each gets the button shape.
+BAR_ACTION_STYLE = theme.button_style(
+    16, "0 14px", extra=f"min-height: {BAR_HEIGHT - 2}px; max-height: {BAR_HEIGHT - 2}px;")
 
 
 class BarGroup(QFrame):
@@ -153,12 +153,13 @@ class BarGroup(QFrame):
         button = QPushButton(text)
         button.setIcon(icons.icon(icon_name, theme.MUTED, 16))
         button.setIconSize(QSize(16, 16))
-        button.setStyleSheet(BAR_BUTTON_STYLE)
+        style = BAR_BUTTON_STYLE if checkable else BAR_ACTION_STYLE
+        button.setStyleSheet(style)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFixedHeight(BAR_HEIGHT)
         if not text:
             button.setFixedWidth(BAR_HEIGHT)  # a round icon button at the end of the pill
-            button.setStyleSheet(BAR_BUTTON_STYLE + "QPushButton { padding: 0; }")
+            button.setStyleSheet(style + "QPushButton { padding: 0; }")
         button.setToolTip(tip)
         button.setCheckable(True)  # the camera and clips show on/off; the view buttons pick one
         if not checkable:
@@ -207,8 +208,9 @@ class GardenCheck(QPushButton):
         self.setObjectName("gardenCheck")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(HEADER_PILL_HEIGHT)
-        self.setStyleSheet(f"#gardenCheck {{ background: {theme.PANEL}; border: none; border-radius: 20px; }}"
-                           f"#gardenCheck:hover {{ background: {theme.RAISED}; }}")
+        self.setStyleSheet(f"#gardenCheck {{ background: {theme.BUTTON}; border: 1px solid {theme.BUTTON_EDGE};"
+                           f" border-top-color: {theme.BUTTON_TOP}; border-radius: 20px; }}"
+                           f"#gardenCheck:hover {{ background: {theme.BUTTON_HOVER}; border-color: {theme.BUTTON_EDGE_HOVER}; }}")
         self.setToolTip("Garden check: how SprigCast and your streams are doing. Click for everything.")
         row = QHBoxLayout(self)
         row.setContentsMargins(16, 0, 16, 0)
@@ -340,12 +342,7 @@ def _sentence(note: str) -> str:
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
                    ("x", "X"), ("custom", "Custom RTMP"))
-CHIP_STYLE = (
-    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 10px;"
-    f" padding: 2px 10px; min-height: 16px; font-size: 11px; }}"
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
-)
+CHIP_STYLE = theme.button_style(10, "2px 10px", extra="min-height: 16px; font-size: 11px;")
 REMOVE_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
 
 

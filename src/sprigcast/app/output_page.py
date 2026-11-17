@@ -384,8 +384,7 @@ class OutputPage(QWidget):
             pill = QPushButton(f"{seconds} s")
             pill.setCheckable(True)
             pill.setChecked(seconds == current)
-            pill.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton:checked {{ background: {theme.SELECT_BG};"
-                               f" color: {theme.SELECT_TEXT}; }}")
+            pill.setStyleSheet(theme.SMALL_PILL_STYLE)
             pill.setCursor(Qt.CursorShape.PointingHandCursor)
             self.clip_length.addButton(pill, seconds)
             lengths.addWidget(pill)

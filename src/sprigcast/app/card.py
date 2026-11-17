@@ -34,7 +34,7 @@ FIELD_STYLE = (
     f"QLineEdit:focus {{ border-color: {theme.ACCENT}; }}"
 )
 PRIMARY_PILL = theme.PRIMARY_STYLE + "QPushButton { border-radius: 17px; padding: 9px 22px; }" \
-    f"QPushButton:disabled {{ background: {theme.RAISED}; color: {theme.MUTED}; border: 1px solid {theme.RAISED}; }}"
+    f"QPushButton:disabled {{ background: transparent; color: {theme.MUTED}; border: 1px solid {theme.BUTTON_OFF_EDGE}; }}"
 
 
 def field_label(text: str) -> QLabel:
@@ -87,8 +87,7 @@ class CardDialog(QDialog):
         row.setSpacing(8)
         row.addStretch(1)
         no = QPushButton(cancel)
-        no.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton {{ background: {theme.RAISED}; padding: 9px 18px;"
-                         " border-radius: 17px; } " f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+        no.setStyleSheet(theme.button_style(17, "9px 18px"))
         no.clicked.connect(self.reject)
         yes = QPushButton(primary)
         yes.setStyleSheet(PRIMARY_PILL)

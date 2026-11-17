@@ -44,10 +44,7 @@ from sprigcast.app.card import CardDialog
 from sprigcast.app.live_stage import Switch
 from sprigcast.sources.media import MediaSource, clamp_speed, file_filter, is_sound_file
 
-CHIP = theme.SMALL_PILL_STYLE + f"QPushButton {{ background: {theme.RAISED}; padding: 7px 14px; border-radius: 15px; }}" \
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}" \
-    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}" \
-    f"QPushButton:disabled {{ color: {theme.LEAF_OFF}; }}"
+CHIP = theme.button_style(15, "7px 14px")
 SMALL_CHIP = CHIP + "QPushButton { padding: 7px 6px; }"
 ROW_HEIGHT = 34
 LABEL_WIDTH = 132

@@ -48,8 +48,7 @@ ADD_STYLE = theme.PILL_STYLE + (f"QPushButton:enabled {{ background: {theme.ACCE
                                  f"QPushButton:enabled:hover {{ background: {theme.ACCENT_HOVER}; }}")
 
 
-REMOVE_STYLE = theme.PILL_STYLE + (f"QPushButton {{ background: {theme.RAISED_HOVER}; }}"  # reads on a PANEL row
-                                    f"QPushButton:hover {{ background: {theme.HIGHLIGHT}; }}")
+REMOVE_STYLE = theme.PILL_STYLE
 
 
 def _pill(text: str, primary: bool = False) -> QPushButton:

@@ -169,18 +169,14 @@ class Strip(QFrame):
         self.mute.setFixedSize(34, 26)
         self.mute.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mute.setStyleSheet(
-            f"QPushButton {{ background: {theme.RAISED}; border: none; border-radius: 13px; }}"
-            f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-            f"QPushButton:checked {{ background: {theme.SELECT_BG}; }}")
+            theme.button_style(12, "0"))
         self.mute.clicked.connect(self._mute_clicked)
         more = QPushButton()
         more.setIcon(icons.icon("gear", theme.MUTED, 15))
         more.setFixedSize(34, 26)
         more.setCursor(Qt.CursorShape.PointingHandCursor)
         more.setToolTip("Volume, listeners, filters and tracks")
-        more.setStyleSheet(f"QPushButton {{ background: transparent; border: none; border-radius: 13px;"
-                           f" color: {theme.MUTED}; font-size: 16px; }}"
-                           f"QPushButton:hover {{ background: {theme.RAISED}; color: {theme.TEXT}; }}")
+        more.setStyleSheet(theme.button_style(12, "0"))
         more.clicked.connect(lambda: self.on_open(self.sound_id))
         buttons.addStretch(1)
         buttons.addWidget(self.mute)
@@ -299,8 +295,7 @@ class SoundStrips(QFrame):
         self.add.setFixedSize(26, 26)
         self.add.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add.setToolTip("Add a mic, desktop sound, app sound or sound file")
-        self.add.setStyleSheet(f"QPushButton {{ background: {theme.RAISED}; border: none; border-radius: 13px; }}"
-                               f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+        self.add.setStyleSheet(theme.button_style(12, "0"))
         self.add.clicked.connect(lambda: self.on_menu(None, self.add.mapToGlobal(self.add.rect().bottomLeft())))
         head.addWidget(self.add)
         col.addLayout(head)

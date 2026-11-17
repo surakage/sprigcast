@@ -62,17 +62,9 @@ EASINGS = [("smooth", "Smooth"), ("ease_out", "Ease out"), ("ease_in", "Ease in"
 UNMATCHED = [("fade", "Fade"), ("scale", "Scale"), ("slide", "Slide")]  # what only one bloom shows
 
 # The panel sits on a PANEL card (Live's side column, Build's left column, or its own window), so its
-# pills and boxes are one step lighter (RAISED) to read as things you can press or type in.
-PILL_STYLE = (
-    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 13px;"
-    f" padding: 6px 8px; font-weight: 600; }}"
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-    f"QPushButton:disabled {{ color: {theme.MUTED}; }}"
-    "QPushButton::menu-indicator { width: 0; image: none; }"
-)
-CHOICE_STYLE = PILL_STYLE + (
-    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
-)
+# pills use the shared button look and boxes are one step lighter (RAISED), to read as things you can press or type in.
+PILL_STYLE = theme.button_style(13, "6px 8px")
+CHOICE_STYLE = PILL_STYLE
 
 # Number boxes as soft pills too, the number centred with room on both sides. No arrow buttons (type,
 # scroll or use the arrow keys); setButtonSymbols(NoButtons) can't be used, the app stylesheet then
@@ -438,10 +430,7 @@ class TransitionPicture(QWidget):
 
 
 COMBO_STYLE = (  # Live's type drop-down: a soft pill, the name on the left and a drawn chevron on the right
-    f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT_BRIGHT}; border: none; border-radius: 19px;"
-    f" padding: 0; min-height: 38px; max-height: 38px; }}"
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
-    "QPushButton::menu-indicator { width: 0; image: none; }"
+    theme.button_style(19, "0", extra=f"color: {theme.TEXT_BRIGHT}; min-height: 36px; max-height: 36px;")
 )
 
 

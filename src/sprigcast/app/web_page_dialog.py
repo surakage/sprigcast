@@ -42,9 +42,7 @@ SPIN_STYLE = (
     f" padding: 5px 10px; color: {theme.TEXT}; }} QSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
     "QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }"
 )
-CHIP = theme.SMALL_PILL_STYLE + f"QPushButton {{ background: {theme.RAISED}; padding: 7px 14px; border-radius: 15px; }}" \
-    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}" \
-    f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+CHIP = theme.button_style(15, "7px 14px")
 
 
 def _muted(text: str) -> QLabel:

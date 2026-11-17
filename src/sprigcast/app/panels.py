@@ -41,11 +41,7 @@ TAB_STYLE = (
     f"QPushButton:hover {{ color: {theme.TEXT}; background: {theme.RAISED}; }}"
     f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
 )
-TOOL_STYLE = (
-    f"QPushButton {{ background: transparent; color: {theme.MUTED}; border: none; border-radius: 12px;"
-    f" padding: 3px 8px; font-size: 14px; }}"
-    f"QPushButton:hover {{ color: {theme.TEXT}; background: {theme.RAISED}; }}"
-)
+TOOL_STYLE = theme.button_style(12, "3px 8px", extra="font-size: 14px;")
 
 
 @dataclass
