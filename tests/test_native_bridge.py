@@ -1,6 +1,8 @@
 """SPRIGCAST_ENGINE=native: the native engine drawing the previews (render/native_bridge.py) and how the render
 thread hands over to it and takes back from it."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -116,6 +118,7 @@ class FakeNative:
         self.uploads, self.watching, self.synced = [], {}, 0
         self.outputs, self.python_served, self.clock = {}, [], 0.0
         self.attached = {}
+        self.lost = 0
 
     def upload(self, source_id, frame, order, size):
         self.uploads.append(source_id)
@@ -130,9 +133,10 @@ class FakeNative:
     def forget_gone(self, ids):
         pass
 
-    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None):
+    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None):
         self.synced += 1
         self.transitions = dict(transitions or {})
+        self.views = dict(views or {})
 
     def handles(self, extra):
         return native_bridge.NativeCanvases.handles(self, extra)
@@ -280,6 +284,72 @@ def test_more_output_sizes_than_the_native_engine_has_room_for_stay_with_python(
     assert fake.output_key(None, True) is None and fake.output_key((4, 4), True) == ((4, 4), True)
     fake.can_share = False
     assert fake.output_key((4, 4), True) == ((4, 4), False)
+
+
+def test_the_virtual_camera_showing_the_bloom_on_air_rides_on_its_canvas():
+    engine, fake = _engine(), FakeCompositor()
+    engine.set_view("camera", "h", "bloom", "a")
+    got = []
+    engine.add_frame_tap("view:camera", got.append, nv12_size=(32, 18))
+    _run(engine, fake)
+    assert fake.rendered == [] and engine.readbacks == 0  # Python draws and copies nothing
+    assert len(got) == 60 and got[0].fmt == "nv12" and (got[0].width, got[0].height) == (32, 18)
+    assert engine._native.outputs["h"] == ([((32, 18), False)], "bicubic")
+    assert engine._native.views == {}  # no slot of its own: the same picture as the canvas
+
+
+def test_instant_replay_keeping_a_camera_is_drawn_by_the_engine_in_a_slot_of_its_own():
+    engine, fake = _engine(), FakeCompositor()
+    engine._collection.sources.append(SourceConfig(id="cam", kind="color", name="Cam",
+                                                   settings={"width": 8, "height": 8}))
+    engine.set_view("replay", "h", "source", "cam")
+    got = []
+    engine.add_frame_tap("view:replay", got.append, nv12_size=(64, 36))
+    _run(engine, fake)
+    assert "view:replay" not in fake.rendered and engine.readbacks == 0
+    canvas, scene = engine._native.views["replay"]
+    assert canvas.id == "h" and [item.source for item in scene.items] == ["cam"]
+    assert engine._native.outputs["view:replay"] == ([((64, 36), False)], "bicubic")
+    assert len(got) == 60 and all(f.canvas_id == "view:replay" and f.fmt == "nv12" for f in got)
+    engine.set_view("replay", None)  # replays off: the engine lets the view go
+    engine.remove_frame_tap("view:replay", got.append)
+    _run(engine, fake, seconds=0.1)
+    assert engine._native.views == {}
+
+
+def test_a_projector_watching_a_view_is_still_drawn_by_python():
+    engine, fake = _engine(), FakeCompositor()
+    engine.set_view("screen", "h", "bloom", "a")
+    got = []
+    engine.add_frame_tap("view:screen", got.append)  # full-size RGBA: a screen
+    _run(engine, fake, seconds=0.25)
+    assert got and fake.rendered and engine._native.views == {}
+
+
+def test_frames_the_engine_let_go_of_count_as_the_recordings_drops():
+    from sprigcast.output.recorder import Recorder
+
+    engine, fake = _engine(), FakeCompositor()
+
+    class Counting:
+        def __init__(self):
+            self.dropped, self.frames = 0, []
+
+        def push_frame(self, frame):
+            self.frames.append(frame)
+
+        frames_lost = Recorder.frames_lost
+        error, paused_since, _opening = None, None, False
+        _stop = SimpleNamespace(is_set=lambda: False)
+
+        def _counts_drops(self):
+            return True
+
+    rec = Counting()
+    engine.add_frame_tap("h", rec.push_frame, nv12_size=(64, 36))
+    engine._native.lost = 4  # every take, the engine let 4 go
+    _run(engine, fake, seconds=0.1)
+    assert rec.frames and rec.dropped == 4 * len(rec.frames)
 
 
 class EngineVideo:
@@ -440,7 +510,8 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     bridge.engine.queue = [(b"a", 5.0, 0), (b"b", 6.0, 0), (b"c", 7.0, 3)]
     bridge.served("h", (64, 36), 5.5)  # Python handed on a frame drawn at 5.5: the one from 5.0 is let go
     assert bridge.take_outputs("h", big) == [(b"b", 6.0), (b"c", 7.0)]
-    assert bridge.output_drops == 3 and bridge.take_outputs("h", big) == []
+    assert bridge.output_drops == 3 and bridge.lost == 3 and bridge.take_outputs("h", big) == []
+    assert bridge.lost == 0
     assert bridge.take_outputs("h", ((2, 2), False)) == []  # not an output it makes
     bridge.set_outputs("h", [big], "lanczos")  # scaled another way: every output starts over
     assert bridge.engine.set[-3:] == [(0, 1, 0, 0), (0, 0, 0, 0), (0, 0, 64, 36)]
@@ -574,3 +645,38 @@ def test_the_bridge_draws_a_collection_like_the_device():
         del frames
     finally:
         bridge.close()
+
+
+def test_views_take_the_free_canvas_slots_and_give_them_back(monkeypatch):
+    class Slots(FakeEngine):
+        def __init__(self, **_):
+            super().__init__()
+            self.canvases, self.shows = {}, {}
+
+        def set_canvas(self, slot, width, height):
+            self.canvases[slot] = (width, height)
+
+        def show(self, slot, key):
+            self.shows[slot] = key
+
+        def transition(self, *a):
+            pass
+
+    monkeypatch.setattr(sprigcore, "Engine", Slots)
+    monkeypatch.setattr(native_bridge.native_snapshot, "hand_over", lambda *a: None)
+    col = _collection()
+    bridge = native_bridge.NativeCanvases(col)
+    h = col.canvases[0]
+    camera = Scene(id="view:replay", name="replay", canvas="h", items=[SceneItem(source="red")])
+    bridge.sync(col, {}, _plain_state, False, views={"replay": (h, camera)})
+    assert bridge._slots == {"h": 0, "v": 1, "view:replay": 2}  # the canvases first, whatever comes in
+    assert bridge.engine.canvases[2] == (64, 36) and bridge.engine.shows[2] == "view:replay"
+    assert bridge.draws("view:replay")
+    bridge.set_outputs("view:replay", [((64, 36), False)])
+    bridge.sync(col, {}, _plain_state, False, views={})  # gone: its output stops and its slot is free
+    assert "view:replay" not in bridge._slots and bridge.engine.shows[2] is None
+    assert bridge.engine.canvases[2] == (0, 0) and bridge.engine.set[-1] == (2, 0, 0, 0)
+    assert not bridge.draws("view:replay") and 2 not in bridge._outputs
+    many = {f"v{n}": (h, camera) for n in range(sprigcore.ENGINE_CANVASES)}
+    bridge.sync(col, {}, _plain_state, False, views=many)  # more than there are slots: the rest stay with Python
+    assert sum(key.startswith("view:") for key in bridge._slots) == sprigcore.ENGINE_CANVASES - 2

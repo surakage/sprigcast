@@ -67,19 +67,26 @@ def from_key(canvas_id: str) -> str:
     return f"from:{canvas_id}"
 
 
+def view_key(name: str) -> str:
+    """A view's scene in the snapshot, and its canvas slot: the same name the render thread taps it by."""
+    return f"view:{name}"
+
+
 def native_transition(running) -> bool:
     """Whether the native engine draws this running transition (render/engine.py Running)."""
     return running is not None and running.began is not None and running.stinger is None and \
         running.settings.kind in sprigcore.TRANSITION_MODES
 
 
-def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None
-                   ) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
+def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None,
+                   views: dict | None = None) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
     """What the native engine draws: each enabled canvas's bloom on air and every sprig layout (the engine draws
     only those something on air places). state_view(collection, layout) gives a sprig as its Live state shows
     it: (layout, fades). Returns the scenes, the sprig placements ((source id, scene key) -> sprig key) and
     canvas id -> the scene key it shows (None: nothing on air). outgoing: canvas id -> the bloom a transition there
-    changes from (drawn as from_key(canvas id))."""
+    changes from (drawn as from_key(canvas id)). views: name -> (canvas, scene) for each view something taps (the
+    virtual camera showing a bloom, Instant replay keeping a camera): drawn as view_key(name), shown in
+    shows[view_key(name)]."""
     sources = {s.id: s for s in collection.sources}
     draws: list[SceneDraw] = []
     parts: dict[tuple[str, str], str] = {}
@@ -108,6 +115,11 @@ def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, 
         if old is not None:
             draws.append(SceneDraw(from_key(canvas.id), old, sizes[canvas.id]))
             place(old, from_key(canvas.id), canvas.id)
+    for name, (canvas, scene) in sorted((views or {}).items()):
+        key = view_key(name)
+        draws.append(SceneDraw(key, scene, (canvas.width, canvas.height)))
+        place(scene, key, canvas.id)
+        shows[key] = key
     for layout in collection.part_scenes():
         size = sizes.get(layout.canvas)
         if size is None:
@@ -181,6 +193,7 @@ class NativeCanvases:
         self._last_out: dict[tuple[str, tuple[int, int]], float] = {}  # newest frame time handed on, per output
         self._dropped: dict[tuple[int, int], int] = {}  # (canvas slot, output slot) -> frames the engine dropped
         self.output_drops = 0
+        self.lost = 0  # frames of the output take_outputs last looked at that the engine let go of
         self._wipe_maps: set[str] = set()
         self._signature = None
         self._last_upload: dict[str, float] = {}
@@ -241,14 +254,27 @@ class NativeCanvases:
             self._guard("forget", self.engine.forget, gone)
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
-             transitions: dict | None = None, wipe_picture=None) -> None:
+             transitions: dict | None = None, wipe_picture=None, views: dict | None = None) -> None:
         """Hand over a new snapshot when what's on air, the filters, a sprig's state or a transition changed
         (every frame while a sprig's state fades). transitions: canvas id -> render/engine.py Running;
         wipe_picture(path) gives a wipe image as a grey RGB array."""
         if self.failed:
             return
         running = {cid: r for cid, r in (transitions or {}).items() if native_transition(r)}
+        for canvas in collection.canvases:  # canvases get their slots before any view does
+            self._slot(canvas.id)
+        views = {name: view for name, view in (views or {}).items() if self._slot(view_key(name)) is not None}
+        for gone in [key for key in self._slots if key.startswith("view:") and key[5:] not in views]:
+            self.set_outputs(gone, ())
+            slot = self._slots.pop(gone)  # its slot is free for another view from now on
+            self._guard("show", self.engine.show, slot, None)
+            self._guard("canvas", self.engine.set_canvas, slot, 0, 0)
+            for table in (self._canvas_sizes, self._shown, self._watching, self._sent_transitions,
+                          self._outputs, self._output_scale):
+                table.pop(slot, None)
         signature = (id(collection), id(effects),
+                     tuple(sorted((name, id(scene), canvas.width, canvas.height)
+                                  for name, (canvas, scene) in views.items())),
                      tuple((c.id, c.enabled, c.width, c.height, collection.active_scenes.get(c.id))
                            for c in collection.canvases),
                      tuple(sorted((cid, id(r)) for cid, r in running.items())))
@@ -256,7 +282,7 @@ class NativeCanvases:
             return
         self._signature = signature
         draws, parts, shows = snapshot_draws(collection, state_view,
-                                             {cid: r.outgoing for cid, r in running.items()})
+                                             {cid: r.outgoing for cid, r in running.items()}, views)
         built = native_snapshot.build(draws, effects, parts)
         self._guard("snapshot", native_snapshot.hand_over, self.engine, built, self.resources)
         for canvas in collection.canvases:
@@ -272,6 +298,16 @@ class NativeCanvases:
                 self._shown[slot] = key
                 self._guard("show", self.engine.show, slot, key)
             self._hand_transition(slot, canvas.id, running.get(canvas.id), wipe_picture)
+        for name, (canvas, _scene) in views.items():
+            key = view_key(name)
+            slot = self._slots[key]
+            size = (canvas.width, canvas.height)
+            if self._canvas_sizes.get(slot) != size:
+                self._canvas_sizes[slot] = size
+                self._guard("canvas", self.engine.set_canvas, slot, *size)
+            if self._shown.get(slot, "") != key:
+                self._shown[slot] = key
+                self._guard("show", self.engine.show, slot, key)
 
     def _hand_transition(self, slot: int, canvas_id: str, running, wipe_picture) -> None:
         """Start (or stop) the canvas's transition in the engine when Python's changed."""
@@ -296,9 +332,13 @@ class NativeCanvases:
         self._guard("transition", self.engine.transition, slot, from_key(canvas_id), spec)
 
     def _slot(self, canvas_id: str) -> int | None:
+        """The engine's canvas slot for a canvas or a view (view_key), given the first free one if it has none.
+        None when all are taken: Python's compositor draws it."""
         slot = self._slots.get(canvas_id)
-        if slot is None and len(self._slots) < sprigcore.ENGINE_CANVASES:
-            slot = self._slots[canvas_id] = len(self._slots)
+        if slot is None:
+            free = sorted(set(range(sprigcore.ENGINE_CANVASES)) - set(self._slots.values()))
+            if free:
+                slot = self._slots[canvas_id] = free[0]
         return slot
 
     # ---- what comes out ----------------------------------------------------------------------------------------
@@ -384,6 +424,7 @@ class NativeCanvases:
             return []
         size, on_card = key
         frames = []
+        before = self.output_drops
         last = self._last_out.get((canvas_id, size), 0.0)
         for _ in range(sprigcore.ENGINE_OUTPUTS * 2):  # the queue holds a few; never loop for ever
             if on_card:
@@ -412,6 +453,7 @@ class NativeCanvases:
                 frames.append(frame)
                 last = drawn
         self._last_out[(canvas_id, size)] = last
+        self.lost = self.output_drops - before  # what the engine let go of since the last call, for the outputs' counts
         return frames
 
     def _count_drops(self, slot: int, out: int, dropped: int) -> None:

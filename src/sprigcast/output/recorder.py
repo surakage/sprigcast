@@ -754,6 +754,14 @@ class Recorder:
     def _counts_drops(self) -> bool:
         return True
 
+    def frames_lost(self, count: int) -> None:
+        """The native engine finished `count` frames for this output that weren't taken in time (render
+        thread late): they count as dropped, as the recording is that much shorter. The native simple run
+        (2026-11-17) logged "0 frames dropped" for files ~370 frames short."""
+        if count > 0 and self.error is None and not self._stop.is_set() and self.paused_since is None \
+                and not self._opening and self._counts_drops():
+            self.dropped += count
+
     def push_audio(self, block) -> None:
         """block is float32 of shape (n, 2) at 48 kHz, or a tuple of them, one per track in self.tracks."""
         if self.error is not None or self._stop.is_set() or self.paused_since is not None:
