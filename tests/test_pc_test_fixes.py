@@ -290,3 +290,45 @@ def test_no_app_wide_python_hooks_and_the_ui_gets_the_lock_while_building(qapp):
     theme._burst_until = 0.0
     theme._burst_over()
     assert sys.getswitchinterval() == usual
+
+
+def test_restyling_on_the_live_screen_never_keeps_the_quick_hand_over_on(qapp, monkeypatch):
+    """Build 44094725157's heavy run: any restyle (a label recoloured every second) restarted the burst, so the
+    lock changed hands every 0.1 ms for good and the canvases fell to 14-41 fps. Only a window being shown
+    starts one now, and one never lasts more than BURST_MAX_S."""
+    import sys
+
+    from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QWidget
+
+    from sprigcast.app import theme
+
+    theme.apply_theme(qapp)
+    theme._burst_until = 0.0
+    theme._burst_over()
+    usual = sys.getswitchinterval()
+    window = QWidget()
+    QVBoxLayout(window).addWidget(label := QLabel("Live"))
+    window.show()
+    theme._burst_until = 0.0
+    theme._burst_over()  # the window's own burst, over
+    for i in range(5):
+        label.setStyleSheet(f"color: #{i}{i}{i}")  # restyled while live
+        chip = QLabel("Chip")  # a piece made again on a refresh, styled before it's placed
+        chip.setStyleSheet("color: #fff")
+        chip.ensurePolished()
+        qapp.processEvents()
+        assert sys.getswitchinterval() == usual
+    dialog = QDialog(window)
+    QVBoxLayout(dialog).addWidget(QLabel("Settings"))
+    dialog.show()  # a pop-up: a burst while its widgets are made
+    qapp.processEvents()
+    assert sys.getswitchinterval() <= theme.BURST_SWITCH_S
+    clock = [theme._burst_began + theme.BURST_MAX_S + 1]
+    monkeypatch.setattr(theme.time, "monotonic", lambda: clock[0])
+    before = theme._burst_until
+    theme.ui_burst(starts=False)  # still restyling after the cap: not stretched any further
+    assert theme._burst_until == before
+    theme._burst_over()
+    assert sys.getswitchinterval() == usual
+    dialog.close()
+    window.close()

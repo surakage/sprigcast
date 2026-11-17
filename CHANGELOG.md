@@ -134,6 +134,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   off for the rest of the run and frames go through memory as before; SPRIGCAST_NO_GPU_SHARE=1 turns it off.
   The stream report says which way frames went. Needs a try on a real PC.
 - Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
+- Fixed: after the Settings freeze fix, any restyled label on the Live screen kept Python's quick lock hand-over
+  on for good, which doubled SprigCast's CPU and dropped the heavy run to 14-41 fps. Only a window or pop-up
+  being shown starts it now, for 3 seconds at most.
 - Twitch sign-in no longer signs you out when going live and sending a chat message refresh it at the same moment.
 
 ### Get started
