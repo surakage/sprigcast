@@ -471,7 +471,27 @@ class SharedReplay:
     def errors(self) -> list[str]:
         return [f"{e.canvas_id}: {e.error}" for e in self.buffers if e.error]
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = False) -> threading.Thread | None:
+        """Clips off. An encoder nobody else uses stops on a thread of its own (returned; None when there is
+        none): stopping waits for its queued frames and deletes its file of kept seconds, which froze the window
+        for 314 ms when it ran here (PC test 2026-11-17). wait: stop them here instead (the app is closing)."""
+        ending: list = []
         for enc in self.buffers:
             enc.seconds = 0.0  # a recording still running keeps the encoder; it needn't keep the seconds
-            self.pool.release("replay", enc.canvas_id)
+            self.pool.release("replay", enc.canvas_id, ending)
+        if not ending:
+            return None
+
+        def end() -> None:
+            for enc in ending:
+                try:
+                    enc.stop()
+                except Exception as exc:  # noqa: BLE001 (nothing is lost: clips are already off)
+                    log.warning("ending the clip encoder of %s: %s", enc.canvas_id, exc)
+
+        if wait:
+            end()
+            return None
+        thread = threading.Thread(target=end, name="clips-end")
+        thread.start()
+        return thread

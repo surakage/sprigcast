@@ -3095,7 +3095,7 @@ class MainWindow(QMainWindow):
             self._stop_recording(wait=True)
         self._wait_for_stopped_recording()
         if self.replay is not None:
-            self.replay.stop()
+            self.replay.stop(wait=True)
             self.replay = None
         self.timer.stop()
         self.engine.stop(wait=False)  # the render thread lets go of the card on its own time (main waits)
@@ -5549,6 +5549,9 @@ class MainWindow(QMainWindow):
                 return
             self._set_encoder_tracks()
             self._wake_up()
+            ending = getattr(self, "_clips_ending", None)
+            if ending is not None and ending.is_alive():
+                ending.join(10)  # clips off and on again: the last encoder has stopped before the next one opens
             try:
                 self.replay = SharedReplay.start(  # clips go in Clips/<day> (output/replay.py replay_path)
                     self.encoders, canvases, self._recordings_folder() / "Clips", settings.replay_seconds,
@@ -5561,7 +5564,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Clips ready: Save clip keeps the last {settings.replay_seconds} s.", 4000)
             self._clips_used_at, self._clips_idle_paused = time.monotonic(), False
         elif not on and self.replay is not None:
-            self.replay.stop()
+            self._clips_ending = self.replay.stop()  # its encoder stops on a thread of its own, not here
             self.replay = None
             self._rest_soon()
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
