@@ -120,6 +120,33 @@ struct Reader {  // the frame thread's: a small picture and three copies on thei
     int64_t last = 0;
 };
 
+struct OutFrame {
+    std::vector<uint8_t> data;
+    double drawn = 0;
+};
+
+struct Output {  // shared: an output Python asked for and its finished frames
+    int width = 0, height = 0, scale = 0;
+    uint64_t serial = 0;  // bumped on every change: frames made for an older setting are let go
+    std::deque<OutFrame> ready;
+    std::vector<std::vector<uint8_t>> spare;  // buffers to reuse
+    uint64_t dropped = 0;
+};
+
+struct OutputWant {  // the frame thread's copy of what Python asked for
+    int width = 0, height = 0, scale = 0;
+    uint64_t serial = 0;
+};
+
+struct OutReader {  // the frame thread's: an output's two planes and three copies of them on their way back
+    sc::Nv12Planes planes;
+    ComPtr<ID3D11Texture2D> ys[3], uvs[3];
+    bool pending[3] = {false, false, false};
+    double drawn[3] = {0, 0, 0};
+    uint64_t serial[3] = {0, 0, 0};
+    int next = 0;
+};
+
 struct PreviewGpu {
     ComPtr<IDXGISwapChain1> chain;
     ComPtr<ID3D11RenderTargetView> target;
@@ -148,6 +175,7 @@ struct sc_engine {
     CanvasCfg canvases[SC_ENGINE_CANVASES];
     Watch watches[SC_ENGINE_CANVASES];
     TransitionCfg transitions[SC_ENGINE_CANVASES];
+    Output outputs[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     std::unordered_map<uint64_t, Pic> uploads;                  // the newest picture per source, not yet sent
     std::unordered_map<uint64_t, std::vector<uint8_t>> spare;   // buffers to reuse for the next picture
     std::set<uint64_t> forgets;
@@ -167,6 +195,7 @@ struct sc_engine {
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
     std::unordered_map<int, PreviewGpu> shown;
     Reader readers[SC_ENGINE_CANVASES];
+    OutReader out_readers[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     RunningTransition running[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> kept_sources;
     std::unordered_map<uint64_t, LookData> kept_looks;
@@ -217,6 +246,8 @@ void check(int code) {
 void drop_gpu(sc_engine &e) {
     e.shown.clear();
     for (auto &r : e.readers) r = Reader();
+    for (auto &row : e.out_readers)
+        for (auto &r : row) r = OutReader();
     for (auto &c : e.gpu) {
         sc_canvas_destroy(c);
         c = nullptr;
@@ -475,6 +506,93 @@ void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &wa
     r.last = now;
 }
 
+// An output's frames: collect the copies that are done into its queue, then draw this frame as NV12 and start its
+// copy back, never waiting on the card (a copy still on its way is looked at again next frame).
+void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, const OutputWant &want, double drawn) {
+    OutReader &r = e.out_readers[index][slot];
+    sc_device &dev = *e.dev;
+    std::lock_guard<std::mutex> lock(dev.lock);
+    if (!canvas || want.width <= 0) {
+        r = OutReader();
+        return;
+    }
+    const int w = r.planes.width, h = r.planes.height;
+    for (int k = 0; k < 3; ++k) {  // oldest first
+        const int s = (r.next + k) % 3;
+        if (!r.pending[s]) continue;
+        D3D11_MAPPED_SUBRESOURCE my, muv;
+        HRESULT hr = dev.context->Map(r.ys[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &my);
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
+        if (is_lost(hr)) throw Gone("the graphics card was reset or removed (output)");
+        if (SUCCEEDED(hr)) {
+            hr = dev.context->Map(r.uvs[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &muv);
+            if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                dev.context->Unmap(r.ys[s].Get(), 0);
+                break;
+            }
+            if (FAILED(hr)) dev.context->Unmap(r.ys[s].Get(), 0);
+        }
+        if (is_lost(hr)) throw Gone("the graphics card was reset or removed (output)");
+        r.pending[s] = false;
+        if (FAILED(hr)) {
+            fail_hr(SC_ERR_DEVICE, "Map (output frame)", hr);
+            continue;
+        }
+        OutFrame frame;
+        {
+            std::lock_guard<std::mutex> st(e.state);
+            auto &spare = e.outputs[index][slot].spare;
+            if (!spare.empty()) {
+                frame.data.swap(spare.back());
+                spare.pop_back();
+            }
+        }
+        frame.data.resize(static_cast<size_t>(w) * h * 3 / 2);
+        copy_nv12(my, muv, w, h, frame.data.data());
+        dev.context->Unmap(r.uvs[s].Get(), 0);
+        dev.context->Unmap(r.ys[s].Get(), 0);
+        frame.drawn = r.drawn[s];
+        std::lock_guard<std::mutex> st(e.state);
+        Output &out = e.outputs[index][slot];
+        if (out.serial != r.serial[s]) continue;  // made for a setting Python has since changed
+        out.ready.push_back(std::move(frame));
+        while (out.ready.size() > SC_ENGINE_OUTPUT_QUEUE) {  // Python fell behind: the oldest goes
+            out.spare.push_back(std::move(out.ready.front().data));
+            out.ready.pop_front();
+            ++out.dropped;
+        }
+    }
+    if (r.planes.width != want.width || r.planes.height != want.height) {
+        r = OutReader();
+        check(make_nv12(dev.device.Get(), want.width, want.height, r.planes));
+        if (!r.planes.y.texture) return;
+        for (int s = 0; s < 3; ++s) {
+            int code = make_staging(dev.device.Get(), r.planes.y.texture.Get(), r.ys[s]);
+            if (code == SC_OK) code = make_staging(dev.device.Get(), r.planes.uv.texture.Get(), r.uvs[s]);
+            if (code != SC_OK) {
+                if (FAILED(dev.device->GetDeviceRemovedReason()))
+                    throw Gone("the graphics card was reset or removed (output)");
+                r = OutReader();
+                return;
+            }
+        }
+    }
+    const int s = r.next;
+    if (r.pending[s]) {  // all three still on their way: the card is behind, this frame is missed
+        std::lock_guard<std::mutex> st(e.state);
+        ++e.outputs[index][slot].dropped;
+        return;
+    }
+    check(draw_nv12(dev, canvas->view.Get(), canvas->width, canvas->height, r.planes.y.target.Get(),
+                    r.planes.uv.target.Get(), want.width, want.height, want.scale));
+    dev.context->CopyResource(r.ys[s].Get(), r.planes.y.texture.Get());
+    dev.context->CopyResource(r.uvs[s].Get(), r.planes.uv.texture.Get());
+    r.pending[s] = true;
+    r.drawn[s] = drawn;
+    r.serial[s] = want.serial;
+    r.next = (s + 1) % 3;
+}
+
 // One frame: take Python's work, send it to the card, draw every canvas, show the previews.
 void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, uint64_t &skipped) {
     int fault;
@@ -503,6 +621,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     CanvasCfg canvases[SC_ENGINE_CANVASES];
     Watch watches[SC_ENGINE_CANVASES];
     TransitionCfg transitions[SC_ENGINE_CANVASES];
+    OutputWant outputs[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     std::unordered_map<uint64_t, Pic> uploads;
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, LookData> looks;
@@ -518,6 +637,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             watches[i].width = e.watches[i].width;
             watches[i].height = e.watches[i].height;
             watches[i].max_fps = e.watches[i].max_fps;
+            for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) {
+                const Output &out = e.outputs[i][o];
+                outputs[i][o] = OutputWant{out.width, out.height, out.scale, out.serial};
+            }
         }
         uploads.swap(e.uploads);
         forgets.swap(e.forgets);
@@ -591,6 +714,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         else check(sc_canvas_clear(c, 0, 0, 0, 0));
     }
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) read_back(e, i, e.gpu[i], watches[i], seconds, now);
+    const double clock = static_cast<double>(now) / static_cast<double>(qpf());  // Python's perf_counter()
+    for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
+        for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) output_back(e, i, o, e.gpu[i], outputs[i][o], clock);
+    }
 
     for (auto it = e.shown.begin(); it != e.shown.end();) {
         const bool wanted = std::any_of(previews.begin(), previews.end(),
@@ -1117,6 +1244,58 @@ SC_API int sc_engine_canvas_take(sc_engine *engine, int index, uint8_t *out, int
         *seq = w.seq;
         *fresh = 1;
         if (drawn) *drawn = w.drawn;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int width, int height, int scale_mode) {
+    return engine_call(engine, "sc_engine_output_set", [&]() -> int {
+        if (index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_set: no such canvas or output slot");
+        if (scale_mode < SC_SCALE_BILINEAR || scale_mode > SC_SCALE_LANCZOS)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_set: unknown scaling");
+        const bool off = width == 0 && height == 0;
+        if (!off && (width < 2 || height < 2 || width % 2 || height % 2 || width > 16384 || height > 16384))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_set: width and height must be even, 2 to 16384");
+        std::lock_guard<std::mutex> lock(engine->state);
+        Output &out = engine->outputs[index][slot];
+        if (out.width == width && out.height == height && out.scale == scale_mode) return SC_OK;
+        out.width = width;
+        out.height = height;
+        out.scale = scale_mode;
+        ++out.serial;
+        out.ready.clear();
+        out.spare.clear();
+        out.dropped = 0;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_take(sc_engine *engine, int index, int slot, uint8_t *out, size_t bytes, int *fresh,
+                                 double *drawn, uint64_t *dropped) {
+    return engine_call(engine, "sc_engine_output_take", [&]() -> int {
+        if (!out || !fresh || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_take: bad slot or output");
+        *fresh = 0;
+        OutFrame frame;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            Output &o = engine->outputs[index][slot];
+            if (dropped) *dropped = o.dropped;
+            if (bytes != static_cast<size_t>(o.width) * o.height * 3 / 2)
+                return fail(SC_ERR_ARGUMENT, "sc_engine_output_take: that isn't the output's size");
+            if (o.ready.empty()) return SC_OK;
+            frame = std::move(o.ready.front());
+            o.ready.pop_front();
+        }
+        if (frame.data.size() == bytes) {  // copied outside the lock: the frame thread never waits on it
+            std::memcpy(out, frame.data.data(), bytes);
+            *fresh = 1;
+            if (drawn) *drawn = frame.drawn;
+        }
+        std::lock_guard<std::mutex> lock(engine->state);
+        Output &o = engine->outputs[index][slot];
+        if (o.spare.size() < 2 && frame.data.size() == bytes) o.spare.push_back(std::move(frame.data));
         return SC_OK;
     });
 }

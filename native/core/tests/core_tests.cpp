@@ -216,6 +216,26 @@ int main() {
     }
     fade.mode = 99;
     CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 0.5f) == SC_ERR_ARGUMENT);
+
+    // NV12 for encoders, BT.709 limited range: red is Y 63, Cb 102, Cr 240; white Y 235; see-through is black.
+    CHECK(sc_canvas_render(c2, 1, 0.0) == SC_OK);
+    std::vector<uint8_t> nv12(32 * 16 * 3 / 2);
+    CHECK(sc_canvas_read_nv12(c2, nv12.data(), 32, 16, SC_SCALE_BILINEAR) == SC_OK);
+    const uint8_t *cbcr = nv12.data() + 32 * 16;
+    std::printf("nv12: red Y %d Cb %d Cr %d, white Y %d, empty Y %d Cb %d Cr %d\n", nv12[1 * 32 + 1], cbcr[0], cbcr[1],
+                nv12[6 * 32 + 6], nv12[14 * 32 + 30], cbcr[7 * 32 + 30], cbcr[7 * 32 + 31]);
+    CHECK(close_to(nv12[1 * 32 + 1], 63, 1) && close_to(cbcr[0], 102, 1) && close_to(cbcr[1], 240, 1));
+    CHECK(close_to(nv12[6 * 32 + 6], 235, 1));
+    CHECK(nv12[14 * 32 + 30] == 16 && cbcr[7 * 32 + 30] == 128 && cbcr[7 * 32 + 31] == 128);
+    for (int mode = SC_SCALE_BILINEAR; mode <= SC_SCALE_LANCZOS; ++mode) {  // half size: the corners stay
+        std::vector<uint8_t> half(16 * 8 * 3 / 2);
+        CHECK(sc_canvas_read_nv12(c2, half.data(), 16, 8, mode) == SC_OK);
+        if (!close_to(half[0], 63, 1) || half[7 * 16 + 15] != 16) {
+            std::printf("FAILED NV12 scaled with mode %d: Y %d and %d\n", mode, half[0], half[7 * 16 + 15]);
+            ++failures;
+        }
+    }
+    CHECK(sc_canvas_read_nv12(c2, nv12.data(), 31, 16, SC_SCALE_BILINEAR) == SC_ERR_ARGUMENT);  // odd
     sc_canvas_destroy(c2);
     sc_device_destroy(d2);
     sc_device_destroy(nullptr);
@@ -286,6 +306,44 @@ int main() {
         }
         CHECK(fresh == 1);
         CHECK(sc_engine_canvas_watch(eng, 0, 0, 0, 0) == SC_OK);
+    }
+    // Outputs: NV12 frames queue up without waiting on the card, the same as the device's, timed by the
+    // performance counter; past the queue's length the oldest are dropped and counted.
+    {
+        CHECK(sc_engine_output_set(eng, 0, 0, 31, 16, SC_SCALE_BILINEAR) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_output_set(eng, 0, SC_ENGINE_OUTPUTS, 32, 16, SC_SCALE_BILINEAR) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_output_set(eng, 0, 0, 32, 16, 9) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_output_set(eng, 0, 1, 32, 16, SC_SCALE_BILINEAR) == SC_OK);
+        std::vector<uint8_t> frame(32 * 16 * 3 / 2);
+        int fresh = 0;
+        double drawn = -1;
+        uint64_t dropped = 99;
+        CHECK(sc_engine_output_take(eng, 0, 1, frame.data(), frame.size() - 1, &fresh, &drawn, &dropped) ==
+              SC_ERR_ARGUMENT);
+        for (int waited = 0; waited < 2000 && !fresh; waited += 10) {
+            CHECK(sc_engine_output_take(eng, 0, 1, frame.data(), frame.size(), &fresh, &drawn, &dropped) == SC_OK);
+            if (!fresh) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        LARGE_INTEGER now, freq;
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&freq);
+        const double clock = static_cast<double>(now.QuadPart) / static_cast<double>(freq.QuadPart);
+        CHECK(fresh == 1 && drawn > clock - 5 && drawn <= clock);
+        if (fresh && frame != nv12) {
+            std::printf("FAILED the engine's NV12 frame differs from the device's\n");
+            ++failures;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));  // 15 frames at 30 a second, none taken
+        int queued = 0;
+        do {
+            CHECK(sc_engine_output_take(eng, 0, 1, frame.data(), frame.size(), &fresh, &drawn, &dropped) == SC_OK);
+            queued += fresh;
+        } while (fresh && queued < 100);
+        std::printf("output queue: %d waiting, %llu dropped\n", queued, static_cast<unsigned long long>(dropped));
+        CHECK(queued >= 1 && queued <= SC_ENGINE_OUTPUT_QUEUE && dropped >= 1);
+        CHECK(sc_engine_output_set(eng, 0, 1, 0, 0, SC_SCALE_BILINEAR) == SC_OK);
+        CHECK(sc_engine_output_take(eng, 0, 1, frame.data(), 0, &fresh, &drawn, &dropped) == SC_OK);
+        CHECK(fresh == 0 && dropped == 0);
     }
     CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.ticks >= 3; }, 2000, st));
     print_stats("running", st);

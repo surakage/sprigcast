@@ -235,8 +235,20 @@ def layout_size(array: np.ndarray, order: str, size) -> tuple[int, int]:
     return w, h
 
 
-def draw_python(compositor, case: Case) -> np.ndarray:
-    """The case drawn by today's compositor, as H x W x 4 RGBA."""
+# What an encoder gets: the "layout" case as NV12 at the canvas's size and scaled down each way (name, size, how).
+NV12_SHAPES = [("nv12_full", (W, H), "bilinear"), ("nv12_bilinear", (96, 54), "bilinear"),
+               ("nv12_area", (96, 54), "area"), ("nv12_bicubic", (96, 54), "bicubic"),
+               ("nv12_lanczos", (96, 54), "lanczos")]
+
+
+def nv12_picture(data: bytes, size: tuple[int, int]) -> np.ndarray:
+    """NV12 bytes as a grey picture: the Y rows, then the CbCr rows."""
+    return np.frombuffer(bytes(data), dtype=np.uint8).reshape(size[1] * 3 // 2, size[0]).copy()
+
+
+def draw_python(compositor, case: Case, nv12: tuple | None = None) -> np.ndarray:
+    """The case drawn by today's compositor, as H x W x 4 RGBA; with nv12 = (size, how it's scaled), as the
+    NV12 an encoder gets instead (nv12_picture)."""
     from sprigcast.core.scene import Canvas
 
     for source_id, array, order, size in case.uploads:
@@ -259,7 +271,12 @@ def draw_python(compositor, case: Case) -> np.ndarray:
                 compositor.upload("wipe", wipe, "RGB")
             compositor.render(canvas, main.scene, sizes, previous=old.scene, progress=progress,
                               transition=transition, wipe_map="wipe" if wipe is not None else None)
-    data = np.frombuffer(compositor.read(main.key), dtype=np.uint8).reshape(main.size[1], main.size[0], 4).copy()
+    if nv12 is not None:
+        compositor.downscale = {main.key: nv12[1]}
+        data = nv12_picture(compositor.read_nv12(main.key, nv12[0]), nv12[0])
+        compositor.downscale = {}
+    else:
+        data = np.frombuffer(compositor.read(main.key), dtype=np.uint8).reshape(main.size[1], main.size[0], 4).copy()
     for source_id, *_ in case.uploads:
         compositor.forget(source_id)
     if case.transition is not None:
@@ -272,8 +289,8 @@ def draw_python(compositor, case: Case) -> np.ndarray:
     return data
 
 
-def draw_native(device, case: Case) -> np.ndarray:
-    """The case drawn by the native engine, as H x W x 4 RGBA."""
+def draw_native(device, case: Case, nv12: tuple | None = None) -> np.ndarray:
+    """The case drawn by the native engine, as H x W x 4 RGBA (or NV12, as draw_python)."""
     from sprigcast import sprigcore
     from sprigcast.render import native_snapshot
 
@@ -295,8 +312,11 @@ def draw_native(device, case: Case) -> np.ndarray:
             spec = sprigcore.transition_spec(transition, "wipe" if wipe is not None else None)
             canvas.render_transition(old.key, main.key, spec, progress, t)
         bgra = np.frombuffer(canvas.read_bgra(), dtype=np.uint8).reshape(main.size[1], main.size[0], 4)
+        planes = nv12_picture(canvas.read_nv12(*nv12[0], nv12[1]), nv12[0]) if nv12 is not None else None
     for source_id, *_ in case.uploads:
         device.forget(source_id)
+    if planes is not None:
+        return planes
     return np.ascontiguousarray(bgra[..., [2, 1, 0, 3]])
 
 
@@ -326,5 +346,9 @@ if __name__ == "__main__":  # remake the pictures from today's compositor
     for case in cases(GOLDEN):
         Image.fromarray(draw_python(comp, case), "RGBA").save(GOLDEN / f"{case.name}.png")
         print("wrote", case.name)
+    layout = cases(GOLDEN)[0]
+    for name, size, how in NV12_SHAPES:
+        Image.fromarray(draw_python(comp, layout, (size, how)), "L").save(GOLDEN / f"{name}.png")
+        print("wrote", name)
     comp.release()
     _ = math

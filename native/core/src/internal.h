@@ -102,7 +102,8 @@ struct Compositor {
 };
 
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
-int make_target(ID3D11Device *device, int width, int height, Target &out);
+int make_target(ID3D11Device *device, int width, int height, Target &out,
+                DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM);
 // Checks an upload's description; gives the bytes its data spans (the last row needs only its own pixels).
 int upload_bytes(const sc_upload &how, size_t &bytes);
 
@@ -132,6 +133,12 @@ struct sc_device {
     ComPtr<ID3D11PixelShader> trans_ps;
     ComPtr<ID3D11Buffer> trans_constants;
     int prepare_transitions();
+
+    // NV12 for encoders (made the first time an output wants it).
+    ComPtr<ID3D11VertexShader> nv12_vs;
+    ComPtr<ID3D11PixelShader> nv12_ps;
+    ComPtr<ID3D11Buffer> nv12_constants;
+    int prepare_nv12();
 };
 
 struct sc_canvas {
@@ -159,6 +166,21 @@ bool has_scene(sc_device &dev, uint64_t scene);
 // blending, or a plain copy with blend = false). The device's lock must be held.
 int draw_view(sc_device &dev, ID3D11RenderTargetView *target, int tw, int th, ID3D11ShaderResourceView *picture,
               float x, float y, float w, float h, float opacity, bool blend);
+
+// An output's two planes: Y (one channel, width x height) and CbCr (two channels, half each way).
+struct Nv12Planes {
+    Target y, uv;
+    int width = 0, height = 0;
+};
+int make_nv12(ID3D11Device *device, int width, int height, Nv12Planes &out);
+// Draws `canvas` (cw x ch) scaled into the two planes. The device's lock must be held.
+int draw_nv12(sc_device &dev, ID3D11ShaderResourceView *canvas, int cw, int ch, ID3D11RenderTargetView *y,
+              ID3D11RenderTargetView *uv, int width, int height, int scale_mode);
+// A CPU-readable copy of a texture's kind.
+int make_staging(ID3D11Device *device, ID3D11Texture2D *like, ComPtr<ID3D11Texture2D> &out);
+// Copies mapped staging planes into one NV12 buffer (Y rows, then CbCr rows).
+void copy_nv12(const D3D11_MAPPED_SUBRESOURCE &y, const D3D11_MAPPED_SUBRESOURCE &uv, int width, int height,
+               uint8_t *out);
 
 }  // namespace sc
 
