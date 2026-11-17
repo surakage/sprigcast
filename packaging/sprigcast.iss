@@ -313,10 +313,66 @@ begin
   end;
 end;
 
+// ---- An update deletes the files the last version installed and this one doesn't (OBS's removed_files) ----
+var
+  OldFiles: TStringList;
+
+function FileList(): String;
+begin
+  Result := ExpandConstant('{app}\python\sprigcast-files.txt');
+end;
+
+// A safe relative path inside the python folder (never absolute, never ..).
+function SafeListed(Name: String): Boolean;
+begin
+  Result := (Name <> '') and (Pos('..', Name) = 0) and (Pos(':', Name) = 0) and (Name[1] <> '\') and
+            (Name[1] <> '/');
+end;
+
+procedure RemoveDroppedFiles();
+var
+  NewFiles: TStringList;
+  I, Gone: Integer;
+  Name: String;
+begin
+  if (OldFiles = nil) or not FileExists(FileList()) then
+    exit;
+  NewFiles := TStringList.Create;
+  try
+    NewFiles.LoadFromFile(FileList());
+    NewFiles.Sorted := True;  // IndexOf then searches by halves, ignoring case as Windows does
+    Gone := 0;
+    for I := 0 to OldFiles.Count - 1 do
+    begin
+      Name := Trim(OldFiles[I]);
+      if SafeListed(Name) and (NewFiles.IndexOf(Name) < 0) then
+        // A file in use (the camera DLL inside another app) can't go now: it's left, as before.
+        if DeleteFile(ExpandConstant('{app}\python\') + Name) then
+          Gone := Gone + 1;
+    end;
+    Log(Format('Update: %d files the last version had and this one doesn''t were removed', [Gone]));
+  finally
+    NewFiles.Free;
+    OldFiles.Free;
+    OldFiles := nil;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssInstall then
+  begin
+    // Before anything is copied: what the version being replaced installed (none on a first install)
+    if FileExists(FileList()) then
+    begin
+      OldFiles := TStringList.Create;
+      OldFiles.LoadFromFile(FileList());
+    end;
+    exit;
+  end;
   if CurStep <> ssPostInstall then
     exit;
+  RemoveDroppedFiles();
   // A camera that's already set up is kept current on every upgrade, even if the box is unticked.
   if WantsCamera() or (RegisteredCamera() <> '') then
     SetUpCamera();

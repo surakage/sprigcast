@@ -311,6 +311,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 
 - Windows installer built on GitHub (#103, #104), which asks to close SprigCast first (#105).
 - Each installer build is scanned by Microsoft Defender and comes with SHA256 fingerprints (#229).
+- An update deletes every file the last version installed and this one doesn't (a dropped library or plugin),
+  from a list of files each installer carries, as OBS's updater does.
 
 ### Tests
 

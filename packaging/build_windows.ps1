@@ -60,6 +60,8 @@ Remove-Item -Recurse -Force (Join-Path $py "include") -ErrorAction SilentlyConti
 # Unused Qt modules, plugins and tools, WebEngine's debug resources and other languages, Tk, pip and
 # OpenCV's FFmpeg (prune.py says why each is safe). The build checks the app still starts afterwards.
 uv run --no-project --with pefile python (Join-Path $PSScriptRoot "prune.py") $py
+# Every file this version installs: the next update deletes what it no longer ships (manifest.py).
+& $python (Join-Path $PSScriptRoot "manifest.py") $py
 
 # 4. The wizard's brand art, then the installer.
 & $python (Join-Path $PSScriptRoot "make_wizard_images.py") (Join-Path $build "wizard")
