@@ -42,7 +42,7 @@ SILENT_DB = -50.0  # a mic that never peaks above this while you talk is probabl
 CLIPPING_DB = -1.0
 LOW_DISK_GB = 10.0
 # Statuses that are fine, by how they start (any case). paused: asleep while off screen (#87); listening,
-# loading, getting: Live captions waiting for you to talk, or getting its speech model ready.
+# loading, getting: a plugin listening, or getting what it needs ready.
 OK_STATUSES = ("ok", "starting", "capturing", "waiting", "paused", "listening", "loading", "getting")
 
 

@@ -149,7 +149,7 @@ def install(plugins_dir: Path, plugin: StorePlugin, report: PluginReport | None 
 
 
 # Store plugins taken out of SprigCast (see docs/REVISIT.md): an added copy is deleted at start, so it never loads.
-RETIRED = ("background_remover",)
+RETIRED = ("background_remover", "live_captions")
 
 
 def refresh_installed(plugins_dir: Path | None) -> list[str]:
