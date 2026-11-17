@@ -303,13 +303,121 @@ begin
     SetUpCamera();
 end;
 
+// ---- Uninstall: keep your settings for next time, or delete everything ----
+var
+  DeleteData: Boolean;
+
+// Asks once, before anything is removed. Unticked (the default) keeps settings, blooms, pairings and
+// keys, so a reinstall picks up where you left off. A silent uninstall always keeps them.
+function InitializeUninstall: Boolean;
+var
+  Form: TSetupForm;
+  Intro, Note: TNewStaticText;
+  Box: TNewCheckBox;
+  Ok, Cancel: TNewButton;
+begin
+  Result := True;
+  DeleteData := False;
+  if UninstallSilent then
+    exit;
+  Form := CreateCustomForm(ScaleX(440), ScaleY(190), False, True);
+  try
+    Form.Caption := 'Uninstall SprigCast';
+    Form.Color := HeaderColor;
+
+    Intro := TNewStaticText.Create(Form);
+    Intro.Parent := Form;
+    Intro.Left := ScaleX(20);
+    Intro.Top := ScaleY(20);
+    Intro.Width := Form.ClientWidth - ScaleX(40);
+    Intro.AutoSize := False;
+    Intro.WordWrap := True;
+    Intro.Height := ScaleY(34);
+    Intro.Font.Color := HeaderText;
+    Intro.Caption := 'SprigCast will be removed from this PC. Your settings stay, so a reinstall picks up where you left off.';
+
+    Box := TNewCheckBox.Create(Form);
+    Box.Parent := Form;
+    Box.Left := ScaleX(20);
+    Box.Top := Intro.Top + Intro.Height + ScaleY(12);
+    Box.Width := Form.ClientWidth - ScaleX(40);
+    Box.Height := ScaleY(20);
+    Box.Font.Color := HeaderText;
+    Box.Caption := 'Also delete my SprigCast data';
+    Box.Checked := False;
+
+    Note := TNewStaticText.Create(Form);
+    Note.Parent := Form;
+    Note.Left := ScaleX(38);
+    Note.Top := Box.Top + Box.Height + ScaleY(2);
+    Note.Width := Form.ClientWidth - ScaleX(58);
+    Note.AutoSize := False;
+    Note.WordWrap := True;
+    Note.Height := ScaleY(34);
+    Note.Font.Color := NoteColor;
+    Note.Caption := 'Settings, blooms, plugins, pairings, stream keys and logs. Your recordings and screenshots stay.';
+
+    Ok := TNewButton.Create(Form);
+    Ok.Parent := Form;
+    Ok.Caption := 'Uninstall';
+    Ok.ModalResult := mrOk;
+    Ok.Default := True;
+    Ok.Width := ScaleX(90);
+    Ok.Height := ScaleY(26);
+    Ok.Top := Form.ClientHeight - Ok.Height - ScaleY(16);
+    Ok.Left := Form.ClientWidth - ScaleX(20) - 2 * Ok.Width - ScaleX(8);
+
+    Cancel := TNewButton.Create(Form);
+    Cancel.Parent := Form;
+    Cancel.Caption := 'Cancel';
+    Cancel.ModalResult := mrCancel;
+    Cancel.Cancel := True;
+    Cancel.Width := Ok.Width;
+    Cancel.Height := Ok.Height;
+    Cancel.Top := Ok.Top;
+    Cancel.Left := Form.ClientWidth - ScaleX(20) - Cancel.Width;
+
+    Form.ActiveControl := Ok;
+    Result := Form.ShowModal() = mrOk;
+    DeleteData := Result and Box.Checked;
+  finally
+    Form.Free();
+  end;
+end;
+
+procedure DeleteSprigCastData;
+begin
+  // Settings, blooms, plugins, models, pairings and the web page cache.
+  DelTree(ExpandConstant('{localappdata}\Slothbloom\SprigCast'), True, True, True);
+  DelTree(ExpandConstant('{userappdata}\Slothbloom\SprigCast'), True, True, True);
+  RemoveDir(ExpandConstant('{localappdata}\Slothbloom'));
+  RemoveDir(ExpandConstant('{userappdata}\Slothbloom'));
+  // The control API's connection file (Stream Deck plugin and other tools read it).
+  DelTree(ExpandConstant('{userappdata}\SprigCast'), True, True, True);
+  // Logs. Looks you made and unpacked overlay media stay with your files in Documents\SprigCast.
+  DelTree(ExpandConstant('{userdocs}\SprigCast\Logs'), True, True, True);
+  RemoveDir(ExpandConstant('{userdocs}\SprigCast'));
+  // Window layout, choices and other settings Qt keeps in the registry.
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Slothbloom\SprigCast');
+  RegDeleteKeyIfEmpty(HKCU, 'Software\Slothbloom');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Registered: String;
+  Code: Integer;
 begin
-  if CurUninstallStep <> usUninstall then
-    exit;
-  Registered := RegisteredCamera();
-  if Registered <> '' then
-    RunElevated('regsvr32 /u /s "' + Registered + '" & regsvr32 /u /s "' + CameraDir() + '\sprigcast_camera32.dll" 2>nul');
+  if CurUninstallStep = usUninstall then
+  begin
+    // Stream keys and sign-ins live in Credential Manager: SprigCast's own Python removes them, while
+    // it's still here.
+    if DeleteData then
+      Exec(ExpandConstant('{app}\python\python.exe'), '-I -m sprigcast.tools.forget_keys', '',
+           SW_HIDE, ewWaitUntilTerminated, Code);
+    Registered := RegisteredCamera();
+    if Registered <> '' then
+      RunElevated('regsvr32 /u /s "' + Registered + '" & regsvr32 /u /s "' + CameraDir() + '\sprigcast_camera32.dll" 2>nul');
+  end
+  else if (CurUninstallStep = usPostUninstall) and DeleteData then
+    DeleteSprigCastData();
 end;
