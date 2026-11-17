@@ -717,6 +717,19 @@ class _Nv12Target:
         self.uv_fbo = ctx.framebuffer(color_attachments=[self.uv])
         self.pbos = _Pbos(ctx, w * h * 3 // 2, fences)
         self.share = None  # its way to the encoder on the card (render/gpu_share.Share), made when first wanted
+        self.slots: list[_DrawnSlot] | None = None  # read_nv12_later with fences: frames drawn, copied a tick on
+
+    def drawn_slots(self, ctx: moderngl.Context) -> list[_DrawnSlot]:
+        """Two places to draw a frame into, each read back only once the card says it has finished drawing it
+        (made when first wanted; the second is this target's own planes, which the hand-off on the card draws
+        into only when this output isn't read back)."""
+        if self.slots is None:
+            w, h = self.size
+            y, uv = ctx.texture((w, h), 1), ctx.texture((w // 2, h // 2), 2)
+            self.slots = [_DrawnSlot(ctx.framebuffer(color_attachments=[y]), ctx.framebuffer(color_attachments=[uv]),
+                                     (y, uv)),
+                          _DrawnSlot(self.y_fbo, self.uv_fbo)]
+        return self.slots
 
     def release(self) -> None:
         share, self.share = self.share, None
@@ -727,7 +740,31 @@ class _Nv12Target:
                 log.debug("letting go of a GPU hand-off failed", exc_info=True)
         for obj in (self.y_fbo, self.uv_fbo, self.y, self.uv):
             obj.release()
+        for slot in self.slots or ():
+            slot.release(self.pbos.fences)
+        self.slots = None
         self.pbos.release()
+
+
+class _DrawnSlot:
+    """A frame drawn as NV12 and waiting for the card to finish it before it is copied back (_Nv12Target)."""
+
+    __slots__ = ("y_fbo", "uv_fbo", "owned", "sync", "tag", "when")
+
+    def __init__(self, y_fbo, uv_fbo, owned=()):
+        self.y_fbo, self.uv_fbo, self.owned = y_fbo, uv_fbo, owned
+        self.sync, self.tag, self.when = None, None, 0.0
+
+    def clear(self, fences) -> None:
+        if self.sync is not None and fences is not None:
+            fences.forget(self.sync)
+        self.sync, self.tag = None, None
+
+    def release(self, fences) -> None:
+        self.clear(fences)
+        if self.owned:
+            for obj in (self.y_fbo, self.uv_fbo, *self.owned):
+                obj.release()
 
 
 # How to read each source byte order as RGBA when sampling ("1" = fully opaque).
@@ -1441,12 +1478,16 @@ class Compositor:
         pbos.fill(tag, now, lambda buf: fbo.read_into(buf, components=4, alignment=1))
         return pbos.take(now)
 
-    def _draw_nv12(self, canvas_id: str, size: tuple[int, int]) -> _Nv12Target:
-        source = self.targets[canvas_id]
+    def _nv12_target(self, canvas_id: str, size: tuple[int, int]) -> _Nv12Target:
         target = self.nv12_targets.get((canvas_id, size))
         if target is None:
             target = self.nv12_targets[(canvas_id, size)] = _Nv12Target(self.ctx, size, self.gl)
         self._used[("nv12", (canvas_id, size))] = time.monotonic()
+        return target
+
+    def _draw_nv12(self, canvas_id: str, size: tuple[int, int], slot: _DrawnSlot | None = None) -> _Nv12Target:
+        source = self.targets[canvas_id]
+        target = self._nv12_target(canvas_id, size)
         w, h = size
         self.ctx.disable(moderngl.BLEND)
         source.color.use(0)
@@ -1454,7 +1495,8 @@ class Compositor:
         program["canvas"].value = 0
         program["texel"].value = (1.0 / w, 1.0 / h)
         program["scale_mode"].value = SCALE_MODES.get(self.downscale.get(canvas_id, "bilinear"), 0)
-        for fbo, plane, chroma in ((target.y_fbo, (w, h), False), (target.uv_fbo, (w // 2, h // 2), True)):
+        y_fbo, uv_fbo = (slot.y_fbo, slot.uv_fbo) if slot is not None else (target.y_fbo, target.uv_fbo)
+        for fbo, plane, chroma in ((y_fbo, (w, h), False), (uv_fbo, (w // 2, h // 2), True)):
             fbo.use()
             self.ctx.viewport = (0, 0, *plane)
             program["out_size"].value = plane
@@ -1509,6 +1551,8 @@ class Compositor:
             known.pbos.late += 1
             self._used[("nv12", (canvas_id, size))] = time.monotonic()
             return known.pbos.take(now, self.gl.read_buffer if self.gl is not None else None)
+        if self.gl is not None and self.gl.fences_ok:
+            return self._read_nv12_drawn(canvas_id, size, tag, now)
         target = self._draw_nv12(canvas_id, size)
         w, h = size
 
@@ -1522,6 +1566,41 @@ class Compositor:
 
         target.pbos.fill(tag, now, queue)
         return target.pbos.take(now, self.gl.read_buffer if self.gl is not None else None)
+
+    def _read_nv12_drawn(self, canvas_id: str, size: tuple[int, int], tag: object,
+                         now: float) -> tuple[bytes | None, object]:
+        """read_nv12_later with fences: the copy back is asked for only once the card says it has finished
+        drawing that frame. Asked for straight after the drawing, the copy itself held the renderer while the
+        card caught up: 778 ms once in the PC heavy rerun (2026-11-17), with the window not answering, after
+        every buffer's own fence said done. Now each frame is drawn into one of two places with a fence after
+        it, and copied on a later tick when that fence is passed; a frame the card hasn't finished within
+        STUCK_S is let go (this output misses it, nothing waits). Frames come two ticks after they were drawn,
+        each with its own time."""
+        target = self._nv12_target(canvas_id, size)
+        fences, pbos, (w, h) = self.gl, target.pbos, size
+        slots = sorted(target.drawn_slots(self.ctx), key=lambda slot: slot.when)
+        for slot in slots:  # oldest first: frames reach the output in order
+            if slot.sync is None:
+                continue
+            if fences.done(slot.sync):
+                drawn_tag, drawn_at = slot.tag, slot.when
+                slot.clear(fences)
+
+                def queue(buf, slot=slot):
+                    fences.read_into(slot.y_fbo, buf, 1)
+                    fences.read_into(slot.uv_fbo, buf, 2, write_offset=w * h)
+
+                pbos.fill(drawn_tag, drawn_at, queue)
+            elif now - slot.when > self.STUCK_S:
+                slot.clear(fences)
+                pbos.late += 1
+        free = next((slot for slot in slots if slot.sync is None), None)
+        if free is None:  # the card hasn't finished either earlier frame: this one isn't drawn at all
+            pbos.late += 1
+        else:
+            self._draw_nv12(canvas_id, size, free)
+            free.sync, free.tag, free.when = fences.fence(), tag, now
+        return pbos.take(now, fences.read_buffer)
 
     def prune(self, idle_s: float = 3.0, now: float | None = None) -> int:
         """Let go of output-only targets nobody has drawn for idle_s: the NV12 and scaled copies (with

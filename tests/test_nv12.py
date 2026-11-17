@@ -115,16 +115,22 @@ def test_wait_free_reads_hand_back_the_previous_frame(compositor):
     canvas = _picture(compositor)
     want_nv12 = bytes(compositor.read_nv12("c", (32, 18)))
     want_small = compositor.read_scaled("c", (32, 18))
-    assert compositor.read_nv12_later("c", (32, 18), "first", 1.0) == (None, None)  # copying, nothing back yet
+    assert compositor.read_nv12_later("c", (32, 18), "first", 1.0) == (None, None)  # drawing, nothing back yet
     assert compositor.read_scaled_later("c", (32, 18), "first", 1.0) == (None, None)
     compositor.upload("pic", np.zeros((canvas.height, canvas.width, 4), dtype=np.uint8))  # next frame differs
     compositor.render(canvas, Scene(id="s", name="S", canvas="c", items=[SceneItem(source="pic")]), {"pic": (64, 36)})
+    compositor.ctx.finish()
+    nv12_two_ticks = compositor.gl is not None and compositor.gl.fences_ok  # copied only once drawn: a tick more
     data, tag = compositor.read_nv12_later("c", (32, 18), "second", 1.03)
+    if nv12_two_ticks:
+        assert (data, tag) == (None, None)
+        compositor.ctx.finish()
+        data, tag = compositor.read_nv12_later("c", (32, 18), "third", 1.06)
     assert tag == "first" and bytes(data) == want_nv12  # the first frame, copied without waiting
     data, tag = compositor.read_scaled_later("c", (32, 18), "second", 1.03)
     assert tag == "first" and data == want_small
-    data, tag = compositor.read_nv12_later("c", (32, 18), "third", 5.0)
-    assert (data, tag) == (None, None)  # "second" waited too long (a hidden preview): thrown away
+    data, tag = compositor.read_nv12_later("c", (32, 18), "fourth", 5.0)
+    assert (data, tag) == (None, None)  # the frames after waited too long (a hidden preview): thrown away
 
 
 def test_a_full_size_copy_also_comes_back_a_tick_late(compositor):
@@ -327,3 +333,38 @@ def test_read_back_buffers_are_made_for_reading_back():
             raise OSError("no")
 
     assert len(_Pbos(_Ctx(), 16, Refusing()).buffers) == _Pbos.COUNT  # still usable as they were made
+
+
+def test_a_frame_is_copied_back_only_once_the_card_has_drawn_it(compositor):
+    """PC heavy rerun 2026-11-17: the copy back, asked for straight after the drawing, held the renderer 778 ms
+    while the card caught up. Now it is asked for only once the frame's own fence is passed; a frame the card
+    hasn't finished in time is let go and nothing waits."""
+    gl = compositor.gl
+    if gl is None or not gl.fences_ok:
+        pytest.skip("no sync objects here")
+    _picture(compositor)
+    copies = []
+    real_read = gl.read_into
+    gl.read_into = lambda fbo, *a, **k: copies.append(fbo) or real_read(fbo, *a, **k)
+    pending = {"done": False}
+    real_done = gl.done
+    gl.done = lambda sync: pending["done"] and real_done(sync)
+    try:
+        assert compositor.read_nv12_later("c", (36, 20), "a", 1.0) == (None, None)
+        assert compositor.read_nv12_later("c", (36, 20), "b", 1.02) == (None, None)
+        assert copies == []  # neither frame is drawn yet by the card's word: nothing is copied, nothing waits
+        target = compositor.nv12_targets[("c", (36, 20))]
+        late = target.pbos.late
+        compositor.read_nv12_later("c", (36, 20), "c", 1.04)  # both places still busy: this frame isn't drawn
+        assert target.pbos.late == late + 1
+        compositor.read_nv12_later("c", (36, 20), "d", 1.2)  # past STUCK_S: both let go, nothing waited
+        assert copies == [] and target.pbos.late > late
+        pending["done"] = True
+        compositor.ctx.finish()
+        compositor.read_nv12_later("c", (36, 20), "e", 1.22)
+        assert len(copies) == 2  # "d", drawn and finished: its two planes are copied
+        compositor.ctx.finish()
+        data, tag = compositor.read_nv12_later("c", (36, 20), "f", 1.24)
+        assert tag == "d" and data is not None
+    finally:
+        gl.read_into, gl.done = real_read, real_done
