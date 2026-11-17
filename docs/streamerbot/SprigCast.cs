@@ -69,6 +69,11 @@ public class CPHInline
     public bool SaveClip() { return Call("clip.save", "{}"); }
     public bool ToggleStream() { return Call("stream.toggle", "{}"); }
     public bool ToggleRecord() { return Call("record.toggle", "{}"); }
+    public bool PauseRecord() { return Call("record.pause", "{}"); }
+    public bool ResumeRecord() { return Call("record.resume", "{}"); }
+    public bool TogglePauseRecord() { return Call("record.toggle_pause", "{}"); }
+    // optional %name% (default: Chapter 1, 2...)
+    public bool ChapterMark() { return Call("record.chapter", Fields("name")); }
 
     // %garden% / %path%
     public bool SwitchGarden() { return Call("garden.switch", Fields("garden")); }

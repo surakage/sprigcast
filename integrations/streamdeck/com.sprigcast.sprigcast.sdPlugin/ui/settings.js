@@ -17,6 +17,8 @@ const FIELDS = {
 	path: [["path", "Path", "getPaths"]],
 	deaths: [["mode", "Press", ["add", "remove", "reset", "show"]]],
 	"timer-add": [["seconds", "Seconds", null]],
+	"record-pause": [["mode", "Press", ["toggle", "pause", "resume"]]],
+	chapter: [["name", "Chapter name", null]],
 	freeze: [["what", "Sprig or source", "getFreezable"], ["mode", "Press", ["freeze", "toggle", "stop"]], ["seconds", "Seconds", null]],
 	pngtuber: [["mode", "Press", ["expression", "next", "reset"]], ["expression", "Expression", "getExpressions"],
 		["seconds", "For seconds", null]],

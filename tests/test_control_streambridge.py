@@ -468,3 +468,22 @@ def test_main_window_page_state():
     state = MainWindow._page_state(window)
     assert state["blooms"] == {"horizontal": "Chatting", "vertical": "Chatting"}
     assert state["shapes"] == {"web": "horizontal"} and state["recording"] and not state["streaming"]
+
+
+def test_record_paused_event_and_status():
+    """record.paused (output group) when a recording pauses or carries on, for Stream Deck's Pause recording key."""
+    from sprigcast.control.native import FEATURES, NativeApi, event_group
+
+    host = FakeHost(_collection())
+    api = NativeApi(host)
+    api.changes()
+    host.rec = {"seconds": 3.0, "path": "x.mkv", "paused": False}
+    assert ("record.changed", {"on": True}) in api.changes()
+    host.rec = {**host.rec, "paused": True}
+    assert api.changes() == [("record.paused", {"paused": True})]
+    assert api.run("record.status", {})["paused"] is True
+    host.rec = {**host.rec, "paused": False}
+    assert api.changes() == [("record.paused", {"paused": False})]
+    host.rec = None
+    assert api.changes() == [("record.changed", {"on": False})]  # stopping says nothing about pausing
+    assert event_group("record.paused") == "output" and "record.pause" in FEATURES

@@ -13,6 +13,8 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Sound volume | changes or sets a sound's volume; on a Stream Deck + dial, turn for volume and press to mute | dial shows the level | Audio Mixer |
 | Go live | starts or stops the stream | pink while live | Stream |
 | Record | starts or stops recording | pink while recording | Record |
+| Pause recording | pauses or carries on (toggle, pause or resume) in the same file | while paused | Record Pause |
+| Add chapter | adds a chapter mark to the recording (optional name) | ✓ on success | Record Chapter Marker |
 | Clips | keeps clips ready, or stops | while ready | Replay Buffer |
 | Save clip | saves a clip | ✓ on success | Replay Buffer Save |
 | Virtual camera | SprigCast Camera on or off (set it up once in Settings) | while on | Virtual Camera |
@@ -30,8 +32,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | PNGtuber | shows an expression (for some seconds, or until changed), the next one, or default (PNGtuber plugin) | ✓ and the expression's name | |
 | Run action | any SprigCast action with JSON fields | ✓ on success | |
 
-Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air), Record Pause and Chapter
-Marker (SprigCast recordings don't pause or take chapters yet).
+Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air).
 
 ## Light on the PC
 

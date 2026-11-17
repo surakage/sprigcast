@@ -325,3 +325,24 @@ test("no Stream timer added: the timer is unknown, and the rest still caught up"
 	assert.equal(sc.state.stream, true);
 	sc.want(false);
 });
+
+test("tracks a paused recording for the Pause recording key", async () => {
+	FakeSocket.all = [];
+	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
+	sc.want(true);
+	const socket = FakeSocket.last;
+	ANSWERS["record.status"] = { on: true, seconds: 12, paused: true };
+	try {
+		await welcome(socket);
+	} finally {
+		ANSWERS["record.status"] = { on: false };
+	}
+	assert.equal(sc.state.record, true);
+	assert.equal(sc.state.recordPaused, true);
+	socket.say({ event: "record.paused", paused: false });
+	assert.equal(sc.state.recordPaused, false);
+	socket.say({ event: "record.paused", paused: true });
+	socket.say({ event: "record.changed", on: false });
+	assert.equal(sc.state.recordPaused, false); // stopped: not paused any more
+	sc.want(false);
+});
