@@ -66,9 +66,9 @@ the git history named in its entry, but rebuild it to today's rules rather than 
   back on its own (paid services rule: the streamer's own key only).
 
 ### Auto clip (store plugin)
-- **Removed:** 2026-11-17. The plugin was `src/sprigcast/store/auto_clip.py` (#388, #406), with its hooks
-  `plugin_hooks.register_level_watcher` and `register_tool` (the Tools menu entry) and `WindowHost.save_clip_into`.
-  Find them in git history. A copy someone had added is deleted at start (`plugin_store.RETIRED`). Clips and the
+- **Removed:** 2026-11-17. The plugin was `src/sprigcast/store/auto_clip.py` (#388, #406), with
+  `WindowHost.save_clip_into`. Find them in git history. The generic hooks it brought
+  (`plugin_hooks.register_level_watcher` and `register_tool`) stay, since docs/plugins.md offers them to plugins. A copy someone had added is deleted at start (`plugin_store.RETIRED`). Clips and the
   replay buffer are unchanged.
 - **Why:** not reliable enough. It judged a moment only by loudness against a learned usual level. In the
   PC heavy runs it saved a suggestion about every minute under a loud looping video (7 in 7 minutes), and
