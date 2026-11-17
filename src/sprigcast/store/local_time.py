@@ -124,6 +124,7 @@ class LocalTimeSource(Source):
     defaults = {"show_date": True, "hour_24": False, "seconds": False, "time_zone": False,
                 "text_color": "#f2f7f3", "card_color": "#151c19e0"}
     sleeps = True  # hidden, it does nothing; shown again, it draws the time as it is then
+    keeps_picture = True  # (only if the time on the card changed meanwhile: its texture stays while it sleeps)
     sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "top_right"
@@ -145,11 +146,10 @@ class LocalTimeSource(Source):
         self._shown = None  # draw it again with the new look
 
     def wake(self) -> None:
-        self._shown = None
+        pass  # the card is drawn again only if the time on it changed (keeps_picture)
 
     def sleep(self) -> None:
-        self._frame.release()
-        self._shown = None
+        self._frame.release()  # the texture has the picture
 
     def video_frame(self) -> np.ndarray | None:
         clock, under = words(datetime.now(), self.settings)

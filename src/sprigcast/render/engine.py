@@ -1169,7 +1169,8 @@ class Engine:
                 if source.kind == "camera":
                     self._slept_at[source_id] = now
                 self._safely(source_id, source, "sleep", source.sleep)
-                compositor.forget(source_id)
+                if not getattr(source, "keeps_picture", False):
+                    compositor.forget(source_id)
             else:
                 continue
             spent = time.perf_counter() - began

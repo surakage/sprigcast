@@ -52,6 +52,10 @@ class Source(ABC):
     # same, so moving and resizing work as before. Pictures, cameras and videos don't: they have the pixels
     # they have.
     sharp = False
+    # A source whose picture stays right while it sleeps (a text, a clock card): its texture is kept, and woken it
+    # sends a picture only if something changed. Drawing them again on every bloom switch took 10-14 ms each on
+    # the PC (2026-11-17 heavy run, "slowest local_time-1"). Its wake() must not ask for a fresh picture itself.
+    keeps_picture = False
     detail = 1.0  # picture pixels drawn for each pixel of `size` (sharp sources)
 
     def set_detail(self, detail: float) -> None:

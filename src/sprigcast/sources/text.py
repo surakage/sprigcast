@@ -82,6 +82,7 @@ def render_text(text: str, font: ImageFont.ImageFont, color, outline_color, outl
 class TextSource(Source):
     defaults = DEFAULTS  # tells the settings dialog which fields to show
     sleeps = True  # a hidden clock isn't redrawn every second
+    keeps_picture = True  # asleep its texture stays; woken, it's drawn again only if the words changed
     sharp = True  # drawn with the font at the size it's shown, so it stays crisp made big
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -103,8 +104,7 @@ class TextSource(Source):
         self._next_check = 0.0
 
     def wake(self) -> None:
-        self._shown = None  # the texture was dropped: render and send it again
-        self._next_check = 0.0
+        self._next_check = 0.0  # look at once: a clock or a file may have changed while it slept
 
     def set_detail(self, detail: float) -> None:
         super().set_detail(detail)
