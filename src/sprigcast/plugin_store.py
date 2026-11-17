@@ -102,7 +102,7 @@ def catalog(store_dir: Path = STORE_DIR) -> list[StorePlugin]:
         if path.name.startswith("_"):
             continue
         head = read_header(path)
-        if head is None:
+        if head is None or head["id"] in RETIRED:  # a retired plugin's file left by an older install
             continue
         out.append(StorePlugin(id=str(head["id"]), name=str(head.get("name", head["id"])),
                                version=int(head.get("version", 1)), about=str(head.get("about", "")),

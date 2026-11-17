@@ -272,3 +272,12 @@ def test_headers_are_read_from_the_plugin_lines_and_kept_until_the_file_changes(
     assert plugin_store.read_header(path)["version"] == 3
     for plugin in plugin_store.catalog():  # every store plugin still reads
         assert plugin.id and plugin.version >= 1
+
+
+def test_a_retired_plugin_file_left_by_an_older_install_isnt_listed(tmp_path):
+    """The PC test after #454: an update left store/auto_clip.py in the install, and the store showed it."""
+    (tmp_path / "auto_clip.py").write_text('PLUGIN = {"id": "auto_clip", "name": "Auto clip", "version": 1}\n',
+                                          encoding="utf-8")
+    (tmp_path / "kept.py").write_text('PLUGIN = {"id": "kept", "name": "Kept", "version": 1}\n', encoding="utf-8")
+    assert [p.id for p in plugin_store.catalog(tmp_path)] == ["kept"]
+    assert {"auto_clip", "background_remover", "live_captions"} <= set(plugin_store.RETIRED)

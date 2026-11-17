@@ -62,6 +62,25 @@ FinishedLabel=SprigCast is installed. Find it in the Start menu anytime.
 ClickFinish=
 ClickNext=
 
+[InstallDelete]
+; An update clears out the SprigCast code before copying the new one in, so files taken out of SprigCast
+; (a retired store plugin such as Auto clip, a removed module) don't linger from the last version: the store
+; lists every plugin file it finds. Only SprigCast's own Python and art go; the camera folder stays (its
+; DLL may be in use, #272) and so does everything else in {app}. tests/test_packaging.py keeps this list in step.
+Type: files; Name: "{app}\python\Lib\site-packages\sprigcast\*.py"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\__pycache__"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\app"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\audio"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\chat"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\control"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\core"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\data"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\output"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\render"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\sources"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\store"
+Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\tools"
+
 [Files]
 Source: "{#BuildDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#BuildDir}\sprigcast.ico"; DestDir: "{app}"; Flags: ignoreversion
