@@ -160,7 +160,7 @@ def test_apps_can_ask_what_is_playing(fake):
 def test_adding_it_puts_a_small_card_in_the_bottom_left_of_both_shapes():
     col = _collection()
     col.sources.append(SourceConfig(id="n", kind="now_playing", name="Now playing"))
-    part = col.own_sprig(col.scene("chat-h"), "n", (760, 200), "Now playing", "bottom_left")
+    part = col.own_sprig(col.scene("chat-h"), "n", (1100, 200), "Now playing", "bottom_left")
     for shape in col.shapes(part):
         canvas = col.canvas(shape.canvas)
         item = shape.items[0]
@@ -288,3 +288,67 @@ def test_stopping_straight_after_starting_never_leaves_it_running(np_mod, window
         watcher.start()
         watcher.stop()
     assert _until(lambda: not any(t.name == "now-playing" for t in threading.enumerate()))
+
+
+def test_a_long_song_shows_whole(np_mod):
+    """PC test 2026-11-17: "Shy Guy - Live - Sp..." was cut off at any size. A title gets smaller to fit, then
+    takes two lines; the artist gets smaller; nothing usual is cut short."""
+    from PySide6.QtGui import QFont
+
+    room = 960  # a card with no cover
+    lines, _ = np_mod.fit_title("Shy Guy - Live - Spotify Singles", QFont(), room, True)
+    assert lines == ["Shy Guy - Live - Spotify Singles"]
+    long = 'Lose Yourself (From "8 Mile" Soundtrack) - Remastered 2022 Extended Version'
+    lines, _ = np_mod.fit_title(long, QFont(), room, True)
+    assert len(lines) == 2 and " ".join(lines) == long and "…" not in "".join(lines)
+    under, _ = np_mod.fit_line("Eminem, Dr. Dre, 50 Cent, Obie Trice", QFont(), room)
+    assert under == "Eminem, Dr. Dre, 50 Cent, Obie Trice"
+    card = np_mod.paint(np_mod.Track(long, "Eminem"), dict(np_mod.NowPlayingSource.defaults))
+    assert (card.width(), card.height()) == (np_mod.W, np_mod.H)
+
+
+def test_added_through_the_api_it_starts_readable(np_mod):
+    """Put in a bloom with item.add (or OBS's CreateInput), it lands like it does from the + menu: a card a
+    seventh of the short side tall, in a free corner, on both shapes; a second one takes another corner."""
+    from sprigcast.control.api import ControlApi
+    from sprigcast.core.scene import Canvas
+
+    col = _collection()
+    col.canvases = [Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)]
+    api = NativeApi(Host(col))
+    api.run("source.new", {"name": "Song", "kind": "now_playing"})
+    api.run("item.add", {"bloom": "BRB", "source": "Song"})
+    api.run("source.new", {"name": "Song 2", "kind": "now_playing"})
+    api.run("item.add", {"bloom": "BRB", "source": "Song 2"})
+    sprig = next(s for s in col.scenes if s.kind == "part" and s.name == "BRB" and s.shape_of is None)
+    for shape in col.shapes(sprig):
+        canvas = col.canvas(shape.canvas)
+        first, second = shape.items
+        assert first.scale == pytest.approx(1080 * 0.14 / np_mod.H)
+        assert first.x < canvas.width / 2 and first.y > canvas.height / 2  # bottom left
+        w, h = first.drawn_size((np_mod.W, np_mod.H))
+        assert first.x + w <= canvas.width and first.y + h <= canvas.height
+        a = (first.x, first.y, first.x + w, first.y + h)
+        b = (second.x, second.y, second.x + w, second.y + h)
+        assert not (a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3])  # not on top of each other
+    obs = ControlApi(Host(col))
+    obs.handle("CreateInput", {"sceneName": "Shorts", "inputName": "Song 3", "inputKind": "now_playing"})
+    item = col.bloom_sprig(next(s for s in col.scenes if s.id == "solo-v")).items[-1]  # in the bloom's sprig
+    assert item.scale == pytest.approx(1080 * 0.14 / np_mod.H) and item.y > 960
+
+
+def test_text_added_through_the_api_is_the_same_share_of_the_canvas():
+    from sprigcast.control.native import NativeApi as Native
+    from sprigcast.core.scene import Canvas
+    from test_control_api import FakeHost
+
+    col = _collection()
+    col.canvases = [Canvas(id="horizontal", width=1280, height=720), Canvas(id="vertical", width=720, height=1280)]
+    api = Native(FakeHost(col))
+    api.run("source.new", {"name": "Hello", "kind": "text"})
+    api.run("item.add", {"bloom": "BRB", "source": "Hello"})
+    sprig = next(s for s in col.scenes if s.kind == "part" and s.name == "BRB" and s.shape_of is None)
+    assert [shape.items[0].scale for shape in col.shapes(sprig)] == pytest.approx([720 / 1080] * 2)
+    api.run("source.new", {"name": "Cam 2", "kind": "color"})
+    api.run("item.add", {"bloom": "BRB", "source": "Cam 2"})
+    assert all(shape.items[1].scale == 1 and shape.items[1].x == 0 for shape in col.shapes(sprig))  # as in OBS

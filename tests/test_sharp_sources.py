@@ -80,7 +80,7 @@ def test_pictures_and_cameras_are_not_sharp():
     assert create_source("text", "t", {}).sharp
 
 
-CARDS = {"local_time": (640, 220), "stream_timer": (640, 220), "now_playing": (760, 200)}
+CARDS = {"local_time": (640, 220), "stream_timer": (640, 220), "now_playing": (1100, 200)}
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ def test_the_engine_tells_sharp_sources_their_detail_only_when_it_steps():
 
 STARTS = {  # kind: (box, corner, height share, band share), as the plugins say
     "stream_timer": ((640, 220), "top_left", 0.14, None), "local_time": ((640, 220), "top_right", 0.14, None),
-    "now_playing": ((760, 200), "bottom_left", 0.14, None),
+    "now_playing": ((1100, 200), "bottom_left", 0.14, None),
     "audio_visualizer": ((1280, 400), "bottom_center", None, 0.5), "pngtuber": ((640, 640), "bottom_right", None, None),
     "snap": ((800, 1000), None, None, None), "death_count": ((800, 1000), None, None, None), "instant_replay": ((1920, 1080), None, None, None)}
 

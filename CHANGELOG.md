@@ -232,6 +232,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Now playing store plugin: the song Windows says is playing (Spotify, YouTube Music, browsers and most players) with
   its cover, in a small card that fades away when the music stops. No keys or sign-in. It listens only while the card
   is on screen and only when Windows says the song changed; Only from limits it to some apps.
+- Now playing shows the whole song and artist: a long title gets smaller, then takes two lines, instead of being cut
+  off with "...".
+- Plugins put in a bloom through the Control API (item.add) or the OBS-style connection (CreateInput,
+  CreateSceneItem) start at the same readable size and free corner as from the + menu, on both canvases; text starts
+  the same share of the canvas at 720p, 1080p or 4K. They used to start at the size of their box in the top left corner.
 - Re-adding a store plugin in the same session no longer doubles its right-click entries.
 - Auto clip store plugin: while clips are ready, a shout, a loud game moment or chat going wild (optional) saves the
   last seconds as a suggested clip. Nothing is posted: Tools → Suggested clips… lists them to play, keep (moves to

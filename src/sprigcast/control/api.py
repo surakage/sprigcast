@@ -699,7 +699,9 @@ class ControlApi:
         else:
             targets = [scene] + self._twins(scene)
         for target in targets:
-            target.items.append(SceneItem(source=source.id, visible=visible))  # last is on top
+            item = SceneItem(source=source.id, visible=visible)
+            self.col.starting_place(item, source.kind, target)  # a plugin starts readable, as from the + menu
+            target.items.append(item)  # last is on top
         self.host.commit("items")
         layout = self._layout(data)
         index = max(i for i, item in enumerate(layout.items) if item.source == source.id)

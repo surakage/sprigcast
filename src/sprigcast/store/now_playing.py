@@ -36,12 +36,14 @@ from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 2, "adds": "Source",
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 3, "adds": "Source",
           "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover. No keys needed.",
-          "new": "Stays crisp at any size, and starts bigger."}
+          "new": "Shows the whole song and artist: a long title gets smaller, then takes two lines."}
 
 KIND = "now_playing"
-W, H = 760, 200  # the card's box; scale it on the canvas like anything else
+W, H = 1100, 200  # the card's box (the card hugs the words, from the left); scale it on the canvas like anything else
+TITLE_PX = (54, 46, 40)  # the title shrinks a step at a time to fit on one line, then wraps onto two
+UNDER_PX = (36, 32, 28)
 ACCENT = "#4fd88f"
 HIDE_AFTER = 2.0  # seconds paused before the card goes (skipping songs doesn't flicker it)
 FADE = 0.3  # seconds to fade in or out
@@ -286,6 +288,50 @@ def lines(track: Track, settings: dict[str, Any]) -> tuple[str, str]:
     return track.title, "  ·  ".join(under)
 
 
+def fit_line(text: str, font, room: float):
+    """One line in `room` pixels: the font a step smaller at a time (UNDER_PX) until it fits, and cut short
+    with ... only if it's still too long at the smallest. Sets the font's size; answers (text, its metrics)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFontMetricsF
+
+    for px in UNDER_PX:
+        font.setPixelSize(px)
+        metrics = QFontMetricsF(font)
+        if metrics.horizontalAdvance(text) <= room:
+            return text, metrics
+    return metrics.elidedText(text, Qt.TextElideMode.ElideRight, room), metrics
+
+
+def fit_title(title: str, font, room: float, with_under: bool):
+    """The title's lines in `room` pixels: one line, a step smaller at a time (TITLE_PX), then two lines
+    broken between words at the smallest size; only a title too long for two lines is cut short with ...
+    Sets the font's size; answers (lines, their metrics)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFontMetricsF
+
+    sizes = TITLE_PX if with_under else (60, *TITLE_PX)
+    for px in sizes:
+        font.setPixelSize(px)
+        metrics = QFontMetricsF(font)
+        if metrics.horizontalAdvance(title) <= room:
+            return [title], metrics
+    words, first = title.split(" "), ""
+    for n in range(len(words), 0, -1):  # as much as fits on the first line, broken at a space
+        candidate = " ".join(words[:n])
+        if metrics.horizontalAdvance(candidate) <= room:
+            first = candidate
+            rest = " ".join(words[n:])
+            break
+    if not first:  # one very long word: break it where it stops fitting
+        cut = len(title)
+        while cut > 1 and metrics.horizontalAdvance(title[:cut]) > room:
+            cut -= 1
+        first, rest = title[:cut], title[cut:]
+    if not rest:
+        return [first], metrics
+    return [first, metrics.elidedText(rest.strip(), Qt.TextElideMode.ElideRight, room)], metrics
+
+
 def paint(track: Track, settings: dict[str, Any], detail: float = 1.0):
     """The card as a QImage (premultiplied), W x H: the cover at the left, the title, the artist under it.
     The card hugs the words and sits at the left of the box, so it grows to the right. detail: pixels drawn
@@ -298,9 +344,7 @@ def paint(track: Track, settings: dict[str, Any], detail: float = 1.0):
     big = QFont()
     big.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
     big.setWeight(QFont.Weight.Bold)
-    big.setPixelSize(54 if under else 60)
     small = QFont(big)
-    small.setPixelSize(36)
     small.setWeight(QFont.Weight.DemiBold)
     pad = 14
     card_h = H - 2 * pad
@@ -314,10 +358,10 @@ def paint(track: Track, settings: dict[str, Any], detail: float = 1.0):
     lead = (inner + art_side + 28) if cover is not None else 70  # where the words start
     right = 40
     room = W - 2 * pad - lead - right
-    big_m, small_m = QFontMetricsF(big), QFontMetricsF(small)
-    title = big_m.elidedText(title, Qt.TextElideMode.ElideRight, room)
-    under = small_m.elidedText(under, Qt.TextElideMode.ElideRight, room) if under else ""
-    text_w = max(big_m.horizontalAdvance(title), small_m.horizontalAdvance(under) + 4 if under else 0)
+    title_lines, big_m = fit_title(title, big, room, bool(under))
+    under, small_m = fit_line(under, small, room) if under else ("", QFontMetricsF(small))
+    text_w = max(max(big_m.horizontalAdvance(t) for t in title_lines),
+                 small_m.horizontalAdvance(under) + 4 if under else 0)
     card_w = min(W - 2 * pad, lead + text_w + right)
     x0, y0 = pad, pad
     card = _colour(settings.get("card_color"), "#151c19e0")
@@ -342,17 +386,22 @@ def paint(track: Track, settings: dict[str, Any], detail: float = 1.0):
         p.drawEllipse(QRectF(x0 + 34, y0 + card_h / 2 - 9, 18, 18))
     left = x0 + lead
     flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    two = len(title_lines) > 1  # two title lines sit closer, so the words keep clear of the card's edges
+    title_h = big_m.height() * (0.96 if two else 1.08)  # each title line
+    under_h = small_m.height() * (1.0 if two else 1.15) if under else 0.0
+    gap = (2 if two else 6) if under else 0
+    y = y0 + (card_h - title_h * len(title_lines) - gap - under_h) / 2  # the words, centred in the card
     p.setFont(big)
     p.setPen(text_c)
+    for line in title_lines:
+        p.drawText(QRectF(left, y, W, title_h), flags, line)
+        y += title_h
     if under:
-        p.drawText(QRectF(left, y0 + 20, W, 74), flags, title)
         p.setFont(small)
         muted = QColor(text_c)
         muted.setAlphaF(muted.alphaF() * 0.62)
         p.setPen(muted)
-        p.drawText(QRectF(left + 2, y0 + 92, W, 56), flags, under)
-    else:
-        p.drawText(QRectF(left, y0, W, card_h), flags, title)
+        p.drawText(QRectF(left + 2, y + gap, W, under_h), flags, under)
     p.end()
     return image
 
