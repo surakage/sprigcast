@@ -861,3 +861,77 @@ def test_a_cut_to_a_closed_video_waits_for_its_first_picture(tmp_path):
     finally:
         for source in engine._sources.values():
             source.stop()
+
+
+def test_a_video_shown_small_is_decoded_small(tmp_path):
+    """Shown at half its size or less, the decoder thread makes the picture smaller (still packed YUV), so the
+    render thread sends the card a quarter of the pixels; the layout size stays the same."""
+    from sprigcast.sources.media import shrunk
+
+    assert shrunk((1920, 1080), 1.0) == (1920, 1080)
+    assert shrunk((1920, 1080), 0.5) == (960, 540) and shrunk((1920, 1080), 0.25) == (480, 270)
+    assert shrunk((64, 36), 0.25) == (16, 10)
+    source = MediaSource("m", {"path": _video(tmp_path / "clip.mp4", seconds=2.0, sound=False), "loop": True})
+    source.set_shrink(0.5)
+    source.start()
+    try:
+        frames = []
+        _play(source, 0.6, frames)
+        assert frames and source.size == (64, 36)
+        small = frames[-1]
+        assert small.ndim == 2 and small.shape == (18 + 9, 32) and source.channel_order.startswith("I420")
+        assert abs(_grey(small) - _grey(frames[-1])) <= 2
+        source.set_shrink(1.0)
+        frames.clear()
+        _play(source, 0.8, frames)
+        assert frames[-1].shape == (36 + 18, 64)
+    finally:
+        source.stop()
+
+
+def test_the_engine_tells_videos_how_small_they_are_shown():
+    from sprigcast.render.engine import shrink_step
+
+    assert shrink_step(1.3) == 1.0 and shrink_step(1.0) == 1.0 and shrink_step(0.6) == 1.0
+    assert shrink_step(0.5) == 0.5 and shrink_step(0.3) == 0.5 and shrink_step(0.25) == 0.25
+    assert shrink_step(0.1) == 0.25
+
+
+def test_a_looping_gif_is_decoded_once_then_plays_from_memory(tmp_path, monkeypatch):
+    """As OBS's image source does: the first pass is kept, the file closes, later passes cost no decoding."""
+    from sprigcast.sources import media
+
+    made = []
+    real = media._picture
+    monkeypatch.setattr(media, "_picture", lambda *a, **k: made.append(1) or real(*a, **k))
+    source = MediaSource("g", {"path": _gif(tmp_path / "a.gif"), "loop": True})
+    source.start()
+    try:
+        frames = []
+        _play(source, 2.0, frames)  # over three passes of a 0.6 s GIF
+        assert len(made) == 6
+        levels = [_grey(f) for f in frames]
+        assert max(levels) > 150 and levels.count(min(levels)) >= 2  # it really looped, showing every level again
+        source.set_shrink(0.5)  # shown smaller: decoded again at the new size, then kept again
+        _until(lambda: len(made) >= 12)
+        frames.clear()
+        _play(source, 1.0, frames)
+        assert len(made) == 12 and frames[-1].shape[:2] in ((18 + 9, 32), (18, 32))
+    finally:
+        source.stop()
+
+
+def test_a_big_looping_clip_is_not_kept(tmp_path, monkeypatch):
+    from sprigcast.sources import media
+
+    monkeypatch.setattr(media, "LOOP_KEEP_BYTES", 1000)  # less than one picture
+    made = []
+    real = media._picture
+    monkeypatch.setattr(media, "_picture", lambda *a, **k: made.append(1) or real(*a, **k))
+    source = MediaSource("g", {"path": _gif(tmp_path / "a.gif"), "loop": True})
+    source.start()
+    try:
+        _play(source, 1.6, [])
+        assert len(made) > 6  # decoded again on the next pass, as before
+    finally:
+        source.stop()

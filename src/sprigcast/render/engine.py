@@ -53,6 +53,7 @@ GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again thi
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
+BUDGET_MARGIN = 0.8  # ...and drawn more often again only under this share of the lower step's budget
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 FAIL_RETRY_S = 1.0  # a source whose picture keeps failing is asked again about once a second, not every frame
@@ -863,13 +864,21 @@ class Engine:
         """Tell each sharp source (text, clock cards) the biggest size it's shown at, so it draws that many
         pixels: crisp when it's made big, light when it's small. Only a step change redraws it."""
         sharp = {sid: s for sid, s in self._sources.items() if getattr(s, "sharp", False)}
-        if not sharp:
+        shrinks = {sid: s for sid, s in self._sources.items() if getattr(s, "shrinks", False)}
+        if not sharp and not shrinks:
             return
         try:
-            scales = shown_detail(self._collection, {sid: s.size for sid, s in sharp.items()})
+            scales = shown_detail(self._collection, {sid: s.size for sid, s in {**sharp, **shrinks}.items()})
         except Exception as exc:  # never stop the render loop for this: they keep the detail they have
             log.warning("couldn't work out how big sharp sources are shown: %s", exc)
             return
+        for source_id, source in shrinks.items():  # videos shown small are decoded small (sources/media.py)
+            try:
+                step = shrink_step(scales.get(source_id, 1.0))
+                if step != getattr(source, "shrink", 1.0):
+                    source.set_shrink(step)
+            except Exception as exc:  # a plugin's source
+                log.warning("source %s set_shrink failed: %s", source_id, exc)
         for source_id, source in sharp.items():
             try:
                 step = detail_step(scales.get(source_id, 1.0), source.size)
@@ -1488,8 +1497,11 @@ class Engine:
         canvas, the encoders and the sound stay on time; its animation just moves in bigger steps."""
         avg = self._source_ms.get(source_id, 0.0) * 0.9 + 1000 * spent * 0.1
         self._source_ms[source_id] = avg
-        every = min(4, max(1, math.ceil(avg / SOURCE_BUDGET_MS))) if avg > SOURCE_BUDGET_MS else 1
         before = self._source_every.get(source_id, 1)
+        every = min(4, max(1, math.ceil(avg / SOURCE_BUDGET_MS))) if avg > SOURCE_BUDGET_MS else 1
+        if every < before and avg > (every * SOURCE_BUDGET_MS) * BUDGET_MARGIN:
+            every = before  # only back to drawing more often once well under: Instant replay at 5.1-5.2 ms
+            # switched 6 times in 6 s in the 2026-11-17 heavy run
         if every != before:
             self._source_every[source_id] = every
             if every > 1 and source_id not in self._budget_logged:
@@ -1562,7 +1574,8 @@ class Engine:
                 frame = missed
             if frame is not None:
                 compositor.upload(source_id, frame, source.channel_order,
-                                  source.size if getattr(source, "sharp", False) else None)
+                                  source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False)
+                                  else None)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
             if spent > slowest[1]:
@@ -1628,6 +1641,18 @@ class Engine:
 
 MOST_DETAIL_PIXELS = 4096  # a sharp source's picture is never drawn wider or taller than this
 DETAIL_RANGE = (0.125, 4.0)
+
+
+SHRINK_STEPS = (1.0, 0.5, 0.25)  # a video is decoded at its size, half or a quarter (never smaller than shown)
+
+
+def shrink_step(scale: float) -> float:
+    """The smallest of SHRINK_STEPS that still has a pixel for every canvas pixel it covers at `scale`. Only
+    whole halvings, so a video dragged bigger or smaller changes size a couple of times, not every frame."""
+    for step in reversed(SHRINK_STEPS):
+        if scale <= step + 1e-6:
+            return step
+    return 1.0
 
 
 def detail_step(scale: float, size: tuple[int, int]) -> float:

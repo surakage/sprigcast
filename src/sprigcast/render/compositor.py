@@ -841,7 +841,9 @@ class Compositor:
             self.planar[source_id] = (mode, layout[1], (w, pic_h))
         else:
             self.planar.pop(source_id, None)
-        if size and size[0] > 0 and size[1] > 0 and layout is None and abs(w / size[0] - 1.0) > 1e-3:
+        if size and size[0] > 0 and size[1] > 0 and abs(w / size[0] - 1.0) > 1e-3:
+            # More or fewer pixels than its layout box: a sharp source, or a video decoded smaller (filters
+            # measured in pixels look the same either way)
             self.detail[source_id] = (w / size[0], (int(size[0]), int(size[1])))
         else:
             self.detail.pop(source_id, None)
@@ -1086,7 +1088,7 @@ class Compositor:
                 self.program["planar"].value = 0
                 self._applied = None
             planar_on = planar is not None
-            detail = None if part is not None or planar is not None else self.detail.get(source_id)
+            detail = None if part is not None else self.detail.get(source_id)
             if detail is not None:
                 fx = self._in_detail(fx, detail[0])
                 picture = detail[1]
@@ -1458,6 +1460,8 @@ class Compositor:
         for pbos in self.full_pbos.values():
             pbos.release()
         self.forget_looks()
+        if self.gl is not None:
+            self.gl.release()
         self.vao.release()
         self.vbo.release()
         self.program.release()

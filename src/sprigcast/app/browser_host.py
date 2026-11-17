@@ -538,6 +538,18 @@ def start_host(parent: QObject | None = None) -> BrowserHost | None:
     # means no Chromium in memory.
     if importlib.util.find_spec("PySide6.QtWebEngineWidgets") is None:
         return None
-    host = BrowserHost(parent)
+    if in_helper():
+        from sprigcast.app.browser_helper import RemoteHost
+
+        host = RemoteHost()  # pages in their own process: they can never freeze the window or the renderer
+    else:
+        host = BrowserHost(parent)
     browser.set_host(host)
     return host
+
+
+def in_helper() -> bool:
+    """Browser sources run in a helper process (app/browser_helper.py) unless SPRIGCAST_BROWSER_IN_PROCESS is set."""
+    import os
+
+    return not os.environ.get("SPRIGCAST_BROWSER_IN_PROCESS")

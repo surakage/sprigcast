@@ -83,6 +83,19 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - The mouse wheel no longer changes a drop-down you didn't click (it set a place's Resolution to 480p).
 - Settings no longer waits for the sound-device scan to list the virtual camera's speakers (a 300 ms freeze).
 - Browser sources and web docks share at most two Chromium page processes.
+- From the heavy run (2026-11-17), the way OBS does it:
+  - Browser sources are drawn in a helper process. Copying a page waited for the graphics card for 0.3 s at a
+    time, which froze the window and held up the renderer. The helper ends 90 s after the last page closes, and
+    starts again with the same pages if it stops.
+  - A picture sent to the graphics card goes into fresh memory, so it never waits for the card to finish the
+    last frame (up to 355 ms before).
+  - Videos and cameras shown at half their size or less are decoded that small, with a quarter or a sixteenth
+    of the pixels to send.
+  - A looping GIF or silent clip that fits in 48 MB is decoded once, then plays from memory with its file closed.
+  - When the canvas runs late, the stream and recordings repeat the last picture instead of leaving a gap, so
+    they keep a steady 60 fps. Gaps over half a second, or with the encoder busy, stay as gaps.
+  - A source drawn every 2nd frame to stay on time goes back to every frame only once it's well under budget,
+    instead of switching back and forth.
 - Settings → General → Features: switch off Clips or the virtual camera. Off, they leave Live and load nothing.
 
 ### Sound
