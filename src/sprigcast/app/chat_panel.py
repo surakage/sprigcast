@@ -9,8 +9,7 @@ It shows one of two things, and switching never adds another panel:
 * **A chat link**: any web page that shows chat (a pop-out chat, StreamBridge, Streamer.bot,
   a multi-chat overlay), shown in the panel itself.
 
-Pasting a twitch.tv, youtube.com, kick.com or tiktok.com link reads that chat natively instead.
-TikTok is unofficial (TikTok has no public chat API): TikFinity is used when it's running.
+Pasting a twitch.tv, youtube.com or kick.com link reads that chat natively instead.
 
     ┌ Chat ───────────────────── ↗  × ┐
     │ ● Twitch  ● YouTube  ● Kick   ⋯ │
@@ -50,8 +49,7 @@ SOURCE = "chat/source"  # "chat" (your channels, mixed) | "link" | "" (nothing p
 LINK = "chat/link"
 NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle", "kick": "name"}; an empty Twitch name = your account
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube and Kick: a Twitch channel picked by hand
-HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name",
-         "tiktok": "@your TikTok handle"}
+HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
 KEEP = 300  # messages kept on screen
 EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
@@ -556,8 +554,7 @@ class ChatPanel(QWidget):
             row.addWidget(field, 1)
             self.name_fields[platform] = field
             layout.addLayout(row)
-        hint = QLabel("Just names: SprigCast reads public chat, no sign-in. Leave any empty. "
-                      "TikTok is unofficial and uses TikFinity when it's running.")
+        hint = QLabel("Just names: SprigCast reads public chat, no sign-in. Leave any empty.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
         layout.addWidget(hint)
@@ -628,8 +625,7 @@ class ChatPanel(QWidget):
             return
         lower = text.lower()
         is_link = "://" in text or "." in text or "/" in text
-        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com"),
-                                                  ("tiktok", "tiktok.com"))
+        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com"))
                          if host in lower), None) if is_link else "twitch"
         name = name_for(platform, text) if platform else None
         if name:
@@ -770,8 +766,7 @@ class ChatPanel(QWidget):
             if state != "live" and platform in dropped:
                 dot, state = theme.BAD, "reconnecting"
             words = {"live": "reading chat", "connecting": "connecting…"}.get(state, state.split(":", 1)[-1].strip())
-            via = {"tikfinity": " via TikFinity", "direct": " straight from TikTok"}.get(getattr(reader, "via", ""), "")
-            tips.append(f"{title} ({reader.channel}): {words}{via}")
+            tips.append(f"{title} ({reader.channel}): {words}")
         self.where.setText("&nbsp;&nbsp;".join(parts))
         self.where.setToolTip("\n".join(tips))
 
@@ -820,27 +815,12 @@ class ChatPanel(QWidget):
         menu.addAction("Change link…" if saved else "Paste a link…").triggered.connect(self.ask_link)
         if not self._account():
             menu.addAction("Connect Twitch…").triggered.connect(self._connect)
-        if "tiktok" in self.reading():
-            menu.addAction("TikTok key…").triggered.connect(self._tiktok_key)
         menu.addSeparator()
         if kind == "chat":
             menu.addAction("Clear").triggered.connect(self.view.clear_chat)
         elif kind == "link" and self.web is not None:
             menu.addAction("Reload").triggered.connect(self.web.reload)
         return menu
-
-    def _tiktok_key(self) -> None:
-        """An optional Euler Stream key: steadier TikTok reading when TikFinity isn't running."""
-        from PySide6.QtWidgets import QInputDialog
-
-        from sprigcast.chat.tiktok import KEY_SETTING
-
-        key, ok = QInputDialog.getText(
-            self, "TikTok key", "Optional. Without TikFinity, TikTok chat goes through a free signing service "
-            "(eulerstream.com) with shared limits. Your own free key from there lifts them.",
-            QLineEdit.EchoMode.Password, str(QSettings().value(KEY_SETTING, "") or ""))
-        if ok:
-            QSettings().setValue(KEY_SETTING, key.strip())
 
     def shutdown(self) -> None:
         self.hub.stop()

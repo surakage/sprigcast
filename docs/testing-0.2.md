@@ -123,23 +123,7 @@ picture, with bars at the sides if its shape is different.
 **Report:** the camera missing from the list, a black or green picture, a picture that freezes, or an
 error during setup (copy its wording).
 
-## 6. TikTok chat
-
-1. Start TikFinity and make sure it's connected to your TikTok LIVE.
-2. In SprigCast's Chat panel, press **⋯ → Channels…**, type your handle next to TikTok
-   (like `@yourname`) and press **Use**.
-3. Go live on TikTok (TikTok LIVE Studio is fine) and have a friend, or a second phone, type a message.
-
-**Works if:** the message shows in the Chat panel with a TikTok mark. Hovering the TikTok name at the
-top says "reading chat via TikFinity".
-
-**Then try it without TikFinity:** close TikFinity and wait a minute. The tooltip should switch to
-"straight from TikTok", and new messages keep coming. (If it doesn't connect, **⋯ → TikTok key…**
-takes an optional Euler Stream key that makes this steadier.)
-
-**Report:** no messages, messages that arrive late, or the panel staying on "connecting…".
-
-## 7. Game capture sound
+## 6. Game capture sound
 
 Gives a game its own sound row, so you can turn the game down without touching Discord or music.
 

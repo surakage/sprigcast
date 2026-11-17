@@ -1,7 +1,7 @@
 """Keep the log readable: things that happen over and over are written now and then, not every time.
 
 The user's log for one day (2026-11-15) had 3,142 lines, most of them the same few: a screenshot every
-minute, every web request TikTok's chat made, TikTok chat going "connecting" / "not live yet" all day,
+minute, every web request a chat made, a chat going "connecting" / "not live yet" all day,
 and Streamer.bot connecting and disconnecting. Failures are still written every time.
 """
 
@@ -34,7 +34,7 @@ class Every:
 
 
 def quiet_libraries() -> None:
-    """Libraries that log every web request at INFO (httpx: 616 lines a day from TikTok chat alone)."""
+    """Libraries that log every web request at INFO (httpx: hundreds of lines a day from one chat)."""
     import logging
 
     for name in ("httpx", "httpcore", "urllib3", "websockets", "asyncio"):

@@ -94,7 +94,7 @@ class ChatHub(QObject):
         if platform not in self.readers:
             return
         if self.states.get(platform) != state:
-            # Waiting for a channel to go live cycles "connecting" / "not live yet" all day (TikTok: 519 lines
+            # Waiting for a channel to go live cycles "connecting" / "not live yet" all day (519 lines
             # on 2026-11-15): those are written every 30 minutes; going live, offline or an error every time.
             routine = state == "connecting" or state.startswith("waiting")
             if not routine or _CHAT_LOG.allow((platform, state)):
