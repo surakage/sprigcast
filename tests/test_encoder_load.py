@@ -140,3 +140,20 @@ def test_garden_check_says_so_and_offers_one_tap(app):
     assert taps == [1] and not page.lighter.isVisible()
     assert page.overload_text.text().startswith("Lighter settings saved")
     pop.accept()
+
+
+def test_a_slow_replay_buffer_is_called_that_not_a_recording():
+    """PC stream 2026-11-17: "The encoder can't keep up with the recording" with nothing recording."""
+    from types import SimpleNamespace
+
+    clock = _Clock()
+    replay = _Enc()
+    w = _watch(clock, 12, each=lambda s: replay.run(s, 15.5), replay=SimpleNamespace(buffers=[replay]))
+    assert w.overloaded() == ["replay buffer"]
+
+
+def test_the_replay_buffer_and_recording_get_one_step_lighter_together():
+    c = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)], sources=[], scenes=[])
+    c.recording.encoder.preset = "p6"
+    assert make_lighter(c, ["recording", "replay buffer"]) == ["recording"]
+    assert c.recording.encoder.preset == "p4"  # one step, not two

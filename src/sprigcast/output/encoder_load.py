@@ -21,7 +21,8 @@ X264_FASTER = ["placebo", "veryslow", "slower", "slow", "medium", "fast", "faste
 
 
 def _encoders(streamers, recording, replay) -> list[tuple[str, object]]:
-    """(kind, encoder) for every encoder running now, each once. kind is "stream" or "recording"."""
+    """(kind, encoder) for every encoder running now, each once. kind is "stream", "recording" or "replay
+    buffer" (the Clip button's: it said "recording" while nothing was recording, PC stream 2026-11-17)."""
     found, seen = [], set()
 
     def add(kind, enc):
@@ -34,7 +35,7 @@ def _encoders(streamers, recording, replay) -> list[tuple[str, object]]:
     for _, enc in getattr(recording, "recorders", None) or []:
         add("stream" if hasattr(enc, "links") else "recording", enc)
     for enc in getattr(replay, "buffers", None) or []:
-        add("recording", enc)
+        add("replay buffer", enc)
     return found
 
 
@@ -74,7 +75,8 @@ class EncoderWatch:
                 line.popleft()
 
     def overloaded(self) -> list[str]:
-        """The kinds ("stream", "recording") whose encoder couldn't keep up lately, stream first."""
+        """The kinds ("stream", "recording", "replay buffer") whose encoder couldn't keep up lately, stream
+        first."""
         kinds = set()
         for key, line in self._samples.items():
             if len(line) < 3 or line[-1][0] - line[0][0] < WINDOW_S / 2:
@@ -87,7 +89,7 @@ class EncoderWatch:
             full = sum(1 for s in line if s[4] > FULL_QUEUE) >= FULL_SAMPLES
             if busy or eased or full:
                 kinds.add(self._kinds.get(key, "recording"))
-        return [k for k in ("stream", "recording") if k in kinds]
+        return [k for k in ("stream", "recording", "replay buffer") if k in kinds]
 
 
 def lighter(enc, codec: str = "") -> dict:
@@ -108,9 +110,13 @@ def lighter(enc, codec: str = "") -> dict:
 
 def make_lighter(collection, kinds: list[str], codecs: dict | None = None) -> list[str]:
     """Apply lighter() to the stream and/or recording encoder settings. Returns the kinds that changed."""
-    done = []
+    done, seen = [], set()
     for kind in kinds:
+        # The replay buffer encodes with the recording's settings: one step lighter for both, not two.
         enc = collection.stream_encoder if kind == "stream" else collection.recording.encoder
+        if id(enc) in seen:
+            continue
+        seen.add(id(enc))
         changes = lighter(enc, (codecs or {}).get(kind, ""))
         for key, value in changes.items():
             setattr(enc, key, value)
