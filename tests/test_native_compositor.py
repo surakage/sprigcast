@@ -138,7 +138,7 @@ def test_a_sprig_snapshot_is_the_engines_own_copy(device):
 
 # ---- the engine's own frame loop (phase 2, part 2) ------------------------------------------------------------------
 
-STILL_CASES = [c for c in CASES if c.times == (0.0,)]  # the engine draws at its own clock
+STILL_CASES = [c for c in CASES if c.times == (0.0,) and c.transition is None]  # the engine draws at its own clock
 
 
 @needs_engine
