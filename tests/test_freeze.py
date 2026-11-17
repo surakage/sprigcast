@@ -295,7 +295,9 @@ def test_snap_freezes_the_bloom_but_not_itself(added, tmp_path):
         instance.video_frame()
         job = instance._job
         time.sleep(0.01)
-    job.started -= snap.GROW[1] + instance._hold()  # the polaroid starts to leave
+    # The polaroid starts to leave (a little past it: Windows' clock moves in 16 ms steps, so with no time gone by
+    # the subtraction could come back a hair short of the mark).
+    job.started -= snap.GROW[1] + instance._hold() + 0.05
     instance.video_frame()
     assert host.gone == [token]  # the screen moves again
     instance.clear()
