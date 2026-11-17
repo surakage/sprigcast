@@ -144,6 +144,17 @@ def test_added_store_plugins_get_the_new_version_at_start(tmp_path):
     assert plugin_store.refresh_installed(folder) == []
 
 
+def test_retired_store_plugins_are_deleted_at_start(tmp_path):
+    """Background remover was taken out (2026-11-17, docs/REVISIT.md): an added copy must never load again."""
+    folder = tmp_path / "plugins"
+    folder.mkdir()
+    old = plugin_store.installed_path(folder, "background_remover")
+    old.write_text('PLUGIN = {"id": "background_remover", "version": 2}', encoding="utf-8")
+    plugin_store.refresh_installed(folder)
+    assert not old.exists()
+    assert "background_remover" not in {p.id for p in plugin_store.catalog()}
+
+
 def test_slide_show_leaves_out_sprigcasts_own_screenshots(tmp_path):
     """Soak 2026-11-15: playing the Screenshots folder put pictures of the canvas on the canvas: stacked copies."""
     from sprigcast.store.slide_show import pictures_in

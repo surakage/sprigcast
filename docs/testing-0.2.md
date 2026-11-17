@@ -144,7 +144,7 @@ sound device you use.
 
 ## Already tried on Windows
 
-An hour-long Twitch stream, Twitch, YouTube and Kick chat together, the installer, and the full test
+An hour-long Twitch stream, Twitch and YouTube chat together, the installer, and the full test
 suite (558 passed on Windows 11).
 
 **Not covered by Claude's run on your PC (14 Nov):** game and window capture sound (test 7) and moving

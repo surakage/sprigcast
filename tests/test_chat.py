@@ -92,12 +92,11 @@ def test_message_html_escapes_and_lifts_dark_names():
 
 def test_panel_switches_between_link_twitch_and_account(app, monkeypatch):
     from sprigcast.app import chat_panel
-    from sprigcast.chat.kick import KickChat
     from sprigcast.chat.youtube import YouTubeChat
     from sprigcast.output import twitch_auth
 
     started = []
-    for cls in (twitch.TwitchChat, YouTubeChat, KickChat):
+    for cls in (twitch.TwitchChat, YouTubeChat):
         monkeypatch.setattr(cls, "start", lambda self, ch: (started.append((self.platform, ch)),
                                                             setattr(self, "channel", ch)))
     monkeypatch.setattr(chat_panel.ChatPanel, "_show_link",
@@ -120,14 +119,13 @@ def test_panel_switches_between_link_twitch_and_account(app, monkeypatch):
     panel.use_link()  # the saved link is one click away
     assert panel.source()[0] == "link"
 
-    panel.ask_names()  # just names: YouTube and Kick join the same chat
+    panel.ask_names()  # just names: YouTube joins the same chat
     assert panel.name_fields["twitch"].placeholderText() == "surakage (connected)"
     panel.name_fields["youtube"].setText("youtube.com/@SlothBloom")
-    panel.name_fields["kick"].setText("kick.com/slothbloom")
     panel._use_names()
-    assert panel.source() == ("chat", {"twitch": "surakage", "youtube": "@SlothBloom", "kick": "slothbloom"})
-    assert set(panel.readers) == {"twitch", "youtube", "kick"} and panel.view.mixed
-    assert "Twitch" in panel.where.text() and "Kick" in panel.where.text()
+    assert panel.source() == ("chat", {"twitch": "surakage", "youtube": "@SlothBloom"})
+    assert set(panel.readers) == {"twitch", "youtube"} and panel.view.mixed
+    assert "Twitch" in panel.where.text() and "YouTube" in panel.where.text()
 
     panel.ask_link()  # a pasted YouTube video link reads that stream's chat
     panel.link_field.setText("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
@@ -136,7 +134,6 @@ def test_panel_switches_between_link_twitch_and_account(app, monkeypatch):
 
     panel.ask_names()
     panel.name_fields["youtube"].setText("")
-    panel.name_fields["kick"].setText("")
     panel._use_names()
     assert set(panel.readers) == {"twitch"} and not panel.view.mixed  # the others stop
 
@@ -152,9 +149,9 @@ def test_mixed_lines_carry_a_platform_mark_and_mods_clear_per_platform(app):
     view = chat_panel.ChatView()
     view.mixed = True
     view.add(ChatMessage("twitch", "a", "hi", user_id="1", id="t1"))
-    view.add(ChatMessage("kick", "b", "yo", user_id="1", id="k1"))
+    view.add(ChatMessage("youtube", "b", "yo", user_id="1", id="y1"))
     assert "▍" in chat_panel.message_html(view.messages[0], True)
-    view.remove(user_id="1", platform="kick")
+    view.remove(user_id="1", platform="youtube")
     assert [m.platform for m in view.messages] == ["twitch"]
 
 
@@ -201,8 +198,8 @@ def test_emote_cache_starts_over_instead_of_growing(app, monkeypatch):
     monkeypatch.setattr(chat_panel, "EMOTE_CACHE", 3)
     view = chat_panel.ChatView()
     view._asked.update({"a", "b", "c", "d"})
-    view.add(ChatMessage("kick", "a", "hi", images={"kick-1": "https://files.kick.com/emotes/1/fullsize"}))
-    assert not view._asked and view._urls == {"kick-1": "https://files.kick.com/emotes/1/fullsize"}
+    view.add(ChatMessage("youtube", "a", "hi", images={"yt-1": "https://yt3.ggpht.com/emoji-1"}))
+    assert not view._asked and view._urls == {"yt-1": "https://yt3.ggpht.com/emoji-1"}
     assert [m.text for m in view.messages] == ["hi"]
 
 

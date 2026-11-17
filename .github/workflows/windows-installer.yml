@@ -56,12 +56,6 @@ jobs:
           $exe = (Resolve-Path "packaging\build\python\SprigCast.exe").Path
           & $py -c "import sys, onnxruntime as o; sys.executable = r'$exe'; from sprigcast.store import live_captions as c; e = c.ProcessEngine(None, 'tiny', 'en', 'cpu', hold=0.01); print('captions helper OK', e.device, 'DirectML' if 'DmlExecutionProvider' in o.get_available_providers() else 'no DirectML'); e.close()"
           if ($LASTEXITCODE -ne 0) { throw "The Live captions helper didn't start from SprigCast.exe" }
-          # Background remover's helper (#428) too: asked to load a missing model, the answer must come from
-          # the helper itself, not "the background helper stopped".
-          & $py -c "import sys; sys.executable = r'$exe'; from sprigcast.store import background_remover as b
-          try: b.HelperModel('missing.onnx', 'mediapipe')
-          except RuntimeError as e: assert 'helper stopped' not in str(e), e; print('background helper OK:', e)"
-          if ($LASTEXITCODE -ne 0) { throw "The Background remover helper didn't start from SprigCast.exe" }
           # The bundled font (#428) is in the installed copy.
           & $py -c "import sprigcast, pathlib; f = pathlib.Path(sprigcast.__file__).parent / 'data' / 'fonts' / 'Nunito.ttf'; assert f.is_file(), f; print('font OK')"
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }

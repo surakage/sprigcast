@@ -2,17 +2,17 @@
 
 It shows one of two things, and switching never adds another panel:
 
-* **Your chats, mixed**: type your channel name for Twitch, YouTube and Kick ("Chat from"), and
-  SprigCast reads each one's public chat as a guest (chat/twitch.py, youtube.py, kick.py) into one
+* **Your chats, mixed**: type your channel name for Twitch and YouTube ("Chat from"), and
+  SprigCast reads each one's public chat as a guest (chat/twitch.py, youtube.py) into one
   list, each line marked with its platform's colour. No sign-ins or keys, so it works for anyone.
   Connecting Twitch fills in the Twitch name by itself.
 * **A chat link**: any web page that shows chat (a pop-out chat, StreamBridge, Streamer.bot,
   a multi-chat overlay), shown in the panel itself.
 
-Pasting a twitch.tv, youtube.com or kick.com link reads that chat natively instead.
+Pasting a twitch.tv or youtube.com link reads that chat natively instead.
 
     ┌ Chat ───────────────────── ↗  × ┐
-    │ ● Twitch  ● YouTube  ● Kick   ⋯ │
+    │ ● Twitch  ● YouTube           ⋯ │
     │ ▍mossy  hi chat!                │
     │ ▍fern   that leaf tho 🌿        │
     └─────────────────────────────────┘
@@ -47,9 +47,9 @@ log = logging.getLogger(__name__)
 KEY = "chat"  # the panel's key in app/panels.py
 SOURCE = "chat/source"  # "chat" (your channels, mixed) | "link" | "" (nothing picked yet); "twitch" = old "chat"
 LINK = "chat/link"
-NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle", "kick": "name"}; an empty Twitch name = your account
-OLD_CHANNEL = "chat/twitch_channel"  # before YouTube and Kick: a Twitch channel picked by hand
-HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
+NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle"}; an empty Twitch name = your account
+OLD_CHANNEL = "chat/twitch_channel"  # before YouTube: a Twitch channel picked by hand
+HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle"}
 KEEP = 300  # messages kept on screen
 EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
@@ -523,7 +523,7 @@ class ChatPanel(QWidget):
         self.link_field.setStyleSheet(FIELD_STYLE)
         self.link_field.returnPressed.connect(self._use_link)
         layout.addWidget(self.link_field)
-        hint = QLabel("Twitch, YouTube and Kick links read chat natively. Any other page shows here as it is.")
+        hint = QLabel("Twitch and YouTube links read chat natively. Any other page shows here as it is.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
         layout.addWidget(hint)
@@ -625,8 +625,7 @@ class ChatPanel(QWidget):
             return
         lower = text.lower()
         is_link = "://" in text or "." in text or "/" in text
-        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com"))
-                         if host in lower), None) if is_link else "twitch"
+        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu")) if host in lower), None) if is_link else "twitch"
         name = name_for(platform, text) if platform else None
         if name:
             names = saved_names()

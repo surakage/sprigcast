@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.core import looks
-from sprigcast.core.filters import VST3_FOLDER, Field, filter_kind, filter_kinds, settings_for
+from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
 from sprigcast.core.scene import Filter, SourceConfig
 
 AUDIO_KINDS = {"audio_input", "audio_output", "app_audio"}
@@ -180,8 +180,6 @@ class FilterForm(QWidget):
         def pick() -> None:
             current = str(box.property("path") or "")
             start = str(Path(current).parent) if current else str(looks_folder() if f.key == "file" else Path.home())
-            if not current and "vst3" in f.file_types and Path(VST3_FOLDER).is_dir():
-                start = VST3_FOLDER
             path, _ = QFileDialog.getOpenFileName(self, f.label, start, f.file_types or "All files (*)")
             if path:
                 show(path)
@@ -340,15 +338,9 @@ class FiltersDialog(QDialog):
         self.save_look_button.setToolTip("Save these colour settings as a .cube LUT you can use anywhere")
         self.save_look_button.clicked.connect(self._save_look)
         self.save_look_button.hide()
-        self.vst_button = QPushButton("Open plug-in")
-        self.vst_button.setStyleSheet(RAISED_PILL)
-        self.vst_button.setToolTip("Open the plug-in's own window. Its settings are saved with this filter")
-        self.vst_button.clicked.connect(self._open_vst)
-        self.vst_button.hide()
         top = QHBoxLayout()
         top.addWidget(self.title, 1)
         top.addWidget(self.save_look_button)
-        top.addWidget(self.vst_button)
         top.addWidget(self.reset_button)
         right.addLayout(top)
         right.addWidget(self.form_area, 1)
@@ -454,7 +446,6 @@ class FiltersDialog(QDialog):
     def _show_selected(self, row: int) -> None:
         flt = self._current()
         self.reset_button.setEnabled(flt is not None)
-        self.vst_button.setVisible(flt is not None and flt.kind == "vst")
         if flt is None:
             self.save_look_button.hide()
             self.title.setText("")
@@ -498,32 +489,6 @@ class FiltersDialog(QDialog):
         if flt is not None and self.form is not None:
             flt.settings = self.form.values()
             self.on_change(save=False)
-
-    def _open_vst(self) -> None:
-        """Show the VST's own window (it stays until you close it), then keep what was changed there."""
-        from sprigcast.core.filters import load_vst, vst_state
-
-        flt = self._current()
-        if flt is None or flt.kind != "vst":
-            return
-        settings = settings_for(flt.kind, flt.settings)
-        if not settings["plugin_file"]:
-            self.title.setText("VST Plug-in  ·  choose the plug-in first")
-            return
-        try:
-            plugin = load_vst(settings["plugin_file"], settings["state"])
-            plugin.show_editor()
-            state = vst_state(plugin)
-        except ModuleNotFoundError:
-            self.title.setText("VST Plug-in  ·  plug-in support isn't installed")
-            return
-        except Exception as exc:
-            self.title.setText(f"VST Plug-in  ·  it didn't open: {exc}")
-            return
-        flt.settings = {**settings, "state": state}
-        if self.form is not None:
-            self.form.setters["state"](state)
-        self.on_change(save=False)
 
     def _save_look(self, path: str | None = None) -> Path | None:
         """Bake the selected Color Correction into a .cube file (in Documents\\SprigCast\\Looks by default)."""
