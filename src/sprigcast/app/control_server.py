@@ -51,6 +51,7 @@ LAN = "control/lan"  # let phones and other PCs connect, not just apps on this P
 DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use another if OBS runs too)
 NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
 WEB_TIMEOUT_MS = 5000  # a connection that hasn't said what it is by then is dropped
+FULL_EVERY = 6  # every this many watches (3 s) the settings are written out and compared anyway
 WATCH_MS = 500  # how often stream and record states are compared while an app is connected
 
 
@@ -397,8 +398,9 @@ class ControlServer(QObject):
         self.error = ""
         self.watch = QTimer(self)
         self.watch.setInterval(WATCH_MS)
-        self.watch.timeout.connect(self.notify)
+        self.watch.timeout.connect(lambda: self.notify(full=False))
         self._notify_queued = False
+        self._edited = True  # something was edited or asked since the settings were last written out
         self._running: tuple | None = None  # (port, password, lan, obs door) it listens with
         self.info_path: Path | None = None  # where apps on this PC find the port and password (api.json)
         self.connection_path: Path | None = None  # %APPDATA%\SprigCast\connection.json: port and doors, no secrets
@@ -687,18 +689,25 @@ class ControlServer(QObject):
 
     def soon(self) -> None:
         """Something may have changed: compare once the current work is done (many edits, one look)."""
+        self._edited = True
         if self.sessions and not self._notify_queued:
             self._notify_queued = True
             QTimer.singleShot(0, self.notify)
 
-    def notify(self) -> None:
-        self._notify_queued = False
+    def notify(self, full: bool = True) -> None:
+        """full=False (the half-second watch): only what changes by itself (stream, recording, media, states)
+        is looked at again, unless something was edited or asked since the last full look."""
+        self._light = 0 if full else getattr(self, "_light", 0) + 1
+        if not full and (self._edited or self._light >= FULL_EVERY):
+            full, self._light = True, 0  # a plugin may change its own settings: looked at fully now and then
+        if full:
+            self._notify_queued, self._edited = False, False
         try:
             if self._obs():
                 for event_type, intent, data in self.api.changes():
                     self.broadcast(event_type, intent, data)
             if self._natives():
-                for name, data in self.native.changes():
+                for name, data in self.native.changes(full):
                     self.native_broadcast(name, data)
         except Exception:
             log.exception("control: working out events")

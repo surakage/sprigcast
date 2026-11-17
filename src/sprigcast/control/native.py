@@ -1323,8 +1323,20 @@ class NativeApi:
 
     # Events ---------------------------------------------------------------------------------------
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, full: bool = True) -> dict[str, Any]:
+        """full=False: the settings and filters are taken from the last look instead of written out again (the
+        half-second watch, when nothing was edited or asked: writing every source's settings out as JSON held
+        Python's lock 13 ms at a time and slowed the frames, PC heavy run 2026-11-17)."""
         col = self.col
+        last = getattr(self, "_last", None)
+        if not full and last is not None:
+            here = {src.id for src in col.sources}  # a source gone since: never named from the old look
+            filters = {key: v for key, v in last["filters"].items() if key[0] in here}
+            settings = {sid: v for sid, v in last["settings"].items() if sid in here}
+        else:
+            filters = {(s.id, f.id): (f.enabled, json.dumps(f.settings, sort_keys=True, default=str))
+                       for s in col.sources for f in s.filters}
+            settings = {s.id: json.dumps(s.settings, sort_keys=True, default=str) for s in col.sources}
         items = {}
         for scene in col.scenes:
             for i, item in enumerate(scene.items):
@@ -1335,9 +1347,8 @@ class NativeApi:
             "items": items,
             "sounds": {s.id: (bool(s.settings.get("muted", False)), float(s.settings.get("volume_db", 0.0)))
                        for s in col.sources if self._has_sound(s)},
-            "filters": {(s.id, f.id): (f.enabled, json.dumps(f.settings, sort_keys=True, default=str))
-                        for s in col.sources for f in s.filters},
-            "settings": {s.id: json.dumps(s.settings, sort_keys=True, default=str) for s in col.sources},
+            "filters": filters,
+            "settings": settings,
             "sourceList": {s.id: (s.name, s.kind) for s in col.sources if s.kind != PART_KIND},
             "layouts": {scene.id: tuple(i.source for i in scene.items) for scene in col.scenes},
             "plugins": self._plugin_ids(),
@@ -1374,9 +1385,9 @@ class NativeApi:
                 out.append(bloom.name)
         return out
 
-    def changes(self) -> list[tuple[str, dict[str, Any]]]:
-        """(event name, data) for what changed since the last call."""
-        now = self.snapshot()
+    def changes(self, full: bool = True) -> list[tuple[str, dict[str, Any]]]:
+        """(event name, data) for what changed since the last call. full=False: see snapshot."""
+        now = self.snapshot(full)
         last, self._last = self._last, now
         if last is None:
             return []

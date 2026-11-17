@@ -935,3 +935,22 @@ def test_a_big_looping_clip_is_not_kept(tmp_path, monkeypatch):
         assert len(made) > 6  # decoded again on the next pass, as before
     finally:
         source.stop()
+
+
+def test_a_closed_file_is_held_by_nothing(tmp_path, monkeypatch, caplog):
+    """PC 2026-11-17: "a closed file is still held 1 more time(s), by VideoStream": a stream object kept in the
+    decoder's frame held the file (and FFmpeg's decoder threads) after it was closed."""
+    import logging
+
+    from sprigcast.sources import media
+
+    monkeypatch.setattr(media, "_held_logged", False)
+    caplog.set_level(logging.INFO, logger=media.log.name)
+    for name, path, loop in (("g", _gif(tmp_path / "a.gif"), True), ("v", _video(tmp_path / "v.mp4", seconds=0.5), False)):
+        source = MediaSource(name, {"path": path, "loop": loop})
+        source.start()
+        try:
+            _play(source, 1.4)  # the GIF is kept after its first pass and its file closed; the video plays out
+        finally:
+            source.stop()
+    assert "still held" not in caplog.text

@@ -106,6 +106,9 @@ def test_uploads_and_nv12_read_backs_match_without_direct_calls(compositor, monk
         first = compositor.read_nv12_later("horizontal", (32, 18), "a", 0.0)
         compositor.ctx.finish()  # a real card may still be copying (it isn't waited for); a tick later it's done
         second = compositor.read_nv12_later("horizontal", (32, 18), "b", 0.01)
+        if second == (None, None) and direct:  # with fences: copied only once drawn, a tick more
+            compositor.ctx.finish()
+            second = compositor.read_nv12_later("horizontal", (32, 18), "c", 0.02)
         assert first == (None, None) and second[1] == "a"
         results.append(bytes(second[0]))
         compositor.gl = gl

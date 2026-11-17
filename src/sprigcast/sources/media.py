@@ -811,6 +811,7 @@ class MediaSource(Source):
                     container = held.container = self._open(path)
                 elif not _rewind(container):  # the next pass: from the top of the open file
                     held.decoder = decoder = None
+                    video = audio = streams = packet = frames = target = None  # each holds the file open
                     held.release()
                     held.key = key
                     container = held.container = self._open(path)
@@ -910,7 +911,7 @@ class MediaSource(Source):
                     return True  # played out: the thread closes the file and ends (_run)
                 if kept:  # the whole pass was kept: later passes play from memory, the file and decoder close
                     replay, kept = kept, None
-                    container = decoder = None
+                    container = decoder = video = audio = streams = packet = frames = target = None
                     held.release()
                 offset += length
             return False
@@ -918,7 +919,9 @@ class MediaSource(Source):
             # Only this thread ever touches its decoder and file. They stay in `held` for the next play; the
             # thread lets them go itself when it ends (_run). Pictures it handed over are copies of their own
             # (core/frames.owned), so none points back into the decoder.
-            container = decoder = None
+            # The streams too: each holds its file, and with it FFmpeg's decoder threads, until it is let go (PC
+            # 2026-11-17: "a closed file is still held 1 more time(s), by VideoStream").
+            container = decoder = video = audio = streams = packet = frames = target = None
             if own:
                 held.release()
 

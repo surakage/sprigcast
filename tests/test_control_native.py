@@ -148,6 +148,12 @@ def test_events_in_our_words():
                                       "itemId": "alert", "visible": False}
     assert events["stream.changed"] == {"on": True}
     assert api.changes() == []
+    # The half-second watch: the settings as last written out (an edit or a request asks for a full look).
+    col.source("mic").settings["gate"] = 0.5
+    assert api.changes(full=False) == []
+    assert [name for name, _ in api.changes()] == ["source.changed"]
+    col.sources.remove(col.source("mic"))
+    api.changes(full=False)  # a source gone between two looks is never named from the old one
 
 
 def test_session_password_and_requests():
@@ -358,3 +364,33 @@ def test_camera_on_off_and_event():
     assert ("camera.changed", {"on": True}) in api.changes()
     assert api.run("camera.status", {}) == {"on": True}
     assert api.run("camera.set", {"on": False}) == {"on": False}
+
+
+def test_the_half_second_watch_writes_settings_out_only_after_a_change(monkeypatch):
+    """PC heavy run 2026-11-17: every source's settings written out as JSON on each look held Python's lock
+    13 ms at a time. The watch now reuses them unless something was edited or asked (or every 3 s)."""
+    from sprigcast.app import control_server
+    from sprigcast.control import native as native_mod
+
+    dumps = []
+    real = native_mod.json.dumps
+    monkeypatch.setattr(native_mod.json, "dumps", lambda *a, **k: dumps.append(1) or real(*a, **k))
+
+    class Api:
+        def __init__(self):
+            self.calls = []
+
+        def changes(self, full=True):
+            self.calls.append(full)
+            return []
+
+    server = control_server.ControlServer.__new__(control_server.ControlServer)
+    server.native, server._notify_queued, server._edited = Api(), False, True
+    server._obs, server._natives = (lambda: []), (lambda: [object()])
+    server.notify(full=False)  # edited since the last look: a full one
+    for _ in range(control_server.FULL_EVERY - 1):
+        server.notify(full=False)
+    server.notify(full=False)  # every FULL_EVERY watches: a full one anyway
+    server._edited = True
+    server.notify(full=False)
+    assert server.native.calls == [True] + [False] * (control_server.FULL_EVERY - 1) + [True, True]
