@@ -175,6 +175,7 @@ struct OutReader {  // the frame thread's: an output's two planes and three copi
     // A shared output's instead: NV12 textures an encoder reads on the card.
     uint64_t pool = 0;
     int pool_w = 0, pool_h = 0;
+    uint64_t pool_serial = 0;  // the output setting the pool was made for
     PoolEntry entries[SC_ENGINE_SHARE_POOL];
 };
 
@@ -557,7 +558,10 @@ void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, cons
         if (out.serial == want.serial) out.share_state = -1;
     };
     if (!dev.nv12_targets) return cannot();
-    if (!r.pool || r.pool_w != want.width || r.pool_h != want.height) {
+    // A new setting gets a new pool, even at the same size: Python let go of the old one (crash run 2026-11-17: the
+    // outputs were made again while this thread was stuck, so it never saw them stop, kept its old pool, and every
+    // frame after that went nowhere, with nothing counted).
+    if (!r.pool || r.pool_w != want.width || r.pool_h != want.height || r.pool_serial != want.serial) {
         r = OutReader();
         {
             std::lock_guard<std::mutex> st(e.state);
@@ -590,6 +594,7 @@ void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, cons
         r.pool = e.next_pool++;
         r.pool_w = want.width;
         r.pool_h = want.height;
+        r.pool_serial = want.serial;
         std::lock_guard<std::mutex> st(e.state);
         Output &out = e.outputs[index][slot];
         if (out.serial == want.serial) {
@@ -601,7 +606,10 @@ void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, cons
     {
         std::lock_guard<std::mutex> st(e.state);
         Output &out = e.outputs[index][slot];
-        if (out.pool != r.pool) return;  // Python changed the output: the next frame starts over
+        if (out.pool != r.pool) {  // Python changed the output: the next frame starts over (and says so)
+            if (out.serial == want.serial) ++out.dropped;
+            return;
+        }
         for (int i = 0; i < SC_ENGINE_SHARE_POOL && free < 0; ++i) {
             if (!out.busy[i]) free = i;
         }

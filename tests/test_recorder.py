@@ -55,7 +55,7 @@ def test_frames_rendered_before_start_are_skipped(tmp_path):
     rec.push_frame(Frame("h", 64, 64, data, 10.001))  # same 1/30 s slot as the previous one
     rec.push_frame(Frame("h", 64, 64, data, 10.1))
     rec.stop()
-    assert rec.error is None and rec.frames == 2
+    assert rec.error is None and rec.frames - rec.repeated == 2  # the hole before 10.1 is filled once open
 
 
 def test_recording_path_never_overwrites(tmp_path):
@@ -425,7 +425,8 @@ def test_an_eased_recording_plays_at_the_right_length(tmp_path):
 
 def test_missed_ticks_are_filled_with_the_picture_before(tmp_path):
     """As OBS does with lagged frames: a canvas that ran late doesn't leave holes, so the frame rate stays steady.
-    A long stall (over half a second) stays a gap, and a repeat never pushes out a real frame."""
+    A stall up to FILL_LONG_S is filled with the picture that ends it (crash run 3, 2026-11-17: a stuck frame left
+    3 s missing); longer stays a gap, and a repeat never pushes out a real frame."""
     rec = Recorder(tmp_path / "r.mkv", 16, 16, 60, 500, "libx264", 0.0)  # not started: nothing drains the queue
     first, late = (Frame("h", 16, 16, bytes([n]) * (16 * 16 * 4), t) for n, t in ((1, 0.0), (2, 4 / 60)))
     rec.push_frame(first)
@@ -433,12 +434,38 @@ def test_missed_ticks_are_filled_with_the_picture_before(tmp_path):
     queued = [rec._video.get_nowait() for _ in range(rec._video.qsize())]
     assert [pts for pts, _ in queued] == [0, 1, 2, 3, 4]
     assert [f.data[0] for _, f in queued] == [1, 1, 1, 1, 2] and rec.repeated == 3 and rec.dropped == 0
-    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 2.0))  # a 2-second stall: a gap, as before
-    assert [pts for pts, _ in [rec._video.get_nowait()]] == [120] and rec.repeated == 3
+    rec.push_frame(Frame("h", 16, 16, bytes([3]) * (16 * 16 * 4), 2.0))  # a 2-second stall: one item fills it
+    (slots, picture), = [rec._video.get_nowait()]
+    assert slots == range(5, 121) and picture.data[0] == 3 and rec.repeated == 3 + 115
+    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), 8.0))  # over FILL_LONG_S: left as a gap
+    assert [pts for pts, _ in [rec._video.get_nowait()]] == [480] and rec.repeated == 118
     for i in range(VIDEO_QUEUE // 2):
-        rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (121 + i) / 60))
-    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (121 + VIDEO_QUEUE // 2 + 5) / 60))
-    assert rec.repeated == 3 and rec.dropped == 0  # queue half full: no repeats, the real frame got in
+        rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (481 + i) / 60))
+    rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (481 + VIDEO_QUEUE // 2 + 5) / 60))
+    assert rec.repeated == 118 and rec.dropped == 0  # queue half full: no repeats, the real frame got in
+
+
+def test_a_stuck_feed_keeps_the_files_timing(tmp_path):
+    """Crash run 3 (2026-11-17): a stuck engine frame left 3.02 s out of the file. Now the hole is filled and none
+    of it counts as dropped."""
+    w, h, fps = 32, 18, 30
+    rec = Recorder(tmp_path / "s.mkv", w, h, fps, 500, "libx264", 0.0)
+    rec.start()
+    rec.wait_open()
+    clock = 100.0
+    for i in list(range(30)) + list(range(120, 150)):  # a second, three seconds stuck, a second
+        rec.push_frame(Frame("h", w, h, bytes(w * h * 4), i / fps))
+        while rec._video.qsize() > 2:
+            time.sleep(0.001)
+        if i == 29:
+            rec.check_flow(clock)
+            rec.check_flow(clock + 2.5)  # "no frames arrive"
+            clock += 3.0
+        rec.check_flow(clock)
+    rec.stop()
+    with av.open(str(tmp_path / "s.mkv")) as f:
+        frames = list(f.decode(f.streams.video[0]))
+    assert len(frames) == 150 and rec.dropped == 0 and rec.repeated == 90
 
 
 def test_a_stopped_feed_is_said_once_and_its_frames_count_as_dropped(tmp_path, caplog):
@@ -470,6 +497,23 @@ def test_a_stopped_feed_is_said_once_and_its_frames_count_as_dropped(tmp_path, c
     assert rec._video.qsize() == 1  # kept again
 
 
+def test_a_feed_that_stays_stopped_is_said_again_and_counted_as_it_goes(tmp_path):
+    """Stuck-frame crash run (2026-11-17): a stream froze for good after one "no frames arrive", and the summary
+    still said 0 dropped."""
+    rec = Recorder(tmp_path / "f.mkv", 16, 16, 30, 500, "libx264", 0.0)
+    rec.check_flow(10.0)
+    rec.frames += 1
+    rec.check_flow(11.0)
+    assert rec.check_flow(13.1) == "no frames arrive"
+    assert rec.check_flow(15.0) is None and rec.dropped == 0  # within what push_frame can fill
+    assert rec.check_flow(20.0) is None and rec.dropped == 9 * 30  # past FILL_LONG_S: counted as it goes
+    assert rec.check_flow(23.2) == "no frames arrive (still, after 12 s)"  # said again: the caller tries again
+    assert rec.check_flow(24.0) is None and rec.dropped == 13 * 30
+    rec.frames += 1
+    rec.check_flow(25.0)
+    assert rec.dropped == 14 * 30 - 1  # settled on recovery, never counted twice
+
+
 def test_a_stuck_encoder_is_named_with_where_it_waits(tmp_path):
     import time as _time
     from types import SimpleNamespace
@@ -479,3 +523,12 @@ def test_a_stuck_encoder_is_named_with_where_it_waits(tmp_path):
     rec.push_frame(SimpleNamespace(time=_time.perf_counter(), data=b"", fmt="nv12"))
     why = rec.check_flow(3.5)
     assert why.startswith("the encoder is stuck (1 frames waiting")
+
+
+def test_nvencs_error_text_is_shown_only_when_readable():
+    """Crash run 2 (2026-11-17): "INVALID_CALL (��)" from a buffer the driver never wrote."""
+    from sprigcast.output.nvenc_d3d11 import readable_error
+
+    assert readable_error(b"Invalid device pointer\0junk") == "Invalid device pointer"
+    assert readable_error(b"\xc8\x9f") == "" and readable_error(b"") == "" and readable_error(None) == ""
+    assert readable_error(b"ok\x07") == ""

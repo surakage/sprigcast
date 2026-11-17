@@ -7046,7 +7046,7 @@ class MainWindow(QMainWindow):
             if not why:
                 continue
             name = getattr(getattr(enc, "path", None), "name", kind)
-            log.error("%s %s has written no frames for %.0f s while SprigCast runs: %s", kind, name,
+            log.error("%s %s is writing no frames while SprigCast runs (%.0f s or more): %s", kind, name,
                       FLOW_STALL_S, why)
             if why.startswith("no frames arrive") and self.engine is not None:
                 refresh = getattr(self.engine, "refresh_outputs", None)

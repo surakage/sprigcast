@@ -417,15 +417,20 @@ class NativeCanvases:
                 out = current[key] = free.pop(0)
                 self._guard("output", self.engine.set_output, slot, out, key[0][0], key[0][1], scale, key[1])
 
-    def reset_outputs(self) -> None:
+    def reset_outputs(self) -> bool:
         """Let go of every output; the render thread names them again next tick (render/engine.py
         refresh_outputs): a feed that stopped starts over (new texture pools: frames still held elsewhere
-        no longer hold it up)."""
+        no longer hold it up). False, and nothing done, while the engine's frame is stuck: it would come back
+        to outputs changed under it (crash run 2026-11-17); the caller asks again next tick."""
+        stats = self._guard("stats", self.engine.stats)
+        if stats is not None and stats.get("hung"):
+            return False
         log.warning("native engine: making every output again (%d frames on the card not given back yet, "
                     "%d not taken in time so far)", CardFrame.held, self.output_drops)
         for canvas_id in list(self._slots):
             self.set_outputs(canvas_id, ())
         self._last_out.clear()
+        return True
 
     def take_outputs(self, canvas_id: str, key: tuple) -> list:
         """Every frame of this output (output_key) the native engine finished since the last call, oldest
