@@ -201,6 +201,16 @@ def _chip(text: str, colour: str) -> QLabel:
     return chip
 
 
+def _check_on_worker(check: optimize.Check, profile: optimize.PcProfile, results: queue.Queue) -> None:
+    """One check, on a worker. It holds no window: a worker holding one could free its Qt objects off the
+    UI thread when the window closed first (heap corruption on Windows)."""
+    try:
+        result = check.run(profile)
+    except Exception as exc:  # one failed check never stops the rest
+        result = f"Couldn't check ({exc})"
+    results.put((check, result))
+
+
 class OptimizeWizard(QDialog):
     """Three pages: Start, Checking, Suggestions. ``chosen`` holds the ticked changes after Apply."""
 
@@ -435,7 +445,9 @@ class OptimizeWizard(QDialog):
                 continue
             self._rows[check.key] = QListWidgetItem(f"⋯   {check.label}", self.check_list)
             if check.background and self.run_in_thread:
-                threading.Thread(target=self._run_check, args=(check,), daemon=True, name=f"optimize-{check.key}").start()
+                # the worker gets the check, the profile and the queue: never this window (see _check_on_worker)
+                threading.Thread(target=_check_on_worker, args=(check, self.profile, self._results), daemon=True,
+                                 name=f"optimize-{check.key}").start()
                 self._timer.start()
             else:
                 self._run_check(check)
@@ -445,11 +457,7 @@ class OptimizeWizard(QDialog):
         self.show_plan()
 
     def _run_check(self, check: optimize.Check) -> None:
-        try:
-            result = check.run(self.profile)
-        except Exception as exc:  # one failed check never stops the rest
-            result = f"Couldn't check ({exc})"
-        self._results.put((check, result))
+        _check_on_worker(check, self.profile, self._results)
 
     def _poll(self) -> None:
         try:

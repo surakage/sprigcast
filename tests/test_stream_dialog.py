@@ -113,3 +113,30 @@ def test_multitrack_and_advanced_options(fake_keyring):
     assert d.outputs[0].ignore_recommendations and not d.limits.isVisibleTo(d)
     d2 = StreamPage(SceneCollection(canvases=col.canvases, outputs=[d.outputs[0]]))
     assert d2.extra_canvas.currentData() == "vertical" and not d2.enhanced_kbps_auto.isChecked()
+
+
+def test_add_starts_a_blank_place_until_a_service_is_picked(fake_keyring):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import NEW_PLACE, PICK_SERVICE, StreamPage
+
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)],
+        outputs=[Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/twitch")],
+    )
+    d = StreamPage(col)
+    d._add()
+    new = d.outputs[-1]
+    assert new.service is None and not new.enabled
+    assert d.service.currentText() == PICK_SERVICE and d.hero.text() == NEW_PLACE
+    assert d.list.item(1).text() == f"{NEW_PLACE}\n{PICK_SERVICE}"
+    assert not d._picture_section.isVisibleTo(d) and not d.key_row.isVisibleTo(d) and not d.enabled.isVisibleTo(d)
+    assert d.apply_to(col) and [o.id for o in col.outputs] == ["out-twitch"]  # left blank: not kept
+    d.list.setCurrentRow(0)
+    d.list.setCurrentRow(1)
+    assert d.service.currentText() == PICK_SERVICE  # still blank when you come back to it
+    d.service.setCurrentIndex(d.service.findData("youtube"))
+    assert new.service == "youtube" and new.enabled and d._picture_section.isVisibleTo(d)
+    assert d.list.item(1).text().startswith("YouTube")
+    assert d.apply_to(col) and [o.service for o in col.outputs] == ["twitch", "youtube"]
+    d.list.setCurrentRow(0)
+    assert d.service.currentData() == "twitch" and d._picture_section.isVisibleTo(d)
