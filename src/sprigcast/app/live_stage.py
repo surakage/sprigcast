@@ -658,7 +658,7 @@ class LiveSide(QWidget):
 
         if files:
             self.clip.setChecked(False)
-            QTimer.singleShot(250, lambda: self.set_clip(self._clip_on, self._clip_seconds))
+            QTimer.singleShot(250, self, lambda: self.set_clip(self._clip_on, self._clip_seconds))
 
     # Destinations ---------------------------------------------------------------------------
 
