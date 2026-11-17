@@ -92,7 +92,10 @@ the git history named in its entry, but rebuild it to today's rules rather than 
 and the Background remover downloaded into, and the settings that captions, Wave Link sync and Kick chat
 kept, including a captions Google key, and Auto clip's `auto_clip.json`. `clean_up_recordings` deletes,
 once, the unkept suggested clips that Auto clip's `suggested.json` lists in the recordings folder's "Suggested clips"
-(nothing else in that folder). When someone takes out another feature, add its leftovers there
+(nothing else in that folder). An update also clears SprigCast's old code before copying the new code in (`packaging/sprigcast.iss`
+`[InstallDelete]`, all but the camera folder), so a removed module or store plugin file can't linger in the install.
+Before that, Auto clip still showed in the plugin store after #454, and `plugin_store.catalog` now skips `RETIRED`
+ids as well. When someone takes out another feature, add its leftovers there
 and bump `VERSION`. Garden filters of removed kinds (`vst`, `background`) are dropped as gardens load
 (`core/scene.py` `RETIRED_FILTER_KINDS`).
 
