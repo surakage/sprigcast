@@ -209,6 +209,12 @@ def run() -> None:
     from sprigcast.app import crash_dump
 
     crash_dump.install(logbook.log_dir())  # a native crash leaves a small dump beside crash.log (Windows)
+    from sprigcast import sprigcore
+
+    if sprigcore.engine_choice() == "native":  # the C++ engine is loaded only when asked for (docs/native-engine.md)
+        logging.info("native engine asked for: %s, cards %s",
+                     "loaded" if sprigcore.available() else "not available, using the Python engine",
+                     [c["name"] for c in sprigcore.adapters()])
     package = inside_package()
     if package:
         logging.warning("started inside the Windows app package %s (by a Microsoft Store app): settings and "
