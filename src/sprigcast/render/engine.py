@@ -73,6 +73,17 @@ class Frame:
         self.canvas_size = canvas_size or (width, height)  # the canvas it shows (a preview may be smaller)
 
 
+def _wants_gpu(callback) -> bool:
+    """Whether a frame tap's owner (a Recorder) takes frames on the card right now (wants_gpu_frames)."""
+    wants = getattr(getattr(callback, "__self__", None), "wants_gpu_frames", None)
+    if wants is None:
+        return False
+    try:
+        return bool(wants())
+    except Exception:  # noqa: BLE001 (never let a question break the tick)
+        return False
+
+
 STINGER_WAIT_S = 2.0  # a stinger clip that has not started by then is swapped for a quick fade
 
 
@@ -308,7 +319,7 @@ class Engine:
             compositor.render(target, scene, sizes)
             frames: dict = {}
             for callback, nv12_size in outputs:
-                frame = self._frame(compositor, target, nv12_size, now, frames)
+                frame = self._output_frame(compositor, target, callback, nv12_size, now, frames)
                 if frame is None:
                     continue
                 try:
@@ -1285,7 +1296,7 @@ class Engine:
         compositor.render(target, self._collection.hide_items(scene, set(hidden)) if scene else scene, sizes)
         frames: dict = {}
         for callback, nv12_size in outputs:
-            frame = self._frame(compositor, target, nv12_size, now, frames)
+            frame = self._output_frame(compositor, target, callback, nv12_size, now, frames)
             if frame is None:
                 continue
             try:
@@ -1356,6 +1367,19 @@ class Engine:
             except Exception:
                 log.exception("frame tap for %s failed", target.id)
         return True
+
+    def _output_frame(self, compositor, canvas, callback, nv12_size, now: float, made: dict):
+        """_frame for one output. An encoder that takes frames on the card (SprigCast's NVENC, see
+        render/gpu_share.py) gets a GpuFrame instead, with no read-back; when none can be made this tick it gets
+        the read-back frame as before. Outputs of one size share one of each."""
+        if nv12_size is not None and _wants_gpu(callback):
+            key = ("gpu", nv12_size)
+            if key not in made:
+                share = getattr(compositor, "share_nv12", None)
+                made[key] = share(canvas.id, nv12_size, now) if share is not None else None
+            if made[key] is not None:
+                return made[key]
+        return self._frame(compositor, canvas, nv12_size, now, made)
 
     def _frame(self, compositor, canvas, nv12_size, now: float, made: dict) -> Frame | None:
         """This canvas for an output (NV12 at its size) or a full-size preview (RGBA). None: nothing yet.
@@ -1622,7 +1646,7 @@ class Engine:
                     self.frames[canvas.id].put(shown)
                 self._mark(f"{canvas.id} preview copy")
             for callback, nv12_size in outputs:
-                frame = self._frame(compositor, canvas, nv12_size, now, frames)
+                frame = self._output_frame(compositor, canvas, callback, nv12_size, now, frames)
                 self._mark(f"{canvas.id} read back")
                 if frame is None:
                     continue  # the first tick of a wait-free copy: its frame arrives next tick

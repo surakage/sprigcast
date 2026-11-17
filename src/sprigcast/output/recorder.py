@@ -179,7 +179,8 @@ class DirectVideo:
     convert those themselves.
     """
 
-    def __init__(self, width: int, height: int, fps: int, bitrate_kbps: int, enc, codec: str = "h264_nvenc"):
+    def __init__(self, width: int, height: int, fps: int, bitrate_kbps: int, enc, codec: str = "h264_nvenc",
+                 shared: bool = False):
         import io
 
         import av
@@ -195,8 +196,9 @@ class DirectVideo:
             width, height, fps, enc.preset, bitrate_kbps=bitrate_kbps, rate_control=enc.rate_control,
             max_kbps=max_kbps, buffer_kbits=buffer_kbits, cq_level=enc.cq_level,
             gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning, adaptive_quant=enc.adaptive_quant,
-            multipass=enc.multipass, codec=raw,
+            multipass=enc.multipass, codec=raw, shared=shared,
         )
+        self.shared = shared  # can also take frames on the card (encode_texture, render/gpu_share.py)
         self._enc = enc
         try:
             black = bytes(width * height) + bytes([128]) * (width * height // 2)
@@ -217,6 +219,19 @@ class DirectVideo:
         import av
 
         data, is_key = self.encoder.encode_frame(nv12, keyframe)
+        if not data:
+            return []
+        packet = av.Packet(data)
+        packet.pts = packet.dts = pts
+        packet.time_base = self.time_base
+        packet.is_keyframe = is_key
+        return [packet]
+
+    def encode_texture(self, frame, pts: int, keyframe: bool) -> list:
+        """Like encode, for a GpuFrame (an NV12 texture on the card): nothing is copied through memory."""
+        import av
+
+        data, is_key = self.encoder.encode_texture(frame, keyframe)
         if not data:
             return []
         packet = av.Packet(data)
@@ -661,7 +676,7 @@ class Recorder:
         Renders that fall in an output frame slot already taken (a 60 fps canvas feeding a 30 fps
         output) are skipped here, before the queue, so they neither take queue space nor count as drops.
         """
-        if self.error is not None or self._stop.is_set() or self.paused_since is not None:
+        if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._frames_closed:
             return
         before = self._last_queued
         pts = self._assign_pts(frame)
@@ -816,9 +831,19 @@ class Recorder:
         container = self._open_container()
         self._reformatter = VideoReformatter()
         if self.uses_direct():
+            from sprigcast.render import gpu_share
+
+            shared = gpu_share.usable() and self.gpu_size is not None
             try:
-                self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps, self.encoder,
-                                           self.codec)
+                try:
+                    self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps,
+                                               self.encoder, self.codec, shared=shared)
+                except Exception as exc:
+                    if not shared:
+                        raise
+                    gpu_share.give_up(f"NVENC on the shared device: {exc}")
+                    self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps,
+                                               self.encoder, self.codec)
             except Exception as exc:  # fall back to FFmpeg's encoder for this recording
                 log.warning("direct NVENC failed to start (%s); using FFmpeg's", exc)
                 self._direct = None
@@ -867,6 +892,7 @@ class Recorder:
         # streaming apps the encoder was starved for whole bursts and frames dropped.
         raise_thread_priority(ABOVE_NORMAL)
         container, finished = None, False
+        self._frames_closed = False  # a stream reconnecting runs a new session in the same recorder
         try:
             self._opening = True
             try:
@@ -892,8 +918,9 @@ class Recorder:
                 self._mux(container, extra.encode(None))
             finished = True
         finally:
+            self._let_go_of_frames()
             if self._direct is not None:
-                self._direct.close()
+                self._direct.close()  # kept as it is: reports read which encoder ran
             if container is not None and self._before_close(container):
                 try:
                     container.close()
@@ -901,6 +928,28 @@ class Recorder:
                     if finished:
                         raise  # the file's ending could not be written (disk full, drive removed)
                     log.warning("closing %s failed: %s", self.path, exc)
+
+    _frames_closed = False  # the encoder has finished: frames pushed now are ignored
+    _gpu_failed = False  # a frame on the card failed to encode: frames come through memory from then on
+
+    def wants_gpu_frames(self) -> bool:
+        """Asked by the render thread each tick: hand this output its frames on the card (render/gpu_share.py)?
+        Only once SprigCast's NVENC is open on the shared device, and never after one failed."""
+        direct = self._direct
+        return (direct is not None and direct.shared and not self._gpu_failed and not self._opening
+                and not self._frames_closed
+                and self.error is None and not self._stop.is_set())
+
+    def _let_go_of_frames(self) -> None:
+        """Drop the frames still queued (and the one kept for repeats): frames on the card hold a texture each
+        until they're let go, and a finished recorder can stay around a while for its numbers."""
+        self._frames_closed = True
+        self._last_frame = None
+        while True:
+            try:
+                self._video.get_nowait()
+            except queue.Empty:
+                break
 
     def _before_close(self, container) -> bool:
         """Hook for subclasses that write from another thread. Return False to skip closing."""
@@ -950,6 +999,11 @@ class Recorder:
             return  # rendered before the start, or a second tick in the same output frame slot
         self._last_pts = pts
         began, muxed = time.perf_counter(), self.mux_seconds
+        if getattr(frame, "fmt", "rgba") == "gpu":
+            if self._encode_on_card(container, stream, frame, pts):
+                self.frames += 1
+                self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
+            return
         if getattr(frame, "fmt", "rgba") == "nv12" and (frame.width, frame.height) == (self.out_width, self.out_height):
             if self._direct is not None:  # straight from the GPU readback into the encoder's buffer
                 self._mux(container, self._encode_direct(stream, frame.data, pts))
@@ -983,6 +1037,31 @@ class Recorder:
         self.frames += 1
         # Time spent converting and encoding this frame, not counting waiting on the file or network.
         self.encode_seconds += (time.perf_counter() - began) - (self.mux_seconds - muxed)
+
+    def _encode_on_card(self, container, stream, frame, pts: int) -> bool:
+        """Encode a GpuFrame. False (the frame is lost, counted as dropped) when it can't be: the next frames
+        come through memory instead (wants_gpu_frames turns False)."""
+        direct = self._direct
+        if direct is None or not direct.shared or self._gpu_failed or \
+                (frame.width, frame.height) != (self.out_width, self.out_height):
+            if self._counts_drops():
+                self.dropped += 1
+            return False
+        key, self._force_key = self._force_key, False
+        try:
+            packets = direct.encode_texture(frame, pts, key)
+        except Exception as exc:  # noqa: BLE001 (the driver refused the texture: back to the read-back path)
+            from sprigcast.render import gpu_share
+
+            self._gpu_failed, self._force_key = True, True
+            gpu_share.give_up(f"NVENC couldn't take a frame on the card: {exc}")
+            if self._counts_drops():
+                self.dropped += 1
+            return False
+        for packet in packets:
+            packet.stream = stream
+        self._mux(container, packets)
+        return True
 
     def _encode_direct(self, stream, nv12, pts: int) -> list:
         key, self._force_key = self._force_key, False

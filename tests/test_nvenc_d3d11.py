@@ -23,15 +23,28 @@ def test_structures_match_the_sdk_header():
         96, 224, 240, 304]
 
 
+def test_texture_input_structures_match_the_sdk_header():
+    """NV_ENC_REGISTER_RESOURCE and NV_ENC_MAP_INPUT_RESOURCE (12.1 to 13.0, x64), for frames on the card."""
+    assert ctypes.sizeof(n.RegisterResource) == 1536
+    assert n.RegisterResource.resourceToRegister.offset == 24 and n.RegisterResource.registeredResource.offset == 32
+    assert n.RegisterResource.bufferFormat.offset == 40 and n.RegisterResource.pInputFencePoint.offset == 48
+    assert ctypes.sizeof(n.MapInputResource) == 1544
+    assert n.MapInputResource.registeredResource.offset == 16 and n.MapInputResource.mappedResource.offset == 24
+    assert n.MapInputResource.mappedBufferFmt.offset == 32
+    # nvEncMapInputResource, nvEncUnmapInputResource, nvEncRegisterResource, nvEncUnregisterResource
+    assert [n.F_MAP_INPUT, n.F_UNMAP_INPUT, n.F_REGISTER, n.F_UNREGISTER] == [25, 26, 30, 31]
+
+
 def test_versions():
     assert n._struct_version(6, True) == (12 | 1 << 24 | 6 << 16 | 7 << 28 | 1 << 31)
     assert n._struct_version(7, True, (13, 0)) == (13 | 0 << 24 | 7 << 16 | 7 << 28 | 1 << 31)
     # NV_ENC_*_VER from nvEncodeAPI.h 12.1 / 12.2 / 13.0
     assert n.API_LAYOUTS[(12, 1)] == {"init": 6, "config": 8, "preset": 4, "pic": 6, "lock_bitstream": 1,
-                                      "create_input": 1, "reconfigure": 1, "init_size": 1808}
+                                      "create_input": 1, "reconfigure": 1, "init_size": 1808, "register": 4,
+                                      "map": 4}
     assert n.API_LAYOUTS[(13, 0)] == n.API_LAYOUTS[(12, 2)] == {
         "init": 7, "config": 9, "preset": 5, "pic": 7, "lock_bitstream": 2, "create_input": 2,
-        "reconfigure": 2, "init_size": 1800}
+        "reconfigure": 2, "init_size": 1800, "register": 5, "map": 4}
     assert 8 + 8 * n.F_RECONFIGURE == 264  # nvEncReconfigureEncoder in NV_ENCODE_API_FUNCTION_LIST
     assert list(n.API_LAYOUTS) == sorted(n.API_LAYOUTS, reverse=True)  # newest first
 

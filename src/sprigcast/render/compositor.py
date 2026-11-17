@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 
 import moderngl
@@ -708,8 +709,15 @@ class _Nv12Target:
         self.y_fbo = ctx.framebuffer(color_attachments=[self.y])
         self.uv_fbo = ctx.framebuffer(color_attachments=[self.uv])
         self.pbos = _Pbos(ctx, w * h * 3 // 2, fences)
+        self.share = None  # its way to the encoder on the card (render/gpu_share.Share), made when first wanted
 
     def release(self) -> None:
+        share, self.share = self.share, None
+        if share is not None:
+            try:
+                share.release()
+            except Exception:  # noqa: BLE001 (a lost device: nothing more to let go)
+                log.debug("letting go of a GPU hand-off failed", exc_info=True)
         for obj in (self.y_fbo, self.uv_fbo, self.y, self.uv):
             obj.release()
         self.pbos.release()
@@ -788,6 +796,13 @@ class Compositor:
 
             gl = UnlockedGL(self.ctx)
             self.gl = gl if gl.ok else None
+        # Frames handed to SprigCast's NVENC on the card (render/gpu_share.py): None until an encoder first
+        # wants one, False once it couldn't be set up.
+        self._bridge = None
+        if self.gl is not None and sys.platform == "win32":
+            from sprigcast.render import gpu_share
+
+            gpu_share.probe()
         self.program = self.ctx.program(vertex_shader=VERTEX_SHADER, fragment_shader=FRAGMENT_SHADER)
         self.vbo = self.ctx.buffer(reserve=4 * 4 * 4, dynamic=True)  # 4 vertices x (x, y, u, v) float32
         self.vao = self.ctx.vertex_array(self.program, [(self.vbo, "2f 2f", "in_pos", "in_uv")])
@@ -1400,6 +1415,27 @@ class Compositor:
         target.uv_fbo.read_into(data, components=2, alignment=1, write_offset=w * h)
         return data
 
+    def share_nv12(self, canvas_id: str, size: tuple[int, int], now: float):
+        """The canvas as NV12 at size, handed to the encoder on the card (a render/gpu_share.GpuFrame), or None:
+        sharing is off or failed (turned off for the run, logged once), or every pool texture is out on loan.
+        The caller sends the frame through memory then (read_nv12_later), as before."""
+        from sprigcast.render import gpu_share
+
+        if not gpu_share.usable() or self._bridge is False:
+            return None
+        try:
+            if self._bridge is None:
+                self._bridge = gpu_share.Bridge()
+            target = self._draw_nv12(canvas_id, size)
+            if target.share is None:
+                target.share = gpu_share.Share(self._bridge, size)
+            return target.share.push(target.y.glo, target.uv.glo, canvas_id, now)
+        except Exception as exc:  # noqa: BLE001 (any refusal: back to the read-back path for the rest of the run)
+            gpu_share.give_up(str(exc) or exc.__class__.__name__)
+            if self._bridge is None:
+                self._bridge = False
+            return None
+
     def read_nv12_later(self, canvas_id: str, size: tuple[int, int], tag: object,
                         now: float) -> tuple[bytes | None, object]:
         """Like read_nv12 without waiting for the GPU: returns the previous call's frame and tag (see _Pbos).
@@ -1470,6 +1506,9 @@ class Compositor:
             scaled.release()
         for pbos in self.full_pbos.values():
             pbos.release()
+        bridge, self._bridge = self._bridge, None
+        if bridge:
+            bridge.release()
         self.forget_looks()
         if self.gl is not None:
             self.gl.release()

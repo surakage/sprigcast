@@ -61,6 +61,25 @@ GL_SYNC_FLUSH_COMMANDS_BIT = 0x00000001
 GL_TIMEOUT_EXPIRED = 0x911B
 
 
+try:  # CPython's own constructor: a bytes object of n bytes, not yet filled in (nobody else can see it yet)
+    _from_size = ctypes.pythonapi.PyBytes_FromStringAndSize
+    _from_size.restype, _from_size.argtypes = ctypes.py_object, [ctypes.c_void_p, ctypes.c_ssize_t]
+    _DATA_AT = bytes.__basicsize__ - 1  # where a bytes object's contents start (after its header)
+except (AttributeError, ValueError):  # not CPython
+    _from_size = None
+
+
+def _new_bytes(n: int) -> bytes | None:
+    """A new bytes object to fill in place (only before anyone else sees it), or None where that can't be done."""
+    if _from_size is None or n <= 0:
+        return None
+    return _from_size(None, n)
+
+
+def _bytes_address(data: bytes) -> int:
+    return id(data) + _DATA_AT
+
+
 def _resolvers():
     """Ways to find an OpenGL function for the current context: the driver's lookup, then the library's own
     exports (Windows' wglGetProcAddress doesn't hand out the OpenGL 1.1 functions)."""
@@ -222,10 +241,18 @@ class UnlockedGL:
         return was.value
 
     def read_buffer(self, buffer) -> bytes:
-        """buffer.read(): the whole buffer's bytes."""
-        out = ctypes.create_string_buffer(buffer.size)
+        """buffer.read(): the whole buffer's bytes, copied once, straight into a new bytes object.
+
+        Going through a ctypes buffer and .raw copied every frame twice (a 1080p preview: 8 MB, 30 times a
+        second). Frames stay bytes (unchangeable): previews and the projector show them in place."""
+        out = _new_bytes(buffer.size)
         self.glBindBuffer(GL_COPY_READ_BUFFER, buffer.glo)
-        self.glGetBufferSubData(GL_COPY_READ_BUFFER, 0, buffer.size, out)
+        if out is not None:
+            self.glGetBufferSubData(GL_COPY_READ_BUFFER, 0, buffer.size, _bytes_address(out))
+        else:
+            room = ctypes.create_string_buffer(buffer.size)
+            self.glGetBufferSubData(GL_COPY_READ_BUFFER, 0, buffer.size, room)
+            out = room.raw
         self.glBindBuffer(GL_COPY_READ_BUFFER, 0)
-        return out.raw
+        return out
 

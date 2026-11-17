@@ -77,7 +77,9 @@ def test_direct_calls_give_the_same_pixels_as_moderngl(compositor):
         assert bytes(out[8:]) == fbo.read(components=components, alignment=1)
         buffer = ctx.buffer(reserve=size[0] * size[1] * components)
         gl.read_into(fbo, buffer, components)
-        assert gl.read_buffer(buffer) == buffer.read() == bytes(out[8:])
+        fetched = gl.read_buffer(buffer)
+        assert fetched == buffer.read() == bytes(out[8:])
+        assert type(fetched) is bytes  # filled in place, once: previews show frames as they are (unchangeable)
         for obj in (buffer, fbo, texture):
             obj.release()
 
