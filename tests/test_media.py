@@ -582,7 +582,7 @@ def test_a_bloom_of_seven_media_waking_and_sleeping_leaves_no_threads(tmp_path, 
             for source in sources:
                 source.wake()
             time.sleep(0.2)
-        assert abs(process.num_threads() - before) <= 10
+        assert process.num_threads() - before <= 10  # none left behind (fewer is fine: other work's threads ended)
         assert set(opened) == set(files) and len(opened) > len(files)  # closed asleep, opened again awake
     finally:
         gc.enable()
