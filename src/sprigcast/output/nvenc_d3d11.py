@@ -111,6 +111,17 @@ STATUS_NAMES = [
 ]
 
 
+def readable_error(raw: bytes | None) -> str:
+    """NVENC's last-error text, or "" when there's none worth showing. After a failed call on a device that went
+    away the driver hands back a buffer it never wrote (crash run 2, 2026-11-17: "INVALID_CALL (\ufffd\ufffd)")."""
+    if not raw:
+        return ""
+    text = raw.split(b"\0", 1)[0].decode("ascii", errors="replace").strip()
+    if not text or any(not (ch.isprintable() and ch.isascii()) or ch == "\ufffd" for ch in text):
+        return ""
+    return text[:300]
+
+
 class FunctionList(Structure):
     _fields_ = [("version", c_uint32), ("reserved", c_uint32), ("fn", c_void_p * 319)]
 
@@ -505,7 +516,7 @@ class D3D11Encoder:
         if self.encoder:
             try:
                 last = ctypes.WINFUNCTYPE(c_char_p, c_void_p)(_load().fn[F_LAST_ERROR])(self.encoder)
-                detail = f" ({last.decode(errors='replace')})" if last else ""
+                detail = f" ({text})" if (text := readable_error(last)) else ""
             except Exception:  # the message is only a nicety
                 pass
         raise NvencError(f"NVENC {what} failed: {_status_name(status)}{detail}")

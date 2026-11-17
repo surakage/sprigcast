@@ -40,6 +40,9 @@ EASE_CLEAR = 1 / 3
 EASE_CLEAR_S = 5.0
 EASE_MIN_FPS = 48  # only from 50/60 fps: 30 -> 15 would look worse than a few drops
 FLOW_STALL_S = 2.0  # no frame written this long while running: the output's feed has stopped (check_flow)
+# A longer hole in the feed (a stuck frame, the engine rebuilding) is filled up to this long, with the picture that
+# ends it, so files and streams keep their timing; longer than this is left as a gap (counted as dropped).
+FILL_LONG_S = 5.0
 VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
@@ -702,6 +705,19 @@ class Recorder:
                     self.repeated += 1
                 except queue.Full:
                     break
+        elif last is not None and before >= 0 and max(1, self.fps // 2) < pts - before <= FILL_LONG_S * self.fps \
+                and not self._opening and getattr(self, "_easing_since", None) is None \
+                and self._video.qsize() < VIDEO_QUEUE // 2:
+            # A long hole (crash run 3 on 2026-11-17: a stuck frame left 3.02 s missing from the file and the
+            # stream). One queue item fills it: this picture for every slot up to its own. Not the picture before:
+            # after an engine rebuild that one's texture may be on a device that's gone.
+            try:
+                self._video.put_nowait((range(before + 1, pts + 1), frame))
+                self.repeated += pts - before - 1
+                self.peak_queue = max(self.peak_queue, self._video.qsize())
+                return
+            except queue.Full:
+                pass
         if self._opening:
             # The encoder is still opening (up to half a second for a GPU encoder): keep only the
             # newest couple of frames instead of filling the queue (~45 MB at 1080p) and then
@@ -759,7 +775,7 @@ class Recorder:
 
     fed = 0  # frames handed to push_frame while running (check_flow tells "none arrive" from "none are kept")
     stalls = 0  # times check_flow found the feed stopped
-    _flow: tuple | None = None  # (when, frames written, frames fed) at the last change check_flow saw
+    _flow: tuple | None = None  # (when, frames written, frames fed, repeats) at the last change check_flow saw
     _stalled_since: float | None = None
 
     def check_flow(self, now: float) -> str | None:
@@ -773,16 +789,17 @@ class Recorder:
         if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._opening:
             self._flow, self._stalled_since = None, None
             return None
-        mark = (self.frames, self.fed)
+        mark = (self.frames, self.fed, self.repeated)
         if self._flow is None or mark[0] != self._flow[1]:
             if self._stalled_since is not None:
                 gap = now - self._stalled_since
-                lost = max(0, round(gap * self.fps) - (mark[0] - self._flow[1]))
+                filled = mark[2] - self._flow[3]  # repeats queued to fill the hole (not all written yet)
+                lost = max(0, round(gap * self.fps) - (mark[0] - self._flow[1]) - filled)
                 if self._counts_drops():
                     self.dropped += lost
                 log.warning("%s: frames are written again after %.1f s; %d counted as dropped", self.path.name,
                             gap, lost)
-            self._flow, self._stalled_since = (now, mark[0], mark[1]), None
+            self._flow, self._stalled_since = (now, *mark), None
             return None
         if self._stalled_since is not None or now - self._flow[0] < FLOW_STALL_S:
             return None
@@ -975,7 +992,12 @@ class Recorder:
                     if stopping:
                         break
                     continue
-                self._write_video(container, video, frame, pts)
+                if isinstance(pts, range):  # a hole filled with one picture (push_frame)
+                    for slot in pts:
+                        self._write_video(container, video, frame, slot)
+                        self._write_audio(container, audio)
+                else:
+                    self._write_video(container, video, frame, pts)
             self._write_audio(container, audio)
             if self._direct is None:  # SprigCast's own encoder holds nothing back (no B-frames)
                 self._mux(container, video.encode(None))
