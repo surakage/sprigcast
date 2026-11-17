@@ -37,7 +37,8 @@ from sprigcast.core.source import Source, register
 log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "instant_replay", "name": "Instant replay", "version": 2, "adds": "Source",
-          "about": "Play the last few seconds of your game (and camera) back on stream, with a replay wipe."}
+          "about": "Play the last few seconds of your game (and camera) back on stream, with a replay wipe.",
+          "new": "Ready for the faster engine: replays can play through it."}
 
 KIND = "instant_replay"
 W, H = 1920, 1080  # the replay's box on the canvas (its pictures are 720p or 1080p, scaled to fit)
