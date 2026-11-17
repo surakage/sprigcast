@@ -182,6 +182,9 @@ def run() -> None:
 
     logbook.setup()  # Documents\SprigCast\Logs: today's log, one report per stream, crashes
     logbook.catch_unhandled()  # errors nobody caught reach the log, not a console that isn't there
+    from sprigcast.app import crash_dump
+
+    crash_dump.install(logbook.log_dir())  # a native crash leaves a small dump beside crash.log (Windows)
     package = inside_package()
     if package:
         logging.warning("started inside the Windows app package %s (by a Microsoft Store app): settings and "
@@ -309,6 +312,7 @@ def run() -> None:
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
     tidy.timeout.connect(pacing.tidy)
     tidy.timeout.connect(pacing.watch_threads)  # which threads come and go, for the next long test
+    tidy.timeout.connect(pacing.watch_memory)  # and where memory goes, every 10 minutes
     tidy.start(pacing.TIDY_EVERY_MS)
     from sprigcast.core import warm, workers
 

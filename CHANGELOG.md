@@ -229,7 +229,6 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 ### Chat
 
 - One Chat panel that mixes Twitch, YouTube and Kick from just channel names (#144, #148, #150).
-- TikTok chat through TikFinity or directly (#181).
 - Show chat on your stream, and reply on Twitch (#181).
 - Fixed YouTube live lookup and Kick's chat key (#185).
 

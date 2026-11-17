@@ -30,3 +30,26 @@ def _sources_closed_after_each_test():
     from sprigcast.core import retire
 
     retire.RETIRER.settle()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Close what the tests left open and let Qt delete it while Python still runs. Left to the interpreter's own
+    shutdown, Qt's wrappers were torn down after the modules they need, and the run ended in a crash (a segfault
+    in Shiboken's unregisterWrapper) after every test had passed."""
+    import gc
+
+    try:
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in QApplication.topLevelWidgets():
+        widget.close()
+        widget.deleteLater()
+    for _ in range(3):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        gc.collect()
