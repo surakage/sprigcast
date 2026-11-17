@@ -198,27 +198,49 @@ def busy_stacks(skip: set[int] | None = None) -> str:
     return "; ".join(parts) or "no Python thread busy (native code or the system)"
 
 
+_watch_args: dict = {}  # how the stall watch was started, to start it again (keep_watching)
+WATCH_CHECK_BEATS = 50  # the window's beat looks every 5 s that the stall watch still runs
+
+
+def keep_watching() -> bool:
+    """Start the stall watch again if it stopped (it never should). True if it had to."""
+    import threading
+
+    if not _watch_args or any(t.name == "sprigcast-stall-watch" and t.is_alive() for t in threading.enumerate()):
+        return False
+    log.warning("stall watch had stopped: started again")
+    watch_stalls(**_watch_args)
+    return True
+
+
 def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
     """Start the stall watch (once). Logs at most one line every STALL_EVERY_S."""
     import threading
 
     if any(t.name == "sprigcast-stall-watch" for t in threading.enumerate()):
         return
+    _watch_args.update(clock=clock, interval=interval)
 
     def run():
         me = {threading.get_ident()}
         logged = float("-inf")
         last = clock()
+        failed_at = float("-inf")
         while True:
             time.sleep(interval)
-            now = clock()
-            late = 1000 * (now - last - interval)
-            last = now
-            if late >= STALL_MS and now - logged >= STALL_EVERY_S:
-                logged = now
-                log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
-            _check_window(now)
-            _check_busy(now)
+            try:  # nothing here may ever stop the watch
+                now = clock()
+                late = 1000 * (now - last - interval)
+                last = now
+                if late >= STALL_MS and now - logged >= STALL_EVERY_S:
+                    logged = now
+                    log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
+                _check_window(now)
+                _check_busy(now)
+            except Exception:  # noqa: BLE001
+                if time.monotonic() - failed_at >= STALL_EVERY_S:  # said once in a while, never a flood
+                    failed_at = time.monotonic()
+                    log.exception("stall watch: a check failed; still watching")
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
 
 
@@ -273,6 +295,9 @@ def ui_beat() -> None:
         log.info("the window didn't answer for %.0f ms; it was at %s", 1000 * (now - _ui["since"]), _ui["where"])
         _ui["where"] = None
     _ui["beat"], _ui["ident"] = now, threading.get_ident()
+    _ui["beats"] = _ui.get("beats", 0) + 1
+    if _ui["beats"] % WATCH_CHECK_BEATS == 0:
+        keep_watching()
 
 
 def ui_rest() -> None:
@@ -289,13 +314,14 @@ def _check_window(now: float) -> None:
     frame = sys._current_frames().get(ident)
     if frame is None:
         return
-    _ui["since"] = beat
-    _ui["where"] = _where(frame)
+    where = _where(frame)
     del frame
     # Who else is running right then: a window held up on a trivial line is waiting for Python's lock, and
     # the thread holding it is among these (PC test 2026-11-17: 328 ms on a one-line check).
     others = busy_stacks({ident, threading.get_ident()})
-    _ui["where"] += f"; meanwhile {others}"
+    # Set once, whole: the window's thread may answer (ui_beat clears "where") at any moment. Adding to it in
+    # a second step met None there once and stopped the watch for the rest of the session (2026-11-17).
+    _ui["since"], _ui["where"] = beat, f"{where}; meanwhile {others}"
 
 
 def _where(frame, depth: int = 12) -> str:

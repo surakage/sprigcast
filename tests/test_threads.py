@@ -199,3 +199,64 @@ def test_memory_is_logged_every_ten_minutes_with_what_python_keeps_aside(monkeyp
     assert first.startswith("memory now: ") and "python objects" in first and "kept aside" in first
     assert pacing.watch_memory(now=1000.0 + 60) is None  # not every minute
     assert pacing.watch_memory(now=1000.0 + pacing.MEMORY_EVERY_S + 1) is not None
+
+
+def test_the_stall_watch_never_stops(monkeypatch, caplog):
+    """2026-11-17: a check met None mid-update, raised, and the watch was gone for the rest of the session."""
+    import logging
+    import threading
+
+    from sprigcast.core import pacing
+
+    def watching():
+        return [t for t in threading.enumerate() if t.name == "sprigcast-stall-watch" and t.is_alive()]
+
+    calls = []
+
+    def broken(now):
+        calls.append(now)
+        raise TypeError("unsupported operand type(s) for +=: 'NoneType' and 'str'")
+
+    monkeypatch.setattr(pacing, "_check_window", broken)
+    pacing.watch_stalls()
+    with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
+        deadline = time.monotonic() + 2
+        while len(calls) < 3 and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert len(calls) >= 3 and watching()  # it failed three times and still runs
+    assert "still watching" in caplog.text
+
+
+def test_keep_watching_starts_it_again(monkeypatch):
+    import threading
+
+    from sprigcast.core import pacing
+
+    started = []
+    monkeypatch.setattr(pacing, "_watch_args", {"interval": 0.05})
+    monkeypatch.setattr(threading, "enumerate", lambda: [])  # it isn't running
+    monkeypatch.setattr(pacing, "watch_stalls", lambda **kw: started.append(kw))
+    assert pacing.keep_watching() and started == [{"interval": 0.05}]
+
+
+def test_window_stall_is_noted_whole_even_if_the_window_answers_meanwhile(monkeypatch):
+    from sprigcast.core import pacing
+
+    pacing._ui.update(beat=10.0, ident=threading_ident(), where=None)
+
+    def answered(skip=None):
+        pacing._ui["where"] = None  # the window's thread answered right then
+        return "render at engine.py:1 tick"
+
+    monkeypatch.setattr(pacing, "busy_stacks", answered)
+    try:
+        pacing._check_window(11.0)
+        assert "meanwhile render at engine.py:1 tick" in pacing._ui["where"]
+    finally:
+        pacing._ui.update(beat=None, ident=None, where=None)
+
+
+def threading_ident():
+    import threading
+
+    return threading.get_ident()
