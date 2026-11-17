@@ -89,6 +89,20 @@ struct PreviewCfg {
     float background[4] = {0, 0, 0, 1};
 };
 
+struct TransitionCfg {  // shared: the transition Python started last on a canvas
+    uint64_t from = 0;
+    sc_transition how{};
+    uint64_t serial = 0;
+};
+
+struct RunningTransition {  // the frame thread's
+    uint64_t from = 0;
+    sc_transition how{};
+    double start = 0;
+    uint64_t serial = 0;
+    bool on = false;
+};
+
 struct Watch {  // shared: what Python asked for and the newest picture
     int width = 0, height = 0, max_fps = 0;
     std::vector<uint8_t> latest;
@@ -133,6 +147,7 @@ struct sc_engine {
     bool rate_changed = true;
     CanvasCfg canvases[SC_ENGINE_CANVASES];
     Watch watches[SC_ENGINE_CANVASES];
+    TransitionCfg transitions[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> uploads;                  // the newest picture per source, not yet sent
     std::unordered_map<uint64_t, std::vector<uint8_t>> spare;   // buffers to reuse for the next picture
     std::set<uint64_t> forgets;
@@ -152,6 +167,7 @@ struct sc_engine {
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
     std::unordered_map<int, PreviewGpu> shown;
     Reader readers[SC_ENGINE_CANVASES];
+    RunningTransition running[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> kept_sources;
     std::unordered_map<uint64_t, LookData> kept_looks;
     std::unordered_map<uint64_t, MaskData> kept_masks;
@@ -486,6 +502,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
 
     CanvasCfg canvases[SC_ENGINE_CANVASES];
     Watch watches[SC_ENGINE_CANVASES];
+    TransitionCfg transitions[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> uploads;
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, LookData> looks;
@@ -496,6 +513,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     {
         std::lock_guard<std::mutex> lock(e.state);
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
+        std::copy(std::begin(e.transitions), std::end(e.transitions), transitions);
         for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
             watches[i].width = e.watches[i].width;
             watches[i].height = e.watches[i].height;
@@ -551,6 +569,23 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             int code = sc_canvas_create(e.dev, cfg.width, cfg.height, &c);
             check(code);
             if (code != SC_OK) continue;
+        }
+        RunningTransition &run = e.running[i];
+        if (transitions[i].serial != run.serial) {  // a new one (or a stop) from Python: it starts this frame
+            run.serial = transitions[i].serial;
+            run.from = transitions[i].from;
+            run.how = transitions[i].how;
+            run.start = seconds;
+            run.on = run.from != 0;
+        }
+        if (run.on) {
+            const double progress = (seconds - run.start) / std::max(0.001, static_cast<double>(run.how.seconds));
+            if (progress < 1.0) {
+                check(sc_canvas_render_transition(c, run.from, cfg.scene, seconds, &run.how,
+                                                  static_cast<float>(progress)));
+                continue;
+            }
+            run.on = false;
         }
         if (cfg.scene) check(sc_canvas_render(c, cfg.scene, seconds));
         else check(sc_canvas_clear(c, 0, 0, 0, 0));
@@ -1030,6 +1065,22 @@ SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int
         if (!canvas || canvas->width != width || canvas->height != height)
             return fail(SC_ERR_TIMEOUT, "sc_engine_canvas_read: the canvas isn't drawn yet");
         return sc_canvas_read_bgra(canvas, out, width * 4);
+    });
+}
+
+SC_API int sc_engine_canvas_transition(sc_engine *engine, int index, uint64_t from, const sc_transition *how) {
+    return engine_call(engine, "sc_engine_canvas_transition", [&]() -> int {
+        if (index < 0 || index >= SC_ENGINE_CANVASES)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_transition: no such slot");
+        const bool stop = from == 0 || !how;
+        if (!stop && (how->mode < SC_TRANSITION_FADE || how->mode > SC_TRANSITION_BLOOM || !(how->seconds > 0)))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_transition: unknown kind or no length");
+        std::lock_guard<std::mutex> lock(engine->state);
+        TransitionCfg &t = engine->transitions[index];
+        t.from = stop ? 0 : from;
+        t.how = stop ? sc_transition{} : *how;
+        ++t.serial;
+        return SC_OK;
     });
 }
 

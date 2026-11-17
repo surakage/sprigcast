@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 3
+#define SC_INTERFACE_VERSION 4
 
 enum {
     SC_OK = 0,
@@ -209,6 +209,31 @@ SC_API int sc_snapshot_set(sc_device *device, const sc_snapshot *snapshot);
  * seconds, for scrolling and barrel rolls. */
 SC_API int sc_canvas_render(sc_canvas *canvas, uint64_t scene, double time);
 
+/* A transition between two snapshot scenes (core/scene.py Transition; the stinger and move kinds stay in
+ * Python for now). Both scenes are drawn to pictures of their own and mixed the way render/compositor.py's
+ * transition shader mixes them. */
+enum {
+    SC_TRANSITION_FADE = 1,
+    SC_TRANSITION_SLIDE = 2,
+    SC_TRANSITION_SWIPE = 3,
+    SC_TRANSITION_WIPE = 4,
+    SC_TRANSITION_LEAF = 5,
+    SC_TRANSITION_BLOOM = 6,
+};
+
+typedef struct sc_transition {
+    int mode;              /* SC_TRANSITION_* */
+    float seconds;         /* how long it runs (the engine's own transitions) */
+    float direction[2];    /* where slide, swipe and wipe move to: left (-1, 0), right (1, 0), up (0, -1), down (0, 1) */
+    float softness;        /* wipe, leaf and bloom edge, 0 .. 1 */
+    int reserved;
+    uint64_t wipe_map;     /* wipe: a picture set with sc_mask_set, dark parts change first; 0 = a straight edge */
+} sc_transition;
+
+/* Draws the change from scene `from` to scene `to` onto the canvas at `progress` (0 .. 1). */
+SC_API int sc_canvas_render_transition(sc_canvas *canvas, uint64_t from, uint64_t to, double time,
+                                       const sc_transition *how, float progress);
+
 /* Checks of the crash gate (tests only): faults inside a device call. kind 1 throws a C++ exception, kind 2
  * writes through a null pointer (an access violation). Either way the call answers SC_ERR_INTERNAL and the
  * device is shut off (SC_ERR_FAULTED from then on); the app goes on. */
@@ -286,6 +311,10 @@ SC_API int sc_engine_stats_get(sc_engine *engine, sc_engine_stats *out);
 /* Waits for a frame drawn after this call (up to 2 s) and copies that canvas into `out` as BGRA, width * 4 bytes a row. The
  * width and height must be the canvas's. Tests and screenshots only: the frame path never copies frames back. */
 SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int width, int height);
+/* Starts a transition on canvas `index` from scene `from` to the scene it shows (sc_engine_canvas_show), timed
+ * by the engine from its next frame. from = 0 (or how = NULL) stops one that is running. A transition whose
+ * `from` scene is no longer in the snapshot ends at once. */
+SC_API int sc_engine_canvas_transition(sc_engine *engine, int index, uint64_t from, const sc_transition *how);
 /* Pictures of a canvas for Python's screens: each frame (at most `max_fps` a second, 0 = every frame) the engine
  * draws canvas `index` shrunk to width x height as premultiplied RGBA, the way SprigCast's previews take it, and
  * copies it back without waiting on the graphics card, so it arrives a frame or two later. 0 x 0 stops. */

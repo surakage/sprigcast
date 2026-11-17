@@ -197,6 +197,25 @@ int main() {
     sc_snapshot bad_snap = {&bad, 1, items, 2, nullptr, 0};
     CHECK(sc_snapshot_set(d2, &bad_snap) == SC_ERR_ARGUMENT);
     CHECK(sc_canvas_render(c2, 12345, 0.0) == SC_OK);  // an unknown scene: see-through
+    // Transitions: at the start a fade shows the outgoing scene exactly; at the end, the incoming one.
+    sc_transition fade = {};
+    fade.mode = SC_TRANSITION_FADE;
+    fade.seconds = 0.3f;
+    std::vector<uint8_t> mixed(32 * 16 * 4);
+    CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 0.0f) == SC_OK);
+    CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+    CHECK(mixed == out);
+    CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 1.0f) == SC_OK);
+    CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+    CHECK(at(mixed, 32, 1, 1).a == 0);
+    for (int mode = SC_TRANSITION_FADE; mode <= SC_TRANSITION_BLOOM; ++mode) {
+        sc_transition t = fade;
+        t.mode = mode;
+        t.softness = 0.2f;
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &t, 0.5f) == SC_OK);
+    }
+    fade.mode = 99;
+    CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 0.5f) == SC_ERR_ARGUMENT);
     sc_canvas_destroy(c2);
     sc_device_destroy(d2);
     sc_device_destroy(nullptr);
@@ -226,6 +245,16 @@ int main() {
         }
     };
     engine_draws_it("at first");
+    {   // A transition run by the engine's own clock: from an unknown scene it ends at once (the canvas as is).
+        sc_transition t = {};
+        t.mode = SC_TRANSITION_FADE;
+        t.seconds = 0.2f;
+        CHECK(sc_engine_canvas_transition(eng, 0, 777, &t) == SC_OK);
+        engine_draws_it("with a transition from a scene that isn't there");
+        t.seconds = 0;
+        CHECK(sc_engine_canvas_transition(eng, 0, 1, &t) == SC_ERR_ARGUMENT);
+        CHECK(sc_engine_canvas_transition(eng, 0, 0, nullptr) == SC_OK);
+    }
     // Watched pictures come back without waiting: RGBA at the size asked, the same picture at full size.
     CHECK(sc_engine_canvas_watch(eng, 0, 32, 16, 0) == SC_OK);
     {

@@ -126,6 +126,12 @@ struct sc_device {
 
     sc::Compositor comp;
     int prepare_compositor();
+
+    // Transitions (made the first time one runs).
+    ComPtr<ID3D11VertexShader> trans_vs;
+    ComPtr<ID3D11PixelShader> trans_ps;
+    ComPtr<ID3D11Buffer> trans_constants;
+    int prepare_transitions();
 };
 
 struct sc_canvas {
@@ -135,9 +141,19 @@ struct sc_canvas {
     ComPtr<ID3D11RenderTargetView> target;
     ComPtr<ID3D11ShaderResourceView> view;  // previews draw the canvas from this
     ComPtr<ID3D11Texture2D> staging;  // made on the first read
+    sc::Target outgoing, incoming;    // transitions: the two scenes, let go after a while unused
+    double transition_used = 0;
 };
 
 namespace sc {
+
+// Draws snapshot scene `scene` (sprigs first) into a target. The device's lock must be held.
+int render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, int height, uint64_t scene, double time);
+// Draws a transition onto the canvas. The device's lock must be held.
+int render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double time, const sc_transition &how,
+                      float progress);
+// Whether the snapshot has this scene.
+bool has_scene(sc_device &dev, uint64_t scene);
 
 // Draws `picture` into the rectangle x, y, w, h of a target `tw` x `th` (the phase 1 drawing: bilinear, "over"
 // blending, or a plain copy with blend = false). The device's lock must be held.

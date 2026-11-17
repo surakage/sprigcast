@@ -79,8 +79,11 @@ render/native_bridge.py: the render thread hands every new source picture to the
 snapshot of what is on air (blooms and every sprig layout, as their Live state shows them) whenever that or the
 filters change. The native engine draws the canvases and copies preview-sized pictures back without waiting on
 the card (`sc_engine_canvas_watch` / `_take`); the screens show those, so Python's compositor no longer draws a
-canvas only to show it. It still draws recordings and streams, transitions, Build's edited bloom, the Part
-editor, screenshots and the virtual camera until those move. If the native engine stops (faulted), Python's
+canvas only to show it. Transitions (fade, slide, swipe, wipe, leaf, bloom) run in the native engine on its own
+clock (`sc_engine_canvas_transition`; the outgoing bloom is in the snapshot while one runs), drawn by a port of
+the Python transition shader and pixel-checked against it (tests/native_golden/t_*.png). Python's compositor
+still draws recordings and streams, stinger and move transitions, Build's edited bloom, the Part editor,
+screenshots and the virtual camera until those move. If the native engine stops (faulted), Python's
 compositor draws the previews again by itself.
 
 ## Phases

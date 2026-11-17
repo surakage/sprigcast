@@ -54,6 +54,33 @@ def test_a_switched_off_canvas_or_an_empty_one_shows_nothing():
     assert not [d for d in draws if d.key.startswith("canvas:")]
 
 
+def test_a_transitions_outgoing_bloom_is_in_the_snapshot():
+    col = _collection()
+    old = Scene(id="old", name="Old", canvas="h", items=[SceneItem(source="cam")])
+    draws, parts, shows = native_bridge.snapshot_draws(col, _plain_state, {"h": old})
+    assert "from:h" in [d.key for d in draws]
+    assert parts[("cam", "from:h")] == "part:p-cam"
+    assert shows["h"] == "canvas:h"
+
+
+def test_which_transitions_the_native_engine_draws():
+    from sprigcast.core.scene import Transition
+    from sprigcast.render.engine import Running
+
+    def running(kind, began=1.0, stinger=None):
+        return Running(None, began, 0.3, Transition(kind=kind), stinger=stinger)
+
+    for kind in ("fade", "slide", "swipe", "wipe", "leaf", "bloom"):
+        assert native_bridge.native_transition(running(kind))
+    assert not native_bridge.native_transition(running("move"))
+    assert not native_bridge.native_transition(running("stinger", stinger=object()))
+    assert not native_bridge.native_transition(running("fade", began=None))  # waiting for a camera
+    spec = sprigcore.transition_spec(Transition(kind="wipe", direction="up", softness=2.0, duration_ms=500), "w")
+    assert (spec.mode, round(spec.seconds, 3), tuple(spec.direction), spec.softness) == (4, 0.5, (0.0, -1.0), 1.0)
+    assert spec.wipe_map == sprigcore.key("w")
+    assert sprigcore.transition_spec(Transition(kind="cut")) is None
+
+
 def test_a_sprig_is_drawn_as_its_live_state_shows_it():
     col = _collection()
 
@@ -74,7 +101,7 @@ class FakeCompositor:
     def upload(self, source_id, *a):
         self.uploaded.append(source_id)
 
-    def render(self, canvas, scene, sizes, previous=None, progress=1.0):
+    def render(self, canvas, scene, sizes, **extra):
         self.rendered.append(canvas.id)
 
     def read(self, key):
@@ -94,8 +121,12 @@ class FakeNative:
     def forget_gone(self, ids):
         pass
 
-    def sync(self, collection, effects, state_view, fading):
+    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None):
         self.synced += 1
+        self.transitions = dict(transitions or {})
+
+    def handles(self, extra):
+        return native_bridge.NativeCanvases.handles(self, extra)
 
     def check(self, now):
         pass
@@ -157,6 +188,37 @@ def test_a_failed_native_engine_hands_the_previews_back_to_python():
     engine._native.failed = True
     _run(engine, fake)
     assert 29 <= fake.rendered.count("h") <= 31
+    assert engine.frames["h"].take().data == b"x"
+
+
+def _switch(engine, kind):
+    from sprigcast.core.scene import Transition
+
+    new = engine._collection.model_copy(deep=True)
+    new.scenes.append(Scene(id="c", name="C", canvas="h"))
+    new.active_scenes["h"] = "c"
+    new.transition = Transition(kind=kind, duration_ms=500)
+    old, engine._collection = engine._collection, new
+    engine._start_transitions(old, new)
+
+
+def test_a_fade_stays_in_the_native_engine():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    _switch(engine, "fade")
+    engine._transitions["h"].began = 10.0
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered == []  # Python draws nothing: the native engine runs the fade
+    assert "h" in engine._native.transitions
+
+
+def test_a_move_transition_is_drawn_by_python():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    _switch(engine, "move")
+    engine._transitions["h"].began = 10.0
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered.count("h") >= 7
     assert engine.frames["h"].take().data == b"x"
 
 

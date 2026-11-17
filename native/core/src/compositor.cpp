@@ -430,6 +430,43 @@ int sc_device::prepare_compositor() {
     return SC_OK;
 }
 
+int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, int height, uint64_t scene_id,
+                     double time) {
+    int ready = dev.prepare_compositor();
+    if (ready != SC_OK) return ready;
+    std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
+    ID3D11DeviceContext *c = dev.context.Get();
+    if (!snap || !snap->by_id.count(scene_id)) {
+        const float clear[4] = {0, 0, 0, 0};
+        c->ClearRenderTargetView(target, clear);
+        return SC_OK;
+    }
+    c->OMSetBlendState(dev.over.Get(), nullptr, 0xFFFFFFFF);
+    c->RSSetState(dev.raster.Get());
+    c->IASetInputLayout(nullptr);
+    c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    c->VSSetShader(dev.comp.vs.Get(), nullptr, 0);
+    c->PSSetShader(dev.comp.ps.Get(), nullptr, 0);
+    ID3D11Buffer *buffers[] = {dev.comp.constants.Get()};
+    c->VSSetConstantBuffers(0, 1, buffers);
+    c->PSSetConstantBuffers(0, 1, buffers);
+    ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get(), dev.comp.clamp.Get()};
+    c->PSSetSamplers(0, 2, samplers);
+
+    Renderer r{dev, *snap, time, c};
+    const sc_scene &scene = snap->scenes[snap->by_id.at(scene_id)];
+    std::set<uint64_t> done, open{scene_id};
+    int code = r.draw_parts(scene, done, open, 0);
+    if (code != SC_OK) return code;
+    r.draw_scene(scene, target, width, height);
+    return SC_OK;
+}
+
+bool sc::has_scene(sc_device &dev, uint64_t scene) {
+    std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
+    return snap && snap->by_id.count(scene);
+}
+
 extern "C" {
 
 SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data, const sc_upload *how) {
@@ -595,42 +632,22 @@ SC_API int sc_snapshot_set(sc_device *device, const sc_snapshot *snapshot) {
 SC_API int sc_canvas_render(sc_canvas *canvas, uint64_t scene_id, double time) {
     return device_call(canvas ? canvas->device : nullptr, "sc_canvas_render", [&]() -> int {
         if (!canvas) return fail(SC_ERR_ARGUMENT, "sc_canvas_render: no canvas");
-        sc_device &dev = *canvas->device;
-        std::lock_guard<std::mutex> lock(dev.lock);
-        int ready = dev.prepare_compositor();
-        if (ready != SC_OK) return ready;
-        std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
-        ID3D11DeviceContext *c = dev.context.Get();
-        if (!snap) {
-            const float clear[4] = {0, 0, 0, 0};
-            c->ClearRenderTargetView(canvas->target.Get(), clear);
-            return SC_OK;
+        std::lock_guard<std::mutex> lock(canvas->device->lock);
+        if (canvas->outgoing.texture && time - canvas->transition_used > 30.0) {
+            canvas->outgoing = Target();  // no transition for a while: let go of its two pictures
+            canvas->incoming = Target();
         }
-        auto found = snap->by_id.find(scene_id);
-        if (found == snap->by_id.end()) {
-            const float clear[4] = {0, 0, 0, 0};
-            c->ClearRenderTargetView(canvas->target.Get(), clear);
-            return SC_OK;
-        }
-        c->OMSetBlendState(dev.over.Get(), nullptr, 0xFFFFFFFF);
-        c->RSSetState(dev.raster.Get());
-        c->IASetInputLayout(nullptr);
-        c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        c->VSSetShader(dev.comp.vs.Get(), nullptr, 0);
-        c->PSSetShader(dev.comp.ps.Get(), nullptr, 0);
-        ID3D11Buffer *buffers[] = {dev.comp.constants.Get()};
-        c->VSSetConstantBuffers(0, 1, buffers);
-        c->PSSetConstantBuffers(0, 1, buffers);
-        ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get(), dev.comp.clamp.Get()};
-        c->PSSetSamplers(0, 2, samplers);
+        return render_scene(*canvas->device, canvas->target.Get(), canvas->width, canvas->height, scene_id, time);
+    });
+}
 
-        Renderer r{dev, *snap, time, c};
-        const sc_scene &scene = snap->scenes[found->second];
-        std::set<uint64_t> done, open{scene_id};
-        int code = r.draw_parts(scene, done, open, 0);
-        if (code != SC_OK) return code;
-        r.draw_scene(scene, canvas->target.Get(), canvas->width, canvas->height);
-        return SC_OK;
+SC_API int sc_canvas_render_transition(sc_canvas *canvas, uint64_t from, uint64_t to, double time,
+                                       const sc_transition *how, float progress) {
+    return device_call(canvas ? canvas->device : nullptr, "sc_canvas_render_transition", [&]() -> int {
+        if (!canvas || !how || how->mode < SC_TRANSITION_FADE || how->mode > SC_TRANSITION_BLOOM)
+            return fail(SC_ERR_ARGUMENT, "sc_canvas_render_transition: no canvas, or an unknown kind");
+        std::lock_guard<std::mutex> lock(canvas->device->lock);
+        return render_transition(*canvas, from, to, time, *how, progress);
     });
 }
 
