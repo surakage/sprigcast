@@ -139,3 +139,41 @@ def test_changes_save_once_they_settle_and_closing_saves_what_waits(tmp_path, mo
         assert SceneCollection.load(path).scenes[0].name == "Renamed"
     finally:
         w.close()
+
+
+def test_gear_clicks_are_logged_and_a_window_opened_early_is_made_whole(tmp_path, monkeypatch, caplog):
+    """PC test 2026-11-17: after a relaunch, clicks on the Settings gear did nothing and the log said nothing."""
+    import logging
+
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QEvent, QPointF, QSettings, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    app = QApplication.instance() or QApplication([])
+    QCoreApplication.setOrganizationName("SprigCastStripsTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          scenes=[Scene(id="a", name="A", canvas="horizontal")], active_scenes={"horizontal": "a"})
+    w = MainWindow(col, tmp_path / "scenes.json")
+    opened = []
+    monkeypatch.setattr(w, "_open_settings", lambda *a, **k: opened.append(a))
+    try:
+        with caplog.at_level(logging.INFO, logger="sprigcast.app.main_window"):
+            press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(5, 5),
+                                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+            app.sendEvent(w.settings_button, press)
+            w.settings_button.click()
+        assert "settings: gear pressed" in caplog.text and "settings: gear clicked" in caplog.text
+        assert opened == [()]
+        w.show_minimized_drawn(settle_ms=10_000)  # a minimized start, still being drawn...
+        w.showMaximized()  # ...when another app opens it
+        app.processEvents()
+        assert w.windowOpacity() == 1.0
+        assert not w.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+    finally:
+        w.close()

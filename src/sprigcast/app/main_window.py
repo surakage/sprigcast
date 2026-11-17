@@ -245,6 +245,21 @@ class _Repotted(QObject):
     done = Signal(list)
 
 
+
+class GearWatch(QObject):
+    """Logs mouse presses that reach the Settings gear: the PC once saw clicks on it do nothing, with nothing
+    in the log to say whether they got there. One button, so it costs nothing."""
+
+    def __init__(self, button):
+        super().__init__(button)
+        button.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            log.info("settings: gear pressed (%s)", "enabled" if obj.isEnabled() else "disabled")
+        return False
+
 class MainWindow(QMainWindow):
     def __init__(self, collection: SceneCollection, scenes_path: Path, plugins_dir: Path | None = None,
                  shelf=None):
@@ -2267,7 +2282,8 @@ class MainWindow(QMainWindow):
         self.settings_button.setToolTip("Settings (Ctrl+,)")
         self.settings_button.setStyleSheet(self.palette_button.styleSheet())
         self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.settings_button.clicked.connect(lambda: self._open_settings())
+        self.settings_button.clicked.connect(self._gear_clicked)
+        self._gear_watch = GearWatch(self.settings_button)  # logs presses that reach it (PC test: clicks did nothing)
         bar.addWidget(self.settings_button)
         self._set_header_clock("Offline", False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
@@ -6158,7 +6174,18 @@ class MainWindow(QMainWindow):
 
     # Settings window -------------------------------------------------------------
 
+    def _gear_clicked(self) -> None:
+        log.info("settings: gear clicked (window %s)", "active" if self.isActiveWindow() else "not active")
+        self._open_settings()
+
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
+        open_now = next((w for w in QApplication.topLevelWidgets()
+                         if isinstance(w, SettingsWindow) and w.isVisible()), None)
+        if open_now is not None:  # already open (behind another window, say): bring it forward
+            log.info("settings: already open, brought forward")
+            open_now.raise_()
+            open_now.activateWindow()
+            return
         if tab == "Hotkeys":  # windows of their own now; older links still land there
             self.open_hotkeys()
             return
@@ -6543,6 +6570,8 @@ class MainWindow(QMainWindow):
         self.show()
 
         def minimize() -> None:
+            if self.windowOpacity() >= 1.0:  # opened meanwhile (changeEvent made it whole): leave it open
+                return
             self.showMinimized()
             self.setWindowOpacity(1.0)
             self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
@@ -6563,6 +6592,13 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
+            if not self.isMinimized() and (self.windowOpacity() < 1.0 or self.testAttribute(
+                    Qt.WidgetAttribute.WA_ShowWithoutActivating)):
+                # Opened (or maximised by another app) before show_minimized_drawn finished: never leave it
+                # see-through or unable to take the focus.
+                self.setWindowOpacity(1.0)
+                self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+                log.info("window opened while still being drawn for a minimized start: made whole")
             self._pace_poll()
             if self.isMinimized():
                 QTimer.singleShot(1000, self._sweep_if_due)
