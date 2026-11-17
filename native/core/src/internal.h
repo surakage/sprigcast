@@ -43,6 +43,11 @@ struct Source {
     int format = SC_FMT_RGBA;
     int planar = 0;               // 0, 1 (I420) or 2 (I420A)
     float yuv[3] = {0, 0, 0};
+    // An NV12 picture copied on the card (sc::source_nv12): the texture is also a target the repack draws into,
+    // and the NV12 picture is copied here first (a decoder's array slice can't be read in place).
+    ComPtr<ID3D11RenderTargetView> target;
+    ComPtr<ID3D11Texture2D> nv12, nv12_staging;
+    ComPtr<ID3D11ShaderResourceView> nv12_y, nv12_uv;
 };
 
 struct Look {
@@ -87,6 +92,15 @@ int make_target(ID3D11Device *device, int width, int height, Target &out,
                 DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM);
 // Checks an upload's description; gives the bytes its data spans (the last row needs only its own pixels).
 int upload_bytes(const sc_upload &how, size_t &bytes);
+// An NV12 picture on the card (a texture, or slice `slice` of a decoder's texture array) as source `id`, without
+// passing through memory: copied, then repacked into the compositor's I420 layout (line for line the same as an
+// I420 upload of it). `how` gives the picture's size (format SC_FMT_NV12, height = picture height * 3 / 2), its
+// colours and layout size. SC_ERR_DEVICE when this card can't read NV12 textures in shaders. Takes device.lock.
+int source_nv12(sc_device &device, uint64_t id, ID3D11Texture2D *picture, unsigned slice, const sc_upload &how);
+// An SC_FMT_NV12 upload from memory: `done` when it went onto the card as NV12 (source_nv12); otherwise `rows`
+// holds the same picture as I420 rows (width bytes each) for the ordinary upload. Takes device.lock.
+int upload_nv12(sc_device &device, uint64_t id, const uint8_t *data, const sc_upload &how,
+                std::vector<uint8_t> &rows, bool &done);
 
 }  // namespace sc
 
@@ -121,6 +135,13 @@ struct sc_device {
     ComPtr<ID3D11PixelShader> nv12_ps;
     ComPtr<ID3D11Buffer> nv12_constants;
     int prepare_nv12();
+
+    // NV12 pictures on the card into a source (sc::source_nv12).
+    int nv12_sources = -1;  // -1 not checked yet, 0 this card can't read NV12 textures in shaders, 1 it can
+    ComPtr<ID3D11VertexShader> repack_vs;
+    ComPtr<ID3D11PixelShader> repack_ps;
+    ComPtr<ID3D11Buffer> repack_constants;
+    int prepare_repack();
 };
 
 struct sc_canvas {

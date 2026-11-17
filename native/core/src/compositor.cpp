@@ -383,13 +383,14 @@ int make_target(ID3D11Device *device, int width, int height, Target &out, DXGI_F
 
 int sc::upload_bytes(const sc_upload &how, size_t &bytes) {
     const int fmt = how.format, w = how.width, h = how.height, stride = how.stride;
-    if (fmt < SC_FMT_RGBA || fmt > SC_FMT_I420A) return fail(SC_ERR_ARGUMENT, "Upload: unknown format");
-    const bool planar = fmt == SC_FMT_I420 || fmt == SC_FMT_I420A;
+    if (fmt < SC_FMT_RGBA || fmt > SC_FMT_NV12) return fail(SC_ERR_ARGUMENT, "Upload: unknown format");
+    const bool planar = fmt == SC_FMT_I420 || fmt == SC_FMT_I420A || fmt == SC_FMT_NV12;
     const bool three = fmt == SC_FMT_RGB || fmt == SC_FMT_BGR;
     const int bpp = planar ? 1 : (three ? 3 : 4);
     if (w < 1 || h < 1 || w > 16384 || h > 16384 || stride < w * bpp || stride > 16384 * 4)
         return fail(SC_ERR_ARGUMENT, "Upload: bad size or stride");
     if (planar && (w % 2 || h < 3)) return fail(SC_ERR_ARGUMENT, "Upload: bad planar size");
+    if (fmt == SC_FMT_NV12 && (h % 3 || (h / 3) % 2)) return fail(SC_ERR_ARGUMENT, "Upload: bad NV12 size");
     bytes = static_cast<size_t>(h - 1) * stride + static_cast<size_t>(w) * bpp;
     return SC_OK;
 }
@@ -475,6 +476,17 @@ SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data,
         size_t bytes = 0;
         int ok = upload_bytes(*how, bytes);
         if (ok != SC_OK) return ok;
+        std::vector<uint8_t> repacked;
+        sc_upload as_i420 = *how;
+        if (how->format == SC_FMT_NV12) {  // on the card when it can; else repacked here into I420 rows
+            bool done = false;
+            ok = upload_nv12(*device, id, data, *how, repacked, done);
+            if (ok != SC_OK || done) return ok;
+            as_i420.format = SC_FMT_I420;
+            as_i420.stride = as_i420.width;
+            data = repacked.data();
+            how = &as_i420;
+        }
         const int fmt = how->format, w = how->width, h = how->height, stride = how->stride;
         const bool planar = fmt == SC_FMT_I420 || fmt == SC_FMT_I420A;
         const bool three = fmt == SC_FMT_RGB || fmt == SC_FMT_BGR;
