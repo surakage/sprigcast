@@ -106,7 +106,23 @@ def forget_files() -> int:
     return gone
 
 
+def forget_kept_copy() -> int:
+    """The settings copy SprigCast keeps (app/settings_keeper.py): its keys and pairings go too."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QCoreApplication, QSettings, QStandardPaths
+
+    QCoreApplication.setOrganizationName("Slothbloom")
+    QCoreApplication.setApplicationName("SprigCast")
+    config = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation)
+    copy = Path(config) / "settings-kept.ini" if config else None
+    if copy is None or not copy.is_file():
+        return 0
+    return forget_settings(QSettings(str(copy), QSettings.Format.IniFormat))
+
+
 def main() -> None:
+    forget_kept_copy()
     print(f"Deleted {forget()} SprigCast entries from Credential Manager, {forget_settings()} saved secrets "
           f"and {forget_files()} key files")
 

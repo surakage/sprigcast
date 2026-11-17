@@ -119,6 +119,10 @@ def remove_after_exit(folders: list[Path]) -> None:
 def clear_all(recordings: Path | None = None) -> list[Path]:
     """Forget secrets and settings now, and delete SprigCast's folders once it closes. Returns the folders."""
     folders = data_folders(recordings)
+    from sprigcast.app import settings_keeper
+    from sprigcast.app.main import config_dir
+
+    settings_keeper.forget(config_dir())  # no copy left to bring settings back, and none made on the way out
     counts = forget_secrets_and_settings()
     log.info("clear data: %d credentials, %d secrets, %d key files gone; %d folders go when SprigCast closes",
              counts["credentials"], counts["secrets"], counts["files"], len(folders))
