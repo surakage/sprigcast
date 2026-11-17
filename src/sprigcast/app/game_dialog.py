@@ -73,7 +73,7 @@ class GameCaptureDialog(CardDialog):
         self.capture.setCursor(Qt.CursorShape.PointingHandCursor)
         self.capture.setMaxVisibleItems(14)
         self.body.addWidget(self.capture)
-        self.hotkey_note = QLabel("Set its key in Settings → Hotkeys.")
+        self.hotkey_note = QLabel("Set its key in Tools → Hotkeys.")
         self.hotkey_note.setStyleSheet(theme.MUTED_STYLE + "; font-size: 12px;")
         self.body.addWidget(self.hotkey_note)
         self._fill(list(windows), (self.was_mode, str(settings.get("title", "")), str(settings.get("process", ""))))

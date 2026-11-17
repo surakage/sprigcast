@@ -17,7 +17,7 @@ For apps (Streamer.bot and others): the event autoclip.suggested, and the action
 autoclip.set, autoclip.list, autoclip.keep, autoclip.delete and autoclip.mark (suggest a clip now,
 say on a raid).
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

@@ -14,7 +14,7 @@ hidden, it stops listening; during silence, once it has settled, nothing is draw
 Apps can change its look, for a redeem or a song change:
     {"do": "visualizer.set", "style": "circle", "color": "#7fb8ff"}
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

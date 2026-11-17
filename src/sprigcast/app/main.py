@@ -100,7 +100,7 @@ LEAN_RECORDING = "migrations/recording_no_b_frames"
 def lean_recording(collection: SceneCollection, remember: bool = True) -> bool:
     """Once: switch recordings from the old default of 2 B-frames to none (saves ~50 MB per canvas).
 
-    Only the old default is changed; a value you picked yourself in Settings → Output is kept, and
+    Only the old default is changed; a value you picked yourself in Settings → Stream → Quality is kept, and
     so is anything you set after this ran. True if the collection changed.
     """
     from PySide6.QtCore import QSettings
@@ -123,7 +123,7 @@ def lean_stream(collection: SceneCollection, remember: bool = True) -> bool:
     """Once: switch streams from the old default of 2 B-frames to none.
 
     Without B-frames a stream runs on SprigCast's own NVENC encoder instead of FFmpeg's, about 150 MB
-    less while live (soak test, 2026-11-13). A value picked by hand in Settings → Output is kept.
+    less while live (soak test, 2026-11-13). A value picked by hand in Settings → Stream → Quality is kept.
     """
     from PySide6.QtCore import QSettings
 
@@ -216,6 +216,11 @@ def run() -> None:
     # Web docks (app/custom_docks.py) need these set before the app exists. Qt WebEngine is only
     # loaded when you have custom docks, so without any it costs no memory.
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    import os
+
+    from sprigcast.app.browser_host import chromium_flags
+
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = chromium_flags(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""))
     from sprigcast.app import custom_docks
 
     if custom_docks.load():
@@ -371,7 +376,27 @@ def run() -> None:
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
     code = app.exec()
     window.engine.finish_stopping()  # the window is gone: now wait for drawing and sound to stop
+    if app.property("sprigcast_restart"):  # Settings' Restart now
+        if server is not None:
+            server.close()  # let go first, or the new copy would only bring this closing one forward
+        relaunch()
     sys.exit(code)
+
+
+def restart_command(argv: list[str] | None = None, frozen: bool | None = None) -> list[str]:
+    """How to start SprigCast again: the same program and arguments, without --safe-mode."""
+    argv = list(sys.argv if argv is None else argv)
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    args = [a for a in (argv[1:] if frozen else argv) if a != "--safe-mode"]
+    return [sys.executable, *args]
+
+
+def relaunch() -> None:
+    from PySide6.QtCore import QProcess
+
+    program, *args = restart_command()
+    if not QProcess.startDetached(program, args):
+        logging.getLogger(__name__).warning("restart: could not start %s", program)
 
 
 if __name__ == "__main__":

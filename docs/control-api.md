@@ -11,7 +11,7 @@ Turn it on in **Settings → Connections**, then connect a WebSocket to:
 ws://127.0.0.1:4455/sprigcast
 ```
 
-The port and password are the ones shown in Settings → Connections. Apps on other devices can connect only when "Let phones and other computers on my network connect" is on.
+The port and password are the ones shown in Settings → Connections. Apps on other devices can connect only when "Let phones and other computers on my network connect" is on (an Expert settings row).
 
 ## Words
 
@@ -63,7 +63,7 @@ GET http://127.0.0.1:4455/api/pair?code=123456&name=Streamer.bot
 
 While the API runs, SprigCast writes `%LOCALAPPDATA%\Slothbloom\SprigCast\api.json` (`app`, `port`, `path`, `password`) so apps on the same PC connect with nothing typed, the way Elgato's OBS plugin reads obs-websocket's settings. The `password` there is this PC's own key, not your password, and it changes when the password does. The file is removed when the API stops.
 
-It also writes `%APPDATA%\SprigCast\connection.json` for apps that find SprigCast by themselves (THSV StreamBridge): `app`, `version`, `port`, `path` (`/sprigcast`), `obsCompatible` (Compatibility mode on), `passwordSet` and `pid`. It never holds the password or a key, so those apps still ask you for the password. It is removed when the API stops.
+It also writes `%APPDATA%\SprigCast\connection.json` for apps that find SprigCast by themselves (THSV StreamBridge): `app`, `version`, `port`, `path` (`/sprigcast`), `obsCompatible` (OBS-style connection on), `passwordSet` and `pid`. It never holds the password or a key, so those apps still ask you for the password. It is removed when the API stops.
 
 The password and paired keys are stored encrypted for your Windows account (DPAPI), not as plain text.
 
@@ -333,7 +333,7 @@ Pages shown by a Web page source get `window.sprigcast` (the same object as `win
 
 ## Store plugins
 
-Plugins added from **Settings → Plugins** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `freeze.start`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
+Plugins added from **Tools → Plugin store** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `freeze.start`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
 
 | Action | Plugin | What it does | Fields |
 | --- | --- | --- | --- |
@@ -393,7 +393,7 @@ Using Streamer.bot? See [Streamer.bot](streamerbot.md). Building an integration?
 
 ## Web links
 
-For buttons and scripts that can only open a link. Turn on **Allow web links** in Settings → Connections. A password is always needed.
+For buttons and scripts that can only open a link. Turn on **Allow web links** in Settings → Connections (an Expert settings row: tick Expert settings at the bottom of Settings first). A password is always needed.
 
 ```
 http://127.0.0.1:4455/api                                  every action
@@ -408,7 +408,7 @@ Requests made by web pages on other sites are refused, so a page you visit can't
 
 ## The OBS-compatible door
 
-Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Apps that build overlays can make them: CreateScene (a bloom in every shape that's on, with its own sprig), RemoveScene, CreateInput (answers `inputUuid` and a numeric `sceneItemId`), CreateSceneItem and RemoveSceneItem; things added to a bloom go in its sprig and answer to the bloom's name. StartStream and StartRecord never wait on a SprigCast pop-up: when the Stream doctor (or low space) would ask first, they fail with the reasons in the comment, and a `force: true` field goes ahead. A browser source's OBS `shutdown` setting is SprigCast's `keep_running` turned around, both ways. Each place you stream to is an output called `sprigcast:<id>` with GetOutputStatus, StartOutput and StopOutput while live (`simple_stream` is the whole stream). Beyond these, new features come to the SprigCast API only. It can be switched off with **Compatibility mode** in Settings → Connections.
+Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Apps that build overlays can make them: CreateScene (a bloom in every shape that's on, with its own sprig), RemoveScene, CreateInput (answers `inputUuid` and a numeric `sceneItemId`), CreateSceneItem and RemoveSceneItem; things added to a bloom go in its sprig and answer to the bloom's name. StartStream and StartRecord never wait on a SprigCast pop-up: when the Stream doctor (or low space) would ask first, they fail with the reasons in the comment, and a `force: true` field goes ahead. A browser source's OBS `shutdown` setting is SprigCast's `keep_running` turned around, both ways. Each place you stream to is an output called `sprigcast:<id>` with GetOutputStatus, StartOutput and StopOutput while live (`simple_stream` is the whole stream). Beyond these, new features come to the SprigCast API only. It can be switched off with **OBS-style connection (for Streamer.bot)** in Settings → Connections.
 
 ## Adding actions from a plugin
 

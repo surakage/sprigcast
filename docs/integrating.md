@@ -70,6 +70,6 @@ Questions or changes that would help your integration: open an issue on [the Spr
 SprigCast feeds LIVE Studio through SprigCast Camera, and LIVE Studio does its own encoding and TikTok upload.
 
 - In LIVE Studio, add a camera source and pick SprigCast Camera. With the camera on "Auto", a portrait request gets the vertical canvas.
-- Sound needs no extra device, the same as with OBS (whose virtual camera carries no sound either). LIVE Studio picks up the PC's sound itself: its own desktop sound and mic, or a mix such as Wave Link's Stream mix. Leave Settings → Output → Virtual camera → Sound to off (the default). It's only for a setup that wants SprigCast's own mix sent to a virtual cable.
+- Sound needs no extra device, the same as with OBS (whose virtual camera carries no sound either). LIVE Studio picks up the PC's sound itself: its own desktop sound and mic, or a mix such as Wave Link's Stream mix. Leave Settings → Video → Virtual camera → Sound to off (the default). It's only for a setup that wants SprigCast's own mix sent to a virtual cable.
 - It stays light: SprigCast only feeds the camera while an app is watching. When the vertical canvas is already being streamed or recorded at the size LIVE Studio asks for, the camera reuses the same frame instead of making another one.
 - TikTok gifts, likes and follows go through TikFinity or Streamer.bot. They can call SprigCast's API (see [streamerbot.md](streamerbot.md)). SprigCast doesn't read or pass on TikTok events itself.

@@ -9,7 +9,7 @@ Mode:
                 when shown on, it starts over each time it comes on screen (a "Starting soon" bloom).
     Stopwatch   counts up when you start it, pauses and resets.
 
-Start, pause and reset with hotkeys (Settings → Hotkeys → Plugins), a right-click on it, the Stream Deck
+Start, pause and reset with hotkeys (Tools → Hotkeys → Plugins), a right-click on it, the Stream Deck
 (Run action) or from an app:
     {"do": "timer.start"}                 start or carry on ("minutes": 10 starts a fresh 10-minute countdown)
     {"do": "timer.pause"}
@@ -26,7 +26,7 @@ It's light: off screen it does nothing at all, and on screen the card is drawn a
 on it changes, once a second. Where a stopwatch or countdown is is kept with your blooms, so it carries on
 after a restart.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

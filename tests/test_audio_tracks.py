@@ -157,26 +157,24 @@ def test_audio_page_sets_switch_tracks_and_which_sounds_go_where(monkeypatch):
     assert not again.global_rows[0].isEnabled()
 
 
-def test_audio_page_has_tabs_and_sets_both_bitrates():
+def test_audio_page_has_tabs_and_bitrate_lives_with_each_encoder():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtWidgets import QApplication
 
     from sprigcast.app.audio_page import AudioPage
+    from sprigcast.app.output_page import EncoderForm
 
     QApplication.instance() or QApplication([])
     col = _collection()
     page = AudioPage(col, {})
-    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["Devices", "Tracks", "Sounds", "Bitrate"]
-    page.stream_kbps.setCurrentIndex(page.stream_kbps.findData(128))
-    page.recording_kbps.setCurrentIndex(page.recording_kbps.findData(320))
+    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["Devices", "Tracks", "Sounds"]
+    col.stream_encoder.audio_kbps = 128
     page.apply_to(col)
-    assert col.stream_encoder.audio_kbps == 128 and col.recording.encoder.audio_kbps == 320
-    live = AudioPage(col, {}, streaming=True)
-    assert not live.stream_kbps.isEnabled()
-    live.stream_kbps.setCurrentIndex(live.stream_kbps.findData(96))
-    live.apply_to(col)
-    assert col.stream_encoder.audio_kbps == 128  # not changed while live
+    assert col.stream_encoder.audio_kbps == 128  # the Audio page leaves the encoders alone
+    form = EncoderForm("Encoder", col.recording.encoder)
+    form.audio.setCurrentIndex(form.audio.findData(320))
+    assert form.values().audio_kbps == 320
 
 
 def test_sounds_tab_sets_volume_mono_balance_sync_and_who_hears_it():

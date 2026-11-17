@@ -101,6 +101,27 @@ def actions(collection: SceneCollection) -> list[tuple[str, str]]:
     return [item for _title, items in sections(collection) for item in items]
 
 
+# Keys Windows or every app already uses: a hotkey there would fire each time you copy, paste or switch apps.
+TAKEN = {
+    "alt+tab": "Windows uses it to switch apps", "alt+f4": "Windows uses it to close apps",
+    "ctrl+alt+del": "Windows keeps it for itself", "ctrl+shift+esc": "Windows uses it for Task Manager",
+    "ctrl+esc": "Windows uses it for Start", "alt+esc": "Windows uses it to switch apps",
+    "ctrl+c": "every app uses it to copy", "ctrl+v": "every app uses it to paste",
+    "ctrl+x": "every app uses it to cut", "ctrl+z": "every app uses it to undo", "ctrl+y": "every app uses it to redo",
+    "ctrl+a": "every app uses it to select all", "ctrl+s": "every app uses it to save",
+    "ctrl+f": "every app uses it to find", "ctrl+w": "apps use it to close a tab", "ctrl+t": "browsers use it",
+    "ctrl+tab": "apps use it to switch tabs", "ctrl+p": "every app uses it to print", "f1": "apps use it for help",
+}
+
+
+def taken_by(combo: str) -> str:
+    """Why this key is already Windows' or every app's ("" when it's free). Any Windows-key combo is."""
+    low = combo.replace(" ", "").lower()
+    if low.startswith("meta+") or "+meta+" in low:
+        return "Windows keeps Windows-key combos for itself"
+    return TAKEN.get(low, "")
+
+
 def to_pynput(combo: str) -> str | None:
     """Qt's "Ctrl+Alt+F5" as pynput's "<ctrl>+<alt>+<f5>". None if a key can't be expressed."""
     if not combo:

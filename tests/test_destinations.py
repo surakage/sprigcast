@@ -616,7 +616,8 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         assert lines and len(lines) == len(set(lines))
         assert any("Ctrl+K" in str(line) for line in lines)
         tools = [a.text() for a in w.menuBar().actions()[5].menu().actions() if not a.isSeparator()]
-        assert tools == ["Get started…", "Starter kit…", "Optimize for this PC…", "Stream doctor…", "Plugin store…"]
+        assert tools == ["Get started…", "Starter kit…", "Optimize for this PC…", "Stream doctor…", "Hotkeys…",
+                         "Plugin store…"]
         shown = []
         monkeypatch.setattr("sprigcast.app.transitions_panel.PopUp.exec", lambda self: shown.append(self))
         help_menu = w.menuBar().actions()[6].menu()

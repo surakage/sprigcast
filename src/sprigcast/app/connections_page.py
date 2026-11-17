@@ -209,20 +209,18 @@ class ConnectionsPage(QWidget):
         pair_card = self._pair_card()
 
         devices, dbox = _card("Who can connect")
-        self.lan = QCheckBox("Let phones and other computers on my network connect")
-        self.lan.setChecked(s["lan"])
-        dbox.addWidget(self.lan)
-        dbox.addWidget(_hint("Only needed when the app runs on another device. Keep a password on."))
-        dbox.addSpacing(6)
-        self.web_door = QCheckBox("Allow web links")
-        self.web_door.setChecked(s["web_door"])
-        dbox.addWidget(self.web_door)
-        dbox.addWidget(_hint("For buttons and scripts that can only open a link. Always needs the password."))
-        dbox.addSpacing(6)
-        self.obs_door = QCheckBox("Compatibility mode")
+        self.obs_door = QCheckBox("OBS-style connection (for Streamer.bot)")
+        self.obs_door.setToolTip("Apps made for OBS (Streamer.bot, THSV StreamBridge) connect as they would to OBS")
         self.obs_door.setChecked(s["obs_door"])
         dbox.addWidget(self.obs_door)
-        dbox.addWidget(_hint("Using THSV StreamBridge or Streamer.bot? Keep this on."))
+        self.lan = QCheckBox("Let phones and other computers on my network connect")
+        self.lan.setToolTip("Only needed when the app runs on another device. Keep a password on.")
+        self.lan.setChecked(s["lan"])
+        dbox.addWidget(self.lan)
+        self.web_door = QCheckBox("Allow web links")
+        self.web_door.setToolTip("For buttons and scripts that can only open a link. Always needs the password.")
+        self.web_door.setChecked(s["web_door"])
+        dbox.addWidget(self.web_door)
 
         for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled, self.obs_door.toggled,
                        self.web_door.toggled):
@@ -252,6 +250,12 @@ class ConnectionsPage(QWidget):
             layout.addWidget(card)
         self._saved_password = s["password"]
         self._refresh()
+        self.set_expert(False)
+
+    def set_expert(self, on: bool) -> None:
+        """LAN and web links are expert rows, unless one is already on (then it's shown, never hidden while on)."""
+        self.lan.setVisible(on or self.lan.isChecked())
+        self.web_door.setVisible(on or self.web_door.isChecked())
 
     # Pair a device ---------------------------------------------------------------------
 

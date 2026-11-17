@@ -4,7 +4,7 @@ Add Death count (+ → Plugins → Death count): it gets a sprig of its own, fil
 of your bloom. Each time the count changes the ground pops up, the stone grows out of it showing the
 old number, the number flips to the new one, it holds a few seconds and sinks back into the ground.
 
-Change the count with hotkeys (Settings → Hotkeys → Plugins), a right-click on it, or from an app:
+Change the count with hotkeys (Tools → Hotkeys → Plugins), a right-click on it, or from an app:
     {"do": "deaths.add"}                 one more (or "amount": 3)
     {"do": "deaths.remove"}              one less, never below 0
     {"do": "deaths.set", "count": 12}
@@ -15,7 +15,7 @@ Change the count with hotkeys (Settings → Hotkeys → Plugins), a right-click 
 The count is kept with your blooms, so it's still there after a restart. Settings: Count, Label
 (the word above the number) and Seconds (how long it stays up).
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.settings_window import apply_naming, sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
-        apply_naming()  # file-name patterns from Settings → Advanced
+        apply_naming()  # file-name patterns from Settings → Recording
         # Nothing is on screen yet: don't copy full-size frames back until _poll_engine says which
         # previews are showing and how big they are (each early one was an 8 MB frame).
         self.engine.previews = frozenset()
@@ -496,7 +496,7 @@ class MainWindow(QMainWindow):
         self.hotkeys = Hotkeys(self)
         self.hotkeys.triggered.connect(self._on_hotkey)
         self.hotkeys.apply(self.collection.hotkeys)
-        self.camera = None  # SprigCast Camera (Settings → Output → Virtual camera), see _sync_camera
+        self.camera = None  # SprigCast Camera (Settings → Video → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
         self._camera_timer.timeout.connect(self._poll_camera)
         self._rest_check = QTimer(self, interval=2000)  # rest mode (app/priority.py): step down when nothing goes out
@@ -931,8 +931,43 @@ class MainWindow(QMainWindow):
                 return menu
             self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
             if self.mode != "live":
+                self._snap_menu(menu)
                 menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
         return menu
+
+    SNAP_DISTANCES = (5, 10, 20, 40)
+
+    def _snap_menu(self, menu: QMenu) -> QMenu:
+        """Build's right-click → Snapping (it used to be five rows in Settings → General)."""
+        from sprigcast.app.preview import snap_settings
+
+        now = snap_settings()
+        snap = menu.addMenu("Snapping")
+        snap.setToolTipsVisible(True)
+
+        def tick(label: str, key: str, on: bool, tip: str = "") -> None:
+            act = snap.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(on)
+            if tip:
+                act.setToolTip(tip)
+            act.toggled.connect(lambda checked, k=key: QSettings().setValue(k, checked))
+
+        tick("Snap", "editing/snap", now["enabled"], "Hold Ctrl while dragging to place a source without snapping")
+        snap.addSeparator()
+        tick("To canvas edges", "editing/snap_edges", now["edges"])
+        tick("To other sources", "editing/snap_sources", now["sources"])
+        tick("To the centre", "editing/snap_center", now["center"])
+        snap.addSeparator()
+        reach = snap.addMenu("Sensitivity")
+        for px in self.SNAP_DISTANCES:
+            act = reach.addAction(f"{px} px")
+            act.setCheckable(True)
+            act.setChecked(abs(now["distance"] - px) < 0.5)
+            act.triggered.connect(lambda _=False, v=px: QSettings().setValue("editing/snap_distance", float(v)))
+        for act in snap.actions()[1:]:
+            act.setEnabled(now["enabled"])
+        return snap
 
     def _live_canvas_menu(self, menu: QMenu, canvas_id: str) -> None:
         """Right-click a canvas on Live: things about this canvas only (nothing here edits a bloom)."""
@@ -1015,7 +1050,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Rename…").triggered.connect(lambda: self._rename_bloom(scene_id))
         menu.addAction(icons.icon("key", theme.MUTED), "Set a key…").triggered.connect(
-            lambda: self._open_settings("Hotkeys"))
+            lambda: self.open_hotkeys())
 
     def _bloom_transition(self, scene_id: str, kind: str | None) -> None:
         """Going to this bloom uses `kind` (None: the usual transition), from any bloom."""
@@ -2500,6 +2535,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Repot as MP4…").triggered.connect(lambda: self._ask_repot())
         file_menu.addAction("Export report…").triggered.connect(lambda: self.export_report())
         file_menu.addSeparator()
+        file_menu.addAction("Export settings…").triggered.connect(lambda: self.export_settings())
+        file_menu.addAction("Import settings…").triggered.connect(lambda: self.import_settings())
+        file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -2563,7 +2601,8 @@ class MainWindow(QMainWindow):
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
         tools_menu.addSeparator()
-        tools_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
+        tools_menu.addAction("Hotkeys…").triggered.connect(lambda: self.open_hotkeys())
+        tools_menu.addAction("Plugin store…").triggered.connect(lambda: self.open_plugin_store())
         self._tools_menu = tools_menu
         self._plugin_tool_actions: list = []
         tools_menu.aboutToShow.connect(self._fill_plugin_tools)
@@ -2778,6 +2817,17 @@ class MainWindow(QMainWindow):
 
             workers.run(look, name="busy-pc")
 
+    def _preview_mode(self) -> str:
+        """Settings → General → This PC → Preview while live: "smooth" unless on air with Light or Off."""
+        if self.streaming is None and self.recording is None:
+            return "smooth"
+        choice = getattr(self, "_preview_live", None)
+        if choice is None:
+            from sprigcast.app.settings_window import preview_choice
+
+            choice = self._preview_live = preview_choice()
+        return choice
+
     def _watched_previews(self) -> frozenset[str]:
         """Previews on screen right now; the engine skips copying back the rest (or everything when minimised)."""
         projected = {p.canvas_id for p in self.projectors if p.view is None}
@@ -2809,7 +2859,18 @@ class MainWindow(QMainWindow):
         for projector in self.projectors:
             if projector.view is not None:
                 projector.take_pending()
+        mode = self._preview_mode()
+        fps = 15 if mode == "light" else 30
+        if getattr(self.engine, "preview_fps", fps) != fps:
+            self.engine.preview_fps = fps
+        off = mode == "off"
+        for preview in self.previews.values():
+            if preview.paused != off:
+                preview.paused = off
+                preview.update()
         watched = self._watched_previews()
+        if off:  # Preview while live: Off. Projectors still draw (they're what you asked to see).
+            watched = frozenset(k for k in watched if k not in self.previews and not k.startswith("next:"))
         if watched != self.engine.previews:
             self.engine.previews = watched
         sizes = self._preview_pixel_sizes()
@@ -4505,7 +4566,7 @@ class MainWindow(QMainWindow):
             empty = self.more_menu.addAction("No plugin sources installed")
             empty.setEnabled(False)
         self.more_menu.addSeparator()
-        self.more_menu.addAction("Plugin store…").triggered.connect(lambda: self._open_settings("Plugins"))
+        self.more_menu.addAction("Plugin store…").triggered.connect(lambda: self.open_plugin_store())
         folder = self.more_menu.addAction("Open plugins folder…")
         folder.setEnabled(self.plugins_dir is not None)
         folder.triggered.connect(self._open_plugins_folder)
@@ -5237,7 +5298,7 @@ class MainWindow(QMainWindow):
 
     def _plugin_updates(self) -> None:
         """Say which store plugins updated ("Death count updated" + what's new), and put in updates held while
-        live or recording (Settings → Plugins). Waits while on air, checking every few seconds."""
+        live or recording (Tools → Plugin store). Waits while on air, checking every few seconds."""
         from sprigcast import plugin_store
 
         if not plugin_store.updated_at_start and not plugin_store.waiting:
@@ -5265,7 +5326,7 @@ class MainWindow(QMainWindow):
             self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
         note = plugin_store.update_note(done)
         if note is not None:
-            self._saved_note(note[0], detail=note[1], link="Plugins", on_click=lambda: self._open_settings("Plugins"),
+            self._saved_note(note[0], detail=note[1], link="Plugins", on_click=lambda: self.open_plugin_store(),
                              ms=8000)
 
     @staticmethod
@@ -5779,7 +5840,7 @@ class MainWindow(QMainWindow):
         return {"started": True, "warnings": warnings}
 
     def _record_with_stream(self) -> None:
-        """Settings → Output → Recording → "Record when I go live": the stream's own recording starts with it
+        """Settings → Recording → "Record when I go live": the stream's own recording starts with it
         (from the stream's encoder when "Same as stream" is on too) and ends with it."""
         self._recording_for_stream = False
         if not self.collection.recording.record_when_live or self.recording is not None:
@@ -6031,6 +6092,13 @@ class MainWindow(QMainWindow):
     # Settings window -------------------------------------------------------------
 
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
+        if tab == "Hotkeys":  # windows of their own now; older links still land there
+            self.open_hotkeys()
+            return
+        if tab == "Plugins":
+            self.open_plugin_store()
+            return
+
         def scan() -> dict[str, list[str]]:  # restarts PortAudio (a few hundred ms on Windows): on a worker
             return {
                 "audio_input": [d.name for d in list_audio_devices(loopback=False)],
@@ -6040,16 +6108,12 @@ class MainWindow(QMainWindow):
         from sprigcast.core import workers
 
         devices = workers.run(scan, name="sound-devices")
-        rec = self.collection.recording
         self._clips_before = self._clip_key()
         window = SettingsWindow(
             self.collection,
             default_recordings_folder=self._default_recordings_folder(),
             encoder=codec_label(pick_codec()),
             audio_devices=devices,
-            plugin_report=self.plugin_report,
-            open_plugins_folder=self._open_plugins_folder if self.plugins_dir is not None else None,
-            plugins_dir=self.plugins_dir,
             streaming=self.streaming is not None,
             recording=self.recording is not None,
             control=self.control,
@@ -6063,11 +6127,88 @@ class MainWindow(QMainWindow):
             window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
         window.on_ducking = self._open_ducking  # handed to the Audio page when it's made
-        window.plugins_changed.connect(self._fill_more_menu)
+        window.optimize_requested.connect(lambda: QTimer.singleShot(0, self, self.open_optimizer))
+        window.restart_requested.connect(lambda: QTimer.singleShot(0, self, self.restart_app))
+        modal(window)
+
+    def export_settings(self, path: str | None = None) -> bool:
+        """File → Export settings: your choices in one file (never keys, sign-ins or passwords)."""
+        from PySide6.QtWidgets import QFileDialog
+
+        from sprigcast.app import settings_file
+
+        if path is None:
+            start = str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation))
+                        / "SprigCast settings.json")
+            path, _ = QFileDialog.getSaveFileName(self, "Export settings", start, "SprigCast settings (*.json)")
+        if not path:
+            return False
+        try:
+            settings_file.export_settings(self.collection, Path(path))
+        except OSError as exc:
+            QMessageBox.warning(self, "Export settings", f"Couldn't save it: {exc}")
+            return False
+        self._saved_note("Settings exported", Path(path).parent, detail="No stream keys or passwords are in it")
+        return True
+
+    def import_settings(self, path: str | None = None) -> bool:
+        """File → Import settings: take another setup's choices (this PC's keys and sign-ins stay)."""
+        from PySide6.QtWidgets import QFileDialog
+
+        from sprigcast.app import settings_file
+
+        if self.streaming is not None or self.recording is not None:
+            QMessageBox.information(self, "Import settings", "Stop streaming and recording first.")
+            return False
+        if path is None:
+            start = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+            path, _ = QFileDialog.getOpenFileName(self, "Import settings", start, "SprigCast settings (*.json)")
+        if not path:
+            return False
+        try:
+            done = settings_file.import_settings(self.collection, Path(path))
+        except ValueError as exc:
+            QMessageBox.warning(self, "Import settings", str(exc))
+            return False
+        log.info("settings imported from %s: %s", Path(path).name, ", ".join(done) or "nothing")
+        self.collection.save(self.scenes_path)
+        self._after_settings()
+        self._saved_note("Settings imported", detail=", ".join(done) or "Nothing in it to change")
+        return True
+
+    def open_hotkeys(self) -> None:
+        """Tools → Hotkeys."""
+        from PySide6.QtWidgets import QDialog
+
+        from sprigcast.app.hotkeys_dialog import HotkeysWindow
+
+        if modal(HotkeysWindow(self.collection, parent=self)) == QDialog.DialogCode.Accepted:
+            self._apply_hotkeys()
+            self._changed()
+
+    def open_plugin_store(self) -> None:
+        """Tools → Plugin store."""
+        from sprigcast.app.plugin_store_page import PluginStoreWindow
+
+        window = PluginStoreWindow(self.plugins_dir, self.plugin_report,
+                                   self._open_plugins_folder if self.plugins_dir is not None else None,
+                                   self.collection, on_air=self.streaming is not None or self.recording is not None,
+                                   parent=self)
+        window.store.changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
-        window.plugins_changed.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
+        window.store.changed.connect(
+            lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
         modal(window)
         self._plugin_updates()  # an Update pressed while on air waits until the stream and recording stop
+
+    def restart_app(self) -> None:
+        """Close and start again (Settings' Restart now, for canvas changes). Never while live or recording."""
+        if self.streaming is not None or self.recording is not None:
+            self.statusBar().showMessage("Stop streaming and recording first, then restart.", 10000)
+            return
+        app = QApplication.instance()
+        app.setProperty("sprigcast_restart", True)  # main() starts the new copy once this one has let go
+        self.close()
 
     def _poll_camera(self) -> None:
         """Once a second while SprigCast Camera is on: feed it, and send the sound along while an app watches."""
@@ -6078,7 +6219,7 @@ class MainWindow(QMainWindow):
         self.engine.set_sound_out(self._camera_sound_device() if self.camera.watched else None)
 
     def _camera_sound_device(self) -> str | None:
-        """Settings → Output → Virtual camera → Sound to, unless SprigCast also captures that device (an echo)."""
+        """Settings → Video → Virtual camera → Sound to, unless SprigCast also captures that device (an echo)."""
         from sprigcast.app.output_page import camera_sound
 
         device = camera_sound()
@@ -6119,7 +6260,7 @@ class MainWindow(QMainWindow):
         self.live_side.set_camera(self.camera is not None, getattr(self, "_camera_error", ""))
 
     def _toggle_camera(self) -> None:
-        """Live's Virtual camera button: the same switch as Settings → Output → Virtual camera."""
+        """Live's Virtual camera button: the same switch as Settings → Video → Virtual camera."""
         from PySide6.QtCore import QSettings
 
         from sprigcast.app.output_page import CAMERA_ON
@@ -6212,6 +6353,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.settings_window import sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
+        self._preview_live = None  # read again (Preview while live)
         self._sync_canvas_choice()  # Settings → Video may have switched a canvas on or off (and sizes changed)
         self._sync_camera()
         self._changed()
@@ -6414,9 +6556,11 @@ class MainWindow(QMainWindow):
         for canvas in self.collection.canvases:
             commands.append(Command(f"Pop out {canvas.id.capitalize()}", "Canvas",
                                     lambda cid=canvas.id: self.open_projector(cid, None)))
-        for tab, label in (("General", "General"), ("Stream", "Stream outputs"), ("Output", "Output (encoder)"),
-                           ("Audio", "Audio devices"), ("Video", "Canvases"), ("Hotkeys", "Hotkeys"),
-                           ("Connections", "Connections"), ("Advanced", "Advanced"), ("Plugins", "Plugins")):
+        for tab, label in (("General", "General"), ("Stream/Places", "Places to stream"),
+                           ("Stream/Quality", "Stream quality"), ("Recording", "Recording"),
+                           ("Recording/Clips", "Clips"), ("Audio", "Audio devices"), ("Video", "Canvases"),
+                           ("Video/Virtual camera", "Virtual camera"), ("Hotkeys", "Hotkeys"),
+                           ("Connections", "Connections"), ("Plugins", "Plugin store")):
             commands.append(Command(f"Settings: {label}", "Settings", lambda t=tab: self._open_settings(t),
                                     "Ctrl+," if tab == "General" else ""))
         for part in self.collection.parts():
@@ -6486,6 +6630,7 @@ class MainWindow(QMainWindow):
         _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
                                       older=older, hdd=hdd)
         lowend.store_fps(fps)
+        lowend.store_tier("light")
         self.collection.save(self.scenes_path)
         self._after_settings()  # a canvas switched off, clips and browser sources: bring the docks in line
         self.statusBar().showMessage(
@@ -6561,6 +6706,10 @@ class MainWindow(QMainWindow):
         for change in wizard.chosen:
             log.info("optimize: applied %s (was %s)", change.label, change.now)
         lowend.store_fps(fps)
+        try:
+            lowend.store_tier(lowend.tier(lowend.pc_facts()))
+        except Exception as exc:  # noqa: BLE001 (only the label on Settings → General)
+            log.debug("optimize: no tier: %s", exc)
         self.collection.save(self.scenes_path)
         self._after_settings()
         self.statusBar().showMessage(
@@ -6676,7 +6825,21 @@ class MainWindow(QMainWindow):
         if busy and busy != getattr(self, "_overload_logged", None):
             log.warning("encoder can't keep up: %s (codec %s)", " and ".join(busy),
                         ", ".join(watch.codecs.get(k, "?") for k in busy))
+            self._offer_lighter(busy)
         self._overload_logged = busy
+
+    def _offer_lighter(self, busy: list[str]) -> None:
+        """The first overload of a session: say so right away with the one-tap fix, not only in Garden check."""
+        if getattr(self, "_lighter_offered", False):
+            return
+        self._lighter_offered = True
+
+        def tap() -> None:
+            self._saved_note(self._make_encoding_lighter())
+
+        self._saved_note(f"The encoder can't keep up with the {' and '.join(busy)}",
+                         detail="A faster preset fixes it", link="Make it lighter", on_click=tap, kind="warn",
+                         ms=20000)
 
     def _overload_text(self) -> str:
         watch = getattr(self, "_encoder_watch", None)

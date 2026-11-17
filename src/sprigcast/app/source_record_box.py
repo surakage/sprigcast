@@ -1,4 +1,4 @@
-"""Settings → Output → Recording: Source record, a second file without the sources you pick."""
+"""Settings → Recording: Source record, a second file without the sources you pick."""
 
 from __future__ import annotations
 

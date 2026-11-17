@@ -715,7 +715,7 @@ class TunePage(QWidget):
         self.goes: dict[str, QPushButton] = {}
         for i, (track, text, tip) in enumerate((("stream", "Stream", "Your live stream"),
                                                 ("recording", "Recording", "The recording's main sound"),
-                                                ("voice", "Voice", "The recording's voice-only track (Settings → Output → Recording)"),
+                                                ("voice", "Voice", "The recording's voice-only track (Settings → Recording)"),
                                                 ("clips", "Clips", "Saved clips"))):
             b = _chip(text, checkable=True)
             b.setToolTip(tip)

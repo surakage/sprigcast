@@ -8,7 +8,7 @@ Only the picture on screen and the next one are decoded: the next one in the bac
 the current one shows, so a big photo never holds up the canvas. A hidden slide show sleeps.
 Added from + → Plugins it fills the canvas.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

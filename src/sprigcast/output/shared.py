@@ -4,7 +4,7 @@ On an NVIDIA card every encoder costs RAM (about 160 MB each even with one share
 recording plus the replay buffer used to run two per canvas. Here each canvas has a single
 CanvasEncoder while either is on. It keeps the replay buffer's last seconds in memory, and a recording
 is a file that the same encoded packets are also written to, starting at a keyframe asked for on the
-spot. Recording and replay settings are the same (Settings → Output → Recording), so nothing is lost.
+spot. Recording and replay settings are the same (Settings → Recording), so nothing is lost.
 
 Turning one on while the other runs joins the running encoder; the encoder stops when neither needs it.
 """
@@ -44,7 +44,7 @@ class FileTap:
         self._closing = False  # end the file at the next keyframe
         self._file_done = threading.Event()
         self.file_tracks: tuple[str, ...] = tracks  # what a recording keeps
-        # Long recordings can go to several files (Settings → Output → Recording → Split): a new one starts at
+        # Long recordings can go to several files (Settings → Recording → Split): a new one starts at
         # the first keyframe past split_seconds of video or split_bytes written, so nothing is lost between.
         self.split_seconds = 0.0
         self.split_bytes = 0

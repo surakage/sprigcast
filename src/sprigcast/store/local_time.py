@@ -9,7 +9,7 @@ e.g. "CST"), Text colour and Card colour (a colour ending in 00 is see-through: 
 It's light: the clock is only drawn again when the words on it change, so once a minute (once a
 second with Seconds on). Between those it costs nothing.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

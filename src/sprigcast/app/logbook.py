@@ -8,7 +8,7 @@
 * ``crash.log``: where a native library crashed, if one ever does (a section per run, by process id),
   and on the next start what Windows recorded about it (app/crash_report.py).
 
-Day logs and stream reports older than 14 days are deleted at start-up (Settings → Advanced → Logs:
+Day logs and stream reports older than 14 days are deleted at start-up (Settings → General → Logs:
 7, 14, 30 or 90 days, or Forever). SPRIGCAST_LOG_DIR puts the folder somewhere else. Stream keys never
 reach these files.
 """
@@ -29,7 +29,7 @@ KEEP_CHOICES = (7, 14, 30, 90, 0)
 
 
 def keep_days() -> int:
-    """How many days of logs and stream reports to keep (Settings → Advanced); 0 keeps them all."""
+    """How many days of logs and stream reports to keep (Settings → Recording → File names); 0 keeps them all."""
     try:
         from PySide6.QtCore import QSettings
 

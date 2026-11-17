@@ -232,3 +232,29 @@ def test_live_shows_how_the_last_stream_went(qapp):
     assert side.last_stream.text().strip() == "Last stream: bumpy  ·  12 drops"
     side.last_stream.click()
     assert opened == [1]
+
+
+def test_a_wheel_over_an_unclicked_drop_down_never_changes_it(qapp):
+    """PC test 2026-11-17: scrolling over a place's Resolution set it to 480p. Qt hands a WheelFocus box the
+    focus before any filter sees the wheel, so the guard now takes WheelFocus away as boxes are made."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox, QLineEdit, QSpinBox, QVBoxLayout, QWidget
+
+    from sprigcast.app import wheel_guard
+
+    wheel_guard.install(qapp)
+    page = QWidget()
+    lay = QVBoxLayout(page)
+    other, combo, spin = QLineEdit(), QComboBox(), QSpinBox()
+    combo.setFocusPolicy(Qt.FocusPolicy.WheelFocus)  # what some styles give a drop-down
+    combo.addItems(["1080p", "720p", "480p"])
+    for w in (other, combo, spin):
+        lay.addWidget(w)
+    page.show()
+    other.setFocus()
+    qapp.processEvents()
+    assert combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+    assert spin.focusPolicy() != Qt.FocusPolicy.WheelFocus
+    qapp.sendEvent(combo, _wheel_event())
+    assert combo.currentIndex() == 0 and not combo.hasFocus()
+    page.close()

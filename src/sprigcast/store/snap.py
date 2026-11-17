@@ -17,7 +17,7 @@ viewers see exactly the moment in the polaroid; the Snap itself keeps moving), a
 (off unless you turn it on: also saves the framed polaroid next to the screenshot). It's only an
 animation: nothing about your viewers is read or kept.
 
-A SprigCast store plugin: add it from Settings → Plugins.
+A SprigCast store plugin: add it from Tools → Plugin store.
 """
 
 from __future__ import annotations

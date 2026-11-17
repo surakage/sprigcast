@@ -1,6 +1,6 @@
 """File names for recordings and clips, and turning finished MKV recordings into MP4.
 
-Names come from a pattern with tokens, set in Settings → Advanced:
+Names come from a pattern with tokens, set in Settings → Recording → File names (expert):
 {date} 2026-11-14, {time} 19-30-05, {canvas} horizontal, {year} {month} {day} {hour} {minute} {second}.
 """
 

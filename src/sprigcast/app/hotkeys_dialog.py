@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
+    QDialog,
     QFrame,
     QHBoxLayout,
     QKeySequenceEdit,
@@ -16,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.app.hotkeys import sections, to_pynput
+from sprigcast.app.hotkeys import sections, taken_by, to_pynput
 from sprigcast.app.live_stage import heading
 from sprigcast.core.scene import SceneCollection
 
@@ -141,5 +142,53 @@ class HotkeysPage(QWidget):
                 return f"{combo} can't be used as a hotkey. Add a letter, number or F-key."
             if combo in seen:
                 return f"{combo} is used twice."
+            why = taken_by(combo)
+            if why:
+                return f"{combo} can't be a hotkey: {why}."
             seen[combo] = action
         return None
+
+
+class HotkeysWindow(QDialog):
+    """Tools → Hotkeys: every key in a window of its own (it used to make Settings very tall)."""
+
+    def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
+        from sprigcast.app.output_page import _scrolled
+        from sprigcast.app.settings_window import SAVE_STYLE, window_style
+
+        super().__init__(parent)
+        self.setWindowTitle("Hotkeys")
+        self.setObjectName("settingsWindow")
+        self.setStyleSheet(window_style())
+        self.resize(760, 720)
+        self.collection = collection
+        self.page = HotkeysPage(collection)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 20)
+        root.setSpacing(16)
+        root.addWidget(heading("Hotkeys", 20))
+        root.addWidget(_scrolled(self.page), 1)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addStretch(1)
+        self.cancel_button = QPushButton("Cancel")
+        self.save_button = QPushButton("Save")
+        for button, style, slot in ((self.cancel_button, theme.PILL_STYLE, self.reject),
+                                    (self.save_button, SAVE_STYLE, self._save)):
+            button.setStyleSheet(style)
+            button.setMinimumWidth(96)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setAutoDefault(False)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        root.addLayout(row)
+
+    def _save(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        problem = self.page.problem()
+        if problem:
+            QMessageBox.warning(self, "Hotkeys", problem)
+            return
+        self.collection.hotkeys = self.page.result_hotkeys()
+        self.accept()

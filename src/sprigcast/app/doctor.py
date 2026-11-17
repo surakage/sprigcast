@@ -130,7 +130,7 @@ def examine(c: Checkup) -> list[Finding]:
     found += _sources(c)
     if c.recording_planned and c.free_gb is not None and c.free_gb < LOW_DISK_GB:
         found.append(Finding("warning", "Disk", f"Only {c.free_gb:.1f} GB free for recordings: "
-                                                "clear some space or pick another folder in Settings → Output."))
+                                                "clear some space or pick another folder in Settings → Recording."))
     if not any(f.level in ("bad", "warning") for f in found):
         found.insert(0, Finding("good", "All", "Everything checks out: keys, upload, GPU, audio and sources look good."))
     return sorted(found, key=lambda f: LEVELS[f.level])

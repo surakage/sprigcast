@@ -237,7 +237,7 @@ class NativeApi:
         if found is None:
             plugin = _store_action_plugins().get(name)
             if plugin is not None:  # a store plugin's action, but that plugin isn't added
-                raise ApiError("plugin_missing", f"Add the {plugin} plugin in SprigCast (Settings → Plugins).")
+                raise ApiError("plugin_missing", f"Add the {plugin} plugin in SprigCast (Tools → Plugin store).")
             raise ApiError("unknown_action", f"No action {name!r}. app.actions lists them all.")
         return found.run(data)
 

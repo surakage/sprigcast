@@ -289,7 +289,7 @@ class StreamPage(QWidget):
         self.bitrate.setSuffix(" kbps")
         self.bitrate.valueChanged.connect(self._edited)
         form.addRow("Bitrate", self.bitrate)
-        self.video_note = QLabel("Encoder settings (rate control, preset, keyframes…) are on the Output page.")
+        self.video_note = QLabel("Encoder and quality are on the Quality tab.")
         self.video_note.setWordWrap(True)
         self.video_note.setStyleSheet(f"color: {theme.MUTED}")
         self.auto_bitrate = QCheckBox("Auto-pilot bitrate")
@@ -297,6 +297,8 @@ class StreamPage(QWidget):
                                      "dropping frames, then climb back to this bitrate once it recovers")
         self.auto_bitrate.toggled.connect(self._edited)
         form.addRow("", self.auto_bitrate)
+        self.limits = QLabel()  # what the service takes at most (shown with or without Expert settings)
+        form.addRow("", self.limits)
         form.addRow("", self.video_note)
         self.video_box = video
         groups.addWidget(video)
@@ -343,8 +345,6 @@ class StreamPage(QWidget):
         self.ignore_recommendations = QCheckBox("Ignore streaming service setting recommendations")
         self.ignore_recommendations.toggled.connect(self._edited)
         form.addRow("", self.ignore_recommendations)
-        self.limits = QLabel()
-        form.addRow("", self.limits)
         note = QLabel("Keys are saved in Windows Credential Manager, never in the scenes file.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {theme.MUTED}")
@@ -365,7 +365,14 @@ class StreamPage(QWidget):
         _line_up_labels(_FORMS)
         _FORMS.clear()
 
+        self._expert = False
         self._refresh_list(0)
+
+    def set_expert(self, on: bool) -> None:
+        """Extras (bandwidth test, ignoring the service's recommendations) are expert rows."""
+        self._expert = on
+        output = self._current()
+        self._show_unpicked(output is not None and output.id in self._unpicked)
 
     def _auto_row(self, auto: QCheckBox, spin: QSpinBox, start: int) -> QWidget:
         """An "Auto" tick beside a number box, like OBS: ticked means 0 (let Twitch decide)."""
@@ -538,8 +545,10 @@ class StreamPage(QWidget):
         """A new place shows only the service to pick; the rest appears once one is picked."""
         for widget in (self.server, self.twitch_row, self.use_account, self.signin_row, self.key_row, self.help):
             self._account_form.setRowVisible(widget, not unpicked)
-        for widget in (self._picture_section, self._extras_section, self.enabled, self.enabled_label):
+        for widget in (self._picture_section, self.enabled, self.enabled_label):
             widget.setVisible(not unpicked)
+        extras_on = self.ignore_recommendations.isChecked()
+        self._extras_section.setVisible(not unpicked and (self._expert or extras_on))  # never hidden while on
         if unpicked:
             self.enhanced_box.setVisible(False)
             self.bandwidth_test.setVisible(False)

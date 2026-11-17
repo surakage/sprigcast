@@ -105,7 +105,7 @@ For anything other than text, subclass `sprigcast.core.source.Source` and implem
 `video_frame()` (return an RGBA NumPy array when the picture changes, `None` otherwise) or
 `audio_samples()`. Installed packages can also register plugins through a `sprigcast.plugins` entry point.
 Plugins can add audio filters too, with `sprigcast.core.filters.register_filter` (see the docstring there).
-A plugin that fails to load is named in the status bar and in *Settings → Plugins*, and skipped. Plugins run with the same rights
+A plugin that fails to load is named in the status bar and in *Tools → Plugin store*, and skipped. Plugins run with the same rights
 as SprigCast, so only install ones you trust.
 
 

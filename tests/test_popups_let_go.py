@@ -52,6 +52,11 @@ def _count(w):
 def test_menus_and_pop_ups_let_go_when_closed(tmp_path, monkeypatch):
     from PySide6.QtCore import QPoint
 
+    from sprigcast import plugin_store
+
+    # Left by an earlier test, these make the window say "plugin updated" 2.5 s in, in the middle of the count.
+    monkeypatch.setattr(plugin_store, "updated_at_start", [])
+    monkeypatch.setattr(plugin_store, "waiting", {})
     col, w = _window(tmp_path, monkeypatch)
     try:
         opens = [
@@ -60,6 +65,9 @@ def test_menus_and_pop_ups_let_go_when_closed(tmp_path, monkeypatch):
             lambda: w._open_settings(),
             lambda: w._open_filters("bg", "video"),
         ]
+        # The window's one note is made the first time something says something ("Your PC is busy" when the
+        # test machine is loaded) and kept for the next: made here so that moment can't fall in the count.
+        w._saved_note("Warm-up", ms=1)
         for _ in range(2):  # twice each first: anything made once and kept (caches, a shared menu) settles
             for open_ in opens:
                 _closing_whatever_pops_up()

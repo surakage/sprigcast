@@ -293,7 +293,7 @@ CODEC_LABELS = {
 }
 CODEC_SHORT = {"h264_nvenc": "NVENC", "h264_amf": "AMF", "h264_qsv": "Quick Sync", "h264_mf": "Media Foundation",
                "libx264": "x264 (CPU)"}
-# Every encoder Settings → Output can offer, grouped by chip. H.264 works everywhere; HEVC and AV1 make smaller
+# Every encoder Settings → Stream → Quality can offer, grouped by chip. H.264 works everywhere; HEVC and AV1 make smaller
 # files for the same quality and are offered for recordings and clips (most streaming sites want H.264).
 ENCODER_FAMILIES = {
     "nvenc": ("h264_nvenc", "hevc_nvenc", "av1_nvenc"),
@@ -416,7 +416,7 @@ def shrink_to(width: int, height: int, short_side: int | None) -> tuple[int, int
 
 
 def recording_path(folder: Path, canvas_id: str, when: datetime, container: str) -> Path:
-    """`SprigCast 2026-11-10 19-30-05 horizontal.mkv` (pattern from Settings → Advanced), with a counter
+    """`SprigCast 2026-11-10 19-30-05 horizontal.mkv` (pattern from Settings → Recording → File names), with a counter
     if that name is taken."""
     from sprigcast.output import naming
 
@@ -484,7 +484,7 @@ def rate_limits(codec: str, enc, bitrate_kbps: int) -> tuple[int, int]:
 
 
 def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[str, str]:
-    """FFmpeg encoder options for Settings → Output's choices (core.scene.EncoderSettings).
+    """FFmpeg encoder options for Settings → Stream → Quality's choices (core.scene.EncoderSettings).
 
     hrd=False leaves out x264's strict CBR signalling, which would stop the bitrate changing mid-stream.
     """
