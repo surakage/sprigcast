@@ -184,6 +184,7 @@ class NativeCanvases:
         self._wipe_maps: set[str] = set()
         self._signature = None
         self._last_upload: dict[str, float] = {}
+        self._media: dict[str, object] = {}  # source id -> the engine's player its pictures come straight from
         self._stats_at = 0.0
         self._rebuilds = 0
         self._faults = planned_faults(os.environ.get("SPRIGCAST_ENGINE_FAULT"))  # crash gate test on a PC
@@ -220,9 +221,23 @@ class NativeCanvases:
         keep = last is None or now - last > STILL_AFTER_S
         self._guard("upload", self.engine.upload, source_id, frame, channel_order, size, keep=keep)
 
+    def attach_media(self, source_id: str, player) -> bool:
+        """``player`` (a sprigcore.MediaPlayer, or None) is where the engine takes this source's pictures from,
+        each frame, by itself. True while it does: the render thread then sends it none."""
+        if self.failed:
+            return False
+        if self._media.get(source_id) is not player:
+            if player is None:
+                del self._media[source_id]
+            else:
+                self._media[source_id] = player
+            self._guard("media", self.engine.attach_media, source_id, player)
+        return player is not None and not self.failed
+
     def forget_gone(self, source_ids) -> None:
-        for gone in set(self._last_upload) - set(source_ids):
-            del self._last_upload[gone]
+        for gone in (set(self._last_upload) | set(self._media)) - set(source_ids):
+            self._last_upload.pop(gone, None)
+            self._media.pop(gone, None)
             self._guard("forget", self.engine.forget, gone)
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,

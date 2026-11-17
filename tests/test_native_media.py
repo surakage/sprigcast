@@ -329,6 +329,75 @@ def test_closing_while_playing_ends_its_thread(player_lib, files):
         player.info()
 
 
+def test_each_taker_gets_the_picture_on_screen_once(player_lib, files):
+    """The renderer and the engine's compositor each remember what they took: a second taker gets the picture
+    that is on screen at once, and nobody gets the same one twice."""
+    player = opened(files["video"])
+    try:
+        first = pump(player, 3, until=lambda got: got)
+        assert first
+        player.control(sprigcore.MEDIA_PAUSE)
+        pump(player, 0.1)
+        assert player.video_frame() is None  # paused: nothing new for the one who has it
+        player._seen.value = 0  # a newcomer (the engine's compositor, or Python's when it draws again)
+        again = player.video_frame()
+        assert again is not None and again[0].shape == first[-1][0].shape
+        assert player.video_frame() is None
+    finally:
+        player.close()
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_the_engines_compositor_takes_pictures_straight_from_the_player(player_lib, files):
+    """A video attached to the engine shows on its canvas with Python sending no picture at all, goes on showing
+    after the player's handle is closed (the engine holds it), and forgetting the source lets it go."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render import native_bridge
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=320, height=240)],
+        sources=[SourceConfig(id="clip", kind="media", name="Clip", settings={"path": files["video"]})],
+        scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="clip", x=0, y=0, align="top_left")])],
+        active_scenes={"h": "a"},
+    )
+    player = opened(files["video"], loop=True)
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    try:
+        assert bridge.attach_media("clip", player)
+        assert bridge.attach_media("clip", player)  # told once, asked every tick
+        bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+        bridge.watch("h", (320, 240), 0)
+
+        def shown(seconds=5.0):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                player.read_audio(240) if player._handle else None
+                got = bridge.take("h")
+                if got is not None:
+                    img = np.frombuffer(got[0], np.uint8).reshape(240, 320, 4)
+                    if img[..., 3].min() == 255:
+                        return img
+                time.sleep(0.005)
+            return None
+
+        one = shown()
+        assert one is not None and not bridge.failed  # the video fills the canvas, and Python sent nothing
+        two, deadline = one, time.monotonic() + 5
+        while (two == one).all() and time.monotonic() < deadline:
+            two = shown()
+        assert not (two == one).all()  # and it moves
+        assert not bridge.attach_media("clip", None) and bridge.attach_media("clip", player)
+        player.close()  # the source closed its player with the engine still attached
+        time.sleep(0.2)
+        assert not bridge.failed
+        bridge.forget_gone([])
+        time.sleep(0.2)
+        assert not bridge.failed and "clip" not in bridge._media
+    finally:
+        player.close()
+        bridge.close()
+
+
 def test_media_source_plays_through_the_engine(player_lib, files, monkeypatch):
     """sources/media.py with SPRIGCAST_ENGINE=native: the same class, the engine's player underneath."""
     from sprigcast.sources.media import MediaSource

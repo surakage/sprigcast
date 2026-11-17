@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 7
+#define SC_INTERFACE_VERSION 8
 
 enum {
     SC_OK = 0,
@@ -316,6 +316,12 @@ SC_API int sc_engine_canvas_show(sc_engine *engine, int index, uint64_t scene);
 SC_API int sc_engine_source_upload(sc_engine *engine, uint64_t id, const uint8_t *data, const sc_upload *how,
                                    int flags);
 SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id);
+/* Source `id` shows what `media` plays: every frame the engine takes the picture due from the player itself,
+ * straight from its decoder thread, so a video's pictures never pass through Python. media = NULL goes back to
+ * pictures sent with sc_engine_source_upload (the source keeps the picture it has). The engine keeps the player
+ * alive as long as it is attached, and sc_engine_source_forget detaches it. */
+struct sc_media;
+SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, struct sc_media *media);
 SC_API int sc_engine_look_set(sc_engine *engine, uint64_t id, const float *table, int n);
 SC_API int sc_engine_mask_set(sc_engine *engine, uint64_t id, const uint8_t *rgba, int width, int height, int luma);
 SC_API int sc_engine_snapshot_set(sc_engine *engine, const sc_snapshot *snapshot);
@@ -474,10 +480,11 @@ SC_API int sc_media_control(sc_media *media, int what, double value);
 /* Shown at most `shrink` of its size anywhere (1, 1/2, 1/4): the next pictures are made that small. */
 SC_API int sc_media_set_shrink(sc_media *media, float shrink);
 SC_API int sc_media_info_get(sc_media *media, sc_media_info *out);
-/* The picture due now on the file's clock, if it is a new one: copied into `out` (`capacity` bytes) and described
- * in *picture. Returns SC_MEDIA_NO_PICTURE ... SC_MEDIA_TOO_SMALL, or a negative SC_ERR_*. Never waits for the
- * decoder. */
-SC_API int sc_media_video_frame(sc_media *media, sc_media_picture *picture, uint8_t *out, size_t capacity);
+/* The picture on screen now on the file's clock, if it isn't the one *seen names (start *seen at 0; each taker
+ * keeps its own): copied into `out` (`capacity` bytes) and described in *picture, and *seen is updated. Returns
+ * SC_MEDIA_NO_PICTURE ... SC_MEDIA_TOO_SMALL, or a negative SC_ERR_*. Never waits for the decoder. */
+SC_API int sc_media_video_frame(sc_media *media, uint64_t *seen, sc_media_picture *picture, uint8_t *out,
+                                size_t capacity);
 /* The next `count` stereo samples (interleaved floats at 48 kHz) due on the file's clock; silence where there is
  * none. asleep: 1 while the source is off air. Never waits for the decoder. */
 SC_API int sc_media_read_audio(sc_media *media, float *out, int count, int asleep);

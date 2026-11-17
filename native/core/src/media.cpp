@@ -9,6 +9,7 @@
 // This file needs no graphics card and nothing of Windows but the library loader, so its checks also run on
 // Linux (tests/test_native_media.py).
 #include "base.h"
+#include "media.h"
 
 #if defined(_MSC_VER)
 #  pragma warning(push, 0)
@@ -213,6 +214,11 @@ struct Core : std::enable_shared_from_this<Core> {
     double finished_at = 0;
     bool has_shown = false;
     double shown = 0;
+    // The picture on screen now, for whoever shows it (Python's renderer, the engine's compositor): each remembers
+    // the serial it last took, so a newcomer gets the picture at once and nobody takes one twice.
+    PicturePtr on_screen;
+    bool on_screen_blank = false;
+    uint64_t serial = 0;
     bool hidden = false, paused_by_hide = false;
     float speed = 1.0f;          // the speed the decoder and clock run at now
     bool blank = false;
@@ -268,7 +274,42 @@ struct Core : std::enable_shared_from_this<Core> {
             if (clear_on_end && has_video) blank = true;
         }
     }
-    bool current(uint64_t gen, uint64_t serial) const { return thread == serial && generation == gen; }
+    bool current(uint64_t gen, uint64_t mine) const { return thread == mine && generation == gen; }
+    // Moves on to the picture due now on the file's clock (sources/media.py video_frame).
+    void advance() {
+        if (parked) return;  // asleep: nothing is due (the engine may still ask for a frame or two)
+        if (blank) {
+            blank = false;
+            on_screen = nullptr;
+            on_screen_blank = true;
+            ++serial;
+            return;
+        }
+        if (state != SC_MEDIA_PLAYING && has_shown) return;
+        run_clock();
+        const double now = position();
+        while (frames.size() >= 2 && frames[1].first <= now) {
+            frames.pop_front();
+            wake.notify_all();
+        }
+        if (!frames.empty() && (frames[0].first <= now + 0.005 || !has_shown)) {
+            const double at = frames[0].first;
+            const bool fresh = !has_shown || at != shown;
+            if (fresh) {
+                on_screen = frames[0].second;
+                on_screen_blank = false;
+                ++serial;
+                has_shown = true;
+                shown = at;
+            }
+            if (frames.size() == 1) {  // the last one decoded: hand it over and make room
+                frames.pop_front();
+                wake.notify_all();
+            }
+            if (fresh) return;
+        }
+        check_end();
+    }
 
     // ---- controls (any thread) ----
     void start(bool ensure);
@@ -362,6 +403,7 @@ void Core::control(int what, double value) {
             ++generation;  // the decoder stops where it is
             clear_queues();
             has_shown = false;
+            on_screen = nullptr;  // off air nothing is kept: the canvas has its last picture as a texture
             wake.notify_all();
             break;
         }
@@ -1023,6 +1065,41 @@ struct sc_media {
     std::shared_ptr<Core> core;
 };
 
+namespace sc {
+
+std::shared_ptr<void> media_hold(sc_media *media) { return media ? media->core : nullptr; }
+
+void media_due(const std::shared_ptr<void> &player, uint64_t *seen, MediaDue *out) {
+    out->what = SC_MEDIA_NO_PICTURE;
+    out->keep.reset();
+    Core &c = *static_cast<Core *>(player.get());
+    std::lock_guard<std::mutex> hold(c.lock);
+    c.advance();
+    if (*seen == c.serial) return;
+    *seen = c.serial;
+    if (c.on_screen_blank || !c.on_screen) {
+        if (c.on_screen_blank) out->what = SC_MEDIA_BLANK;
+        return;
+    }
+    const Picture &pic = *c.on_screen;
+    out->what = SC_MEDIA_PICTURE;
+    out->keep = c.on_screen;
+    out->data = pic.data.data();
+    out->how = sc_upload{};
+    out->how.format = pic.format;
+    out->how.width = pic.width;
+    out->how.height = pic.height;
+    out->how.stride = pic.stride;
+    out->how.layout_width = c.width;
+    out->how.layout_height = c.height;
+    // render/compositor.py YUV_MATRICES: Kr, Kb, then 1 for full range.
+    out->how.yuv[0] = pic.matrix == 709 ? 0.2126f : pic.matrix == 2020 ? 0.2627f : 0.299f;
+    out->how.yuv[1] = pic.matrix == 709 ? 0.0722f : pic.matrix == 2020 ? 0.0593f : 0.114f;
+    out->how.yuv[2] = pic.full ? 1.0f : 0.0f;
+}
+
+}  // namespace sc
+
 extern "C" {
 
 SC_API int sc_media_ffmpeg_load(const char *avutil, const char *avcodec, const char *avformat, const char *swscale,
@@ -1158,46 +1235,28 @@ SC_API int sc_media_info_get(sc_media *media, sc_media_info *out) {
     });
 }
 
-SC_API int sc_media_video_frame(sc_media *media, sc_media_picture *picture, uint8_t *out, size_t capacity) {
+SC_API int sc_media_video_frame(sc_media *media, uint64_t *seen, sc_media_picture *picture, uint8_t *out,
+                                size_t capacity) {
     return sc::guarded("sc_media_video_frame", [&]() -> int {
-        if (!media || !picture) return sc::fail(SC_ERR_ARGUMENT, "sc_media_video_frame: nothing given");
+        if (!media || !picture || !seen) return sc::fail(SC_ERR_ARGUMENT, "sc_media_video_frame: nothing given");
         Core &c = *media->core;
         PicturePtr found;
         double at = 0;
         {
             std::lock_guard<std::mutex> hold(c.lock);
-            if (c.blank) {
-                c.blank = false;
-                return SC_MEDIA_BLANK;
+            c.advance();
+            if (*seen == c.serial) return SC_MEDIA_NO_PICTURE;
+            if (c.on_screen_blank || !c.on_screen) {
+                *seen = c.serial;
+                return c.on_screen_blank ? SC_MEDIA_BLANK : SC_MEDIA_NO_PICTURE;
             }
-            if (c.state != SC_MEDIA_PLAYING && c.has_shown) return SC_MEDIA_NO_PICTURE;
-            c.run_clock();
-            const double now = c.position();
-            while (c.frames.size() >= 2 && c.frames[1].first <= now) {
-                c.frames.pop_front();
-                c.wake.notify_all();
+            if (!out || capacity < c.on_screen->data.size()) {
+                picture->bytes = c.on_screen->data.size();
+                return SC_MEDIA_TOO_SMALL;
             }
-            if (!c.frames.empty() && (c.frames[0].first <= now + 0.005 || !c.has_shown)) {
-                at = c.frames[0].first;
-                const bool fresh = !c.has_shown || at != c.shown;
-                if (fresh && (!out || capacity < c.frames[0].second->data.size())) {
-                    picture->bytes = c.frames[0].second->data.size();
-                    return SC_MEDIA_TOO_SMALL;
-                }
-                if (fresh) found = c.frames[0].second;
-                if (c.frames.size() == 1) {  // the last one decoded: hand it over and make room
-                    c.frames.pop_front();
-                    c.wake.notify_all();
-                }
-                if (fresh) {
-                    c.has_shown = true;
-                    c.shown = at;
-                }
-            }
-            if (!found) {
-                c.check_end();
-                return SC_MEDIA_NO_PICTURE;
-            }
+            *seen = c.serial;
+            found = c.on_screen;
+            at = c.shown;
         }
         // Copied with the lock let go: the decoder and the mixer never wait on a picture being copied.
         std::memcpy(out, found->data.data(), found->data.size());
