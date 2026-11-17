@@ -251,6 +251,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   default 2), instead of being cut off with "...". The card is drawn once per song and each frame adds only what
   moves, on a worker, never on the render thread; standing still, nothing is drawn. Adding it no longer freezes the
   window for 0.66 s, and the log notes each new song. nowplaying.get also answers `length` and `position`.
+- A plugin, text or slide show added to a sprig that shows small in its bloom (say at 40% in a corner) starts sized
+  for how big the sprig shows, inside the part of the canvas the sprig covers and clear of the others there, instead
+  of at 40% of its size. Bands shrink to fit a crowded sprig; a tall sprig stacks the cards down its sides.
 - Plugins put in a bloom through the Control API (item.add) or the OBS-style connection (CreateInput,
   CreateSceneItem) start at the same readable size and free corner as from the + menu, on both canvases; text starts
   the same share of the canvas at 720p, 1080p or 4K. They used to start at the size of their box in the top left corner.

@@ -4521,12 +4521,16 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         canvas = self.collection.canvas(scene.canvas)
+        # In a sprig shown small in its bloom, start it the size it would be on the canvas, in the part of the
+        # canvas the sprig covers (else it comes out tiny where it shows).
+        k, vx, vy, left, top_, width, height = self.collection.view_region(scene)
         if fills:
             w, h = int(settings.get("width") or canvas.width), int(settings.get("height") or canvas.height)
-            item.scale = min(canvas.width / max(1, w), canvas.height / max(1, h))
+            fit = min(width / max(1, w), height / max(1, h))
+            item.scale = fit / k
             item.scale_y = None
-            item.x = (canvas.width - w * item.scale) / 2
-            item.y = (canvas.height - h * item.scale) / 2
+            item.x = (left + (width - w * fit) / 2 - vx) / k
+            item.y = (top_ + (height - h * fit) / 2 - vy) / k
             self._changed()
             self._refresh_properties()
             return
@@ -4534,10 +4538,13 @@ class MainWindow(QMainWindow):
         stacked = sum(1 for i in scene.items if i is not item and self.collection.source(i.source).kind == kind)
         short = min(canvas.width, canvas.height)
         if getattr(cls, "sharp", False):  # text: the same share of the canvas at 720p, 1080p or 4K (and crisp)
-            item.scale, item.scale_y = short / 1080, None
-        top = canvas.height * (PORTRAIT_TOP if canvas.height > canvas.width else 0.05)  # below TikTok's tabs
-        item.x = round(canvas.width * 0.05)
-        item.y = round(top + (stacked * 100 * short / 1080) % max(1, canvas.height // 2))
+            item.scale, item.scale_y = short / 1080 / k, None
+        whole = (k, vx, vy) == (1.0, 0.0, 0.0)
+        top = canvas.height * (PORTRAIT_TOP if canvas.height > canvas.width else 0.05) if whole \
+            else top_ + height * 0.05  # below TikTok's tabs
+        x = round(canvas.width * 0.05) if whole else left + width * 0.05
+        y = top + (stacked * 100 * short / 1080) % max(1, (canvas.height if whole else height) // 2)
+        item.x, item.y = round((x - vx) / k, 2), round((y - vy) / k, 2)
         self._changed()
         self._refresh_properties()
 

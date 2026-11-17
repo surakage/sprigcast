@@ -280,6 +280,69 @@ def test_the_pngtuber_keeps_clear_of_the_side_buttons_on_vertical(all_plugins):
     assert box[2] <= 1080 * 0.85 + 0.5  # left of TikTok's like / comment / share column
 
 
+def _small_sprig(cw, ch, k=0.4):
+    """A bloom showing a sprig at k of the size near its top left (like a corner overlay)."""
+    col = SceneCollection(canvases=[Canvas(id="c", width=cw, height=ch)],
+                          scenes=[Scene(id="b", name="B", canvas="c"), Scene(id="p", name="Corner", canvas="c", kind="part")],
+                          active_scenes={"c": "b"})
+    col.sources.append(SourceConfig(id="ps", kind="scene", name="Corner", settings={"scene": "p"}))
+    col.scene("b").items.append(SceneItem(source="ps", scale=k, x=cw * 0.04, y=ch * 0.06))
+    return col
+
+
+def _shown_boxes(col, k, ox, oy):
+    """Each plugin in sprig p as it shows on the canvas: (left, top, right, bottom)."""
+    from sprigcast.core.source import source_class
+
+    configs = {s.id: s for s in col.sources}
+    boxes = {}
+    for placed in col.scene("p").items:
+        shape = col.shape_for(col.part_of(configs[placed.source]), "c")
+        inner = shape.items[0]
+        w, h = inner.drawn_size(tuple(source_class(inner.source).own_sprig))
+        x, y = ox + k * (placed.x + inner.x * placed.scale), oy + k * (placed.y + inner.y * placed.scale)
+        boxes[inner.source] = (x, y, x + k * w * placed.scale, y + k * h * placed.sy)
+    return boxes
+
+
+@pytest.mark.parametrize("size", [(1920, 1080), (1280, 720), (1080, 1920)])
+def test_plugins_dropped_in_a_sprig_shown_small_start_readable_inside_it(all_plugins, size):
+    """PC test 2026-11-17: plugins added to a sprig shown at 40% came out at 40% of their size ("miniscule").
+    They start sized for the canvas, as far as the sprig's part of it allows: inside it, clear of each other."""
+    cw, ch = size
+    col = _small_sprig(cw, ch)
+    assert col.shown_view(col.scene("p")) == pytest.approx((0.4, cw * 0.04, ch * 0.06))
+    assert col.shown_view(col.scene("b")) == (1.0, 0.0, 0.0)
+    kinds = ["stream_timer", "local_time", "now_playing", "pngtuber", "audio_visualizer"]
+    _add_all(col, "p", kinds)
+    boxes = _shown_boxes(col, 0.4, cw * 0.04, ch * 0.06)
+    left, top, right, bottom = cw * 0.04, ch * 0.06, cw * 0.44, ch * 0.46
+    short = min(cw, ch)
+    for kind, b in boxes.items():
+        assert b[0] >= left - 0.5 and b[1] >= top - 0.5 and b[2] <= right + 0.5 and b[3] <= bottom + 0.5, kind
+    for card in ("stream_timer", "local_time"):
+        tall = boxes[card][3] - boxes[card][1]
+        assert tall > 0.4 * 0.14 * short * 1.5  # well past the 40% it used to start at
+    for i, a in enumerate(kinds):
+        for b in kinds[i + 1:]:
+            p, q = boxes[a], boxes[b]
+            assert min(p[2], q[2]) - max(p[0], q[0]) <= 0.5 or min(p[3], q[3]) - max(p[1], q[1]) <= 0.5, (a, b)
+
+
+def test_text_and_api_plugins_in_a_sprig_shown_small(all_plugins):
+    col = _small_sprig(1920, 1080, 0.5)
+    item = SceneItem(source="t")
+    col.sources.append(SourceConfig(id="t", kind="text", name="Hello"))
+    col.starting_place(item, "text", col.scene("p"))
+    assert item.scale == pytest.approx(2.0)  # shows at 1:1 on the canvas through the half-size sprig
+    col.sources.append(SourceConfig(id="np", kind="now_playing", name="Song"))
+    item = SceneItem(source="np")
+    col.starting_place(item, "now_playing", col.scene("p"))
+    shown = 0.5 * item.scale * 200  # its box's height on the canvas
+    assert 0.5 * 1080 * 0.14 * 1.4 < shown <= 1080 * 0.14 + 0.5  # much more than the half size it started at
+    assert 0 <= item.x and item.x + item.scale * 1100 <= 1920 + 0.5  # inside the sprig
+
+
 def test_videos_shown_small_are_told_to_decode_small_and_filters_keep_their_look():
     """The heavy run (2026-11-17): two 1080p videos placed at 0.3 were sent to the card at full size."""
     from sprigcast.render.engine import Engine
