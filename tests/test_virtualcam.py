@@ -276,3 +276,15 @@ def test_needs_update_reads_the_files_once(monkeypatch, tmp_path):
     assert len(reads) == 2  # once each
     dst.write_bytes(b"older" * 10)  # a different size: no read needed to know
     assert virtualcam.needs_update() and len(reads) == 2
+
+
+def test_the_native_engines_frames_reach_the_camera():
+    """PC (2026-11-17): on the native engine the camera stayed on its "no picture" green: the engine's frames are
+    bytearrays, which the copy refused."""
+    block = _block()
+    assert block.write(4, 2, bytearray(range(12)))
+    assert ctypes.string_at(block.address + HEADER, 12) == bytes(range(12))
+    assert block.write(4, 2, memoryview(bytearray(range(1, 13))))
+    assert ctypes.string_at(block.address + HEADER, 12) == bytes(range(1, 13))
+    assert block.write(4, 2, memoryview(bytes(range(2, 14))))  # read-only
+    assert ctypes.string_at(block.address + HEADER, 12) == bytes(range(2, 14))
