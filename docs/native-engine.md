@@ -12,6 +12,14 @@ frame.
 
 ## Rules
 
+- **Our own code.** The engine is SprigCast's own Python converted to C++. OBS is studied for ideas only; no OBS
+  code is copied, and SprigCast is not an OBS clone.
+- **Frozen snapshots.** The engine draws from its own copy of what is shown (`render/native_snapshot.py` builds it
+  on each change), never from Python's live objects, so no Python lock is held per frame.
+- **Crash gates.** Every exported function catches C++ exceptions and, built with `/EHa`, Windows faults. A device
+  that faulted is shut off (`SC_ERR_FAULTED`), a lost graphics card answers `SC_ERR_DEVICE_LOST`, and Python
+  makes a new device; the app goes on. Each later phase adds its own gates (thread guards, watchdogs, helper
+  processes, encoder fallback); see the plan.
 - **The engine never waits on Python.** It never calls into Python. Its log lines wait in a queue that
   `sprigcore.drain_log()` moves into SprigCast's log.
 - **No frames or sound cross into Python** on the frame path. Reading a canvas back is for tests and screenshots
@@ -38,6 +46,11 @@ set SPRIGCAST_CORE_DLL=%CD%\build\core\Release\sprigcore.dll
 uv run pytest tests/test_sprigcore.py
 ```
 
+`tests/test_native_compositor.py` draws the cases in `tests/native_cases.py` with the engine and compares them
+with `tests/native_golden/`, today's compositor's drawing of the same cases. If a change to
+`render/compositor.py` is meant, remake those pictures with `python tests/native_cases.py` and change the engine's
+shader (`native/core/src/shader_compositor.h`) to match.
+
 The checks draw with Windows' software renderer (WARP), so they give the same answer on every PC and in CI
 (`.github/workflows/core.yml`). The installer build puts the DLL in `sprigcast\engine\`.
 
@@ -48,11 +61,11 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | Phase | What moves | State |
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
-| 2 | Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | Next |
-| 3 | Media and GIF decode, browser pages as shared textures | |
-| 4 | Recording, streaming, Enhanced Broadcasting, replay, virtual camera | |
-| 5 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
-| 6 | Sound: devices, mixer, filters, sync | |
+| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor and snapshot drawn like today's (pixel-checked) |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | |
+| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
+| 5 | Sound: devices, mixer, filters, sync | |
+| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
 | 7 | Capture and camera inside the engine | |
 | 8 | Old Python engine and its packages removed | |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |

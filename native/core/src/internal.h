@@ -1,0 +1,159 @@
+// What the engine's source files share: errors, the log, the crash gate, and the device and canvas.
+#pragma once
+
+#define SPRIGCORE_BUILD
+#include "sprigcore.h"
+
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <dxgi1_2.h>
+#include <windows.h>
+#include <wrl/client.h>
+
+#include <atomic>
+#include <cstdint>
+#include <exception>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+using Microsoft::WRL::ComPtr;
+
+namespace sc {
+
+void log_line(int level, const std::string &message);
+int fail(int code, const std::string &message);
+int fail_hr(int code, const char *what, HRESULT hr);
+void set_last_error(const std::string &message);
+
+// Every exported function runs inside this: no C++ exception crosses into Python. Built with /EHa, catch (...)
+// also stops Windows faults (an access violation in a driver or in our own code).
+template <typename F>
+int guarded(const char *name, F &&body) {
+    try {
+        set_last_error("");
+        return body();
+    } catch (const std::bad_alloc &) {
+        return fail(SC_ERR_OUT_OF_MEMORY, std::string(name) + ": out of memory");
+    } catch (const std::exception &e) {
+        return fail(SC_ERR_INTERNAL, std::string(name) + ": " + e.what());
+    } catch (...) {
+        return fail(SC_ERR_INTERNAL, std::string(name) + ": fault");
+    }
+}
+
+}  // namespace sc
+
+struct sc_device;
+
+namespace sc {
+
+struct Source {
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> view;
+    int data_w = 0, data_h = 0;   // the texture
+    int pic_w = 0, pic_h = 0;     // the picture (planar: the Y plane)
+    int layout_w = 0, layout_h = 0;
+    int format = SC_FMT_RGBA;
+    int planar = 0;               // 0, 1 (I420) or 2 (I420A)
+    float yuv[3] = {0, 0, 0};
+};
+
+struct Look {
+    ComPtr<ID3D11ShaderResourceView> view;
+    int size = 0;
+};
+
+struct Mask {
+    ComPtr<ID3D11ShaderResourceView> view;
+    bool luma = false;
+};
+
+struct Target {
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11RenderTargetView> target;
+    ComPtr<ID3D11ShaderResourceView> view;
+    int width = 0, height = 0;
+};
+
+struct Snapshot {
+    std::vector<sc_scene> scenes;
+    std::vector<sc_item> items;
+    std::vector<sc_effects> effects;
+    std::unordered_map<uint64_t, size_t> by_id;
+};
+
+struct Compositor {
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3D11Buffer> constants;
+    ComPtr<ID3D11SamplerState> wrap, clamp;
+    std::unordered_map<uint64_t, Source> sources;
+    std::unordered_map<uint64_t, Look> looks;
+    std::unordered_map<uint64_t, Mask> masks;
+    std::unordered_map<uint64_t, Target> parts;          // a sprig's drawing, by snapshot scene id
+    std::map<std::pair<uint64_t, int>, double> spins;    // (source, run) -> when its barrel roll started
+    std::shared_ptr<const Snapshot> snapshot;
+};
+
+HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
+int make_target(ID3D11Device *device, int width, int height, Target &out);
+
+}  // namespace sc
+
+struct sc_device {
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
+    std::mutex lock;  // the immediate context is used by one thread at a time
+    std::atomic<bool> faulted{false};
+
+    // The phase 1 drawing (sc_canvas_draw_bgra), made the first time it's used.
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3D11Buffer> constants;
+    ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11BlendState> over;
+    ComPtr<ID3D11RasterizerState> raster;
+    int prepare_drawing();
+
+    sc::Compositor comp;
+    int prepare_compositor();
+};
+
+struct sc_canvas {
+    sc_device *device = nullptr;
+    int width = 0, height = 0;
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11RenderTargetView> target;
+    ComPtr<ID3D11Texture2D> staging;  // made on the first read
+};
+
+namespace sc {
+
+// The crash gate for calls on a device: a faulted device refuses work; a fault inside marks it faulted; a
+// removed or reset graphics card is reported as SC_ERR_DEVICE_LOST.
+template <typename F>
+int device_call(sc_device *device, const char *name, F &&body) {
+    if (!device) return fail(SC_ERR_ARGUMENT, std::string(name) + ": no device");
+    if (device->faulted.load()) return fail(SC_ERR_FAULTED, std::string(name) + ": this device faulted earlier");
+    int code = guarded(name, body);
+    if (code == SC_ERR_INTERNAL && !device->faulted.exchange(true)) {
+        log_line(SC_LOG_ERROR, std::string(name) + ": the device is shut off after a fault");
+    }
+    if (code == SC_ERR_DEVICE && device->device) {
+        HRESULT why = device->device->GetDeviceRemovedReason();
+        if (FAILED(why)) {
+            device->faulted.store(true);
+            return fail_hr(SC_ERR_DEVICE_LOST, "The graphics card was reset or removed", why);
+        }
+    }
+    return code;
+}
+
+}  // namespace sc
