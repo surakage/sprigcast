@@ -725,6 +725,31 @@ def test_long_destination_list_scrolls_inside_its_card(app):
     side.close()
 
 
+def test_destination_rows_restyle_only_what_changed(app, monkeypatch):
+    """Live refreshes Destinations every second: restyling every row each time froze the window 532 ms."""
+    from PySide6.QtWidgets import QWidget
+
+    from sprigcast.app.live_stage import Destination, LiveSide
+
+    side = LiveSide(lambda: None, lambda: None, lambda: None, lambda _id: None)
+    side.show()
+    places = [Destination(id="tw", name="Twitch", on=True, note="6000 kbps"),
+              Destination(id="yt", name="YouTube", on=False, note="Off")]
+    side.show_destinations(places, {"tw": "good"})
+    styled = []
+    real = QWidget.setStyleSheet
+    monkeypatch.setattr(QWidget, "setStyleSheet", lambda self, sheet: (styled.append(self), real(self, sheet)))
+    side.show_destinations(places, {"tw": "good"})
+    assert styled == []  # nothing changed: nothing restyled or re-laid out
+    note = side.place_rows["tw"][2]
+    side.show_destinations([Destination(id="tw", name="Twitch", on=True, note="5800 kbps"), places[1]],
+                           {"tw": "warning"})
+    assert "5800 kbps" in note.text() and styled == []  # a new number is new text, not a new style
+    side.show_destinations([Destination(id="tw", name="Twitch", on=False, note="Off"), places[1]], {})
+    assert styled == [side.place_rows["tw"][1]]  # switched off: only its name changes colour
+    side.close()
+
+
 def test_bloom_pills_show_their_key_and_numbers_switch(app):
     from sprigcast.app.hotkeys import SCENE_PREFIX
     from sprigcast.app.live_panel import LivePanel
