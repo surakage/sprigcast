@@ -139,6 +139,23 @@ def watch_threads(now: float | None = None) -> str | None:
     return line
 
 
+MEMORY_EVERY_S = 600.0  # a memory line this often, so a slow climb shows where it went (not only at stops)
+_memory_logged: float | None = None
+
+
+def watch_memory(now: float | None = None) -> str | None:
+    """Every 10 minutes: one memory line, with what Python keeps aside (frozen objects are only looked
+    through again at rest; a climb there is cycles left behind since). Returns the line."""
+    global _memory_logged
+    now = time.monotonic() if now is None else now
+    if _memory_logged is not None and now - _memory_logged < MEMORY_EVERY_S:
+        return None
+    _memory_logged = now
+    line = f"memory now: {memory_line()}; kept aside {gc.get_freeze_count():,}"
+    log.info(line)
+    return line
+
+
 def settle() -> float:
     """At rest (nothing recorded or streamed): look through everything once, frozen included, so cycles
     from the show (a stopped encoder, a closed window) are freed; then freeze again. Returns ms."""

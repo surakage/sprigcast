@@ -274,3 +274,24 @@ def test_filters_in_source_pixels_look_the_same_at_any_detail(compositor):
     assert compositor._in_detail(fx, 2.0) is doubled  # made once, not every frame
     plain = VideoEffects()
     assert compositor._in_detail(plain, 2.0) is plain
+
+
+def test_a_preview_copy_waits_for_the_window_to_come_back(compositor):
+    """Minimized, the window asks for no preview; made again on its return, the first copy into fresh read-back
+    buffers held the renderer 330 ms on the PC (2026-11-16, at rest). A preview's copy stays a while; an
+    output's goes after a few seconds as before."""
+    import time
+
+    compositor.ctx.__enter__()
+    compositor.prune(now=time.monotonic() + 10_000)
+    canvas = Canvas(id="pv", width=64, height=36)
+    compositor.render(canvas, None, {})
+    now = time.monotonic()
+    compositor.read_scaled_later("pv", (32, 18), "p", now, optional=True)  # the window's preview
+    kept = compositor.scaled_targets[("pv", (32, 18))]
+    compositor.prune(now=now + 120)  # two minutes minimized
+    assert compositor.scaled_targets.get(("pv", (32, 18))) is kept
+    compositor.prune(now=now + compositor.PREVIEW_KEEP_S + 1)  # gone for good after a long while
+    assert ("pv", (32, 18)) not in compositor.scaled_targets
+    compositor.read_scaled_later("pv", (32, 18), "p", time.monotonic())  # not a preview: let go soon as before
+    assert compositor.prune(now=time.monotonic() + 100) >= 1 and ("pv", (32, 18)) not in compositor.scaled_targets

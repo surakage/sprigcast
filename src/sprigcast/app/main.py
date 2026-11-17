@@ -309,6 +309,7 @@ def run() -> None:
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
     tidy.timeout.connect(pacing.tidy)
     tidy.timeout.connect(pacing.watch_threads)  # which threads come and go, for the next long test
+    tidy.timeout.connect(pacing.watch_memory)  # and where memory goes, every 10 minutes
     tidy.start(pacing.TIDY_EVERY_MS)
     from sprigcast.core import warm, workers
 
