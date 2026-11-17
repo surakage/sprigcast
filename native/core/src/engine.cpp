@@ -186,12 +186,6 @@ struct PreviewGpu {
     int64_t retry_at = 0;  // after a failure: when to try making it again
 };
 
-void name_thread(const wchar_t *name) {
-    using Describe = HRESULT(WINAPI *)(HANDLE, PCWSTR);
-    FARPROC found = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");  // Windows 10 1607+
-    if (found) reinterpret_cast<Describe>(reinterpret_cast<void (*)()>(found))(GetCurrentThread(), name);
-}
-
 }  // namespace
 
 struct sc_engine {

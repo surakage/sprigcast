@@ -352,6 +352,23 @@ def test_frames_the_engine_let_go_of_count_as_the_recordings_drops():
     assert rec.frames and rec.dropped == 4 * len(rec.frames)
 
 
+def test_pictures_go_only_to_the_engine_while_python_draws_nothing():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    camera = engine._sources["cam"] = EngineVideo()
+    camera.engine_player = None  # a camera: Python takes its pictures and hands them on
+    engine._collection.scenes[0].items.append(SceneItem(source="cam"))
+    _run(engine, fake, seconds=0.5)
+    assert engine._native.uploads.count("cam") == 30
+    assert fake.uploaded.count("cam") == 1  # the first tick only, before Python knew it draws nothing
+    got = []
+    engine.add_frame_tap("h", got.append)  # a full-size RGBA tap: Python draws again, with the newest picture
+    engine._tick(fake, 20.0)
+    assert fake.uploaded.count("cam") == 2 and fake.rendered == ["h"] and engine._held_back == {}
+    engine._tick(fake, 20.1)
+    assert fake.uploaded.count("cam") == 3  # while it draws, every picture goes to both
+
+
 class EngineVideo:
     """Stands in for a MediaSource the engine's own player decodes."""
 

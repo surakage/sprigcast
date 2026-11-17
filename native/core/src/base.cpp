@@ -1,6 +1,10 @@
 // The engine's log queue, last error and version: the parts of the C interface that need no graphics card.
 #include "base.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -17,6 +21,16 @@ constexpr size_t LOG_KEEP = 512;
 namespace sc {
 
 void set_last_error(const std::string &message) { g_last_error = message; }
+
+void name_thread(const wchar_t *name) {
+#ifdef _WIN32
+    using Describe = HRESULT(WINAPI *)(HANDLE, PCWSTR);
+    FARPROC found = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription");
+    if (found) reinterpret_cast<Describe>(reinterpret_cast<void (*)()>(found))(GetCurrentThread(), name);
+#else
+    (void)name;
+#endif
+}
 
 void log_line(int level, const std::string &message) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
