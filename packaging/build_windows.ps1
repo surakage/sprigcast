@@ -57,6 +57,9 @@ $py = Join-Path $build "python"
 Get-ChildItem $py -Recurse -Directory -Include "__pycache__", "tests", "test" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -notmatch "sprigcast" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force (Join-Path $py "include") -ErrorAction SilentlyContinue
+# Unused Qt modules, plugins and tools, WebEngine's debug resources and other languages, Tk, pip and
+# OpenCV's FFmpeg (prune.py says why each is safe). The build checks the app still starts afterwards.
+uv run --no-project --with pefile python (Join-Path $PSScriptRoot "prune.py") $py
 
 # 4. The wizard's brand art, then the installer.
 & $python (Join-Path $PSScriptRoot "make_wizard_images.py") (Join-Path $build "wizard")
