@@ -52,25 +52,3 @@ def test_off_the_window_thread_it_just_runs(qapp):
     worker.start()
     worker.join()
     assert got == [worker]
-
-
-def test_the_wave_link_setting_is_read_once(qapp, monkeypatch):
-    from sprigcast.audio import wavelink
-
-    reads = []
-    real = wavelink.QSettings
-
-    class Counting(real):
-        def value(self, *a, **k):
-            reads.append(a[0])
-            return super().value(*a, **k)
-
-    monkeypatch.setattr(wavelink, "QSettings", Counting)
-    monkeypatch.setattr(wavelink, "_enabled", [])
-    for _ in range(5):
-        wavelink.enabled()
-    assert reads.count(wavelink.SETTING) == 1
-    wavelink.set_enabled(not wavelink.enabled())
-    flipped = wavelink.enabled()
-    wavelink.set_enabled(not flipped)  # put it back
-    assert reads.count(wavelink.SETTING) == 1 and wavelink.enabled() is (not flipped)

@@ -65,15 +65,18 @@ the git history named in its entry, but rebuild it to today's rules rather than 
   an older PC. The streamer's-own-Google-key mode is light, since it needs no local model, and could come
   back on its own (paid services rule: the streamer's own key only).
 
+### Elgato Wave Link sync
+- **Removed:** 2026-11-17. The code was `src/sprigcast/audio/wavelink.py` and the "Keep Wave Link in step"
+  box in Settings → Sound. Capturing Wave Link's channels and mixes as sound devices stays: those are
+  ordinary Windows devices.
+- **Why:** it talked to Wave Link's private WebSocket (the one Elgato's Stream Deck plugin uses), which
+  isn't an official API, so any Wave Link update could break it. It was only tested against a fake server.
+  It was light, with one local connection and no polling.
+- **To come back:** an official Wave Link API from Elgato.
+
 ## Kept, with what was measured (2026-11-17)
 
 These were reviewed and kept. Each still needs a pass on the real PC.
-
-### Elgato Wave Link sync
-- **Kept:** it costs nothing. It is off by default. When on, it holds one local connection only while a
-  sound captures a Wave Link channel, with no thread and no polling.
-- **Risk:** it talks to Wave Link's private WebSocket, and was only tested against a fake server. Check it
-  with Wave Link 3, and again after Wave Link updates.
 
 ### Now playing (store plugin)
 - **Kept:** it adds under 1 MB to the install (the `winrt` packages). It uses one thread only while the card
