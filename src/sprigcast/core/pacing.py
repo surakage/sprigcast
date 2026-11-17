@@ -550,7 +550,7 @@ def memory_line() -> str:
     parts.append(f"python objects {len(objects):,} (" + ", ".join(f"{k.__name__} {n:,}" for k, n in kinds) + ")")
     del objects
     parts.append(f"python threads {threading.active_count()} ({thread_names()})")
-    return "; ".join(parts)[:2500]
+    return "; ".join(parts)
 
 
 def thread_names(threads=None) -> str:
