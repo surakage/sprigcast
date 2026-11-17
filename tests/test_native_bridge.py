@@ -1,6 +1,7 @@
 """SPRIGCAST_ENGINE=native: the native engine drawing the previews (render/native_bridge.py) and how the render
 thread hands over to it and takes back from it."""
 
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -789,3 +790,16 @@ def test_a_screenshot_of_a_canvas_the_engine_draws_is_read_from_the_engine():
     assert taps == ["shot:v"]  # the one the engine doesn't draw comes from Python, as before
     engine._sources["snap"] = SimpleNamespace(in_screenshots=False)
     assert engine.native_shot("h") is None  # something stays out of screenshots: Python draws without it
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' own thread list (runs in CI with the engine checks)")
+def test_thread_times_come_without_psutil_on_windows():
+    """CPU by thread: psutil held Python's lock 434 ms on the PC (2026-11-17); these come through ctypes."""
+    import threading
+
+    from sprigcast.tools.cpuwhere import CpuWatch, _windows_thread_times
+
+    times = _windows_thread_times()
+    assert threading.get_native_id() in times and all(t >= 0 for t in times.values())
+    whole, threads = CpuWatch().busiest()
+    assert whole >= 0 and isinstance(threads, list)
