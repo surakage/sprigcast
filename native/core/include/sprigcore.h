@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 2
+#define SC_INTERFACE_VERSION 3
 
 enum {
     SC_OK = 0,
@@ -46,6 +46,7 @@ enum {
     SC_ERR_INTERNAL = -5,    /* a bug in the engine; the log says more */
     SC_ERR_FAULTED = -6,     /* this device faulted earlier and is shut off: make a new one (crash gate) */
     SC_ERR_DEVICE_LOST = -7, /* the graphics card was reset or removed: make a new device */
+    SC_ERR_TIMEOUT = -8,     /* the engine's frame thread didn't answer in time (it is busy or stuck) */
 };
 
 enum { SC_LOG_DEBUG = 10, SC_LOG_INFO = 20, SC_LOG_WARNING = 30, SC_LOG_ERROR = 40 };
@@ -212,6 +213,83 @@ SC_API int sc_canvas_render(sc_canvas *canvas, uint64_t scene, double time);
  * writes through a null pointer (an access violation). Either way the call answers SC_ERR_INTERNAL and the
  * device is shut off (SC_ERR_FAULTED from then on); the app goes on. */
 SC_API int sc_debug_fault(sc_device *device, int kind);
+
+/* ---- The engine (phase 2) ------------------------------------------------------------------------------------
+ *
+ * The engine draws on its own: one frame thread, paced by a high-resolution timer, draws every canvas each frame
+ * and shows them in preview windows. Python only hands it work. Every call below copies what it is given and
+ * returns at once: the frame thread picks the work up at the start of its next frame, so Python never waits on
+ * the graphics card and the frame thread never waits on Python.
+ *
+ * Crash gates: a fault or a lost graphics card while drawing doesn't end the engine. It builds a new device and
+ * hands it everything again from its own copies (pictures uploaded with SC_UPLOAD_KEEP, looks, shapes and the
+ * snapshot; video sources send their next frame anyway). Five rebuilds within a minute and it stops trying and
+ * reports `faulted`, so Python can switch to its own engine. A watchdog thread reports `hung` when one frame
+ * has taken more than two seconds. */
+
+typedef struct sc_engine sc_engine;
+
+typedef struct sc_engine_stats {
+    uint64_t ticks;          /* frames drawn */
+    uint64_t late;           /* frame times missed because drawing ran long (skipped, never queued up) */
+    uint64_t presented;      /* frames shown in preview windows */
+    uint64_t preview_skips;  /* preview frames skipped because a window wasn't ready (the engine never waits) */
+    double time;             /* the engine's clock: seconds since it started */
+    double render_ms_last;   /* drawing every canvas and preview, one frame */
+    double render_ms_avg;    /* the same, smoothed over about a second */
+    double render_ms_max;    /* the longest since the engine started */
+    int32_t running;         /* the frame thread is going */
+    int32_t faulted;         /* gave up after repeated faults: Python should use its own engine */
+    int32_t hung;            /* the frame being drawn has taken more than 2 s (watchdog) */
+    int32_t rebuilds;        /* times the device was rebuilt after a fault or a lost graphics card */
+    int32_t canvases;
+    int32_t previews;
+    int32_t sources;
+    int32_t reserved;
+} sc_engine_stats;
+
+/* sc_engine_source_upload flags. */
+enum {
+    SC_UPLOAD_KEEP = 1,  /* keep a copy so the picture comes back after a rebuild: for pictures that don't change */
+};
+
+#define SC_ENGINE_CANVASES 4  /* canvas slots: the horizontal and vertical canvases and room for more */
+
+/* An engine on adapter `adapter` (-1 = Windows' default) or the software renderer (SC_DEVICE_WARP). It starts
+ * drawing at 60 frames a second with no canvases. */
+SC_API int sc_engine_create(int adapter, int flags, sc_engine **out);
+/* Stops the threads and frees everything. If the frame thread is stuck it is left behind (and its memory with
+ * it) rather than waited on forever. */
+SC_API void sc_engine_destroy(sc_engine *engine);
+SC_API int sc_engine_set_rate(sc_engine *engine, int fps_num, int fps_den);
+/* Canvas slot `index` (0 .. SC_ENGINE_CANVASES - 1) at width x height; 0 x 0 removes it. */
+SC_API int sc_engine_canvas_set(sc_engine *engine, int index, int width, int height);
+/* Which snapshot scene the canvas draws (0 = nothing: see-through). */
+SC_API int sc_engine_canvas_show(sc_engine *engine, int index, uint64_t scene);
+/* As sc_source_upload, sc_source_forget, sc_look_set, sc_mask_set and sc_snapshot_set, for the engine: the data
+ * is copied and drawn from the next frame on. A source uploaded again before the next frame only sends the
+ * newest picture. */
+SC_API int sc_engine_source_upload(sc_engine *engine, uint64_t id, const uint8_t *data, const sc_upload *how,
+                                   int flags);
+SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id);
+SC_API int sc_engine_look_set(sc_engine *engine, uint64_t id, const float *table, int n);
+SC_API int sc_engine_mask_set(sc_engine *engine, uint64_t id, const uint8_t *rgba, int width, int height, int luma);
+SC_API int sc_engine_snapshot_set(sc_engine *engine, const sc_snapshot *snapshot);
+/* Shows canvas `canvas` in the window `hwnd` (an HWND), fitted inside it with bars of `background` (0xRRGGBB),
+ * at most `max_fps` times a second (0 = every frame). The window must stay open until the preview is detached.
+ * Gives the preview's id in `out_id`. */
+SC_API int sc_engine_preview_attach(sc_engine *engine, int canvas, void *hwnd, int max_fps, uint32_t background,
+                                    int *out_id);
+/* Stops showing the preview and waits (up to 2 s) until the engine has let go of the window. */
+SC_API int sc_engine_preview_detach(sc_engine *engine, int id);
+SC_API int sc_engine_stats_get(sc_engine *engine, sc_engine_stats *out);
+/* Waits for a frame drawn after this call (up to 2 s) and copies that canvas into `out` as BGRA, width * 4 bytes a row. The
+ * width and height must be the canvas's. Tests and screenshots only: the frame path never copies frames back. */
+SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int width, int height);
+/* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++
+ * exception, 2 writes through a null pointer, 3 acts as if the graphics card was lost (the engine rebuilds),
+ * 4 stalls the frame for 3 s (the watchdog reports it hung, then it goes on). */
+SC_API int sc_engine_debug_fault(sc_engine *engine, int kind);
 
 #ifdef __cplusplus
 }

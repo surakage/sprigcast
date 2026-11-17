@@ -54,6 +54,25 @@ shader (`native/core/src/shader_compositor.h`) to match.
 The checks draw with Windows' software renderer (WARP), so they give the same answer on every PC and in CI
 (`.github/workflows/core.yml`). The installer build puts the DLL in `sprigcast\engine\`.
 
+## The frame loop (`sc_engine_*`)
+
+The engine draws on its own thread, paced by a high-resolution timer (Windows 10 1803+, else a 1 ms system
+tick). Python's calls only copy work into a queue (pictures, looks, shapes, the snapshot, canvas sizes, previews);
+the frame thread takes the whole queue at the start of a frame, so Python never waits on the graphics card and the
+frame thread never waits on Python. A source uploaded twice before a frame only sends the newest picture. A frame
+that runs long skips the frame times it missed (counted as `late`) instead of queueing them. With no canvases and
+no previews the thread sleeps.
+
+Previews are swap chains on the windows Python gives (flip model where Windows has it), drawn fitted with bars
+and shown without waiting: a window that isn't ready skips that frame. `max_fps` lowers a preview's rate.
+
+Crash gates in the loop: a C++ exception, an access violation or a lost graphics card in a frame drops that
+device; the next frame builds a new one and hands it back everything kept (pictures uploaded with
+`SC_UPLOAD_KEEP`, looks, shapes, the snapshot; video sends its next frame anyway). More than five rebuilds in a
+minute, or no device after ten tries, and the engine stops and reports `faulted`, for Python to switch to its own
+engine. A watchdog thread reports `hung` while one frame has taken more than 2 s. `sc_engine_debug_fault`
+triggers each of these in the checks.
+
 ## Phases
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7
@@ -61,7 +80,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | Phase | What moves | State |
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
-| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor and snapshot drawn like today's (pixel-checked) |
+| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor and snapshot drawn like today's (pixel-checked); the engine's own frame loop and previews (`sc_engine_*`, not yet used by the app) |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |

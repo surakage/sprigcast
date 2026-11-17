@@ -2,6 +2,9 @@
 drawn here in NumPy. The pixel checks need sprigcore.dll (Windows; CI builds it, see .github/workflows/core.yml)
 and run on Windows' software renderer, so they give the same answer on every PC."""
 
+import ctypes
+import time
+
 import numpy as np
 import pytest
 
@@ -35,6 +38,8 @@ def test_a_missing_dll_means_the_python_engine(fresh, tmp_path):
     assert sprigcore.drain_log() == 0
     with pytest.raises(sprigcore.NativeError):
         sprigcore.Device(warp=True)
+    with pytest.raises(sprigcore.NativeError):
+        sprigcore.Engine(warp=True)
 
 
 def test_a_dll_that_isnt_one_is_refused(fresh, tmp_path, monkeypatch):
@@ -146,3 +151,24 @@ def test_closing_the_device_closes_its_canvases():
         c.clear(0, 0, 0)
     c.close()
     dev.close()
+
+
+def test_engine_stats_match_the_header():
+    """sc_engine_stats: four 64-bit counts, four doubles, eight ints (include/sprigcore.h)."""
+    assert ctypes.sizeof(sprigcore.EngineStats) == 4 * 8 + 4 * 8 + 8 * 4
+
+
+@needs_engine
+def test_an_engine_that_gave_up_says_so_and_refuses_work():
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        eng.set_canvas(0, 8, 8)
+        deadline = time.monotonic() + 20
+        while not eng.stats()["faulted"] and time.monotonic() < deadline:
+            before = eng.stats()["rebuilds"]
+            eng.debug_fault(3)
+            while eng.stats()["rebuilds"] == before and not eng.stats()["faulted"] and time.monotonic() < deadline:
+                time.sleep(0.02)
+        assert eng.stats()["faulted"]
+        with pytest.raises(sprigcore.NativeError) as e:
+            eng.upload("a", _picture(4, 4))
+        assert e.value.code == sprigcore.FAULTED

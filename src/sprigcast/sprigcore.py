@@ -25,14 +25,16 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 2  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 3  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
 DEVICE_WARP = 1
 ERRORS = {-1: "bad argument", -2: "graphics device", -3: "shader", -4: "out of memory", -5: "internal",
-          -6: "faulted", -7: "graphics card lost"}
-FAULTED, DEVICE_LOST = -6, -7  # the device is shut off: make a new one (crash gate)
+          -6: "faulted", -7: "graphics card lost", -8: "timed out"}
+FAULTED, DEVICE_LOST, TIMEOUT = -6, -7, -8  # FAULTED, DEVICE_LOST: the device is shut off (crash gate)
+UPLOAD_KEEP = 1
+ENGINE_CANVASES = 4
 FORMATS = {"RGBA": 0, "BGRA": 1, "RGB": 2, "BGR": 3, "BGRX": 4, "pBGRA": 5, "I420": 6, "I420A": 7}
 MAX_HALOS = 4
 _LEVELS = {10: logging.DEBUG, 20: logging.INFO, 30: logging.WARNING, 40: logging.ERROR}
@@ -112,6 +114,23 @@ class SceneEntry(ctypes.Structure):
                 ("first_item", ctypes.c_int), ("item_count", ctypes.c_int)]
 
 
+class EngineStats(ctypes.Structure):
+    _fields_ = [
+        ("ticks", ctypes.c_uint64), ("late", ctypes.c_uint64), ("presented", ctypes.c_uint64),
+        ("preview_skips", ctypes.c_uint64), ("time", ctypes.c_double), ("render_ms_last", ctypes.c_double),
+        ("render_ms_avg", ctypes.c_double), ("render_ms_max", ctypes.c_double), ("running", ctypes.c_int32),
+        ("faulted", ctypes.c_int32), ("hung", ctypes.c_int32), ("rebuilds", ctypes.c_int32),
+        ("canvases", ctypes.c_int32), ("previews", ctypes.c_int32), ("sources", ctypes.c_int32),
+        ("reserved", ctypes.c_int32),
+    ]
+
+    def as_dict(self) -> dict:
+        d = {name: getattr(self, name) for name, _ in self._fields_ if name != "reserved"}
+        for flag in ("running", "faulted", "hung"):
+            d[flag] = bool(d[flag])
+        return d
+
+
 class Snapshot(ctypes.Structure):
     _fields_ = [("scenes", ctypes.POINTER(SceneEntry)), ("scene_count", ctypes.c_int),
                 ("items", ctypes.POINTER(Item)), ("item_count", ctypes.c_int),
@@ -172,6 +191,21 @@ def _lib():
         "sc_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
         "sc_canvas_render": (c_int, [vp, ctypes.c_uint64, ctypes.c_double]),
         "sc_debug_fault": (c_int, [vp, c_int]),
+        "sc_engine_create": (c_int, [c_int, c_int, out]),
+        "sc_engine_destroy": (None, [vp]),
+        "sc_engine_set_rate": (c_int, [vp, c_int, c_int]),
+        "sc_engine_canvas_set": (c_int, [vp, c_int, c_int, c_int]),
+        "sc_engine_canvas_show": (c_int, [vp, c_int, ctypes.c_uint64]),
+        "sc_engine_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload), c_int]),
+        "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_engine_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
+        "sc_engine_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
+        "sc_engine_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
+        "sc_engine_preview_attach": (c_int, [vp, c_int, vp, c_int, ctypes.c_uint32, ctypes.POINTER(c_int)]),
+        "sc_engine_preview_detach": (c_int, [vp, c_int]),
+        "sc_engine_stats_get": (c_int, [vp, ctypes.POINTER(EngineStats)]),
+        "sc_engine_canvas_read": (c_int, [vp, c_int, vp, c_int, c_int]),
+        "sc_engine_debug_fault": (c_int, [vp, c_int]),
     }
     try:
         for name, (restype, argtypes) in sigs.items():
@@ -249,6 +283,28 @@ def adapters() -> list[dict]:
     return found
 
 
+def _upload_args(frame, channel_order: str, size):
+    """A picture as the engine takes it: contiguous bytes and their description."""
+    import numpy as np
+
+    kind, _, _rest = channel_order.partition("/")
+    fmt = FORMATS.get(kind)
+    if fmt is None:
+        raise NativeError(-1, f"unknown channel order {channel_order!r}")
+    pixels = np.ascontiguousarray(frame, dtype=np.uint8)
+    how = Upload()
+    how.format = fmt
+    how.height, how.width = pixels.shape[:2]
+    how.stride = pixels.strides[0]
+    if size and size[0] > 0 and size[1] > 0:
+        how.layout_width, how.layout_height = int(size[0]), int(size[1])
+    if kind.startswith("I420"):
+        from sprigcast.render.compositor import planar_layout
+
+        how.yuv[:] = planar_layout(channel_order)[1]
+    return pixels, how
+
+
 class Device:
     """A Direct3D 11 device. ``warp=True`` is Windows' software renderer (tests)."""
 
@@ -276,23 +332,7 @@ class Device:
     def upload(self, source_id: str, frame, channel_order: str = "RGBA", size: tuple[int, int] | None = None) -> None:
         """A source's new picture, as render/compositor.py Compositor.upload takes it (a NumPy array H x W x C, or
         H x W for planar video). The copy to the card happens in the engine, without Python's lock."""
-        import numpy as np
-
-        kind, _, rest = channel_order.partition("/")
-        fmt = FORMATS.get(kind)
-        if fmt is None:
-            raise NativeError(-1, f"unknown channel order {channel_order!r}")
-        pixels = np.ascontiguousarray(frame, dtype=np.uint8)
-        how = Upload()
-        how.format = fmt
-        how.height, how.width = pixels.shape[:2]
-        how.stride = pixels.strides[0]
-        if size and size[0] > 0 and size[1] > 0:
-            how.layout_width, how.layout_height = int(size[0]), int(size[1])
-        if kind.startswith("I420"):
-            from sprigcast.render.compositor import planar_layout
-
-            how.yuv[:] = planar_layout(channel_order)[1]
+        pixels, how = _upload_args(frame, channel_order, size)
         _check(_need().sc_source_upload(self.handle, key(source_id), pixels.ctypes.data, ctypes.byref(how)))
 
     def forget(self, source_id: str) -> None:
@@ -371,6 +411,120 @@ class Canvas:
         if self._handle:
             _need().sc_canvas_destroy(self._handle)
             self._handle = ctypes.c_void_p()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+class Engine:
+    """The engine's own frame loop (phase 2): a frame thread in the DLL draws every canvas at the frame rate and
+    shows them in preview windows. Every call only hands work over and returns at once; the frame thread takes it
+    at the start of its next frame. A fault or a lost graphics card is rebuilt from the engine's own copies; when
+    :meth:`stats` says ``faulted`` the engine has given up and SprigCast's Python engine should take over."""
+
+    def __init__(self, adapter: int = -1, warp: bool = False, fps: tuple[int, int] = (60, 1)):
+        lib = _need()
+        handle = ctypes.c_void_p()
+        _check(lib.sc_engine_create(adapter, DEVICE_WARP if warp else 0, ctypes.byref(handle)))
+        self._handle = handle
+        self._sizes: dict[int, tuple[int, int]] = {}
+        self._previews: set[int] = set()
+        drain_log()
+        self.set_rate(*fps)
+
+    @property
+    def handle(self) -> ctypes.c_void_p:
+        if not self._handle:
+            raise NativeError(-1, "the engine is closed")
+        return self._handle
+
+    def set_rate(self, num: int, den: int = 1) -> None:
+        _check(_need().sc_engine_set_rate(self.handle, int(num), int(den)))
+
+    def set_canvas(self, index: int, width: int, height: int) -> None:
+        """Canvas slot ``index`` at width x height; 0 x 0 removes it."""
+        _check(_need().sc_engine_canvas_set(self.handle, index, int(width), int(height)))
+        if width and height:
+            self._sizes[index] = (int(width), int(height))
+        else:
+            self._sizes.pop(index, None)
+
+    def show(self, index: int, scene: str | None) -> None:
+        """Which snapshot scene canvas ``index`` draws (None: nothing)."""
+        _check(_need().sc_engine_canvas_show(self.handle, index, key(scene) if scene else 0))
+
+    def upload(self, source_id: str, frame, channel_order: str = "RGBA", size: tuple[int, int] | None = None,
+               keep: bool = False) -> None:
+        """As :meth:`Device.upload`. ``keep`` for pictures that don't change: the engine keeps a copy so they
+        come back by themselves after a rebuild (video sends its next frame anyway)."""
+        pixels, how = _upload_args(frame, channel_order, size)
+        _check(_need().sc_engine_source_upload(self.handle, key(source_id), pixels.ctypes.data, ctypes.byref(how),
+                                               UPLOAD_KEEP if keep else 0))
+
+    def forget(self, source_id: str) -> None:
+        _check(_need().sc_engine_source_forget(self.handle, key(source_id)))
+
+    def set_look(self, name: str, table) -> None:
+        import numpy as np
+
+        data = np.ascontiguousarray(table, dtype=np.float32)
+        _check(_need().sc_engine_look_set(self.handle, key(name), data.ctypes.data, data.shape[0]))
+
+    def set_mask(self, name: str, rgba, luma: bool) -> None:
+        import numpy as np
+
+        data = np.ascontiguousarray(rgba, dtype=np.uint8)
+        _check(_need().sc_engine_mask_set(self.handle, key(name), data.ctypes.data, data.shape[1], data.shape[0],
+                                          int(luma)))
+
+    def set_snapshot(self, snapshot: Snapshot) -> None:
+        _check(_need().sc_engine_snapshot_set(self.handle, ctypes.byref(snapshot)))
+
+    def attach_preview(self, index: int, hwnd: int, max_fps: int = 0, background: int = 0x000000) -> int:
+        """Shows canvas ``index`` in the native window ``hwnd`` (int(widget.winId())), fitted with bars of
+        ``background`` (0xRRGGBB). The window must stay open until :meth:`detach_preview`."""
+        pid = ctypes.c_int()
+        _check(_need().sc_engine_preview_attach(self.handle, index, ctypes.c_void_p(int(hwnd)), int(max_fps),
+                                                int(background) & 0xFFFFFF, ctypes.byref(pid)))
+        self._previews.add(pid.value)
+        return pid.value
+
+    def detach_preview(self, preview: int) -> None:
+        """Stops the preview; returns once the engine has let go of the window, so it can close."""
+        self._previews.discard(preview)
+        _check(_need().sc_engine_preview_detach(self.handle, preview))
+
+    def stats(self) -> dict:
+        out = EngineStats()
+        _check(_need().sc_engine_stats_get(self.handle, ctypes.byref(out)))
+        drain_log()
+        return out.as_dict()
+
+    def read_bgra(self, index: int) -> bytes:
+        """Canvas ``index`` as BGRA bytes from a frame drawn after this call. Tests and screenshots only."""
+        if index not in self._sizes:
+            raise NativeError(-1, f"canvas {index} isn't set")
+        w, h = self._sizes[index]
+        out = ctypes.create_string_buffer(w * h * 4)
+        _check(_need().sc_engine_canvas_read(self.handle, index, out, w, h))
+        return out.raw
+
+    def debug_fault(self, kind: int) -> None:
+        """Crash gate checks (tests only): 1 exception, 2 access violation, 3 lost card, 4 a 3 s stuck frame."""
+        _check(_need().sc_engine_debug_fault(self.handle, kind))
+
+    def close(self) -> None:
+        if self._handle:
+            lib = _need()
+            for preview in list(self._previews):
+                lib.sc_engine_preview_detach(self._handle, preview)
+            self._previews.clear()
+            lib.sc_engine_destroy(self._handle)
+            self._handle = ctypes.c_void_p()
+            drain_log()
 
     def __enter__(self):
         return self

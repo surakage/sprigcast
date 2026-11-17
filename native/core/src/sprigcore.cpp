@@ -159,6 +159,50 @@ int sc_device::prepare_drawing() {
     return SC_OK;
 }
 
+namespace sc {
+
+int draw_view(sc_device &dev, ID3D11RenderTargetView *target, int tw, int th, ID3D11ShaderResourceView *picture,
+              float x, float y, float w, float h, float opacity, bool blend) {
+    int ready = dev.prepare_drawing();
+    if (ready != SC_OK) return ready;
+    DrawConstants k = {};
+    k.rect[0] = x / tw * 2.0f - 1.0f;
+    k.rect[1] = 1.0f - y / th * 2.0f;
+    k.rect[2] = w / tw * 2.0f;
+    k.rect[3] = -h / th * 2.0f;
+    k.opacity = std::min(opacity, 1.0f);
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = dev.context->Map(dev.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Map (constants)", hr);
+    std::memcpy(mapped.pData, &k, sizeof k);
+    dev.context->Unmap(dev.constants.Get(), 0);
+
+    ID3D11DeviceContext *c = dev.context.Get();
+    D3D11_VIEWPORT vp = {0, 0, static_cast<float>(tw), static_cast<float>(th), 0, 1};
+    ID3D11RenderTargetView *targets[] = {target};
+    ID3D11ShaderResourceView *views[] = {picture};
+    ID3D11SamplerState *samplers[] = {dev.sampler.Get()};
+    ID3D11Buffer *buffers[] = {dev.constants.Get()};
+    c->OMSetRenderTargets(1, targets, nullptr);
+    c->OMSetBlendState(blend ? dev.over.Get() : nullptr, nullptr, 0xFFFFFFFF);
+    c->RSSetViewports(1, &vp);
+    c->RSSetState(dev.raster.Get());
+    c->IASetInputLayout(nullptr);
+    c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    c->VSSetShader(dev.vs.Get(), nullptr, 0);
+    c->VSSetConstantBuffers(0, 1, buffers);
+    c->PSSetShader(dev.ps.Get(), nullptr, 0);
+    c->PSSetConstantBuffers(0, 1, buffers);
+    c->PSSetShaderResources(0, 1, views);
+    c->PSSetSamplers(0, 1, samplers);
+    c->Draw(4, 0);
+    ID3D11ShaderResourceView *none[] = {nullptr};
+    c->PSSetShaderResources(0, 1, none);
+    return SC_OK;
+}
+
+}  // namespace sc
+
 // ---- exports ------------------------------------------------------------------------------------------------
 
 extern "C" {
@@ -315,6 +359,8 @@ SC_API int sc_canvas_create(sc_device *device, int width, int height, sc_canvas 
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Creating the canvas texture", hr);
         hr = device->device->CreateRenderTargetView(canvas->texture.Get(), nullptr, &canvas->target);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "CreateRenderTargetView", hr);
+        hr = device->device->CreateShaderResourceView(canvas->texture.Get(), nullptr, &canvas->view);
+        if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "CreateShaderResourceView (canvas)", hr);
         *out = canvas.release();
         return SC_OK;
     });
@@ -365,40 +411,8 @@ SC_API int sc_canvas_draw_bgra(sc_canvas *canvas, const uint8_t *pixels, int wid
         hr = dev.device->CreateShaderResourceView(picture.Get(), nullptr, &view);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "CreateShaderResourceView", hr);
 
-        DrawConstants k = {};
-        k.rect[0] = x / canvas->width * 2.0f - 1.0f;
-        k.rect[1] = 1.0f - y / canvas->height * 2.0f;
-        k.rect[2] = w / canvas->width * 2.0f;
-        k.rect[3] = -h / canvas->height * 2.0f;
-        k.opacity = std::min(opacity, 1.0f);
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        hr = dev.context->Map(dev.constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Map (constants)", hr);
-        std::memcpy(mapped.pData, &k, sizeof k);
-        dev.context->Unmap(dev.constants.Get(), 0);
-
-        ID3D11DeviceContext *c = dev.context.Get();
-        D3D11_VIEWPORT vp = {0, 0, static_cast<float>(canvas->width), static_cast<float>(canvas->height), 0, 1};
-        ID3D11RenderTargetView *targets[] = {canvas->target.Get()};
-        ID3D11ShaderResourceView *views[] = {view.Get()};
-        ID3D11SamplerState *samplers[] = {dev.sampler.Get()};
-        ID3D11Buffer *buffers[] = {dev.constants.Get()};
-        c->OMSetRenderTargets(1, targets, nullptr);
-        c->OMSetBlendState(dev.over.Get(), nullptr, 0xFFFFFFFF);
-        c->RSSetViewports(1, &vp);
-        c->RSSetState(dev.raster.Get());
-        c->IASetInputLayout(nullptr);
-        c->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        c->VSSetShader(dev.vs.Get(), nullptr, 0);
-        c->VSSetConstantBuffers(0, 1, buffers);
-        c->PSSetShader(dev.ps.Get(), nullptr, 0);
-        c->PSSetConstantBuffers(0, 1, buffers);
-        c->PSSetShaderResources(0, 1, views);
-        c->PSSetSamplers(0, 1, samplers);
-        c->Draw(4, 0);
-        ID3D11ShaderResourceView *none[] = {nullptr};
-        c->PSSetShaderResources(0, 1, none);
-        return SC_OK;
+        return draw_view(dev, canvas->target.Get(), canvas->width, canvas->height, view.Get(), x, y, w, h,
+                         opacity, true);
     });
 }
 
