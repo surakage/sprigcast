@@ -838,6 +838,8 @@ class Recorder:
                 try:
                     self._direct = DirectVideo(self.out_width, self.out_height, self.fps, self.bitrate_kbps,
                                                self.encoder, self.codec, shared=shared)
+                    log.info("%s: SprigCast's own NVENC%s", self.path.stem,
+                             ", frames on the graphics card" if shared else "")
                 except Exception as exc:
                     if not shared:
                         raise

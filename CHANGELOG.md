@@ -132,7 +132,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Direct3D, as OBS's encoder reads its frames on the card), instead of copying it into memory and back: about
   187 MB a second less per 1080p60 output, and no frames waiting in memory. Anything the driver refuses turns it
   off for the rest of the run and frames go through memory as before; SPRIGCAST_NO_GPU_SHARE=1 turns it off.
-  The stream report says which way frames went. Needs a try on a real PC.
+  The stream report says which way frames went. First PC run: drawing went from ~5.8 to ~10.4 ms a frame
+  (handing over waits on the render thread), so it's now OFF unless SPRIGCAST_GPU_SHARE=1, with a log line
+  each minute saying where its time goes.
 - Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
 - Fixed: after the Settings freeze fix, any restyled label on the Live screen kept Python's quick lock hand-over
   on for good, which doubled SprigCast's CPU and dropped the heavy run to 14-41 fps. Only a window or pop-up

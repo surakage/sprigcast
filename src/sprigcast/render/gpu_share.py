@@ -17,7 +17,12 @@ whose context costs about 100 MB. This one doesn't:
 
 Windows with an NVIDIA card drawing OpenGL only. Anything that fails turns it off for the rest of the run
 (logged once) and frames go back to the read-back path as before; a pool with no free texture (the encoder
-is behind) sends that tick's frame by the read-back path too. SPRIGCAST_NO_GPU_SHARE=1 turns it off.
+is behind) sends that tick's frame by the read-back path too.
+
+OFF unless SPRIGCAST_GPU_SHARE=1. The first PC run (build 44113527509, RTX 5060 Ti) drew ~10.4 ms a frame
+against ~5.8 ms before: handing over waits on the render thread (OpenGL and Direct3D syncing at the lock),
+where the read-back it replaces never waits. A minute line ("GPU hand-off WxH: ... OpenGL x ms, Direct3D y
+ms") says where the time goes when it's on.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from ctypes import POINTER, Structure, byref, c_float, c_int, c_uint32, c_void_p
 
 log = logging.getLogger(__name__)
 
+REPORT_S = 60.0  # a timing line this often while handing over
 POOL_SIZE = 5  # NV12 textures per output size: one being encoded, one waiting, one held for repeats, spares
 SLOW_MS = 8.0  # a hand-off slower than this is counted (and the longest logged when the share closes)
 
@@ -79,7 +85,10 @@ _ids = itertools.count(1)
 
 
 def turned_off() -> bool:
-    return bool(os.environ.get("SPRIGCAST_NO_GPU_SHARE")) or sys.platform != "win32"
+    """Off unless asked for (SPRIGCAST_GPU_SHARE=1): see the module notes. SPRIGCAST_NO_GPU_SHARE=1 still wins."""
+    if sys.platform != "win32" or os.environ.get("SPRIGCAST_NO_GPU_SHARE"):
+        return True
+    return os.environ.get("SPRIGCAST_GPU_SHARE", "") not in ("1", "on", "yes")
 
 
 def usable() -> bool:
@@ -438,6 +447,8 @@ class Share:
         self.full = 0  # ticks with no free texture (the encoder is behind): sent through memory instead
         self.slow = 0  # hand-offs over SLOW_MS
         self.longest_ms = 0.0
+        self._minute = [0, 0.0, 0.0, 0.0]  # frames, OpenGL ms, Direct3D ms, longest ms since the last report
+        self._report_at = time.monotonic() + REPORT_S
         gl = bridge.gl
         try:
             for pw, ph, fmt in ((w, h, DXGI_FORMAT_R8_UNORM), (w // 2, h // 2, DXGI_FORMAT_R8G8_UNORM)):
@@ -453,6 +464,7 @@ class Share:
                 self.handles.append(c_void_p(handle))
             self._locked = (c_void_p * 2)(*self.handles)
             self.pool = Pool(bridge.device, w, h)
+            log.info("GPU hand-off on: %dx%d frames go to SprigCast's NVENC on the graphics card", w, h)
         except Exception:
             self.release()
             raise
@@ -474,6 +486,7 @@ class Share:
                     gl.glCopyImageSubData(src, GL_TEXTURE_2D, 0, 0, 0, 0, dst, GL_TEXTURE_2D, 0, 0, 0, 0, pw, ph, 1)
             finally:
                 gl.wglDXUnlockObjectsNV(self.bridge.handle, 2, self._locked)
+            gl_done = time.perf_counter()
             self.bridge.copy_planes(self.planes, self.pool.views[index], self.size)
             reason = self.bridge.removed()
             if reason < 0:
@@ -481,12 +494,29 @@ class Share:
         except Exception:
             self.pool.give_back(index)
             raise
-        took = (time.perf_counter() - began) * 1000
+        ended = time.perf_counter()
+        took = (ended - began) * 1000
         self.longest_ms = max(self.longest_ms, took)
         if took > SLOW_MS:
             self.slow += 1
         self.handed += 1
+        minute = self._minute
+        minute[0] += 1
+        minute[1] += (gl_done - began) * 1000
+        minute[2] += (ended - gl_done) * 1000
+        minute[3] = max(minute[3], took)
+        if time.monotonic() >= self._report_at:
+            self._report()
         return GpuFrame(canvas_id, w, h, now, self.pool, index)
+
+    def _report(self) -> None:
+        frames, gl_ms, d3d_ms, longest = self._minute
+        if frames:
+            log.info("GPU hand-off %dx%d: %d frames, average %.2f ms (OpenGL %.2f, Direct3D %.2f), longest %.1f ms, "
+                     "%d sent through memory", *self.size, frames, (gl_ms + d3d_ms) / frames, gl_ms / frames,
+                     d3d_ms / frames, longest, self.full)
+        self._minute = [0, 0.0, 0.0, 0.0]
+        self._report_at = time.monotonic() + REPORT_S
 
     def release(self) -> None:
         gl = self.bridge.gl

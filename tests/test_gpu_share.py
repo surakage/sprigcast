@@ -198,3 +198,15 @@ def test_sharing_is_off_where_it_cannot_work(monkeypatch):
     if gpu_share.sys.platform != "win32":
         assert not gpu_share.usable()  # Windows only
         assert gpu_share.probe() is False
+
+
+def test_off_unless_asked_for(monkeypatch):
+    """The first PC run drew ~10.4 ms a frame with it against ~5.8 ms without: off until it's faster."""
+    monkeypatch.setattr(gpu_share.sys, "platform", "win32")
+    monkeypatch.delenv("SPRIGCAST_NO_GPU_SHARE", raising=False)
+    monkeypatch.delenv("SPRIGCAST_GPU_SHARE", raising=False)
+    assert gpu_share.turned_off()
+    monkeypatch.setenv("SPRIGCAST_GPU_SHARE", "1")
+    assert not gpu_share.turned_off()
+    monkeypatch.setenv("SPRIGCAST_NO_GPU_SHARE", "1")
+    assert gpu_share.turned_off()
