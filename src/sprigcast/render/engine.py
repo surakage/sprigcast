@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -174,6 +175,12 @@ class Engine:
         # Replaced whole by the UI (see set_view); drawn only while something taps them.
         self.views: dict[str, tuple[str, str, Any]] = {}
         self._view_at: dict[str, float] = {}  # view name -> when a screen-only view was last drawn
+        # With the native engine: views it draws in a canvas slot of their own (name -> (canvas, scene)), views
+        # of a bloom on air that ride on that canvas's outputs (canvas id -> names), and the views it served
+        # this tick (Python's compositor leaves those alone).
+        self._engine_views: dict = {}
+        self._riders: dict[str, list[str]] = {}
+        self._served_views: set[str] = set()
         self._ticks = 0  # ticks drawn (each counts itself up early on): what a hold or a screenshot waits for
         # Freezes. Snap's (see hold): source id -> (token, first tick, until perf_counter), replaced whole under
         # _holds_lock. Freeze filters (the Freeze plugin): source id -> ("filter", run) and its time.time() end
@@ -308,12 +315,53 @@ class Engine:
             return canvas, Scene(id=f"view:{name}", name=name, canvas=canvas_id, items=[item])
         return canvas, None
 
-    def _render_views(self, compositor, sizes, now: float, taps: dict, drawn: dict | None = None) -> None:
+    def _native_views(self, taps: dict, sizes: dict) -> tuple[dict, dict]:
+        """With the native engine: which views it makes. A view only recordings take (NV12: the virtual camera,
+        Instant replay keeping a camera) is the engine's; one of the bloom on air rides on its canvas's outputs
+        (same picture, mid transition too), any other is drawn in a canvas slot of its own. A view a screen
+        watches (a projector, full-size RGBA) stays with Python. Returns (name -> (canvas, scene), canvas id ->
+        names riding on it).
+
+        The native heavy run (2026-11-17) still had Python draw and copy back the virtual camera's view and
+        Instant replay's camera every frame, with NVENC waiting on it: 375-900 ms window freezes."""
+        views: dict = {}
+        riders: dict[str, list[str]] = {}
+        active = self._collection.active_scenes
+        enabled = {c.id for c in self._collection.canvases if c.enabled}
+        for name in sorted(self.views):
+            outputs = taps.get(f"view:{name}", ())
+            if not outputs or any(size is None for _cb, size in outputs):
+                continue
+            canvas_id, kind, ref = self.views[name]
+            if kind == "bloom" and canvas_id in enabled and ref == active.get(canvas_id):
+                riders.setdefault(canvas_id, []).append(name)
+                continue
+            canvas, scene = self._view_scene(name, sizes)
+            if canvas is not None and scene is not None:
+                views[name] = (canvas, scene)
+        return views, riders
+
+    def _rider_outputs(self, canvas_id: str, taps: dict) -> list:
+        """The outputs of the views of the bloom on air that ride on this canvas (_native_views)."""
+        return [tap for name in self._riders.get(canvas_id, ()) for tap in taps.get(f"view:{name}", ())]
+
+    def _render_views(self, compositor, sizes, now: float, taps: dict, drawn: dict | None = None,
+                      native=None) -> None:
         """Draw each view something taps. drawn: canvas id -> its frames, for canvases drawn this tick."""
+        from sprigcast.render.native_bridge import view_key
+
         for name in list(self.views):
             outputs = taps.get(f"view:{name}", ())
-            if not outputs:
+            if not outputs or name in self._served_views:
                 continue
+            if native is not None and name in self._engine_views:
+                key, view_canvas = view_key(name), self._engine_views[name][0]
+                keys = self._output_keys(native, outputs)
+                if native.serves(key, keys):  # the engine drew it in a slot of its own: take its frames
+                    native.set_outputs(key, keys, view_canvas.downscale)
+                    self._native_outputs(native, SimpleNamespace(id=key), outputs)
+                    continue
+                native.set_outputs(key, ())
             if all(size is None for _cb, size in outputs):  # only screens watch it (a projector): ~30 fps is plenty
                 if now - self._view_at.get(name, -1.0) < 1 / self.preview_fps - 0.002:
                     continue
@@ -1468,10 +1516,16 @@ class Engine:
         the engine drew it: NV12 bytes, or the frame on the card for an encoder that takes it there (outputs
         alike share the frames)."""
         made: dict = {}
+        lost: dict = {}
         for (callback, _size), key in zip(outputs, self._output_keys(native, outputs)):
             if key not in made:
                 made[key] = [frame if key[1] else Frame(canvas.id, key[0][0], key[0][1], frame[0], frame[1], "nv12")
                              for frame in native.take_outputs(canvas.id, key)]
+                lost[key] = getattr(native, "lost", 0)
+            if lost[key]:  # frames the engine let go of: the recorder or stream counts them as dropped
+                count = getattr(getattr(callback, "__self__", None), "frames_lost", None)
+                if count is not None:
+                    count(lost[key])
             for frame in made[key]:
                 try:
                     callback(frame)
@@ -1487,9 +1541,15 @@ class Engine:
         if self._waking or self.editing_part or self._grabs:
             return True
         canvases = {c.id for c in self._collection.canvases if c.enabled}
-        if any(key not in canvases or not native.serves(key, self._output_keys(native, outputs))
-               for key, outputs in taps.items()):
-            return True  # a screenshot, source record, the virtual camera, or an output only Python can make
+        riding = {f"view:{name}" for names in self._riders.values() for name in names}
+        for key in {*taps, *self._riders}:
+            if key in riding:
+                continue  # served with its canvas
+            outputs = [*taps.get(key, ()), *self._rider_outputs(key, taps)]
+            if not key.startswith("view:") and key not in canvases:
+                return True  # a screenshot, source record, or the like
+            if not native.serves(key, self._output_keys(native, outputs)):
+                return True  # a projector, or an output only Python can make
         if any(not native_transition(r) for r in self._transitions.values()):
             return True  # a stinger or move transition: still Python's
         active = self._collection.active_scenes
@@ -1766,14 +1826,19 @@ class Engine:
         self._mark("sources")
         with self._taps_lock:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
+        sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        self._served_views = set()
         if native is not None:
+            self._engine_views, self._riders = self._native_views(taps, sizes)
             native.forget_gone(self._sources)
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
-                        {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map)
+                        {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
+                        views=self._engine_views)
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")
-        sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        else:
+            self._engine_views, self._riders = {}, {}
         self._python_drew = native is None or self._python_draws(native, taps)
         if not self._python_drew:
             self._part_textures, self._parts_used = {}, set()  # nothing Python draws this tick shows a sprig
@@ -1809,11 +1874,13 @@ class Engine:
                         data, w, h = got
                         self.frames[canvas.id].put(Frame(canvas.id, w, h, data, now,
                                                          canvas_size=(canvas.width, canvas.height)))
-                keys = self._output_keys(native, outputs)
+                ridden = [*outputs, *self._rider_outputs(canvas.id, taps)]  # the virtual camera showing it, too
+                keys = self._output_keys(native, ridden)
                 native_out = native_shows and native.serves(canvas.id, keys)
                 native.set_outputs(canvas.id, keys if native_out else (), canvas.downscale)
                 if native_out:  # recordings and streams: the frames the native engine finished since last tick
-                    self._native_outputs(native, canvas, outputs)
+                    self._native_outputs(native, canvas, ridden)
+                    self._served_views.update(self._riders.get(canvas.id, ()))
                     self._mark(f"{canvas.id} native outputs")
                     outputs = ()
             self._render_staged(compositor, canvas, sizes, now)
@@ -1847,7 +1914,7 @@ class Engine:
                     log.exception("frame tap for %s failed", canvas.id)
                 self._mark(f"{canvas.id} {getattr(callback, '__qualname__', 'output')}")
         self._mark("canvases")
-        self._render_views(compositor, sizes, now, taps, drawn_now)
+        self._render_views(compositor, sizes, now, taps, drawn_now, native)
         self._mark("virtual camera")
         if self._grabs:
             self._serve_grabs(compositor, sizes)
