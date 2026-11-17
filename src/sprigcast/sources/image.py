@@ -90,6 +90,9 @@ def load_rgba(path: Path) -> np.ndarray | None:
         return None
 
 
+DECODE_ASIDE = True  # a picture shown again is decoded on a worker (tests turn it off)
+
+
 @register("image")
 class ImageSource(Source):
     sleeps = True  # an image no scene on screen shows keeps no texture; it is decoded again when shown
@@ -99,6 +102,7 @@ class ImageSource(Source):
         super().__init__(source_id, settings)
         self._size = _MISSING
         self._pending = True  # the compositor needs the pixels (again)
+        self._decoding = None  # a Future: the picture being decoded on a worker after a wake (DECODE_ASIDE)
         self._measure()
 
     def _path(self) -> Path:
@@ -107,6 +111,7 @@ class ImageSource(Source):
     def _measure(self) -> None:
         self._size = image_size(self._path()) or _MISSING
         self._pending = True
+        self._decoding = None  # another picture now: a decode of the old one is let go
 
     def update(self, settings: dict[str, Any]) -> None:
         old = self.settings.get("path")
@@ -116,6 +121,16 @@ class ImageSource(Source):
 
     def wake(self) -> None:
         self._pending = True  # the texture was dropped while nothing showed this image
+        # Decoded again on a worker: a switch to a bloom full of pictures decoded them all in one frame on the PC
+        # (2026-11-17 heavy run, "sources" 75-88 ms). Until it's there the switch keeps showing the old bloom
+        # (slow_wake: Engine._still_waking waits for its texture), so it never pops in late.
+        if DECODE_ASIDE:
+            from sprigcast.core import workers
+
+            self._decoding = workers.run(load_rgba, self._path(), name="picture decode")
+
+    def sleep(self) -> None:
+        self._decoding = None  # a decode still running is let go when it ends
 
     @property
     def size(self) -> tuple[int, int]:
@@ -124,8 +139,18 @@ class ImageSource(Source):
     def video_frame(self) -> np.ndarray | None:
         if not self._pending:
             return None
+        decoding = self._decoding
+        if decoding is not None:
+            if not decoding.done():
+                return None
+            self._decoding = None
+            try:
+                frame = decoding.result()
+            except Exception:  # noqa: BLE001 (logged by the worker)
+                frame = None
+        else:
+            frame = load_rgba(self._path())
         self._pending = False
-        frame = load_rgba(self._path())
         if frame is None:
             frame = _missing()
         self._size = (frame.shape[1], frame.shape[0])

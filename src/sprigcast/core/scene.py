@@ -675,13 +675,13 @@ class SceneCollection(BaseModel):
     @staticmethod
     def hide_items(shape: Scene, hidden: set[str]) -> Scene:
         """A copy of a layout with these sources switched off (the layout itself when there are none)."""
-        if not hidden:
+        if not hidden or not any(item.visible and item.source in hidden for item in shape.items):
             return shape
-        view = shape.model_copy(deep=True)
-        for item in view.items:
-            if item.source in hidden:
-                item.visible = False
-        return view
+        # A shallow copy sharing the items it doesn't change: views are only drawn, never edited. A deep copy of
+        # each sprig was most of the renderer's sprig work when a bloom switch brought in 17 (PC, 2026-11-17).
+        items = [item.model_copy(update={"visible": False}) if item.visible and item.source in hidden else item
+                 for item in shape.items]
+        return shape.model_copy(update={"items": items})
 
     def state_hidden(self, part: Scene) -> set[str]:
         """What the sprig's current Live state hides (in every layout of it)."""

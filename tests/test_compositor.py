@@ -318,3 +318,56 @@ def test_a_full_size_preview_keeps_its_read_back_buffers_through_a_visit_to_sett
     compositor.read_full_later("fv", "p", time.monotonic())  # an output's copy, not a preview's
     compositor.prune(now=time.monotonic() + 100)
     assert "fv" not in compositor.full_pbos
+
+
+def test_a_sprig_target_let_go_is_reused_by_the_next_sprig_of_its_size(compositor):
+    """Heavy run 2026-11-17: a switch to a bloom of 17 sprigs every 15 s made all their targets again each time, and
+    the first draw into fresh ones held the frame 80-130 ms. Let-go targets wait a minute for a sprig of their size."""
+    import time
+
+    from sprigcast.core.scene import Scene
+
+    compositor.ctx.__enter__()
+    compositor.prune(now=time.monotonic() + 10_000)
+    compositor.prune(now=time.monotonic() + 20_000)  # and the spares that left behind
+    layout = Scene(id="sp", name="Sprig", canvas="h", kind="part")
+    compositor.render_part("sp1", (64, 36), layout, {})
+    first = compositor.targets["part:sp1"]
+    now = time.monotonic()
+    compositor.prune(now=now + 10)  # shown nowhere for a while: kept aside, not freed
+    assert "part:sp1" not in compositor.targets
+    compositor.render_part("sp2", (64, 36), layout, {})
+    assert compositor.targets["part:sp2"] is first  # the same texture, cleared and drawn again
+    compositor.prune(now=now + 20)
+    compositor.prune(now=now + 20 + compositor.SPARE_KEEP_S + 1)  # not wanted for a minute: freed
+    assert compositor._take_spare((64, 36)) is None
+
+
+def test_a_picture_shown_again_is_decoded_on_a_worker(monkeypatch, tmp_path):
+    """Heavy run 2026-11-17: a switch to a bloom full of pictures decoded them all in one frame ("sources" 75-88 ms).
+    A picture that wakes is decoded on a worker; the switch waits for its texture (slow_wake), so it never pops in."""
+    import threading
+    import time
+
+    import numpy as np
+    from PIL import Image
+
+    from sprigcast.sources import image as image_mod
+
+    path = tmp_path / "p.png"
+    Image.fromarray(np.full((6, 8, 4), 200, np.uint8)).save(path)
+    src = image_mod.ImageSource("pic", {"path": str(path)})
+    assert src.video_frame() is not None  # the first time: in place
+    monkeypatch.setattr(image_mod, "DECODE_ASIDE", True)
+    where = []
+    real = image_mod.load_rgba
+    monkeypatch.setattr(image_mod, "load_rgba", lambda p: where.append(threading.current_thread().name) or real(p))
+    src.sleep()
+    src.wake()
+    deadline, frame = time.monotonic() + 5, None
+    while frame is None and time.monotonic() < deadline:
+        frame = src.video_frame()
+        time.sleep(0.002)
+    assert frame is not None and frame.shape == (6, 8, 4)
+    assert where and where[0].startswith("sprigcast-work")
+    assert src.video_frame() is None  # handed over once
