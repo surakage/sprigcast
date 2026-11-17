@@ -5,39 +5,37 @@ from __future__ import annotations
 import threading
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from sprigcast.app import theme
+from sprigcast.app.card import CardDialog
 from sprigcast.output import service_signin
 from sprigcast.output.oauth_loopback import Cancelled, SignInError
 from sprigcast.output.stream import SERVICES
 
 
-class SignInDialog(QDialog):
+class SignInDialog(CardDialog):
     """exec(); on success `fetched` holds the account, key and server."""
 
     def __init__(self, service: str, parent: QWidget | None = None, run=None):
-        super().__init__(parent)
         label = SERVICES[service].label
-        self.setWindowTitle(f"Sign in to {label}")
-        self.setMinimumWidth(420)
+        super().__init__(f"Sign in to {label}", parent, width=440)
         self.fetched: service_signin.Fetched | None = None
         self._error: str | None = None
         self._cancel = threading.Event()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 22, 24, 20)
-        layout.setSpacing(12)
         self.message = QLabel(f"Finish signing in to {label} in your browser.")
         self.message.setWordWrap(True)
-        layout.addWidget(self.message)
+        self.message.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
+        self.body.addWidget(self.message)
         row = QHBoxLayout()
         row.addStretch(1)
         cancel = QPushButton("Cancel")
-        cancel.setStyleSheet(theme.SMALL_PILL_STYLE)
+        cancel.setStyleSheet(theme.button_style(17, "9px 18px"))
         cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
-        layout.addLayout(row)
+        self.body.addSpacing(4)
+        self.body.addLayout(row)
         work = run or service_signin.SIGN_IN[service]
 
         def go() -> None:
@@ -65,7 +63,7 @@ class SignInDialog(QDialog):
             self.accept()
         elif self._error:
             self.message.setText(self._error)
-            self.message.setStyleSheet(f"color: {theme.WARN}")
+            self.message.setStyleSheet(f"color: {theme.WARN}; background: transparent;")
 
     def done(self, result: int) -> None:  # noqa: D401 (Qt override)
         self._cancel.set()

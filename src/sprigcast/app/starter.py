@@ -262,11 +262,7 @@ def combo_style() -> str:
             "QComboBox::drop-down { border: none; background: transparent; width: 30px; }" + arrow)
 
 
-CHIP_STYLE = (f"QPushButton {{ background: transparent; color: {theme.MUTED}; border: 1px solid {theme.EDGE_STRONG};"
-              " border-radius: 15px; padding: 7px 12px; font-weight: 600; }"
-              f"QPushButton:hover {{ border-color: {theme.ACCENT}; color: {theme.TEXT}; }}"
-              f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
-              f" border-color: {theme.ACCENT}; }}")
+CHIP_STYLE = theme.button_style(15, "7px 12px")
 
 
 SEGMENT_STYLE = (f"QPushButton {{ background: transparent; color: {theme.MUTED}; border: none; border-radius: 12px;"

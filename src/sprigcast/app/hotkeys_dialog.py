@@ -54,9 +54,7 @@ class HotkeyRow(QWidget):
         self.clear.setToolTip("Clear this hotkey")
         self.clear.setFixedSize(34, 34)
         self.clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear.setStyleSheet(f"QPushButton {{ background: transparent; border: none; border-radius: 17px;"
-                                 f" color: {theme.MUTED}; font-size: 16px; }}"
-                                 f"QPushButton:hover {{ background: {theme.PANEL}; color: {theme.TEXT}; }}")
+        self.clear.setStyleSheet(theme.button_style(16, "0", extra="font-size: 16px;"))
         self.clear.clicked.connect(self.edit.clear)
         row.addWidget(self.clear)
         self.edit.keySequenceChanged.connect(self._mark)

@@ -350,8 +350,7 @@ class MainWindow(QMainWindow):
         self.part_back.clicked.connect(self._close_part)
         header.insertWidget(0, self.part_back)
         for button in (self.part_back, *self.shape_buttons.values(), self.remove_shape_button, states):
-            button.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton:checked {{ background: {theme.SELECT_BG};"
-                                 f" color: {theme.SELECT_TEXT}; }}")
+            button.setStyleSheet(theme.SMALL_PILL_STYLE)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
         part_layout.addLayout(header)
         # Nesting, said plainly: what you change here changes in every bloom that uses this sprig.
@@ -1727,10 +1726,7 @@ class MainWindow(QMainWindow):
         look = section("Look")
         chips = QHBoxLayout()
         chips.setSpacing(8)
-        chip_style = theme.SMALL_PILL_STYLE + (
-            f"QPushButton {{ background: {theme.CARD}; border: 1px solid {theme.EDGE}; border-radius: 16px;"
-            f" padding: 8px 14px; }} QPushButton:hover {{ background: {theme.RAISED};"
-            f" border-color: {theme.EDGE_STRONG}; }}")
+        chip_style = theme.button_style(16, "8px 14px")
         self.prop_extra = QPushButton("")
         self.prop_extra.clicked.connect(self._edit_source_settings)
         self.prop_filters = QPushButton("Filters")
@@ -2211,8 +2207,7 @@ class MainWindow(QMainWindow):
         self.palette_button.setFixedSize(38, 38)
         self.palette_button.setToolTip("Search commands, blooms and settings (Ctrl+K)")
         self.palette_button.setStyleSheet(
-            f"QToolButton {{ background: {theme.PANEL}; border: none; border-radius: 19px; color: {theme.MUTED}; }}"
-            f"QToolButton:hover {{ background: {theme.RAISED}; color: {theme.TEXT}; }}")
+            theme.button_style(19, "0", "QToolButton"))
         self.palette_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.palette_button.clicked.connect(lambda: self._open_palette())
         self.screenshot_button.setStyleSheet(self.palette_button.styleSheet())
