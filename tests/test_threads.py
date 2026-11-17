@@ -182,3 +182,13 @@ def test_a_long_render_tick_says_where_it_was_held_up():
     where = pacing.busy_end("render")
     assert "test_a_long_render_tick_says_where_it_was_held_up" in where
     assert pacing.busy_end("render") is None
+
+
+def test_memory_is_logged_every_ten_minutes_with_what_python_keeps_aside(monkeypatch):
+    from sprigcast.core import pacing
+
+    monkeypatch.setattr(pacing, "_memory_logged", None)
+    first = pacing.watch_memory(now=1000.0)
+    assert first.startswith("memory now: ") and "python objects" in first and "kept aside" in first
+    assert pacing.watch_memory(now=1000.0 + 60) is None  # not every minute
+    assert pacing.watch_memory(now=1000.0 + pacing.MEMORY_EVERY_S + 1) is not None

@@ -34,7 +34,6 @@ PLATFORMS = {  # key -> (label, colour of its mark in the mixed list)
     "twitch": ("Twitch", "#a970ff"),
     "youtube": ("YouTube", "#ff5a52"),
     "kick": ("Kick", "#53fc18"),
-    "tiktok": ("TikTok", "#25f4ee"),
 }
 
 
@@ -52,10 +51,6 @@ def make_reader(platform: str, parent=None):
         from sprigcast.chat.kick import KickChat
 
         return KickChat(parent)
-    if platform == "tiktok":
-        from sprigcast.chat.tiktok import TikTokChat
-
-        return TikTokChat(parent)
     raise KeyError(platform)
 
 
@@ -73,10 +68,6 @@ def name_for(platform: str, text: str) -> str | None:
         from sprigcast.chat.kick import slug_from_text
 
         return slug_from_text(text)
-    if platform == "tiktok":
-        from sprigcast.chat.tiktok import handle_from_text
-
-        return handle_from_text(text)
     return None
 
 

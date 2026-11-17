@@ -846,6 +846,7 @@ class Compositor:
         # When each output-only target was last drawn: ("nv12" | "scaled", key) or ("canvas", "clean:<id>" | "shot:<id>").
         # prune() lets go of the ones nobody has drawn for a while (see prune).
         self._used: dict[tuple, float] = {}
+        self._previewed: set[tuple] = set()  # scaled copies a preview reads (kept longer by prune)
 
     # Sources -------------------------------------------------------------
 
@@ -1082,6 +1083,7 @@ class Compositor:
         self.transition_vao.render(moderngl.TRIANGLES, vertices=3)
 
     TRANSITION_KEEP_S = 30.0
+    PREVIEW_KEEP_S = 600.0  # a preview's small copy (and its read-back buffers) waits this long for the window
 
     def end_transition(self, canvas_id: str) -> None:
         """A canvas's transition finished. Its two extra textures stay for the next switch (prune() frees
@@ -1404,6 +1406,8 @@ class Compositor:
         optional (a preview): while the card is behind on earlier copies, ask it for no new one. On the PC
         (2026-11-16) queuing a preview copy while the card was stuck held the renderer 332 ms."""
         known = self.scaled_targets.get((canvas_id, size))
+        if optional:
+            self._previewed = {k for k in self._previewed if k in self.scaled_targets} | {(canvas_id, size)}
         if optional and known is not None and known.pbos.behind():
             known.pbos.late += 1
             self._used[("scaled", (canvas_id, size))] = time.monotonic()
@@ -1490,8 +1494,18 @@ class Compositor:
         their two read-back buffers each) of a recording, stream or preview that ended, and source
         record's clean copy of a canvas. They used to stay until SprigCast closed. Returns how many."""
         now = time.monotonic() if now is None else now
-        stale = [(kind, key) for (kind, key), when in self._used.items()
-                 if now - when > (max(idle_s, self.TRANSITION_KEEP_S) if kind == "transition" else idle_s)]
+
+        def keep(kind, key) -> float:
+            if kind == "transition":
+                return max(idle_s, self.TRANSITION_KEEP_S)
+            if kind == "scaled" and key in self._previewed:
+                # A preview stops while the window is minimized or hidden. Made again when it comes back, the
+                # first copy into fresh read-back buffers held the renderer 330 ms on the PC (2026-11-16, at
+                # rest): the driver set aside their memory then. A few MB kept a while is cheaper.
+                return max(idle_s, self.PREVIEW_KEEP_S)
+            return idle_s
+
+        stale = [(kind, key) for (kind, key), when in self._used.items() if now - when > keep(kind, key)]
         for kind, key in stale:
             del self._used[(kind, key)]
             if kind == "transition":
@@ -1501,6 +1515,7 @@ class Compositor:
             pool = {"nv12": self.nv12_targets, "scaled": self.scaled_targets, "canvas": self.targets,
                     "full": self.full_pbos}[kind]
             target = pool.pop(key, None)
+            self._previewed.discard(key)
             if target is not None:
                 target.release()
         return len(stale)
