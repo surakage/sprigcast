@@ -136,6 +136,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   (handing over waits on the render thread), so it's now OFF unless SPRIGCAST_GPU_SHARE=1, with a log line
   each minute saying where its time goes.
 - Frames read back from the graphics card (previews, other encoders) are copied once instead of twice.
+- Texts, Local time and the stream timer keep their picture while their bloom is off screen, and draw again only
+  if what they show changed: each was drawn again on every bloom switch (10-14 ms each on the PC).
 - Switching back to a bloom full of sources: their textures wait a minute after the bloom leaves the screen and
   are reused when it comes back, instead of being made again in the switch frame (140-225 ms on the PC).
 - Switching to a heavy bloom no longer costs a 100-220 ms frame: sprig targets that were let go are kept a minute

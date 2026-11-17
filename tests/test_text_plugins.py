@@ -116,3 +116,23 @@ def test_a_changed_text_is_drawn_on_a_worker(monkeypatch):
         frame = src.video_frame()
     assert frame is not None and frame.shape[1] > 60
     assert drawn_on and drawn_on[0].startswith("sprigcast-work")
+
+
+def test_a_text_keeps_its_picture_while_asleep_and_draws_again_only_if_it_changed():
+    """Heavy run 2026-11-17: texts and clock cards were drawn again on every bloom switch (10-14 ms each). Asleep
+    their texture stays (the engine doesn't forget it); woken, nothing is drawn unless the words changed."""
+    from sprigcast.sources.text import TextSource
+    from sprigcast.store.local_time import LocalTimeSource
+    from sprigcast.store.stream_timer import StreamTimerSource
+
+    assert TextSource.keeps_picture and LocalTimeSource.keeps_picture and StreamTimerSource.keeps_picture
+    src = TextSource("t", {"text": "Hello", "size": 20})
+    assert src.video_frame() is not None
+    src.sleep()
+    src.wake()
+    assert src.video_frame() is None  # the same words: the kept texture is right
+    src.sleep()
+    src.update({"text": "Bye", "size": 20})
+    src.wake()
+    assert src.video_frame() is not None
+

@@ -376,6 +376,7 @@ class StreamTimerSource(Source):
                 "text_color": "#f2f7f3", "card_color": "#151c19e0"}
     choices = {"mode": MODES, "count_from": COUNT_FROM}
     sleeps = True  # off screen it does nothing; back on screen it draws the time as it is then
+    keeps_picture = True  # (only if the time changed meanwhile: its texture stays while it sleeps)
     sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "top_left"
@@ -398,8 +399,7 @@ class StreamTimerSource(Source):
         self._came_on()
 
     def wake(self) -> None:
-        self._shown = None
-        self._came_on()
+        self._came_on()  # the card is drawn again only if what it shows changed (keeps_picture)
 
     def _came_on(self) -> None:
         self._was_done = None
@@ -414,8 +414,7 @@ class StreamTimerSource(Source):
         self._asked_at = 0.0
 
     def sleep(self) -> None:
-        self._frame.release()
-        self._shown = None
+        self._frame.release()  # the texture has the picture
 
     def video_frame(self) -> np.ndarray | None:
         if self._asked_at and time.monotonic() - self._asked_at < RESTART_WAIT:
