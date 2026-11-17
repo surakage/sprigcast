@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 8
+#define SC_INTERFACE_VERSION 9
 
 enum {
     SC_OK = 0,
@@ -473,6 +473,10 @@ SC_API int sc_media_create(int playing, sc_media **out);
 /* Ends its thread (waits up to 2 s for it; a thread stuck in a file read is left behind) and frees it. */
 SC_API void sc_media_destroy(sc_media *media);
 SC_API int sc_media_set_options(sc_media *media, const sc_media_options *options);
+/* How pictures are made, from the next time the file is opened (call before sc_media_set_file). rgba: 1 makes
+ * every picture SC_FMT_RGBA with straight alpha, whatever the file holds (a stinger clip: the transition draws
+ * it as it is). max_width, max_height: bigger videos are shrunk to fit while decoding (0 = 1920). */
+SC_API int sc_media_set_picture(sc_media *media, int rgba, int max_width, int max_height);
 /* Another file (UTF-8 path; "" = none) from its start. video: 1 when it should have a picture (told by its
  * name until the file is open). playing: as sc_media_create. */
 SC_API int sc_media_set_file(sc_media *media, const char *path, int video, int playing);

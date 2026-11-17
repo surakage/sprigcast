@@ -32,7 +32,7 @@ from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
 from sprigcast.render import move
-from sprigcast.render.stinger import StingerPlayer
+from sprigcast.render.stinger import StingerPlayer, open_stinger
 
 log = logging.getLogger(__name__)
 
@@ -722,7 +722,7 @@ class Engine:
         limit = (width * (2 if matte == "right" else 1), height * (2 if matte == "below" else 1))
         sting = transition.stinger
         gain = 0.0 if sting.muted else 10 ** (sting.volume_db / 20)
-        player = StingerPlayer(path, limit, gain)
+        player = open_stinger(path, limit, gain)
         player.start()
         return player
 
@@ -806,7 +806,7 @@ class Engine:
         if running.stinger is not None:
             frame = running.stinger.frame_at(elapsed)
             if frame is not None:
-                compositor.upload(running.stinger.id, frame)
+                compositor.upload(running.stinger.id, frame, running.stinger.channel_order)
             extra["overlay"] = running.stinger.id
             extra["cut"] = elapsed >= running.settings.stinger.cut_ms / 1000
         if running.wipe_map:

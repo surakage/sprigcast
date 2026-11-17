@@ -53,8 +53,121 @@ def probe(path: str) -> float | None:
     return None
 
 
+def open_stinger(path: str, limit: tuple[int, int] = (3840, 3840), gain: float = 1.0):
+    """The player for a stinger clip: the engine's own (C++) with SPRIGCAST_ENGINE=native, else Python's."""
+    from sprigcast import sprigcore
+
+    if sprigcore.use_native_media():
+        try:
+            return NativeStinger(path, limit, gain)
+        except Exception as exc:  # noqa: BLE001 (any refusal: Python plays it)
+            log.warning("stinger %s: the engine's player isn't available (%s); playing it in Python", path, exc)
+    return StingerPlayer(path, limit, gain)
+
+
+class _Ready:
+    """StingerPlayer.ready for the engine's player: asked, not signalled."""
+
+    def __init__(self, check):
+        self.is_set = check
+
+
+class NativeStinger:
+    """A stinger clip played by the engine's media player (native/core/src/media.cpp): the same interface as
+    StingerPlayer. Reading, decoding and resampling run on the engine's thread, outside Python's lock, behind its
+    crash gate: a clip that faults the decoder gives an error here and the switch falls back to a fade.
+
+    The player waits, paused, with its first pictures decoded; the first frame_at() starts its clock, so picture
+    and sound stay in step with each other and with the transition. Pictures are RGBA with straight alpha,
+    shrunk to fit `limit`, as StingerPlayer's are."""
+
+    kind = "stinger"
+
+    def __init__(self, path: str, limit: tuple[int, int] = (3840, 3840), gain: float = 1.0):
+        from sprigcast import sprigcore
+
+        self.limit = limit
+        self.id = f"stinger:{path}"
+        self.path = path
+        self.gain = gain
+        self.settings = {"monitor": True}
+        self.duration = 1.0
+        self.error: str | None = None
+        self.channel_order = "RGBA"
+        self.size = (0, 0)
+        self.ready = _Ready(self._is_ready)
+        self._ready = False
+        self._playing = False
+        self._closed = False
+        self._play = sprigcore.MEDIA_PLAY
+        self._start = sprigcore.MEDIA_START
+        self._player = sprigcore.MediaPlayer(playing=True)
+        self._player.set_options(False, False, False, 1.0)
+        self._player.set_picture(True, limit)
+        self._player.set_file(path, True, True)
+        self._player.control(sprigcore.MEDIA_PAUSE)  # paused, not stopped: it decodes its first pictures and waits
+
+    def start(self) -> None:
+        self._player.control(self._start)
+
+    def _is_ready(self) -> bool:
+        """The first picture is decoded, or the file can't be played (error says why)."""
+        if self._ready or self._closed:
+            return True
+        try:
+            info = self._player.info()
+        except Exception as exc:  # noqa: BLE001
+            self.error, self._ready = str(exc) or type(exc).__name__, True
+            return True
+        status = info.status_text
+        if info.faulted or status.startswith("can't") or status == "no file":
+            self.error = status
+            log.warning("stinger %s could not be played: %s", self.path, status)
+        elif info.decoded and not info.has_video:
+            self.error = "no video in the file"
+        elif not info.decoded:
+            return False
+        if info.duration > 0:
+            self.duration = max(0.1, info.duration)
+        self.size = (info.width, info.height)
+        self._ready = True
+        return True
+
+    def frame_at(self, t: float) -> np.ndarray | None:
+        """The frame due now if it is new since the last call, else None. The player keeps the time itself from
+        the first call on (t is the same clock, counted by the transition)."""
+        if self._closed:
+            return None
+        if not self._playing:
+            self._playing = True
+            self._player.control(self._play)
+        got = self._player.video_frame()
+        if got is None or isinstance(got, str):
+            return None
+        self.channel_order = got[1]
+        return got[0]
+
+    def read_block(self, count: int) -> np.ndarray:
+        if not self._playing or self._closed:
+            return np.zeros((count, 2), dtype=np.float32)
+        return self._player.read_audio(count)
+
+    def close(self) -> None:
+        """Returns at once: ending the engine's decoder thread may wait, so a helper thread does it."""
+        if not self._closed:
+            self._closed = True
+            from sprigcast.core.retire import RETIRER
+
+            RETIRER.retire(self)
+
+    def stop(self) -> None:  # core/retire.py
+        self._player.close()
+
+
 class StingerPlayer:
     """One stinger clip being played. Use start(), then frame_at() each tick, then close()."""
+
+    channel_order = "RGBA"
 
     kind = "stinger"
 

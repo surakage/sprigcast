@@ -398,6 +398,59 @@ def test_the_engines_compositor_takes_pictures_straight_from_the_player(player_l
         bridge.close()
 
 
+def test_a_stinger_clip_plays_through_the_engine(player_lib, files, monkeypatch, tmp_path):
+    """render/stinger.py with SPRIGCAST_ENGINE=native: RGBA pictures with the clip's alpha, shrunk to the limit,
+    sound from the first frame_at on, and a file that can't play gives an error instead of a picture."""
+    from sprigcast.core.retire import RETIRER
+    from sprigcast.render import stinger
+
+    assert isinstance(stinger.open_stinger(files["video"]), stinger.StingerPlayer)  # the switch is off
+    monkeypatch.setenv("SPRIGCAST_ENGINE", "native")
+    player = stinger.open_stinger(files["video"], (160, 160), 1.0)
+    assert isinstance(player, stinger.NativeStinger)
+    player.start()
+    deadline = time.monotonic() + 5
+    while not player.ready.is_set() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert player.ready.is_set() and player.error is None
+    assert abs(player.duration - 2.0) < 0.1 and player.size == (160, 120)
+    assert not np.abs(player.read_block(240)).any()  # silent until the transition shows its first frame
+    frames, sound, began = [], 0, time.monotonic()
+    while time.monotonic() - began < 1.0:
+        frame = player.frame_at(time.monotonic() - began)
+        if frame is not None:
+            frames.append(frame)
+        sound += int(np.abs(player.read_block(240)).max() > 0.2)
+        time.sleep(0.005)
+    assert 20 <= len(frames) <= 32 and sound > 50  # 30 pictures a second, by its own clock
+    assert frames[0].shape == (120, 160, 4) and player.channel_order == "RGBA" and (frames[0][..., 3] == 255).all()
+    player.close()
+    player.close()
+    assert player.frame_at(2.0) is None and not np.abs(player.read_block(240)).any()
+
+    if "webm" in files:  # a see-through clip keeps its alpha
+        clear = stinger.open_stinger(files["webm"])
+        clear.start()
+        deadline = time.monotonic() + 5
+        while not clear.ready.is_set() and time.monotonic() < deadline:
+            time.sleep(0.005)
+        frame = clear.frame_at(0.0)
+        assert frame is not None and frame.shape == (48, 64, 4)
+        assert frame[10, 10, 3] > 250 and frame[10, 50, 3] < 5 and frame[10, 10, 0] > 200
+        clear.close()
+
+    bad = tmp_path / "bad.webm"
+    bad.write_bytes(b"not a video at all")
+    broken = stinger.open_stinger(str(bad))
+    broken.start()
+    deadline = time.monotonic() + 5
+    while not broken.ready.is_set() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert broken.ready.is_set() and broken.error
+    broken.close()
+    assert RETIRER.settle()
+
+
 def test_media_source_plays_through_the_engine(player_lib, files, monkeypatch):
     """sources/media.py with SPRIGCAST_ENGINE=native: the same class, the engine's player underneath."""
     from sprigcast.sources.media import MediaSource
