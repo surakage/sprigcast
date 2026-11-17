@@ -258,3 +258,21 @@ def test_turning_the_camera_off_never_unmaps_a_frame_mid_copy():
     assert calls == ["unmapped"]
     assert block.write(64, 64, frame) is False
     assert block.wanted() == (0, 0) and block.heartbeat() == 0 and not block.valid
+
+
+def test_needs_update_reads_the_files_once(monkeypatch, tmp_path):
+    """PC test 2026-11-17: the camera window read both DLLs each time it opened (0.4 s while live)."""
+    src, dst = tmp_path / "a" / virtualcam.DLL_NAME, tmp_path / "b" / virtualcam.DLL_NAME
+    for path in (src, dst):
+        path.parent.mkdir()
+        path.write_bytes(b"camera" * 1000)
+    monkeypatch.setattr(virtualcam, "bundled_dll", lambda name=virtualcam.DLL_NAME: src if name == virtualcam.DLL_NAME else None)
+    monkeypatch.setattr(virtualcam, "registered_path", lambda clsid=virtualcam.CLSID: dst)
+    monkeypatch.setattr(virtualcam, "_compared", {})
+    reads = []
+    real = virtualcam.Path.read_bytes
+    monkeypatch.setattr(virtualcam.Path, "read_bytes", lambda self: (reads.append(self), real(self))[1])
+    assert not virtualcam.needs_update() and not virtualcam.needs_update()
+    assert len(reads) == 2  # once each
+    dst.write_bytes(b"older" * 10)  # a different size: no read needed to know
+    assert virtualcam.needs_update() and len(reads) == 2

@@ -153,6 +153,21 @@ def installed() -> bool:
     return registered_path() is not None
 
 
+_compared: dict[tuple, bool] = {}
+
+
+def _same(a: Path, b: Path) -> bool:
+    """Same bytes? Different sizes say no at once; otherwise read once per pair of files as they are now
+    (reading both DLLs each time the camera window opened held SprigCast up 0.4 s while live)."""
+    sa, sb = a.stat(), b.stat()
+    if sa.st_size != sb.st_size:
+        return False
+    key = (str(a), sa.st_mtime_ns, str(b), sb.st_mtime_ns, sa.st_size)
+    if key not in _compared:
+        _compared[key] = a.read_bytes() == b.read_bytes()
+    return _compared[key]
+
+
 def needs_update() -> bool:
     """Set up, but with an older DLL than the one this SprigCast ships."""
     src, dst = bundled_dll(), registered_path()
@@ -160,11 +175,24 @@ def needs_update() -> bool:
         return False
     src32, dst32 = bundled_dll(DLL32_NAME), dst.with_name(DLL32_NAME)
     try:
-        if src.read_bytes() != dst.read_bytes():
+        if not _same(src, dst):
             return True
-        return bool(src32) and (not dst32.exists() or src32.read_bytes() != dst32.read_bytes())
+        return bool(src32) and (not dst32.exists() or not _same(src32, dst32))
     except OSError:
         return False
+
+
+_looked = False
+
+
+def look_ahead() -> None:
+    """Compare the DLLs on a worker (once, at start), so the camera window opens without reading them."""
+    global _looked
+    if sys.platform == "win32" and not _looked:
+        _looked = True
+        from sprigcast.core import workers
+
+        workers.run(needs_update, name="camera-dll")
 
 
 def _elevated(command: str) -> bool:

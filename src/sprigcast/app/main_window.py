@@ -265,7 +265,7 @@ class MainWindow(QMainWindow):
         self.selected_sound_id: str | None = None  # a sound picked in Build's library
         self._undo: list[str] = []  # earlier collections as JSON, oldest first (Edit → Undo, Ctrl+Z)
         self._redo: list[str] = []
-        self._undo_current: str | None = collection.model_dump_json()
+        self._undo_current: str | None = collection.to_text()
         self._undo_at = 0.0
         # Hints and tips show for your first few sessions, then get out of the way.
         sessions = QSettings().value("build/sessions", 0, type=int) + 1
@@ -2948,16 +2948,17 @@ class MainWindow(QMainWindow):
                 timer = self._drag_send = QTimer(self)
                 timer.setSingleShot(True)
                 timer.setInterval(16)
-                timer.timeout.connect(lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
+                timer.timeout.connect(lambda: self.engine.send(ReplaceCollection(self.collection.snapshot())))
             if not timer.isActive():
                 timer.start()
             return
         timer = getattr(self, "_drag_send", None)
         if timer is not None:
             timer.stop()  # this full send carries the drag's end
-        self.collection.save(self.scenes_path)
-        self._remember_for_undo()
-        self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        text = self.collection.to_text()  # once, for the file and for undo
+        self.collection.save(self.scenes_path, text)
+        self._remember_for_undo(text)
+        self.engine.send(ReplaceCollection(self.collection.snapshot()))
         self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
@@ -2968,8 +2969,8 @@ class MainWindow(QMainWindow):
     UNDO_STEPS = 50
     UNDO_MERGE_S = 0.8  # changes this close together (a slider, nudging with arrows) are one step
 
-    def _remember_for_undo(self) -> None:
-        now_json = self.collection.model_dump_json()
+    def _remember_for_undo(self, now_json: str | None = None) -> None:
+        now_json = now_json if now_json is not None else self.collection.to_text()
         if self._undo_current is None or now_json == self._undo_current:
             self._undo_current = now_json
             return
@@ -3004,7 +3005,7 @@ class MainWindow(QMainWindow):
         self._undo_current = text
         self._undo_at = 0.0
         self.collection.save(self.scenes_path)
-        self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+        self.engine.send(ReplaceCollection(self.collection.snapshot()))
         ids = {s.id for s in self.collection.scenes}
         if self.selected_scene_id not in ids:
             self.selected_scene_id = self.collection.active_scenes.get(self.build_canvas)
@@ -5342,7 +5343,7 @@ class MainWindow(QMainWindow):
                 log.warning("plugin store: held update of %s failed: %s", plugin.id, error)
         if held:
             self._fill_more_menu()
-            self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True)))
+            self.engine.send(ReplaceCollection(self.collection.snapshot()))
         note = plugin_store.update_note(done)
         if note is not None:
             self._saved_note(note[0], detail=note[1], link="Plugins", on_click=lambda: self.open_plugin_store(),
@@ -6239,7 +6240,7 @@ class MainWindow(QMainWindow):
         window.store.changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
         window.store.changed.connect(
-            lambda: self.engine.send(ReplaceCollection(self.collection.model_copy(deep=True))))
+            lambda: self.engine.send(ReplaceCollection(self.collection.snapshot())))
         modal(window)
         self._plugin_updates()  # an Update pressed while on air waits until the stream and recording stop
 
@@ -6283,6 +6284,7 @@ class MainWindow(QMainWindow):
 
         from sprigcast.app import features
 
+        virtualcam.look_ahead()  # the camera window then opens without reading the camera's files
         want = (features.on("camera") and camera_wanted() and virtualcam.supported()[0]
                 and virtualcam.installed())
         if want and self.camera is None:

@@ -12,6 +12,9 @@ from __future__ import annotations
 def modal(dialog) -> int:
     """dialog.exec(), then delete it once control returns to the window's event loop. Reading its answers right
     after (dialog.values(), dialog.account) is fine: it's only deleted later."""
+    from sprigcast.app.theme import ui_burst
+
+    ui_burst()  # showing it lays out and polishes every widget: Python's lock comes back quickly meanwhile
     try:
         return dialog.exec()
     finally:

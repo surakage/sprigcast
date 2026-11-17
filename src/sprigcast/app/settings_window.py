@@ -266,6 +266,7 @@ class SettingsWindow(QDialog):
         parent: QWidget | None = None,
         **_old,  # plugin_report, open_plugins_folder, plugins_dir: the plugin store has its own window now
     ):
+        theme.ui_burst()  # from the first line: Python's lock comes back quickly while the window is made
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setObjectName("settingsWindow")

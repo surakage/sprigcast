@@ -143,15 +143,22 @@ def test_the_window_not_answering_is_logged_with_where_it_was(caplog):
         pacing.ui_beat()  # this thread plays the window's
         pacing._check_window(10.1)
         assert pacing._ui["where"] is None  # 100 ms: fine
-        seen = threading.Event()
+        seen, stop = threading.Event(), threading.Event()
+
+        def hog():  # another thread busy right then: named with the stall (it may be the one holding the lock)
+            while not stop.is_set():
+                sum(range(100))
 
         def check():
             pacing._check_window(11.7)
             seen.set()
 
+        threading.Thread(target=hog, name="lock-hog").start()
         threading.Thread(target=check).start()  # the stall watch, while "the window" is right here
         seen.wait(2)
+        stop.set()
         assert "test_threads.py" in pacing._ui["where"]
+        assert "meanwhile" in pacing._ui["where"] and "lock-hog at" in pacing._ui["where"]
         clock[0] = 11.8
         with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
             pacing.ui_beat()
