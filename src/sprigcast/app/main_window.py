@@ -3483,11 +3483,18 @@ class MainWindow(QMainWindow):
         if timer is not None:
             timer.stop()  # this refresh covers any that were waiting
         sounds = [s for s in self.collection.sources if self._has_sound(s)]
-        self.live_side.show_sound([self._sound_item(s) for s in sounds])
+        items = [self._sound_item(s) for s in sounds]
+        ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
+        kinds = {s.id: s.kind for s in ordered}
+        tags = {s.id: self._plays_in_tag(s) for s in ordered}
+        shown = (items, kinds, tags, self.collection.audio.ducking, hasattr(self, "sound_strips"))
+        if shown == getattr(self, "_audio_shown", None):
+            return  # nothing changed (Save in Settings redid every strip, holding SprigCast up ~0.7 s while live)
+        self._audio_shown = shown
+        self.live_side.show_sound(items)
         if hasattr(self, "sound_strips"):
-            ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
-            self.sound_strips.show_sound([self._sound_item(s) for s in ordered], {s.id: s.kind for s in ordered},
-                                         {s.id: self._plays_in_tag(s) for s in ordered})
+            by_id = {item.id: item for item in items}
+            self.sound_strips.show_sound([by_id[s.id] for s in ordered], kinds, tags)
             self._show_sound_where()
         self.live_side.sound.set_mic_first(self.collection.audio.ducking)
 

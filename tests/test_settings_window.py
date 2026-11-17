@@ -440,11 +440,11 @@ def test_only_the_shown_page_is_made_before_the_window_opens(app, monkeypatch):
     w.on_ducking = ducked.append  # set after the page was made: still reaches it
     w.audio_page.ducking_button.click()
     assert ducked == [w.audio_page]
-    for _ in range(len(TABS) * 3):  # then the rest, one per turn of the event loop
+    for _ in range(len(TABS) * 3):  # the others wait for their tab: making them all held SprigCast up while live
         app.processEvents()
     made[:] = [entry if isinstance(entry, str) else entry[1] for entry in made
                if isinstance(entry, str) or entry[0] is w]
-    assert sorted(made) == sorted(TABS) and w.stack.count() == len(TABS)
+    assert made == ["Audio"] and w._built == {"Audio"}
     w.tabs.setCurrentRow(TABS.index("Connections"))
     assert w.stack.currentIndex() == TABS.index("Connections")
     from sprigcast.app.connections_page import ConnectionsPage
@@ -458,7 +458,8 @@ def test_apply_and_attributes_make_pages_not_made_yet(app):
     w = _window(_collection())
     assert w._built == {"General"}
     assert w.stream_page is not None and w._built == {"General", "Stream"}  # only the page asked for
-    assert w.apply() and w._built == set(TABS)
+    assert w.apply() and w._built == {"General", "Stream"}  # Save writes the pages made, makes no others
+    assert w.confirm_stream is not None and w._built == {"General", "Stream"}  # General's own: nothing more made
 
 
 def test_the_audio_page_waits_for_its_device_scan_on_a_worker(app):
@@ -471,7 +472,7 @@ def test_the_audio_page_waits_for_its_device_scan_on_a_worker(app):
     w = _window(_collection(), audio_devices=scan)
     for _ in range(len(TABS) * 3):
         app.processEvents()
-    assert "Audio" not in w._built and len(w._built) == len(TABS) - 1  # the rest are made meanwhile
+    assert w._built == {"General"}  # nothing else is made meanwhile
     threading.Timer(0.05, lambda: scan.set_result({"audio_input": ["USB Mic"], "audio_output": []})).start()
     w.tabs.setCurrentRow(TABS.index("Audio"))  # clicked before the scan is done: waits, the window drawing
     assert "Audio" in w._built and w.current_tab() == "Audio"
@@ -483,3 +484,16 @@ def test_general_ends_with_clear_all_my_data(app):
     w.on_clear_data = asked.append
     w.clear_data_button.click()
     assert asked == [w] and w.clear_data_button.text() == "Clear all my data…"
+
+
+def test_save_leaves_pages_never_opened_as_they_were(app):
+    """Only General was opened: Save writes General and leaves the canvases, places and sound untouched."""
+    from sprigcast.app.settings_window import CONFIRM_STREAM
+
+    col = _collection()
+    before = [(c.width, c.height, c.fps, c.enabled) for c in col.canvases]
+    w = _window(col)
+    w.confirm_stream.setChecked(not w.confirm_stream.isChecked())
+    assert w.apply() and w._built == {"General"}
+    assert QSettings().value(CONFIRM_STREAM, type=bool) == w.confirm_stream.isChecked()
+    assert [(c.width, c.height, c.fps, c.enabled) for c in col.canvases] == before
