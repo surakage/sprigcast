@@ -81,10 +81,21 @@ filters change. The native engine draws the canvases and copies preview-sized pi
 the card (`sc_engine_canvas_watch` / `_take`); the screens show those, so Python's compositor no longer draws a
 canvas only to show it. Transitions (fade, slide, swipe, wipe, leaf, bloom) run in the native engine on its own
 clock (`sc_engine_canvas_transition`; the outgoing bloom is in the snapshot while one runs), drawn by a port of
-the Python transition shader and pixel-checked against it (tests/native_golden/t_*.png). Python's compositor
-still draws recordings and streams, stinger and move transitions, Build's edited bloom, the Part editor,
-screenshots and the virtual camera until those move. If the native engine stops (faulted), Python's
-compositor draws the previews again by itself.
+the Python transition shader and pixel-checked against it (tests/native_golden/t_*.png).
+
+Recordings and streams take their frames from the native engine too (`sc_engine_output_set` / `_take`): each
+frame it scales the canvas to every output size wanted (up to four a canvas) and turns it into NV12, BT.709
+limited range, with a port of the Python NV12 shader and its four scaling filters (pixel-checked,
+tests/native_golden/nv12_*.png), and copies it back without waiting on the card. Finished frames wait in a short
+queue, each stamped with the performance counter when it was drawn (Python's `time.perf_counter()`, the clock
+recorders time frames by), so a late Python tick doesn't lose a frame: it hands on every frame that queued up.
+Past four waiting frames the oldest is dropped and counted. The encoders are still Python's; handing the
+engine's textures straight to the card's encoder is next.
+
+Python's compositor still draws stinger and move transitions, Build's edited bloom, the Part editor, screenshots,
+source record, full-size RGBA taps and the virtual camera until those move, and a canvas's outputs while it
+draws one of those (a frame older than one already handed on is never sent). If the native engine stops
+(faulted), Python's compositor draws the previews and outputs again by itself.
 
 ## Phases
 
@@ -93,7 +104,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | Phase | What moves | State |
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
-| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor and snapshot drawn like today's (pixel-checked); the engine's own frame loop and previews (`sc_engine_*`, not yet used by the app) |
+| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. Next: its textures straight to the card's encoder |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |

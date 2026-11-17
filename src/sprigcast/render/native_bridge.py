@@ -6,9 +6,10 @@ thread and copies small pictures back for the previews without waiting on the gr
 thread no longer draws a canvas just to show it.
 
 Transitions (fade, slide, swipe, wipe, leaf and bloom) run in the native engine on its own clock; the outgoing
-bloom is in the snapshot while one runs. Python's compositor still draws whatever the native engine can't do
-yet: recordings and streams (until encoders move in), stinger and move transitions, Build's edited bloom,
-screenshots and the virtual camera. If the native engine faults for
+bloom is in the snapshot while one runs. Recordings and streams take NV12 frames the native engine makes on its
+own thread (up to ENGINE_OUTPUTS sizes a canvas), timed by when it drew them. Python's compositor still draws
+whatever the native engine can't do yet: stinger and move transitions, Build's edited bloom, screenshots, source
+record and the virtual camera, and the outputs of a canvas while it draws one of those. If the native engine faults for
 good, this steps aside and Python's compositor draws the previews again, as before.
 """
 
@@ -106,6 +107,11 @@ class NativeCanvases:
         self._shown: dict[int, str | None] = {}
         self._watching: dict[int, tuple[int, int, int]] = {}
         self._sent_transitions: dict[int, int | None] = {}  # slot -> id() of the Running handed over
+        self._outputs: dict[int, dict[tuple[int, int], int]] = {}  # canvas slot -> output size -> output slot
+        self._output_scale: dict[int, str] = {}
+        self._last_out: dict[tuple[str, tuple[int, int]], float] = {}  # newest frame time handed on, per output
+        self._dropped: dict[tuple[int, int], int] = {}  # (canvas slot, output slot) -> frames the engine dropped
+        self.output_drops = 0
         self._wipe_maps: set[str] = set()
         self._signature = None
         self._last_upload: dict[str, float] = {}
@@ -242,6 +248,68 @@ class NativeCanvases:
         got = self._guard("take", self.engine.take, slot, w, h)
         return (got[0], w, h) if got else None
 
+    # ---- recordings and streams ---------------------------------------------------------------------------------
+
+    def serves(self, canvas_id: str, outputs) -> bool:
+        """Whether the native engine can make every one of these frame taps ((callback, NV12 size) pairs): NV12
+        only, at most ENGINE_OUTPUTS sizes, on a canvas it draws."""
+        sizes = {nv12 for _callback, nv12 in outputs}
+        return bool(sizes) and None not in sizes and len(sizes) <= sprigcore.ENGINE_OUTPUTS and self.draws(canvas_id)
+
+    def set_outputs(self, canvas_id: str, sizes, scale: str = "bilinear") -> None:
+        """The NV12 sizes the native engine makes for this canvas from now on (empty: none). A size kept keeps
+        its slot, so its frames go on without a gap."""
+        slot = self._slots.get(canvas_id)
+        if slot is None or self.failed:
+            return
+        want = sorted(set(sizes))[:sprigcore.ENGINE_OUTPUTS]
+        current = self._outputs.setdefault(slot, {})
+        if want and self._output_scale.get(slot, scale) != scale:  # every output is scaled again: start over
+            self.set_outputs(canvas_id, ())
+            current = self._outputs.setdefault(slot, {})
+        if want:
+            self._output_scale[slot] = scale
+        for size in [s for s in current if s not in want]:
+            out = current.pop(size)
+            self._dropped.pop((slot, out), None)
+            self._last_out.pop((canvas_id, size), None)
+            self._guard("output", self.engine.set_output, slot, out, 0, 0)
+        free = [o for o in range(sprigcore.ENGINE_OUTPUTS) if o not in current.values()]
+        for size in want:
+            if size not in current and free:
+                out = current[size] = free.pop(0)
+                self._guard("output", self.engine.set_output, slot, out, size[0], size[1], scale)
+
+    def take_outputs(self, canvas_id: str, size: tuple[int, int]) -> list[tuple[bytearray, float]]:
+        """Every NV12 frame of this size the native engine finished since the last call, oldest first:
+        (data, when it was drawn in time.perf_counter() seconds). Never a frame older than one handed on."""
+        slot = self._slots.get(canvas_id)
+        out = self._outputs.get(slot, {}).get(size) if slot is not None else None
+        if out is None or self.failed:
+            return []
+        frames = []
+        last = self._last_out.get((canvas_id, size), 0.0)
+        for _ in range(sprigcore.ENGINE_OUTPUTS * 2):  # the queue holds a few; never loop for ever
+            got = self._guard("output frame", self.engine.take_output, slot, out, size[0], size[1])
+            if got is None:
+                break
+            data, drawn, dropped = got
+            gone = dropped - self._dropped.get((slot, out), 0)
+            if gone > 0:
+                self._dropped[(slot, out)] = dropped
+                self.output_drops += gone
+            if drawn > last:
+                frames.append((data, drawn))
+                last = drawn
+        self._last_out[(canvas_id, size)] = last
+        return frames
+
+    def served(self, canvas_id: str, size: tuple[int, int], drawn: float) -> None:
+        """Python's compositor handed on a frame of this output drawn at `drawn`: a native frame from before
+        then would go backwards, so it's let go."""
+        key = (canvas_id, size)
+        self._last_out[key] = max(self._last_out.get(key, 0.0), drawn)
+
     def check(self, now: float) -> None:
         """About once a second: the engine's health. A faulted engine turns this off."""
         if self.failed or now - self._stats_at < STATS_EVERY_S:
@@ -253,6 +321,9 @@ class NativeCanvases:
         if stats["rebuilds"] != self._rebuilds:
             self._rebuilds = stats["rebuilds"]
             log.warning("native engine: rebuilt its device (%d so far)", self._rebuilds)
+        if self.output_drops:
+            log.warning("native engine: %d recording or stream frames weren't taken in time", self.output_drops)
+            self.output_drops = 0
         if stats["faulted"]:
             self.fail("it stopped after repeated faults")
         elif stats["hung"]:

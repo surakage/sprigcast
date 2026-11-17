@@ -114,6 +114,7 @@ class FakeNative:
     def __init__(self):
         self.failed = False
         self.uploads, self.watching, self.synced = [], {}, 0
+        self.outputs, self.python_served, self.clock = {}, [], 0.0
 
     def upload(self, source_id, frame, order, size):
         self.uploads.append(source_id)
@@ -140,6 +141,19 @@ class FakeNative:
     def take(self, canvas_id):
         size = self.watching.get(canvas_id)
         return (b"n" * (size[0] * size[1] * 4), *size) if size else None
+
+    def serves(self, canvas_id, outputs):
+        return native_bridge.NativeCanvases.serves(self, canvas_id, outputs)
+
+    def set_outputs(self, canvas_id, sizes, scale="bilinear"):
+        self.outputs[canvas_id] = (sorted(set(sizes)), scale)
+
+    def take_outputs(self, canvas_id, size):
+        self.clock += 1.0  # one frame a tick, each drawn later than the last
+        return [(b"o" * (size[0] * size[1] * 3 // 2), self.clock)]
+
+    def served(self, canvas_id, size, drawn):
+        self.python_served.append((canvas_id, size))
 
     def close(self):
         pass
@@ -172,7 +186,7 @@ def test_previews_come_from_the_native_engine_and_python_draws_nothing():
     assert engine._native.synced == 60
 
 
-def test_outputs_are_still_drawn_by_python_while_the_preview_is_native():
+def test_a_full_size_rgba_output_is_still_drawn_by_python_while_the_preview_is_native():
     engine, fake = _engine(), FakeCompositor()
     engine.previews = frozenset({"h"})
     got = []
@@ -180,6 +194,42 @@ def test_outputs_are_still_drawn_by_python_while_the_preview_is_native():
     _run(engine, fake)
     assert len(got) == 60 and fake.rendered.count("h") == 60
     assert engine.frames["h"].take().data[:1] == b"n"  # the preview is the native engine's
+    assert engine._native.outputs["h"] == ([], "bicubic")
+
+
+def test_recordings_and_streams_take_the_native_engines_frames():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    big, small = [], []
+    engine.add_frame_tap("h", big.append, nv12_size=(64, 36))
+    engine.add_frame_tap("h", small.append, nv12_size=(32, 18))
+    _run(engine, fake)
+    assert fake.rendered == [] and engine.readbacks == 0  # Python draws and copies nothing
+    assert len(big) == 60 and len(small) == 60
+    assert (big[0].fmt, big[0].width, big[0].height, len(big[0].data)) == ("nv12", 64, 36, 64 * 36 * 3 // 2)
+    assert [f.time for f in big] == sorted(f.time for f in big) and big[0].time < big[-1].time
+    assert engine._native.outputs["h"] == ([(32, 18), (64, 36)], "bicubic")
+    assert engine._native.outputs["v"] == ([], "bicubic")
+
+
+def test_outputs_go_back_to_python_while_it_draws_the_canvas():
+    engine, fake = _engine(), FakeCompositor()
+    got = []
+    engine.add_frame_tap("h", got.append, nv12_size=(64, 36))
+    _switch(engine, "move")  # a transition only Python draws
+    engine._transitions["h"].began = 10.0
+    fake.read_nv12_later = lambda canvas_id, size, tag, now: (b"p", now)
+    fake.read_nv12 = lambda canvas_id, size: b"p"
+    _run(engine, fake, seconds=0.25)
+    assert got and all(f.data == b"p" for f in got)
+    assert engine._native.outputs["h"] == ([], "bicubic") and ("h", (64, 36)) in engine._native.python_served
+
+
+def test_more_output_sizes_than_the_native_engine_has_room_for_stay_with_python():
+    outputs = [(None, (2 * n, 2 * n)) for n in range(1, sprigcore.ENGINE_OUTPUTS + 2)]
+    fake = FakeNative()
+    assert not fake.serves("h", outputs) and fake.serves("h", outputs[:-1])
+    assert not fake.serves("h", [(None, None)]) and not fake.serves("h", [])
 
 
 def test_a_failed_native_engine_hands_the_previews_back_to_python():
@@ -231,6 +281,41 @@ def test_preview_pictures_are_the_size_shown():
     assert engine.frames["h"].take().width == 32
 
 
+class FakeEngine:
+    """Stands in for sprigcore.Engine: remembers the outputs it was set and hands back queued frames."""
+
+    def __init__(self, **_):
+        self.set, self.queue = [], []
+
+    def set_output(self, index, slot, width, height, scale="bilinear"):
+        self.set.append((index, slot, width, height))
+
+    def take_output(self, index, slot, width, height):
+        return self.queue.pop(0) if self.queue else None
+
+    def close(self):
+        pass
+
+
+def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch):
+    monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    bridge.set_outputs("h", [(64, 36), (32, 18), (64, 36)], "area")
+    assert bridge.engine.set == [(0, 0, 32, 18), (0, 1, 64, 36)]
+    bridge.set_outputs("h", [(64, 36), (16, 8)], "area")  # one gone, one new: the kept one isn't touched
+    assert bridge.engine.set[2:] == [(0, 0, 0, 0), (0, 0, 16, 8)]
+    bridge.engine.queue = [(b"a", 5.0, 0), (b"b", 6.0, 0), (b"c", 7.0, 3)]
+    bridge.served("h", (64, 36), 5.5)  # Python handed on a frame drawn at 5.5: the one from 5.0 is let go
+    assert bridge.take_outputs("h", (64, 36)) == [(b"b", 6.0), (b"c", 7.0)]
+    assert bridge.output_drops == 3 and bridge.take_outputs("h", (64, 36)) == []
+    assert bridge.take_outputs("h", (2, 2)) == []  # not an output it makes
+    bridge.set_outputs("h", [(64, 36)], "lanczos")  # scaled another way: every output starts over
+    assert bridge.engine.set[-3:] == [(0, 1, 0, 0), (0, 0, 0, 0), (0, 0, 64, 36)]
+    bridge.set_outputs("h", ())
+    assert bridge.engine.set[-1] == (0, 0, 0, 0) and not bridge.failed
+
+
 # ---- the real engine (Windows) ------------------------------------------------------------------------------
 
 needs_engine = pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
@@ -262,5 +347,16 @@ def test_the_bridge_draws_a_collection_like_the_device():
         img = np.frombuffer(got[0], np.uint8).reshape(18, 32, 4)
         assert (img[2:10, 4:12] == pic).all()
         assert (img[0, 0] == 0).all()  # see-through where nothing is
+        bridge.set_outputs("h", [(32, 18)])
+        frames, deadline = [], time.monotonic() + 3
+        while not frames and time.monotonic() < deadline:
+            frames = bridge.take_outputs("h", (32, 18))
+            time.sleep(0.01)
+        assert frames and not bridge.failed
+        data, drawn = frames[0]
+        assert abs(time.perf_counter() - drawn) < 3  # timed by the clock recorders use
+        y = np.frombuffer(bytes(data), np.uint8)[:32 * 18].reshape(18, 32)
+        luma = 16 + 219 * (pic[..., :3].astype(float) @ [0.2126, 0.7152, 0.0722]) / 255
+        assert np.abs(y[2:10, 4:12] - luma).max() <= 1.5 and (y[0] == 16).all()
     finally:
         bridge.close()

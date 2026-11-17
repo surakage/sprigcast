@@ -80,6 +80,14 @@ def test_golden_pictures_match_todays_compositor(python_compositor, case):
     assert nc.close_enough(stats), f"{case.name}: {stats}; if the change is meant, run python tests/native_cases.py"
 
 
+@pytest.mark.parametrize("shape", nc.NV12_SHAPES, ids=[n for n, _s, _h in nc.NV12_SHAPES])
+def test_golden_nv12_matches_todays_compositor(python_compositor, shape):
+    name, size, how = shape
+    want = np.asarray(Image.open(nc.GOLDEN / f"{name}.png").convert("L"))
+    stats = nc.compare(nc.draw_python(python_compositor, CASES[0], (size, how))[..., None], want[..., None])
+    assert nc.close_enough(stats), f"{name}: {stats}; if the change is meant, run python tests/native_cases.py"
+
+
 # ---- the native engine draws the same ----------------------------------------------------------------------------
 
 needs_engine = pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
@@ -99,6 +107,18 @@ def test_native_engine_draws_like_todays_compositor(device, case, tmp_path):
     if not nc.close_enough(stats):
         Image.fromarray(got, "RGBA").save(tmp_path / f"{case.name}-native.png")
     assert nc.close_enough(stats), f"{case.name}: {stats} (native picture in {tmp_path})"
+
+
+@needs_engine
+@pytest.mark.parametrize("shape", nc.NV12_SHAPES, ids=[n for n, _s, _h in nc.NV12_SHAPES])
+def test_native_nv12_is_what_todays_compositor_gives_encoders(device, shape, tmp_path):
+    name, size, how = shape
+    want = np.asarray(Image.open(nc.GOLDEN / f"{name}.png").convert("L"))
+    got = nc.draw_native(device, CASES[0], (size, how))
+    stats = nc.compare(got[..., None], want[..., None])
+    if not nc.close_enough(stats):
+        Image.fromarray(got, "L").save(tmp_path / f"{name}-native.png")
+    assert nc.close_enough(stats), f"{name}: {stats} (native picture in {tmp_path})"
 
 
 @needs_engine

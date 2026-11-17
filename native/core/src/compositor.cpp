@@ -357,14 +357,14 @@ struct Renderer {
 
 namespace sc {
 
-int make_target(ID3D11Device *device, int width, int height, Target &out) {
+int make_target(ID3D11Device *device, int width, int height, Target &out, DXGI_FORMAT format) {
     out = Target();
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = static_cast<UINT>(width);
     td.Height = static_cast<UINT>(height);
     td.MipLevels = 1;
     td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.Format = format;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_DEFAULT;
     td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;

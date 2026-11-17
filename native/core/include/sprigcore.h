@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 4
+#define SC_INTERFACE_VERSION 5
 
 enum {
     SC_OK = 0,
@@ -234,6 +234,19 @@ typedef struct sc_transition {
 SC_API int sc_canvas_render_transition(sc_canvas *canvas, uint64_t from, uint64_t to, double time,
                                        const sc_transition *how, float progress);
 
+/* How an output smaller than its canvas is scaled (Settings → Video): render/compositor.py SCALE_MODES. */
+enum {
+    SC_SCALE_BILINEAR = 0,
+    SC_SCALE_AREA = 1,
+    SC_SCALE_BICUBIC = 2,
+    SC_SCALE_LANCZOS = 3
+};
+
+/* The canvas scaled to width x height (both even) as NV12 for an encoder, BT.709 limited range like
+ * render/compositor.py NV12_FRAGMENT: width x height bytes of Y, then width x height / 2 bytes of CbCr pairs, top
+ * row first, into `out` (width * height * 3 / 2 bytes). Waits for the card: tests only. */
+SC_API int sc_canvas_read_nv12(sc_canvas *canvas, uint8_t *out, int width, int height, int scale_mode);
+
 /* Checks of the crash gate (tests only): faults inside a device call. kind 1 throws a C++ exception, kind 2
  * writes through a null pointer (an access violation). Either way the call answers SC_ERR_INTERNAL and the
  * device is shut off (SC_ERR_FAULTED from then on); the app goes on. */
@@ -279,6 +292,8 @@ enum {
 };
 
 #define SC_ENGINE_CANVASES 4  /* canvas slots: the horizontal and vertical canvases and room for more */
+#define SC_ENGINE_OUTPUTS 4  /* NV12 outputs per canvas: a recording and streams of different sizes */
+#define SC_ENGINE_OUTPUT_QUEUE 4  /* finished output frames kept waiting for Python */
 
 /* An engine on adapter `adapter` (-1 = Windows' default) or the software renderer (SC_DEVICE_WARP). It starts
  * drawing at 60 frames a second with no canvases. */
@@ -324,6 +339,17 @@ SC_API int sc_engine_canvas_watch(sc_engine *engine, int index, int width, int h
  * *fresh = 0. Never waits. */
 SC_API int sc_engine_canvas_take(sc_engine *engine, int index, uint8_t *out, int width, int height, uint64_t *seq,
                                  int *fresh, double *drawn);
+/* An output of canvas `index` (a recording or stream), in output slot `slot` (0 .. SC_ENGINE_OUTPUTS - 1): every
+ * frame the engine draws the canvas scaled to width x height (both even) as NV12 (sc_canvas_read_nv12) and copies
+ * it back without waiting on the graphics card. Finished frames queue up (at most SC_ENGINE_OUTPUT_QUEUE; past
+ * that the oldest is dropped and counted) until taken. 0 x 0 stops it and empties its queue. */
+SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int width, int height, int scale_mode);
+/* The oldest finished frame of an output, if there is one of width x height: copies it into `out` (`bytes` must
+ * be width * height * 3 / 2), sets *fresh = 1 and *drawn to when it was drawn in seconds of the performance
+ * counter (Python's time.perf_counter() on Windows). Otherwise *fresh = 0. *dropped (optional) gets how many
+ * frames this output has dropped so far. Never waits. */
+SC_API int sc_engine_output_take(sc_engine *engine, int index, int slot, uint8_t *out, size_t bytes, int *fresh,
+                                 double *drawn, uint64_t *dropped);
 /* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++
  * exception, 2 writes through a null pointer, 3 acts as if the graphics card was lost (the engine rebuilds),
  * 4 stalls the frame for 3 s (the watchdog reports it hung, then it goes on). */

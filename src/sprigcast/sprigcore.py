@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 4  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 5  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -35,6 +35,8 @@ ERRORS = {-1: "bad argument", -2: "graphics device", -3: "shader", -4: "out of m
 FAULTED, DEVICE_LOST, TIMEOUT = -6, -7, -8  # FAULTED, DEVICE_LOST: the device is shut off (crash gate)
 UPLOAD_KEEP = 1
 ENGINE_CANVASES = 4
+ENGINE_OUTPUTS = 4  # NV12 outputs per canvas (SC_ENGINE_OUTPUTS)
+SCALE_MODES = {"bilinear": 0, "area": 1, "bicubic": 2, "lanczos": 3}  # render/compositor.py SCALE_MODES
 FORMATS = {"RGBA": 0, "BGRA": 1, "RGB": 2, "BGR": 3, "BGRX": 4, "pBGRA": 5, "I420": 6, "I420A": 7}
 MAX_HALOS = 4
 _LEVELS = {10: logging.DEBUG, 20: logging.INFO, 30: logging.WARNING, 40: logging.ERROR}
@@ -237,6 +239,10 @@ def _lib():
         "sc_engine_canvas_take": (c_int, [vp, c_int, vp, c_int, c_int, ctypes.POINTER(ctypes.c_uint64),
                                           ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_double)]),
         "sc_engine_debug_fault": (c_int, [vp, c_int]),
+        "sc_canvas_read_nv12": (c_int, [vp, vp, c_int, c_int, c_int]),
+        "sc_engine_output_set": (c_int, [vp, c_int, c_int, c_int, c_int, c_int]),
+        "sc_engine_output_take": (c_int, [vp, c_int, c_int, vp, ctypes.c_size_t, ctypes.POINTER(c_int),
+                                          ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint64)]),
     }
     try:
         for name, (restype, argtypes) in sigs.items():
@@ -438,6 +444,13 @@ class Canvas:
         _check(_need().sc_canvas_render_transition(self.handle, key(previous), key(scene), float(time),
                                                    ctypes.byref(spec), float(progress)))
 
+    def read_nv12(self, width: int, height: int, scale: str = "bilinear") -> bytes:
+        """The canvas scaled to width x height (even) as NV12, as render/compositor.py read_nv12 gives it.
+        Waits for the card: tests only."""
+        out = ctypes.create_string_buffer(width * height * 3 // 2)
+        _check(_need().sc_canvas_read_nv12(self.handle, out, int(width), int(height), SCALE_MODES.get(scale, 0)))
+        return out.raw
+
     def read_bgra(self) -> bytes:
         """The canvas as BGRA bytes, top row first. For tests and screenshots, never the frame path."""
         out = ctypes.create_string_buffer(self.width * self.height * 4)
@@ -572,6 +585,22 @@ class Engine:
         _check(_need().sc_engine_canvas_take(self.handle, index, out, width, height, ctypes.byref(seq),
                                              ctypes.byref(fresh), ctypes.byref(drawn)))
         return (out.raw, drawn.value) if fresh.value else None
+
+    def set_output(self, index: int, slot: int, width: int, height: int, scale: str = "bilinear") -> None:
+        """Have the engine make NV12 frames of canvas ``index`` at width x height (even) for an encoder, in
+        output slot ``slot`` (0 .. ENGINE_OUTPUTS - 1), scaled the way Canvas.downscale says. 0 x 0 stops."""
+        _check(_need().sc_engine_output_set(self.handle, index, slot, int(width), int(height),
+                                            SCALE_MODES.get(scale, 0)))
+
+    def take_output(self, index: int, slot: int, width: int, height: int) -> tuple[bytearray, float, int] | None:
+        """The oldest finished NV12 frame of an output: (data, when it was drawn in time.perf_counter()
+        seconds, frames dropped so far), or None when none is waiting. Never waits."""
+        size = width * height * 3 // 2
+        data = bytearray(size)
+        fresh, drawn, dropped = ctypes.c_int(0), ctypes.c_double(0.0), ctypes.c_uint64(0)
+        _check(_need().sc_engine_output_take(self.handle, index, slot, (ctypes.c_char * size).from_buffer(data),
+                                             size, ctypes.byref(fresh), ctypes.byref(drawn), ctypes.byref(dropped)))
+        return (data, drawn.value, dropped.value) if fresh.value else None
 
     def debug_fault(self, kind: int) -> None:
         """Crash gate checks (tests only): 1 exception, 2 access violation, 3 lost card, 4 a 3 s stuck frame."""
