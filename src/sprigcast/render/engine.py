@@ -199,6 +199,7 @@ class Engine:
         # SPRIGCAST_ENGINE=native: the native engine draws the canvases for the previews (render/native_bridge.py).
         self._native = None
         self._python_drew = True  # last tick Python's compositor drew something (always, without the native engine)
+        self._refresh_outputs = False  # refresh_outputs() asked: outputs are made again next tick
         self._held_back: dict = {}  # source id -> (frame, channel order, layout): pictures Python's compositor skipped
 
     # Called from the UI thread ----------------------------------------------
@@ -276,6 +277,11 @@ class Engine:
         with self._taps_lock:
             taps = self._taps.get(canvas_id, [])
             taps[:] = [t for t in taps if t[0] != callback]
+
+    def refresh_outputs(self) -> None:
+        """An output gets no frames (Recorder.check_flow): next tick the native engine's outputs and Python's
+        output copies are let go and made again. Any thread."""
+        self._refresh_outputs = True
 
     def set_clean(self, canvas_id: str, hidden) -> None:
         """Source record: draw a copy of this canvas without these sources (None: stop drawing it)."""
@@ -1764,6 +1770,14 @@ class Engine:
         if self._release_later:
             self._release_unused(compositor)
             self._mark("letting go of textures")
+        if self._refresh_outputs:
+            self._refresh_outputs = False
+            if self._native is not None and not self._native.failed:
+                self._native.reset_outputs()
+            prune = getattr(compositor, "prune", None)
+            self._pruned = prune(0.0) if prune is not None else 0
+            log.warning("outputs made again: %d of Python's output copies let go", self._pruned)
+            self._mark("making outputs again")
         if now - self._pruned_at > 1.0:  # a recording or source record that ended leaves its targets idle
             self._pruned_at = now
             prune = getattr(compositor, "prune", None)  # test stand-ins may not have it

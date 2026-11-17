@@ -176,6 +176,12 @@ class FakeNative:
     def served(self, canvas_id, size, drawn):
         self.python_served.append((canvas_id, size))
 
+    resets = 0
+
+    def reset_outputs(self):
+        self.resets += 1
+        self.outputs = {}
+
     def close(self):
         pass
 
@@ -369,6 +375,19 @@ def test_pictures_go_only_to_the_engine_while_python_draws_nothing():
     assert fake.uploaded.count("cam") == 3  # while it draws, every picture goes to both
 
 
+def test_an_output_that_gets_no_frames_is_made_again():
+    engine, fake = _engine(), FakeCompositor()
+    got = []
+    engine.add_frame_tap("h", got.append, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.1)
+    fake.prune = lambda idle_s=3.0: 2
+    engine.refresh_outputs()  # Recorder.check_flow found no frames arriving
+    engine._tick(fake, 20.0)
+    assert engine._native.resets == 1 and engine._native.outputs["h"] == ([((64, 36), False)], "bicubic")
+    engine._tick(fake, 20.1)
+    assert engine._native.resets == 1  # once
+
+
 class EngineVideo:
     """Stands in for a MediaSource the engine's own player decodes."""
 
@@ -534,6 +553,10 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     assert bridge.engine.set[-3:] == [(0, 1, 0, 0), (0, 0, 0, 0), (0, 0, 64, 36)]
     bridge.set_outputs("h", ())
     assert bridge.engine.set[-1] == (0, 0, 0, 0) and not bridge.failed
+    bridge.set_outputs("h", [big])
+    bridge.served("h", (64, 36), 9.0)
+    bridge.reset_outputs()  # a feed that stopped: every output starts over, nothing remembered
+    assert bridge.engine.set[-1] == (0, 0, 0, 0) and bridge._outputs[0] == {} and bridge._last_out == {}
 
 
 def test_frames_on_the_card_go_back_to_the_engine_when_let_go(monkeypatch):

@@ -384,6 +384,8 @@ def run() -> None:
         20_000, lambda: pacing.housekeeping("thread count", pacing.watch_threads)))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and where memory goes, every 10 minutes
         40_000, lambda: pacing.housekeeping("memory line", pacing.watch_memory)))
+    tidy.timeout.connect(lambda: QTimer.singleShot(  # and which threads use the CPU, every 5 minutes
+        50_000, lambda: pacing.housekeeping("CPU by thread", pacing.watch_cpu)))
     tidy.start(pacing.TIDY_EVERY_MS)
     from sprigcast.core import warm, workers
 

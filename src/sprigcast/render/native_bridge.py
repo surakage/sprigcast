@@ -148,9 +148,11 @@ class CardFrame:
                  "_give_back", "__weakref__")
 
     data = None  # no bytes: see texture
+    held = 0  # frames not given back yet, all outputs together (said when an output's feed stops)
 
     def __init__(self, canvas_id: str, size: tuple[int, int], drawn: float, pool: CardPool, texture: int,
                  entry: int, give_back):
+        CardFrame.held += 1
         self.canvas_id, self.width, self.height, self.time = canvas_id, size[0], size[1], drawn
         self.fmt = "gpu"
         self.canvas_size = size
@@ -165,6 +167,7 @@ class CardFrame:
     def __del__(self):
         pool, self.pool = self.pool, None
         if pool is not None:
+            CardFrame.held -= 1
             try:
                 self._give_back(pool.id, self.entry, self.texture)
             except Exception:  # noqa: BLE001 (never from a destructor)
@@ -413,6 +416,16 @@ class NativeCanvases:
             if key not in current and free:
                 out = current[key] = free.pop(0)
                 self._guard("output", self.engine.set_output, slot, out, key[0][0], key[0][1], scale, key[1])
+
+    def reset_outputs(self) -> None:
+        """Let go of every output; the render thread names them again next tick (render/engine.py
+        refresh_outputs): a feed that stopped starts over (new texture pools: frames still held elsewhere
+        no longer hold it up)."""
+        log.warning("native engine: making every output again (%d frames on the card not given back yet, "
+                    "%d not taken in time so far)", CardFrame.held, self.output_drops)
+        for canvas_id in list(self._slots):
+            self.set_outputs(canvas_id, ())
+        self._last_out.clear()
 
     def take_outputs(self, canvas_id: str, key: tuple) -> list:
         """Every frame of this output (output_key) the native engine finished since the last call, oldest

@@ -276,7 +276,14 @@ def test_from_tapped_frames_to_a_replay_on_screen_and_back(ir, tmp_path, monkeyp
     assert source.outbox[1][1]["reason"] == "ended"
     assert not source.busy
     assert _wait(lambda: not list((tmp_path / "SprigCast").glob("replay-*.mkv")))  # tidied away
-    source.sleep()  # off air: stops keeping replays
+    source.sleep()  # off air: the encoder stays a while (KEEP_WARM_S), then stops keeping replays
+    assert source.play() == "Instant replay isn't on air."
+    source.wake()  # back on air within that time: the same encoder goes on, nothing new is opened
+    assert _wait(lambda: source._want) and source._buffer is buf
+    time.sleep(0.05)
+    assert source._buffer is buf and engine.views["replay-rp"][1] == "scene"
+    source.KEEP_WARM_S = 0.05
+    source.sleep()
     assert _wait(lambda: source._buffer is None)
     assert "replay-rp" not in engine.views and not engine.taps["view:replay-rp"] and not engine.audio
 
