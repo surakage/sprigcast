@@ -307,8 +307,8 @@ end;
 var
   DeleteData: Boolean;
 
-// Asks once, before anything is removed. Unticked (the default) keeps settings, blooms, pairings and
-// keys, so a reinstall picks up where you left off. A silent uninstall always keeps them.
+// Asks once, before anything is removed. Unticked (the default) keeps settings and blooms, so a reinstall
+// picks up where you left off. A silent uninstall keeps them too. Keys and sign-ins always go.
 function InitializeUninstall: Boolean;
 var
   Form: TSetupForm;
@@ -334,7 +334,7 @@ begin
     Intro.WordWrap := True;
     Intro.Height := ScaleY(34);
     Intro.Font.Color := HeaderText;
-    Intro.Caption := 'SprigCast will be removed from this PC. Your settings stay, so a reinstall picks up where you left off.';
+    Intro.Caption := 'SprigCast and its saved stream keys and sign-ins will be removed. Your settings stay, so a reinstall picks up where you left off.';
 
     Box := TNewCheckBox.Create(Form);
     Box.Parent := Form;
@@ -355,7 +355,7 @@ begin
     Note.WordWrap := True;
     Note.Height := ScaleY(34);
     Note.Font.Color := NoteColor;
-    Note.Caption := 'Settings, blooms, plugins, pairings, stream keys and logs. Your recordings and screenshots stay.';
+    Note.Caption := 'Settings, blooms, plugins, pairings and logs. Your recordings and screenshots stay.';
 
     Ok := TNewButton.Create(Form);
     Ok.Parent := Form;
@@ -409,11 +409,10 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // Stream keys and sign-ins live in Credential Manager: SprigCast's own Python removes them, while
-    // it's still here.
-    if DeleteData then
-      Exec(ExpandConstant('{app}\python\python.exe'), '-I -m sprigcast.tools.forget_keys', '',
-           SW_HIDE, ewWaitUntilTerminated, Code);
+    // Stream keys, sign-ins and pairings live in Credential Manager. They always go, ticked or not (no
+    // secrets outlive SprigCast), removed by its own Python while it's still here.
+    Exec(ExpandConstant('{app}\python\python.exe'), '-I -m sprigcast.tools.forget_keys', '',
+         SW_HIDE, ewWaitUntilTerminated, Code);
     Registered := RegisteredCamera();
     if Registered <> '' then
       RunElevated('regsvr32 /u /s "' + Registered + '" & regsvr32 /u /s "' + CameraDir() + '\sprigcast_camera32.dll" 2>nul');
