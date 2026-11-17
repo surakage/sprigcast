@@ -3028,9 +3028,11 @@ class MainWindow(QMainWindow):
             projector.close()
         self.panels.close_windows()
         self.chat_panel.shutdown()
-        self._save_layout()
-        self._save_thumbs()
-        self.gardens.close()
+        forgetting = getattr(self, "_forgetting", False)  # Clear all my data: save nothing on the way out
+        if not forgetting:
+            self._save_layout()
+            self._save_thumbs()
+            self.gardens.close()
         self.hotkeys.stop()
         self.meter.stop()
         self.control.stop()
@@ -3050,7 +3052,8 @@ class MainWindow(QMainWindow):
         self.engine.stop(wait=False)  # the render thread lets go of the card on its own time (main waits)
         if self.browser_host is not None:
             self.browser_host.shutdown()
-        self.updater.install_on_quit()  # a downloaded update runs once SprigCast has closed
+        if not forgetting:
+            self.updater.install_on_quit()  # a downloaded update runs once SprigCast has closed
         super().closeEvent(event)
 
     # Selection helpers -----------------------------------------------------
@@ -6127,6 +6130,7 @@ class MainWindow(QMainWindow):
             window.stream_page.select_output(output_id)
         window.applied.connect(self._after_settings)
         window.on_ducking = self._open_ducking  # handed to the Audio page when it's made
+        window.on_clear_data = self.clear_all_data
         window.optimize_requested.connect(lambda: QTimer.singleShot(0, self, self.open_optimizer))
         window.restart_requested.connect(lambda: QTimer.singleShot(0, self, self.restart_app))
         modal(window)
@@ -6598,6 +6602,26 @@ class MainWindow(QMainWindow):
                 checked = action.isChecked() if action.isCheckable() else ("✓" in tail or None)
                 out.append(Command(text, group, action.trigger, action.shortcut().toString(), checked))
         return out
+
+    def clear_all_data(self, parent=None) -> bool:
+        """Settings → General → Clear all my data: ask, forget every secret and setting, delete SprigCast's
+        folders once it has closed (app/clear_data.py), and close. True if it went ahead."""
+        from sprigcast.app import clear_data
+
+        if self.streaming is not None or self.recording is not None or self.replay is not None:
+            QMessageBox.information(parent or self, "Clear all my data", "Stop streaming, recording and clips first.")
+            return False
+        go, recordings = clear_data.ask(parent or self)
+        if not go:
+            return False
+        self._forgetting = True
+        clear_data.clear_all(self._recordings_folder() if recordings else None)
+        for window in QApplication.topLevelWidgets():  # Settings and anything else open goes too
+            if window is not self and window.isVisible():
+                window.close()
+        self.close()
+        QApplication.quit()
+        return True
 
     def use_light_settings(self, why: str = "") -> bool:
         """Offer the light settings (720p, 30 fps, fast encoder). True if they were applied."""

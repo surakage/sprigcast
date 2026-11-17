@@ -304,6 +304,7 @@ class SettingsWindow(QDialog):
         self._audio_devices = audio_devices
         self._subs: dict[str, str] = {}  # page -> its own tab to open on once it's made
         self.on_ducking = None  # passed on to the Audio page (the main window opens the Ducking window)
+        self.on_clear_data = None  # the main window's clear_all_data(parent)
         for name in TABS:
             QListWidgetItem(name, self.tabs)
             self.stack.addWidget(QWidget())  # stands in until the page is made
@@ -581,7 +582,18 @@ class SettingsWindow(QDialog):
         self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
         lform.addRow("Keep logs for", self.keep_logs)
 
-        return _page(look, self._this_pc_card(), startup, updates, safety, logs)
+        return _page(look, self._this_pc_card(), startup, updates, safety, logs, self._clear_data_card())
+
+    def _clear_data_card(self) -> QGroupBox:
+        """Clear all my data: keys, sign-ins, settings and files go, then SprigCast closes (app/clear_data.py)."""
+        card = QGroupBox("Your data")
+        row = QHBoxLayout(card)
+        row.addWidget(QLabel("Delete everything SprigCast keeps on this PC."), 1)
+        self.clear_data_button = QPushButton("Clear all my data…")
+        self.clear_data_button.setStyleSheet(theme.SMALL_PILL_STYLE + f"QPushButton {{ color: {theme.BAD}; }}")
+        self.clear_data_button.clicked.connect(lambda: self.on_clear_data and self.on_clear_data(self))
+        row.addWidget(self.clear_data_button)
+        return card
 
     def _this_pc_card(self) -> QGroupBox:
         """This PC: the tier Optimize picked, and the settings that decide how much of the PC SprigCast uses."""
