@@ -303,3 +303,27 @@ def test_a_fence_seen_done_isnt_asked_about_again():
     assert pbos.take(1.016) == (b"a", "a")
     assert fences.asked == asked  # "a" was already known to be done
 
+
+
+def test_read_back_buffers_are_made_for_reading_back():
+    """The PC test (2026-11-17): a copy into a read-back buffer held the renderer 305 ms. Buffers made the way
+    moderngl makes them are for drawing from; each one is now told it is read back (UnlockedGL.read_back_buffer)."""
+    from sprigcast.render.compositor import _Pbos
+
+    class Hinting(_Fences):
+        def __init__(self):
+            super().__init__()
+            self.hinted = []
+
+        def read_back_buffer(self, buffer):
+            self.hinted.append(buffer)
+
+    fences = Hinting()
+    pbos = _Pbos(_Ctx(), 16, fences)
+    assert fences.hinted == pbos.buffers
+
+    class Refusing(_Fences):
+        def read_back_buffer(self, buffer):
+            raise OSError("no")
+
+    assert len(_Pbos(_Ctx(), 16, Refusing()).buffers) == _Pbos.COUNT  # still usable as they were made

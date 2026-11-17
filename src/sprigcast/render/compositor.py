@@ -626,6 +626,13 @@ class _Pbos:
     def __init__(self, ctx: moderngl.Context, nbytes: int, fences=None):
         self.fences = fences if getattr(fences, "fences_ok", False) else None
         self.buffers = [ctx.buffer(reserve=nbytes) for _ in range(self.COUNT)]
+        hint = getattr(fences, "read_back_buffer", None)  # UnlockedGL: made as buffers that are read back
+        if hint is not None:
+            try:
+                for buffer in self.buffers:
+                    hint(buffer)
+            except Exception as exc:  # noqa: BLE001 (they still work as moderngl made them)
+                log.info("read-back buffers: the driver refused the read-back hint (%s)", exc)
         self.pending: list[list] = []  # [buffer index, tag, when, fence, seen done], oldest first
         self.free = list(range(self.COUNT))
         self.late = 0  # ticks the card hadn't finished the copy (nothing taken instead of waiting)
