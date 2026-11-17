@@ -259,6 +259,12 @@ HIGHEST, ABOVE_NORMAL = 2, 1  # Windows' THREAD_PRIORITY_* values
 # it notes where every busy thread is right then, which names the one that held the lock.
 STALL_MS = 200.0
 STALL_EVERY_S = 10.0
+# "Everything waited" means a thread held Python's lock, but the watch can only look once it has the lock back,
+# when that thread has moved on: the PC's heavy run (2026-11-17) logged 400-1000 ms stalls naming NVENC threads
+# that were only waiting in the driver. Python's fault handler can print every thread's stack from its own C
+# thread while the lock is held: armed here, it fires when the watch hasn't re-armed it for DUMP_AFTER_S.
+DUMP_AFTER_S = 0.35
+DUMP_REARM_S = 0.15
 _IDLE_CALLS = {"wait", "sleep", "get", "select", "_wait_for_tstate_lock", "join", "acquire", "run_forever",
                "_run_once", "_poll", "accept", "recv", "read", "readinto", "wait_for", "exec", "_worker"}
 
@@ -310,15 +316,19 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
         logged = float("-inf")
         last = clock()
         failed_at = float("-inf")
+        dump = _StallDump()
         while True:
+            dump.arm()
             time.sleep(interval)
             try:  # nothing here may ever stop the watch
                 now = clock()
                 late = 1000 * (now - last - interval)
                 last = now
+                during = dump.take()
                 if late >= STALL_MS and now - logged >= STALL_EVERY_S:
                     logged = now
-                    log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
+                    log.info("everything waited %.0f ms; busy then: %s%s", late, busy_stacks(me),
+                             f"; during it: {during}" if during else "")
                 _check_window(now)
                 _check_busy(now)
             except Exception:  # noqa: BLE001
@@ -326,6 +336,69 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
                     failed_at = time.monotonic()
                     log.exception("stall watch: a check failed; still watching")
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
+
+
+class _StallDump:
+    """Every thread's stack printed by faulthandler while Python's lock is held (see DUMP_AFTER_S)."""
+
+    def __init__(self) -> None:
+        import tempfile
+
+        try:
+            self.file = tempfile.TemporaryFile()
+        except OSError:
+            self.file = None
+        self.armed_at = float("-inf")
+
+    def arm(self) -> None:
+        import faulthandler
+
+        now = time.monotonic()
+        if self.file is None or now - self.armed_at < DUMP_REARM_S:
+            return
+        self.armed_at = now
+        try:
+            faulthandler.dump_traceback_later(DUMP_AFTER_S, repeat=False, file=self.file)
+        except (RuntimeError, ValueError, OSError):
+            self.file = None
+
+    def take(self) -> str:
+        """What a dump printed since the last look, shortened, or ""."""
+        if self.file is None:
+            return ""
+        try:
+            if self.file.tell() == 0:
+                return ""
+            self.file.seek(0)
+            text = self.file.read().decode("utf-8", "replace")
+            self.file.seek(0)
+            self.file.truncate()
+        except OSError:
+            return ""
+        import threading
+
+        return shorten_dump(text, {t.ident: t.name for t in threading.enumerate()})
+
+
+def shorten_dump(text: str, names: dict | None = None, frames: int = 4) -> str:
+    """faulthandler's dump, one part per thread: "0x1a2b at file.py:12 f <- other.py:3 g", the current thread
+    (the one holding Python's lock, when it says) first."""
+    import re
+
+    parts = []
+    for block in re.split(r"\n(?=(?:Current thread|Thread) 0x)", text.strip()):
+        lines = block.strip().splitlines()
+        if not lines:
+            continue
+        head = re.match(r"(Current thread|Thread) (0x[0-9a-fA-F]+)", lines[0])
+        calls = [re.match(r'\s*File "(.*)", line (\d+) in (\S+)', line) for line in lines[1:]]
+        where = " <- ".join(f"{re.split(r'[\\/]', m.group(1))[-1]}:{m.group(2)} {m.group(3)}"
+                            for m in calls[:frames] if m)
+        if head and where:
+            holds = head.group(1) == "Current thread"
+            name = (names or {}).get(int(head.group(2), 16), head.group(2))
+            parts.insert(0 if holds else len(parts), f"{name}{' (holding the lock)' if holds else ''} at {where}")
+    return "; ".join(parts)[:2500]
 
 
 # A step that should be quick (a render tick) can be held up without Python's lock held, inside the graphics

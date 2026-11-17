@@ -532,3 +532,30 @@ def test_nvencs_error_text_is_shown_only_when_readable():
     assert readable_error(b"Invalid device pointer\0junk") == "Invalid device pointer"
     assert readable_error(b"\xc8\x9f") == "" and readable_error(b"") == "" and readable_error(None) == ""
     assert readable_error(b"ok\x07") == ""
+
+
+def test_a_fill_gives_way_to_real_frames_and_says_what_it_did(tmp_path, caplog):
+    """Stuck-frame retest (2026-11-17): a fill made the stream drop 164 real frames while its line said 0
+    dropped. The fill now stops before real frames would be dropped, and the line says what was filled."""
+    rec = Recorder(tmp_path / "g.mkv", 16, 16, 30, 500, "libx264", 0.0)
+    written = []
+    rec._write_video = lambda container, stream, frame, pts=None: written.append(pts)
+    rec._write_audio = lambda container, audio: None
+    rec._fill(None, None, None, object(), range(1, 11))
+    assert written == list(range(1, 11)) and rec.fill_cut == 0
+    written.clear()
+    for _ in range(VIDEO_QUEUE - 3):
+        rec._video.put_nowait((0, object()))  # real frames waiting
+    rec.repeated = 9
+    rec._fill(None, None, None, object(), range(20, 30))
+    assert written == [29] and rec.fill_cut == 9 and rec.dropped == 9 and rec.repeated == 0
+    rec._video = type(rec._video)(maxsize=VIDEO_QUEUE)
+    rec.check_flow(10.0)
+    rec.frames += 1
+    rec.check_flow(11.0)
+    rec.check_flow(13.1)
+    rec.repeated += 60
+    rec.frames += 1
+    with caplog.at_level("WARNING"):
+        rec.check_flow(14.0)
+    assert "60 filled with the picture that ended it, 29 counted as dropped" in caplog.text

@@ -121,3 +121,33 @@ def test_a_cpu_by_thread_line_goes_in_the_log(caplog):
     stop.set()
     worker.join()
     assert line.startswith("CPU by thread:") and "sprigcast-busy" in line and line in caplog.text
+
+
+def test_a_stall_dump_names_the_thread_holding_the_lock():
+    """The stall watch can only look once Python's lock is free again; faulthandler prints every stack during it."""
+    import threading
+
+    from sprigcast.core.pacing import _StallDump, shorten_dump
+
+    me = threading.get_ident()
+    text = (f"Thread 0x{me + 1:x} (most recent call first):\n"
+            '  File "C:\\\\x\\\\nvenc_d3d11.py", line 597 in encode_texture\n'
+            '  File "C:\\\\x\\\\recorder.py", line 10 in _run\n\n'
+            f"Current thread 0x{me:x} (most recent call first):\n"
+            '  File "C:\\\\x\\\\compositor.py", line 943 in upload\n'
+            '  File "C:\\\\x\\\\engine.py", line 1870 in _tick\n')
+    short = shorten_dump(text, {me: "render"})
+    assert short.startswith("render (holding the lock) at compositor.py:943 upload <- engine.py:1870 _tick")
+    assert "nvenc_d3d11.py:597 encode_texture" in short
+
+    dump = _StallDump()
+    import faulthandler
+    import time as _time
+
+    faulthandler.dump_traceback_later(0.05, repeat=False, file=dump.file)
+    end = _time.monotonic() + 0.3
+    while _time.monotonic() < end:  # holds the lock: faulthandler's own thread prints anyway
+        pass
+    got = dump.take()
+    assert "MainThread at test_pacing.py" in got and "test_a_stall_dump_names_the_thread_holding_the_lock" in got
+    assert dump.take() == ""  # read once

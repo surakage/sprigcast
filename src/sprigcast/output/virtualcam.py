@@ -285,8 +285,16 @@ class SharedBlock:
         seq = self._u64(24)
         seq.value += 1
         self._u32(16).value, self._u32(20).value = width, height
-        # A numpy array is copied straight from its own memory, with no bytes copy in between.
-        ctypes.memmove(self.address + HEADER, getattr(getattr(nv12, "ctypes", None), "data", nv12), n)
+        # A numpy array is copied straight from its own memory, with no bytes copy in between. So is a bytearray
+        # (the native engine's frames): ctypes refuses one as a pointer, and on the PC (2026-11-17) every native
+        # frame failed here, leaving the camera on its "no picture" green.
+        if isinstance(nv12, bytearray) or (isinstance(nv12, memoryview) and not nv12.readonly):
+            source = ctypes.addressof((ctypes.c_char * n).from_buffer(nv12))
+        elif isinstance(nv12, memoryview):
+            source = bytes(nv12[:n])
+        else:
+            source = getattr(getattr(nv12, "ctypes", None), "data", nv12)
+        ctypes.memmove(self.address + HEADER, source, n)
         seq.value += 1
 
     def close(self) -> None:
