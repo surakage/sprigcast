@@ -83,6 +83,7 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - The mouse wheel no longer changes a drop-down you didn't click (it set a place's Resolution to 480p).
 - Settings no longer waits for the sound-device scan to list the virtual camera's speakers (a 300 ms freeze).
 - Browser sources and web docks share at most two Chromium page processes.
+- Settings → General → Features: switch off Clips or the virtual camera. Off, they leave Live and load nothing.
 
 ### Sound
 
@@ -107,6 +108,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Built-in clips: 15, 30, 45 or 60 seconds, horizontal, vertical or both (#152).
 - The stream summary shows the bitrate actually sent (#118, #136).
 - Logbook: daily logs, a report for each stream, and crash reports in Documents\SprigCast\Logs (#129, #134, #138).
+- A recording stops itself, files saved, when the drive has about a minute of room left, instead of filling it.
+  Finishing a recording as a plain MP4 waits when there's no room for the second copy (the file plays as it is).
+- The Stream doctor adds up every place you go live to and checks the total against your upload (Optimize's test,
+  or what your last clean stream carried). Far over asks before going live.
 
 ### Get started
 

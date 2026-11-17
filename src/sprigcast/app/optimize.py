@@ -247,8 +247,24 @@ def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=No
     return int(sent * 8 / 1000 / took) if took > 0 else None
 
 
+MEASURED = "upload/measured_kbps"  # QSettings: the upload Optimize's test measured (the Stream doctor checks with it)
+
+
+def remember_measured(kbps: int | None) -> None:
+    if kbps:
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue(MEASURED, int(kbps))  # QSettings is safe on any thread with its own instance
+
+
 def _check_upload(p: PcProfile) -> str:
     """Twitch's bandwidth test when a Twitch key is set (a real stream, never shown), else Cloudflare's."""
+    text = _measure_upload(p)
+    remember_measured(p.upload_kbps)
+    return text
+
+
+def _measure_upload(p: PcProfile) -> str:
     from sprigcast.output import upload_test
 
     collection = p.extra.get("collection")

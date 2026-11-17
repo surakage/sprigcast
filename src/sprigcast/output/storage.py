@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 GB = 1024 ** 3
 LOW_MINUTES = 30  # warn when a recording has less room than this left
 VERY_LOW_MINUTES = 5  # and again here
+STOP_MINUTES = 1  # a recording stops itself, its files closed properly, before the drive is full
 FLOOR_BYTES = 2 * GB  # always leave Windows this much, whatever the bitrate
 SCREENSHOT_TYPES = (".png", ".jpg", ".jpeg")
 CLIP_TYPES = (".mkv", ".mp4", ".mov", ".flv")
@@ -82,6 +83,22 @@ class SpaceWatch:
                 self.warned.update(lv for lv in (VERY_LOW_MINUTES, LOW_MINUTES) if lv >= level)
                 return space_warning(free, self.kbps)
         return ""
+
+
+    def must_stop(self) -> bool:
+        """The drive is about to fill (only FLOOR_BYTES and a minute left): stop now, while the files can still
+        be closed properly. A full drive cuts a recording off mid-write and leaves Windows nowhere to go."""
+        return self.left is not None and self.left < STOP_MINUTES
+
+
+def room_to_copy(path: Path, free=free_bytes) -> bool:
+    """Whether the drive can take a second copy of path (finishing an MP4, repotting) and keep FLOOR_BYTES."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    room = free(path.parent)
+    return room is None or room - size > FLOOR_BYTES
 
 
 def rec_note(left: float | None) -> str:

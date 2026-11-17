@@ -525,8 +525,10 @@ class MainWindow(QMainWindow):
         self.updater = Updater(self, busy=lambda: self.streaming is not None or self.recording is not None)
         self.updater.start()
         QTimer.singleShot(2500, self._plugin_updates)  # say which store plugins updated at this start
-        if self.collection.recording.clips_on_start:  # once the renderer has its first frames
-            QTimer.singleShot(1500, lambda: self.replay is None and self._toggle_replay(True))
+        from sprigcast.app import features
+
+        if self.collection.recording.clips_on_start and features.on("clips"):  # once the renderer has frames
+            QTimer.singleShot(1500, self, lambda: self.replay is None and self._toggle_replay(True))
         self._clips_used_at = time.monotonic()
         self._clips_idle_paused = False  # clips paused for being unused: back when a stream or recording starts
         self._clips_timer = QTimer(self)
@@ -1923,6 +1925,7 @@ class MainWindow(QMainWindow):
         self._show_last_stream()
         self.live_side.on_screenshot = lambda: self._screenshot(background=True)
         self.live_side.on_view = self._set_live_view
+        self._apply_features()  # Settings → General → Features: hide what's switched off
         self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
         self.live_stage = LiveStage(self.live_side)
         self.live_tiles = QScrollArea()
@@ -1944,7 +1947,7 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.Resize and watched is self.live_tiles.viewport():
             QTimer.singleShot(0, self._fit_tiles)
         if event.type() == QEvent.Type.Resize and watched is getattr(self, "splitter", None) and self.mode == "live":
-            QTimer.singleShot(0, self._share_stage)
+            QTimer.singleShot(0, self, self._share_stage)
         return super().eventFilter(watched, event)
 
     def _fit_tiles(self) -> None:
@@ -1961,7 +1964,7 @@ class MainWindow(QMainWindow):
                 preview.live_look = True
                 preview.show_title = False  # Live: just the picture, no name or size above it
             QTimer.singleShot(0, self._fit_tiles)
-            QTimer.singleShot(0, self._share_stage)
+            QTimer.singleShot(0, self, self._share_stage)
         else:
             if self.splitter.parent() is not self.canvas_page:
                 self.canvas_page.layout().addWidget(self.splitter, 1)
@@ -2302,7 +2305,7 @@ class MainWindow(QMainWindow):
         self.mode_clock.setFont(font)
         self.mode_clock.setStyleSheet(f"color: {theme.LIVE_TEXT if live else theme.MUTED}; padding-left: 6px;")
         self._hold_clock_width()
-        QTimer.singleShot(0, self._fit_header)
+        QTimer.singleShot(0, self, self._fit_header)
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -2336,7 +2339,7 @@ class MainWindow(QMainWindow):
         QSettings().setValue("live/canvas_view", view)
         self._apply_canvas_view()
         if self.mode == "live":
-            QTimer.singleShot(0, self._share_stage)
+            QTimer.singleShot(0, self, self._share_stage)
         self.live_panel.show_scenes(self.collection)
 
     def _apply_canvas_view(self) -> None:
@@ -2370,7 +2373,7 @@ class MainWindow(QMainWindow):
             self.splitter.insertWidget(0, self.canvas_columns[first])
         if build:
             self._share_stage()  # now, so the swap doesn't show a frame of the old sizes
-            QTimer.singleShot(0, self._share_stage)
+            QTimer.singleShot(0, self, self._share_stage)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
         canvas = self.collection.canvas(self.build_canvas)
@@ -5472,6 +5475,11 @@ class MainWindow(QMainWindow):
             self._toggle_replay(True)
 
     def _toggle_replay(self, on: bool) -> None:
+        from sprigcast.app import features
+
+        if on and self.replay is None and not features.on("clips"):
+            self.statusBar().showMessage(features.OFF_NOTE["clips"], 5000)
+            return
         if on and self.replay is None:
             settings = self.collection.recording
             canvases = self._clip_canvases()
@@ -5520,7 +5528,10 @@ class MainWindow(QMainWindow):
     def _save_replay(self) -> list:
         """Save a clip of the last seconds; returns the files (none when clips are off or it failed)."""
         if self.replay is None:
-            self.statusBar().showMessage("Press Clip first to get clips ready.", 4000)
+            from sprigcast.app import features
+
+            self.statusBar().showMessage(features.OFF_NOTE["clips"] if not features.on("clips") else
+                                         "Press Clip first to get clips ready.", 4000)
             return []
         try:
             paths = self.replay.save()
@@ -5536,7 +5547,18 @@ class MainWindow(QMainWindow):
         self.control.replay_saved(paths)
         return paths
 
-    def _stop_recording(self) -> None:
+    def _stop_for_space(self) -> None:
+        """The recordings drive is nearly full: stop now, files closed properly, rather than let it fill."""
+        from sprigcast.output import storage
+
+        free = storage.free_bytes(self._recordings_folder())
+        log.warning("recording stopped: the drive is almost full (%s free)",
+                    storage.size_text(free) if free is not None else "?")
+        self._stop_recording(low_disk=True)
+        self._saved_note("Recording stopped: the drive is almost full", self._recordings_folder(),
+                         detail="Your files are saved. Free up space to record again.", kind="warn", ms=30000)
+
+    def _stop_recording(self, low_disk: bool = False) -> None:
         session, self.recording = self.recording, None
         if session is None:
             return
@@ -5568,7 +5590,7 @@ class MainWindow(QMainWindow):
 
             repot, delete = repot_choice()
             mkvs = [p for p in session.paths if p.suffix.lower() == ".mkv"]
-            if repot and mkvs:
+            if repot and mkvs and not low_disk:  # a repotted copy needs room the drive hasn't got
                 self.repot(mkvs, delete)
 
     def _refresh_recording_status(self) -> None:
@@ -5588,6 +5610,9 @@ class MainWindow(QMainWindow):
             if seconds % 15 == 0 and seconds != getattr(self, "_space_checked", -1):  # a disk check every 15 s
                 self._space_checked = seconds
                 space = watch.check()
+                if watch.must_stop():
+                    self._stop_for_space()
+                    return
                 if space:
                     log.warning("recording: %s", space)
                     self.statusBar().showMessage(space, 20000)
@@ -5667,7 +5692,7 @@ class MainWindow(QMainWindow):
         brief = getattr(self, "_header_level", 0) >= 1
         self.mode_clock.setText(self._clock_html + ("" if brief else self._clock_details))
         self._hold_clock_width()
-        QTimer.singleShot(0, self._fit_header)
+        QTimer.singleShot(0, self, self._fit_header)
 
     def _hold_clock_width(self) -> None:
         """Room for the clock measured with every digit as an 8 (the widest), so the buttons beside it
@@ -6243,7 +6268,10 @@ class MainWindow(QMainWindow):
         from sprigcast.app.output_page import camera_choice, camera_wanted
         from sprigcast.output import virtualcam
 
-        want = camera_wanted() and virtualcam.supported()[0] and virtualcam.installed()
+        from sprigcast.app import features
+
+        want = (features.on("camera") and camera_wanted() and virtualcam.supported()[0]
+                and virtualcam.installed())
         if want and self.camera is None:
             camera = virtualcam.VirtualCamera(self.engine, lambda: self.collection.canvases, choice=camera_choice,
                                               scenes=lambda: self.collection.scenes)
@@ -6270,7 +6298,12 @@ class MainWindow(QMainWindow):
         from sprigcast.app.output_page import CAMERA_ON
         from sprigcast.output import virtualcam
 
+        from sprigcast.app import features
+
         turn_on = self.camera is None
+        if turn_on and not features.on("camera"):
+            self._say(features.OFF_NOTE["camera"])
+            return
         self._camera_error = self._guide_camera() if turn_on else ""
         QSettings().setValue(CAMERA_ON, turn_on and not self._camera_error)
         self._sync_camera()
@@ -6350,6 +6383,7 @@ class MainWindow(QMainWindow):
             self._restart_clips_if_changed(clips)
             rec = self.collection.recording
             self._clips_before = self._clip_key()
+        self._apply_features()
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
         from sprigcast.app.theme import apply_theme
 
@@ -6369,6 +6403,20 @@ class MainWindow(QMainWindow):
         from sprigcast.app.control_server import apply_settings
 
         apply_settings(self.control, self)
+
+    def _apply_features(self) -> None:
+        """Settings → General → Features: a feature that's off leaves Live's bar and stops (nothing kept loaded)."""
+        from sprigcast.app import features
+
+        clips, camera = features.on("clips"), features.on("camera")
+        if not clips and getattr(self, "replay", None) is not None:
+            self._toggle_replay(False)
+        self.live_side.clip.setVisible(clips)
+        for w in (self.live_side.camera, self.live_side.camera_settings):
+            w.setVisible(camera)
+        if not camera:
+            self.live_side.camera_note.setVisible(False)
+        # _sync_camera (run next by _after_settings, and at start) lets the camera go when it's off
 
     REST_AFTER_MS = 10_000
 
@@ -6538,15 +6586,22 @@ class MainWindow(QMainWindow):
                                             lambda sid=scene.id: self._switch_to_scene(sid),
                                             hotkeys.get(SCENE_PREFIX + scene.id, ""),
                                             scene.id == self.collection.active_scenes.get(canvas.id)))
+        from sprigcast.app import features
+
         live = self.streaming is not None
         recording = self.recording is not None
         commands += [
             Command("End stream" if live else "Go live", "Action", self._on_live_clicked, hotkeys.get(TOGGLE_STREAM, "")),
             Command("Stop recording" if recording else "Start recording", "Action", self._on_record_clicked,
                     hotkeys.get(TOGGLE_RECORD, "")),
-            Command("Clips ready", "Action", lambda: self._toggle_replay(self.replay is None),
-                    checked=self.replay is not None),
-            Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
+        ]
+        if features.on("clips"):
+            commands += [
+                Command("Clips ready", "Action", lambda: self._toggle_replay(self.replay is None),
+                        checked=self.replay is not None),
+                Command("Save replay", "Action", self._save_replay, hotkeys.get(SAVE_REPLAY, "")),
+            ]
+        commands += [
             Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
             Command("Stream health", "Action", lambda: self._open_health()),
             Command("Light settings for a slower PC", "Action", lambda: self.use_light_settings()),
@@ -6773,7 +6828,7 @@ class MainWindow(QMainWindow):
         self.live_side.garden.setToolTip("Garden check: how SprigCast and your streams are doing. Click for everything."
                                          + (f" Recording: {rec_warning}" if rec_warning else ""))
         self.live_side.garden.set_numbers("  ·  ".join(parts), level, sample.get("cpu"))
-        QTimer.singleShot(0, self._fit_header)
+        QTimer.singleShot(0, self, self._fit_header)
 
     def _open_garden_check(self, tab: str = "now"):
         """How SprigCast and the streams are doing (tiles, stream health, quick checks), and the last streams."""
@@ -7207,6 +7262,7 @@ class MainWindow(QMainWindow):
             last_streams=doctor.load_last_streams(QSettings()),
             free_gb=doctor.free_space_gb(self._recordings_folder()),
             recording_planned=bool(self.collection.recording.canvases),
+            upload_kbps=doctor.usable_upload(QSettings()),
         )
 
     def _doctor_warnings(self) -> list[str]:

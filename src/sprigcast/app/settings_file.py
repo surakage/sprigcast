@@ -17,7 +17,7 @@ from sprigcast.core.scene import EncoderSettings, RecordingSettings, SceneCollec
 FORMAT = "sprigcast-settings"
 VERSION = 1
 # QSettings groups and keys that travel. Anything else (sign-ins, window layout, this PC's tier) stays.
-GROUPS = ("general/", "editing/", "advanced/", "camera/", "logs/", "settings/", "live/")
+GROUPS = ("general/", "editing/", "advanced/", "camera/", "logs/", "settings/", "live/", "features/")
 KEYS = ("updates/auto_check", "control/enabled", "control/lan", "control/obs_door", "control/web_door",
         "control/port", "control/use_password")
 LEFT_OUT = ("general/pc_tier", "general/optimized", "camera/sound_to")
