@@ -258,34 +258,15 @@ def test_an_output_copy_isnt_asked_for_while_the_card_is_stuck(compositor, monke
     assert len(draws) == 1
 
 
-def test_read_back_buffers_are_read_straight_from_memory_where_the_driver_can(compositor):
-    from sprigcast.render.gl_unlocked import MappedBuffer
-
-    if compositor.gl is None or not compositor.gl.mapping_ok:
-        pytest.skip("this driver has no persistent mapping")
-    _picture(compositor)
-    want = bytes(compositor.read_nv12("c", (32, 18)))
-    compositor.read_nv12_later("c", (32, 18), "first", 1.0)
-    target = compositor.nv12_targets[("c", (32, 18))]
-    assert all(isinstance(b, MappedBuffer) for b in target.pbos.buffers)
-    calls = []
-    real = compositor.gl.glGetBufferSubData
-    compositor.gl.glGetBufferSubData = lambda *a: calls.append(a) or real(*a)
-    try:
-        data, tag = compositor.read_nv12_later("c", (32, 18), "second", 1.03)
-    finally:
-        compositor.gl.glGetBufferSubData = real
-    assert tag == "first" and bytes(data) == want and calls == []  # fetched with no OpenGL call
-
-
-def test_outputs_keep_four_buffers_and_previews_three(compositor):
+def test_every_copy_keeps_three_driver_buffers(compositor):
+    """Not four, and not pinned memory kept mapped: those cost about 70 MB on the PC (2026-11-17 rerun)."""
     _picture(compositor)
     compositor.read_nv12_later("c", (32, 18), "a", 1.0)
     compositor.read_scaled_later("c", (16, 8), "a", 1.0, optional=True)
     compositor.read_full_later("c", "a", 1.0)
-    assert len(compositor.nv12_targets[("c", (32, 18))].pbos.buffers) == 4
-    assert len(compositor.full_pbos["c"].buffers) == 4
-    assert len(compositor.scaled_targets[("c", (16, 8))].pbos.buffers) == 3
+    for pbos in (compositor.nv12_targets[("c", (32, 18))].pbos, compositor.full_pbos["c"],
+                 compositor.scaled_targets[("c", (16, 8))].pbos):
+        assert len(pbos.buffers) == 3 and all(isinstance(b, moderngl.Buffer) for b in pbos.buffers)
 
 
 def test_a_read_puts_back_moderngls_framebuffer_without_asking_the_driver(compositor):
@@ -322,13 +303,3 @@ def test_a_fence_seen_done_isnt_asked_about_again():
     assert pbos.take(1.016) == (b"a", "a")
     assert fences.asked == asked  # "a" was already known to be done
 
-
-def test_without_mapping_the_usual_buffers_are_made():
-    from sprigcast.render.compositor import _Pbos
-
-    class NoMapping(_Fences):
-        def mapped(self, nbytes):
-            return None
-
-    pbos = _Pbos(_Ctx(), 16, NoMapping(), 4)
-    assert len(pbos.buffers) == 4 and all(isinstance(b, _Buffer) for b in pbos.buffers)

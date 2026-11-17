@@ -613,25 +613,20 @@ class _Pbos:
     card is behind on every buffer the oldest gives way. Without fences (moderngl's own calls) the frame of
     the tick before is fetched as it is, as before.
 
-    Where the driver can (OpenGL 4.4), the buffers stay mapped (gl_unlocked.MappedBuffer): a finished copy is
-    fetched from memory with no OpenGL call. A fence seen done is remembered, so asking about it again (behind,
-    stuck, take in one tick) doesn't ask the driver again.
+    A fence seen done is remembered, so asking about it again (behind, stuck, take in one tick) doesn't ask the
+    driver again. (Buffers kept mapped for good, read with no OpenGL call, were tried in #453: they live in
+    pinned memory counted against SprigCast, about 70 MB more in the 2026-11-17 rerun, and the copies into them
+    still waited when the card did. Three driver-owned buffers each, as before.)
     """
 
     STALE_S = 0.5  # a frame waiting longer than this (a preview hidden for a while) is thrown away
-    COUNT = 3  # a preview's: one tick in flight, one being taken, one spare
-    OUTPUT_COUNT = 4  # an encoder's: the card may be two ticks behind before a frame gives way
+    COUNT = 3  # one tick in flight, one being taken, one spare
 
-    def __init__(self, ctx: moderngl.Context, nbytes: int, fences=None, count: int | None = None):
+    def __init__(self, ctx: moderngl.Context, nbytes: int, fences=None):
         self.fences = fences if getattr(fences, "fences_ok", False) else None
-        count = count or self.COUNT
-        mapped = getattr(self.fences, "mapped", None)
-        self.buffers = []
-        for _ in range(count):
-            buffer = mapped(nbytes) if mapped is not None else None
-            self.buffers.append(buffer if buffer is not None else ctx.buffer(reserve=nbytes))
+        self.buffers = [ctx.buffer(reserve=nbytes) for _ in range(self.COUNT)]
         self.pending: list[list] = []  # [buffer index, tag, when, fence, seen done], oldest first
-        self.free = list(range(count))
+        self.free = list(range(self.COUNT))
         self.late = 0  # ticks the card hadn't finished the copy (nothing taken instead of waiting)
         self.size: tuple[int, int] | None = None  # what it was made for, where the owner needs to know
 
@@ -651,8 +646,8 @@ class _Pbos:
 
     def take(self, now: float, read=None) -> tuple[bytes | None, object]:
         """The oldest frame queued before this tick's, with its tag, or (None, None) when there is none or the
-        card hasn't finished copying it. read(buffer) fetches it (UnlockedGL.read_buffer), else the buffer's
-        own read() (moderngl's, or straight from memory for a mapped one)."""
+        card hasn't finished copying it. read(buffer) fetches it (UnlockedGL.read_buffer), else moderngl's
+        buffer.read()."""
         while len(self.pending) > 1 and now - self.pending[0][2] > self.STALE_S:
             self._drop()
         if len(self.pending) < 2:  # never the frame queued this tick
@@ -712,7 +707,7 @@ class _Nv12Target:
         self.uv = ctx.texture((w // 2, h // 2), 2)
         self.y_fbo = ctx.framebuffer(color_attachments=[self.y])
         self.uv_fbo = ctx.framebuffer(color_attachments=[self.uv])
-        self.pbos = _Pbos(ctx, w * h * 3 // 2, fences, _Pbos.OUTPUT_COUNT)
+        self.pbos = _Pbos(ctx, w * h * 3 // 2, fences)
 
     def release(self) -> None:
         for obj in (self.y_fbo, self.uv_fbo, self.y, self.uv):
@@ -1358,7 +1353,7 @@ class Compositor:
         if pbos is None or pbos.size != (w, h):  # first time, or the canvas was resized
             if pbos is not None:
                 pbos.release()
-            pbos = self.full_pbos[canvas_id] = _Pbos(self.ctx, w * h * 4, self.gl, _Pbos.OUTPUT_COUNT)
+            pbos = self.full_pbos[canvas_id] = _Pbos(self.ctx, w * h * 4, self.gl)
             pbos.size = (w, h)
         self._used[("full", canvas_id)] = time.monotonic()
         if pbos.stuck(now, self.STUCK_S):  # see read_nv12_later
