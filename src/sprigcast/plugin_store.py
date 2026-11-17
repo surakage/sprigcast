@@ -148,11 +148,24 @@ def install(plugins_dir: Path, plugin: StorePlugin, report: PluginReport | None 
     return error
 
 
+# Store plugins taken out of SprigCast (see docs/REVISIT.md): an added copy is deleted at start, so it never loads.
+RETIRED = ("background_remover",)
+
+
 def refresh_installed(plugins_dir: Path | None) -> list[str]:
     """Bring store plugins you added up to the version that ships with this SprigCast (before they
-    load, at start). Your own plugins and ones you never added are left alone. Returns the ids updated."""
+    load, at start), and delete retired ones. Your own plugins and ones you never added are left alone.
+    Returns the ids updated."""
     if plugins_dir is None or not plugins_dir.is_dir():
         return []
+    for plugin_id in RETIRED:
+        target = installed_path(plugins_dir, plugin_id)
+        if target.exists():
+            try:
+                target.unlink()
+                log.info("plugin store: removed %s (retired from SprigCast)", plugin_id)
+            except OSError as exc:
+                log.warning("plugin store: couldn't remove retired %s: %s", plugin_id, exc)
     updated = []
     for plugin in catalog():
         have = installed_version(plugins_dir, plugin.id)

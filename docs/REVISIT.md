@@ -4,12 +4,13 @@ Features that were taken out, or are on watch, because they weren't steady enoug
 Anything here comes back only after it's rebuilt or proven on real PCs. The bar is the launch bar:
 it must run on any Windows 10/11 PC, old ones included, without crashes, freezes or dropped frames.
 
-Each entry says why it's here and what it would need to come back.
+Each entry says why it's here and what it would need to come back. To bring one back, start from
+the git history named in its entry, but rebuild it to today's rules rather than restoring it as it was.
 
 ## Taken out
 
 ### TikTok chat
-- **Status:** being removed (decided 2026-11-17). Rebuild from scratch; don't revive the old code.
+- **Removed:** 2026-11-17 (#431). Rebuild from scratch; don't revive the old code.
 - **Why:** it caused an access-violation crash while SprigCast sat idle (2026-11-16). It ran on the
   unofficial `TikTokLive` library (TikTok has no public chat API), with its own asyncio thread inside
   the app, and it had to be kept off the UI thread twice (#371, #377).
@@ -17,69 +18,84 @@ Each entry says why it's here and what it would need to come back.
   Live captions' model), so a crash there can never take the stream down. Or lean on TikFinity /
   Streamer.bot, which already read TikTok and can call SprigCast's API.
 
-## Under review (decision pending)
-
-These were flagged in the stability review of 2026-11-17. Each one is still in the app until a
-decision is made; once one is taken out, move it to "Taken out" above.
-
 ### Kick chat
-- **Why:** reads kick.com's private channel API and its Pusher chat feed (`chat/kick.py`). Neither is an
-  official API, and kick.com sits behind Cloudflare, which already refused SprigCast's sign-in (1010/403,
-  #420, #425). Same kind of risk as TikTok chat.
-- **To come back:** Kick's official developer API, if it ever offers chat to desktop apps.
-
-### YouTube and Kick sign-in (fetch the stream key)
-- **Why:** the Google app is still in Testing mode, so only listed test users can sign in; outside
-  testers would see "access blocked". Kick still answers 403 (#425). Closing Settings mid sign-in caused
-  heap corruption (#420, fixed). Pasting the key always works.
-- **To come back:** Google verification of the `youtube` scope, a working Kick sign-in, and a run with
-  a tester who isn't on the test-user list.
-
-### Twitch Enhanced Broadcasting (multitrack)
-- **Why:** built in #19 and checked only against a local FFmpeg listener; never tried on a real Twitch
-  stream. It runs one encoder per quality, which is the opposite of "easy on the PC", and Twitch drops
-  the connection if the broadcast metrics are off. Off by default.
-- **To come back:** a real Twitch test, on a PC with room to spare.
-
-### Elgato Wave Link sync
-- **Why:** talks to Wave Link's private WebSocket (`audio/wavelink.py`); only tested against a fake
-  server. Off by default.
-- **To come back:** a test with Wave Link 3 on the user's PC, and a check after each Wave Link update.
-
-### Live captions (store plugin)
-- **Why:** the largest plugin (about 1,100 lines), with a speech model, model downloads and a helper
-  process. It froze the stream for 1.4 s before #412, and the graphics-card (DirectML) path hasn't run on
-  a real PC. It needs onnxruntime-directml in the installer.
-- **To come back:** a PC test on both graphics card and processor, and on an older PC.
-
-### Background remover (store plugin)
-- **Why:** v2 (model in a helper process, #428) has never run on a real PC. AI on every camera frame is
-  heavy for older PCs. With Live captions, it's the only reason onnxruntime ships, so shelving both
-  shrinks the install.
-- **To come back:** a PC test with the Facecam, frame times with Better edges, and memory after it parks.
+- **Removed:** 2026-11-17 (#430). The code was `src/sprigcast/chat/kick.py`. Streaming to Kick and Kick
+  sign-in stay.
+- **Why:** it read kick.com's private channel API and its Pusher chat feed. Neither is an official API,
+  and kick.com sits behind Cloudflare, which already refused SprigCast's sign-in (1010/403, #420, #425).
+  It was the same kind of risk as TikTok chat.
+- **To come back:** Kick's official developer API, once it offers chat to desktop apps (today it only
+  sends chat to a web server by webhook).
 
 ### VST3 sound filters
+- **Removed:** 2026-11-17 (#430), with the `pedalboard` library. The code was the `vst` filter in
+  `src/sprigcast/core/filters.py` and its "Open plug-in" button in the Filters window. A saved VST filter
+  is skipped, and the sound plays without it.
 - **Why:** a VST3 plug-in is someone else's native code loaded inside SprigCast. A bad plug-in can crash
-  the whole app the same way TikTok chat did. Never tried with a real plug-in (#253).
-- **To come back:** run plug-ins in a helper process, or test a set of common free plug-ins (ReaPlugs,
-  NVIDIA Broadcast) on the user's PC.
+  the whole app the same way TikTok chat did. It was never tried with a real plug-in (#253).
+- **To come back:** run plug-ins in a helper process, so a crash there only stops that one filter.
+
+### Background remover (store plugin)
+- **Removed:** 2026-11-17 (#430). The plugin was `src/sprigcast/store/background_remover.py`, and its
+  models were in `models/background/`. A copy someone had added is deleted at start
+  (`plugin_store.RETIRED`). The drawing side stays and does nothing until a plugin uses it: the
+  `background` video filter kind, `plugin_hooks.register_frame_watcher`, and the compositor's
+  `upload_cutout` and `cutout` shader paths.
+- **Why:** it cost the most of anything measured on 2026-11-17. On the processor (old PCs, or any PC
+  where DirectML can't start), on a 4-core test machine:
+  - Normal: about 25 % of the whole PC (one full core) plus 5 % in SprigCast, and a 80 MB helper,
+    for as long as the camera is on screen.
+  - Better edges: about 47 % of the PC and a 190 MB helper, and it managed only 17 masks a second.
+  - SprigCast itself streams at 3 to 5 % CPU. Nothing was used while the camera was off screen,
+    because the helper ended. Its graphics card (DirectML) path was never run on a real PC.
+- **To come back:** a graphics card path proven on real PCs (NVIDIA, AMD, Intel) that stays off the
+  processor, plus a clear "your PC can't run this" message on PCs without DirectML.
+
+## Kept, with what was measured (2026-11-17)
+
+These were reviewed and kept. Each still needs a pass on the real PC.
+
+### Live captions (store plugin)
+- **Kept:** it costs nothing until captions are on air, and only a moderate amount while someone talks.
+- **Measured** (tiny model on the processor, 4-core test machine): a 210 MB helper process with 2 threads,
+  about 6 % of the PC while talking non-stop, and 0.15 s to read 3 s of speech. The helper ends 60 s
+  after captions go off air. The model downloads once: 104 MB (processor) to 290 MB (graphics card,
+  base model on PCs with 8 or more cores).
+- **Install:** it is now the only user of onnxruntime-directml, about 25 MB of the download and 70 MB
+  installed. Taking captions out too would save that.
+- **To check:** the graphics card path on the user's PC, and the processor path on an older PC.
+
+### Elgato Wave Link sync
+- **Kept:** it costs nothing. It is off by default. When on, it holds one local connection only while a
+  sound captures a Wave Link channel, with no thread and no polling.
+- **Risk:** it talks to Wave Link's private WebSocket, and was only tested against a fake server. Check it
+  with Wave Link 3, and again after Wave Link updates.
 
 ### Now playing (store plugin)
-- **Why:** reads Windows' media session through `winrt`; tested only against a stand-in, never on real
-  Windows (#390). Adds two Windows-only packages.
-- **To come back:** a PC test with Spotify and a browser playing.
+- **Kept:** it adds under 1 MB to the install (the `winrt` packages). It uses one thread only while the card
+  is on screen, and it waits for Windows to say the song changed instead of asking.
+- **Risk:** it was only tested against a stand-in, never on real Windows. Check it with Spotify and a browser.
 
-## Keep, but check in the next PC test
+### YouTube and Kick sign-in
+- **Kept:** it makes setting up a stream key easier (the user's decision, 2026-11-17).
+- **Risk:** the Google app is still in Testing mode, so only listed test users can sign in. Outside testers
+  will see "access blocked" until Google verifies the `youtube` scope. Kick still answers 403 (#425).
+  Pasting the key always works.
 
-Not removal candidates. They stay, and each needs a pass on real hardware.
+### Twitch Enhanced Broadcasting (multitrack)
+- **Kept:** for testing while multistreaming. OBS offers the same thing through the Aitum plugin.
+- **Risk:** it was built in #19 and checked only against a local FFmpeg listener. It runs one encoder per
+  quality, and Twitch drops the connection if the broadcast metrics are off. It is off by default.
 
-- **Idle preview copy stall:** at idle after a show, one frame took 330 ms on the preview copy and the
-  window stopped answering for 0.9 s (log of 52ad3a7). Being fixed separately.
+## Check in the next PC test
+
+These aren't removal candidates. Each needs a pass on real hardware.
+
 - **Graphics driver reset recovery** (#428): never triggered on a real PC.
-- **SprigCast's own NVENC encoder** (`output/nvenc_d3d11.py`): talks to the NVIDIA driver directly and is
-  the default for recordings and the replay buffer. Proven on the user's RTX card only; it checks itself
-  with a test frame and falls back to FFmpeg. Try it on another NVIDIA card.
-- **Untested store plugins and features:** Instant replay, Move transition, Auto clip, Stream timer,
-  PNGtuber. If one misbehaves in the test, move it to "Under review".
-- **Paired devices:** the cause of StreamBridge's lost pairing is still unknown; it survived the last
-  update. Read the "paired" log lines if it happens again.
+- **SprigCast's own NVENC encoder** (`output/nvenc_d3d11.py`): it talks to the NVIDIA driver directly and is
+  the default for recordings and the replay buffer. It has only been proven on the user's RTX card. It checks
+  itself with a test frame and falls back to FFmpeg. Try it on another NVIDIA card.
+- **Untested store plugins and features:** Instant replay, Move transition, Auto clip, Stream timer and
+  PNGtuber. If one misbehaves in the test, review it here.
+- **Paired devices:** the cause of StreamBridge's lost pairing is still unknown, though the pairing survived
+  the last update. If it's lost again, read the "paired" log lines.

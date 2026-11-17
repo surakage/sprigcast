@@ -132,22 +132,14 @@ def test_sound_filters_stay_apart_from_effects_and_are_a_to_z(app):
     assert ducking.settings["sound_id"] == "mic"
 
 
-def test_vst_filter_passes_sound_through_until_a_plug_in_loads(app, tmp_path):
+def test_vst_filters_are_gone_and_old_ones_are_skipped(app):
+    """VST3 plug-ins ran someone else's native code inside SprigCast: removed (2026-11-17), see docs/REVISIT.md."""
     import numpy as np
 
-    from sprigcast.app.filters_dialog import FiltersDialog
-    from sprigcast.core.filters import AudioChain
+    from sprigcast.core.filters import AudioChain, filter_kind
+    from sprigcast.core.scene import Filter
 
-    source = SourceConfig(id="mic", kind="audio_input", name="Mic")
-    d = FiltersDialog(source, lambda save=True: None)
-    flt = d.add("vst")
-    assert d.vst_button.isVisibleTo(d) and not d.form.rows["state"].isVisibleTo(d.form)
-    d._open_vst()  # nothing picked yet: says so, no crash
-    assert "choose the plug-in" in d.title.text()
+    assert filter_kind("vst") is None
     block = np.full((1024, 2), 0.25, dtype=np.float32)
-    chain = AudioChain(source.filters)
-    assert np.array_equal(chain.process(block), block)
-    flt.settings = {**flt.settings, "plugin_file": str(tmp_path / "Missing.vst3")}
-    assert chain.update(source.filters)
-    assert np.array_equal(chain.process(block), block)  # won't load: the sound still plays
-    assert chain.processors[0].problem
+    chain = AudioChain([Filter(id="f1", kind="vst", name="VST", settings={"plugin_file": "Old.vst3"})])
+    assert not chain.processors and np.array_equal(chain.process(block), block)  # a saved one just passes sound

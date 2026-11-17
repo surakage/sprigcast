@@ -15,7 +15,7 @@ def test_feed_keeps_recent_lines_and_follows_mod_actions():
     assert [line.message.text for line in lines] == ["m2", "m3", "m4"] and version == 5
     feed.remove(platform="twitch", message_id="3")
     assert [line.message.text for line in feed.snapshot()[1]] == ["m2", "m4"]
-    feed.remove(platform="kick", user_id="u2")  # another platform's ban leaves Twitch alone
+    feed.remove(platform="youtube", user_id="u2")  # another platform's ban leaves Twitch alone
     assert len(feed.snapshot()[1]) == 2
     feed.remove(platform="twitch", user_id="u2")
     assert feed.snapshot()[1] == [] and feed.version == 7
@@ -34,8 +34,8 @@ def test_chat_box_draws_newest_at_the_bottom_and_wraps(monkeypatch):
     lines = []
     feed = Feed()
     feed.push(ChatMessage("twitch", "fern", "short"))
-    feed.push(ChatMessage("kick", "moss", "a much longer message that will need to wrap onto more lines " * 2,
-                          emotes=[(0, 0, "kick-1")], images={"kick-1": "https://files.kick.com/emotes/1/fullsize"}))
+    feed.push(ChatMessage("youtube", "moss", "a much longer message that will need to wrap onto more lines " * 2,
+                          emotes=[(0, 0, "yt-1")], images={"yt-1": "https://yt3.ggpht.com/emoji-1"}))
     lines = feed.snapshot()[1]
     frame = box.draw(lines)
     assert frame.shape == (200, 300, 4) and frame.dtype == np.uint8

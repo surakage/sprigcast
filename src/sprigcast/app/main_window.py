@@ -604,7 +604,7 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, k=kind.key: self._add_app_sound(k))
 
     def _build_chat_panel(self) -> None:
-        """Chat on Live: your Twitch, YouTube and Kick chats mixed, or any chat link, in this one panel."""
+        """Chat on Live: your Twitch and YouTube chats mixed, or any chat link, in this one panel."""
         from sprigcast.app.chat_panel import KEY, ChatPanel
 
         self.chat_panel = ChatPanel(self._connect_twitch)

@@ -15,6 +15,13 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 - Chat from Twitch, YouTube and Kick together.
 - The Windows installer.
 
+### Taken out
+
+Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it needs to come back.
+
+- TikTok chat (#431). Kick chat, VST3 sound filters and the Background remover store plugin (#430). A Background
+  remover someone had added is deleted at start.
+
 ### Live screen
 
 - Live gets its own screen: a big stage, then Blooms, Sound and Transitions as cards along the bottom (#119, #160, #196).

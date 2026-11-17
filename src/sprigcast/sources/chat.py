@@ -36,7 +36,7 @@ DEFAULTS = {
     "bubble_color": "#0e1311c8",  # a soft dark bubble behind each message ("#00000000" = none)
     "background_color": "#00000000",  # the whole box ("#00000000" = see-through)
     "hide_after": 0,  # seconds before a message fades away; 0 keeps them
-    "platform_marks": True,  # a small bar in the platform's colour (Twitch purple, YouTube red, Kick green)
+    "platform_marks": True,  # a small bar in the platform's colour (Twitch purple, YouTube red)
 }
 TWITCH_EMOTE = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0"
 CHECK_EVERY = 0.2  # seconds between looks at the feed

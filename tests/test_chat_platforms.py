@@ -1,4 +1,4 @@
-"""YouTube and Kick chat readers: the parts that turn each platform's public chat into ChatMessages."""
+"""YouTube chat reader: the parts that turn its public chat into ChatMessages."""
 
 import json
 import os
@@ -8,7 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6.QtCore")
 
-from sprigcast.chat import kick, name_for, youtube  # noqa: E402
+from sprigcast.chat import name_for, youtube  # noqa: E402
 
 
 def test_youtube_handles_and_links():
@@ -81,60 +81,15 @@ def test_youtube_messages_super_chats_and_deletes():
     assert [m.id for m in got] == ["m1"] and deleted == ["m1"]
 
 
-def test_kick_names_emotes_and_events():
-    assert kick.slug_from_text("https://kick.com/SlothBloom") == "slothbloom"
-    assert kick.slug_from_text("@moss_fern") == "moss_fern"
-    assert kick.slug_from_text("bad name!") is None
-    assert kick.chatroom_from_channel({"chatroom": {"id": 668}}) == 668
-    data = {"id": "abc", "content": "gg [emote:37226:KEKW]!", "sender": {
-        "id": 9, "username": "Moss", "identity": {"color": "#E9113C", "badges": [{"type": "moderator"}]}}}
-    message = kick.message_from_event("App\\Events\\ChatMessageEvent", data)
-    assert message.text == "gg KEKW!" and message.emotes == [(3, 6, "kick-37226")]
-    assert message.images["kick-37226"].endswith("/37226/fullsize") and message.badges == ("moderator",)
-    sub = kick.message_from_event("App\\Events\\GiftedSubscriptionsEvent",
-                                  {"gifter_username": "Fern", "gifted_usernames": ["a", "b"]})
-    assert sub.notice and sub.text == "Fern gifted 2 subs"
-
-
-def test_kick_reader_subscribes_pongs_and_dedupes():
-    from PySide6.QtCore import QCoreApplication
-
-    QCoreApplication.instance() or QCoreApplication([])
-
-    class Socket:
-        sent = []
-
-        def sendTextMessage(self, text):  # noqa: N802
-            self.sent.append(json.loads(text))
-
-    reader = kick.KickChat()
-    reader.chatroom, reader.socket = 668, Socket()
-    got, states = [], []
-    reader.message.connect(got.append)
-    reader.status.connect(states.append)
-    reader.handle_text(json.dumps({"event": "pusher:connection_established", "data": "{}"}))
-    assert [m["data"]["channel"] for m in reader.socket.sent] == ["chatrooms.668.v2", "chatroom_668"]
-    reader.handle_text(json.dumps({"event": "pusher_internal:subscription_succeeded", "data": "{}"}))
-    line = {"event": "App\\Events\\ChatMessageEvent",
-            "data": json.dumps({"id": "x1", "content": "hi", "sender": {"username": "a"}})}
-    reader.handle_text(json.dumps(line))
-    reader.handle_text(json.dumps(line))
-    reader.handle_text(json.dumps({"event": "pusher:ping", "data": {}}))
-    assert len(got) == 1 and states == ["live"] and reader.socket.sent[-1]["event"] == "pusher:pong"
-    sent = {"event": "App\\Events\\ChatMessageSentEvent",
-            "data": json.dumps({"id": "x2", "content": "yo", "sender": {"username": "b"}})}
-    reader.handle_text(json.dumps(sent))
-    assert [m.text for m in got] == ["hi", "yo"]
-    # A retired chat key (Pusher 4001) moves the next try on to the next key
-    assert reader._key_index == 0
-    reader.handle_text(json.dumps({"event": "pusher:error", "data": {"code": 4001, "message": "gone"}}))
-    assert reader._key_index == 1
-    reader._ping.stop()
-    reader.socket = None
-
-
 def test_tiktok_chat_is_gone_until_it_is_built_properly():
     """TikTok chat was unofficial and suspected in an idle crash (2026-11-16): removed until built anew."""
     from sprigcast.chat import PLATFORMS, name_for
 
     assert "tiktok" not in PLATFORMS and name_for("tiktok", "@moss") is None
+
+
+def test_kick_chat_is_gone_until_it_is_built_properly():
+    """Kick chat read kick.com's private feed behind Cloudflare: removed (2026-11-17), see docs/REVISIT.md."""
+    from sprigcast.chat import PLATFORMS, name_for
+
+    assert "kick" not in PLATFORMS and name_for("kick", "kick.com/moss") is None
