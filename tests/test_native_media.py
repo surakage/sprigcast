@@ -451,6 +451,54 @@ def test_a_stinger_clip_plays_through_the_engine(player_lib, files, monkeypatch,
     assert RETIRER.settle()
 
 
+def test_an_instant_replay_plays_through_the_engine(player_lib, files, monkeypatch, tmp_path):
+    """store/instant_replay.py with SPRIGCAST_ENGINE=native: B, G, R, A pictures fitted to the box (letterboxed),
+    from skip_to on, at half speed with its sound slowed, ended once it has played out."""
+    from sprigcast.core.retire import RETIRER
+    from sprigcast.store import instant_replay as ir
+
+    assert type(ir.open_player(Path(files["video"]), (200, 200))) is ir.Player  # the switch is off
+    monkeypatch.setenv("SPRIGCAST_ENGINE", "native")
+    player = ir.open_player(Path(files["video"]), (200, 200), speed=0.5, skip_to=1.0).start()
+    assert isinstance(player, ir.NativePlayer)
+    assert player.wait_first(5) and player.error is None
+    assert player.done and abs(player.length - 1.0) < 0.1  # all but the first second
+    assert not np.abs(player.read(240)).any() and not player.finished()  # waits for the show's first picture
+    pictures, sound, began = [], 0, time.monotonic()
+    while not player.finished() and time.monotonic() - began < 6:
+        picture = player.take((time.monotonic() - began) * 0.5)
+        if picture is not None:
+            pictures.append(picture)
+        sound += int(np.abs(player.read(240)).max() > 0.05)
+        time.sleep(0.005)
+    spent = time.monotonic() - began
+    assert player.finished() and 1.7 < spent < 3.0  # one second of replay at half speed
+    assert 24 <= len(pictures) <= 31 and pictures[0].shape == (200, 200, 4) and pictures[0].flags.writeable
+    assert tuple(pictures[0][0, 0]) == (ir.DEEP[2], ir.DEEP[1], ir.DEEP[0], 255)  # letterbox above the picture
+    assert pictures[0][100, 100, 3] == 255 and sound > 150
+    player.stop()
+    player.stop()
+    assert player.take(9.0) is None and player.finished()
+
+    quiet = ir.open_player(Path(files["video"]), (320, 240), sound=False, skip_to=1.5).start()
+    assert quiet.wait_first(5)
+    began, shapes = time.monotonic(), set()
+    while not quiet.finished() and time.monotonic() - began < 4:  # nobody reads its sound: it still ends
+        picture = quiet.take(time.monotonic() - began)
+        if picture is not None:
+            shapes.add(picture.shape)
+        time.sleep(0.005)
+    assert quiet.finished() and shapes == {(240, 320, 4)}
+    quiet.stop()
+
+    bad = tmp_path / "bad.mkv"
+    bad.write_bytes(b"not a video at all")
+    broken = ir.open_player(bad, (200, 200)).start()
+    assert not broken.wait_first(5) and broken.error
+    broken.stop()
+    assert RETIRER.settle()
+
+
 def test_media_source_plays_through_the_engine(player_lib, files, monkeypatch):
     """sources/media.py with SPRIGCAST_ENGINE=native: the same class, the engine's player underneath."""
     from sprigcast.sources.media import MediaSource

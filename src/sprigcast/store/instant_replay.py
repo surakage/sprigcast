@@ -36,8 +36,9 @@ from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "instant_replay", "name": "Instant replay", "version": 1, "adds": "Source",
-          "about": "Play the last few seconds of your game (and camera) back on stream, with a replay wipe."}
+PLUGIN = {"id": "instant_replay", "name": "Instant replay", "version": 2, "adds": "Source",
+          "about": "Play the last few seconds of your game (and camera) back on stream, with a replay wipe.",
+          "new": "Ready for the faster engine: replays can play through it."}
 
 KIND = "instant_replay"
 W, H = 1920, 1080  # the replay's box on the canvas (its pictures are 720p or 1080p, scaled to fit)
@@ -661,6 +662,128 @@ class Player:
         return out
 
 
+class NativePlayer(Player):
+    """Player with the engine's media player underneath (SPRIGCAST_ENGINE=native; native/core/src/media.cpp):
+    the replay is read, decoded, fitted to `size`, turned to B, G, R, A and its sound slowed on the engine's
+    thread, outside Python's lock and behind its crash gate. It waits paused at skip_to with its first pictures
+    decoded; the first take() starts its clock, which runs at `speed`, so picture and sound stay in step."""
+
+    def __init__(self, path: Path, size: tuple[int, int], speed: float = 1.0, sound: bool = True,
+                 skip_to: float = 0.0):
+        from sprigcast import sprigcore
+
+        self.path, self.size, self.speed, self.sound, self.skip_to = path, size, speed, sound, skip_to
+        self.error: str | None = None
+        self.length = 0.0
+        self.done = False  # the replay's length is known
+        self._core = sprigcore
+        self._playing = False
+        self._stopped = False
+        self._drained_at = 0.0
+        self._media = sprigcore.MediaPlayer(playing=True)
+        self._media.set_options(False, False, False, speed)
+        self._media.set_picture("BGRA", size, grow=True)
+        self._media.set_file(str(path), True, True)
+        self._media.control(sprigcore.MEDIA_PAUSE)  # paused, not stopped: it decodes its first pictures and waits
+
+    def start(self) -> NativePlayer:
+        if self.skip_to > 0:
+            self._media.control(self._core.MEDIA_SEEK, self.skip_to)
+        self._media.control(self._core.MEDIA_START)
+        return self
+
+    def stop(self) -> None:
+        """Returns at once: ending the engine's decoder thread may wait, so a helper thread does it."""
+        if not self._stopped:
+            self._stopped = True
+            from sprigcast.core.retire import RETIRER
+
+            RETIRER.retire(_Closing(self._media))
+
+    def _look(self):
+        """What the engine's player says now (None once stopped); keeps error, length and done up to date."""
+        if self._stopped:
+            return None
+        try:
+            info = self._media.info()
+        except Exception as exc:  # noqa: BLE001
+            self.error = self.error or str(exc) or exc.__class__.__name__
+            return None
+        status = info.status_text
+        if info.faulted or status.startswith("can't") or status == "no file":
+            if self.error is None:
+                log.warning("instant replay: couldn't play %s: %s", self.path.name, status)
+            self.error = status
+        if info.duration > 0:
+            self.length, self.done = max(0.0, info.duration - self.skip_to), True
+        return info
+
+    def wait_first(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            info = self._look()
+            if info is None or self.error is not None:
+                return False
+            if info.decoded:
+                return bool(info.has_video)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+
+    def take(self, clip_t: float) -> np.ndarray | None:
+        """The picture due now, or None when it's the same one as before. The player keeps the time itself from
+        the first call on (clip_t is the same clock, counted by the show)."""
+        if self._stopped:
+            return None
+        now = time.monotonic()
+        if not self._playing:
+            self._playing, self._drained_at = True, now
+            self._media.control(self._core.MEDIA_PLAY)
+        if not self.sound:  # nobody reads its sound: let it go, or the replay would never count as ended
+            from sprigcast.sources.audio import SAMPLE_RATE
+
+            due = min(SAMPLE_RATE, int((now - self._drained_at) * SAMPLE_RATE))
+            if due > 0:
+                self._drained_at = now
+                self._media.read_audio(due)
+        got = self._media.video_frame()
+        if got is None or isinstance(got, str):
+            return None
+        picture = got[0]
+        return picture if picture.shape[1::-1] == tuple(self.size) else self._letterbox(picture)
+
+    def finished(self) -> bool:
+        info = self._look()
+        return info is None or self.error is not None or info.state_name == "ended"
+
+    def read(self, count: int) -> np.ndarray:
+        if self._stopped or not self._playing:
+            return np.zeros((count, 2), dtype=np.float32)
+        return self._media.read_audio(count)
+
+
+class _Closing:
+    """A media player handed to core/retire.py to be closed."""
+
+    id, kind = "replay", "instant_replay"
+
+    def __init__(self, media):
+        self.stop = media.close
+
+
+def open_player(path: Path, size: tuple[int, int], speed: float = 1.0, sound: bool = True,
+                skip_to: float = 0.0) -> Player:
+    """The player for a saved replay: the engine's own with SPRIGCAST_ENGINE=native, else Python's."""
+    from sprigcast import sprigcore
+
+    if sprigcore.use_native_media():
+        try:
+            return NativePlayer(path, size, speed, sound, skip_to)
+        except Exception as exc:  # noqa: BLE001 (any refusal: Python plays it)
+            log.warning("instant replay: the engine's player isn't available (%s); playing it in Python", exc)
+    return Player(path, size, speed, sound, skip_to)
+
+
 class _Show:
     """One replay on screen: the wipe in, the replay, the wipe out."""
 
@@ -896,8 +1019,8 @@ class InstantReplaySource(Source):
         try:
             folder.mkdir(parents=True, exist_ok=True)
             buf.save(path)
-            player = Player(path, self.out_size, speed, bool(self.settings.get("replay_sound", True)),
-                            skip_to=max(0.0, have - seconds)).start()
+            player = open_player(path, self.out_size, speed, bool(self.settings.get("replay_sound", True)),
+                                 skip_to=max(0.0, have - seconds)).start()
             if not player.wait_first(5.0):
                 player.stop()
                 raise RuntimeError(player.error or "nothing to play")

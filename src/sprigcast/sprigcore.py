@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 9  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 10  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -732,7 +732,7 @@ def _media_sigs() -> dict:
         "sc_media_video_frame": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(MediaPicture), vp,
                                          ctypes.c_size_t]),
         "sc_media_read_audio": (c_int, [vp, vp, c_int, c_int]),
-        "sc_media_set_picture": (c_int, [vp, c_int, c_int, c_int]),
+        "sc_media_set_picture": (c_int, [vp, c_int, c_int, c_int, c_int]),
         "sc_media_debug_fault": (c_int, [vp, c_int]),
     }
 
@@ -835,10 +835,12 @@ class MediaPlayer:
         options = MediaOptions(int(bool(loop)), int(bool(clear_on_end)), int(bool(restart_on_show)), float(speed))
         _check(self._call(self._lib.sc_media_set_options, ctypes.byref(options)))
 
-    def set_picture(self, rgba: bool = False, limit: tuple[int, int] = (0, 0)) -> None:
-        """Before :meth:`set_file`: every picture RGBA (straight alpha), and videos bigger than ``limit`` shrunk
-        to fit it while decoding ((0, 0) = 1920 a side)."""
-        _check(self._call(self._lib.sc_media_set_picture, int(rgba), int(limit[0]), int(limit[1])))
+    def set_picture(self, order: str = "", limit: tuple[int, int] = (0, 0), grow: bool = False) -> None:
+        """Before :meth:`set_file`: every picture in ``order`` ("RGBA" or "BGRA", straight alpha; "" as the
+        file has them), and videos bigger than ``limit`` shrunk to fit it while decoding ((0, 0) = 1920 a
+        side). ``grow`` also enlarges smaller ones to fit it."""
+        _check(self._call(self._lib.sc_media_set_picture, {"": 0, "RGBA": 1, "BGRA": 2}[order], int(limit[0]),
+                          int(limit[1]), int(grow)))
 
     def set_file(self, path: str, video: bool, playing: bool) -> None:
         _check(self._call(self._lib.sc_media_set_file, str(path).encode("utf-8"), int(video), int(playing)))

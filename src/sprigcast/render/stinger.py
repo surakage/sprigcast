@@ -103,7 +103,7 @@ class NativeStinger:
         self._start = sprigcore.MEDIA_START
         self._player = sprigcore.MediaPlayer(playing=True)
         self._player.set_options(False, False, False, 1.0)
-        self._player.set_picture(True, limit)
+        self._player.set_picture("RGBA", limit)
         self._player.set_file(path, True, True)
         self._player.control(sprigcore.MEDIA_PAUSE)  # paused, not stopped: it decodes its first pictures and waits
 
