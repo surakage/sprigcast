@@ -33,6 +33,8 @@ jobs:
           $py = "packaging\build\python\python.exe"
           & $py -c "import sprigcast, av, moderngl, PySide6.QtWidgets, numpy; print('imports OK', sprigcast.__file__)"
           & $py -m sprigcast.tools.check
+          & $py -c "from sprigcast import sprigcore; assert sprigcore.available(), sprigcore.dll_path(); print('native engine OK', sprigcore.adapters())"
+          if ($LASTEXITCODE -ne 0) { throw "The installed copy can't load the native engine" }
           # After pruning (prune.py): every Qt module SprigCast imports loads, and a web page still opens
           # in Qt WebEngine (its helper, resources and US English text are all there).
           & $py -c "from PySide6 import QtCore, QtGui, QtWidgets, QtNetwork, QtSvg, QtWebChannel, QtWebSockets, QtWebEngineCore, QtWebEngineWidgets; print('Qt modules OK')"
@@ -64,7 +66,7 @@ jobs:
       - name: Fingerprints and a Microsoft Defender scan
         shell: pwsh
         run: |
-          Get-FileHash packaging\out\*.exe, packaging\build\python\Lib\site-packages\sprigcast\camera\*.dll -Algorithm SHA256 |
+          Get-FileHash packaging\out\*.exe, packaging\build\python\Lib\site-packages\sprigcast\camera\*.dll, packaging\build\python\Lib\site-packages\sprigcast\engine\*.dll -Algorithm SHA256 |
             ForEach-Object { "{0}  {1}" -f $_.Hash, (Split-Path $_.Path -Leaf) } | Tee-Object packaging\out\SHA256.txt
           $mp = Join-Path $env:ProgramFiles "Windows Defender\MpCmdRun.exe"
           if (-not (Test-Path $mp)) { Write-Warning "Microsoft Defender isn't on this runner: no scan"; exit 0 }
