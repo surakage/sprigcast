@@ -75,3 +75,19 @@ def test_new_id_avoids_existing():
     c = default_collection()
     first = c.new_id("scene")
     assert first not in {s.id for s in c.scenes}
+
+
+def test_snapshot_and_text_are_full_copies_made_in_compiled_code():
+    """PC test 2026-11-17: model_copy(deep=True) took 300+ ms on the window's thread while live."""
+    from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          sources=[SourceConfig(id="a", kind="image", name="A",
+                                                settings={"floor": float("-inf"), "list": [1, {"x": 2}]})])
+    copy = col.snapshot()
+    assert copy == col and copy.sources[0].settings is not col.sources[0].settings
+    assert copy.sources[0].settings["list"][1] is not col.sources[0].settings["list"][1]
+    copy.sources[0].settings["list"][1]["x"] = 3
+    assert col.sources[0].settings["list"][1]["x"] == 2
+    text = col.to_text()
+    assert "-Infinity" in text and SceneCollection.model_validate_json(text) == col  # not null

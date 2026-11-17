@@ -86,3 +86,25 @@ def test_a_sound_change_updates_in_place_and_refreshes_once(tmp_path, monkeypatc
         assert card.notes["mic"].text() == "muted" and card.meters["mic"].muted
     finally:
         w.close()
+
+
+def test_a_new_sound_keeps_the_other_strips(monkeypatch):
+    """PC test 2026-11-17: a sound coming or going made every strip again (0.3 s while live). Now only it."""
+    from PySide6.QtWidgets import QApplication
+
+    _app = QApplication.instance() or QApplication([])
+    from sprigcast.app.sound_card import Sound
+    from sprigcast.app.sound_strips import SoundStrips
+
+    strips = SoundStrips(lambda *a: None, lambda *a: None)
+    mic, desk, music = Sound(id="mic", name="Mic"), Sound(id="desk", name="Desktop"), Sound(id="m", name="Music")
+    kinds = {"mic": "audio_input", "desk": "audio_output", "m": "media"}
+    strips.show_sound([desk, mic], kinds)
+    first = dict(strips.strips)
+    strips.show_sound([desk, music, mic], kinds)
+    assert strips.strips["desk"] is first["desk"] and strips.strips["mic"] is first["mic"]
+    order = [strips.row.itemAt(i).widget() for i in range(strips.row.count() - 1)]
+    assert order == [strips.strips["desk"], strips.strips["m"], strips.strips["mic"]]
+    strips.show_sound([mic], kinds)
+    assert list(strips.strips) == ["mic"] and strips.strips["mic"] is first["mic"]
+    assert strips.row.count() == 2  # the strip and the stretch

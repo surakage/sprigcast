@@ -348,15 +348,27 @@ class SoundStrips(QFrame):
         """Sound items (app/sound_card.Sound), each one's source kind (for its icon) and where it plays."""
         shape = tuple(s.id for s in sounds)
         if shape != self._shape:
+            # Only the sounds that came or went: making every strip again held the window ~0.3 s while live
+            # (PC test, 2026-11-17). The ones kept move into the new order.
             self._shape = shape
-            for strip in self.strips.values():
-                strip.deleteLater()
+            kinds_now = getattr(self, "_kinds", {})
+            kept = {sid: strip for sid, strip in self.strips.items()
+                    if sid in shape and kinds_now.get(sid) == kinds.get(sid)}
+            for sid, strip in self.strips.items():
+                if sid not in kept:
+                    self.row.removeWidget(strip)
+                    strip.deleteLater()
             self.strips = {}
-            for sound in sounds:
-                strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open, self.on_menu)
-                self.row.insertWidget(self.row.count() - 1, strip)
+            for at, sound in enumerate(sounds):
+                strip = kept.get(sound.id)
+                if strip is None:
+                    strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open, self.on_menu)
+                else:
+                    self.row.removeWidget(strip)
+                self.row.insertWidget(at, strip)
                 self.strips[sound.id] = strip
             self.set_open(self.is_open)
+        self._kinds = dict(kinds)
         for sound in sounds:
             self.strips[sound.id].show_sound(sound)
             self.strips[sound.id].set_tag((tags or {}).get(sound.id, ""))

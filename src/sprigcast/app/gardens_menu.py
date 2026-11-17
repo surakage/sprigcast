@@ -134,7 +134,7 @@ class GardenControl:
     def _forget_undo(self) -> None:
         self.w._undo.clear()
         self.w._redo.clear()
-        self.w._undo_current = self.w.collection.model_dump_json()
+        self.w._undo_current = self.w.collection.to_text()
 
     def _switch_path(self, entry_id: str) -> str | None:
         w = self.w
@@ -164,7 +164,7 @@ class GardenControl:
         w.scenes_path = self.shelf.garden_file(entry)
         w.selected_folder_id = None
         w.live_panel.thumbs.clear()
-        w._restore_state(incoming.model_dump_json())  # saves, hands it to the renderer, redraws
+        w._restore_state(incoming.to_text())  # saves, hands it to the renderer, redraws
         self._forget_undo()
         w._load_thumbs()
         w.live_panel.show_scenes(w.collection)
@@ -482,7 +482,7 @@ class GardenControl:
         target = Path(path)
         target = target.with_name(file_name(target.stem) + pack.PACK_SUFFIX)
         self.w.collection.save(self.w.scenes_path)
-        snapshot = self.w.collection.model_copy(deep=True)  # the garden as it is now, whatever happens meanwhile
+        snapshot = self.w.collection.snapshot()  # the garden as it is now, whatever happens meanwhile
         try:
             left_out = self._in_background(f"Packing {current.name}…",
                                            lambda progress: self.shelf.export_pack(current.id, target, snapshot,

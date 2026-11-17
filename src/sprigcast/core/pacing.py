@@ -281,6 +281,8 @@ def ui_rest() -> None:
 
 
 def _check_window(now: float) -> None:
+    import threading
+
     beat, ident = _ui["beat"], _ui["ident"]
     if beat is None or _ui["where"] is not None or 1000 * (now - beat) < UI_STALL_MS:
         return
@@ -290,6 +292,10 @@ def _check_window(now: float) -> None:
     _ui["since"] = beat
     _ui["where"] = _where(frame)
     del frame
+    # Who else is running right then: a window held up on a trivial line is waiting for Python's lock, and
+    # the thread holding it is among these (PC test 2026-11-17: 328 ms on a one-line check).
+    others = busy_stacks({ident, threading.get_ident()})
+    _ui["where"] += f"; meanwhile {others}"
 
 
 def _where(frame, depth: int = 5) -> str:

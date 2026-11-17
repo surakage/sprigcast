@@ -1212,11 +1212,24 @@ class SceneCollection(BaseModel):
     def from_json(cls, text: str) -> "SceneCollection":
         return cls.model_validate_json(text)
 
-    def save(self, path: Path) -> None:
+    def snapshot(self) -> "SceneCollection":
+        """A full copy, independent of this one, made in pydantic's compiled code. model_copy(deep=True) walks
+        everything in Python: while live, other threads share Python's lock and one copy took 300+ ms on the
+        window's thread (PC test, 2026-11-17). This is a few ms and barely gives the lock away."""
+        return type(self).model_validate(self.model_dump())
+
+    def to_text(self) -> str:
+        """The garden as saved (JSON, indented), written by compiled code. json.dumps with an indent runs in
+        Python, slow on the window's thread while live. -inf and NaN stay as they were (not null)."""
+        from pydantic_core import to_json
+
+        return to_json(self.model_dump(), indent=2, inf_nan_mode="constants").decode("utf-8")
+
+    def save(self, path: Path, text: str | None = None) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.model_dump(mode="json"), indent=2), encoding="utf-8")
+        tmp.write_text(text if text is not None else self.to_text(), encoding="utf-8")
         from sprigcast.core import backups
 
         backups.keep(path)  # the last good save, and one copy a day (core/backups.py)
