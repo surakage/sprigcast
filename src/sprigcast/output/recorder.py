@@ -43,6 +43,7 @@ FLOW_STALL_S = 2.0  # no frame written this long while running: the output's fee
 # A longer hole in the feed (a stuck frame, the engine rebuilding) is filled up to this long, with the picture that
 # ends it, so files and streams keep their timing; longer than this is left as a gap (counted as dropped).
 FILL_LONG_S = 5.0
+FLOW_REPEAT_S = 10.0  # a feed still stopped is said again this often (and the caller tries again to put it right)
 VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
@@ -777,15 +778,20 @@ class Recorder:
     stalls = 0  # times check_flow found the feed stopped
     _flow: tuple | None = None  # (when, frames written, frames fed, repeats) at the last change check_flow saw
     _stalled_since: float | None = None
+    _stall_said = 0.0  # when check_flow last said this stall
+    _stall_counted = 0  # frames of this stall already counted as dropped while it went on
 
     def check_flow(self, now: float) -> str | None:
         """Call about once a second (time.monotonic()). Says, once, when no frame has been written for
         FLOW_STALL_S while running, and why: "no frames arrive" (the feed: the caller reattaches it), "frames
         arrive but none are kept" (their times: the numbering is put back on the clock here) or "the encoder
-        is stuck" (with where). When frames flow again the missing ones count as dropped.
+        is stuck" (with where). Said again every FLOW_REPEAT_S while it lasts. Past FILL_LONG_S (longer than
+        push_frame fills) the missing frames count as dropped as it goes on, so a summary taken mid-stall is
+        true; when frames flow again the rest of the hole is settled.
 
         The native heavy run (2026-11-17) streamed nothing for 77 s with the canvas at 60 fps and 0 dropped:
-        the loss was silent, and nothing put it right."""
+        the loss was silent, and nothing put it right. A crash run the same day froze a stream for good after one
+        "no frames arrive" and still said 0 dropped: it was said once and counted only on recovery."""
         if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._opening:
             self._flow, self._stalled_since = None, None
             return None
@@ -796,18 +802,33 @@ class Recorder:
                 filled = mark[2] - self._flow[3]  # repeats queued to fill the hole (not all written yet)
                 lost = max(0, round(gap * self.fps) - (mark[0] - self._flow[1]) - filled)
                 if self._counts_drops():
-                    self.dropped += lost
+                    self.dropped += max(0, lost - self._stall_counted)
                 log.warning("%s: frames are written again after %.1f s; %d counted as dropped", self.path.name,
-                            gap, lost)
-            self._flow, self._stalled_since = (now, *mark), None
+                            gap, max(lost, self._stall_counted))
+            self._flow, self._stalled_since, self._stall_counted = (now, *mark), None, 0
             return None
-        if self._stalled_since is not None or now - self._flow[0] < FLOW_STALL_S:
+        if self._stalled_since is not None:
+            gap = now - self._stalled_since
+            if gap > FILL_LONG_S:  # too long for push_frame to fill: these are gone, count them now
+                lost = round(gap * self.fps)
+                if self._counts_drops() and lost > self._stall_counted:
+                    self.dropped += lost - self._stall_counted
+                self._stall_counted = max(self._stall_counted, lost)
+            if now - self._stall_said < FLOW_REPEAT_S:
+                return None
+            self._stall_said = now
+            return f"{self._stall_reason(mark)} (still, after {gap:.0f} s)"
+        if now - self._flow[0] < FLOW_STALL_S:
             return None
-        self._stalled_since = self._flow[0]
+        self._stalled_since, self._stall_said, self._stall_counted = self._flow[0], now, 0
         self.stalls += 1
+        return self._stall_reason(mark)
+
+    def _stall_reason(self, mark: tuple) -> str:
         if self._video.qsize() == 0:
             if mark[1] == self._flow[2]:
                 return "no frames arrive"
+            self._flow = (*self._flow[:2], mark[1], *self._flow[3:])  # fed since: a repeat tells afresh
             self._last_queued = math.floor((time.perf_counter() - self.start_time) * self.fps) - 1
             return "frames arrive but none are kept (their numbering is back on the clock now)"
         import sys
@@ -1189,7 +1210,8 @@ class Recorder:
             old.close()
         except Exception:  # noqa: BLE001 (the old device may be gone)
             pass
-        log.warning("%s: NVENC opened again on the native engine's new device (%s)", self.path.stem, why)
+        log.warning("%s: NVENC opened again on the native engine's new device (the old session's last frame "
+                    "failed: %s)", self.path.stem, why)
         return True
 
     def _encode_direct(self, stream, nv12, pts: int) -> list:

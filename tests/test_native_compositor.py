@@ -240,3 +240,41 @@ def test_the_engine_rebuilds_after_faults_and_its_kept_pictures_come_back(device
         eng.set_canvas(0, 0, 0)
         with pytest.raises(sprigcore.NativeError):
             eng.read_bgra(0)
+
+
+def _next_output_frame(eng, share: bool, within: float) -> bool:
+    """Whether output slot 0 of canvas 0 hands over a frame within `within` seconds (given straight back)."""
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        if share:
+            state, frame, _dropped = eng.take_texture(0, 0)
+            if state < 0:
+                pytest.skip("this device can't keep output frames on the card")
+            if frame is not None:
+                texture, pool, entry, _drawn = frame
+                sprigcore.com_release(texture)
+                eng.give_back(0, 0, pool, entry)
+                return True
+        elif eng.take_output(0, 0, 64, 36) is not None:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+@needs_engine
+@pytest.mark.parametrize("share", [True, False], ids=["on-card", "memory"])
+def test_outputs_made_again_while_a_frame_is_stuck_still_get_frames(share):
+    """Stuck-frame crash run (2026-11-17): the outputs were made again while the frame thread was stuck; it came
+    back to the same size under a new setting, kept its old texture pool, and the stream froze for good."""
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        eng.set_canvas(0, 64, 36)
+        eng.set_output(0, 0, 64, 36, share=share)
+        assert _next_output_frame(eng, share, 5.0)
+        eng.debug_fault(4)  # the next frame sticks for 3 s
+        time.sleep(0.5)
+        assert eng.stats()["running"]
+        eng.set_output(0, 0, 0, 0)  # what reset_outputs and the next tick do, both inside the stuck frame
+        eng.set_output(0, 0, 64, 36, share=share)
+        time.sleep(3.0)
+        assert _next_output_frame(eng, share, 5.0), "no frames after the stuck frame"
+        assert not eng.stats()["faulted"]

@@ -178,9 +178,14 @@ class FakeNative:
 
     resets = 0
 
+    stuck = False
+
     def reset_outputs(self):
+        if self.stuck:
+            return False
         self.resets += 1
         self.outputs = {}
+        return True
 
     def close(self):
         pass
@@ -388,6 +393,25 @@ def test_an_output_that_gets_no_frames_is_made_again():
     assert engine._native.resets == 1  # once
 
 
+def test_outputs_are_made_again_only_once_a_stuck_engine_frame_is_going_again():
+    """Stuck-frame crash run (2026-11-17): outputs made again under a stuck frame froze the stream for good."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.add_frame_tap("h", [].append, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.1)
+    pruned = []
+    fake.prune = lambda idle_s=3.0: pruned.append(idle_s) or 0
+    engine._native.stuck = True
+    engine.refresh_outputs()
+    engine._tick(fake, 20.0)
+    engine._tick(fake, 20.1)
+    assert engine._native.resets == 0 and 0.0 not in pruned  # waits, and keeps asking
+    engine._native.stuck = False
+    engine._tick(fake, 20.2)
+    assert engine._native.resets == 1 and 0.0 in pruned
+    engine._tick(fake, 20.3)
+    assert engine._native.resets == 1
+
+
 class EngineVideo:
     """Stands in for a MediaSource the engine's own player decodes."""
 
@@ -512,8 +536,13 @@ def test_preview_pictures_are_the_size_shown():
 class FakeEngine:
     """Stands in for sprigcore.Engine: remembers the outputs it was set and hands back queued frames."""
 
+    hung = 0
+
     def __init__(self, **_):
         self.set, self.queue, self.back = [], [], []
+
+    def stats(self):
+        return {"rebuilds": 0, "faulted": 0, "hung": self.hung}
 
     def set_output(self, index, slot, width, height, scale="bilinear", share=False):
         self.set.append((index, slot, width, height) + (("card",) if share else ()))
@@ -555,7 +584,10 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     assert bridge.engine.set[-1] == (0, 0, 0, 0) and not bridge.failed
     bridge.set_outputs("h", [big])
     bridge.served("h", (64, 36), 9.0)
-    bridge.reset_outputs()  # a feed that stopped: every output starts over, nothing remembered
+    bridge.engine.hung, before = 1, len(bridge.engine.set)
+    assert bridge.reset_outputs() is False and len(bridge.engine.set) == before  # never under a stuck frame
+    bridge.engine.hung = 0
+    assert bridge.reset_outputs()  # a feed that stopped: every output starts over, nothing remembered
     assert bridge.engine.set[-1] == (0, 0, 0, 0) and bridge._outputs[0] == {} and bridge._last_out == {}
 
 

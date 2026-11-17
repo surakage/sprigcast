@@ -497,6 +497,23 @@ def test_a_stopped_feed_is_said_once_and_its_frames_count_as_dropped(tmp_path, c
     assert rec._video.qsize() == 1  # kept again
 
 
+def test_a_feed_that_stays_stopped_is_said_again_and_counted_as_it_goes(tmp_path):
+    """Stuck-frame crash run (2026-11-17): a stream froze for good after one "no frames arrive", and the summary
+    still said 0 dropped."""
+    rec = Recorder(tmp_path / "f.mkv", 16, 16, 30, 500, "libx264", 0.0)
+    rec.check_flow(10.0)
+    rec.frames += 1
+    rec.check_flow(11.0)
+    assert rec.check_flow(13.1) == "no frames arrive"
+    assert rec.check_flow(15.0) is None and rec.dropped == 0  # within what push_frame can fill
+    assert rec.check_flow(20.0) is None and rec.dropped == 9 * 30  # past FILL_LONG_S: counted as it goes
+    assert rec.check_flow(23.2) == "no frames arrive (still, after 12 s)"  # said again: the caller tries again
+    assert rec.check_flow(24.0) is None and rec.dropped == 13 * 30
+    rec.frames += 1
+    rec.check_flow(25.0)
+    assert rec.dropped == 14 * 30 - 1  # settled on recovery, never counted twice
+
+
 def test_a_stuck_encoder_is_named_with_where_it_waits(tmp_path):
     import time as _time
     from types import SimpleNamespace

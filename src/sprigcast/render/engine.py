@@ -200,6 +200,7 @@ class Engine:
         self._native = None
         self._python_drew = True  # last tick Python's compositor drew something (always, without the native engine)
         self._refresh_outputs = False  # refresh_outputs() asked: outputs are made again next tick
+        self._refresh_waiting = False  # ...and is waiting for the native engine's stuck frame
         self._held_back: dict = {}  # source id -> (frame, channel order, layout): pictures Python's compositor skipped
 
     # Called from the UI thread ----------------------------------------------
@@ -1772,11 +1773,16 @@ class Engine:
             self._mark("letting go of textures")
         if self._refresh_outputs:
             self._refresh_outputs = False
-            if self._native is not None and not self._native.failed:
-                self._native.reset_outputs()
-            prune = getattr(compositor, "prune", None)
-            self._pruned = prune(0.0) if prune is not None else 0
-            log.warning("outputs made again: %d of Python's output copies let go", self._pruned)
+            if self._native is not None and not self._native.failed and self._native.reset_outputs() is False:
+                self._refresh_outputs = True  # the engine's frame is stuck: once it's going again
+                if not self._refresh_waiting:
+                    log.warning("outputs are made again once the native engine's frame is unstuck")
+                self._refresh_waiting = True
+            else:
+                self._refresh_waiting = False
+                prune = getattr(compositor, "prune", None)
+                self._pruned = prune(0.0) if prune is not None else 0
+                log.warning("outputs made again: %d of Python's output copies let go", self._pruned)
             self._mark("making outputs again")
         if now - self._pruned_at > 1.0:  # a recording or source record that ended leaves its targets idle
             self._pruned_at = now
