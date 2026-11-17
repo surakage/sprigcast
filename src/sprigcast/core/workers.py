@@ -44,18 +44,20 @@ def wait_answering(job: Callable, *args, poll_ms: int = 10):
     import threading
 
     try:
-        from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+        from PySide6.QtCore import QCoreApplication, QEventLoop
     except ImportError:
         return job(*args)
     app = QCoreApplication.instance()
     if app is None or threading.current_thread() is not threading.main_thread():
         return job(*args)
+    from concurrent.futures import wait
+
     future = pool().submit(job, *args)
-    loop = QEventLoop()
-    check = QTimer()
-    check.timeout.connect(lambda: future.done() and loop.quit())
-    check.start(poll_ms)
-    if not future.done():
-        loop.exec(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-    check.stop()
+    # Poll rather than a nested QEventLoop: on Windows that loop barely woke for the window's timers while it
+    # waited (2 of ~20 beats in 200 ms on the PC, 2026-11-17). Each turn hands over every event that's due
+    # (clicks and keys wait, so nothing starts twice), then sleeps on the job, not the GIL, for poll_ms.
+    flags = QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+    while not future.done():
+        app.processEvents(flags)
+        wait([future], timeout=poll_ms / 1000)
     return future.result()

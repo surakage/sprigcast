@@ -1,7 +1,7 @@
 """One SprigCast at a time: a second launch brings the open window forward and quits.
 
-The first copy listens on a local socket named for this Windows user; a second copy that reaches it
-sends "show" and exits before loading anything.
+The first copy listens on a local socket named for this Windows user; a second copy that reaches it waits
+for the first to answer (it hangs up once its window is showing) and exits before loading anything.
 """
 
 from __future__ import annotations
@@ -25,7 +25,12 @@ def server_name() -> str:
 
 
 def ask_running_copy(name: str | None = None, wait_ms: int = 400) -> bool:
-    """True when another copy is running: it was asked to show its window."""
+    """True when another copy is running: it was asked to show its window.
+
+    Reaching the running copy is the ask itself: no message has to get through. A named pipe on Windows could
+    lose a "show" written just before the second copy hung up (a second launch did nothing on the PC,
+    2026-11-16), so this copy stays connected until the running one hangs up after showing its window, or
+    for at most two seconds."""
     socket = QLocalSocket()
     socket.connectToServer(name or server_name())
     if not socket.waitForConnected(wait_ms):
@@ -37,15 +42,16 @@ def ask_running_copy(name: str | None = None, wait_ms: int = 400) -> bool:
             ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
         except Exception:
             pass
-    socket.write(b"show\n")
+    socket.write(b"show\n")  # for an older copy that waits for it
     socket.flush()
-    socket.waitForBytesWritten(wait_ms)
-    socket.disconnectFromServer()
+    if socket.state() == QLocalSocket.LocalSocketState.ConnectedState:
+        socket.waitForDisconnected(max(wait_ms, 2000))
+    socket.abort()
     return True
 
 
 def listen(on_show: Callable[[], None], parent=None, name: str | None = None) -> QLocalServer | None:
-    """Be the copy that's running: call on_show whenever another launch asks."""
+    """Be the copy that's running: call on_show whenever another launch reaches it."""
     name = name or server_name()
     server = QLocalServer(parent)
     if not server.listen(name):
@@ -54,23 +60,15 @@ def listen(on_show: Callable[[], None], parent=None, name: str | None = None) ->
             log.warning("single copy check off: %s", server.errorString())
             return None
 
-    def asked(conn, done: list) -> None:
-        if done or not conn.bytesAvailable():
-            return
-        done.append(True)  # once per launch, however the bytes arrive
-        conn.readAll()
-        on_show()
-
     def arrived() -> None:
-        # On Windows (a named pipe) the second copy's "show" can already be waiting by the time the connection is
-        # picked up, and the second copy may have hung up too: then readyRead never comes. Look straight away and
-        # again as it hangs up, not only on readyRead (a second launch did nothing on the PC, 2026-11-16).
+        launches = 0
         while server.hasPendingConnections():
             conn = server.nextPendingConnection()
-            done: list = []
-            conn.readyRead.connect(lambda c=conn, d=done: asked(c, d))
-            conn.disconnected.connect(lambda c=conn, d=done: (asked(c, d), c.deleteLater()))
-            asked(conn, done)
+            launches += 1
+            conn.disconnected.connect(conn.deleteLater)
+            conn.disconnectFromServer()  # the answer: the second copy stops waiting and quits
+        if launches:
+            on_show()
 
     server.newConnection.connect(arrived)
     return server
