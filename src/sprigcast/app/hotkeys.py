@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 
 TOGGLE_STREAM = "toggle_stream"
 TOGGLE_RECORD = "toggle_record"
+PAUSE_RECORD = "pause_record"  # pause the recording / carry on in the same file
+CHAPTER_MARK = "chapter_mark"  # a chapter mark in the recording at this moment
 SAVE_REPLAY = "save_replay"  # save the replay buffer's last seconds as clips
 SCREENSHOT = "screenshot"  # a PNG of each shape on air, in the recordings folder
 TOGGLE_CLIPS = "toggle_clips"  # keep clips ready (replay buffer) on / off
@@ -54,7 +56,8 @@ shelf_actions = _no_shelf
 def sections(collection: SceneCollection) -> list[tuple[str, list[tuple[str, str]]]]:
     """Everything a hotkey can do, grouped as the Hotkeys page shows it: (title, [(action id, label)])."""
     groups: list[tuple[str, list[tuple[str, str]]]] = [
-        ("Going live", [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording")]),
+        ("Going live", [(TOGGLE_STREAM, "Go live / End stream"), (TOGGLE_RECORD, "Start / Stop recording"),
+                        (PAUSE_RECORD, "Pause / Resume recording"), (CHAPTER_MARK, "Add a chapter mark")]),
         ("Clips and screenshots", [(SAVE_REPLAY, "Save a clip"), (TOGGLE_CLIPS, "Keep clips ready on / off"),
                                    (SCREENSHOT, "Take a screenshot")]),
     ]

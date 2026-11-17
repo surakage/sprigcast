@@ -285,7 +285,7 @@ def test_outputs_studio_and_vendor_requests():
     _ok(api, "StopStream")
     _ok(api, "StartRecord")
     assert _ok(api, "StopRecord") == {"outputPath": "C:/rec.mkv"}
-    assert _fails(api, "PauseRecord") == Status.RESOURCE_ACTION_NOT_SUPPORTED
+    assert _fails(api, "PauseRecord") == Status.OUTPUT_NOT_RUNNING  # recordings pause now; this one has stopped
     assert _fails(api, "SaveReplayBuffer") == Status.OUTPUT_NOT_RUNNING
     # SprigCast's SaveClip starts clips when they're off.
     out = _ok(api, "CallVendorRequest", {"vendorName": "sprigcast", "requestType": "SaveClip"})
@@ -458,4 +458,32 @@ def test_connections_settings_page():
     page.apply()
     settings = control_server.saved_settings()
     assert settings["enabled"] and settings["port"] == 4460 and settings["use_password"]
+    QSettings().clear()
+
+
+def test_an_app_connecting_after_settings_closed_doesnt_touch_the_closed_page():
+    """Settings closed (page deleted), then an app connected: the server called into a deleted spin box."""
+    _qt()
+    import gc
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ConnectionsPageTest")
+    from sprigcast.app.connections_page import ConnectionsPage
+
+    class Server:
+        listening, sessions, error = True, [], ""
+        on_clients_changed = None
+
+    server = Server()
+    page = ConnectionsPage(server)
+    server.on_clients_changed(1)  # open: it updates
+    assert page.status.text().startswith("On")
+    page.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    del page
+    gc.collect()
+    server.on_clients_changed(2)  # nothing to update, and no error
     QSettings().clear()

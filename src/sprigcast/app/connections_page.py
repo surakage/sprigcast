@@ -230,8 +230,20 @@ class ConnectionsPage(QWidget):
         self.port.valueChanged.connect(self._refresh)
         self.password.textChanged.connect(self._refresh)
         if server is not None:
-            server.on_clients_changed = lambda _count: self._refresh()
-            self.destroyed.connect(lambda *_: setattr(server, "on_clients_changed", lambda _count: None))
+            import weakref
+
+            import shiboken6
+
+            page = weakref.ref(self)
+
+            def clients_changed(_count) -> None:
+                # Settings closed and deleted this page: the server outlives it (a "destroyed" hook didn't
+                # always run first, and the next app connecting hit a deleted spin box).
+                alive = page()
+                if alive is not None and shiboken6.isValid(alive):
+                    alive._refresh()
+
+            server.on_clients_changed = clients_changed
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -382,7 +394,7 @@ class ConnectionsPage(QWidget):
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(self.connect_text())
         self.copy.setText("Copied")
-        QTimer.singleShot(1500, lambda: self.copy.setText("Copy"))
+        QTimer.singleShot(1500, self.copy, lambda: self.copy.setText("Copy"))  # not after Settings closes
 
     def apply(self) -> None:
         q = QSettings()
@@ -397,4 +409,4 @@ class ConnectionsPage(QWidget):
         q.setValue(LAN, self.lan.isChecked())
         q.setValue(OBS_DOOR, self.obs_door.isChecked())
         q.setValue(WEB_DOOR, self.web_door.isChecked())
-        QTimer.singleShot(0, self._refresh)  # the server restarts once Settings is applied
+        QTimer.singleShot(0, self, self._refresh)  # the server restarts once Settings is applied

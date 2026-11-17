@@ -18,9 +18,14 @@ from datetime import datetime
 from pathlib import Path
 
 from sprigcast.output.recorder import recording_path, resolve_codec, shrink_to
-from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, replay_path
+from sprigcast.output.replay import PacketFile, ReplayBuffer, _Packet, chapter_list, replay_path
 
 log = logging.getLogger(__name__)
+
+
+def part_path(first: Path, number: int) -> Path:
+    """The file a split recording goes on in: "SprigCast 2026-11-16 19-10-53 horizontal part 2.mkv"."""
+    return first.with_name(f"{first.stem} part {number}{first.suffix}")
 
 
 class FileTap:
@@ -39,17 +44,65 @@ class FileTap:
         self._closing = False  # end the file at the next keyframe
         self._file_done = threading.Event()
         self.file_tracks: tuple[str, ...] = tracks  # what a recording keeps
+        # Long recordings can go to several files (Settings → Output → Recording → Split): a new one starts at
+        # the first keyframe past split_seconds of video or split_bytes written, so nothing is lost between.
+        self.split_seconds = 0.0
+        self.split_bytes = 0
+        self.file_parts: list[Path] = []  # every file this recording has written so far, in order
+        self._file_zero = 0.0
+        self._file_bytes = 0
+        # Pause: nothing is written until resume; the file then carries on from a keyframe as if no time passed.
+        self._paused = False
+        self._resuming = False
+        self._last_rel = 0.0  # seconds into the file of the last picture written
+        self._marks: list[tuple[float, str]] = []  # chapter marks in the file being written
+        self.file_chapters: dict[Path, list[dict]] = {}  # each finished part's chapters (for MP4s made plain)
 
     # Called from other threads ----------------------------------------------------------
 
-    def start_file(self, path: Path, container: str | None = None) -> None:
-        """Start writing everything from the next keyframe (asked for right away) to `path`."""
+    def start_file(self, path: Path, container: str | None = None, split_seconds: float = 0.0,
+                   split_bytes: int = 0) -> list[Path]:
+        """Start writing everything from the next keyframe (asked for right away) to `path`. Returns the list
+        that fills with the files written (`path`, then "<name> part 2" and on when it splits)."""
+        parts: list[Path] = []
+
         def job():
             if self.file is not None or self.file_path is not None:
                 raise RuntimeError("already writing a file")
             self.file_path, self.file_container, self.file_error = path, container, None
+            self.split_seconds, self.split_bytes, self.file_parts = split_seconds, split_bytes, parts
+            self._paused = self._resuming = False
+            self._marks, self.file_chapters, self._last_rel = [], {}, 0.0
             self._force_key = True
         self._ask(job)
+        return parts
+
+    def pause_file(self) -> bool:
+        """Stop writing for now; the file stays open. False when no file is being written."""
+        def job():
+            if self.file_path is None or self._paused:
+                return False
+            self._paused, self._resuming = True, False
+            return True
+        return bool(self._ask(job))
+
+    def resume_file(self) -> bool:
+        """Carry on in the same file from the next keyframe (asked for at once)."""
+        def job():
+            if self.file_path is None or not self._paused:
+                return False
+            self._paused, self._resuming, self._force_key = False, True, True
+            return True
+        return bool(self._ask(job))
+
+    def mark_chapter(self, name: str) -> bool:
+        """A chapter mark at the newest picture written ("Boss fight"). False when no file is being written."""
+        def job():
+            if self.file is None:
+                return False
+            self._marks.append((self._last_rel, name))
+            return True
+        return bool(self._ask(job))
 
     def stop_file(self, timeout: float = 10.0) -> None:
         """Finish the file while the encoder keeps running (the replay buffer or a stream still needs it).
@@ -78,13 +131,33 @@ class FileTap:
             if self._closing and p.kind == "video" and p.keyframe:
                 self._close_file()
                 return
+            if self._paused:
+                return
+            if self._resuming and self.file is not None:
+                if not (p.kind == "video" and p.keyframe):
+                    return  # the file carries on at a keyframe
+                # Move this file's clock on by the pause, so this picture follows the last one written.
+                shift = (p.seconds - self.file.zero) - (self._last_rel + 1 / max(1, self.fps))
+                self.file.zero += shift
+                self._file_zero += shift
+                self._resuming = False
+            if self.file is not None and p.kind == "video" and p.keyframe and self._split_due(p):
+                self._finish_part()  # the next part starts with this keyframe
             if self.file is None:
                 if not (p.kind == "video" and p.keyframe):
                     return  # the file starts at a keyframe
-                self.file = PacketFile(self.file_path, self.file_container or self.container_kind, self._templates,
-                                       p.seconds, self.audio_kinds(*self.file_tracks) or ("audio",))
+                path = self.file_path if not self.file_parts else part_path(self.file_path, len(self.file_parts) + 1)
+                self.file = PacketFile(path, self.file_container or self.container_kind, self._templates,
+                                       p.seconds, self.audio_kinds(*self.file_tracks) or ("audio",), crash_safe=True)
+                self.file_parts.append(path)
+                self._file_zero, self._file_bytes = p.seconds, 0
+                if len(self.file_parts) > 1:
+                    log.info("recording %s: part %d", self.file_path.name, len(self.file_parts))
             began = time.perf_counter()
+            self._file_bytes += len(p.data or b"") or p.size
             self.file.write(p)
+            if p.kind == "video":
+                self._last_rel = p.seconds - self.file.zero
             waited = time.perf_counter() - began
             self.mux_seconds += waited
             self.longest_stall = max(self.longest_stall, waited)
@@ -93,11 +166,25 @@ class FileTap:
             self.file_error = str(exc) or exc.__class__.__name__
             self._close_file()
 
+    def _split_due(self, p: _Packet) -> bool:
+        if self.split_seconds and p.seconds - self._file_zero >= self.split_seconds:
+            return True
+        return bool(self.split_bytes) and self._file_bytes >= self.split_bytes
+
+    def _finish_part(self) -> None:
+        out, self.file = self.file, None
+        chapters = chapter_list(self._marks, self._last_rel + 1 / max(1, self.fps))
+        self._marks = []
+        if chapters:
+            self.file_chapters[out.path] = chapters
+        out.close(chapters)
+
     def _close_file(self) -> None:
-        out, self.file, self.file_path, self._closing = self.file, None, None, False
+        out, self.file_path, self._closing = self.file, None, False
+        self._paused = self._resuming = False
         if out is not None:
             try:
-                out.close()
+                self._finish_part()
             except Exception as exc:
                 self.file_error = self.file_error or str(exc) or exc.__class__.__name__
         self._file_done.set()
@@ -202,6 +289,7 @@ class SharedRecording:
                  borrowed: dict | None = None):
         self.pool = pool
         self.recorders = encoders  # (canvas id, encoder): what the stats panel reads
+        self.parts: list[list[Path]] = []  # per canvas, every file written (more than one once it splits)
         self.borrowed = dict(borrowed or {})  # canvas id -> the stream's encoder this records from ("Same as stream")
         self._paths = paths
         self.started_at = time.monotonic()
@@ -211,12 +299,14 @@ class SharedRecording:
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, bitrate_kbps: int, container: str = "mkv",
               codec: str | None = None, encoder=None, short_side: int | None = None,
-              stream_encoders: dict | None = None) -> SharedRecording:
+              stream_encoders: dict | None = None, split_seconds: float = 0.0,
+              split_bytes: int = 0) -> SharedRecording:
         """stream_encoders (canvas id -> a live stream's encoder): "Same as stream", those canvases are written
         from the packets already encoded for the stream, with no encoder of their own."""
         codec = codec or resolve_codec(encoder)
         now = datetime.now()
-        encoders, paths, borrowed = [], [], {}
+        encoders, paths, borrowed, parts = [], [], {}, []
+        split = {"split_seconds": split_seconds, "split_bytes": split_bytes}
         try:
             for canvas in canvases:
                 path = recording_path(folder, canvas.id, now, container)
@@ -225,11 +315,11 @@ class SharedRecording:
                     shared.hold("recording")
                     borrowed[canvas.id] = shared
                     encoders.append((canvas.id, shared))
-                    shared.start_file(path, container)
+                    parts.append(shared.start_file(path, container, **split))
                 else:
                     enc = pool.acquire("recording", canvas, bitrate_kbps, container, codec, encoder, short_side)
                     encoders.append((canvas.id, enc))
-                    enc.start_file(path)
+                    parts.append(enc.start_file(path, **split))
                 paths.append(path)
         except Exception:
             for canvas_id, enc in encoders:
@@ -242,11 +332,50 @@ class SharedRecording:
             raise
         if borrowed:
             log.info("recording %s from the stream's encoder (Same as stream)", ", ".join(borrowed))
-        return cls(pool, encoders, paths, borrowed)
+        made = cls(pool, encoders, paths, borrowed)
+        made.parts = parts
+        return made
+
+    paused_since: float | None = None
+    paused_total = 0.0
+
+    @property
+    def paused(self) -> bool:
+        return self.paused_since is not None
 
     @property
     def elapsed(self) -> float:
-        return time.monotonic() - self.started_at
+        """How long the files run: paused time doesn't count."""
+        now = time.monotonic()
+        return now - self.started_at - self.paused_total - ((now - self.paused_since) if self.paused else 0.0)
+
+    def pause(self) -> bool:
+        if self.paused:
+            return False
+        for _, enc in self.recorders:
+            enc.pause_file()
+        self.paused_since = time.monotonic()
+        return True
+
+    def resume(self) -> bool:
+        if not self.paused:
+            return False
+        for _, enc in self.recorders:
+            enc.resume_file()
+        self.paused_total += time.monotonic() - self.paused_since
+        self.paused_since = None
+        return True
+
+    def mark_chapter(self, name: str) -> bool:
+        """A chapter mark in every file at this moment. True when at least one file took it."""
+        return any([enc.mark_chapter(name) for _, enc in self.recorders])
+
+    @property
+    def chapters(self) -> dict[Path, list[dict]]:
+        found: dict[Path, list[dict]] = {}
+        for _, enc in self.recorders:
+            found.update(getattr(enc, "file_chapters", {}))
+        return found
 
     @property
     def dropped(self) -> int:
@@ -263,7 +392,9 @@ class SharedRecording:
 
     @property
     def paths(self) -> list[Path]:
-        return list(self._paths)
+        """Every file written, each canvas's parts in order (just the first ones until a frame is written)."""
+        written = [p for files in self.parts for p in files]
+        return written if written else list(self._paths)
 
     def stop(self) -> None:
         for canvas_id, enc in self.recorders:

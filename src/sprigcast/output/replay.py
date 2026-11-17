@@ -295,18 +295,26 @@ def audio_kind(index: int) -> str:
     return "audio" if index == 0 else f"audio{index}"
 
 
+FRAGMENTED = "frag_keyframe+empty_moov+default_base_moof"
+
+
 class PacketFile:
     """A video file written from already-encoded packets, with time 0 at `zero` seconds.
 
     templates is (video stream, audio stream per track); `audio` picks which audio tracks go in, by
     packet kind, in order. Packets of other kinds are left out."""
 
-    def __init__(self, path: Path, container: str, templates, zero: float, audio: tuple[str, ...] = ("audio",)):
+    def __init__(self, path: Path, container: str, templates, zero: float, audio: tuple[str, ...] = ("audio",),
+                 crash_safe: bool = False):
         import av
 
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path, self.zero = path, zero
-        self._out = av.open(str(path), "w", format=CONTAINERS[container])
+        # crash_safe (recordings): an MP4 is written in fragments, each playable as soon as it's written, so
+        # a crash or power cut leaves a file that plays up to that moment. finish_mp4() makes it a plain MP4
+        # once it's closed properly. MKV plays after a crash anyway.
+        options = {"movflags": FRAGMENTED, "flush_packets": "1"} if crash_safe and container == "mp4" else {}
+        self._out = av.open(str(path), "w", format=CONTAINERS[container], options=options)
         video_t, *audio_t = templates
         self._streams = {"video": self._out.add_stream_from_template(video_t)}
         for kind in audio:
@@ -316,6 +324,7 @@ class PacketFile:
             if title and len(audio) > 1:
                 stream.metadata["title"] = title
             self._streams[kind] = stream
+        self._last_dts: dict[str, int] = {}
 
     def write(self, p: _Packet) -> None:
         import av
@@ -329,13 +338,44 @@ class PacketFile:
         packet = av.Packet(p.payload())
         packet.pts = None if p.pts is None else p.pts - offset
         packet.dts = None if p.dts is None else p.dts - offset
+        stamp = packet.dts if packet.dts is not None else packet.pts
+        if stamp is not None:
+            if stamp <= self._last_dts.get(p.kind, -1):
+                return  # sound from just before a resumed recording's keyframe: already covered
+            self._last_dts[p.kind] = stamp
         packet.time_base = p.time_base
         packet.is_keyframe = p.keyframe
         packet.stream = stream
         self._out.mux(packet)
 
-    def close(self) -> None:
+    def close(self, chapters: list[dict] | None = None) -> None:
+        """chapters: chapter_list() entries, written into the file as it closes (MKV; an MP4 gets them when
+        it's made plain, naming.finish_mp4)."""
+        if chapters:
+            try:
+                self._out.set_chapters(chapters)
+            except Exception as exc:  # a container without chapters: the file is still fine
+                log.info("chapters left out of %s: %s", self.path.name, exc)
         self._out.close()
+
+
+def chapter_list(marks: list[tuple[float, str]], end: float) -> list[dict]:
+    """Chapters from (seconds into the file, name) marks: each runs to the next one or the end. A first
+    chapter "Start" covers the time before the first mark, so players show the whole file."""
+    from fractions import Fraction
+
+    marks = sorted((max(0.0, t), name) for t, name in marks if t <= end)
+    if not marks:
+        return []
+    if marks[0][0] > 0.5:
+        marks.insert(0, (0.0, "Start"))
+    ms = Fraction(1, 1000)
+    out = []
+    for i, (t, name) in enumerate(marks):
+        stop = marks[i + 1][0] if i + 1 < len(marks) else max(end, t + 0.001)
+        out.append({"id": i + 1, "start": round(t * 1000), "end": max(round(stop * 1000), round(t * 1000) + 1),
+                    "time_base": ms, "metadata": {"title": name}})
+    return out
 
 
 class ReplaySession:

@@ -354,6 +354,11 @@ class RecordingSettings(BaseModel):
     # Same as stream: while live, a canvas being streamed is recorded from the stream's own encoder (its size,
     # bitrate and stream sound) instead of a second encoder. Lighter on the PC, like OBS's "Same as stream".
     same_as_stream: bool = False
+    # Split long recordings into several files, with nothing lost between them (0: one file). FAT32 drives
+    # can't hold a file over 4 GB.
+    record_when_live: bool = False  # going live starts a recording too, and ending the stream stops that one
+    split_minutes: int = 0
+    split_gb: float = 0.0
     encoder: EncoderSettings = Field(default_factory=lambda: EncoderSettings(rate_control="vbr", audio_kbps=192, b_frames=0))
     # No B-frames for recordings: NVENC needs ~50 MB of extra GPU-mapped buffers per encoder for them,
     # and at recording bitrates the quality difference is invisible. Streams skip them too since 2026-11.
@@ -1096,6 +1101,9 @@ class SceneCollection(BaseModel):
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(self.model_dump(mode="json"), indent=2), encoding="utf-8")
+        from sprigcast.core import backups
+
+        backups.keep(path)  # the last good save, and one copy a day (core/backups.py)
         tmp.replace(path)  # atomic on the same drive, so a crash never leaves half a file
 
 

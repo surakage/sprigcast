@@ -641,13 +641,26 @@ class Recorder:
         self._last_queued = pts
         return pts
 
+    paused_since: float | None = None  # perf_counter() when paused; frames and sound are left out until resume()
+
+    def pause(self) -> None:
+        if self.paused_since is None:
+            self.paused_since = time.perf_counter()
+
+    def resume(self) -> None:
+        """Carry on in the same file, as if the pause never happened: picture times move up by the pause
+        (sound is stamped by how much was written, so it carries on by itself)."""
+        if self.paused_since is not None:
+            self.start_time += time.perf_counter() - self.paused_since
+            self.paused_since = None
+
     def push_frame(self, frame) -> None:
         """frame has .data (RGBA bytes, top row first) and .time (perf_counter when rendered).
 
         Renders that fall in an output frame slot already taken (a 60 fps canvas feeding a 30 fps
         output) are skipped here, before the queue, so they neither take queue space nor count as drops.
         """
-        if self.error is not None or self._stop.is_set():
+        if self.error is not None or self._stop.is_set() or self.paused_since is not None:
             return
         pts = self._assign_pts(frame)
         if pts is None:
@@ -708,7 +721,7 @@ class Recorder:
 
     def push_audio(self, block) -> None:
         """block is float32 of shape (n, 2) at 48 kHz, or a tuple of them, one per track in self.tracks."""
-        if self.error is not None or self._stop.is_set():
+        if self.error is not None or self._stop.is_set() or self.paused_since is not None:
             return
         try:
             self._audio.put_nowait(block)
@@ -753,7 +766,11 @@ class Recorder:
         import av
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind])
+        from sprigcast.output.replay import FRAGMENTED
+
+        # An MP4 in fragments survives a crash (see PacketFile); naming.finish_mp4() makes it plain afterwards.
+        options = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else {}
+        return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind], options=options)
 
     @staticmethod
     def default_encoder():

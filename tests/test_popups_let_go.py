@@ -32,10 +32,14 @@ def _closing_whatever_pops_up():
 def _count(w):
     import gc
 
+    from PySide6.QtCore import QEvent
     from PySide6.QtWidgets import QApplication, QWidget
 
     for _ in range(3):
-        QApplication.sendPostedEvents(None, 0)  # deleteLater happens here
+        QApplication.sendPostedEvents(None, 0)
+        # deleteLater: what's waiting to be deleted is let go, not kept. Plain processEvents only deletes those
+        # when the event loop level allows it, which made this fail now and then in a full run.
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         QApplication.processEvents()
         gc.collect()
     from collections import Counter

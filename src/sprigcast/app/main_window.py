@@ -78,6 +78,8 @@ from sprigcast.app.hotkeys import (
     STATE_PREFIX,
     TOGGLE_RECORD,
     TOGGLE_STREAM,
+    PAUSE_RECORD,
+    CHAPTER_MARK,
     Hotkeys,
 )
 from sprigcast.app.build_stage import (
@@ -507,7 +509,10 @@ class MainWindow(QMainWindow):
         self._load_thumbs()
         self._build_mode_bar()
         self._refresh_all()
-        custom_docks.apply(self, custom_docks.load())  # before the saved panels are put back
+        from sprigcast.app import safe_mode
+
+        # Before the saved panels are put back. None in safe mode (a web panel may be what crashed).
+        custom_docks.apply(self, [] if safe_mode.on() else custom_docks.load())
         self._restore_layout()
         self._sync_canvas_choice()
         self._show_part_editor()
@@ -1100,6 +1105,7 @@ class MainWindow(QMainWindow):
             self.engine.add_frame_tap(f"view:{view}", projector.tap)
         projector.target = (kind, ref or canvas_id)
         self.projectors.append(projector)
+        QTimer.singleShot(0, self._pace_poll)  # once it's shown: a projector wants every picture
         return projector
 
     def _projector_closed(self, projector) -> None:
@@ -1108,6 +1114,7 @@ class MainWindow(QMainWindow):
         if projector.view is not None:
             self.engine.remove_frame_tap(f"view:{projector.view}", projector.tap)
             self.engine.set_view(projector.view, None)
+        self._pace_poll()
 
     def _fill_capture_sound_menu(self, menu: QMenu, capture_id: str) -> None:
         """A capture's own sound, like OBS's Capture audio: none, the app's own, or an output such as
@@ -1875,6 +1882,7 @@ class MainWindow(QMainWindow):
                                   lambda: self._open_settings(), self._on_sound_changed,
                                   lambda sid: self._open_filters(sid, "audio"), self._set_mic_first,
                                   self._toggle_camera, self._camera_settings)
+        self.live_side.on_pause = lambda: self.pause_recording(None)
         self.live_side.sound.on_settings = lambda: self._open_settings("Audio/Sounds")
         self.live_side.on_health = lambda: self._open_health()
         self._show_last_stream()
@@ -2948,6 +2956,9 @@ class MainWindow(QMainWindow):
         self.live_panel.show_scenes(self.collection)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if event.spontaneous() and not self._may_close():
+            event.ignore()
+            return
         self.hide()  # gone at once; what follows only tidies up
         from sprigcast.core import pacing
 
@@ -5324,6 +5335,7 @@ class MainWindow(QMainWindow):
             self.recording = SharedRecording.start(
                 self.encoders, canvases, self._recordings_folder(), settings.bitrate_kbps, settings.container,
                 encoder=settings.encoder, short_side=settings.short_side, stream_encoders=borrowed,
+                split_seconds=settings.split_minutes * 60, split_bytes=int(settings.split_gb * 1e9),
             )
         except Exception as exc:
             self.recording = None
@@ -5337,6 +5349,7 @@ class MainWindow(QMainWindow):
                  ", ".join(c.id for c in canvases), settings.bitrate_kbps, settings.container,
                  f"{settings.short_side}p" if settings.short_side else "canvas", settings.encoder.rate_control,
                  settings.encoder.preset)
+        self._chapters_marked = 0
         self.live_side.set_recording(True)
         self._refresh_recording_status()
         if space:
@@ -5477,6 +5490,10 @@ class MainWindow(QMainWindow):
                  names or "no files", session.dropped, f", {eased} eased" if eased else "",
                  f"; errors: {errors}" if errors else "", memory_line())
         self._rest_soon()
+        from sprigcast.output.naming import finish_later
+
+        # MP4s were written crash-safe: now plain MP4s (with their chapter marks), in the background.
+        finish_later(session.paths, chapters=getattr(session, "chapters", None))
         if errors:
             self.live_panel.set_recording("")
             QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
@@ -5499,7 +5516,7 @@ class MainWindow(QMainWindow):
         clock = f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
         codec = codec_short(session.recorders[0][1].codec) if session.recorders else codec_short(pick_codec())
         dropped = session.dropped
-        text = f"● REC {clock}  ·  {codec}"
+        text = f"{'❚❚ PAUSED' if getattr(session, 'paused', False) else '● REC'} {clock}  ·  {codec}"
         notes = [f"{dropped} frames dropped: encoder busy"] if dropped else []
         warn = bool(notes)
         watch = getattr(self, "_space_watch", None)
@@ -5519,6 +5536,39 @@ class MainWindow(QMainWindow):
         self.live_panel.set_recording("  ·  ".join([text, *notes]))
         self._side_status("rec", seconds, "  ·  ".join(notes), warn)
         self.mode_clock.setToolTip("  ·  ".join([f"Recording with {codec}", *notes]))
+
+    def pause_recording(self, pause: bool | None = None) -> str | None:
+        """Pause the recording (pause=True), carry on in the same file (False), or switch (None). Returns a
+        problem, or None. The Live header's Pause button, the hotkey, the API and Stream Deck keys all come here."""
+        session = self.recording
+        if session is None:
+            return "Not recording."
+        if not hasattr(session, "pause"):
+            return "This recording can't pause."
+        pause = not session.paused if pause is None else pause
+        if pause == session.paused:
+            return None
+        (session.pause if pause else session.resume)()
+        log.info("recording %s at %.0f s", "paused" if pause else "resumed", session.elapsed)
+        self._say("Recording paused" if pause else "Recording again")
+        self.live_side.set_recording(True, paused=pause)
+        plugin_hooks.output_changed("record", getattr(session, "started_at", time.monotonic()))
+        self._refresh_recording_status()
+        return None
+
+    def mark_chapter(self, name: str = "") -> str | None:
+        """A chapter mark in the recording at this moment (hotkey, Stream Deck, API). Editors and players
+        list them, so a long VOD can jump straight to the good parts. Returns a problem, or None."""
+        session = self.recording
+        if session is None:
+            return "Not recording."
+        self._chapters_marked = getattr(self, "_chapters_marked", 0) + 1
+        name = (name or "").strip()[:80] or f"Chapter {self._chapters_marked}"
+        if not getattr(session, "mark_chapter", lambda _n: False)(name):
+            return "The recording hasn't started writing yet."
+        log.info("chapter mark %r at %.0f s", name, session.elapsed)
+        self._say(f"Marked: {name}")
+        return None
 
     def _side_status(self, kind: str, seconds: int | None, details: str = "", warn: bool = False) -> None:
         """The header's one clock while live or recording (whichever has run longest, no label: the pink
@@ -5725,7 +5775,20 @@ class MainWindow(QMainWindow):
         self._health = SessionHealth(self.streaming)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
+        self._record_with_stream()
         return {"started": True, "warnings": warnings}
+
+    def _record_with_stream(self) -> None:
+        """Settings → Output → Recording → "Record when I go live": the stream's own recording starts with it
+        (from the stream's encoder when "Same as stream" is on too) and ends with it."""
+        self._recording_for_stream = False
+        if not self.collection.recording.record_when_live or self.recording is not None:
+            return  # a recording you started yourself carries on as you left it
+        answer = self._start_recording(remote=True, force=True)  # no pop-ups in the middle of going live
+        self._recording_for_stream = bool(answer.get("started"))
+        if not self._recording_for_stream:
+            log.warning("record when live: %s", answer.get("problem", "didn't start"))
+            self.statusBar().showMessage(f"Live, but not recording: {answer.get('problem', '')}", 10000)
 
     def _stream_target(self, output, ask: bool = True, quiet: bool = False):
         """What going live sends to one place: (target, None), (None, problem), or (None, None) when the
@@ -5866,6 +5929,10 @@ class MainWindow(QMainWindow):
         plugin_hooks.output_changed("stream", None)
         self._say("Ending stream…")
         session.stop(wait=False)  # the encoders and connections finish on their own thread
+        if getattr(self, "_recording_for_stream", False):
+            self._recording_for_stream = False
+            if self.recording is not None:
+                self._stop_recording()  # it started with the stream: it ends with it
         delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)
         if delayed > 0:
             self.statusBar().showMessage(f"Stream delay: the last {delayed:g} s still go out to viewers.",
@@ -6249,10 +6316,46 @@ class MainWindow(QMainWindow):
 
         QTimer.singleShot(settle_ms, minimize)
 
+    def _may_close(self) -> bool:
+        """Closing the window while live or recording ends them: ask first (like OBS)."""
+        doing = [what for what, on in (("live", self.streaming is not None),
+                                       ("recording", self.recording is not None)) if on]
+        if not doing:
+            return True
+        what = "live and recording" if len(doing) == 2 else doing[0]
+        answer = QMessageBox.question(self, "SprigCast", f"You're {what}. Close SprigCast and end it?")
+        return answer == QMessageBox.StandardButton.Yes
+
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
-            QTimer.singleShot(1000, self._sweep_if_due)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._pace_poll()
+            if self.isMinimized():
+                QTimer.singleShot(1000, self._sweep_if_due)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._pace_poll()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._pace_poll()
+
+    POLL_SHOWN_MS, POLL_HIDDEN_MS = 33, 250
+
+    def _pace_poll(self) -> None:
+        """Out of sight (minimised, or hidden to the tray) with no projector open, nothing needs 30 picture
+        updates a second: the window looks for news 4 times a second instead (OBS stops its preview too).
+        Shown again, it's back to 30 at once."""
+        timer = getattr(self, "timer", None)
+        if timer is None:
+            return
+        out_of_sight = self.isMinimized() or not self.isVisible()
+        projecting = any(p.isVisible() for p in getattr(self, "projectors", []))
+        wanted = self.POLL_HIDDEN_MS if out_of_sight and not projecting else self.POLL_SHOWN_MS
+        if timer.interval() != wanted:
+            timer.setInterval(wanted)
+            log.info("window %s: checking for news every %d ms", "out of sight" if wanted > 33 else "shown", wanted)
 
     def _show_render_health(self, event) -> None:
         """One plain word in the status bar (Smooth / Busy / Struggling); the numbers are in its tooltip."""
@@ -6877,6 +6980,10 @@ class MainWindow(QMainWindow):
             self._toggle_streaming()
         elif action == TOGGLE_RECORD:
             self._toggle_recording()
+        elif action == PAUSE_RECORD:
+            self.pause_recording(None)
+        elif action == CHAPTER_MARK:
+            self.mark_chapter()
         elif action.startswith(STATE_PREFIX):
             part_id, _, name = action[len(STATE_PREFIX):].partition(":")
             part = next((p for p in self.collection.parts() if p.id == part_id), None)
