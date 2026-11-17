@@ -50,6 +50,7 @@ STREAMING = {  # uploads through a pixel buffer, so sending a picture never wait
     "glBufferData": (None, [_u, _z, _p, _u]),
 }
 GL_STREAM_DRAW = 0x88E0
+GL_STREAM_READ = 0x88E1
 FENCES = {  # OpenGL 3.2 sync objects: without them read-backs are fetched without asking first, as before
     "glFenceSync": (_p, [_u, _u]),
     "glClientWaitSync": (_u, [_p, _u, ctypes.c_uint64]),
@@ -256,6 +257,16 @@ class UnlockedGL:
         was = _i(0)
         self.glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, ctypes.byref(was))
         return was.value
+
+    def read_back_buffer(self, buffer) -> None:
+        """Tells the driver this buffer is for reading frames back (GL_STREAM_READ). moderngl makes every buffer
+        as one that is drawn from; a driver (NVIDIA's says so in its debug output) moves such a buffer into
+        ordinary memory once it sees it read back every frame, and from then on each copy into it waits for the
+        card to finish everything it was asked, inside the call: the fences never get the chance to skip a late
+        frame. On the PC (2026-11-17, a stream and a recording running) one such copy held the renderer 305 ms."""
+        self.glBindBuffer(GL_PIXEL_PACK_BUFFER, buffer.glo)
+        self.glBufferData(GL_PIXEL_PACK_BUFFER, buffer.size, None, GL_STREAM_READ)
+        self.glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
 
     def read_buffer(self, buffer) -> bytes:
         """buffer.read(): the whole buffer's bytes, copied once, straight into a new bytes object.
