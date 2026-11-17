@@ -361,7 +361,9 @@ def test_the_card_is_drawn_only_when_the_words_change(cap):
     assert source.video_frame() is None
     source.board.say("Welcome in, everyone!", final=True, now=__import__("time").monotonic())
     shown = source.video_frame()
-    assert shown[..., 3].any() and not shown[:100, :, 3].any()  # the card sits at the bottom
+    drawn = np.where(shown[..., 3].any(axis=1))[0]
+    assert len(drawn) and drawn.max() >= 260 - 12 - 2  # the card sits at the bottom of the box
+    assert not shown[:12, :, 3].any() and drawn.min() > 12  # see-through above it (any font's line height)
     assert source.video_frame() is None
     source.update({**source.settings, "card_color": "#00000000"})
     assert source.video_frame() is not None
@@ -594,9 +596,10 @@ def test_alignment_size_and_caps(cap):
     small, srows, _ = _ink(cap.paint("hi chat", {**base, "text_size": "small"}))
     large, lrows, _ = _ink(cap.paint("hi chat", {**base, "text_size": "large"}))
     assert len(large) > len(small) and len(lrows) > len(srows)
-    lower, _, _ = _ink(cap.paint("hi chat", base))
-    upper, _, _ = _ink(cap.paint("hi chat", {**base, "all_caps": True}))
-    assert len(upper) > len(lower)
+    lower, _, lower_a = _ink(cap.paint("hi chat", base))
+    upper, _, upper_a = _ink(cap.paint("hi chat", {**base, "all_caps": True}))
+    _c, _r, typed_caps = _ink(cap.paint("HI CHAT", base))
+    assert (upper_a == typed_caps).all() and not (upper_a == lower_a).all()  # all caps draws the capitals
     for lines in (1, 2, 3):  # big text never spills out of the box
         _c, rows, _a = _ink(cap.paint("word " * 60, {**base, "look": "card", "text_size": "large", "lines": lines}))
         assert rows.min() > 0 and rows.max() < 260 - 1

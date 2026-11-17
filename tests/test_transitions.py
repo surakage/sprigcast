@@ -256,16 +256,22 @@ def test_panel_fits_narrow_cards_and_live_chip_picks_a_transition(tmp_path):
     app = QApplication.instance() or QApplication([])
     from sprigcast.app.transitions_panel import TransitionsPanel, summary
 
+    from PySide6.QtWidgets import QWidget
+
     t = Transition()
+    host = QWidget()  # a card inside the window, as in the app: Windows holds a window itself to its layout's
+    host.resize(500, 400)  # minimum size, so a top-level panel never got as narrow as 220 there
     panel = TransitionsPanel(t, lambda: None)
-    panel.resize(220, 400)
-    panel.show()
+    panel.setParent(host)
+    panel.setGeometry(0, 0, 220, 400)
+    host.show()
     app.processEvents()
+    assert panel.width() == 220
     assert panel._columns == 3 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapAllRows
-    panel.resize(400, 400)
+    panel.setGeometry(0, 0, 400, 400)
     app.processEvents()
     assert panel._columns == 3 and panel.form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.DontWrapRows
-    panel.close()
+    host.close()
     assert summary(Transition(kind="leaf", duration_ms=500)) == "Leaf · 0.5 s"
     assert summary(Transition(kind="stinger")) == "Stinger"
 
