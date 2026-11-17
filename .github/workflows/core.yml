@@ -44,9 +44,9 @@ jobs:
           $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
           $env:PYTHONPATH = "src"
           uv run --frozen python -c "from sprigcast import sprigcore; assert sprigcore.available(), 'not loaded'; print(sprigcore.adapters())"
-          $out = uv run --frozen pytest -q tests/test_sprigcore.py -rs | Tee-Object -Variable lines
+          uv run --frozen pytest -q tests/test_sprigcore.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
           if ($LASTEXITCODE -ne 0) { throw "pixel checks failed" }
-          if ($lines -match "SKIPPED") { throw "checks were skipped though the DLL is built" }
+          if (Select-String -Path pytest.txt -Pattern "SKIPPED" -Quiet) { throw "checks were skipped though the DLL is built" }
       - name: Engine checks under AddressSanitizer
         shell: pwsh
         run: |
