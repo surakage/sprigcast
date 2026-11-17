@@ -80,8 +80,7 @@ def test_pictures_and_cameras_are_not_sharp():
     assert create_source("text", "t", {}).sharp
 
 
-CARDS = {"local_time": (640, 220), "stream_timer": (640, 220), "now_playing": (760, 200),
-         "live_captions": (1600, 260)}
+CARDS = {"local_time": (640, 220), "stream_timer": (640, 220), "now_playing": (760, 200)}
 
 
 @pytest.fixture
@@ -102,9 +101,7 @@ def test_cards_draw_at_their_detail_and_keep_their_box(kind, qt, tmp_path):
         module = sys.modules[f"sprigcast_plugin_{kind}"]
         source = create_source(kind, "s", {})
         assert source.sharp and source.size == CARDS[kind]
-        if kind == "live_captions":
-            image = module.paint("Hello there", {}, 2.0)
-        elif kind == "now_playing":
+        if kind == "now_playing":
             image = module.paint(module.Track(title="Song", artist="Someone", playing=True), {}, 2.0)
         elif kind == "local_time":
             image = module.paint("8:03 PM", "Sat, Nov 14", {}, 2.0)
@@ -167,7 +164,7 @@ def test_the_engine_tells_sharp_sources_their_detail_only_when_it_steps():
 
 STARTS = {  # kind: (box, corner, height share, band share), as the plugins say
     "stream_timer": ((640, 220), "top_left", 0.14, None), "local_time": ((640, 220), "top_right", 0.14, None),
-    "now_playing": ((760, 200), "bottom_left", 0.14, None), "live_captions": ((1600, 260), "bottom_center", None, None),
+    "now_playing": ((760, 200), "bottom_left", 0.14, None),
     "audio_visualizer": ((1280, 400), "bottom_center", None, 0.5), "pngtuber": ((640, 640), "bottom_right", None, None),
     "snap": ((800, 1000), None, None, None), "death_count": ((800, 1000), None, None, None), "instant_replay": ((1920, 1080), None, None, None)}
 
@@ -212,7 +209,6 @@ def test_every_plugin_starts_on_the_canvas_readable_and_clear_of_the_others(size
             assert y0 >= 0.12 * ch - 0.5 and y0 + h <= 0.775 * ch + 0.5, kind  # clear of TikTok's own bars
     for card in ("stream_timer", "local_time", "now_playing"):
         assert pixels[card][3] == pytest.approx(0.14 * min(cw, ch))  # readable, not huge
-    assert boxes["live_captions"][3] <= boxes["now_playing"][1] + 1e-6  # captions above now playing, not on it
     if cw > ch:
         assert boxes["audio_visualizer"][2] <= boxes["pngtuber"][0]  # the band beside the avatar
 
@@ -246,7 +242,7 @@ def _add_all(col, bloom_id, kinds):
 @pytest.mark.parametrize("size", [(1920, 1080), (1280, 720), (1080, 1920)])
 def test_plugins_added_together_never_start_on_top_of_each_other(all_plugins, size):
     cw, ch = size
-    kinds = ["stream_timer", "local_time", "now_playing", "pngtuber", "live_captions", "audio_visualizer"]
+    kinds = ["stream_timer", "local_time", "now_playing", "pngtuber", "audio_visualizer"]
     if ch > cw:  # a phone screen has room for five of them; with all six the last one may sit on another
         kinds.remove("audio_visualizer")
     for order in (kinds, kinds[::-1]):

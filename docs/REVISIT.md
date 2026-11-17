@@ -14,8 +14,7 @@ the git history named in its entry, but rebuild it to today's rules rather than 
 - **Why:** it caused an access-violation crash while SprigCast sat idle (2026-11-16). It ran on the
   unofficial `TikTokLive` library (TikTok has no public chat API), with its own asyncio thread inside
   the app, and it had to be kept off the UI thread twice (#371, #377).
-- **To come back:** a fresh design that runs outside the SprigCast process (a helper process, like
-  Live captions' model), so a crash there can never take the stream down. Or lean on TikFinity /
+- **To come back:** a fresh design that runs outside the SprigCast process (a helper process), so a crash there can never take the stream down. Or lean on TikFinity /
   Streamer.bot, which already read TikTok and can call SprigCast's API.
 
 ### Kick chat
@@ -49,21 +48,26 @@ the git history named in its entry, but rebuild it to today's rules rather than 
   - SprigCast itself streams at 3 to 5 % CPU. Nothing was used while the camera was off screen,
     because the helper ended. Its graphics card (DirectML) path was never run on a real PC.
 - **To come back:** a graphics card path proven on real PCs (NVIDIA, AMD, Intel) that stays off the
-  processor, plus a clear "your PC can't run this" message on PCs without DirectML.
+  processor, plus a clear "your PC can't run this" message on PCs without DirectML. The onnxruntime
+  library was taken out with Live captions, so it would need to be added back.
+
+### Live captions (store plugin)
+- **Removed:** 2026-11-17, along with the onnxruntime-directml library, which was about 25 MB of the
+  download and 70 MB installed. The plugin was `src/sprigcast/store/live_captions.py`. A copy someone
+  had added is deleted at start (`plugin_store.RETIRED`). The shared model download
+  (`src/sprigcast/models.py`) stays, because Auto clip keeps its settings next to it.
+- **Why:** it used too much while it ran. With the tiny model on the processor (4-core test machine), it
+  needed a 210 MB helper process, about as much as SprigCast itself uses at idle, plus about 6 % CPU while
+  someone talked non-stop. PCs with 8 or more cores picked the larger base model, which costs more. The
+  model was a 104 to 290 MB download. Before #412 it froze the stream for 1.4 s, and its graphics card
+  (DirectML) path was never run on a real PC.
+- **To come back:** a much smaller memory footprint, a graphics card path proven on real PCs, and a test on
+  an older PC. The streamer's-own-Google-key mode is light, since it needs no local model, and could come
+  back on its own (paid services rule: the streamer's own key only).
 
 ## Kept, with what was measured (2026-11-17)
 
 These were reviewed and kept. Each still needs a pass on the real PC.
-
-### Live captions (store plugin)
-- **Kept:** it costs nothing until captions are on air, and only a moderate amount while someone talks.
-- **Measured** (tiny model on the processor, 4-core test machine): a 210 MB helper process with 2 threads,
-  about 6 % of the PC while talking non-stop, and 0.15 s to read 3 s of speech. The helper ends 60 s
-  after captions go off air. The model downloads once: 104 MB (processor) to 290 MB (graphics card,
-  base model on PCs with 8 or more cores).
-- **Install:** it is now the only user of onnxruntime-directml, about 25 MB of the download and 70 MB
-  installed. Taking captions out too would save that.
-- **To check:** the graphics card path on the user's PC, and the processor path on an older PC.
 
 ### Elgato Wave Link sync
 - **Kept:** it costs nothing. It is off by default. When on, it holds one local connection only while a

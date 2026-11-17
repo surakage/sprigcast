@@ -20,8 +20,6 @@ dependencies = [
     "keyring>=25",  # stream keys in Windows Credential Manager (M8)
     "pynput>=1.7; sys_platform == 'win32'",  # global hotkeys (M10)
     "psutil>=5.9",  # CPU and memory in the stats panel (M10)
-    "onnxruntime-directml>=1.20; sys_platform == 'win32'",  # Background remover and Live captions: AI models on any GPU (loaded only when used)
-    "onnxruntime>=1.20; sys_platform != 'win32'",
     "winrt-Windows.Media.Control>=3.0; sys_platform == 'win32'",  # Now playing store plugin: the song Windows says is playing (loaded only while on screen)
     "winrt-runtime>=3.0; sys_platform == 'win32'",
 ]
@@ -31,12 +29,6 @@ sprigcast = "sprigcast.app.main:run"
 sprigcast-check = "sprigcast.tools.check:main"
 sprigcast-teststream = "sprigcast.tools.teststream:main"
 sprigcast-memcheck = "sprigcast.tools.memcheck:main"
-
-[tool.uv]
-# On Windows, onnxruntime-directml brings the onnxruntime module, so plain onnxruntime is never pulled in
-# there; elsewhere it stays. onnxruntime also lists sympy (about 70 MB with mpmath) for its model tools;
-# running a model (Background remover, Live captions) never imports it, so it's left out everywhere.
-override-dependencies = ["onnxruntime>=1.20; sys_platform != 'win32'", "sympy; sys_platform == 'never'"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
