@@ -357,14 +357,47 @@ def test_a_frame_is_copied_back_only_once_the_card_has_drawn_it(compositor):
         late = target.pbos.late
         compositor.read_nv12_later("c", (36, 20), "c", 1.04)  # both places still busy: this frame isn't drawn
         assert target.pbos.late == late + 1
-        compositor.read_nv12_later("c", (36, 20), "d", 1.2)  # past STUCK_S: both let go, nothing waited
+        compositor.read_nv12_later("c", (36, 20), "c2", 1.2)  # a card a little behind: both still wait their turn
+        assert all(slot.sync is not None for slot in target.drawn_slots(compositor.ctx))
+        compositor.read_nv12_later("c", (36, 20), "d", 2.1)  # past DRAWN_GIVE_UP_S: both let go, nothing waited
         assert copies == [] and target.pbos.late > late
         pending["done"] = True
         compositor.ctx.finish()
-        compositor.read_nv12_later("c", (36, 20), "e", 1.22)
+        compositor.read_nv12_later("c", (36, 20), "e", 2.12)
         assert len(copies) == 2  # "d", drawn and finished: its two planes are copied
         compositor.ctx.finish()
-        data, tag = compositor.read_nv12_later("c", (36, 20), "f", 1.24)
+        data, tag = compositor.read_nv12_later("c", (36, 20), "f", 2.14)
         assert tag == "d" and data is not None
     finally:
         gl.read_into, gl.done = real_read, real_done
+
+
+def test_frames_keep_coming_from_a_card_that_runs_a_little_behind(compositor):
+    """Native heavy run 2026-11-17: with the card finishing every frame 0.1-0.2 s late (NVENC busy on it), each
+    was let go before it was done and a stream got no frames at all for 77 s. Now they come, late."""
+    gl = compositor.gl
+    if gl is None or not gl.fences_ok:
+        pytest.skip("no sync objects here")
+    _picture(compositor)
+    clock = {"now": 0.0}
+    made = {}
+    real_fence, real_done = gl.fence, gl.done
+
+    def fence():
+        sync = real_fence()
+        made[sync] = clock["now"]
+        return sync
+
+    gl.fence = fence
+    gl.done = lambda sync: clock["now"] - made.get(sync, -1.0) >= 0.15 and real_done(sync)  # 0.15 s behind
+    got = []
+    try:
+        for i in range(120):  # two seconds at 60 fps
+            clock["now"] = 5.0 + i / 60
+            compositor.ctx.finish()
+            data, tag = compositor.read_nv12_later("c", (40, 22), i, clock["now"])
+            if data is not None:
+                got.append(tag)
+    finally:
+        gl.fence, gl.done = real_fence, real_done
+    assert len(got) >= 10 and got == sorted(got)  # fewer than 120 (the card is behind), but never none

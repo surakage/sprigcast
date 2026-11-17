@@ -92,3 +92,32 @@ def test_the_per_frame_walks_leave_no_reference_cycles():
     finally:
         gc.set_debug(0)
         gc.garbage.clear()
+
+
+def test_a_cpu_by_thread_line_goes_in_the_log(caplog):
+    import threading
+    import time as _time
+
+    from sprigcast.core import pacing
+
+    pacing._cpu_watch = None
+    assert pacing.watch_cpu() is None  # the first call starts counting
+    stop = threading.Event()
+    spun = threading.Event()
+
+    def busy():
+        end = _time.monotonic() + 0.2
+        while _time.monotonic() < end:
+            pass
+        spun.set()
+        stop.wait(5)
+
+    worker = threading.Thread(target=busy, name="sprigcast-busy")
+    worker.start()
+    spun.wait(5)
+    assert pacing.watch_cpu() is None  # not 5 minutes yet
+    with caplog.at_level("INFO"):
+        line = pacing.watch_cpu(now=0.0)  # asked for: said now
+    stop.set()
+    worker.join()
+    assert line.startswith("CPU by thread:") and "sprigcast-busy" in line and line in caplog.text

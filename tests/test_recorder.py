@@ -439,3 +439,43 @@ def test_missed_ticks_are_filled_with_the_picture_before(tmp_path):
         rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (121 + i) / 60))
     rec.push_frame(Frame("h", 16, 16, bytes(16 * 16 * 4), (121 + VIDEO_QUEUE // 2 + 5) / 60))
     assert rec.repeated == 3 and rec.dropped == 0  # queue half full: no repeats, the real frame got in
+
+
+def test_a_stopped_feed_is_said_once_and_its_frames_count_as_dropped(tmp_path, caplog):
+    """Native heavy run 2026-11-17: a stream got no frames for 77 s with 0 dropped, and nothing said so."""
+    import time as _time
+    from types import SimpleNamespace
+
+    rec = Recorder(tmp_path / "w.mkv", 16, 16, 30, 500, "libx264", 0.0)  # not started: nothing drains the queue
+    assert rec.check_flow(10.0) is None  # the first look
+    rec.frames += 1
+    assert rec.check_flow(11.0) is None  # writing: fine
+    assert rec.check_flow(12.5) is None  # 1.5 s without: not yet
+    assert rec.check_flow(13.1) == "no frames arrive" and rec.stalls == 1
+    assert rec.check_flow(14.0) is None  # said once
+    rec.frames += 3
+    with caplog.at_level("WARNING"):
+        assert rec.check_flow(16.0) is None
+    assert rec.dropped == round(5.0 * 30) - 3 and "again after 5.0 s" in caplog.text
+    # Frames arrive but their times are behind the numbering: put back on the clock.
+    rec.start_time = _time.perf_counter() - 100.0
+    rec._last_queued = 100 * 30 + 900  # 30 s ahead of the clock
+    assert rec.check_flow(17.0) is None
+    for i in range(5):
+        rec.push_frame(SimpleNamespace(time=_time.perf_counter(), data=b"", fmt="nv12"))
+    assert rec._video.qsize() == 0  # all taken as early renders: none kept
+    why = rec.check_flow(19.5)
+    assert why.startswith("frames arrive but none are kept")
+    rec.push_frame(SimpleNamespace(time=_time.perf_counter() + 0.02, data=b"", fmt="nv12"))
+    assert rec._video.qsize() == 1  # kept again
+
+
+def test_a_stuck_encoder_is_named_with_where_it_waits(tmp_path):
+    import time as _time
+    from types import SimpleNamespace
+
+    rec = Recorder(tmp_path / "s.mkv", 16, 16, 30, 500, "libx264", _time.perf_counter())  # not started: stuck
+    rec.check_flow(1.0)
+    rec.push_frame(SimpleNamespace(time=_time.perf_counter(), data=b"", fmt="nv12"))
+    why = rec.check_flow(3.5)
+    assert why.startswith("the encoder is stuck (1 frames waiting")

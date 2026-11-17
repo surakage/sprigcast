@@ -154,7 +154,7 @@ from sprigcast.core.scene import (
 )
 from sprigcast.core.source import known_kinds, source_class
 from sprigcast.output.keys import get_key, set_key
-from sprigcast.output.recorder import codec_label, codec_short, pick_codec, resolve_codec
+from sprigcast.output.recorder import FLOW_STALL_S, codec_label, codec_short, pick_codec, resolve_codec
 from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
@@ -7028,6 +7028,31 @@ class MainWindow(QMainWindow):
         snap.overload = self._overload_text()
         return snap
 
+    def _watch_flow(self, streamers) -> None:
+        """Every meter tick: has any stream, recording or replay stopped getting frames (Recorder.check_flow)?
+        Said loudly, and when no frames arrive at all the render thread makes its outputs again."""
+        import time as _time
+
+        from sprigcast.output.encoder_load import _encoders
+
+        now = _time.monotonic()
+        for kind, enc in _encoders(streamers, self.recording, self.replay):
+            check = getattr(enc, "check_flow", None)
+            try:
+                why = check(now) if check is not None else None
+            except Exception:
+                log.exception("frame flow check")
+                continue
+            if not why:
+                continue
+            name = getattr(getattr(enc, "path", None), "name", kind)
+            log.error("%s %s has written no frames for %.0f s while SprigCast runs: %s", kind, name,
+                      FLOW_STALL_S, why)
+            if why.startswith("no frames arrive") and self.engine is not None:
+                refresh = getattr(self.engine, "refresh_outputs", None)
+                if refresh is not None:
+                    refresh()
+
     def _watch_encoders(self) -> None:
         """Every meter tick: is each running encoder keeping up? (Garden check offers a lighter one if not.)"""
         from sprigcast.output.encoder_load import EncoderWatch
@@ -7041,6 +7066,7 @@ class MainWindow(QMainWindow):
         except Exception:
             log.exception("encoder watch")
             return
+        self._watch_flow(streamers)
         busy = watch.overloaded()
         if busy and busy != getattr(self, "_overload_logged", None):
             log.warning("encoder can't keep up: %s (codec %s)", " and ".join(busy),

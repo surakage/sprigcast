@@ -199,6 +199,30 @@ def watch_threads(now: float | None = None) -> str | None:
     return line
 
 
+CPU_EVERY_S = 300.0  # a CPU-by-thread line this often (watch_cpu)
+_cpu_watch = None
+
+
+def watch_cpu(now: float | None = None) -> str | None:
+    """Every 5 minutes: which threads used the CPU since the last line, in % of one core, busiest first
+    (tools/cpuwhere.py: Python threads by name, native ones by their own name or the library they started
+    in). PC tests read it from the log instead of running a separate tool. Returns the line."""
+    global _cpu_watch
+    from sprigcast.tools.cpuwhere import CpuWatch
+
+    if _cpu_watch is None:
+        _cpu_watch = CpuWatch()
+        return None
+    if time.monotonic() - _cpu_watch._at < CPU_EVERY_S and now is None:
+        return None
+    whole, threads = _cpu_watch.busiest()
+    _cpu_watch.restart()
+    top = ", ".join(f"{name} {share:.1f}" for name, share in threads[:12] if share >= 0.1)
+    line = f"CPU by thread: {whole:.1f}% of the whole CPU; in % of one core: {top or 'idle'}"
+    log.info(line)
+    return line
+
+
 MEMORY_EVERY_S = 600.0  # a memory line this often, so a slow climb shows where it went (not only at stops)
 _memory_logged: float | None = None
 

@@ -829,6 +829,10 @@ class Compositor:
     """Owns the GL context, one framebuffer per canvas, and one texture per source."""
 
     STUCK_S = 0.1  # an output's copy not done after this long: the card is stuck, ask it for no more (read_nv12_later)
+    # A frame drawn for an output that the card hasn't finished after this long is let go (_read_nv12_drawn). At
+    # STUCK_S, a card running a little behind (every frame done after 0.1-0.2 s, NVENC busy on the same card) had
+    # every frame let go: a stream got no frames at all for 77 s in the native heavy run (2026-11-17).
+    DRAWN_GIVE_UP_S = 1.0
 
     def __init__(self, ctx: moderngl.Context | None = None):
         self.ctx = ctx or create_context()
@@ -1574,8 +1578,9 @@ class Compositor:
         card caught up: 778 ms once in the PC heavy rerun (2026-11-17), with the window not answering, after
         every buffer's own fence said done. Now each frame is drawn into one of two places with a fence after
         it, and copied on a later tick when that fence is passed; a frame the card hasn't finished within
-        STUCK_S is let go (this output misses it, nothing waits). Frames come two ticks after they were drawn,
-        each with its own time."""
+        DRAWN_GIVE_UP_S is let go (this output misses it, nothing waits). While the card is behind on both, the
+        frame isn't drawn (a gap the recorder fills). Frames come two ticks or more after they were drawn, each
+        with its own time."""
         target = self._nv12_target(canvas_id, size)
         fences, pbos, (w, h) = self.gl, target.pbos, size
         slots = sorted(target.drawn_slots(self.ctx), key=lambda slot: slot.when)
@@ -1583,15 +1588,15 @@ class Compositor:
             if slot.sync is None:
                 continue
             if fences.done(slot.sync):
-                drawn_tag, drawn_at = slot.tag, slot.when
+                drawn_tag = slot.tag
                 slot.clear(fences)
 
                 def queue(buf, slot=slot):
                     fences.read_into(slot.y_fbo, buf, 1)
                     fences.read_into(slot.uv_fbo, buf, 2, write_offset=w * h)
 
-                pbos.fill(drawn_tag, drawn_at, queue)
-            elif now - slot.when > self.STUCK_S:
+                pbos.fill(drawn_tag, now, queue)  # the copy is asked for now: its own wait counts from now
+            elif now - slot.when > self.DRAWN_GIVE_UP_S:
                 slot.clear(fences)
                 pbos.late += 1
         free = next((slot for slot in slots if slot.sync is None), None)

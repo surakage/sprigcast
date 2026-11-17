@@ -32,6 +32,21 @@ Pop-Location
 uv pip install --python $python --break-system-packages -r (Join-Path $build "requirements.txt")
 uv pip install --python $python --break-system-packages --no-deps $root
 
+# 2a. The command-line tools (pyproject [project.scripts]). uv's .exe launchers hold this build folder's path to
+#     python.exe, so on a user's PC they fail with "uv trampoline failed to canonicalize script path" (PC test,
+#     2026-11-17). Small .cmd files run the Python next to them instead, wherever SprigCast is installed.
+$scripts = Join-Path $build "python\Scripts"
+Remove-Item (Join-Path $scripts "sprigcast*.exe") -Force -ErrorAction SilentlyContinue
+$tools = @{
+    "sprigcast-check" = "sprigcast.tools.check"
+    "sprigcast-teststream" = "sprigcast.tools.teststream"
+    "sprigcast-memcheck" = "sprigcast.tools.memcheck"
+}
+foreach ($tool in $tools.Keys) {
+    $line = "@`"%~dp0..\python.exe`" -c `"import sys; from $($tools[$tool]) import main; sys.exit(main())`" %*"
+    Set-Content -Path (Join-Path $scripts "$tool.cmd") -Value $line -Encoding ascii
+}
+
 # 2b. The virtual camera (a DirectShow camera plus a Windows 11 media source) next to the sprigcast
 #     package, 64-bit and 32-bit (32-bit apps only see 32-bit cameras).
 cmake -S (Join-Path $root "native\camera") -B (Join-Path $build "camera") -A x64

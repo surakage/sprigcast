@@ -36,9 +36,9 @@ from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "instant_replay", "name": "Instant replay", "version": 2, "adds": "Source",
+PLUGIN = {"id": "instant_replay", "name": "Instant replay", "version": 3, "adds": "Source",
           "about": "Play the last few seconds of your game (and camera) back on stream, with a replay wipe.",
-          "new": "Ready for the faster engine: replays can play through it."}
+          "new": "Lighter on the graphics card: switching blooms keeps the same encoder running."}
 
 KIND = "instant_replay"
 W, H = 1920, 1080  # the replay's box on the canvas (its pictures are 720p or 1080p, scaled to fit)
@@ -833,6 +833,7 @@ class InstantReplaySource(Source):
         self._want = False
         self._buffer = None
         self._attached: tuple | None = None  # (tap name, frame callback, audio callback)
+        self._config: tuple | None = None  # what the running buffer was made for (canvas, size, fps, codec, ...)
         self._show: _Show | None = None
         self._busy = False  # a replay is being made ready, or on screen
         self._clear = True
@@ -870,7 +871,7 @@ class InstantReplaySource(Source):
         self._end_now()
 
     def stop(self) -> None:
-        self._disarm()
+        self._disarm(at_once=True)
         self._end_now()
 
     def set_hidden(self, hidden: bool) -> None:
@@ -910,7 +911,12 @@ class InstantReplaySource(Source):
             gen = self._gen
         workers.run(self._arm_now, gen, name="replay-arm")
 
-    def _disarm(self) -> None:
+    # Off air this long before the encoder is let go. The PC tests switch blooms every 15 s: each switch away
+    # and back closed and opened an NVENC session on the card the stream's and recording's encoders use
+    # (2026-11-17, the native heavy run's 77 s without stream frames began just after one opened).
+    KEEP_WARM_S = 20.0
+
+    def _disarm(self, at_once: bool = False) -> None:
         from sprigcast.core import workers
 
         with self._arm_lock:
@@ -918,21 +924,33 @@ class InstantReplaySource(Source):
                 return
             self._want = False
             self._gen += 1
-        workers.run(self._detach, name="replay-disarm")
+            gen = self._gen
+        if at_once or self.KEEP_WARM_S <= 0:
+            workers.run(self._detach, name="replay-disarm")
+            return
+        timer = threading.Timer(self.KEEP_WARM_S, self._detach_unless_back, (gen,))
+        timer.daemon = True
+        timer.start()
+
+    def _detach_unless_back(self, gen: int) -> None:
+        with self._arm_lock:
+            if gen == self._gen and not self._want:
+                self._detach_locked()
 
     def _arm_now(self, gen: int) -> None:
         with self._arm_lock:
             if gen != self._gen or not self._want:
                 return
-            self._detach_locked()
             engine = self.engine
             if engine is None:
+                self._detach_locked()
                 self.status = "not running"
                 return
             name = TAP_NAME.format(id=self.id)
             try:
                 canvas, scene = view_scene(engine._collection, self.settings, name)
             except ValueError as exc:
+                self._detach_locked()
                 self.status = str(exc)
                 log.warning("instant replay %s: can't keep replays: %s", self.id, exc)
                 return
@@ -946,15 +964,25 @@ class InstantReplaySource(Source):
             out = shrink_to(canvas.width, canvas.height, short) or (canvas.width // 2 * 2, canvas.height // 2 * 2)
             fps = min(canvas.fps, 30) if light else canvas.fps
             seconds = float(min(120, max(3, int(self.settings.get("seconds", 20) or 20))))
+            rate = BITRATES["light" if light or quality not in BITRATES else quality]
+            config = (canvas.id, out, fps, codec, rate, seconds)
+            kept = self._buffer
+            if kept is not None and kept.running and self._attached is not None and self._config == config:
+                # Back on air, or another bloom showing it: the encoder already running goes on (no new
+                # session on the card); only what its view shows is updated.
+                engine.set_view(name, canvas.id, "scene", scene)
+                self.status = "ok"
+                return
+            self._detach_locked()
             buf = ReplayBuffer(f"replay {self.id}", canvas.width, canvas.height, fps,
-                               BITRATES["light" if light or quality not in BITRATES else quality], codec,
+                               rate, codec,
                                time.perf_counter(), seconds, "mkv", out_size=out, tracks=("clips",))
             buf.start()
             tap = f"view:{name}"
             engine.set_view(name, canvas.id, "scene", scene)
             engine.add_frame_tap(tap, buf.push_frame, buf.gpu_size)
             engine.mixer.add_tap(buf.push_audio, buf.tracks)
-            self._buffer, self._attached = buf, (name, buf.push_frame, buf.push_audio)
+            self._buffer, self._attached, self._config = buf, (name, buf.push_frame, buf.push_audio), config
             self.status = "ok"
             log.info("instant replay %s: keeping the last %g s of %s (%dx%d, %s)", self.id, seconds,
                      self.settings.get("capture"), out[0], out[1], codec)
@@ -987,7 +1015,7 @@ class InstantReplaySource(Source):
         if self._busy:
             return "A replay is already playing."
         buf = self._buffer
-        if buf is None or not buf.running:
+        if buf is None or not buf.running or not self._want:  # (kept running a while off air: KEEP_WARM_S)
             return "Instant replay isn't on air." if self.status == "ok" else f"Instant replay: {self.status.rstrip('.')}."
         have = buf.buffered_seconds
         if have < 1.0:

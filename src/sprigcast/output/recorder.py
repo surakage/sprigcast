@@ -39,6 +39,7 @@ EASE_AFTER_S = 2.0
 EASE_CLEAR = 1 / 3
 EASE_CLEAR_S = 5.0
 EASE_MIN_FPS = 48  # only from 50/60 fps: 30 -> 15 would look worse than a few drops
+FLOW_STALL_S = 2.0  # no frame written this long while running: the output's feed has stopped (check_flow)
 VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
@@ -680,6 +681,7 @@ class Recorder:
         """
         if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._frames_closed:
             return
+        self.fed += 1
         before = self._last_queued
         pts = self._assign_pts(frame)
         if pts is None:
@@ -753,6 +755,50 @@ class Recorder:
 
     def _counts_drops(self) -> bool:
         return True
+
+    fed = 0  # frames handed to push_frame while running (check_flow tells "none arrive" from "none are kept")
+    stalls = 0  # times check_flow found the feed stopped
+    _flow: tuple | None = None  # (when, frames written, frames fed) at the last change check_flow saw
+    _stalled_since: float | None = None
+
+    def check_flow(self, now: float) -> str | None:
+        """Call about once a second (time.monotonic()). Says, once, when no frame has been written for
+        FLOW_STALL_S while running, and why: "no frames arrive" (the feed: the caller reattaches it), "frames
+        arrive but none are kept" (their times: the numbering is put back on the clock here) or "the encoder
+        is stuck" (with where). When frames flow again the missing ones count as dropped.
+
+        The native heavy run (2026-11-17) streamed nothing for 77 s with the canvas at 60 fps and 0 dropped:
+        the loss was silent, and nothing put it right."""
+        if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._opening:
+            self._flow, self._stalled_since = None, None
+            return None
+        mark = (self.frames, self.fed)
+        if self._flow is None or mark[0] != self._flow[1]:
+            if self._stalled_since is not None:
+                gap = now - self._stalled_since
+                lost = max(0, round(gap * self.fps) - (mark[0] - self._flow[1]))
+                if self._counts_drops():
+                    self.dropped += lost
+                log.warning("%s: frames are written again after %.1f s; %d counted as dropped", self.path.name,
+                            gap, lost)
+            self._flow, self._stalled_since = (now, mark[0], mark[1]), None
+            return None
+        if self._stalled_since is not None or now - self._flow[0] < FLOW_STALL_S:
+            return None
+        self._stalled_since = self._flow[0]
+        self.stalls += 1
+        if self._video.qsize() == 0:
+            if mark[1] == self._flow[2]:
+                return "no frames arrive"
+            self._last_queued = math.floor((time.perf_counter() - self.start_time) * self.fps) - 1
+            return "frames arrive but none are kept (their numbering is back on the clock now)"
+        import sys
+        import traceback
+
+        stack = sys._current_frames().get(self._thread.ident or -1)
+        where = " <- ".join(f"{f.filename.rsplit(os.sep, 1)[-1]}:{f.lineno} {f.name}"
+                            for f in reversed(traceback.extract_stack(stack)[-4:])) if stack else "unknown"
+        return f"the encoder is stuck ({self._video.qsize()} frames waiting; at {where})"
 
     def frames_lost(self, count: int) -> None:
         """The native engine finished `count` frames for this output that weren't taken in time (render
