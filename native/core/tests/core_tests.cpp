@@ -103,6 +103,76 @@ int main() {
     sc_canvas_destroy(canvas);
     sc_canvas_destroy(nullptr);
     sc_device_destroy(dev);
+
+    // The crash gate: a fault inside a call shuts that device off and the program carries on.
+    for (int kind = 1; kind <= 2; ++kind) {
+#ifdef SPRIGCORE_ASAN
+        if (kind == 2) break;  // AddressSanitizer stops the program on an access violation, by design
+#endif
+        sc_device *broken = nullptr;
+        CHECK(sc_device_create(-1, SC_DEVICE_WARP, &broken) == SC_OK);
+        CHECK(sc_debug_fault(broken, 0) == SC_OK);
+        CHECK(sc_debug_fault(broken, kind) == SC_ERR_INTERNAL);
+        sc_canvas *after = nullptr;
+        CHECK(sc_canvas_create(broken, 8, 8, &after) == SC_ERR_FAULTED);
+        CHECK(after == nullptr);
+        sc_device_destroy(broken);
+    }
+
+    // The compositor: an 8x8 picture of four colours laid out at its own size (texel centres land on pixel
+    // centres, so the colours are exact), then the same drawn inside a sprig placed beside it.
+    sc_device *d2 = nullptr;
+    CHECK(sc_device_create(-1, SC_DEVICE_WARP, &d2) == SC_OK);
+    if (!d2) return 1;
+    std::vector<uint8_t> quad(8 * 8 * 4);
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            uint8_t *px = &quad[(static_cast<size_t>(y) * 8 + x) * 4];  // RGBA
+            const bool right = x >= 4, low = y >= 4;
+            px[0] = (!right && !low) || (right && low) ? 255 : 0;
+            px[1] = (right != low) && right ? 255 : (right && low ? 255 : 0);
+            px[2] = (low && !right) || (right && low) ? 255 : 0;
+            px[3] = 255;
+        }
+    }
+    sc_upload how = {};
+    how.format = SC_FMT_RGBA;
+    how.width = how.height = 8;
+    how.stride = 32;
+    CHECK(sc_source_upload(d2, 11, quad.data(), &how) == SC_OK);
+    sc_item items[2] = {};
+    items[0].source = 11;
+    items[0].scale = 1;
+    items[0].scale_y = -1;
+    items[0].fade = 1;
+    items[0].effects = -1;
+    items[1] = items[0];
+    items[1].source = 99;
+    items[1].part = 500;  // the sprig below
+    items[1].x = 16;
+    items[0].align = items[1].align = 0;  // top left
+    sc_scene scenes[2] = {{500, 8, 8, 0, 1}, {1, 32, 16, 0, 2}};
+    sc_snapshot snap = {scenes, 2, items, 2, nullptr, 0};
+    CHECK(sc_snapshot_set(d2, &snap) == SC_OK);
+    sc_canvas *c2 = nullptr;
+    CHECK(sc_canvas_create(d2, 32, 16, &c2) == SC_OK);
+    if (!c2) return 1;
+    CHECK(sc_canvas_render(c2, 1, 0.0) == SC_OK);
+    std::vector<uint8_t> out(32 * 16 * 4);
+    CHECK(sc_canvas_read_bgra(c2, out.data(), 32 * 4) == SC_OK);
+    Pixel tl = at(out, 32, 1, 1), br = at(out, 32, 6, 6), sprig = at(out, 32, 17, 1), empty = at(out, 32, 30, 14);
+    std::printf("compositor pixels: tl %d,%d,%d,%d br %d,%d,%d,%d sprig %d,%d,%d,%d\n", tl.r, tl.g, tl.b, tl.a,
+                br.r, br.g, br.b, br.a, sprig.r, sprig.g, sprig.b, sprig.a);
+    CHECK(tl.r == 255 && tl.g == 0 && tl.a == 255);
+    CHECK(br.r == 255 && br.g == 255 && br.b == 255);
+    CHECK(sprig.r == 255 && sprig.g == 0 && sprig.a == 255);
+    CHECK(empty.a == 0);
+    sc_scene bad = {2, 8, 8, 1, 5};
+    sc_snapshot bad_snap = {&bad, 1, items, 2, nullptr, 0};
+    CHECK(sc_snapshot_set(d2, &bad_snap) == SC_ERR_ARGUMENT);
+    CHECK(sc_canvas_render(c2, 12345, 0.0) == SC_OK);  // an unknown scene: see-through
+    sc_canvas_destroy(c2);
+    sc_device_destroy(d2);
     sc_device_destroy(nullptr);
 
     if (failures) {

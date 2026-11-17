@@ -1,49 +1,38 @@
 // SprigCast's native engine: the C interface in include/sprigcore.h. Phase 1 (docs/native-engine.md): the
 // build, the link to Python, the log queue, graphics cards and devices, and a first canvas that pictures can be
 // drawn on and read back, which the pixel tests use to compare the engine with what SprigCast draws today.
-#define SPRIGCORE_BUILD
-#include "sprigcore.h"
-
-#include <d3d11.h>
-#include <d3dcompiler.h>
-#include <dxgi1_2.h>
-#include <windows.h>
-#include <wrl/client.h>
+#include "internal.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <deque>
-#include <exception>
 #include <iterator>
-#include <memory>
-#include <mutex>
-#include <new>
-#include <string>
-#include <vector>
-
-using Microsoft::WRL::ComPtr;
+#include <stdexcept>
 
 namespace {
 
-// ---- errors and the log ------------------------------------------------------------------------------------
-
 thread_local std::string g_last_error;
-
 std::mutex g_log_mutex;
 std::deque<std::string> g_log;
 constexpr size_t LOG_KEEP = 512;
-
-void log_line(int level, const std::string &message) {
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    g_log.push_back(std::to_string(level) + " " + message);
-    while (g_log.size() > LOG_KEEP) g_log.pop_front();
-}
 
 std::string hr_text(HRESULT hr) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "0x%08lX", static_cast<unsigned long>(hr));
     return buf;
+}
+
+}  // namespace
+
+namespace sc {
+
+void set_last_error(const std::string &message) { g_last_error = message; }
+
+void log_line(int level, const std::string &message) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log.push_back(std::to_string(level) + " " + message);
+    while (g_log.size() > LOG_KEEP) g_log.pop_front();
 }
 
 int fail(int code, const std::string &message) {
@@ -56,20 +45,21 @@ int fail_hr(int code, const char *what, HRESULT hr) {
     return fail(code, std::string(what) + " failed (" + hr_text(hr) + ")");
 }
 
-// Every exported function runs inside this: no C++ exception crosses into Python.
-template <typename F>
-int guarded(const char *name, F &&body) {
-    try {
-        g_last_error.clear();
-        return body();
-    } catch (const std::bad_alloc &) {
-        return fail(SC_ERR_OUT_OF_MEMORY, std::string(name) + ": out of memory");
-    } catch (const std::exception &e) {
-        return fail(SC_ERR_INTERNAL, std::string(name) + ": " + e.what());
-    } catch (...) {
-        return fail(SC_ERR_INTERNAL, std::string(name) + ": unknown error");
+HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
+    ComPtr<ID3DBlob> errors;
+    HRESULT hr = D3DCompile(source, size, "sprigcore", nullptr, nullptr, entry, profile,
+                            D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out.GetAddressOf(), errors.GetAddressOf());
+    if (FAILED(hr) && errors) {
+        log_line(SC_LOG_ERROR, std::string("shader: ") + static_cast<const char *>(errors->GetBufferPointer()));
     }
+    return hr;
 }
+
+}  // namespace sc
+
+using namespace sc;
+
+namespace {
 
 // ---- graphics cards -----------------------------------------------------------------------------------------
 
@@ -120,53 +110,12 @@ struct DrawConstants {
 
 }  // namespace
 
-// ---- device and canvas --------------------------------------------------------------------------------------
-
-struct sc_device {
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_10_0;
-    std::mutex lock;  // the immediate context is used by one thread at a time
-
-    // Made the first time something is drawn.
-    ComPtr<ID3D11VertexShader> vs;
-    ComPtr<ID3D11PixelShader> ps;
-    ComPtr<ID3D11Buffer> constants;
-    ComPtr<ID3D11SamplerState> sampler;
-    ComPtr<ID3D11BlendState> over;
-    ComPtr<ID3D11RasterizerState> raster;
-
-    int prepare_drawing();
-};
-
-struct sc_canvas {
-    sc_device *device = nullptr;
-    int width = 0, height = 0;
-    ComPtr<ID3D11Texture2D> texture;
-    ComPtr<ID3D11RenderTargetView> target;
-    ComPtr<ID3D11Texture2D> staging;  // made on the first read
-};
-
-namespace {
-
-HRESULT compile(const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
-    ComPtr<ID3DBlob> errors;
-    HRESULT hr = D3DCompile(SHADER, sizeof SHADER - 1, "sprigcore", nullptr, nullptr, entry, profile,
-                            D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out.GetAddressOf(), errors.GetAddressOf());
-    if (FAILED(hr) && errors) {
-        log_line(SC_LOG_ERROR, std::string("shader: ") + static_cast<const char *>(errors->GetBufferPointer()));
-    }
-    return hr;
-}
-
-}  // namespace
-
 int sc_device::prepare_drawing() {
     if (vs) return SC_OK;
     ComPtr<ID3DBlob> vs_code, ps_code;
-    HRESULT hr = compile("vs_main", "vs_4_0", vs_code);
+    HRESULT hr = compile(SHADER, sizeof SHADER - 1, "vs_main", "vs_4_0", vs_code);
     if (FAILED(hr)) return fail_hr(SC_ERR_SHADER, "Compiling the vertex shader", hr);
-    hr = compile("ps_main", "ps_4_0", ps_code);
+    hr = compile(SHADER, sizeof SHADER - 1, "ps_main", "ps_4_0", ps_code);
     if (FAILED(hr)) return fail_hr(SC_ERR_SHADER, "Compiling the pixel shader", hr);
     hr = device->CreateVertexShader(vs_code->GetBufferPointer(), vs_code->GetBufferSize(), nullptr, &vs);
     if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "CreateVertexShader", hr);
@@ -322,8 +271,8 @@ SC_API int sc_device_create(int index, int flags, sc_device **out) {
 SC_API void sc_device_destroy(sc_device *device) { delete device; }
 
 SC_API int sc_device_info(sc_device *device, sc_adapter_info *out, int *feature_level) {
-    return guarded("sc_device_info", [&]() -> int {
-        if (!device || !out) return fail(SC_ERR_ARGUMENT, "sc_device_info: no device or output");
+    return device_call(device, "sc_device_info", [&]() -> int {
+        if (!out) return fail(SC_ERR_ARGUMENT, "sc_device_info: no device or output");
         ComPtr<IDXGIDevice> dxgi;
         HRESULT hr = device->device.As(&dxgi);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "IDXGIDevice", hr);
@@ -343,8 +292,8 @@ SC_API int sc_device_info(sc_device *device, sc_adapter_info *out, int *feature_
 }
 
 SC_API int sc_canvas_create(sc_device *device, int width, int height, sc_canvas **out) {
-    return guarded("sc_canvas_create", [&]() -> int {
-        if (!device || !out) return fail(SC_ERR_ARGUMENT, "sc_canvas_create: no device or output");
+    return device_call(device, "sc_canvas_create", [&]() -> int {
+        if (!out) return fail(SC_ERR_ARGUMENT, "sc_canvas_create: no device or output");
         *out = nullptr;
         if (width < 1 || height < 1 || width > 16384 || height > 16384)
             return fail(SC_ERR_ARGUMENT, "sc_canvas_create: size must be 1 to 16384 each way");
@@ -378,7 +327,7 @@ SC_API void sc_canvas_destroy(sc_canvas *canvas) {
 }
 
 SC_API int sc_canvas_clear(sc_canvas *canvas, float r, float g, float b, float a) {
-    return guarded("sc_canvas_clear", [&]() -> int {
+    return device_call(canvas ? canvas->device : nullptr, "sc_canvas_clear", [&]() -> int {
         if (!canvas) return fail(SC_ERR_ARGUMENT, "sc_canvas_clear: no canvas");
         const float colour[4] = {r, g, b, a};
         std::lock_guard<std::mutex> lock(canvas->device->lock);
@@ -389,7 +338,7 @@ SC_API int sc_canvas_clear(sc_canvas *canvas, float r, float g, float b, float a
 
 SC_API int sc_canvas_draw_bgra(sc_canvas *canvas, const uint8_t *pixels, int width, int height, int stride,
                                float x, float y, float w, float h, float opacity) {
-    return guarded("sc_canvas_draw_bgra", [&]() -> int {
+    return device_call(canvas ? canvas->device : nullptr, "sc_canvas_draw_bgra", [&]() -> int {
         if (!canvas || !pixels) return fail(SC_ERR_ARGUMENT, "sc_canvas_draw_bgra: no canvas or pixels");
         if (width < 1 || height < 1 || width > 16384 || height > 16384 || stride < width * 4)
             return fail(SC_ERR_ARGUMENT, "sc_canvas_draw_bgra: bad picture size or stride");
@@ -454,7 +403,7 @@ SC_API int sc_canvas_draw_bgra(sc_canvas *canvas, const uint8_t *pixels, int wid
 }
 
 SC_API int sc_canvas_read_bgra(sc_canvas *canvas, uint8_t *out, int stride) {
-    return guarded("sc_canvas_read_bgra", [&]() -> int {
+    return device_call(canvas ? canvas->device : nullptr, "sc_canvas_read_bgra", [&]() -> int {
         if (!canvas || !out || stride < canvas->width * 4)
             return fail(SC_ERR_ARGUMENT, "sc_canvas_read_bgra: no canvas or output, or stride too small");
         sc_device &dev = *canvas->device;
@@ -477,6 +426,19 @@ SC_API int sc_canvas_read_bgra(sc_canvas *canvas, uint8_t *out, int stride) {
             std::memcpy(out + static_cast<size_t>(row) * stride, src + static_cast<size_t>(row) * mapped.RowPitch,
                         static_cast<size_t>(canvas->width) * 4);
         dev.context->Unmap(canvas->staging.Get(), 0);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_debug_fault(sc_device *device, int kind) {
+    return device_call(device, "sc_debug_fault", [&]() -> int {
+        if (kind == 2) {
+#ifdef _MSC_VER
+            volatile int *nowhere = nullptr;
+            *nowhere = 1;  // an access violation: /EHa turns it into something catch (...) stops
+#endif
+        }
+        if (kind == 1 || kind == 2) throw std::runtime_error("a deliberate fault (crash gate check)");
         return SC_OK;
     });
 }
