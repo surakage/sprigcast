@@ -21,9 +21,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 
 - TikTok chat (#431). Kick chat, VST3 sound filters and the Background remover store plugin (#430). The Live captions
   store plugin, and with it the onnxruntime library (about 25 MB of the download, 70 MB installed). Elgato Wave Link
-  sync (Wave Link's channels still work as sound devices). A Background
-  remover or Live captions someone had added is deleted at start. Once, at start, SprigCast deletes what those
-  features left on the PC: downloaded models, their settings (including a captions Google key), and their filters in gardens.
+  sync (Wave Link's channels still work as sound devices). The Auto clip store plugin, which wasn't reliable enough
+  (a looping video's sound kept suggesting clips). A Background remover, Live captions or Auto clip someone had added
+  is deleted at start. Once, at start, SprigCast deletes what those
+  features left on the PC: downloaded models, their settings (including a captions Google key), their filters in gardens,
+  and Auto clip's unkept suggested clips. Clips and the replay buffer are unchanged.
 
 ### Live screen
 
@@ -258,14 +260,6 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   CreateSceneItem) start at the same readable size and free corner as from the + menu, on both canvases; text starts
   the same share of the canvas at 720p, 1080p or 4K. They used to start at the size of their box in the top left corner.
 - Re-adding a store plugin in the same session no longer doubles its right-click entries.
-- Auto clip store plugin: while clips are ready, a shout, a loud game moment or chat going wild (optional) saves the
-  last seconds as a suggested clip. Nothing is posted: Tools → Suggested clips… lists them to play, keep (moves to
-  Clips) or delete, and unkept ones are deleted after 3 days. Sensitivity, what it listens to and the gap between
-  clips are yours to set. It reads the levels the meters already have and does nothing while clips are off.
-  `autoclip.*` API actions (`autoclip.mark` for Streamer.bot raids) and an `autoclip.suggested` event.
-- Auto clip is stricter: 2 minutes between suggestions by default (1 at least), 10 an hour at most, none while one
-  is still saving; looping videos and sounds are left out, and the same loud bit coming round again doesn't count
-  (the PC heavy run saved one a minute under a loud looping video).
 - Freeze store plugin: freeze a sprig, game or camera on the frame showing now for a set time (a redeem that
   freezes your game for 10 seconds), then it's live again by itself. Right-click, hotkeys, and `freeze.start`,
   `freeze.stop` and `freeze.toggle` for Streamer.bot and other apps, with an `effect.ended` event when it ends.

@@ -321,6 +321,12 @@ def run() -> None:
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    try:
+        from sprigcast.app.leftovers import clean_up_recordings
+
+        clean_up_recordings(window._recordings_folder())  # Auto clip's unkept suggestions, once
+    except Exception as exc:  # noqa: BLE001 (never stops SprigCast from opening)
+        logging.warning("could not tidy up Auto clip's suggestions: %s", exc)
     shown.append(window)
     window._single_copy = server  # kept alive with the window
     if broken:  # its file couldn't be read: say so once, what opened instead, and where the old one is kept

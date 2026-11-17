@@ -65,6 +65,18 @@ the git history named in its entry, but rebuild it to today's rules rather than 
   an older PC. The streamer's-own-Google-key mode is light, since it needs no local model, and could come
   back on its own (paid services rule: the streamer's own key only).
 
+### Auto clip (store plugin)
+- **Removed:** 2026-11-17. The plugin was `src/sprigcast/store/auto_clip.py` (#388, #406), with
+  `WindowHost.save_clip_into`. Find them in git history. The generic hooks it brought
+  (`plugin_hooks.register_level_watcher` and `register_tool`) stay, since docs/plugins.md offers them to plugins. A copy someone had added is deleted at start (`plugin_store.RETIRED`). Clips and the
+  replay buffer are unchanged.
+- **Why:** not reliable enough. It judged a moment only by loudness against a learned usual level. In the
+  PC heavy runs it saved a suggestion about every minute under a loud looping video (7 in 7 minutes), and
+  after #406 still made four "game +14-17 dB" suggestions from a looping Game Over webm's sound. Each
+  suggestion is a full clip written to disk.
+- **To come back:** a way to tell a real moment from a repeating sound that works on real streams (for
+  example only the game's own app sound, plus chat), tested across a whole stream before it ships.
+
 ### Elgato Wave Link sync
 - **Removed:** 2026-11-17. The code was `src/sprigcast/audio/wavelink.py` and the "Keep Wave Link in step"
   box in Settings → Sound. Capturing Wave Link's channels and mixes as sound devices stays: those are
@@ -78,7 +90,9 @@ the git history named in its entry, but rebuild it to today's rules rather than 
 
 `src/sprigcast/app/leftovers.py` runs once at start. It deletes the models folder that Live captions
 and the Background remover downloaded into, and the settings that captions, Wave Link sync and Kick chat
-kept, including a captions Google key. When someone takes out another feature, add its leftovers there
+kept, including a captions Google key, and Auto clip's `auto_clip.json`. `clean_up_recordings` deletes,
+once, the unkept suggested clips that Auto clip's `suggested.json` lists in the recordings folder's "Suggested clips"
+(nothing else in that folder). When someone takes out another feature, add its leftovers there
 and bump `VERSION`. Garden filters of removed kinds (`vst`, `background`) are dropped as gardens load
 (`core/scene.py` `RETIRED_FILTER_KINDS`).
 
@@ -111,7 +125,7 @@ These aren't removal candidates. Each needs a pass on real hardware.
 - **SprigCast's own NVENC encoder** (`output/nvenc_d3d11.py`): it talks to the NVIDIA driver directly and is
   the default for recordings and the replay buffer. It has only been proven on the user's RTX card. It checks
   itself with a test frame and falls back to FFmpeg. Try it on another NVIDIA card.
-- **Untested store plugins and features:** Instant replay, Move transition, Auto clip, Stream timer and
+- **Untested store plugins and features:** Instant replay, Move transition, Stream timer and
   PNGtuber. If one misbehaves in the test, review it here.
 - **Paired devices:** the cause of StreamBridge's lost pairing is still unknown, though the pairing survived
   the last update. If it's lost again, read the "paired" log lines.

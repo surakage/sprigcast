@@ -60,7 +60,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast import plugin_hooks
 from sprigcast.app.modal import modal
 from sprigcast.app.labels import literal
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
@@ -2621,7 +2620,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
 
     def _fill_plugin_tools(self) -> None:
-        """Tools menu entries that added plugins bring (Auto clip's Suggested clips…), under Plugin store."""
+        """Tools menu entries that added plugins bring (register_tool), under Plugin store."""
         for action in self._plugin_tool_actions:
             self._tools_menu.removeAction(action)
             action.deleteLater()
@@ -2919,7 +2918,7 @@ class MainWindow(QMainWindow):
                     self.sound_strips.set_levels(event.levels)
                 self.peak_watch.feed(event.levels)
                 self.control.meters(event.levels)  # only when a connected app asked for meters
-                if plugin_hooks._LEVEL_WATCHERS:  # Auto clip listens for loud moments
+                if plugin_hooks._LEVEL_WATCHERS:  # plugins following sound levels (register_level_watcher)
                     plugin_hooks.levels_heard(self.api, event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses

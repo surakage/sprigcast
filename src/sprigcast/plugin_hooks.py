@@ -17,8 +17,8 @@
     # Sound levels, about 15 times a second: {source id: (peak dBFS, RMS dBFS)}, plus "master".
     register_level_watcher(lambda api, levels: ...)
 
-    # An entry of your own in the Tools menu (Auto clip's "Suggested clips…").
-    register_tool("Suggested clips…", lambda api: ...)
+    # An entry of your own in the Tools menu.
+    register_tool("My window…", lambda api: ...)
 
 `api` is the SprigCast API (control/native.py NativeApi): api.run("filter.set", {...}), api.col (the
 scenes and sources), api.host (the app). Plugin actions for apps go through control.native.register_action.
