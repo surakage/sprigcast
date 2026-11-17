@@ -7,6 +7,7 @@ its own in SprigCast's memory just for one percentage in the status bar.
 
 from __future__ import annotations
 
+import functools
 import sys
 from collections import defaultdict
 
@@ -30,6 +31,19 @@ def busiest_engine(samples: list[tuple[str, float]], kind: str = "") -> float:
     return min(100.0, max(engines.values(), default=0.0))
 
 
+@functools.cache
+def _item_type():
+    """PDH_FMT_COUNTERVALUE_ITEM_W with the double member of the union. Made once: a ctypes Structure class made
+    in __init__ (a fresh query every RENEW_S) and pointed at with ctypes.POINTER is kept by ctypes forever."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Item(ctypes.Structure):
+        _fields_ = [("name", ctypes.c_wchar_p), ("status", wintypes.DWORD), ("value", ctypes.c_double)]
+
+    return Item
+
+
 class GpuCounter:
     """Open once, then read() whenever. Raises OSError if the counters aren't available."""
 
@@ -39,10 +53,7 @@ class GpuCounter:
         import ctypes
         from ctypes import wintypes
 
-        class Item(ctypes.Structure):  # PDH_FMT_COUNTERVALUE_ITEM_W with the double member of the union
-            _fields_ = [("name", ctypes.c_wchar_p), ("status", wintypes.DWORD), ("value", ctypes.c_double)]
-
-        self._ctypes, self._item = ctypes, Item
+        self._ctypes, self._item = ctypes, _item_type()
         pdh = self._pdh = ctypes.WinDLL("pdh")
         handle = wintypes.HANDLE
         pdh.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_size_t, ctypes.POINTER(handle)]
