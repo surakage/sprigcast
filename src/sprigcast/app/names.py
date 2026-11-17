@@ -63,7 +63,7 @@ def short_status(status: str) -> str:
     s = (status or "").lower()
     if not s or s == "ok" or s.startswith(("capturing", "monitoring", "listening")):
         return ""
-    if s.startswith(("loading", "getting")):  # getting ready (Live captions' speech model)
+    if s.startswith(("loading", "getting")):  # getting ready (a plugin fetching what it needs)
         return "starting"
     for words, tag in (("paused", "asleep"), ("not found", "not found"), ("disconnected", "unplugged"),
                        ("lost", "lost"), ("closed", "closed"), ("busy", "busy"), ("waiting", "waiting"),

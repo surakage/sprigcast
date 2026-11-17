@@ -141,16 +141,16 @@ def test_too_old_windows_says_so_instead_of_check_its_plugged_in():
     assert "needs Windows 10 (2004) or newer" in finding.text
 
 
-def test_captions_listening_or_getting_ready_is_not_a_problem():
+def test_listening_or_getting_ready_is_not_a_problem():
     from types import SimpleNamespace as NS
 
     from sprigcast.app import doctor
     from sprigcast.app.names import plain_problem, short_status
 
     fine = ["Listening", "Loading the speech model", "Getting the speech model (45%)", "paused"]
-    check = NS(collection=NS(sources=[NS(id=str(i), name="Live captions") for i in range(len(fine) + 1)]),
+    check = NS(collection=NS(sources=[NS(id=str(i), name="Plugin") for i in range(len(fine) + 1)]),
                statuses={**{str(i): s for i, s in enumerate(fine)}, str(len(fine)): "Add your Google key in Settings"})
     [finding] = doctor._sources(check)
     assert finding.level == "bad" and "Google key" in finding.text  # a real problem still stops go-live
     assert short_status("Listening") == "" and short_status("Getting the speech model (45%)") == "starting"
-    assert all(plain_problem(s, "live_captions") is None for s in fine)
+    assert all(plain_problem(s, "plugin") is None for s in fine)

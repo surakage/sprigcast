@@ -145,14 +145,16 @@ def test_added_store_plugins_get_the_new_version_at_start(tmp_path):
 
 
 def test_retired_store_plugins_are_deleted_at_start(tmp_path):
-    """Background remover was taken out (2026-11-17, docs/REVISIT.md): an added copy must never load again."""
+    """Background remover and Live captions were taken out (2026-11-17, docs/REVISIT.md): added copies never load again."""
     folder = tmp_path / "plugins"
     folder.mkdir()
-    old = plugin_store.installed_path(folder, "background_remover")
-    old.write_text('PLUGIN = {"id": "background_remover", "version": 2}', encoding="utf-8")
+    for plugin_id in ("background_remover", "live_captions"):
+        plugin_store.installed_path(folder, plugin_id).write_text(f'PLUGIN = {{"id": "{plugin_id}", "version": 2}}',
+                                                                  encoding="utf-8")
     plugin_store.refresh_installed(folder)
-    assert not old.exists()
-    assert "background_remover" not in {p.id for p in plugin_store.catalog()}
+    for plugin_id in ("background_remover", "live_captions"):
+        assert not plugin_store.installed_path(folder, plugin_id).exists()
+        assert plugin_id not in {p.id for p in plugin_store.catalog()}
 
 
 def test_slide_show_leaves_out_sprigcasts_own_screenshots(tmp_path):

@@ -234,7 +234,7 @@ def run() -> None:
     app.setWindowIcon(app_icon())
     from sprigcast.core.painted import brand_fonts
 
-    brand_fonts()  # Nunito for the text plugins (captions, timer, clock, Now playing)
+    brand_fonts()  # Nunito for the text plugins (timer, clock, Now playing)
     from sprigcast.app import crash_report, single_instance
 
     if single_instance.ask_running_copy():  # already open: that window comes forward instead
@@ -273,6 +273,13 @@ def run() -> None:
             refresh_installed(plugins_dir)  # store plugins you added get this version's fixes
         except OSError as exc:
             logging.warning("could not update store plugins: %s", exc)
+    try:
+        from sprigcast.app.leftovers import clean_up
+
+        clean_up(config_dir())  # what features taken out of SprigCast left on this PC, once
+    except Exception as exc:  # noqa: BLE001 (never stops SprigCast from opening)
+        logging.warning("could not tidy up after removed features: %s", exc)
+    if not safe:
         plugins = load_plugins(plugins_dir)
 
     from sprigcast.app.main_window import MainWindow

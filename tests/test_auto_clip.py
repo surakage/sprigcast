@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sprigcast import models, plugin_hooks, plugin_store
+from sprigcast import plugin_hooks, plugin_store
 from sprigcast.chat import ChatMessage
 from sprigcast.control.native import ApiError, NativeApi
 
@@ -29,9 +29,9 @@ def ac(tmp_path, app):
     plugin = next(p for p in plugin_store.catalog() if p.id == "auto_clip")
     assert plugin.name == "Auto clip" and plugin.adds == "Tool"
     assert plugin_store.install(tmp_path / "plugins", plugin) is None
-    models.set_folder(tmp_path / "settings" / "models")
-    yield sys.modules["sprigcast_plugin_auto_clip"]
-    models.set_folder(None)
+    module = sys.modules["sprigcast_plugin_auto_clip"]
+    module.SETTINGS_FILE = tmp_path / "settings" / "auto_clip.json"
+    yield module
     plugin_store.remove(tmp_path / "plugins", "auto_clip")
     assert not [fn for fn in plugin_hooks._LEVEL_WATCHERS if plugin_hooks._alive(fn)]
     assert not any(label == "Suggested clips…" for label, _ in plugin_hooks.tools())

@@ -51,11 +51,6 @@ jobs:
           # Its manifest must say Windows 10/11, or Windows reports build 9200 and Windows 10 features switch off.
           $build = [int]((Get-Content $probe) -split ' ')[-1]
           if ($build -lt 10000) { throw "SprigCast.exe sees Windows build ${build}: its manifest is missing" }
-          # Live captions run their speech model in a helper started from SprigCast.exe (#412): it must
-          # start, answer over its pipe, and the graphics-card runtime must be there.
-          $exe = (Resolve-Path "packaging\build\python\SprigCast.exe").Path
-          & $py -c "import sys, onnxruntime as o; sys.executable = r'$exe'; from sprigcast.store import live_captions as c; e = c.ProcessEngine(None, 'tiny', 'en', 'cpu', hold=0.01); print('captions helper OK', e.device, 'DirectML' if 'DmlExecutionProvider' in o.get_available_providers() else 'no DirectML'); e.close()"
-          if ($LASTEXITCODE -ne 0) { throw "The Live captions helper didn't start from SprigCast.exe" }
           # The bundled font (#428) is in the installed copy.
           & $py -c "import sprigcast, pathlib; f = pathlib.Path(sprigcast.__file__).parent / 'data' / 'fonts' / 'Nunito.ttf'; assert f.is_file(), f; print('font OK')"
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }

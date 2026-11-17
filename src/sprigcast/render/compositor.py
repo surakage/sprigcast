@@ -86,12 +86,6 @@ uniform vec4 sil_color;     // rgb, alpha
 uniform float sil_boost;
 uniform float sil_px;       // the halo's size in canvas pixels
 uniform float blackout;     // 0 .. 1 toward black, keeping the outline
-uniform int cutout;         // background remover: 0 off, 1 see-through, 2 blurred, 3 a picture behind
-uniform sampler2D person;   // cutout: how much of each point is you (red, 0 .. 1), over the whole picture
-uniform sampler2D backdrop; // cutout 2: the background blurred (whole picture); 3: the picture behind
-uniform bool has_backdrop;  // cutout 2: the blurred copy has arrived (else a blur here, for a moment)
-uniform vec4 backdrop_rect; // cutout 3: picture uv = xy + st * zw (fills the source like a cover)
-uniform float cutout_blur;  // cutout 2 before the blurred copy: blur size in source pixels
 in vec2 uv;
 in vec2 local;
 out vec4 color;
@@ -251,9 +245,6 @@ float body(vec2 l) {
     }
     vec4 c = src(mix(uv_rect.xy, uv_rect.zw, l));
     float a = c.a;
-    if (cutout == 1) {
-        a *= texture(person, mix(uv_rect.xy, uv_rect.zw, l)).r;   // a stroke or shadow follows you, not the frame
-    }
     if (key_mode > 0) {
         a *= key_keep(premul && c.a > 0.0 ? c.rgb / c.a : c.rgb);
     }
@@ -319,26 +310,6 @@ void main() {
     vec4 c = blur > 0.0 ? blurred(st, tpx * blur) : src(st);
     if (premul && c.a > 0.0) {
         c.rgb /= c.a;
-    }
-    if (cutout > 0) {
-        float you = texture(person, st).r;
-        if (cutout == 1) {
-            c.a *= you;
-        } else {
-            vec4 b;
-            if (cutout == 3) {
-                b = texture(backdrop, backdrop_rect.xy + st * backdrop_rect.zw);
-            } else if (has_backdrop) {
-                b = texture(backdrop, st);
-            } else {
-                b = blurred(st, tpx * cutout_blur);
-                if (premul && b.a > 0.0) {
-                    b.rgb /= b.a;
-                }
-            }
-            c.rgb = mix(b.rgb, c.rgb, you);
-            c.a = mix(b.a * c.a, c.a, you);
-        }
     }
     if (sharpen > 0.0) {
         vec2 px = tpx;
@@ -835,11 +806,6 @@ class Compositor:
         # Colour looks and shape pictures, loaded once each (key: "look:<name>" or a file path).
         self.program["lut"].value = 1
         self.program["mask"].value = 2
-        self.program["person"].value = 4
-        self.program["backdrop"].value = 5
-        # Background remover: source id -> [its person mask, its blurred background or None] (upload_cutout).
-        self.cutouts: dict[str, list] = {}
-        self._no_one = self.ctx.texture((1, 1), 1, b"\x00")  # no mask yet: nothing of you (never the room)
         self.looks: dict[str, moderngl.Texture3D | None] = {}
         self.masks: dict[str, tuple[moderngl.Texture, bool] | None] = {}
         self.load_errors: dict[str, str] = {}  # key -> why it couldn't be loaded (shown in the Filters window)
@@ -890,58 +856,7 @@ class Compositor:
         else:
             tex.write(pixels)
 
-    def upload_cutout(self, source_id: str, mask: np.ndarray, backdrop: np.ndarray | None = None) -> None:
-        """The background remover's newest mask for a source (H x W, 255 = you) and, for blur, its background
-        blurred (h x w x 3 RGB). Both cover the whole picture; they're small and the GPU scales them up."""
-        held = self.cutouts.setdefault(source_id, [None, None])
-        for i, (array, components) in enumerate(((mask, 1), (backdrop, 3))):
-            tex = held[i]
-            if array is None:
-                if tex is not None:
-                    tex.release()
-                    held[i] = None
-                continue
-            size = (array.shape[1], array.shape[0])
-            if tex is None or tex.size != size:
-                if tex is not None:
-                    tex.release()
-                tex = self.ctx.texture(size, components, alignment=1)
-                tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
-                tex.repeat_x = tex.repeat_y = False
-                held[i] = tex
-            tex.write(np.ascontiguousarray(array, dtype=np.uint8))
-
-    def forget_cutout(self, source_id: str) -> None:
-        for tex in self.cutouts.pop(source_id, None) or ():
-            if tex is not None:
-                tex.release()
-
-    def _use_cutout(self, source_id: str, fx: VideoEffects, size: tuple[int, int]) -> None:
-        """Bind a background-removed source's mask and what goes behind it (units 4 and 5)."""
-        p = self.program
-        mask, blurred = self.cutouts.get(source_id) or (None, None)
-        (mask or self._no_one).use(location=4)
-        mode = fx.cutout
-        if mode == 3:
-            picture = self._mask(fx.cutout_picture)
-            if picture is None:
-                mode = 1  # the picture won't open: see-through instead (the Filters window says why)
-            else:
-                picture[0].use(location=5)
-                pw, ph = picture[0].size
-                sw, sh = max(1, size[0]), max(1, size[1])
-                cover = max(sw / pw, sh / ph)  # fill the source, cropping the picture's overflow evenly
-                zw, zh = sw / (pw * cover), sh / (ph * cover)
-                p["backdrop_rect"].value = ((1 - zw) / 2, (1 - zh) / 2, zw, zh)
-        elif mode == 2:
-            p["has_backdrop"].value = blurred is not None and mask is not None
-            if blurred is not None:
-                blurred.use(location=5)
-            p["cutout_blur"].value = fx.cutout_blur
-        p["cutout"].value = mode
-
     def forget(self, source_id: str) -> None:
-        self.forget_cutout(source_id)
         self.planar.pop(source_id, None)
         self.premultiplied.discard(source_id)
         self.detail.pop(source_id, None)
@@ -1109,7 +1024,6 @@ class Compositor:
         self.program["tex"].value = 0
         self.program["opacity"].value = 1.0
         self.program["planar"].value = 0
-        self.program["cutout"].value = 0
         self._applied = None
         self._draw_pieces(self._scene_pieces(scene, source_sizes, fades))
 
@@ -1123,7 +1037,6 @@ class Compositor:
         self.program["tex"].value = 0
         self.program["opacity"].value = 1.0
         self.program["planar"].value = 0
-        self.program["cutout"].value = 0
         self._applied = None
         self._draw_pieces((d.source, d.canvas, d.quad, d.opacity) for d in draws)
 
@@ -1146,7 +1059,6 @@ class Compositor:
         A scene's items come here (see _scene_pieces), and so does each frame of a Move transition, whose
         quads are somewhere between two blooms."""
         planar_on = False
-        cutting = False
         opacity = 1.0
         for source_id, canvas_id, quad, alpha in pieces:
             part = self.parts.get((source_id, canvas_id))
@@ -1174,12 +1086,6 @@ class Compositor:
             else:
                 picture = planar[2] if planar is not None else tex.size
             self._apply_effects(fx, picture)
-            if fx.cutout:
-                self._use_cutout(source_id, fx, picture)
-                cutting = True
-            elif cutting:
-                self.program["cutout"].value = 0
-                cutting = False
             if fx.shape or fx.halos:
                 (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = quad[:3]
                 self.program["quad_size"].value = (math.hypot(x1 - x0, y1 - y0), math.hypot(x2 - x0, y2 - y0))
@@ -1197,7 +1103,7 @@ class Compositor:
     def _in_detail(self, fx: VideoEffects, detail: float) -> VideoEffects:
         """The filters of a sharp source drawn with `detail` pixels per layout pixel: blur and pixelate are
         counted in the picture's pixels, so they grow with it and look the same at any detail."""
-        if not (fx.blur or fx.pixelate or fx.cutout_blur):
+        if not (fx.blur or fx.pixelate):
             return fx
         key = (id(fx), detail)
         held = self._detailed.get(key)
@@ -1205,8 +1111,7 @@ class Compositor:
             return held[1]
         if len(self._detailed) > 64:
             self._detailed.clear()
-        out = dataclasses.replace(fx, blur=fx.blur * detail, pixelate=fx.pixelate * detail,
-                                  cutout_blur=fx.cutout_blur * detail)
+        out = dataclasses.replace(fx, blur=fx.blur * detail, pixelate=fx.pixelate * detail)
         self._detailed[key] = (fx, out)  # holds fx too, so its id isn't reused while the key stands
         return out
 
@@ -1533,9 +1438,6 @@ class Compositor:
             scaled.release()
         for pbos in self.full_pbos.values():
             pbos.release()
-        for source_id in list(self.cutouts):
-            self.forget_cutout(source_id)
-        self._no_one.release()
         self.forget_looks()
         self.vao.release()
         self.vbo.release()

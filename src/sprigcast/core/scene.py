@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 FORMAT_VERSION = 2
 
@@ -54,6 +54,16 @@ class SourceConfig(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
     filters: list[Filter] = Field(default_factory=list)  # applied top to bottom
 
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _drop_retired_filters(cls, value):
+        """Filters of features taken out of SprigCast (docs/REVISIT.md) leave older gardens as they load."""
+        if isinstance(value, list):
+            return [f for f in value if not (isinstance(f, dict) and f.get("kind") in RETIRED_FILTER_KINDS)]
+        return value
+
+
+RETIRED_FILTER_KINDS = ("vst", "background")  # VST3 sound filters, Background remover (removed 2026-11-17)
 
 ALIGNS = ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right")
 BOUNDS = ("off", "fit", "fill", "stretch")  # off: drawn at its scale; else squeezed into a box of bounds_size
