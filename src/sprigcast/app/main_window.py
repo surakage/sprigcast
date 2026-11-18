@@ -1121,16 +1121,22 @@ class MainWindow(QMainWindow):
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
         if scene is None:
             return
+        from sprigcast.core import workers
+
+        folder = self._recordings_folder() / "Screenshots"
+
+        def take():  # on a worker, the window drawing meanwhile: waiting for the frame and the PNG took it 50-200 ms
+            image = screenshot.grab(self.engine, ["view:screenshot"]).get("view:screenshot")
+            return None if image is None else screenshot.save(image, folder, scene.name)
+
         self.engine.set_view("screenshot", scene.canvas, "bloom", scene_id)
         try:
-            image = screenshot.grab(self.engine, ["view:screenshot"]).get("view:screenshot")
+            path = workers.wait_answering(take)
         finally:
             self.engine.set_view("screenshot", None)
-        if image is None:
+        if path is None:
             self._say("Couldn't take a screenshot: nothing is drawing.")
             return
-        folder = self._recordings_folder() / "Screenshots"
-        path = screenshot.save(image, folder, scene.name)
         self._say(f"Screenshot saved to {path}")
         self._tidy_saves()
 
@@ -5360,9 +5366,14 @@ class MainWindow(QMainWindow):
             screenshot.take_in_background(self.engine, ids, folder, width,
                                           lambda shots, images: self._screenshot_saved(shots, images, folder, afters))
             return []
+        from sprigcast.core import workers
+
         images: dict = {}
         try:
-            shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
+            # Grabbed and made into PNGs on a worker, the window drawing and answering meanwhile: the Control
+            # API's screenshots (Streamer.bot, Stream Deck) waited for a frame and encoded on the window's thread
+            # (54 ms+ on the PC while live, 2026-11-18).
+            shots = workers.wait_answering(screenshot.take, self.engine, ids, folder, width, as_data, images)
         except Exception:
             plugin_hooks.screenshot_done(afters, [])
             raise
@@ -5375,8 +5386,10 @@ class MainWindow(QMainWindow):
         """A PNG of one source or sprig drawn on its own (apps: screenshot.take with source or bloom)."""
         from sprigcast.app import screenshot
 
+        from sprigcast.core import workers
+
         folder = self._recordings_folder() / "Screenshots" if save else None
-        shot = screenshot.take_one(self.engine, source_id, name, folder, width, as_data)
+        shot = workers.wait_answering(screenshot.take_one, self.engine, source_id, name, folder, width, as_data)
         if shot is not None and save:
             self._saved_note("Screenshot saved", Path(shot["path"]).parent)
             self._tidy_saves()

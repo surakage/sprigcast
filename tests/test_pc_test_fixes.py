@@ -376,3 +376,30 @@ def test_sloth_pictures_are_read_once_small_and_shrunk_once_for_every_pop_up():
     a, b = empty.ArtPicture("welcome", 120), empty.ArtPicture("welcome", 120)
     size = empty._image("welcome").size().scaled(a.size(), empty.Qt.AspectRatioMode.KeepAspectRatio)
     assert a._shrunk(None, size) is b._shrunk(None, size)  # shrunk once, shared
+
+
+def test_api_screenshots_are_taken_off_the_window_thread(tmp_path, monkeypatch):
+    """A Control API screenshot (Streamer.bot, Stream Deck) waited for a frame and made the PNG on the window's
+    thread (PC sweep 2026-11-18): it runs on a worker now, the window still drawing."""
+    import threading
+    from pathlib import Path
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import screenshot
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=64, height=36)],
+                          scenes=[Scene(id="a", name="A", canvas="horizontal")], active_scenes={"horizontal": "a"})
+    w = MainWindow(col, Path(tmp_path) / "scenes.json")
+    seen = []
+    monkeypatch.setattr(screenshot, "take", lambda *a, **k: seen.append(threading.current_thread()) or [])
+    monkeypatch.setattr(screenshot, "take_one", lambda *a, **k: seen.append(threading.current_thread()) or None)
+    try:
+        assert w._screenshot(None, None, False, True) == []
+        assert w._source_screenshot("x", "X", None, False, True) is None
+        assert len(seen) == 2 and all(t is not threading.main_thread() for t in seen)
+    finally:
+        w.close()
