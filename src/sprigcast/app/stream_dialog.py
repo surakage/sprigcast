@@ -75,8 +75,7 @@ LABEL_W = 104  # every card's labels share one column, so the fields line up dow
 def _section(title: str) -> tuple[QWidget, QFormLayout]:
     """A soft rounded card with its title inside (no OBS-style group box frame)."""
     card = QFrame()
-    card.setObjectName("streamCard")
-    card.setStyleSheet(f"#streamCard {{ background: {theme.CARD}; border-radius: 20px; }}")
+    card.setObjectName("streamCard")  # styled by the page (PAGE_STYLE)
     outer = QVBoxLayout(card)
     outer.setContentsMargins(26, 20, 26, 22)
     outer.setSpacing(14)
@@ -101,7 +100,16 @@ def _line_up_labels(forms: list[QFormLayout]) -> None:
             item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
             if item is not None and item.widget() is not None:
                 item.widget().setFixedWidth(LABEL_W)
-                item.widget().setStyleSheet(theme.MUTED_STYLE)
+                item.widget().setObjectName("streamMuted")  # styled by the page (PAGE_STYLE)
+
+
+# The page's look in one style sheet, picked by object names: a style sheet on each card, label and note was
+# 30-odd of them, and the page was 245 ms of Settings' warm-up slices on the PC (2026-11-18, just after start).
+PAGE_STYLE = (
+    f"#streamCard {{ background: {theme.CARD}; border-radius: 20px; }}"
+    f"#streamMuted {{ color: {theme.MUTED}; }}"
+    "#streamScroll, #streamForm { background: transparent; }"
+)
 
 
 log = logging.getLogger(__name__)
@@ -130,6 +138,7 @@ class StreamPage(QWidget):
 
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setStyleSheet(PAGE_STYLE)
         self.collection = collection
         self.outputs = [o.model_copy() for o in collection.outputs if o.type == "stream"]
         self.other_paths_ids: set[str] = set()  # places in other paths (their ids name their keys)
@@ -186,7 +195,7 @@ class StreamPage(QWidget):
         self.bandwidth_test.setToolTip("On: the stream reaches Twitch so you can check it, but viewers don't see it")
         self.bandwidth_test.toggled.connect(self._edited)
         self.bandwidth_label = QLabel("Test only")
-        self.bandwidth_label.setStyleSheet(theme.MUTED_STYLE)
+        self.bandwidth_label.setObjectName("streamMuted")
         self.bandwidth_label.setToolTip(self.bandwidth_test.toolTip())
         hero.addWidget(self.bandwidth_label)
         hero.addWidget(self.bandwidth_test)
@@ -195,7 +204,7 @@ class StreamPage(QWidget):
         self.enabled.setToolTip("On: Go live sends here. Off: skipped.")
         self.enabled.toggled.connect(self._edited)
         self.enabled_label = QLabel("Go live here")
-        self.enabled_label.setStyleSheet(theme.MUTED_STYLE)
+        self.enabled_label.setObjectName("streamMuted")
         hero.addWidget(self.enabled_label)
         hero.addWidget(self.enabled)
         self.remove_button = QPushButton("Remove")
@@ -266,7 +275,7 @@ class StreamPage(QWidget):
         form.addRow(self.key_label, self.key_row)
         self.help = QLabel()
         self.help.setWordWrap(True)
-        self.help.setStyleSheet(f"color: {theme.MUTED}")
+        self.help.setObjectName("streamMuted")
         form.addRow("", self.help)
         groups.addWidget(destination)
 
@@ -291,7 +300,7 @@ class StreamPage(QWidget):
         form.addRow("Bitrate", self.bitrate)
         self.video_note = QLabel("Encoder and quality are on the Quality tab.")
         self.video_note.setWordWrap(True)
-        self.video_note.setStyleSheet(f"color: {theme.MUTED}")
+        self.video_note.setObjectName("streamMuted")
         self.auto_bitrate = QCheckBox("Auto-pilot bitrate")
         self.auto_bitrate.setToolTip("When your upload can't keep up, lower the bitrate smoothly instead of "
                                      "dropping frames, then climb back to this bitrate once it recovers")
@@ -336,7 +345,7 @@ class StreamPage(QWidget):
             "Twitch sets sizes and bitrates; the Video settings above are the fallback. Needs an NVIDIA or Intel Arc GPU."
         )
         self.enhanced_note.setWordWrap(True)
-        self.enhanced_note.setStyleSheet(f"color: {theme.MUTED}")
+        self.enhanced_note.setObjectName("streamMuted")
         form.addRow("", self.enhanced_note)
         groups.addWidget(self.enhanced_box)
 
@@ -347,7 +356,7 @@ class StreamPage(QWidget):
         form.addRow("", self.ignore_recommendations)
         note = QLabel("Keys are saved in Windows Credential Manager, never in the scenes file.")
         note.setWordWrap(True)
-        note.setStyleSheet(f"color: {theme.MUTED}")
+        note.setObjectName("streamMuted")
         form.addRow("", note)
         groups.addWidget(advanced)
         self._extras_section = advanced
@@ -358,7 +367,6 @@ class StreamPage(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setObjectName("streamScroll")
         self.form_widget.setObjectName("streamForm")
-        scroll.setStyleSheet("#streamScroll, #streamForm { background: transparent; }")
         scroll.viewport().setAutoFillBackground(False)
         scroll.setWidget(self.form_widget)
         root.addWidget(scroll, 1)

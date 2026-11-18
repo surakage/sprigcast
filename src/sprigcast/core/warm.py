@@ -61,6 +61,15 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
     return loaded
 
 
+def keep_aside() -> None:
+    """Freeze what the warm-up imported (modules, classes, functions: kept for the whole session) without a
+    collection: the next collections skip it instead of walking it (a full one over it held the window 44 ms
+    on the PC just after start, 2026-11-18). Freezing is quick; what isn't kept after all is freed at rest."""
+    import gc
+
+    gc.freeze()
+
+
 def warm_encoders(recording=None, stream=None) -> None:
     """Find out, in the background, which video encoder recording and streaming will use (each check opens an
     encoder and encodes a test frame; the answers are kept for the run). Done at record start instead, the

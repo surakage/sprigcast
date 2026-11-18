@@ -103,9 +103,13 @@ def pause_since(t: float) -> str:
 
 
 def tame_gc() -> None:
-    """Collect once, freeze everything start-up made, and run young collections less often."""
+    """Collect the young objects, freeze everything start-up made, and run young collections less often.
+
+    Young only: a full collection here walked every object start-up made, and held the window 44-63 ms on the PC
+    just after start (2026-11-18). Start-up's own old objects are almost all kept for the whole session; any cycle
+    among them is freed by settle() at rest."""
     began = time.perf_counter()
-    gc.collect()
+    gc.collect(1)
     gc.freeze()
     _gen0, gen1, gen2 = gc.get_threshold()
     gc.set_threshold(GEN0_THRESHOLD, gen1, gen2)
@@ -738,6 +742,18 @@ def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None) -> bool:
     except Exception as exc:
         log.info("could not trim memory: %s", exc)
         return False
+
+
+def trim_working_set_later(done=None) -> None:
+    """trim_working_set on a thread of its own: Windows walking the app's pages took 60-66 ms (PC 2026-11-18),
+    the window waiting all that time when it ran there. done(trimmed) is called on that thread."""
+
+    def trim() -> None:
+        trimmed = trim_working_set()
+        if done is not None:
+            done(trimmed)
+
+    threading.Thread(target=trim, name="trim-memory", daemon=True).start()
 
 
 def private_mb() -> float:
