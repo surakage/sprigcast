@@ -171,11 +171,14 @@ class PluginStorePage(QWidget):
                              "nothing here runs until you add it."))
         sbox.addSpacing(4)
         plugins, versions = known if known is not None else (plugin_store.catalog(), None)
-        for plugin in plugins:
-            row = (StoreRow(self, plugin) if versions is None
-                   else StoreRow(self, plugin, versions.get(plugin.id), read=False))
-            self.rows[plugin.id] = row
-            sbox.addWidget(row)
+        self._sbox, self._versions = sbox, versions
+        self._ids = [p.id for p in plugins]  # every store plugin, cards made or not yet
+        # Read off the window's thread (known): the first few cards now, the rest a few a tick (all at once they
+        # were 90 ms of the open on the PC while live, 2026-11-18). Read here (tests, older callers): all now.
+        now = plugins if known is None else plugins[:self.ROWS_PER_STEP]
+        self._rows_waiting = list(plugins[len(now):])
+        for plugin in now:
+            self._add_row(plugin)
         if not plugins:
             sbox.addWidget(_hint("Nothing in the store yet."))
         self.hold = QCheckBox("Hold plugin updates while live or recording")
@@ -183,6 +186,10 @@ class PluginStorePage(QWidget):
         self.hold.toggled.connect(lambda on: QSettings().setValue(HOLD_ON_AIR, on))
         sbox.addSpacing(4)
         sbox.addWidget(self.hold)
+        if self._rows_waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
 
         mine, mbox = _card("Your plugins")
         self.mine = QLabel()
@@ -207,8 +214,36 @@ class PluginStorePage(QWidget):
         layout.addStretch(1)
         self._refresh_mine()
 
+    ROWS_PER_STEP = 4
+    ROW_GAP_MS = 15
+
+    def _add_row(self, plugin) -> None:
+        versions = self._versions
+        row = (StoreRow(self, plugin) if versions is None
+               else StoreRow(self, plugin, versions.get(plugin.id), read=False))
+        self.rows[plugin.id] = row
+        hold = getattr(self, "hold", None)
+        if hold is None:
+            self._sbox.addWidget(row)
+        else:  # above the spacing and the Hold tick
+            self._sbox.insertWidget(self._sbox.indexOf(hold) - 1, row)
+
+    def _more_rows(self) -> None:
+        for plugin in self._rows_waiting[:self.ROWS_PER_STEP]:
+            self._add_row(plugin)
+        del self._rows_waiting[:self.ROWS_PER_STEP]
+        if self._rows_waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
+
+    def finish(self) -> None:
+        """Make every card still waiting."""
+        while self._rows_waiting:
+            self._add_row(self._rows_waiting.pop(0))
+
     def _store_files(self) -> set[str]:
-        return {f"{pid}.py" for pid in self.rows}
+        return {f"{pid}.py" for pid in self._ids}
 
     def _refresh_mine(self) -> None:
         store = self._store_files()

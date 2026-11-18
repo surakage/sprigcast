@@ -294,6 +294,8 @@ class AudioPage(QWidget):
         self._rows_waiting = [(grid, row, source, tracks) for row, source in enumerate(sounds, 1)]
         for _ in range(min(self.ROWS_NOW, len(self._rows_waiting))):
             self._sound_row(*self._rows_waiting.pop(0))
+        # The rest half a row a tick: a whole row was still 57-78 ms a tick on the PC while live (2026-11-18).
+        self._rows_waiting = [(*args, half) for args in self._rows_waiting for half in (1, 2)]
         if self._rows_waiting:
             from PySide6.QtCore import QTimer
 
@@ -321,8 +323,13 @@ class AudioPage(QWidget):
 
             QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
 
-    def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int) -> None:
+    def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int, half: int = 0) -> None:
+        """A sound's row; half 1 or 2: its first boxes (name to sync offset) or the rest (listeners, tracks)."""
         st = source.settings
+        if half == 2:
+            volume, mono, balance, sync = self._first_halves.pop(source.id)
+            self._row_rest(grid, row, source, tracks, st, volume, mono, balance, sync)
+            return
         grid.addWidget(QLabel(source.name), row, 0)
         volume = QDoubleSpinBox()
         volume.setRange(-60.0, 12.0)
@@ -351,6 +358,12 @@ class AudioPage(QWidget):
         sync.setFixedWidth(100)
         sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
         grid.addWidget(sync, row, 4)
+        if half == 1:
+            self.__dict__.setdefault("_first_halves", {})[source.id] = (volume, mono, balance, sync)
+            return
+        self._row_rest(grid, row, source, tracks, st, volume, mono, balance, sync)
+
+    def _row_rest(self, grid, row, source, tracks, st, volume, mono, balance, sync) -> None:
         hear = QComboBox()
         current = st.get("monitor", False)
         for text, value in self.HEAR:
