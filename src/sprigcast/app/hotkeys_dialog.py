@@ -70,6 +70,7 @@ class HotkeysPage(QWidget):
     and × button, they held the window 427 ms on the PC (2026-11-18 pop-up sweep, live)."""
 
     CARD_GAP_MS = 15
+    ROWS_PER_STEP = 4
 
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None, cards_later: bool = False):
         super().__init__(parent)
@@ -100,7 +101,10 @@ class HotkeysPage(QWidget):
         self.rows: list[HotkeyRow] = []
         self.cards: list[tuple[QFrame, list[HotkeyRow]]] = []
         self._layout, self._hotkeys = layout, dict(collection.hotkeys)
-        self._waiting = list(sections(collection))
+        # Made a few rows at a time (ROWS_PER_STEP): a whole card at once was still 60-80 ms on the PC while live.
+        self._waiting = [(title, items[i:i + self.ROWS_PER_STEP], i == 0)
+                         for title, items in sections(collection)
+                         for i in range(0, max(1, len(items)), self.ROWS_PER_STEP)]
         layout.addStretch(1)
         self.on_done = None  # called once every card is made
         if cards_later:
@@ -108,23 +112,26 @@ class HotkeysPage(QWidget):
         else:
             self.finish()
 
-    def _add_card(self, title: str, items) -> None:
-        card = QFrame()
-        card.setObjectName("hotkeyCard")
-        box = QVBoxLayout(card)
-        box.setContentsMargins(24, 18, 16, 18)
-        box.setSpacing(6)
-        box.addWidget(heading(title, 14))
-        rows = []
+    def _add_card(self, title: str, items, new: bool = True) -> None:
+        """A section's card (new) with its first rows, or more rows for the last card."""
+        if new or not self.cards:
+            card = QFrame()
+            card.setObjectName("hotkeyCard")
+            box = self._box = QVBoxLayout(card)
+            box.setContentsMargins(24, 18, 16, 18)
+            box.setSpacing(6)
+            box.addWidget(heading(title, 14))
+            self.cards.append((card, []))
+            self._layout.insertWidget(self._layout.count() - 1, card)  # above the stretch
+        card, rows = self.cards[-1]
+        box = self._box
         for action, label in items:
             row = HotkeyRow(action, label, self._hotkeys.get(action, ""))
             row.edit.keySequenceChanged.connect(self._update_count)
             box.addWidget(row)
             rows.append(row)
+            self.rows.append(row)
             self.edits[action] = row.edit
-        self.rows += rows
-        self.cards.append((card, rows))
-        self._layout.insertWidget(self._layout.count() - 1, card)  # above the stretch
         if self.search.text():
             self._filter(self.search.text())
 

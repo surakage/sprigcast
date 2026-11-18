@@ -154,6 +154,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Bloom tiles measure their name and key once, not on every paint: a pop-up opening over the window repaints them all
+  (309 ms under the Settings gear while live). Hotkeys are made four rows at a time (a card was 60-80 ms), and the
+  Garden check's rows and chips share one style sheet (140 ms).
 - Control API screenshots (Streamer.bot, Stream Deck) and a bloom tile's Save screenshot wait for the frame and make
   the PNG on a worker; the window keeps drawing and answering meanwhile.
 - More from the second live sweep: the Audio page's sound rows are made a few per tick (263 ms); the control pictures
