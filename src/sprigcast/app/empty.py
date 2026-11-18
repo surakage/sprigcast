@@ -47,6 +47,41 @@ def _image(name: str) -> QImage:
     return _images[name]
 
 
+_sizes: dict[str, QSize] = {}
+_reading: set[str] = set()
+
+
+def _art_size(name: str) -> QSize:
+    """A picture's size from its PNG header alone (no decoding): enough to lay a widget out."""
+    if name in _images:
+        return _images[name].size()
+    if name not in _sizes:
+        from PySide6.QtGui import QImageReader
+
+        _sizes[name] = QImageReader(str(ART_FOLDER / f"sloth-{name}.png")).size()
+    return _sizes[name]
+
+
+def _read_later(name: str) -> None:
+    """Decode a picture on a worker (QImage is safe off the UI thread): a 1024 px PNG took 92 ms of the window's
+    first frames on the PC (2026-11-18). Widgets waiting for it look again until it's there."""
+    if name in _images or name in _reading:
+        return
+    _reading.add(name)
+
+    def read():
+        try:
+            image = _read(name)
+        except Exception:  # noqa: BLE001 (drawn without it)
+            image = QImage()
+        _images.setdefault(name, image)
+        _reading.discard(name)
+
+    import threading
+
+    threading.Thread(target=read, name="sprigcast-art", daemon=True).start()
+
+
 def art(name: str) -> QPixmap:
     """A picture from app/art (loaded once): "napping", "welcome", "live", "ending", "trouble", "happy"...
 
@@ -88,8 +123,8 @@ class ArtPicture(QWidget):
     def set_art(self, name: str) -> None:
         """Show another picture; fits `width` (and `height`, if given) keeping its shape."""
         self.name = name
-        picture = _image(name)
-        ratio = picture.height() / picture.width() if not picture.isNull() else 0.6
+        size = _art_size(name)
+        ratio = size.height() / size.width() if size.width() > 0 else 0.6
         width, height = self.box
         if height is None:
             self.setFixedSize(width, round(width * ratio))
@@ -98,7 +133,13 @@ class ArtPicture(QWidget):
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
-        picture = _image(self.name)
+        picture = _images.get(self.name)
+        if picture is None:  # decoded on a worker; drawn when it's there
+            from PySide6.QtCore import QTimer
+
+            _read_later(self.name)
+            QTimer.singleShot(40, self.update)
+            return
         if picture.isNull():
             return
         p = QPainter(self)
@@ -281,7 +322,13 @@ class _PulsingLive(ArtPicture):
         from PySide6.QtGui import QColor
 
         p = QPainter(self)
-        picture = _image(self.name)
+        picture = _images.get(self.name)
+        if picture is None:  # decoded on a worker (ArtPicture.paintEvent)
+            from PySide6.QtCore import QTimer
+
+            _read_later(self.name)
+            QTimer.singleShot(40, self.update)
+            picture = QImage()
         side = self.art_width
         if not picture.isNull():
             size = picture.size().scaled(QSize(side, self.height()), Qt.AspectRatioMode.KeepAspectRatio)
