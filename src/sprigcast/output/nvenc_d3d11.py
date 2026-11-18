@@ -393,7 +393,8 @@ class D3D11Encoder:
         self.frame = 0
         self.api = (API_MAJOR, API_MINOR)
         self.shared = shared or given
-        self._registered: dict = {}  # (pool id, texture index) -> registered resource, for encode_texture
+        # (pool id, texture index) -> (registered resource, the texture with a reference held), for encode_texture
+        self._registered: dict = {}
         self._pool = None  # the texture pool those belong to (kept alive while registered)
         _load()  # says why NVENC can't be used (not Windows, no NVIDIA driver, old driver) before anything else
         preset = PRESETS.get(preset, PRESET_P4) if isinstance(preset, str) else preset
@@ -566,7 +567,8 @@ class D3D11Encoder:
         if self._pool is not None and self._pool is not pool:
             self._unregister_all()
         key = frame.key
-        registered = self._registered.get(key)
+        held = self._registered.get(key)
+        registered = held[0] if held is not None else None
         if registered is None:
             reg = RegisterResource(version=self._v("register"), resourceType=RESOURCE_TYPE_DIRECTX,
                                    width=frame.width, height=frame.height, pitch=0,
@@ -574,7 +576,13 @@ class D3D11Encoder:
                                    bufferUsage=BUFFER_USAGE_INPUT)
             self._check(_fn(F_REGISTER, c_void_p, c_void_p)(self.encoder, ctypes.addressof(reg)),
                         "registering a texture")
-            registered = self._registered[key] = reg.registeredResource
+            # NVENC keeps the texture's pointer but no reference: hold one until it's unregistered. Crash on the
+            # PC (native run 2026-11-17, 20:23:46): the engine made its outputs again, freed the old pool, and the
+            # next frame's _unregister_all unregistered textures that were gone (access violation in the driver).
+            texture = c_void_p(frame.texture)
+            _add_ref(texture)
+            registered = reg.registeredResource
+            self._registered[key] = (registered, texture)
             self._pool = pool
         mapped = MapInputResource(version=self._v("map"), registeredResource=registered)
         self._check(_fn(F_MAP_INPUT, c_void_p, c_void_p)(self.encoder, ctypes.addressof(mapped)), "mapping a texture")
@@ -603,11 +611,16 @@ class D3D11Encoder:
     def _unregister_all(self) -> None:
         if self.encoder:
             unregister = _fn(F_UNREGISTER, c_void_p, c_void_p)
-            for registered in self._registered.values():
+            for registered, _texture in self._registered.values():
                 try:
                     unregister(self.encoder, registered)
                 except Exception:  # noqa: BLE001 (closing anyway)
                     pass
+        for _registered, texture in self._registered.values():
+            try:
+                _release(texture)  # after unregistering: only now may the engine's texture go
+            except Exception:  # noqa: BLE001 (closing anyway)
+                pass
         self._registered.clear()
         self._pool = None
 
