@@ -198,3 +198,26 @@ def test_the_clock_plugins_have_the_style_tab(added):  # noqa: F811
         assert {"font", "text_scale", "corners", "custom_look", "accent_color"} <= set(source.defaults)
         source.update({**source.settings, "text_scale": 160})
         source.update({**source.settings, "custom_look": "size: 160%"})  # the same look: the same box
+
+
+def test_enter_never_resets_the_style(app, caplog):  # noqa: F811
+    """PC 2026-11-18: a custom look typed and OK'd came back empty. Enter on the focused Reset style button (an
+    auto-default button in a dialog) put the whole style back."""
+    import logging
+
+    from PySide6.QtWidgets import QPushButton
+
+    from sprigcast.app.settings_dialog import SettingsDialog
+
+    defaults = {"show_date": True, "text_color": "#ffffff", "card_color": "#000000e0", "custom_look": ""}
+    dialog = SettingsDialog("Local time", defaults, dict(defaults))
+    assert not any(b.autoDefault() for b in dialog.findChildren(QPushButton)
+                   if b.text() in ("Reset style", "Pick…", "Browse…"))
+    assert dialog.fields["custom_look"].tabChangesFocus()
+    dialog.fields["custom_look"].setPlainText("text: #ffd36b\nhide: date")
+    with caplog.at_level(logging.INFO, logger="sprigcast.app.settings_dialog"):
+        dialog.accept()
+    assert dialog.values()["custom_look"] == "text: #ffd36b\nhide: date"
+    assert "changed custom_look" in caplog.text
+    look = style.resolve(dialog.values(), defaults)
+    assert look.text == "#ffd36bff" and not look.shows("date", dialog.values())
