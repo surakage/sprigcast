@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from sprigcast.app import theme
@@ -18,6 +18,33 @@ from sprigcast.app.open_folder import open_folder
 
 ART_FOLDER = Path(__file__).with_name("art")
 _pictures: dict[str, QPixmap] = {}
+_images: dict[str, QImage] = {}
+_shrunk: dict[tuple, QPixmap] = {}  # (name, width, height, screen scale): every picture of that size shares it
+
+
+ART_MAX = 640  # kept this wide at most: the largest shows 260 px wide, so 2.5x screens still get every pixel
+WARM_ART = ("welcome", "happy")  # what About, Getting started, the Garden check and Stream doctor open with
+
+
+def _read(name: str) -> QImage:
+    image = QImage(str(ART_FOLDER / f"sloth-{name}.png"))
+    if image.width() > ART_MAX:  # 1.6 MB kept instead of the PNG's 4 MB
+        image = image.scaledToWidth(ART_MAX, Qt.TransformationMode.SmoothTransformation)
+    return image
+
+
+def warm_art(names=WARM_ART) -> None:
+    """Read the pop-ups' sloth pictures (1024 px PNGs) on a worker, a while after start: read when a pop-up first
+    showed one, it was most of opening About (64 ms) on the PC while live (2026-11-18). Never raises."""
+    for name in names:
+        if name not in _images:
+            _images[name] = _read(name)
+
+
+def _image(name: str) -> QImage:
+    if name not in _images:
+        _images[name] = _read(name)
+    return _images[name]
 
 
 def art(name: str) -> QPixmap:
@@ -25,8 +52,24 @@ def art(name: str) -> QPixmap:
 
     Empty if it's missing."""
     if name not in _pictures:
-        _pictures[name] = QPixmap(str(ART_FOLDER / f"sloth-{name}.png"))
+        image = _image(name)
+        _pictures[name] = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
     return _pictures[name]
+
+
+def shrunk_art(name: str, width: int, height: int, ratio: float) -> QPixmap:
+    """The picture shrunk once, by area averaging, to width x height device-independent pixels at `ratio`.
+
+    Drawing a 1024 px picture straight into ~100 px skips pixels and leaves light specks in the fur. Kept for the
+    run: each new pop-up shrank its own copy again."""
+    key = (name, width, height, ratio)
+    if key not in _shrunk:
+        image = _image(name).scaled(round(width * ratio), round(height * ratio),
+                                    Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        pixmap = QPixmap.fromImage(image)
+        pixmap.setDevicePixelRatio(ratio)
+        _shrunk[key] = pixmap
+    return _shrunk[key]
 
 
 def sloth_art() -> QPixmap:
@@ -45,7 +88,7 @@ class ArtPicture(QWidget):
     def set_art(self, name: str) -> None:
         """Show another picture; fits `width` (and `height`, if given) keeping its shape."""
         self.name = name
-        picture = art(name)
+        picture = _image(name)
         ratio = picture.height() / picture.width() if not picture.isNull() else 0.6
         width, height = self.box
         if height is None:
@@ -55,7 +98,7 @@ class ArtPicture(QWidget):
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802 (Qt naming)
-        picture = art(self.name)
+        picture = _image(self.name)
         if picture.isNull():
             return
         p = QPainter(self)
@@ -64,19 +107,9 @@ class ArtPicture(QWidget):
         p.drawPixmap(QPointF(x, y), self._shrunk(picture, size))
         p.end()
 
-    def _shrunk(self, picture: QPixmap, size) -> QPixmap:
-        """The picture shrunk once, by area averaging, to the pixels it covers on this screen.
-
-        Drawing a 1024 px picture straight into ~100 px skips pixels and leaves light specks in the fur."""
-        ratio = self.devicePixelRatioF()
-        key = (self.name, size.width(), size.height(), ratio)
-        if getattr(self, "_cache_key", None) != key:
-            self._cache = picture.scaled(round(size.width() * ratio), round(size.height() * ratio),
-                                         Qt.AspectRatioMode.IgnoreAspectRatio,
-                                         Qt.TransformationMode.SmoothTransformation)
-            self._cache.setDevicePixelRatio(ratio)
-            self._cache_key = key
-        return self._cache
+    def _shrunk(self, picture, size) -> QPixmap:
+        """The picture shrunk to the pixels it covers on this screen (shrunk_art)."""
+        return shrunk_art(self.name, size.width(), size.height(), self.devicePixelRatioF())
 
 
 class NappingSloth(ArtPicture):
@@ -248,7 +281,7 @@ class _PulsingLive(ArtPicture):
         from PySide6.QtGui import QColor
 
         p = QPainter(self)
-        picture = art(self.name)
+        picture = _image(self.name)
         side = self.art_width
         if not picture.isNull():
             size = picture.size().scaled(QSize(side, self.height()), Qt.AspectRatioMode.KeepAspectRatio)

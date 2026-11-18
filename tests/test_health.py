@@ -116,7 +116,7 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         assert side.garden.numbers.text() == "CPU 4.6%  ·  209 MB  ·  0 dropped" and side.garden.level == "good"
         health.save(QSettings(), health.HealthRecord(started="2026-11-15 20:10", seconds=600))
         pop = w._open_health()  # Stream health: the Garden check, on the last streams
-        assert pop.page.records[0].seconds == 600 and pop.garden.stack.currentWidget() is pop.page
+        assert pop.garden.page.records[0].seconds == 600 and pop.garden.stack.currentWidget() is pop.garden.page
         pop.close()
         side.garden.click()
         pop = w.findChildren(type(pop))[-1]
@@ -127,7 +127,7 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         labels = [garden.checks.itemAt(i).widget().text() for i in range(garden.checks.count())]
         assert any("GPU encoder" in t for t in labels) and any("Disk has room" in t for t in labels)
         garden.history.click()
-        assert garden.stack.currentWidget() is pop.page
+        assert garden.stack.currentWidget() is pop.garden.page
         garden.done.click()
         assert not pop.isVisible()
     finally:

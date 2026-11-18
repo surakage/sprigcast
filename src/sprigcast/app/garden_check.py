@@ -108,7 +108,6 @@ class GardenCheckPage(QWidget):
                  parent: QWidget | None = None, make_lighter: Callable[[], str] | None = None):
         super().__init__(parent)
         from sprigcast.app.empty import ArtPicture
-        from sprigcast.app.health_page import HealthPage
 
         self.snapshot = snapshot
         self.make_lighter = make_lighter  # the one tap: returns what it did, in words
@@ -170,8 +169,9 @@ class GardenCheckPage(QWidget):
         body.addLayout(checks_row)
         body.addStretch(1)
         self.stack.addWidget(now)
-        self.page = HealthPage(records, open_logs)  # the last few streams
-        self.stack.addWidget(self.page)
+        # The last few streams: made when first shown (made with the rest, it was 148 ms of the PC's 207 ms open
+        # of the Garden check while live, 2026-11-18, for a view most opens never show).
+        self._records, self._open_logs, self._health = records, open_logs, None
 
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
@@ -194,9 +194,19 @@ class GardenCheckPage(QWidget):
         root.addLayout(buttons)
         self.refresh()
 
+    @property
+    def page(self):
+        """The last streams' HealthPage, made the first time it's wanted."""
+        if self._health is None:
+            from sprigcast.app.health_page import HealthPage
+
+            self._health = HealthPage(self._records, self._open_logs)
+            self.stack.addWidget(self._health)
+        return self._health
+
     def show_view(self, view: str) -> None:
         """"now" or "health" (the last streams)."""
-        self.stack.setCurrentIndex(1 if view == "health" else 0)
+        self.stack.setCurrentWidget(self.page if view == "health" else self.stack.widget(0))
         self.history.setText("Back to now" if view == "health" else "Last streams")
 
     def refresh(self) -> None:
@@ -347,7 +357,6 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
 
     pop = PopUp("Garden check", parent, bare=True)  # the page has its own title (with the sloth) and buttons
     pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter)
-    pop.page = pop.garden.page  # the last streams' HealthPage
     pop.add_tab("garden", "Garden check", pop.garden)
     pop.show_tab("garden")
     pop.garden.done.clicked.connect(pop.accept)

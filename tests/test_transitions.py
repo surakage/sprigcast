@@ -450,7 +450,12 @@ def test_live_card_keeps_deeper_settings_in_a_pop_up():
     assert not panel.softness.isVisibleTo(panel) and not panel.clip.isVisibleTo(panel)
     dialog = panel.settings_dialog()
     assert set(dialog.tabs) == {"transition", "rules"} and dialog.tabs["transition"].isChecked()
-    assert panel.rules_dialog().tabs["rules"].isChecked()  # Between blooms' Edit opens on the table tab
+    assert not hasattr(dialog, "table")  # the other tab is made when it's first shown (190 ms on the PC)
+    rules = panel.rules_dialog()
+    assert rules.tabs["rules"].isChecked() and hasattr(rules, "table")  # Between blooms' Edit opens on the table
+    assert not hasattr(rules, "panel")
+    rules.tabs["transition"].click()
+    assert rules.panel.picture.wide and rules.stack.currentWidget().layout().count() == 1
     assert dialog.panel.picture.wide
     dialog.panel.direction_buttons["up"].click()
     assert t.direction == "up" and seen

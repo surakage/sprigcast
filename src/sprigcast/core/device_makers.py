@@ -30,9 +30,20 @@ def _plain(name: str) -> str:
     return name.replace("Ɩ", "l").replace("ı", "i").lower()  # Elgato spells its virtual camera "EƖgato"
 
 
+# One pattern per maker, made as this loads (at start, before anything is busy): built on first use, they cost
+# the Audio page 186 ms on the window's thread on the PC (2026-11-18 pop-up sweep, live).
+_PATTERNS: dict[tuple[str, ...], re.Pattern] = {
+    words: re.compile("|".join(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])" for word in words))
+    for words, _app, _effects in _MAKERS
+}
+
+
 def _has(plain: str, words: tuple[str, ...]) -> bool:
     """Whole words only, so "camo" doesn't match "camouflage"."""
-    return any(re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", plain) for word in words)
+    pattern = _PATTERNS.get(words)
+    if pattern is None:
+        pattern = re.compile("|".join(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])" for word in words))
+    return pattern.search(plain) is not None
 
 
 def maker(name: str) -> str | None:

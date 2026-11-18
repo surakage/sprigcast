@@ -25,6 +25,18 @@ MODULES = [
     "sprigcast.output.stream", "sprigcast.output.enhanced", "sprigcast.output.enhanced_stream",
     "sprigcast.output.twitch_auth", "sprigcast.output.autopilot", "sprigcast.output.virtualcam",
     "sprigcast.app.health", "sprigcast.app.garden_check", "sprigcast.app.doctor",
+    "sprigcast.output.encoder_load",
+    # What the pop-ups load the first time they open. On the PC's pop-up sweep (2026-11-18, live, Heavy test)
+    # loading them was most of the first open: the Audio page 256 ms, the plugin store 138 ms, Report a problem
+    # 84 ms. None makes a Qt object as it loads, so a worker can load them.
+    "sprigcast.app.audio_page", "sprigcast.app.hotkeys_dialog", "sprigcast.plugin_store", "sprigcast.plugins",
+    "sprigcast.app.plugin_store_page", "sprigcast.app.problem_report", "sprigcast.app.tester_report",
+    "sprigcast.app.health_page", "sprigcast.app.about", "sprigcast.app.support", "sprigcast.app.busy_pc",
+    "sprigcast.app.lowend", "sprigcast.app.optimize", "sprigcast.app.connections_page",
+    "sprigcast.app.getting_started", "sprigcast.app.media_dialog", "sprigcast.app.game_dialog",
+    "sprigcast.app.camera_popup", "sprigcast.app.web_page_dialog", "sprigcast.app.browser_quick",
+    "sprigcast.app.source_record_box", "sprigcast.app.signin_dialog", "sprigcast.app.settings_file",
+    "sprigcast.app.projector",
 ]
 WINDOWS_ONLY = ["sprigcast.output.nvenc_d3d11"]
 
