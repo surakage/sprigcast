@@ -92,29 +92,61 @@ def device_label(kind: str) -> str:
 class AudioPage(QWidget):
     TABS = ("Devices", "Tracks", "Sounds")
 
-    def __init__(self, collection: SceneCollection, audio_devices: dict[str, list[str]], recording: bool = False,
-                 streaming: bool = False):
+    def __init__(self, collection: SceneCollection, audio_devices, recording: bool = False,
+                 streaming: bool = False, first: str | None = None):
+        """audio_devices: a dict, or something that gives one when called (Settings: waits for the scan).
+        first: make only this tab now; the others are listed in `later` (Settings makes them a tick apart, see
+        SettingsWindow._slice) and made by finish() if still waiting. None: every tab now."""
         super().__init__()
         self.collection = collection
         self.streaming, self.recording = streaming, recording
+        self._audio_devices = audio_devices
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.device_combos: dict[str, QComboBox] = {}
+        self.on_ducking = None  # set by the main window: opens the Ducking window
         self.tabs = QTabWidget()
-        for name, card in zip(self.TABS, (self._devices(audio_devices), self._tracks(recording), self._grid())):
+        self._holders: dict[str, QVBoxLayout] = {}
+        for name in self.TABS:
             tab = QWidget()
             box = QVBoxLayout(tab)
             box.setContentsMargins(0, 4, 0, 0)
-            box.addWidget(card)
-            if name == "Sounds":
-                box.addLayout(self._ducking_row())
-            box.addStretch(1)
+            self._holders[name] = box
             self.tabs.addTab(tab, name)
         layout.addWidget(self.tabs)
+        names = list(self.TABS) if first not in self.TABS else [first]
+        self.later = [n for n in self.TABS if n not in names]
+        for name in names:
+            self.build_tab(name)
+        if first in self.TABS:
+            self.show_tab(first)
+
+    def build_tab(self, name: str) -> None:
+        """Make one tab's contents (once)."""
+        box = self._holders.pop(name, None)
+        if box is None:
+            return
+        if name in self.later:
+            self.later.remove(name)
+        if name == "Devices":
+            devices = self._audio_devices
+            card = self._devices(devices() if callable(devices) else devices)
+        elif name == "Tracks":
+            card = self._tracks(self.recording)
+        else:
+            card = self._grid()
+        box.addWidget(card)
+        if name == "Sounds":
+            box.addLayout(self._ducking_row())
+        box.addStretch(1)
+
+    def finish(self) -> None:
+        """Make every tab still waiting (before reading what's picked)."""
+        for name in list(self.later):
+            self.build_tab(name)
 
     def _ducking_row(self) -> QHBoxLayout:
         """Ducking's amounts, next to the sounds it lowers (Live's Mic first switch turns it on and off)."""
-        self.on_ducking = None  # set by the main window: opens the Ducking window
         row = QHBoxLayout()
         self.ducking_button = QPushButton("Ducking…")
         self.ducking_button.setToolTip("How much other sounds dip while you talk (Mic first on Live)")
@@ -321,6 +353,7 @@ class AudioPage(QWidget):
     # Saving ------------------------------------------------------------------------------
 
     def apply_to(self, collection: SceneCollection, recording: bool = False) -> None:
+        self.finish()
         audio = collection.audio
         if audio.global_sources is None:  # pin the global devices before anything else moves
             audio.global_sources = collection.global_device_ids()

@@ -152,8 +152,9 @@ class HotkeysPage(QWidget):
 class HotkeysWindow(QDialog):
     """Tools → Hotkeys: every key in a window of its own (it used to make Settings very tall)."""
 
-    def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
-        from sprigcast.app.output_page import _scrolled
+    def __init__(self, collection: SceneCollection, parent: QWidget | None = None, fill_after_show: bool = False):
+        """fill_after_show: the window shows at once and its list of keys is made a moment later (made first, it
+        held the window 380 ms on the PC, 2026-11-18, the canvases waiting meanwhile)."""
         from sprigcast.app.settings_window import SAVE_STYLE, window_style
 
         super().__init__(parent)
@@ -162,12 +163,15 @@ class HotkeysWindow(QDialog):
         self.setStyleSheet(window_style())
         self.resize(760, 720)
         self.collection = collection
-        self.page = HotkeysPage(collection)
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 20)
         root.setSpacing(16)
         root.addWidget(heading("Hotkeys", 20))
-        root.addWidget(_scrolled(self.page), 1)
+        self._slot = QVBoxLayout()
+        root.addLayout(self._slot, 1)
+        self._waiting = fill_after_show
+        if not fill_after_show:
+            self._fill()
         row = QHBoxLayout()
         row.setSpacing(10)
         row.addStretch(1)
@@ -183,8 +187,26 @@ class HotkeysWindow(QDialog):
             row.addWidget(button)
         root.addLayout(row)
 
+    def _fill(self) -> None:
+        if "page" in self.__dict__:
+            return
+        from sprigcast.app.output_page import _scrolled
+
+        self._waiting = False
+        self.page = HotkeysPage(self.collection)
+        self._slot.addWidget(_scrolled(self.page), 1)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(30, self._fill)  # after the window's first paint
+
     def _save(self) -> None:
         from PySide6.QtWidgets import QMessageBox
+
+        self._fill()
 
         problem = self.page.problem()
         if problem:

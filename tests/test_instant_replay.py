@@ -266,8 +266,10 @@ def test_from_tapped_frames_to_a_replay_on_screen_and_back(ir, tmp_path, monkeyp
         if source._show is not None:
             phases.add(source._show.phase)
         sound += float(np.abs(source.read_block(256)).sum())
-        if frame is not None:
+        if frame is not None and source._show is not None:
             assert frame.shape == (720, 1280, 4)
+        elif frame is not None:  # the end: a tiny see-through picture
+            assert frame.shape == (2, 2, 4) and not frame.any()
         time.sleep(0.004)
         assert len(phases) < 5
     assert {"in", "play", "out"} <= phases

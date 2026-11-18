@@ -416,6 +416,7 @@ def run() -> None:
         workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders)), name="warm-up")
 
     QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
+    QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time
     workers.run(warm.warm_keyring, name="warm-keyring")  # now: a stream key or chat sign-in may want it soon
     QTimer.singleShot(20_000, pacing.trim_working_set)  # start-up's one-time pages (imports, shaders) go back
     if plugins.failed:

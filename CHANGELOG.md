@@ -147,6 +147,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Opening Settings or any pop-up no longer pauses the canvases: the app style is plain Qt (it called Python for
   each of ~3,600 widgets, each waiting its turn while streaming); drop-downs, number boxes and menus get the
   wheel guard, room and rounded corners as they're made. Folders (Logs, Recordings) open without holding the window.
+- Settings (a destination, the Sound card's gear) and Hotkeys show their window at once and fill it in just after;
+  the Stream and Audio pages are made in parts a tick apart; a warm-up a little after start (not while live) makes
+  the first open about half as long. Instant replay sends a tiny clear picture on wake (was a full frame, 47-68 ms).
 - The PNGtuber folder is read again on a worker (the window answers from the last read), with one disk read per
   folder; Freeze hotkeys on big sprigs no longer hold the window (each sprig walked once, one commit).
 - Texts, Local time and the stream timer keep their picture while their bloom is off screen, and draw again only

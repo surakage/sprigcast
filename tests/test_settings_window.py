@@ -497,3 +497,33 @@ def test_save_leaves_pages_never_opened_as_they_were(app):
     assert w.apply() and w._built == {"General"}
     assert QSettings().value(CONFIRM_STREAM, type=bool) == w.confirm_stream.isChecked()
     assert [(c.width, c.height, c.fps, c.enabled) for c in col.canvases] == before
+
+
+def test_the_window_shows_first_and_its_page_fills_in_just_after(app):
+    """PC 2026-11-18: clicking a destination took 352 ms to show anything (the Stream page made before the window).
+    Opened from the app, the window is up at once and the page is made a moment later; asks for the page
+    (pick this place) wait for it."""
+    import time
+
+    col = _collection()
+    w = _window(col, tab="Stream", fill_after_show=True)
+    picked = []
+    w.soon(lambda: picked.append(w.current_tab()))
+    assert "Stream" not in w._built and w.current_tab() == "Stream" and not picked
+    w.show()
+    deadline = time.monotonic() + 3
+    while "Stream" not in w._built and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+    assert "Stream" in w._built and picked == ["Stream"]
+    w.soon(lambda: picked.append("now"))  # made already: straight away
+    assert picked[-1] == "now"
+    w.close()
+
+
+def test_a_window_closed_before_its_page_fills_makes_nothing(app):
+    w = _window(_collection(), tab="Audio", fill_after_show=True)
+    w.show()
+    w.reject()
+    w._fill()
+    assert not w._built
