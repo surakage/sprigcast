@@ -54,6 +54,7 @@ YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube"
 KICK_AUTH = "https://id.kick.com/oauth/authorize"
 KICK_API = "https://api.kick.com/public/v1"
 KICK_SCOPES = "user:read channel:read streamkey:read"
+KICK_DETAILS_SCOPES = "user:read channel:read channel:write"  # Stream details: change the title and category
 KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this one
 KICK_REDIRECT = f"http://localhost:{KICK_PORT}/callback"
 
@@ -90,13 +91,15 @@ def helper_url() -> str:
     return os.environ.get("SPRIGCAST_SIGNIN_URL", "").strip() or HELPER_URL
 
 
-def _swap(service: str, code: str, verifier: str, redirect: str, who: str) -> str:
-    """The sign-in code for a token, through the helper (it holds the secret)."""
-    reply = post_form(helper_url(), {"service": service, "code": code, "code_verifier": verifier,
-                                     "redirect_uri": redirect}, "SprigCast's sign-in helper")
+def _swap(service: str, code: str, verifier: str, redirect: str, who: str, keep: bool = False) -> dict:
+    """The sign-in code for a token, through the helper (it holds the secret). keep: a refresh token too."""
+    fields = {"service": service, "code": code, "code_verifier": verifier, "redirect_uri": redirect}
+    if keep:
+        fields["keep"] = "1"
+    reply = post_form(helper_url(), fields, "SprigCast's sign-in helper")
     if "error" in reply or not reply.get("access_token"):
         raise SignInError(f"{who} sign-in failed: {problem_text(reply).rstrip('.')}.")
-    return reply["access_token"]
+    return reply
 
 
 @dataclass
@@ -109,13 +112,17 @@ class Flow:
     url: str  # the sign-in page to open in the browser
     waiter: Waiter
     verifier: str
+    keep: bool = False  # Stream details: stay signed in instead of fetching the key
 
     def finish(self, cancelled: threading.Event | None = None) -> Fetched:
         """Wait for the browser, then read the account and key. Raises SignInError / Cancelled."""
         who = {"youtube": "Google", "kick": "Kick"}[self.service]
         try:
             code = self.waiter.wait(WAIT_SECONDS, cancelled, who)
-            fetched = (_youtube_rest if self.service == "youtube" else _kick_rest)(self, code)
+            if self.keep:
+                fetched = _keep_rest(self, code)
+            else:
+                fetched = (_youtube_rest if self.service == "youtube" else _kick_rest)(self, code)
         except Cancelled:
             log.info("sign-in: %s cancelled", self.service)
             raise
@@ -125,12 +132,14 @@ class Flow:
         except Exception:
             log.exception("sign-in: %s failed", self.service)
             raise
-        log.info("sign-in: %s done, key fetched for %s", self.service, fetched.account)
+        log.info("sign-in: %s done, %s", self.service, "kept for stream details" if self.keep else "key fetched")
         return fetched
 
 
-def begin(service: str) -> Flow:
-    """Start a sign-in: read the Client ID and open the loopback server. Run it on the UI thread."""
+def begin(service: str, keep: bool = False) -> Flow:
+    """Start a sign-in: read the Client ID and open the loopback server. Run it on the UI thread.
+
+    keep: for Stream details, which stays signed in (asks for a refresh token and permission to edit)."""
     cid = setting(f"{service}/client_id")
     label = {"youtube": "YouTube", "kick": "Kick"}[service]
     if not cid:
@@ -141,10 +150,13 @@ def begin(service: str) -> Flow:
         params = {"client_id": cid, "redirect_uri": waiter.url, "response_type": "code", "scope": YOUTUBE_SCOPE,
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state,
                   "prompt": "select_account"}
+        if keep:  # Google hands a refresh token only to an offline sign-in, and only with consent shown
+            params.update(access_type="offline", prompt="consent select_account")
         auth = YOUTUBE_AUTH
     else:
         waiter = Waiter(KICK_PORT, host="localhost", label="Kick")
-        params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url, "scope": KICK_SCOPES,
+        params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url,
+                  "scope": KICK_DETAILS_SCOPES if keep else KICK_SCOPES,
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state}
         auth = KICK_AUTH
     try:
@@ -154,7 +166,7 @@ def begin(service: str) -> Flow:
         raise SignInError(f"Port {waiter.port} is busy, so {label} sign-in can't finish. Close what uses it and "
                           "try again.") from exc
     log.info("sign-in: %s started, waiting on port %d", service, waiter.port)
-    return Flow(service, f"{auth}?{urllib.parse.urlencode(params)}", waiter, verifier)
+    return Flow(service, f"{auth}?{urllib.parse.urlencode(params)}", waiter, verifier, keep)
 
 
 def _run(service: str, cancelled: threading.Event | None, open_url: Callable[[str], object]) -> Fetched:
@@ -168,8 +180,30 @@ def youtube(cancelled: threading.Event | None = None, open_url: Callable[[str], 
     return _run("youtube", cancelled, open_url)
 
 
+def _keep_rest(flow: Flow, code: str) -> Fetched:
+    """Stream details: keep the sign-in (in the credential store) and name the account. No key is read."""
+    from sprigcast.output import stream_details
+
+    who = {"youtube": "Google", "kick": "Kick"}[flow.service]
+    reply = _swap(flow.service, code, flow.verifier, flow.waiter.url, who, keep=True)
+    token = reply["access_token"]
+    if flow.service == "youtube":
+        channels = get_json(f"{YOUTUBE_API}/channels?part=snippet&mine=true", token, "YouTube").get("items") or []
+        if not channels:
+            raise SignInError("That Google account has no YouTube channel yet.")
+        account = channels[0]["snippet"].get("title", "YouTube")
+    else:
+        channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
+        account = str((channels[0] if channels else {}).get("slug") or "Kick")
+    try:
+        stream_details.save_tokens(flow.service, reply, account)
+    except stream_details.DetailsError as exc:
+        raise SignInError(str(exc)) from exc
+    return Fetched(account=account, key="")
+
+
 def _youtube_rest(flow: Flow, code: str) -> Fetched:
-    token = _swap("youtube", code, flow.verifier, flow.waiter.url, "Google")
+    token = _swap("youtube", code, flow.verifier, flow.waiter.url, "Google")["access_token"]
     log.info("sign-in: youtube token received")
     channels = get_json(f"{YOUTUBE_API}/channels?part=snippet&mine=true", token, "YouTube").get("items") or []
     if not channels:
@@ -224,7 +258,7 @@ def kick(cancelled: threading.Event | None = None, open_url: Callable[[str], obj
 
 
 def _kick_rest(flow: Flow, code: str) -> Fetched:
-    token = _swap("kick", code, flow.verifier, flow.waiter.url, "Kick")
+    token = _swap("kick", code, flow.verifier, flow.waiter.url, "Kick")["access_token"]
     log.info("sign-in: kick token received")
     try:
         channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
