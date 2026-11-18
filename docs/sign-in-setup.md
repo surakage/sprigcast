@@ -7,7 +7,17 @@ The Client IDs are public and sit in the app. The client secrets never do: they'
 helper (`integrations/signin-helper`, at signin.slothbloom.com), which finishes each sign-in. Its README has
 the deploy and secret commands.
 
-SprigCast only reads the key. It throws the sign-in away right after, so there are no tokens to keep or refresh.
+For the stream key SprigCast only reads the key and throws the sign-in away right after.
+
+**Stream details** (Live → Destinations → Details) is the one place that stays signed in, because it changes
+your title, category and so on whenever you save. Its sign-in asks for offline access (Google) or
+`channel:write` (Kick), keeps the tokens in Windows Credential Manager (`youtube/oauth`, `kick/oauth`) and
+renews them through the helper (`grant_type=refresh_token`). Sign out on the card throws them away.
+Twitch reuses its connected account, which now also asks for `channel:manage:broadcast`.
+Code: `src/sprigcast/output/stream_details.py`.
+
+While the Google app is in **Testing**, Google lets a sign-in stay for only 7 days, so Stream details asks you
+to sign in to YouTube again once a week until the app is published.
 
 ## YouTube (Google)
 
@@ -32,8 +42,9 @@ page, a privacy policy page and a short video of the sign-in, and takes days to 
 2. Go to <https://kick.com/settings/developer> and **Create app**:
    - Name SprigCast, the sloth logo.
    - Redirect URL exactly: `http://localhost:51587/callback`
-   - Scopes: **Read user information**, **Read channel information**, **Read stream URL and stream key**
-     (`user:read channel:read streamkey:read`).
+   - Scopes: **Read user information**, **Read channel information**, **Read stream URL and stream key**,
+     **Update livestream metadata** (`user:read channel:read streamkey:read channel:write`; the last one is
+     for Stream details).
 3. The **Client ID** goes in `DEFAULTS` and `wrangler.toml`. The **Client Secret** goes only into the helper:
    `npx wrangler secret put KICK_CLIENT_SECRET`.
 

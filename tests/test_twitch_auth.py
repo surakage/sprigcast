@@ -29,7 +29,7 @@ class FakeTwitch:
     def post(self, url, fields):
         self.calls.append((url, dict(fields)))
         if url == t.DEVICE_URL:
-            assert fields["scopes"] == "channel:read:stream_key user:write:chat"
+            assert fields["scopes"] == "channel:read:stream_key user:write:chat channel:manage:broadcast"
             return {"device_code": "dev", "user_code": "ABCDEFGH", "verification_uri": "https://www.twitch.tv/activate?device-code=ABCDEFGH", "interval": 5, "expires_in": 1800}
         if fields.get("grant_type", "").endswith("device_code"):
             if not self.approved:

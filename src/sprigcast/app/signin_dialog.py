@@ -56,7 +56,8 @@ class SignInDialog(CardDialog):
 
     ``begin`` makes the Flow (service_signin.begin); ``open_url`` opens the browser (both on the UI thread)."""
 
-    def __init__(self, service: str, parent: QWidget | None = None, begin=None, open_url=None):
+    def __init__(self, service: str, parent: QWidget | None = None, begin=None, open_url=None,
+                 hint: str = "If the browser shows an error, cancel and paste the stream key instead."):
         label = SERVICES[service].label
         super().__init__(f"Sign in to {label}", parent, width=440)  # a rounded card like every pop-up
         self.service = service
@@ -70,10 +71,11 @@ class SignInDialog(CardDialog):
         self.message.setWordWrap(True)
         self.message.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
         layout.addWidget(self.message)
-        self.hint = QLabel("If the browser shows an error, cancel and paste the stream key instead.")
+        self.hint = QLabel(hint)
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         layout.addWidget(self.hint)
+        self.hint.setVisible(bool(hint))
         row = QHBoxLayout()
         row.addStretch(1)
         self.cancel_button = QPushButton("Cancel")
@@ -95,7 +97,8 @@ class SignInDialog(CardDialog):
         opened = (open_url or open_in_browser)(flow.url)
         log.info("sign-in: %s browser %s", service, "opened" if opened is not False else "didn't open")
         if opened is False:
-            self.message.setText(f"Your browser didn't open. Cancel and paste the {label} stream key instead.")
+            self.message.setText(f"Your browser didn't open. Cancel and paste the {label} stream key instead."
+                                 if hint else "Your browser didn't open. Cancel and try again.")
         self._thread = threading.Thread(target=_work, args=(flow.finish, self._cancel, self._job),
                                         name=f"{service}-sign-in", daemon=True)
         self._thread.start()

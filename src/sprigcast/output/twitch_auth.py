@@ -2,7 +2,8 @@
 
 Uses Twitch's Device Code Grant Flow, the sign-in made for apps without a web server:
 SprigCast shows a short code, you approve it at twitch.tv/activate, and Twitch hands back
-tokens. Only `channel:read:stream_key` and `user:write:chat` (send chat from the Chat panel) are requested. Tokens live in the OS credential
+tokens. Only `channel:read:stream_key`, `user:write:chat` (send chat from the Chat panel) and
+`channel:manage:broadcast` (Stream details: title, category, tags) are requested. Tokens live in the OS credential
 store (like stream keys), never in scenes.json.
 
 Twitch needs a registered app's Client ID. A Public client has no secret, so the ID can be
@@ -22,7 +23,8 @@ from dataclasses import dataclass
 from sprigcast.output.keys import get_key, set_key
 
 DEFAULT_CLIENT_ID = "jsv3nwvolg6ph5e5s9tyzphwzcyvbp"  # SprigCast's public Twitch app (Public client: no secret)
-SCOPES = "channel:read:stream_key user:write:chat"  # your stream key, and sending chat from the Chat panel
+# Your stream key, sending chat from the Chat panel, and changing your title, category and tags (Stream details)
+SCOPES = "channel:read:stream_key user:write:chat channel:manage:broadcast"
 CHAT_SCOPE = "user:write:chat"
 TOKEN_REF = "twitch/oauth"  # keyring entry holding {"access_token", "refresh_token", "expires_at", "login", "user_id"}
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
