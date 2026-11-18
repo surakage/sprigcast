@@ -197,15 +197,56 @@ def test_mentions_stand_out_and_scrolling_up_shows_a_jump_pill(app):
 
 
 def test_emote_cache_starts_over_instead_of_growing(app, monkeypatch):
+    """The page starts over once it has been handed EMOTE_CACHE pictures, and takes the ones still on
+    screen from memory, so a start-over downloads nothing (it used to re-request every emote: a 2 s freeze)."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QImage
+
     from sprigcast.app import chat_panel
 
     monkeypatch.setattr(chat_panel, "EMOTE_CACHE", 3)
+    fetched = []
+    monkeypatch.setattr(chat_panel.ChatView, "_next_fetch", lambda self: fetched.extend(self._queue) or self._queue.clear())
     view = chat_panel.ChatView()
-    view._asked.update({"a", "b", "c", "d"})
-    view.add(ChatMessage("youtube", "a", "hi", images={"yt-1": "https://yt3.ggpht.com/emoji-1"}))
+    view.resize(300, 300)
+    view.show()
+    picture = QImage(22, 22, QImage.Format.Format_ARGB32)
+    picture.fill(0xFF00FF00)
+    view._pictures["yt-1"] = picture
+    view._given = 4  # already past the limit
+    view.add(ChatMessage("youtube", "a", "hi ▢", emotes=[(3, 3, "yt-1")], images={"yt-1": "https://yt3.ggpht.com/emoji-1"}))
     view.flush()
-    assert not view._asked and view._urls == {"yt-1": "https://yt3.ggpht.com/emoji-1"}
-    assert [m.text for m in view.messages] == ["hi"]
+    app.processEvents()
+    assert view._given <= 1 and view._urls == {"yt-1": "https://yt3.ggpht.com/emoji-1"}
+    assert fetched == [] and [m.text for m in view.messages] == ["hi ▢"]
+    for i in range(10):  # new pictures wait their turn instead of all being requested at once
+        view._fetch(QUrl(f"emote:e{i}"))
+    assert len(fetched) == 10 and view._asked >= {f"e{i}" for i in range(10)}
+
+
+def test_emote_downloads_are_queued_a_few_at_a_time(app, monkeypatch):
+    from PySide6.QtCore import QUrl
+
+    from sprigcast.app import chat_panel
+
+    view = chat_panel.ChatView()
+    asked = []
+
+    class Net:
+        def get(self, request):
+            asked.append(request.url().toString())
+
+            class Reply:
+                class finished:  # noqa: N801
+                    @staticmethod
+                    def connect(fn):
+                        pass
+            return Reply()
+
+    view._net = Net()
+    for i in range(20):
+        view._fetch(QUrl(f"emote:e{i}"))
+    assert len(asked) == chat_panel.EMOTE_FETCHES and len(view._queue) == 20 - chat_panel.EMOTE_FETCHES
 
 
 def test_panel_sleeps_when_taken_off_every_screen(app, monkeypatch):
