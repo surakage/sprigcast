@@ -92,3 +92,12 @@ def test_stream_report_writes_setup_lines_every_5_s_and_the_summary(tmp_path):
     assert text.count("Twitch (horizontal)") >= 3  # setup + a line every 5 s
     assert "averaged 6000 kbps" in text and "Ended after" in text
     assert "SECRET" not in text
+
+
+def test_crash_notes_on_windows_read_only_the_crashing_threads_stack():
+    """A handled COM exception (0x8001010d, UI Automation during a menu) made faulthandler read every running
+    thread's stack on Windows; the render thread's changed under it and SprigCast died (2026-11-17 20:57)."""
+    from sprigcast.app.logbook import crash_dumps_all_threads
+
+    assert crash_dumps_all_threads("win32") is False
+    assert crash_dumps_all_threads("linux") is True

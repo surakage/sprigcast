@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -110,12 +111,24 @@ def setup(now: datetime | None = None) -> Path | None:
 
             _crash_file.write(section_header(now=now, version=_version()))  # whose crash it is, if one comes
             _crash_file.flush()
-            faulthandler.enable(file=_crash_file)
+            faulthandler.enable(file=_crash_file, all_threads=crash_dumps_all_threads())
     except (OSError, RuntimeError):
         pass
     logging.getLogger("sprigcast").info("SprigCast %s started; logs in %s%s", _version(), folder,
                                         f" ({removed} older than {keep_days()} days removed)" if removed else "")
     return path
+
+
+def crash_dumps_all_threads(platform: str | None = None) -> bool:
+    """Whether a crash note lists every thread's stack, or only the crashing thread's (Windows).
+
+    On Windows faulthandler writes a note for every exception with an error code, also ones Windows handles
+    and carries on from, like 0x8001010d, which COM raises when UI Automation (a screen reader, the PC's
+    pop-up sweep) asks the window something during a menu's input call. Listing every thread then reads the
+    stacks of threads that are still running; the render thread's changed under it, the note was cut off
+    mid-line with "access violation" and SprigCast died (2026-11-17 20:57, live, Heavy test, menu sweep).
+    The thread the note is about is the one that's stopped, so reading only its own stack is safe."""
+    return (platform or sys.platform) != "win32"
 
 
 class Floods(logging.Filter):
