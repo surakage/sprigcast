@@ -1078,8 +1078,9 @@ class InstantReplaySource(Source):
             if self._clear:
                 self._clear = False
                 self._held = None
-                w, h = self.out_size
-                return np.zeros((h, w, 4), dtype=np.uint8)
+                # Nothing to show: a tiny see-through picture (stretched to the box). A whole clear frame of the
+                # replay's size was made and sent on every wake: 47-68 ms of the PC's switch frame (2026-11-18).
+                return np.zeros((2, 2, 4), dtype=np.uint8)
             return None
         try:
             frame = self._show_frame(show, time.monotonic())
@@ -1091,8 +1092,7 @@ class InstantReplaySource(Source):
         if show.phase == "done":
             self._finish(show)
             self._held = None
-            w, h = self.out_size
-            return np.zeros((h, w, 4), dtype=np.uint8)
+            return np.zeros((2, 2, 4), dtype=np.uint8)  # see-through again (as above)
         if frame is not None:
             self._held = frame
         return frame

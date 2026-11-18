@@ -246,6 +246,10 @@ def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
     return page
 
 
+FILL_AFTER_MS = 30  # the window shows first, then its page is made (fill_after_show)
+SLICE_GAP_MS = 20  # between the parts of a page made a tick apart (SettingsWindow._slice)
+
+
 class SettingsWindow(QDialog):
     applied = Signal()
     optimize_requested = Signal()  # This PC → Optimize again (the main window opens it once Settings closes)
@@ -264,6 +268,7 @@ class SettingsWindow(QDialog):
         check_updates=None,
         tab: str = "General",
         parent: QWidget | None = None,
+        fill_after_show: bool = False,
         **_old,  # plugin_report, open_plugins_folder, plugins_dir: the plugin store has its own window now
     ):
         theme.ui_burst()  # from the first line: Python's lock comes back quickly while the window is made
@@ -293,11 +298,12 @@ class SettingsWindow(QDialog):
             "General": self._general_page,
             "Stream": lambda: self._stream_page(encoder),
             "Recording": lambda: self._recording_page(encoder),
-            "Audio": lambda: self._audio_page(_devices(audio_devices)),
+            "Audio": lambda: self._audio_page(lambda: _devices(audio_devices)),
             "Video": self._video_page,
             "Connections": lambda: self._connections_page(control),
         }
         self._built: set[str] = set()
+        self._slices: list = []  # parts of pages still to make, one per tick (_slice)
         self._audio_devices = audio_devices
         self._subs: dict[str, str] = {}  # page -> its own tab to open on once it's made
         self.on_ducking = None  # passed on to the Audio page (the main window opens the Ducking window)
@@ -318,8 +324,21 @@ class SettingsWindow(QDialog):
         self.search.setCompleter(completer)
         self.search.returnPressed.connect(lambda: self.find(self.search.text()))
 
-        self.open_tab(tab)  # only this page is made now; the others when their tab is picked (making them all
-        # up front held SprigCast up for seconds while live)
+        # Only this page is made, the others when their tab is picked (making them all up front held SprigCast up
+        # for seconds while live). fill_after_show: not even this one before the window is up. The window shows at
+        # once and its page fills in a moment later; made first, a click on a destination took 352 ms to show
+        # anything on the PC (2026-11-18), the canvas preview standing still meanwhile.
+        self._fill_tab: str | None = tab if fill_after_show else None
+        self._after_fill: list = []
+        if self._fill_tab is None:
+            self.open_tab(tab)
+        else:
+            name = TAB_ALIASES.get(tab, tab).partition("/")[0]
+            row = TABS.index(name) if name in TABS else 0
+            self.tabs.blockSignals(True)
+            self.tabs.setCurrentRow(row)
+            self.tabs.blockSignals(False)
+            self.stack.setCurrentIndex(row)
 
         side = QVBoxLayout()
         side.setSpacing(14)
@@ -439,7 +458,13 @@ class SettingsWindow(QDialog):
     def __getattr__(self, name: str):
         """A page's widgets asked for before the page was made: make that page (not knowing which: up to the one)."""
         makers = self.__dict__.get("_makers")
-        if makers is None or name.startswith("_") or len(self.__dict__.get("_built", ())) == len(TABS):
+        if makers is None or name.startswith("_"):
+            raise AttributeError(name)
+        if self.__dict__.get("_slices"):  # part of a page made a tick later: now, it's wanted
+            self._flush_slices()
+            if name in self.__dict__:
+                return self.__dict__[name]
+        if len(self.__dict__.get("_built", ())) == len(TABS):
             raise AttributeError(name)
         page = self._PAGE_OF.get(name)
         if page is not None and page not in self._built:
@@ -478,6 +503,54 @@ class SettingsWindow(QDialog):
         if took >= 100:
             log.info("settings: the %s page took %.0f ms to make", name, took)
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._fill_tab is not None:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(FILL_AFTER_MS, self._fill)  # after the window's first paint
+
+    def _fill(self) -> None:
+        tab, self._fill_tab = self._fill_tab, None
+        if tab is None or getattr(self, "_closed", False):
+            return
+        self.open_tab(tab)
+        later, self._after_fill = self._after_fill, []
+        for call in later:
+            call()
+
+    def _slice(self, call) -> None:
+        """Part of a page made a tick later, one part per tick: the window answers and the canvases get their
+        turn in between (a whole Audio or Stream page at once held both 200+ ms on the PC, 2026-11-18)."""
+        from PySide6.QtCore import QTimer
+
+        self._slices.append(call)
+        if len(self._slices) == 1:
+            QTimer.singleShot(SLICE_GAP_MS, self._next_slice)
+
+    def _next_slice(self) -> None:
+        if not self._slices:
+            return
+        if getattr(self, "_closed", False):
+            self._slices.clear()
+            return
+        self._slices.pop(0)()
+        if self._slices:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(SLICE_GAP_MS, self._next_slice)
+
+    def _flush_slices(self) -> None:
+        while self._slices:
+            self._slices.pop(0)()
+
+    def soon(self, call) -> None:
+        """call() once the first page is made (now, if it is)."""
+        if self._fill_tab is None:
+            call()
+        else:
+            self._after_fill.append(call)
+
     def done(self, result: int) -> None:  # Save, Cancel, Esc or the window's X
         self._closed = True
         super().done(result)
@@ -485,6 +558,7 @@ class SettingsWindow(QDialog):
     def ensure_all(self) -> None:
         for name in TABS:
             self.ensure(name)
+        self._flush_slices()
 
     def _show_row(self, row: int) -> None:
         if 0 <= row < len(TABS):
@@ -673,10 +747,26 @@ class SettingsWindow(QDialog):
             self.stream_page.setEnabled(False)
             box.addWidget(_hint("You're live. End the stream to change these."))
         box.addWidget(self.stream_page, 1)
-        self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming)
         self.stream_tabs = QTabWidget()
         self.stream_tabs.addTab(places, "Places")
-        self.stream_tabs.addTab(_scrolled(self.stream_quality), "Quality")
+        self.stream_tabs.addTab(QWidget(), "Quality")  # made a tick later (_slice), or now if it's the one asked
+
+        def quality():
+            self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming)
+            if hasattr(self.stream_quality, "set_expert"):
+                self.stream_quality.set_expert(self._expert)
+            tabs = self.stream_tabs
+            current = tabs.currentIndex()
+            stand_in = tabs.widget(1)
+            tabs.removeTab(1)
+            tabs.insertTab(1, _scrolled(self.stream_quality), "Quality")
+            tabs.setCurrentIndex(current)
+            stand_in.deleteLater()
+            self._tab_changed(self.stack.currentIndex())
+        if self._subs.get("Stream") == "Quality":
+            quality()
+        else:
+            self._slice(quality)
         return self.stream_tabs
 
     def _recording_page(self, encoder: str) -> QWidget:
@@ -693,15 +783,22 @@ class SettingsWindow(QDialog):
         return self.recording_tabs
 
     def _tab_changed(self, row: int) -> None:
-        if TABS[row] == "Stream" and "Stream" in self._built:  # the banner follows the place list's unsaved choices
-            self.stream_quality.banner.setVisible(any(
+        quality = self.__dict__.get("stream_quality")  # (made a tick after the page: then this runs again)
+        if 0 <= row < len(TABS) and TABS[row] == "Stream" and quality is not None:
+            # the banner follows the place list's unsaved choices
+            quality.banner.setVisible(any(
                 o.enabled and o.service == "twitch" and o.enhanced for o in self.stream_page.outputs
             ))
 
-    def _audio_page(self, audio_devices: dict[str, list[str]]) -> QWidget:
+    def _audio_page(self, audio_devices) -> QWidget:
         from sprigcast.app.audio_page import AudioPage
 
-        self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording, streaming=self.streaming)
+        # The tab asked for (the Sound card's gear: Sounds) now, the others a tick apart (_slice)
+        first = self._subs.get("Audio") or "Devices"
+        self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording,
+                                    streaming=self.streaming, first=first)
+        for name in list(self.audio_page.later):
+            self._slice(lambda name=name: self.audio_page.build_tab(name))
         return _page(self.audio_page)
 
     def _video_page(self) -> QWidget:
@@ -885,6 +982,7 @@ class SettingsWindow(QDialog):
     def apply(self) -> bool:
         """Write back every page that was made (one never opened still matches what's saved). Returns False
         (and shows why) if something can't be saved. Making every page here held Save up for seconds while live."""
+        self._flush_slices()  # the parts of made pages still waiting for their tick
         built = self._built
         if "Stream" in built:
             if not self.streaming and not self.stream_page.apply_to(self.collection):

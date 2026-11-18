@@ -82,3 +82,28 @@ def test_menus_and_pop_ups_let_go_when_closed(tmp_path, monkeypatch):
         assert not kept and after[1] <= before[1], f"kept {dict(kept)}, {after[1] - before[1]} windows"
     finally:
         w.close()
+
+
+def test_the_settings_warm_up_leaves_nothing_behind(tmp_path, monkeypatch):
+    """Once after start, Settings' Stream page is made off screen and let go (Qt's style rules and fonts ready:
+    the first real open takes about half as long). Nothing of it stays, and it never runs while live."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.settings_window import SettingsWindow
+
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        w.show()
+        w.warm_settings()
+        before = _count(w)
+        w.warm_settings()
+        assert _count(w) == before
+        assert not any(isinstance(x, SettingsWindow) and x.isVisible() for x in QApplication.topLevelWidgets())
+        w.streaming = object()
+        made = []
+        monkeypatch.setattr("sprigcast.app.main_window.SettingsWindow", lambda *a, **k: made.append(1))
+        w.warm_settings()
+        assert not made
+    finally:
+        w.streaming = None
+        w.close()
