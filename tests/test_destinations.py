@@ -765,6 +765,45 @@ def test_destination_rows_restyle_only_what_changed(app, monkeypatch):
     side.close()
 
 
+def test_places_move_up_down_and_by_dragging_and_keep_their_order(app, tmp_path, monkeypatch):
+    """Keep both YouTube places together: Edit's Move up / Move down, or drag a row; one order everywhere."""
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SceneCollection
+
+    col = _collection()
+    col.outputs = [Output(id="yt", type="stream", service="youtube", canvas="horizontal"),
+                   Output(id="rec", type="recording", canvas="horizontal"),
+                   Output(id="tw", type="stream", service="twitch", canvas="horizontal"),
+                   Output(id="yt2", type="stream", service="youtube", canvas="vertical")]
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._set_mode("live")
+        side = w.live_side
+        ids = lambda: [p.id for p in side._places]  # noqa: E731
+        assert ids() == ["yt", "tw", "yt2"]
+        w._place_action("yt2", "up")
+        assert ids() == ["yt", "yt2", "tw"]
+        assert [o.id for o in col.outputs] == ["yt", "rec", "yt2", "tw"]  # other outputs keep their spots
+        w._place_action("yt", "down")
+        assert ids() == ["yt2", "yt", "tw"]
+        side.move_place("tw", 0)  # dragged to the top
+        assert ids() == ["tw", "yt2", "yt"]
+        side.move_place("tw", 3)  # and to the bottom (dropped after the last row)
+        assert ids() == ["yt2", "yt", "tw"]
+        assert [o.id for o in SceneCollection.load(tmp_path / "scenes.json").outputs if o.type == "stream"] \
+            == ["yt2", "yt", "tw"]  # saved
+        side.set_editing(True)
+        assert not side.place_tools["yt2"]["up"].isEnabled() and side.place_tools["yt2"]["down"].isEnabled()
+        assert side.place_tools["tw"]["up"].isEnabled() and not side.place_tools["tw"]["down"].isEnabled()
+        side.place_tools["tw"]["up"].click()
+        assert ids() == ["yt2", "tw", "yt"]
+    finally:
+        w.close()
+
+
 def test_bloom_pills_show_their_key_and_numbers_switch(app):
     from sprigcast.app.hotkeys import SCENE_PREFIX
     from sprigcast.app.live_panel import LivePanel

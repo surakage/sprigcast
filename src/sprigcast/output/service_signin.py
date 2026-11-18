@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from sprigcast.output.oauth_loopback import (
     HEADERS,
+    HELPER_TIMEOUT,
     Cancelled,
     SignInError,
     Waiter,
@@ -96,7 +97,7 @@ def _swap(service: str, code: str, verifier: str, redirect: str, who: str, keep:
     fields = {"service": service, "code": code, "code_verifier": verifier, "redirect_uri": redirect}
     if keep:
         fields["keep"] = "1"
-    reply = post_form(helper_url(), fields, "SprigCast's sign-in helper")
+    reply = post_form(helper_url(), fields, "SprigCast's sign-in helper", timeout=HELPER_TIMEOUT, tries=2)
     if "error" in reply or not reply.get("access_token"):
         raise SignInError(f"{who} sign-in failed: {problem_text(reply).rstrip('.')}.")
     return reply

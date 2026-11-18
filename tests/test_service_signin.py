@@ -53,7 +53,7 @@ def ids(monkeypatch):
 
 def test_youtube_reads_the_channel_and_a_reusable_key(ids, monkeypatch):
     posts = []
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: posts.append((url, fields)) or
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append((url, fields)) or
                         {"access_token": "tok"})
 
     def get_json(url, token, who, headers=None):
@@ -78,7 +78,7 @@ def test_youtube_reads_the_channel_and_a_reusable_key(ids, monkeypatch):
 
 def test_kick_reads_server_and_key_on_its_fixed_redirect(ids, monkeypatch):
     posts = []
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: posts.append((url, fields)) or
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append((url, fields)) or
                         {"access_token": "tok"})
     monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"data": [
         {"slug": "slothbloom", "stream": {"url": "rtmps://ingest.kick/app", "key": "sk_1"}}]})
@@ -162,3 +162,50 @@ def test_a_vertical_youtube_place_gets_its_own_key_for_dual_stream(monkeypatch):
     streams.reverse()  # the vertical one listed first: horizontal still gets its own
     assert service_signin._youtube_key("tok") == "wide"
     assert service_signin._youtube_key("tok", vertical=True) == "tall" and len(made) == 1
+
+
+def test_the_helper_is_asked_again_when_it_doesnt_answer(monkeypatch):
+    import io
+    import urllib.request
+
+    from sprigcast.output import oauth_loopback
+
+    seen = []
+
+    class Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(request, timeout):
+        seen.append(timeout)
+        if len(seen) == 1:
+            raise TimeoutError("The read operation timed out")
+        return Reply(b'{"access_token": "a"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(oauth_loopback.time, "sleep", lambda s: None)
+    reply = oauth_loopback.post_form("https://helper.test", {"code": "c"}, "the helper",
+                                     timeout=oauth_loopback.HELPER_TIMEOUT, tries=2)
+    assert reply == {"access_token": "a"}
+    assert seen == [oauth_loopback.HELPER_TIMEOUT] * 2
+
+
+def test_the_helper_isnt_asked_again_after_a_refusal(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    from sprigcast.output import oauth_loopback
+
+    seen = []
+
+    def urlopen(request, timeout):
+        seen.append(1)
+        raise urllib.error.HTTPError(request.full_url, 400, "Bad", {}, io.BytesIO(b'{"error": "invalid_grant"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    reply = oauth_loopback.post_form("https://helper.test", {"code": "c"}, "the helper", tries=2)
+    assert reply["error"] == "invalid_grant" and len(seen) == 1

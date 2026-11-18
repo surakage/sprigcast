@@ -685,7 +685,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.stream_details_dialog import StreamDetailsDialog, places_for
         from sprigcast.app.twitch_connect import TwitchConnectDialog
 
-        streams = sorted((o for o in self.collection.outputs if o.type == "stream"), key=lambda o: not o.enabled)
+        streams = [o for o in self.collection.outputs if o.type == "stream"]  # in the order you set on Live
         modal(StreamDetailsDialog(self, places_for(streams),
                                   connect_twitch=lambda parent: modal(TwitchConnectDialog(parent))))
 
@@ -1952,9 +1952,14 @@ class MainWindow(QMainWindow):
         return None if output.twitch_account else output.id
 
     def _place_action(self, output_id: str, action: str) -> None:
-        """Live's Edit mode: remove a place, swap its canvas, or flip Twitch's bandwidth test."""
+        """Live's Edit mode: remove a place, swap its canvas, or flip Twitch's bandwidth test; and the order."""
         output = next((o for o in self.collection.outputs if o.id == output_id), None)
-        if output is None or self.streaming is not None:
+        if output is None:
+            return
+        if action in ("up", "down") or action.startswith("to:"):  # only the list's order: fine while live too
+            self._order_place(output, action)
+            return
+        if self.streaming is not None:
             return
         if action == "remove":
             self.collection.outputs.remove(output)
@@ -1972,6 +1977,31 @@ class MainWindow(QMainWindow):
             output.bandwidth_test = not output.bandwidth_test
         self.collection.save(self.scenes_path)
         self._refresh_stream_boxes()
+
+    def _order_place(self, output, action: str) -> None:
+        """Move a place up, down or to a spot in the list. Its order is the outputs' order, so Settings,
+        Stream details and the control API's places.list all show it the same way."""
+        outputs = self.collection.outputs
+        slots = [i for i, o in enumerate(outputs) if o.type == "stream"]
+        streams = [outputs[i] for i in slots]
+        at = streams.index(output)
+        if action == "up":
+            to = at - 1
+        elif action == "down":
+            to = at + 1
+        else:
+            try:
+                to = int(action[3:])
+            except ValueError:
+                return
+        to = max(0, min(len(streams) - 1, to))
+        if to == at:
+            return
+        streams.insert(to, streams.pop(at))
+        for i, o in zip(slots, streams):
+            outputs[i] = o
+        self.collection.save(self.scenes_path)
+        self._live_destinations()  # now, live or not: only the order changed
 
     def _build_live_stage(self) -> None:
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""

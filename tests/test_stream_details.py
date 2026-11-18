@@ -423,7 +423,7 @@ def test_an_expired_sign_in_is_renewed_through_the_helper(monkeypatch):
     _signed_in("kick", expires=time.time() - 5)
     sent = []
 
-    def helper(url, fields, who):
+    def helper(url, fields, who, **kw):
         sent.append((url, dict(fields)))
         return {"access_token": "new", "refresh_token": "ref2", "expires_in": 7200}
 
@@ -441,7 +441,7 @@ def test_an_expired_sign_in_is_renewed_through_the_helper(monkeypatch):
 def test_a_refused_renewal_signs_out(monkeypatch):
     _signed_in("youtube", expires=time.time() - 5)
     monkeypatch.setattr("sprigcast.output.oauth_loopback.post_form",
-                        lambda url, fields, who: {"error": "invalid_grant", "status": 400})
+                        lambda url, fields, who, **kw: {"error": "invalid_grant", "status": 400})
     Web(monkeypatch)
     with pytest.raises(sd.NeedsSignIn, match="ran out"):
         sd.load("youtube")
@@ -461,7 +461,7 @@ def test_keeping_a_sign_in_asks_for_offline_access_and_edit_permission(monkeypat
 
 
 def test_a_kept_sign_in_is_saved_and_named(monkeypatch):
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: (
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: (
         {"access_token": "a", "refresh_token": "r", "expires_in": 3600} if fields.get("keep") == "1" else {}))
     monkeypatch.setattr(service_signin, "get_json", lambda url, token, who: {"items": [{"snippet": {"title": "Sloth"}}]})
 

@@ -282,6 +282,9 @@ def watch_memory(now: float | None = None) -> str | None:
     _memory_logged = now
     line = f"memory now: {memory_line()}; kept aside {gc.get_freeze_count():,}"
     log.info(line)
+    from sprigcast.core.memory_map import log_memory_map
+
+    log_memory_map()  # and what holds the committed memory, from a thread of its own
     return line
 
 
