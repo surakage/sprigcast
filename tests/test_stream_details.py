@@ -366,6 +366,25 @@ def test_kick_shows_the_last_save_when_it_sends_empty_details(monkeypatch):
     QSettings().remove(sd.KICK_LAST_SETTING)
 
 
+def test_kick_offline_placeholder_category_is_filled_from_the_last_save(monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.KICK_LAST_SETTING)
+    _signed_in("kick")
+    monkeypatch.setattr(sd, "account", lambda service: "sloth")
+    web = Web(monkeypatch)
+    offline = {"stream_title": "", "category": {"id": 0, "name": "", "thumbnail": ""}, "slug": "sloth",
+               "stream": {"is_live": False, "key": "secret"}}
+    web.on("GET", sd.KICK_API + "/channels", {"data": [offline]})
+    web.on("PATCH", sd.KICK_API + "/channels", {})
+    first = sd.load("kick")
+    assert (first.category, first.category_id, first.unread) == ("", "", True)
+    sd.save("kick", sd.Details(title="Sloth time", category="Art", category_id="15"))
+    again = sd.load("kick")
+    assert (again.title, again.category, again.category_id, again.from_last) == ("Sloth time", "Art", "15", True)
+    QSettings().remove(sd.KICK_LAST_SETTING)
+
+
 def test_kick_tags_can_be_cleared_when_kick_sends_nothing(monkeypatch):
     from PySide6.QtCore import QSettings
 
