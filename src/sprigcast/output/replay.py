@@ -278,7 +278,16 @@ class ReplayBuffer(Recorder):
         with open(path, "rb") as f:
             data = f.read()
         self._remove_streams_file()
-        self._streams = av.open(io.BytesIO(data), "r", format="nut")
+        import av.logging as avlog
+
+        # The file holds headers only: FFmpeg's look for stream details tries to decode packets that aren't there
+        # and logs "no frame!", "Input buffer exhausted" and "Could not find codec parameters" at every stream start
+        # (PC, 2026-11-18). Expected here: kept out of the log.
+        with avlog.Capture(True) as said:
+            self._streams = av.open(io.BytesIO(data), "r", format="nut")
+        if said:
+            log.debug("%s: reading the writer's stream headers: %s", self.path.stem,
+                      " / ".join(str(line[2]).strip() for line in said[:6]))
         return (self._streams.streams.video[0], *self._streams.streams.audio)
 
     def _remove_streams_file(self) -> None:

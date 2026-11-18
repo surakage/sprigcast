@@ -88,3 +88,22 @@ def test_the_engine_texture_device_is_used_when_pyside_takes_it(monkeypatch):
     page.target = first
     assert page._start_quick(first, 640, 360) is first
     assert page.window.device == ("device", 11, 7) and not first.closed and page.host.made == []
+
+
+def test_pointers_go_as_voidptr_when_pyside_refuses_big_ints(monkeypatch):
+    shiboken6 = pytest.importorskip("shiboken6")
+
+    class Device:
+        @staticmethod
+        def fromDeviceAndContext(device, context):  # noqa: N802
+            if isinstance(device, int):
+                raise ValueError("called with wrong argument values: Found signature (device: int, context: int)")
+            return ("voidptr", int(device), int(context))
+
+    monkeypatch.setattr(QtQuick, "QQuickGraphicsDevice", Device)
+    page = _page()
+    first = _Target(2687846546624)
+    page.target = first
+    assert page._start_quick(first, 640, 360) is first
+    assert page.window.device == ("voidptr", 2687846546624, 7)
+    assert isinstance(shiboken6.VoidPtr(1), shiboken6.VoidPtr)

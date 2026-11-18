@@ -214,16 +214,23 @@ class QuickPage:
         used."""
         from PySide6.QtQuick import QQuickGraphicsDevice, QSGRendererInterface
 
-        try:
-            device = QQuickGraphicsDevice.fromDeviceAndContext(target.device, target.context)
-            own = False
-        except (TypeError, AttributeError) as exc:
+        device, own, why = None, False, []
+        for label, args in self._pointer_forms(target):
+            try:
+                device = QQuickGraphicsDevice.fromDeviceAndContext(*args)
+                break
+            except Exception as exc:  # noqa: BLE001 - PySide's binding refuses this form: try the next
+                why.append(f"{label}: {exc}")
+        if device is None:
             luid = getattr(self.host, "card", None)
-            if luid is None or not hasattr(QQuickGraphicsDevice, "fromAdapter"):
+            adapter = getattr(QQuickGraphicsDevice, "fromAdapter", None)
+            if luid is None or adapter is None:
                 self._drop_target(target)
-                raise RuntimeError(f"Qt Quick can't take the engine's card here ({exc})") from exc
-            log.info("browser source %s: Qt Quick makes its own device on the engine's card", self.id)
-            device = QQuickGraphicsDevice.fromAdapter(int(luid[0]) & 0xFFFFFFFF, int(luid[1]))
+                missing = "no card given" if luid is None else "this PySide has no fromAdapter"
+                raise RuntimeError(f"Qt Quick can't take the engine's card here ({missing}; {' | '.join(why)})")
+            log.info("browser source %s: Qt Quick makes its own device on the engine's card (%s)", self.id,
+                     " | ".join(why)[:300])
+            device = adapter(int(luid[0]) & 0xFFFFFFFF, int(luid[1]))
             own = True
         self.window.setGraphicsDevice(device)
         if not self.control.initialize():
@@ -240,6 +247,17 @@ class QuickPage:
             self._drop_target(target)
             target = self.target = self.host.target_for(self.id, w, h, pointer)  # on Qt Quick's own device
         return target
+
+    @staticmethod
+    def _pointer_forms(target):
+        """The ways a PySide build may take the Direct3D pointers: as ints, or as shiboken VoidPtrs (on the PC an
+        int over 2^31 was refused: "Found signature (device: int, context: int)")."""
+        yield "ints", (target.device, target.context)
+        try:
+            from shiboken6 import VoidPtr
+        except ImportError:
+            return
+        yield "VoidPtr", (VoidPtr(target.device), VoidPtr(target.context))
 
     def _drop_target(self, target) -> None:
         if self.target is target:
