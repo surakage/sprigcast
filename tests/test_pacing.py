@@ -73,7 +73,13 @@ def test_tidy_freezes_what_survives_and_settle_frees_cycles_from_the_show():
 
 def test_the_per_frame_walks_leave_no_reference_cycles():
     """Two nested functions that called themselves left a cycle every frame for the collector to find."""
-    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.core.scene import (
+        Canvas,
+        Scene,
+        SceneCollection,
+        SceneItem,
+        SourceConfig,
+    )
     from sprigcast.render.engine import _walk_visible
 
     col = SceneCollection(canvases=[Canvas(id="h", width=64, height=36)],
