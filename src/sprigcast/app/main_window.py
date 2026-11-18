@@ -571,6 +571,8 @@ class MainWindow(QMainWindow):
         add_menu.addAction(f"New {SHOW}…").triggered.connect(self._add_scene)
         add_menu.addAction("New folder…").triggered.connect(self._add_folder)
         add_menu.addAction(f"New {PART}…").triggered.connect(self._add_part)
+        add_menu.addSeparator()
+        add_menu.addAction("Starter kit…").triggered.connect(lambda: QTimer.singleShot(0, self, self.open_starter))
         bar = _toolbar(
             ("+", f"Add {a(SHOW)} (a scene you switch to on air) or {a(PART)} (a reusable piece for {SHOWS})", add_menu),
             ("−", "Remove the selected scene", self._remove_scene),
@@ -617,6 +619,9 @@ class MainWindow(QMainWindow):
         else:
             menu.addAction(f"New {SHOW}…").triggered.connect(lambda: self._add_scene())
             menu.addAction(f"New {SHOW} folder…").triggered.connect(lambda: self._add_folder())
+            menu.addSeparator()
+            # After the menu has closed: a window opened from inside a closing menu could swallow the click.
+            menu.addAction("Starter kit…").triggered.connect(lambda: QTimer.singleShot(0, self, self.open_starter))
         menu.exec(QCursor.pos())
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
@@ -2545,18 +2550,15 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         """File · Edit · Panels · Gardens · Paths · Tools · Help. Only what has no button on screen: Live and
         Build are the header tabs, the canvas choice is the Both/Horizontal/Vertical pills, Pop out is on the
-        canvas right-click, Settings is the gear and the palette is the search button (their keys still work)."""
+        canvas right-click and each panel's ↗, Settings is the gear, the palette is the search button, the
+        selected thing's actions are its right-click menu, switching gardens and paths is the header chip,
+        Stats is the line along the bottom, Optimize and Check for updates are in Settings → General and the
+        Starter kit is on the + beside Blooms (their keys and the palette still reach them)."""
         bar = self.menuBar()
 
         file_menu = bar.addMenu("&File")
         file_menu.addAction("Open recordings folder").triggered.connect(self._open_recordings_folder)
-        plugins = file_menu.addAction("Open plugins folder")
-        plugins.triggered.connect(self._open_plugins_folder)
-        plugins.setEnabled(self.plugins_dir is not None)
-        file_menu.addAction(f"Show {COLLECTION} file").triggered.connect(lambda: self._show_garden_file())
-        file_menu.addSeparator()
         file_menu.addAction("Repot as MP4…").triggered.connect(lambda: self._ask_repot())
-        file_menu.addAction("Export report…").triggered.connect(lambda: self.export_report())
         file_menu.addSeparator()
         file_menu.addAction("Export settings…").triggered.connect(lambda: self.export_settings())
         file_menu.addAction("Import settings…").triggered.connect(lambda: self.import_settings())
@@ -2566,7 +2568,7 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
 
-        # Edit: the selected thing in Build (the same actions and shortcuts as its right-click menu).
+        # Edit: Undo and Redo. The selected thing's actions are its right-click menu (their keys work in Build).
         edit_menu = bar.addMenu("&Edit")
         undo = edit_menu.addAction("Undo")
         undo.setShortcut(QKeySequence.StandardKey.Undo)
@@ -2574,20 +2576,6 @@ class MainWindow(QMainWindow):
         redo = edit_menu.addAction("Redo")
         redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         redo.triggered.connect(self.redo)
-        edit_menu.addSeparator()
-        a = self.item_actions
-        for key in ("rename", "settings", "filters"):
-            edit_menu.addAction(a[key])
-        edit_menu.addSeparator()
-        size = edit_menu.addMenu("Size and place")
-        for key in ("fit", "fill", "stretch", "center", "reset", "uncrop"):
-            size.addAction(a[key])
-        order = edit_menu.addMenu("Order")
-        for key in ("front", "up", "down", "back"):
-            order.addAction(a[key])
-        edit_menu.addSeparator()
-        for key in ("hide", "lock", "remove"):
-            edit_menu.addAction(a[key])
 
         # Keys for things that are buttons on screen, so they need no menu.
         # (Ctrl+1 and Ctrl+2 are on the Live and Build tabs' own actions.)
@@ -2600,7 +2588,7 @@ class MainWindow(QMainWindow):
             self.addAction(action)
 
         self.docks_menu = bar.addMenu("&Panels")
-        self.stats_action = QAction("Stats", self)
+        self.stats_action = QAction("Stats", self)  # the line along the bottom; the key still opens it
         self.stats_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
         self.stats_action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         self.stats_action.triggered.connect(lambda: self.stats_strip.toggle())
@@ -2617,9 +2605,6 @@ class MainWindow(QMainWindow):
 
         tools_menu = bar.addMenu("&Tools")
         tools_menu.addAction("Get started…").triggered.connect(lambda: self.open_getting_started())
-        tools_menu.addAction("Starter kit…").triggered.connect(lambda: self.open_starter())
-        tools_menu.addSeparator()
-        tools_menu.addAction("Optimize for this PC…").triggered.connect(lambda: self.open_optimizer())
         doctor_action = tools_menu.addAction("Stream doctor…")
         doctor_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         doctor_action.triggered.connect(lambda: self._open_doctor())
@@ -2632,12 +2617,12 @@ class MainWindow(QMainWindow):
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
-        help_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
+        help_menu.addSeparator()
         help_menu.addAction("Report a problem…").triggered.connect(lambda: self.report_problem())
+        help_menu.addAction("Export report…").triggered.connect(lambda: self.export_report())
+        help_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
         help_menu.addSeparator()
-        help_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
-        help_menu.addSeparator()
         help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
 
     def _fill_plugin_tools(self) -> None:
@@ -2784,9 +2769,8 @@ class MainWindow(QMainWindow):
         show_about(self)
 
     def _fill_docks_menu(self) -> None:
-        """Each panel this screen offers (ticked when shown), Pop out, then adding web panels and Stats."""
-        self.panels.fill_menu(self.docks_menu, [self.custom_docks_action, self.reset_layout_action],
-                              after_panels=[self.stats_action])
+        """Each panel this screen offers (ticked when shown), then Web panels… and Reset panels."""
+        self.panels.fill_menu(self.docks_menu, [self.custom_docks_action, self.reset_layout_action])
 
     def _edit_custom_docks(self) -> None:
         if not custom_docks.web_engine_available():
@@ -6761,6 +6745,10 @@ class MainWindow(QMainWindow):
             ]
         commands += [
             Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
+            Command("Optimize for this PC", "Action", lambda: self.open_optimizer()),
+            Command("Starter kit", "Action", lambda: self.open_starter()),
+            Command("Check for updates", "Action", lambda: self.updater.check(manual=True)),
+            Command("Stats", "Panel", self.stats_strip.toggle, "Ctrl+Shift+S", self.stats_strip.is_open()),
             Command("Stream health", "Action", lambda: self._open_health()),
             Command("Light settings for a slower PC", "Action", lambda: self.use_light_settings()),
             Command("Ducking", "Sound", lambda: self._open_ducking()),
@@ -6792,6 +6780,10 @@ class MainWindow(QMainWindow):
         for mode, action in self.mode_actions.items():
             commands.append(Command(f"Go to {action.text().strip()}", "Mode", action.trigger,
                                     action.shortcut().toString(), self.mode == mode))
+        commands += [Command(name, group, switch, checked=on) for group, name, on, switch in self.gardens.switch_choices()]
+        if self.mode == "build":  # the selected thing's right-click actions (they work in Build)
+            commands += [Command(act.text().rstrip("…"), "Edit", act.trigger, act.shortcut().toString())
+                         for act in self.item_actions.values()]
         self._fill_add_source_menu()
         commands += self._menu_commands(self.add_source_menu, "Add")
         for menu_action in self.menuBar().actions():

@@ -324,7 +324,8 @@ def test_window_imports_a_garden_pack(window, tmp_path, monkeypatch):
     garden_menu = QMenu()
     w.gardens.fill(garden_menu, "garden")
     texts = [a.text() for a in garden_menu.actions()]
-    assert texts.index("Party\t✓") < texts.index("New…")  # the list first, a tick on the one in use
+    assert texts[0] == "New…" and not any(t.startswith("Party") for t in texts)  # switching is the header chip
+    assert ("Garden", "Party", True) in [c[:3] for c in w.gardens.switch_choices()]  # and the palette
     export = next(a.menu() for a in garden_menu.actions() if a.text() == "Export")
     assert [a.text() for a in export.actions()] == ["Just the garden…", "With its files…"]
     assert not any(a.isCheckable() for a in garden_menu.actions())

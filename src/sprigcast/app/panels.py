@@ -330,7 +330,8 @@ class Panels(QObject):
     # The Panels menu ---------------------------------------------------------------------
 
     def fill_menu(self, menu, extra_actions=(), after_panels=()) -> None:
-        """This screen's panels (a tick on the ones showing), then after_panels, Pop out, then extra_actions."""
+        """This screen's panels (a tick on the ones showing), then after_panels, then extra_actions.
+        Pop out is each panel's own ↗ button."""
         menu.clear()
         offered = [p for p in self.panels.values() if self.mode in p.modes]
         for panel in offered:
@@ -340,11 +341,6 @@ class Panels(QObject):
             action.triggered.connect(lambda _=False, k=panel.key, on=on: self._menu_toggle(k, not on))
         for action in after_panels:
             menu.addAction(action)
-        shown = [p for p in offered if self.is_shown(p.key) and not self.is_popped(p.key)]
-        if shown:
-            pop = menu.addMenu("Pop out")
-            for panel in shown:
-                pop.addAction(panel.title).triggered.connect(lambda _=False, k=panel.key: self.pop_out(k))
         menu.addSeparator()
         for action in extra_actions:
             menu.addAction(action)

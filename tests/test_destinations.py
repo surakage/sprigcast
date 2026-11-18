@@ -615,9 +615,24 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         lines = w.shortcut_lines()
         assert lines and len(lines) == len(set(lines))
         assert any("Ctrl+K" in str(line) for line in lines)
-        tools = [a.text() for a in w.menuBar().actions()[5].menu().actions() if not a.isSeparator()]
-        assert tools == ["Get started…", "Starter kit…", "Optimize for this PC…", "Stream doctor…", "Hotkeys…",
-                         "Plugin store…"]
+        def texts(i):
+            menu = w.menuBar().actions()[i].menu()
+            menu.aboutToShow.emit()
+            return [a.text() for a in menu.actions() if not a.isSeparator()]
+
+        # Only what has no other home on screen (each removed item is still reachable elsewhere).
+        assert texts(0) == ["Open recordings folder", "Repot as MP4…", "Export settings…", "Import settings…", "Quit"]
+        assert texts(1) == ["Undo", "Redo"]
+        assert texts(2)[-2:] == ["Web panels…", "Reset panels"]
+        assert "Stats" not in texts(2) and "Pop out" not in texts(2)
+        assert texts(3) == ["New…", "Duplicate…", "Rename…", "Remove", "Import", "Export", "Missing files…",
+                            "Show file"]
+        assert texts(4) == ["New…", "Duplicate…", "Rename…", "Remove", "Import…", "Export…"]
+        assert texts(5) == ["Get started…", "Stream doctor…", "Hotkeys…", "Plugin store…"]
+        assert texts(6) == ["Keyboard shortcuts", "Report a problem…", "Export report…", "Open logs folder",
+                            "About SprigCast", "Support SprigCast"]
+        palette = {c.title for c in w._palette_commands()}
+        assert {"Optimize for this PC", "Starter kit", "Check for updates", "Stats", "Main"} <= palette
         shown = []
         monkeypatch.setattr("sprigcast.app.transitions_panel.PopUp.exec", lambda self: shown.append(self))
         help_menu = w.menuBar().actions()[6].menu()
