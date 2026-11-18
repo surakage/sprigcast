@@ -107,3 +107,28 @@ def test_pointers_go_as_voidptr_when_pyside_refuses_big_ints(monkeypatch):
     assert page._start_quick(first, 640, 360) is first
     assert page.window.device == ("voidptr", 2687846546624, 7)
     assert isinstance(shiboken6.VoidPtr(1), shiboken6.VoidPtr)
+
+
+def test_the_page_texture_goes_as_a_voidptr_when_pyside_refuses_the_int():
+    from shiboken6 import VoidPtr
+
+    class RenderTarget:
+        @staticmethod
+        def fromD3D11Texture(texture, size):  # noqa: N802
+            if isinstance(texture, int):  # the PC, 2026-11-18: an int over 2^31 refused
+                raise ValueError("'fromD3D11Texture' called with wrong argument values")
+            return ("target", texture, size)
+
+    page = _page()
+    made = page._render_target(RenderTarget, 2762627897376, (600, 400))
+    assert made[0] == "target" and isinstance(made[1], VoidPtr) and int(made[1]) == 2762627897376
+
+
+def test_a_texture_no_form_fits_says_why():
+    class RenderTarget:
+        @staticmethod
+        def fromD3D11Texture(texture, size):  # noqa: N802
+            raise ValueError("no")
+
+    with pytest.raises(RuntimeError, match="can't take the page texture"):
+        _page()._render_target(RenderTarget, 5, (1, 1))

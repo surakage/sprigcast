@@ -13,7 +13,7 @@ on:
             "src/sprigcast/app/browser_helper.py", "tests/test_native_shared.py", "tests/test_native_writer.py",
             "src/sprigcast/app/browser_quick.py", "tests/test_native_page_texture.py",
             "src/sprigcast/audio/native_mixer.py", "src/sprigcast/sources/audio.py", "tests/test_native_mixer.py",
-            "tests/test_native_capture.py"]
+            "tests/test_native_capture.py", "tests/test_native_playback.py", "tests/test_native_filters.py"]
   pull_request:
     paths: ["native/core/**", ".github/workflows/core.yml", "src/sprigcast/sprigcore.py", "src/sprigcast/render/**",
             "src/sprigcast/core/filters.py", "src/sprigcast/core/scene.py", "tests/test_sprigcore.py",
@@ -22,7 +22,7 @@ on:
             "src/sprigcast/app/browser_helper.py", "tests/test_native_shared.py", "tests/test_native_writer.py",
             "src/sprigcast/app/browser_quick.py", "tests/test_native_page_texture.py",
             "src/sprigcast/audio/native_mixer.py", "src/sprigcast/sources/audio.py", "tests/test_native_mixer.py",
-            "tests/test_native_capture.py"]
+            "tests/test_native_capture.py", "tests/test_native_playback.py", "tests/test_native_filters.py"]
 
 jobs:
   build:
@@ -69,7 +69,7 @@ jobs:
           $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
           $env:PYTHONPATH = "src"
           uv run --frozen python -c "from sprigcast import sprigcore; print(sprigcore.ffmpeg_libraries()); assert sprigcore.media_ready(), 'the engine could not load FFmpeg'"
-          uv run --frozen pytest -q tests/test_native_media.py tests/test_native_writer.py tests/test_native_mixer.py tests/test_native_capture.py -rs 2>&1 | Tee-Object -FilePath media.txt
+          uv run --frozen pytest -q tests/test_native_media.py tests/test_native_writer.py tests/test_native_mixer.py tests/test_native_mixer_parity.py tests/test_native_filters.py tests/test_native_capture.py tests/test_native_playback.py -rs 2>&1 | Tee-Object -FilePath media.txt
           if ($LASTEXITCODE -ne 0) { throw "media checks failed" }
           if (Select-String -Path media.txt -Pattern "isn't built|no g\+\+" -Quiet) { throw "media checks were skipped though the DLL is built" }
       - name: Engine checks under AddressSanitizer

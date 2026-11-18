@@ -23,7 +23,7 @@ from sprigcast import sprigcore
 av = pytest.importorskip("av")
 ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "native" / "core"
-MEDIA_SOURCES = ("base.cpp", "ffmpeg.cpp", "media.cpp", "writer.cpp", "mixer.cpp", "capture.cpp")  # the parts of the engine without Direct3D
+MEDIA_SOURCES = ("base.cpp", "ffmpeg.cpp", "media.cpp", "writer.cpp", "mixer.cpp", "capture.cpp", "playback.cpp")  # the parts of the engine without Direct3D
 
 
 @pytest.fixture(scope="session")

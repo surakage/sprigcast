@@ -11,7 +11,13 @@ Microphones and desktop sounds with no filters are read by the engine too (sprig
 thread of its own pushing straight into the mix); one whose device the engine can't find goes back to Python's
 capture.
 
-SPRIGCAST_NO_NATIVE_MIXER=1 keeps Python's mixer; SPRIGCAST_NO_NATIVE_CAPTURE=1 keeps Python's capture.
+Built-in filters (gain, noise gate, compressor, limiter, invert polarity, ducking) run in the mix too; a chain with
+any other filter stays in Python. Monitoring and "Sound out" to a device are played by the engine
+(sprigcore.SoundPlayback, WASAPI on its own thread) straight from the mix: EngineMonitor.
+
+SPRIGCAST_NO_NATIVE_MIXER=1 keeps Python's mixer; SPRIGCAST_NO_NATIVE_CAPTURE=1 keeps Python's capture;
+SPRIGCAST_NO_NATIVE_FILTERS=1 runs every filter chain in Python; SPRIGCAST_NO_NATIVE_MONITOR=1 plays monitoring
+from Python.
 """
 
 from __future__ import annotations
@@ -55,6 +61,92 @@ def wanted() -> bool:
         return sprigcore.engine_choice() == "native" and sprigcore._media_lib() is not None
     except Exception:  # noqa: BLE001 (no engine: Python's mixer)
         return False
+
+
+def make_monitor(mixer, device: str | None = None):
+    """What plays monitoring (device None: the Windows default) or a mix on a named device: the engine itself when
+    it mixes, else audio/monitor.py's Monitor. Same calls either way."""
+    from sprigcast.audio.monitor import Monitor
+
+    if getattr(mixer, "native", False) and not os.environ.get("SPRIGCAST_NO_NATIVE_MONITOR"):
+        return EngineMonitor(mixer, device)
+    return Monitor(device)
+
+
+class EngineMonitor:
+    """audio/monitor.py's Monitor, played by the engine. Handed to NativeMixer.add_monitor_tap or add_tap like a
+    Monitor's write; the mixer then has the engine play that mix on the device instead of handing blocks to
+    Python. If the engine can't, a Python Monitor plays it (write goes there)."""
+
+    def __init__(self, mixer, device: str | None = None):
+        self.device = device
+        self._mixer = mixer
+        self._playback = None  # sprigcore.SoundPlayback while attached
+        self._python = None  # audio/monitor.py's Monitor, if the engine couldn't
+        self._started = False
+        self._lock = threading.Lock()
+
+    @property
+    def running(self) -> bool:
+        return self._started
+
+    @property
+    def native(self) -> bool:
+        return self._playback is not None
+
+    def start(self) -> None:
+        self._started = True
+
+    def stop(self) -> None:
+        self._started = False
+        self.detach()
+
+    def attach(self, what: int) -> bool:
+        """Play mix `what` (sprigcore.MIXER_MONITOR or a track index) in the engine. False: Python plays it."""
+        with self._lock:
+            if self._playback is not None or self._python is not None:
+                return self._playback is not None
+            try:
+                self._playback = self._mixer._engine.play(what, self.device or "")
+                return True
+            except Exception as exc:  # noqa: BLE001 (Python plays it)
+                log.warning("monitor: the engine can't play it (%s); Python plays it", exc)
+                from sprigcast.audio.monitor import Monitor
+
+                self._python = Monitor(self.device)
+                self._python.start()
+                return False
+
+    def detach(self) -> None:
+        with self._lock:
+            playback, python, self._playback, self._python = self._playback, self._python, None, None
+        if playback is not None:
+            playback.close()
+        if python is not None:
+            python.stop()
+
+    def write(self, block: np.ndarray) -> None:
+        python = self._python
+        if python is not None:
+            python.write(block)
+
+    @property
+    def status(self) -> str:
+        """As Monitor's: "off", "playing on <device>", or what is wrong."""
+        python, playback = self._python, self._playback
+        if python is not None:
+            return python.status
+        if playback is None:
+            return "off"
+        try:
+            st = playback.stats()
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {exc}"
+        if st["state"] == "playing":
+            return f"playing on {st['device']}"
+        if st["state"] == "starting":
+            return "starting"
+        return f"error: {st['error'] or st['state']}"
 
 
 def make_mixer(report: Callable[[dict[str, tuple[float, float]]], None]):
@@ -107,6 +199,16 @@ def engine_filters(chain, engine_ids: dict) -> tuple | None:
     return tuple(out)
 
 
+def _python_only(source) -> list[str]:
+    """The kinds of a sound's filters that only Python runs (for the log)."""
+    from sprigcast.core import filters as f
+
+    native = (f.GainFilter, f.NoiseGate, f.Compressor, f.Limiter, f.InvertPolarity, f.Ducking)
+    chain = getattr(source, "audio_chain", None)
+    names = [type(p).__name__ for p in getattr(chain, "processors", ()) if type(p) not in native]
+    return names or ["unknown"]
+
+
 def _python_chain(source, sound) -> object | None:
     """The filters Python runs on this sound: none when the engine runs them."""
     return None if sound.filters is not None else getattr(source, "audio_chain", None)
@@ -115,8 +217,8 @@ def _python_chain(source, sound) -> object | None:
 class _Sound:
     """One sound as the engine knows it."""
 
-    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "filters", "id", "media", "obj", "refused",
-                 "settings")
+    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "capture_said", "filters", "id", "media", "obj",
+                 "refused", "settings")
 
     def __init__(self, obj, native_id: int):
         self.obj = obj
@@ -128,6 +230,7 @@ class _Sound:
         self.capture_key: tuple | None = None  # (device, loopback) it captures
         self.capture_since = 0.0
         self.refused: tuple | None = None  # a (device, loopback) the engine couldn't find: Python captures it
+        self.capture_said = ""  # why Python or the engine captures it, as last logged
         self.filters: tuple | None = None  # the built-in filters the engine runs on it (None: Python runs its chain)
 
 
@@ -189,10 +292,17 @@ class NativeMixer:
         return all((a in source_tracks(s)) == (b in source_tracks(s)) for s in sources)
 
     def add_tap(self, callback: Callable, tracks: tuple[str, ...] = ("stream",)) -> None:
+        owner = getattr(callback, "__self__", None)
+        if isinstance(owner, EngineMonitor) and len(tracks) == 1 and tracks[0] in sprigcore.MIXER_TRACKS \
+                and owner.attach(sprigcore.MIXER_TRACKS.index(tracks[0])):
+            return  # the engine plays it on the device
         with self._lock:
             self._taps = [*self._taps, (callback, tuple(tracks))]
 
     def remove_tap(self, callback: Callable) -> None:
+        owner = getattr(callback, "__self__", None)
+        if isinstance(owner, EngineMonitor):
+            owner.detach()
         with self._lock:
             self._taps = [t for t in self._taps if t[0] != callback]
 
@@ -200,10 +310,16 @@ class NativeMixer:
         self.ducking = ducking
 
     def add_monitor_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        owner = getattr(callback, "__self__", None)
+        if isinstance(owner, EngineMonitor) and owner.attach(sprigcore.MIXER_MONITOR):
+            return  # the engine plays it on the speakers
         with self._lock:
             self._monitor_taps = [*self._monitor_taps, callback]
 
     def remove_monitor_tap(self, callback: Callable[[np.ndarray], None]) -> None:
+        owner = getattr(callback, "__self__", None)
+        if isinstance(owner, EngineMonitor):
+            owner.detach()
         with self._lock:
             self._monitor_taps = [t for t in self._monitor_taps if t != callback]
 
@@ -276,6 +392,12 @@ class NativeMixer:
         if self.ticks % LEVELS_EVERY == 0:
             self._levels(self._sounds)
             self._watch_captures(self._sounds)
+            if self.ticks % (LEVELS_EVERY * 8) == 0:
+                # the engine's own lines (captures, playback, the mixer's problems) into the log as they happen
+                try:
+                    sprigcore.drain_log()
+                except Exception as exc:  # noqa: BLE001
+                    self._problem("the engine's log", exc)
 
     def tick(self, measure: bool = True) -> None:
         """Unclocked (checks): mix one block now from what the sounds make now, as Mixer.tick does."""
@@ -384,17 +506,29 @@ class NativeMixer:
         sound.asleep = asleep
 
     def _capture(self, source, sound: _Sound, heard: dict) -> None:
-        """A microphone or desktop sound with no filters and no plugin listening: the engine reads its device."""
+        """A microphone or desktop sound with no Python-only filters and no plugin listening: the engine reads its
+        device. Which one reads it, and why, is logged each time that changes."""
         get = getattr(source, "native_capture", None)
-        key = None
-        if get is not None and not os.environ.get("SPRIGCAST_NO_NATIVE_CAPTURE") \
-                and _python_chain(source, sound) is None and getattr(source, "id", None) not in heard:
+        if get is None:
+            return
+        sid = getattr(source, "id", "?")
+        key, why = None, ""
+        if os.environ.get("SPRIGCAST_NO_NATIVE_CAPTURE"):
+            why = "SPRIGCAST_NO_NATIVE_CAPTURE is set"
+        elif _python_chain(source, sound) is not None:
+            why = "it has filters only Python has (" + ", ".join(_python_only(source)) + ")"
+        elif sid in heard:
+            why = "a plugin listens to it"
+        else:
             try:
                 key = tuple(get())
             except Exception as exc:  # noqa: BLE001 (Python captures it)
-                self._problem(f"source {getattr(source, 'id', '?')} device", exc)
+                self._problem(f"source {sid} device", exc)
+                why = f"its device couldn't be read ({exc})"
         if key is not None and key == sound.refused:
-            key = None
+            key, why = None, "the engine couldn't capture its device"
+        self._say_capture(sid, sound, f"the engine captures {key[0] or 'the Windows default'}" if key is not None
+                          else f"Python captures it: {why}")
         if key == sound.capture_key:
             return
         self._end_capture(sound, hand_back=key is None)
@@ -403,12 +537,19 @@ class NativeMixer:
         try:
             sound.capture = self._engine.capture(sound.id, key[0], key[1])
         except Exception as exc:  # noqa: BLE001 (Python captures it)
-            self._problem(f"source {getattr(source, 'id', '?')} capture", exc)
+            self._problem(f"source {sid} capture", exc)
             sound.refused = key
             source.engine_captures(False)
+            self._say_capture(sid, sound, f"Python captures it: the engine couldn't open it ({exc})")
             return
         sound.capture_key, sound.capture_since = key, time.monotonic()
         source.engine_captures(True)
+
+    @staticmethod
+    def _say_capture(sid, sound: _Sound, said: str) -> None:
+        if said != sound.capture_said:
+            sound.capture_said = said
+            log.info("sound %s: %s", sid, said)
 
     def _end_capture(self, sound: _Sound, hand_back: bool) -> None:
         if sound.capture is None:
@@ -446,6 +587,7 @@ class NativeMixer:
                          getattr(source, "id", "?"), st["error"])
                 sound.refused = sound.capture_key
                 self._end_capture(sound, hand_back=True)
+                sound.capture_said = "Python captures it: the engine couldn't capture its device"
             elif st["error"]:
                 source.status = st["error"]
 

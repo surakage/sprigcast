@@ -244,6 +244,8 @@ class _WasapiSource(Source):
         """The engine reads the device itself (on): this source's own capture closes, and opens again when off."""
         if on != self._engine_has_it:
             self._engine_has_it = on
+            log.info("audio %s: %s", self.id, "the engine reads this device; Python's capture of it closes" if on
+                     else "Python captures this device again")
             self._restart.set()
     def start(self) -> None:
         self._stop.clear()

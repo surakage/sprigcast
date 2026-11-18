@@ -23,13 +23,9 @@
 #include <thread>
 #include <vector>
 
+#include "sound_devices.h"
+
 #ifdef _WIN32
-#include <windows.h>
-#include <objbase.h>
-#include <propidl.h>
-#include <audioclient.h>
-#include <mmdeviceapi.h>
-#include <wrl/client.h>
 using Microsoft::WRL::ComPtr;
 #endif
 
@@ -40,11 +36,7 @@ constexpr auto RETRY = std::chrono::seconds(2);
 constexpr auto DEFAULT_CHECK = std::chrono::seconds(2);
 const std::wstring TEST_TONE = L"sprigcast-test-tone";
 
-std::string narrow(const std::wstring &text) {
-    std::string out;
-    for (wchar_t c : text) out += (c > 0 && c < 128) ? static_cast<char>(c) : '?';
-    return out;
-}
+using sc::sound::narrow;
 
 // Interleaved frames of any channel count and rate -> 48 kHz stereo (front left and right; mono doubled).
 struct Converter {
@@ -199,31 +191,9 @@ struct sc_capture {
         return found;
     }
 
-    static std::wstring friendly(IMMDevice *one) {
-        // PKEY_Device_FriendlyName, spelled out so no header has to define it here.
-        static const PROPERTYKEY key = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}},
-                                        14};
-        ComPtr<IPropertyStore> store;
-        if (FAILED(one->OpenPropertyStore(STGM_READ, &store))) return L"";
-        PROPVARIANT value;
-        PropVariantInit(&value);
-        std::wstring out;
-        if (SUCCEEDED(store->GetValue(key, &value)) && value.vt == VT_LPWSTR && value.pwszVal) out = value.pwszVal;
-        PropVariantClear(&value);
-        return out;
-    }
+    static std::wstring friendly(IMMDevice *one) { return sc::sound::friendly(one); }
 
-    std::wstring default_id(IMMDeviceEnumerator *devices) {
-        ComPtr<IMMDevice> now;
-        if (FAILED(devices->GetDefaultAudioEndpoint(loopback ? eRender : eCapture, eConsole, &now))) return L"";
-        LPWSTR raw = nullptr;
-        std::wstring out;
-        if (SUCCEEDED(now->GetId(&raw)) && raw) {
-            out = raw;
-            CoTaskMemFree(raw);
-        }
-        return out;
-    }
+    std::wstring default_id(IMMDeviceEnumerator *devices) { return sc::sound::default_id(devices, loopback); }
 
     // One session with one device, until it goes away, the default moves or stop. Returns false when it couldn't
     // start (then the caller waits before trying again).
