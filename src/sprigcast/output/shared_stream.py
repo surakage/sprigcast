@@ -139,6 +139,19 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
             log.info("shared stream %s: auto-pilot bitrate %d kbps", self.canvas_id, kbps)
             self._want_kbps = kbps
 
+    def _writer_before(self, writer) -> None:
+        """The engine's writer encodes (packets mode): the bitrate steered here goes to it before the next picture."""
+        self._steer()
+        if self._want_kbps != self._applied_kbps:
+            k = self._want_kbps
+            peak, buffer = rate_limits(self.codec, self.encoder, k)
+            try:
+                writer.set_bitrate(k, peak or 0, buffer or 0)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("shared stream: couldn't change the bitrate to %d kbps: %s", k, exc)
+            self._applied_kbps = k
+        super()._writer_before(writer)
+
     def _write_video(self, container, stream, frame, pts: int | None = None) -> None:
         self._steer()
         if self._want_kbps != self._applied_kbps:

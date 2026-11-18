@@ -1047,6 +1047,7 @@ class Recorder:
     # The engine's own writer (native/core/src/writer.cpp) ----------------------------------------------------
 
     allow_writer = True  # outputs that write somewhere of their own (a stream, a replay buffer) turn it off
+    packets_mode = False  # the writer only encodes: its packets come back here (_writer_after, output/replay.py)
     writer = None  # the sprigcore.Writer this recording goes through, while it does
 
     def uses_writer(self) -> bool:
@@ -1055,6 +1056,8 @@ class Recorder:
         takes frames on the card). Encoding then never holds Python's lock: x264, AMF and Quick Sync recordings
         stop competing with the window and the render thread for it."""
         if not self.allow_writer or os.environ.get("SPRIGCAST_NO_WRITER"):
+            return False
+        if self.packets_mode and os.environ.get("SPRIGCAST_NO_PACKET_WRITER"):
             return False
         from sprigcast import sprigcore
 
@@ -1080,8 +1083,14 @@ class Recorder:
         from sprigcast import sprigcore
         from sprigcast.output.replay import FRAGMENTED
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        muxing = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else None
+        packets = self.packets_mode
+        if packets:
+            target = self._streams_file()
+            muxing = None
+        else:
+            target = str(self.path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            muxing = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else None
         titles = [self.track_titles.get(t, t.title()) for t in self.tracks] if len(self.tracks) > 1 else None
         device = self._card_device()
         if self.uses_direct() and device is None:
@@ -1090,12 +1099,13 @@ class Recorder:
         writer = None
         try:
             writer = sprigcore.Writer(
-                str(self.path), self.codec, self.out_width, self.out_height, fps=self.fps,
+                target, self.codec, self.out_width, self.out_height, fps=self.fps,
                 video_kbps=self.bitrate_kbps, keyframe_frames=self.fps * (self.encoder.keyint_sec or 2),
                 video_options=self._video_options(), audio_tracks=len(self.tracks),
                 audio_kbps=self.encoder.audio_kbps, container=CONTAINERS[self.container_kind],
                 queue_frames=WRITER_QUEUE, container_options=muxing, track_titles=titles,
-                b_frames=max(0, min(4, self.encoder.b_frames)), device=device.value if device else None)
+                b_frames=max(0, min(4, self.encoder.b_frames)), device=device.value if device else None,
+                packets=packets)
             stats = self._writer_opened(writer)
             why = stats.error_text if stats.state_name == "failed" else ""
         except Exception as exc:  # noqa: BLE001 - PyAV records it instead
@@ -1113,23 +1123,32 @@ class Recorder:
                  self.out_height, self.fps, ", frames on the graphics card" if writer.on_card else "")
         self._opening = False
         self._opened.set()
+        # Packets come back while it runs: taken often, so a stream sends them without a wait of its own.
+        idle = 0.01 if packets else 0.05
         try:
             while True:
                 stopping = self._stop.is_set()
+                self._writer_before(writer)
                 self._writer_audio(writer)
                 try:
-                    pts, frame = self._video.get(timeout=0.05)
+                    pts, frame = self._video.get(timeout=idle)
                 except queue.Empty:
                     self._writer_numbers(writer)
+                    self._writer_after(writer)
                     if stopping:
                         break
                     continue
                 self._writer_video(writer, frame, pts if isinstance(pts, range) else range(pts, pts + 1))
                 self._writer_numbers(writer)
+                self._writer_after(writer)
             self._writer_audio(writer)
             writer.finish()
-            if not writer.wait(WRITER_FINISH_S):
-                raise RuntimeError(f"the file wasn't finished within {WRITER_FINISH_S:.0f} s")
+            deadline = time.monotonic() + WRITER_FINISH_S
+            while not writer.wait(0.05 if packets else WRITER_FINISH_S):
+                self._writer_after(writer)  # its last packets: taken while it finishes, or it waits on them
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"the file wasn't finished within {WRITER_FINISH_S:.0f} s")
+            self._writer_after(writer)
             stats = self._writer_numbers(writer)
             if stats.state_name == "failed":
                 raise RuntimeError(stats.error_text or "the engine's writer failed")
@@ -1137,7 +1156,29 @@ class Recorder:
             self._let_go_of_frames()
             self.writer = None
             writer.close()
+            if packets:
+                self._writer_closed()
         return True
+
+    def _streams_file(self) -> str:
+        """Packets mode: where the writer puts its streams' file (codec headers, read by _writer_after)."""
+        import tempfile
+
+        fd, path = tempfile.mkstemp(prefix="sprigcast-streams-", suffix=".nut")
+        os.close(fd)
+        return path
+
+    def _writer_before(self, writer) -> None:
+        """Each turn of the writer loop, before its frames: a keyframe asked for goes to the writer."""
+        if self._force_key:
+            self._force_key = False
+            writer.keyframe()
+
+    def _writer_after(self, writer) -> None:
+        """Hook, each turn of the writer loop: packets mode takes the encoded packets here (output/replay.py)."""
+
+    def _writer_closed(self) -> None:
+        """Hook: packets mode, once the writer is gone (its packets all taken)."""
 
     linked = False  # the native engine hands this recording's frames to its writer itself (link_writer)
 
@@ -1256,8 +1297,9 @@ class Recorder:
             if self._counts_drops():
                 self.dropped += lost
         self.bytes_out = int(stats.bytes)
-        self.mux_seconds = float(stats.write_seconds)
-        self.longest_stall = float(stats.longest_write)
+        if not self.packets_mode:  # in packets mode, writing them out is timed here (ReplayBuffer._take)
+            self.mux_seconds = float(stats.write_seconds)
+            self.longest_stall = float(stats.longest_write)
         self.peak_queue = max(self.peak_queue, int(stats.queued) + self._video.qsize())
         if stats.state_name == "failed":
             raise RuntimeError(stats.error_text or "the engine's writer failed")

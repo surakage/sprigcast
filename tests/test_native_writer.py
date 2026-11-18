@@ -264,3 +264,56 @@ def test_a_video_encoder_that_fails_once_starts_again_and_the_file_goes_on(playe
     assert stats.state_name == "failed" and "deliberate fault" in stats.error_text and stats.recoveries == 1
     with av.open(str(path)) as f:  # ended cleanly: what was written before plays
         assert 25 <= sum(1 for _ in f.decode(video=0)) <= 31
+
+
+@pytest.mark.parametrize("fault", ["", "40"])
+def test_packets_mode_encodes_and_hands_the_packets_over(player_lib, tmp_path, monkeypatch, fault):  # noqa: F811
+    """Packets mode: the engine encodes, the caller muxes (a stream, clips, a recording from the same packets). The
+    header file's streams carry the codec headers; a keyframe asked for comes next; the bitrate can change. An
+    encoder started again after a failure (fault) puts its headers in its keyframes: the packets still play."""
+    if fault:
+        monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", fault)
+    header = tmp_path / "streams.nut"
+    writer = sprigcore.Writer(str(header), "libx264", W, H, fps=30,
+                              video_options={"preset": "ultrafast", "forced-idr": "1"},
+                              keyframe_frames=300, audio_tracks=2, queue_frames=120, packets=True)
+    packets = []
+    try:
+        for n in range(60):
+            if n == 30:
+                writer.keyframe()
+                writer.set_bitrate(300, 300, 600)
+            assert writer.video(nv12(16 + 3 * n), n) == sprigcore.SC_OK
+            for track in (0, 1):
+                writer.audio(np.zeros((1600, 2), np.float32), track)
+            while (p := writer.take_packet()) is not None:
+                packets.append(p)
+        stats = finished(writer)
+        while (p := writer.take_packet()) is not None:
+            packets.append(p)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == (1 if fault else 0)
+    video = [p for p in packets if p[0] == 0]
+    assert len(video) == 60 and {p[0] for p in packets} == {0, 1, 2}
+    keys = [p[2] for p in video if p[1]]
+    assert keys[0] == 0 and 30 in keys  # the first picture, and the one asked for
+    if fault:
+        assert 40 in keys  # the new encoder starts on a keyframe
+    assert stats.bytes == sum(len(p[5]) for p in packets)
+    from fractions import Fraction
+
+    path = tmp_path / "muxed.mkv"
+    with av.open(str(header)) as probe, av.open(str(path), "w") as out:
+        assert probe.streams.video[0].codec_context.extradata and len(probe.streams.audio) == 2
+        streams = [out.add_stream_from_template(s) for s in (probe.streams.video[0], *probe.streams.audio)]
+        for track, key, pts, dts, tb, data in packets:
+            packet = av.Packet(data)
+            packet.pts, packet.dts, packet.time_base = pts, dts, Fraction(*tb)
+            packet.is_keyframe = key
+            packet.stream = streams[track]
+            out.mux(packet)
+    with av.open(str(path)) as f:
+        lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+    assert len(lumas) == 60 and abs(lumas[59] - (16 + 3 * 59)) <= 4

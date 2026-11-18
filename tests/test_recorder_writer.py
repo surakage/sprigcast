@@ -109,7 +109,8 @@ def test_only_files_on_the_native_engine_use_it(native, monkeypatch, tmp_path):
     from sprigcast.output.replay import ReplayBuffer
     from sprigcast.output.stream import Streamer
 
-    assert not ReplayBuffer.allow_writer and not Streamer.allow_writer and recorder_module.Recorder.allow_writer
+    assert not Streamer.allow_writer and recorder_module.Recorder.allow_writer
+    assert ReplayBuffer.packets_mode and not recorder_module.Recorder.packets_mode  # its packets come back
 
 
 class _LinkEngine:
