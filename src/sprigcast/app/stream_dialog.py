@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -537,17 +537,21 @@ class StreamPage(QWidget):
         can_sign_in = service_signin.available(output.service or "")
         self.signin_row.setVisible(can_sign_in)
         self.signin_label.setVisible(can_sign_in)
-        if can_sign_in:
-            signed_in = bool(output.account)
-            self.signin_state.setText(f"Signed in as {output.account}" if signed_in else "Not signed in")
-            self.sign_in_button.setText("Sign out" if signed_in else "Sign in")
-            self.sign_in_button.setToolTip("Forget this account and its stream key" if signed_in
+        if can_sign_in:  # signing out is under Accounts only; signed in there, the key comes without a sign-in
+            from sprigcast.output import stream_details
+
+            central = stream_details.account(output.service or "")
+            name = central or output.account
+            self.signin_state.setText(f"Signed in as {name}" if name else "Not signed in")
+            self.sign_in_button.setText("Get key" if central else "Sign in")
+            self.sign_in_button.setToolTip("Fill in the stream key from your account" if central
                                            else "Sign in to fill in the stream key")
         if not can_sign_in or output.id != self._error_for:
             self.signin_error.hide()
         if is_twitch:
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
-            self.twitch_button.setText("Disconnect Account" if account else "Connect Account (recommended)")
+            self.twitch_button.setText("Connect Account (recommended)")
+            self.twitch_button.setVisible(not account)  # signing out is under Accounts only
 
     def _card_text(self, output: Output) -> str:
         return f"{NEW_PLACE}\n{PICK_SERVICE}" if output.id in self._unpicked else place_card_text(output)
@@ -636,12 +640,7 @@ class StreamPage(QWidget):
         output = self._current()
         if output is None:
             return
-        if twitch_auth.connected_account():
-            try:
-                twitch_auth.disconnect()
-            except Exception as exc:
-                QMessageBox.warning(self, "SprigCast", f"Could not remove the Twitch sign-in:\n{exc}")
-            self.use_account.setChecked(False)
+        if twitch_auth.connected_account():  # signing out is under Accounts only
             self._show_service(output)
             return
         from sprigcast.app.twitch_connect import TwitchConnectDialog
@@ -674,22 +673,18 @@ class StreamPage(QWidget):
         return self.keys[ref]
 
     def _sign_in_clicked(self) -> None:
-        """YouTube or Kick: sign in once, fill in the key (and Kick's server); signed in, sign out."""
+        """YouTube or Kick: fill in the key (and Kick's server). Signed in under Accounts, straight from the account;
+        otherwise sign in once, which signs in Accounts too."""
         output = self._current()
         if output is None:
             return
-        if output.account:  # Sign out: forget who it was and the key it fetched
-            log.info("sign-in: %s place signed out", output.service)
-            output.account = ""
-            self.key.setText("")
-            self.signin_error.hide()
-            self._edited()
-            return
         from sprigcast.app.signin_dialog import SignInDialog
-
-        from sprigcast.output import service_signin
+        from sprigcast.output import service_signin, stream_details
 
         vertical = output.service == "youtube" and output.canvas == "vertical"  # its own key for Dual stream
+        if stream_details.account(output.service or ""):
+            self._key_from_account(output, vertical)
+            return
         extra = {"begin": lambda s: service_signin.begin(s, vertical=True)} if vertical else {}
         dialog = SignInDialog(output.service or "", self, **extra)
         try:
@@ -703,6 +698,9 @@ class StreamPage(QWidget):
                 self.signin_error.setText(error)
                 self.signin_error.show()
             return
+        self._use_fetched(output, fetched)
+
+    def _use_fetched(self, output: Output, fetched) -> None:
         self._error_for = ""
         self.signin_error.hide()
         output.account = fetched.account
@@ -710,6 +708,46 @@ class StreamPage(QWidget):
         if fetched.server and not self.server.isReadOnly():
             self.server.setText(fetched.server)
         self._edited()
+
+    def _key_from_account(self, output: Output, vertical: bool) -> None:
+        """On a worker: the key through the signed-in account. The answer is picked up on the UI thread."""
+        import threading
+
+        from sprigcast.output import service_signin
+
+        box: dict = {}
+
+        def work() -> None:  # no Qt in here
+            try:
+                box["fetched"] = service_signin.key_from_account(output.service or "", vertical)
+            except Exception as exc:  # noqa: BLE001 (worded for the person, or a plain note)
+                box["error"] = str(exc) if isinstance(exc, service_signin.SignInError) else "Couldn't get the key."
+                if not isinstance(exc, service_signin.SignInError):
+                    log.warning("sign-in: %s key from the account failed", output.service, exc_info=True)
+
+        self.sign_in_button.setEnabled(False)
+        thread = threading.Thread(target=work, name="destination-key", daemon=True)
+        thread.start()
+        timer = QTimer(self)
+        timer.setInterval(100)
+
+        def check() -> None:
+            if thread.is_alive():
+                return
+            timer.stop()
+            timer.deleteLater()
+            self.sign_in_button.setEnabled(True)
+            if self._current() is not output:
+                return  # another place is showing now
+            if "fetched" in box:
+                self._use_fetched(output, box["fetched"])
+            else:
+                self._error_for = output.id
+                self.signin_error.setText(box.get("error", "Couldn't get the key."))
+                self.signin_error.show()
+
+        timer.timeout.connect(check)
+        timer.start()
 
     # Result ------------------------------------------------------------------------
 

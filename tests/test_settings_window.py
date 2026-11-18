@@ -223,7 +223,7 @@ def test_clip_length_shapes_and_ready_on_open(app):
 def test_settings_look_titles_pills_and_pages(app):
     from sprigcast.app.settings_window import ABOUT, TABS
 
-    assert TABS == ["General", "Stream", "Recording", "Audio", "Video", "Connections"]
+    assert TABS == ["General", "Stream", "Accounts", "Recording", "Audio", "Video", "Connections"]
     w = _window(_collection(), tab="Stream/Quality")
     assert set(ABOUT) == set(TABS) and w.objectName() == "settingsWindow"
     assert [b.text() for b in (w.cancel_button, w.apply_button, w.save_button)] == ["Cancel", "Apply", "Save"]

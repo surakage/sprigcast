@@ -332,3 +332,28 @@ def _kick_rest(flow: Flow, code: str) -> Fetched:
 
 
 SIGN_IN = {"youtube": youtube, "kick": kick}
+
+
+def key_from_account(service: str, vertical: bool = False) -> Fetched:
+    """The stream key (and Kick's server) through the account signed in under Accounts: no new sign-in.
+    Worker thread. Raises SignInError, worded for the person."""
+    from sprigcast.output import stream_details
+
+    def call(token: str) -> Fetched:
+        if service == "youtube":
+            account = _youtube_channel(token).get("title", "YouTube")
+            return Fetched(account=account, key=_youtube_key(token, vertical))
+        channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
+        channel = channels[0] if channels else {}
+        stream = channel.get("stream") or {}
+        if not stream.get("key"):
+            raise SignInError("Kick didn't share the stream key. Sign out under Accounts and sign in again.")
+        slug = str(channel.get("slug") or "Kick")
+        return Fetched(account=slug, key=stream["key"], server=str(stream.get("url") or ""))
+
+    try:
+        fetched = stream_details._with_token(service, call)
+    except stream_details.DetailsError as exc:
+        raise SignInError(str(exc)) from exc
+    log.info("sign-in: %s key read through the signed-in account", service)
+    return fetched

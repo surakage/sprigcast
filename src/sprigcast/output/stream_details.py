@@ -300,9 +300,9 @@ def _twitch(call):
     cid = twitch_auth.client_id()
     tokens = twitch_auth._load()
     if not tokens:
-        raise NeedsSignIn("Connect Twitch to change your stream details.")
+        raise NeedsSignIn("Sign in to Twitch to change your stream details.")
     if TWITCH_SCOPE not in (tokens.get("scope") or []):
-        raise NeedsSignIn("Reconnect Twitch once so SprigCast may change your stream details.")
+        raise NeedsSignIn("Sign in to Twitch again once (Settings → Accounts), so SprigCast may change your stream details.")
     try:
         if time.time() >= float(tokens.get("expires_at", 0)):
             tokens = twitch_auth._refresh(tokens, cid)
@@ -314,7 +314,7 @@ def _twitch(call):
     except twitch_auth.TwitchAuthError as exc:
         raise NeedsSignIn(str(exc)) from exc
     except PermissionError as exc:
-        raise NeedsSignIn("Reconnect Twitch in Settings → Stream.") from exc
+        raise NeedsSignIn("Sign in to Twitch again in Settings → Accounts.") from exc
 
 
 def _helix(method: str, path: str, token: str, cid: str, body: dict | None = None) -> dict:

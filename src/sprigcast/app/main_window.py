@@ -676,18 +676,16 @@ class MainWindow(QMainWindow):
             panel.hub.want("source", any(s.kind == "chat" for s in self.collection.sources))
 
     def _connect_twitch(self) -> None:
-        from sprigcast.app.twitch_connect import TwitchConnectDialog
+        from sprigcast.app.accounts_page import open_accounts
 
-        modal(TwitchConnectDialog(self))  # the Chat panel hears about the new account itself
+        open_accounts(self)  # the one place to sign in; the Chat panel hears about the new account itself
 
     def open_stream_details(self) -> None:
         """Stream details: title, category and the rest, saved straight to Twitch, YouTube and Kick."""
         from sprigcast.app.stream_details_dialog import StreamDetailsDialog, places_for
-        from sprigcast.app.twitch_connect import TwitchConnectDialog
 
         streams = [o for o in self.collection.outputs if o.type == "stream"]  # in the order you set on Live
-        modal(StreamDetailsDialog(self, places_for(streams),
-                                  connect_twitch=lambda parent: modal(TwitchConnectDialog(parent))))
+        modal(StreamDetailsDialog(self, places_for(streams)))
 
     def _build_transitions_dock(self) -> None:
         from sprigcast.app.transitions_panel import TransitionsPanel
