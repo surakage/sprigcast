@@ -392,9 +392,33 @@ def test_frames_keep_coming_while_the_encoder_opens_again(player_lib, tmp_path, 
     finally:
         writer.close()
     assert stats.state_name == "finished", stats.error_text
-    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated > 5
+    # While it opens, more pictures than queue_frames wait (PC 2026-11-18: a 0.4 s still before): every frame is
+    # its own picture, none a repeat.
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated == 0
     assert stats.frames_written == 60
     with av.open(str(path)) as f:
-        assert sum(1 for _ in f.decode(video=0)) >= 59
+        lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+    assert len(lumas) >= 59 and all(b > a for a, b in zip(lumas[12:], lumas[13:]))  # moving through the reopen
     sprigcore.drain_log()
-    assert any("goes on from memory (opened again in" in r.getMessage() for r in caplog.records)
+    assert any("goes on from memory (opened again in" in r.getMessage() and "while the old one finished in"
+               in r.getMessage() for r in caplog.records)
+
+
+def test_a_very_long_reopen_still_holds_the_newest_picture(player_lib, tmp_path, monkeypatch):  # noqa: F811
+    """Past the reopen room (90 pictures at most), the newest picture stands for the frames that come, as before:
+    a short still, never a hole."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "5")
+    monkeypatch.setenv("SPRIGCAST_WRITER_REOPEN_MS", "2000")
+    path = tmp_path / "long.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=60, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        for n in range(150):
+            assert writer.video(nv12(16 + n), n) == sprigcore.SC_OK
+            time.sleep(1 / 60)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated > 0
+    assert stats.frames_written == 150
