@@ -11,7 +11,7 @@ adds the secret. With no Client ID the sign-in isn't offered and the key is past
 
 YouTube: Google Cloud project, YouTube Data API v3 on, OAuth client of type "Desktop app"; scope
 `youtube` (listing and, when there is none, making a reusable stream key). Kick: kick.com → Settings →
-Developer → Create app, redirect URL exactly REDIRECT below; scopes user:read channel:read streamkey:read.
+Developer → Create app, redirect URL exactly REDIRECT below; scopes user:read channel:read channel:write streamkey:read.
 """
 
 from __future__ import annotations
@@ -54,8 +54,10 @@ YOUTUBE_SCOPE = "https://www.googleapis.com/auth/youtube"
 
 KICK_AUTH = "https://id.kick.com/oauth/authorize"
 KICK_API = "https://api.kick.com/public/v1"
-KICK_SCOPES = "user:read channel:read streamkey:read"
-KICK_DETAILS_SCOPES = "user:read channel:read channel:write"  # Stream details: change the title and category
+# One Kick sign-in serves the destination (stream key) and Stream details (title, category, tags).
+KICK_SCOPES = "user:read channel:read channel:write streamkey:read"
+KICK_DETAILS_SCOPES = KICK_SCOPES
+CHAT_NAMES = "chat/names"  # QSettings, as app/chat_panel.NAMES: the channels the Chat panel reads
 KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this one
 KICK_REDIRECT = f"http://localhost:{KICK_PORT}/callback"
 
@@ -141,7 +143,8 @@ class Flow:
 def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
     """Start a sign-in: read the Client ID and open the loopback server. Run it on the UI thread.
 
-    keep: for Stream details, which stays signed in (asks for a refresh token and permission to edit)."""
+    Every sign-in stays signed in for Stream details and names your channel for chat; keep: Stream details
+    only (no stream key is read)."""
     cid = setting(f"{service}/client_id")
     label = {"youtube": "YouTube", "kick": "Kick"}[service]
     if not cid:
@@ -151,14 +154,14 @@ def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
         waiter = Waiter(free_port(), label="YouTube")
         params = {"client_id": cid, "redirect_uri": waiter.url, "response_type": "code", "scope": YOUTUBE_SCOPE,
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state,
-                  "prompt": "select_account"}
-        if keep:  # Google hands a refresh token only to an offline sign-in, and only with consent shown
-            params.update(access_type="offline", prompt="consent select_account")
+                  # One sign-in for the key and Stream details: Google hands a refresh token only to an
+                  # offline sign-in, and only with consent shown.
+                  "access_type": "offline", "prompt": "consent select_account"}
         auth = YOUTUBE_AUTH
     else:
         waiter = Waiter(KICK_PORT, host="localhost", label="Kick")
         params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url,
-                  "scope": KICK_DETAILS_SCOPES if keep else KICK_SCOPES,
+                  "scope": KICK_SCOPES,
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state}
         auth = KICK_AUTH
     try:
@@ -190,29 +193,69 @@ def _keep_rest(flow: Flow, code: str) -> Fetched:
     reply = _swap(flow.service, code, flow.verifier, flow.waiter.url, who, keep=True)
     token = reply["access_token"]
     if flow.service == "youtube":
-        channels = get_json(f"{YOUTUBE_API}/channels?part=snippet&mine=true", token, "YouTube").get("items") or []
-        if not channels:
-            raise SignInError("That Google account has no YouTube channel yet.")
-        account = channels[0]["snippet"].get("title", "YouTube")
+        snippet = _youtube_channel(token)
+        account, chat = snippet.get("title", "YouTube"), str(snippet.get("customUrl") or "")
     else:
         channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
-        account = str((channels[0] if channels else {}).get("slug") or "Kick")
+        chat = str((channels[0] if channels else {}).get("slug") or "")
+        account = chat or "Kick"
     try:
         stream_details.save_tokens(flow.service, reply, account)
     except stream_details.DetailsError as exc:
         raise SignInError(str(exc)) from exc
+    _name_chat(flow.service, chat)
     return Fetched(account=account, key="")
 
 
-def _youtube_rest(flow: Flow, code: str) -> Fetched:
-    token = _swap("youtube", code, flow.verifier, flow.waiter.url, "Google")["access_token"]
-    log.info("sign-in: youtube token received")
+def _youtube_channel(token: str) -> dict:
     channels = get_json(f"{YOUTUBE_API}/channels?part=snippet&mine=true", token, "YouTube").get("items") or []
     if not channels:
         raise SignInError("That Google account has no YouTube channel yet.")
-    account = channels[0]["snippet"].get("title", "YouTube")
+    return channels[0].get("snippet") or {}
+
+
+def _keep(service: str, reply: dict, account: str, chat: str) -> None:
+    """A destination's sign-in signs Stream details in too and names your chat. Never fails the key."""
+    from sprigcast.output import stream_details
+
+    try:
+        stream_details.save_tokens(service, reply, account)
+    except Exception:  # noqa: BLE001 - the key is what this sign-in is for; Stream details can sign in itself
+        log.info("sign-in: %s key fetched, but the sign-in wasn't kept for stream details", service, exc_info=True)
+    _name_chat(service, chat)
+
+
+def _name_chat(service: str, name: str) -> None:
+    """Chat reads this channel from now on, unless you typed one for it yourself."""
+    if not name:
+        return
+    try:
+        import json
+
+        from PySide6.QtCore import QSettings
+
+        settings = QSettings()
+        try:
+            names = json.loads(str(settings.value(CHAT_NAMES, "") or "{}"))
+        except ValueError:
+            names = {}
+        if not isinstance(names, dict) or names.get(service):
+            return
+        names[service] = name
+        settings.setValue(CHAT_NAMES, json.dumps(names))
+        log.info("sign-in: %s chat follows the signed-in channel", service)
+    except Exception:  # noqa: BLE001
+        log.info("sign-in: couldn't name the %s chat", service, exc_info=True)
+
+
+def _youtube_rest(flow: Flow, code: str) -> Fetched:
+    reply = _swap("youtube", code, flow.verifier, flow.waiter.url, "Google", keep=True)
+    token = reply["access_token"]
+    log.info("sign-in: youtube token received")
+    snippet = _youtube_channel(token)
+    account = snippet.get("title", "YouTube")
     key = _youtube_key(token, flow.vertical)
-    _revoke("youtube", "https://oauth2.googleapis.com/revoke", {"token": token})
+    _keep("youtube", reply, account, str(snippet.get("customUrl") or ""))
     return Fetched(account=account, key=key)
 
 
@@ -267,7 +310,8 @@ def kick(cancelled: threading.Event | None = None, open_url: Callable[[str], obj
 
 
 def _kick_rest(flow: Flow, code: str) -> Fetched:
-    token = _swap("kick", code, flow.verifier, flow.waiter.url, "Kick")["access_token"]
+    reply = _swap("kick", code, flow.verifier, flow.waiter.url, "Kick", keep=True)
+    token = reply["access_token"]
     log.info("sign-in: kick token received")
     try:
         channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
@@ -282,23 +326,9 @@ def _kick_rest(flow: Flow, code: str) -> Fetched:
     stream = channel.get("stream") or {}
     if not stream.get("key"):
         raise SignInError("Kick didn't share the stream key. Sign in again and allow it.")
-    _revoke("kick", f"https://id.kick.com/oauth/revoke?{urllib.parse.urlencode({'token': token})}", {})
-    return Fetched(account=str(channel.get("slug") or "Kick"), key=stream["key"], server=str(stream.get("url") or ""))
+    slug = str(channel.get("slug") or "")
+    _keep("kick", reply, slug or "Kick", slug)
+    return Fetched(account=slug or "Kick", key=stream["key"], server=str(stream.get("url") or ""))
 
 
 SIGN_IN = {"youtube": youtube, "kick": kick}
-
-
-def _revoke(service: str, url: str, fields: dict) -> None:
-    """Throw the sign-in away: SprigCast kept only the key. Best effort.
-    Not while Stream details keeps a sign-in for the same service: Google (and maybe Kick) revoke the whole
-    grant, which would end that sign-in too. The unrevoked token simply runs out within hours."""
-    from sprigcast.output import stream_details
-
-    if stream_details.account(service):
-        log.info("sign-in: %s kept, Stream details is signed in with it too", service)
-        return
-    try:
-        post_form(url, fields, "the service")
-    except SignInError:
-        pass

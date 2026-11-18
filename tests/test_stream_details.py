@@ -455,7 +455,7 @@ def test_keeping_a_sign_in_asks_for_offline_access_and_edit_permission(monkeypat
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(yt.url).query)
     assert query["access_type"] == ["offline"] and "consent" in query["prompt"][0] and yt.keep
     plain = urllib.parse.parse_qs(urllib.parse.urlsplit(service_signin.begin("youtube").url).query)
-    assert "access_type" not in plain
+    assert plain["access_type"] == ["offline"]  # one sign-in: the destination's keeps Stream details too
     kick = urllib.parse.parse_qs(urllib.parse.urlsplit(service_signin.begin("kick", keep=True).url).query)
     assert "channel:write" in kick["scope"][0].split()
 

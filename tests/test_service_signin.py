@@ -73,7 +73,8 @@ def test_youtube_reads_the_channel_and_a_reusable_key(ids, monkeypatch):
     assert url == service_signin.HELPER_URL  # the helper adds the secret: none in the app
     assert token_call["service"] == "youtube" and token_call["code"] == "abc" and token_call["code_verifier"]
     assert "client_secret" not in token_call and token_call["redirect_uri"] == seen["redirect_uri"]
-    assert posts[-1][0].endswith("/revoke")  # only the key is kept
+    assert token_call["keep"] == "1" and seen["access_type"] == "offline"  # one sign-in: Stream details too
+    assert not any(url.endswith("/revoke") for url, _ in posts)  # Google would end the whole grant
 
 
 def test_kick_reads_server_and_key_on_its_fixed_redirect(ids, monkeypatch):
@@ -211,14 +212,29 @@ def test_the_helper_isnt_asked_again_after_a_refusal(monkeypatch):
     assert reply["error"] == "invalid_grant" and len(seen) == 1
 
 
-def test_a_destination_sign_in_leaves_the_stream_details_sign_in_alone(monkeypatch):
-    """Google revokes the whole grant: revoking the destination's token would end Stream details' sign-in."""
+def test_one_destination_sign_in_also_signs_in_stream_details_and_names_chat(ids, monkeypatch):
+    import json
+
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app.chat_panel import NAMES
     from sprigcast.output import stream_details
 
-    posts = []
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append(url) or {})
-    monkeypatch.setattr(stream_details, "account", lambda service: "Sloth Bloom" if service == "youtube" else "")
-    service_signin._revoke("youtube", "https://oauth2.googleapis.com/revoke", {"token": "t"})
-    assert posts == []
-    service_signin._revoke("kick", "https://id.kick.com/oauth/revoke?token=t", {})
-    assert posts == ["https://id.kick.com/oauth/revoke?token=t"]  # nothing kept for Kick: thrown away
+    assert service_signin.CHAT_NAMES == NAMES
+    QSettings().setValue(NAMES, json.dumps({"twitch": "sloth"}))
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: {
+        "access_token": "tok", "refresh_token": "ref", "expires_in": 3600})
+    monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"data": [
+        {"slug": "slothbloom", "stream": {"url": "rtmps://ingest.kick/app", "key": "sk_1"}}]})
+    open_url, seen = _browser()
+    service_signin.kick(open_url=open_url)
+    assert "channel:write" in seen["scope"] and "streamkey:read" in seen["scope"]
+    assert stream_details.account("kick") == "slothbloom"
+    assert json.loads(stream_details.get_key(stream_details.TOKEN_REF["kick"]))["refresh_token"] == "ref"
+    assert json.loads(QSettings().value(NAMES)) == {"twitch": "sloth", "kick": "slothbloom"}
+    QSettings().setValue(NAMES, json.dumps({"kick": "mine"}))
+    service_signin.kick(open_url=_browser()[0])
+    assert json.loads(QSettings().value(NAMES)) == {"kick": "mine"}  # a channel you typed stays
+    stream_details._remember("kick", "")
+    stream_details.set_key(stream_details.TOKEN_REF["kick"], "")
+    QSettings().remove(NAMES)
