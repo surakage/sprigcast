@@ -192,6 +192,25 @@ def inside_package() -> str:
     return ""
 
 
+# The parts of PyAV the media, camera, recording, replay and stream threads use. Imported here, on the main
+# thread, before any of them starts: when two threads import PyAV at the same moment, Python hands one of them the
+# half-made module ("partially initialized module 'av.video.reformatter'", "no attribute 'formats_available'",
+# "Cannot convert AudioFrame to Frame") and everything that records or plays breaks until a restart.
+AV_MODULES = ("av", "av.logging", "av.audio.frame", "av.video.frame", "av.video.reformatter", "av.codec.hwaccel")
+
+
+def import_av() -> bool:
+    import importlib
+
+    try:
+        for name in AV_MODULES:
+            importlib.import_module(name)
+    except Exception as exc:  # noqa: BLE001 - a broken PyAV: each user of it says so in its own words
+        logging.error("PyAV could not be loaded (%s): videos, cameras, recording and streaming won't work", exc)
+        return False
+    return True
+
+
 def run() -> None:
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
@@ -216,6 +235,7 @@ def run() -> None:
         logging.info("native engine asked for: %s, cards %s",
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
                      [c["name"] for c in sprigcore.adapters()])
+    import_av()
     package = inside_package()
     if package:
         logging.warning("started inside the Windows app package %s (by a Microsoft Store app): settings and "
