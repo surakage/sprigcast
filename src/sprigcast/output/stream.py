@@ -441,6 +441,22 @@ def log_live(st) -> None:
         log.info("stream %s live", st.name)
 
 
+def engine_encodes_streams() -> bool:
+    """With the native engine, every stream goes through a shared encoder (output/shared_stream.py), which the
+    engine's writer runs on its own thread (packets mode): Python only sends the packets. SPRIGCAST_NO_WRITER or
+    SPRIGCAST_NO_PACKET_WRITER keeps a lone stream on its own Python encoder (Streamer)."""
+    import os
+
+    from sprigcast import sprigcore
+
+    if os.environ.get("SPRIGCAST_NO_WRITER") or os.environ.get("SPRIGCAST_NO_PACKET_WRITER"):
+        return False
+    try:
+        return sprigcore.use_native_media()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class StreamSession:
     """Every live output at once. Each output encodes its own canvas; all share the mixed audio."""
 
@@ -457,6 +473,7 @@ class StreamSession:
         from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
 
         start_time = time.perf_counter()
+        share_all = share_all or engine_encodes_streams()
         streamers, taps, shared = [], [], []
         owned: dict[int, list[tuple]] = {}  # id(streamer or shared encoder) -> its frame taps (drop() takes them off)
         for t in targets:  # no size of its own: the canvas's output (scaled) size

@@ -238,8 +238,22 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   Once per writer: a second failure ends the file cleanly (`recoveries`). Writing errors (disk full) never
   restart anything. `SPRIGCAST_WRITER_FAULT=20` (or `10,30`) fails the encoder at those pictures for tests;
   `tests/test_native_writer.py` runs it, also under AddressSanitizer locally.
-- Next: a replay buffer of the stream's size sharing the stream's encoder, streams with reconnects, and Instant
-  replay's buffer.
+- **Shared encoders on the writer: packets mode (step 5, interface 21).** Recordings that share a canvas's
+  encoder with clips, clips themselves, Instant replay's buffer and every stream (`output/shared.py`
+  `CanvasEncoder`, `output/shared_stream.py` `SharedStreamEncoder`, `output/replay.py` `ReplayBuffer`) are encoded
+  by a writer in packets mode (`sc_writer_config.packets`): it encodes on its own thread, writes only a small NUT
+  file with the streams and their codec headers as the encoders made them (a placeholder byte a stream so a
+  demuxer opens it; read once for the templates that clip files and stream muxers copy), and hands every packet
+  back (`sc_writer_packet_take`). Python keeps them for clips, writes the recording file and sends the streams
+  exactly as it did PyAV's packets, so reconnects, delay, backlog skipping and clips borrowing the stream's encoder
+  are unchanged. A keyframe asked for (a link joining, a file starting) goes to the next picture
+  (`sc_writer_keyframe`); a stream's auto-pilot steers the bitrate (`sc_writer_set_bitrate`). Linking works as for
+  recordings (memory or the card), so a stream's frames don't pass through Python either. With the native engine
+  a lone stream gets a shared encoder too (`output/stream.py` `engine_encodes_streams`). If the video encoder fails
+  once, the new one puts its codec headers in its keyframes, so the streams' muxers go on. `SPRIGCAST_NO_PACKET_WRITER=1`
+  keeps these encoders in PyAV (and a lone stream on its own `Streamer`). Tests: `tests/test_packet_writer.py`
+  runs the shared-encoder and stream tests on the writer.
+- Next: Enhanced Broadcasting's tracks and the virtual camera fed by the engine.
 
 ## Phases
 

@@ -102,6 +102,7 @@ struct Core {
     struct Picture {
         int64_t pts = 0, count = 1;  // written as frames pts .. pts + count - 1 (more than one: a hole filled)
         FramePtr frame;
+        bool key = false;            // sc_writer_keyframe was asked before it came: it starts a keyframe
     };
     std::deque<Picture> pictures;
     std::vector<std::deque<std::vector<float>>> sounds;          // per track, blocks not yet taken
@@ -116,6 +117,18 @@ struct Core {
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
     std::deque<int64_t> faults;  // SPRIGCAST_WRITER_FAULT (tests): pictures whose encoding fails ("10" or "10,20")
     int64_t encoded = 0;
+    // Packets mode (cfg->packets): encoded packets wait here for sc_writer_packet_take instead of being written.
+    bool packets = false;
+    struct Out {
+        int track = 0;
+        bool key = false;
+        int64_t pts = 0, dts = 0;
+        AVRational tb{1, 1};
+        std::vector<uint8_t> data;
+    };
+    std::deque<Out> outs;
+    std::atomic<int> want_kbps{0}, want_max{0}, want_buffer{0};  // sc_writer_set_bitrate, applied before a picture
+    bool key_next = false;  // sc_writer_keyframe: the next picture queued starts a keyframe (under `lock`)
     FramePtr i420;
 
     AVFormatContext *out = nullptr;
@@ -131,7 +144,7 @@ struct Core {
     void to_memory(const std::string &why);
     void upload(FramePtr &picture);
     void write_packets(AVCodecContext *enc, AVStream *stream);
-    void encode_video(AVFrame *frame);
+    void encode_video(AVFrame *frame, bool key = false);
     void encode_sound(Track &t, bool flush);
     void close_all(bool trailer);
     ~Core() {
@@ -150,11 +163,12 @@ struct Core {
 int interrupted(void *opaque) { return static_cast<Core *>(opaque)->abort.load() ? 1 : 0; }
 
 void Core::open() {
-    const char *fmt = format.empty() ? nullptr : format.c_str();
+    const char *fmt = packets ? "nut" : format.empty() ? nullptr : format.c_str();
     must(ff.avformat_alloc_output_context2(&out, nullptr, fmt, target.c_str()), "the output");
     out->interrupt_callback.callback = interrupted;
     out->interrupt_callback.opaque = this;
-    const bool global = (out->oformat->flags & AVFMT_GLOBALHEADER) != 0;
+    // Packets go to muxers of the caller's (FLV, Matroska, MP4): all want the codec headers apart.
+    const bool global = packets || (out->oformat->flags & AVFMT_GLOBALHEADER) != 0;
 
     const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
     if (!codec) throw Error("no video encoder named " + video_codec);
@@ -195,6 +209,23 @@ void Core::open() {
     const int header = ff.avformat_write_header(out, &muxing);
     ff.av_dict_free(&muxing);
     must(header, "the header");
+    if (packets) {  // the streams' file: one placeholder byte a stream, so a demuxer opens it; then it's done
+        uint8_t zero[1 + AV_INPUT_BUFFER_PADDING_SIZE] = {};
+        for (unsigned i = 0; i < out->nb_streams; ++i) {
+            AVPacket *mark = ff.av_packet_alloc();
+            if (!mark) throw std::bad_alloc();
+            mark->data = zero;  // not reference-counted: the muxer copies it
+            mark->size = 1;
+            mark->pts = mark->dts = 0;
+            mark->stream_index = static_cast<int>(i);
+            mark->flags |= AV_PKT_FLAG_KEY;
+            const int w = ff.av_interleaved_write_frame(out, mark);
+            ff.av_packet_free(&mark);
+            must(w, "the streams' file");
+        }
+        must(ff.av_write_trailer(out), "the streams' file");
+        if (out->pb) ff.avio_closep(&out->pb);
+    }
     pkt = ff.av_packet_alloc();
     if (!pkt) throw std::bad_alloc();
 }
@@ -277,6 +308,21 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream) {
         const int r = ff.avcodec_receive_packet(enc, pkt);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return;
         must(r, "encoding");
+        if (packets) {  // for the caller to take: copied out, in the encoder's own time base
+            Out o;
+            o.track = stream->index;
+            o.key = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+            o.pts = pkt->pts;
+            o.dts = pkt->dts;
+            o.tb = enc->time_base;
+            o.data.assign(pkt->data, pkt->data + pkt->size);
+            ff.av_packet_unref(pkt);
+            std::lock_guard<std::mutex> hold(lock);
+            if (outs.size() >= 4096) throw WriteError("the encoded packets weren't taken for a minute");
+            bytes += o.data.size();
+            outs.push_back(std::move(o));
+            continue;
+        }
         ff.av_packet_rescale_ts(pkt, enc->time_base, stream->time_base);
         pkt->stream_index = stream->index;
         const int size = pkt->size;
@@ -291,7 +337,7 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream) {
     }
 }
 
-void Core::encode_video(AVFrame *frame) {
+void Core::encode_video(AVFrame *frame, bool key) {
     if (frame && yuv420) {  // an encoder without NV12: the planes apart, U then V
         if (!i420) {
             i420.reset(ff.av_frame_alloc());
@@ -318,6 +364,16 @@ void Core::encode_video(AVFrame *frame) {
         i420->color_range = frame->color_range;
         i420->colorspace = frame->colorspace;
         frame = i420.get();
+    }
+    if (frame) {
+        const int kbps = want_kbps.exchange(0);
+        if (kbps > 0) {  // a stream steering its bitrate: x264 and NVENC take it from the next picture
+            venc->bit_rate = static_cast<int64_t>(kbps) * 1000;
+            const int peak = want_max.exchange(0), buffer = want_buffer.exchange(0);
+            if (peak > 0) venc->rc_max_rate = static_cast<int64_t>(peak) * 1000;
+            if (buffer > 0) venc->rc_buffer_size = buffer * 1000;
+        }
+        frame->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     }
     if (frame && !faults.empty() && encoded++ == faults.front()) {  // SPRIGCAST_WRITER_FAULT: fails here
         faults.pop_front();
@@ -361,7 +417,9 @@ void Core::to_memory(const std::string &why) {
     i420.reset();
     const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
     if (!codec) throw Error("no video encoder named " + video_codec);
-    open_video(codec, (out->oformat->flags & AVFMT_GLOBALHEADER) != 0);
+    // Packets mode: the caller's muxers hold the first encoder's headers, which a new encoder may not match. Its
+    // headers go in the keyframes themselves instead (decoders take headers that come with the pictures).
+    open_video(codec, !packets && (out->oformat->flags & AVFMT_GLOBALHEADER) != 0);
 }
 
 void Core::encode_sound(Track &t, bool flush) {
@@ -395,7 +453,7 @@ void Core::encode_sound(Track &t, bool flush) {
 }
 
 void Core::close_all(bool trailer) {
-    if (out && trailer) {
+    if (out && trailer && !packets) {  // packets mode: the streams' file was finished when it opened
         const int r = ff.av_write_trailer(out);
         if (r < 0) set_failed("writing the file's ending: " + av_text(r));
     }
@@ -476,7 +534,7 @@ void Core::run() {
                     }
                     for (; k < picture.count && !abort.load(); ++k) {  // the encoder keeps its own reference
                         picture.frame->pts = picture.pts + k;
-                        encode_video(picture.frame.get());
+                        encode_video(picture.frame.get(), picture.key && k == 0);
                         std::lock_guard<std::mutex> hold(lock);
                         ++frames_written;
                     }
@@ -489,7 +547,7 @@ void Core::run() {
                     if (picture.frame && picture.frame->format != AV_PIX_FMT_D3D11) {
                         for (; k < picture.count && !abort.load(); ++k) {
                             picture.frame->pts = picture.pts + k;
-                            encode_video(picture.frame.get());
+                            encode_video(picture.frame.get(), true);  // a new encoder starts on a keyframe
                             std::lock_guard<std::mutex> hold(lock);
                             ++frames_written;
                         }
@@ -582,7 +640,8 @@ int feed(Core &c, const uint8_t *nv12, int stride, int64_t first, int64_t last) 
         first = std::max(first, c.last_pts + 1);
         c.last_pts = last;
         c.frames_repeated += static_cast<uint64_t>(last - first);
-        c.pictures.push_back(Core::Picture{first, last - first + 1, std::move(f)});
+        c.pictures.push_back(Core::Picture{first, last - first + 1, std::move(f), c.key_next});
+        c.key_next = false;
     }
     c.wake.notify_one();
     return SC_OK;
@@ -678,7 +737,8 @@ int feed_texture(Core &c, void *texture, int64_t first, int64_t last, std::funct
         first = std::max(first, c.last_pts + 1);
         c.last_pts = last;
         c.frames_repeated += static_cast<uint64_t>(last - first);
-        c.pictures.push_back(Core::Picture{first, last - first + 1, std::move(f)});
+        c.pictures.push_back(Core::Picture{first, last - first + 1, std::move(f), c.key_next});
+        c.key_next = false;
     }
     c.wake.notify_one();
     return SC_OK;
@@ -733,6 +793,7 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
         core->tracks = cfg->audio_tracks;
         core->audio_kbps = std::max(32, cfg->audio_kbps);
         core->queue_limit = static_cast<size_t>(std::clamp(cfg->queue_frames, 2, 120));
+        core->packets = cfg->packets != 0;
         const std::string fault = env_text("SPRIGCAST_WRITER_FAULT");  // tests: the encoder fails at these
         if (!fault.empty()) {
             for (const char *at = fault.c_str(); *at;) {
@@ -834,6 +895,47 @@ SC_API int sc_writer_stats_get(sc_writer *w, sc_writer_stats *out) {
         out->on_card = c.on_card.load() ? 1 : 0;
         out->recoveries = c.recoveries;
         std::snprintf(out->error, sizeof out->error, "%s", c.error.c_str());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_writer_packet_take(sc_writer *w, sc_writer_packet *info, uint8_t *data, int capacity) {
+    return sc::guarded("sc_writer_packet_take", [&]() -> int {
+        if (!w || !info) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_packet_take: nothing given");
+        Core &c = *w->core;
+        std::lock_guard<std::mutex> hold(c.lock);
+        if (c.outs.empty()) return 0;
+        Core::Out &o = c.outs.front();
+        info->track = o.track;
+        info->keyframe = o.key ? 1 : 0;
+        info->pts = o.pts;
+        info->dts = o.dts;
+        info->tb_num = o.tb.num;
+        info->tb_den = o.tb.den;
+        info->size = static_cast<int>(o.data.size());
+        if (!data || capacity < info->size) return SC_ERR_ARGUMENT;  // asked again with room; no error noted
+        if (!o.data.empty()) std::memcpy(data, o.data.data(), o.data.size());
+        c.outs.pop_front();
+        return 1;
+    });
+}
+
+SC_API int sc_writer_set_bitrate(sc_writer *w, int kbps, int max_kbps, int buffer_kbits) {
+    return sc::guarded("sc_writer_set_bitrate", [&]() -> int {
+        if (!w || kbps < 50) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_set_bitrate: no writer or bitrate");
+        Core &c = *w->core;
+        c.want_max = std::max(0, max_kbps);
+        c.want_buffer = std::max(0, buffer_kbits);
+        c.want_kbps = kbps;  // last: the writer thread reads it first
+        return SC_OK;
+    });
+}
+
+SC_API int sc_writer_keyframe(sc_writer *w) {
+    return sc::guarded("sc_writer_keyframe", [&]() -> int {
+        if (!w) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_keyframe: no writer");
+        std::lock_guard<std::mutex> hold(w->core->lock);
+        w->core->key_next = true;
         return SC_OK;
     });
 }

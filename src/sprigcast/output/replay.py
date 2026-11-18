@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import queue
 import tempfile
 import threading
@@ -126,7 +127,9 @@ def replay_path(folder: Path, canvas_id: str, when: datetime, container: str) ->
 class ReplayBuffer(Recorder):
     """A Recorder whose packets go to a rolling in-memory buffer of `seconds` instead of a file."""
 
-    allow_writer = False  # its packets go to memory here, not to a file (Recorder.uses_writer)
+    # With the native engine, the engine's writer encodes on its own thread and hands the packets back here
+    # (packets mode, _writer_after): they go to the buffer, a file and the streams as PyAV's do.
+    packets_mode = True
 
     def __init__(self, canvas_id: str, width: int, height: int, fps: int, bitrate_kbps: int, codec: str,
                  start_time: float, seconds: float, container: str = "mkv", encoder=None,
@@ -141,6 +144,8 @@ class ReplayBuffer(Recorder):
         self._spool: Spool | None = None
         self._spool_failed = False
         self._templates = None  # (video stream, audio stream per track) of the in-memory container
+        self._streams_path: str | None = None  # packets mode: the writer's streams' file, read for the templates
+        self._streams = None  # packets mode: the container the templates come from (kept open with them)
         self._requests: queue.Queue = queue.Queue()
 
     # Called from other threads ------------------------------------------------------
@@ -216,21 +221,77 @@ class ReplayBuffer(Recorder):
         kinds = {id(stream): "video" if i == 0 else audio_kind(i - 1) for i, stream in enumerate(self._templates)}
         for packet in packets:
             kind = kinds.get(id(packet.stream), "audio")
-            p = _Packet(kind, bytes(packet), packet.pts, packet.dts,
-                        packet.time_base or packet.stream.time_base, bool(packet.is_keyframe))
-            self._keep(p)
             self.bytes_out += packet.size
-            began = time.perf_counter()
-            self._on_packet(p)  # a recording file gets the bytes straight away
-            if self.seconds > 0 and not self._spool_failed:
-                self._to_spool(p)
-            waited = time.perf_counter() - began
-            self.mux_seconds += waited
-            self.longest_stall = max(self.longest_stall, waited)
+            self._take(_Packet(kind, bytes(packet), packet.pts, packet.dts,
+                               packet.time_base or packet.stream.time_base, bool(packet.is_keyframe)))
+        self._trimmed()
+
+    def _take(self, p: _Packet) -> None:
+        """One encoded packet: kept for clips, handed on (a file, the streams), its bytes moved to the ring."""
+        self._keep(p)
+        began = time.perf_counter()
+        self._on_packet(p)  # a recording file gets the bytes straight away
+        if self.seconds > 0 and not self._spool_failed:
+            self._to_spool(p)
+        waited = time.perf_counter() - began
+        self.mux_seconds += waited
+        self.longest_stall = max(self.longest_stall, waited)
+
+    def _trimmed(self) -> None:
         self._trim()
         if self.seconds <= 0 and self._spool is not None and not (self._packets and self._packets[0].spool):
             self._spool.close()  # replay turned off and spooled packets (always the oldest) are gone
             self._spool = None
+
+    # Packets mode: the engine's writer encodes (Recorder._writer_session) ------------------------------------
+
+    def _streams_file(self) -> str:
+        self._streams_path = super()._streams_file()
+        return self._streams_path
+
+    def _writer_opened(self, writer):
+        stats = super()._writer_opened(writer)
+        if getattr(writer, "packets", False) and stats.state_name == "running":
+            self._templates = self._read_streams()  # before any packet: a stream link connects at once
+        return stats
+
+    def _writer_after(self, writer) -> None:
+        """Take the packets the writer has encoded so far; then run what other threads asked for (_ask)."""
+        first = writer.take_packet()
+        if first is not None:
+            kinds = ("video", *(audio_kind(i) for i in range(len(self._templates) - 1)))
+            p = first
+            while p is not None:
+                track, key, pts, dts, tb, data = p
+                self._take(_Packet(kinds[track] if track < len(kinds) else "audio", data, pts, dts, Fraction(*tb),
+                                   key))
+                p = writer.take_packet()
+            self._trimmed()
+        self._serve_requests()
+
+    def _read_streams(self):
+        """The writer's streams' file, finished as it opened: the codec headers (SPS/PPS, AAC config) and sizes
+        that saved clips and stream muxers copy, as PyAV's own encoders give them."""
+        import av
+
+        path = self._streams_path
+        with open(path, "rb") as f:
+            data = f.read()
+        self._remove_streams_file()
+        self._streams = av.open(io.BytesIO(data), "r", format="nut")
+        return (self._streams.streams.video[0], *self._streams.streams.audio)
+
+    def _remove_streams_file(self) -> None:
+        path, self._streams_path = self._streams_path, None
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def _writer_closed(self) -> None:
+        self._remove_streams_file()  # never opened: the writer failed before its first packets
+        self._before_close(None)  # a file of FileTap's is finished after the last packets went in
 
     def _to_spool(self, p: _Packet) -> None:
         """Move a packet's bytes out of memory into the ring file."""
@@ -295,6 +356,9 @@ class ReplayBuffer(Recorder):
 
     def _write_audio(self, container, stream) -> None:
         super()._write_audio(container, stream)
+        self._serve_requests()
+
+    def _serve_requests(self) -> None:
         while True:  # saving happens here, on the encoder thread, between frames
             try:
                 job, done, finished = self._requests.get_nowait()

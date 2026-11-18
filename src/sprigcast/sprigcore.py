@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 20  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 21  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -839,7 +839,15 @@ class WriterConfig(ctypes.Structure):
                 ("fps_num", ctypes.c_int), ("fps_den", ctypes.c_int), ("video_kbps", ctypes.c_int),
                 ("keyframe_frames", ctypes.c_int), ("audio_tracks", ctypes.c_int), ("audio_kbps", ctypes.c_int),
                 ("queue_frames", ctypes.c_int), ("format_options", ctypes.c_char_p),
-                ("track_titles", ctypes.c_char_p), ("b_frames", ctypes.c_int), ("d3d11_device", ctypes.c_void_p)]
+                ("track_titles", ctypes.c_char_p), ("b_frames", ctypes.c_int), ("d3d11_device", ctypes.c_void_p),
+                ("packets", ctypes.c_int)]
+
+
+class WriterPacket(ctypes.Structure):
+    """include/sprigcore.h sc_writer_packet."""
+
+    _fields_ = [("track", ctypes.c_int), ("keyframe", ctypes.c_int), ("pts", ctypes.c_int64), ("dts", ctypes.c_int64),
+                ("tb_num", ctypes.c_int), ("tb_den", ctypes.c_int), ("size", ctypes.c_int)]
 
 
 class WriterStats(ctypes.Structure):
@@ -891,6 +899,9 @@ def _media_sigs() -> dict:
         "sc_writer_wait": (c_int, [vp, c_int]),
         "sc_writer_stats_get": (c_int, [vp, ctypes.POINTER(WriterStats)]),
         "sc_writer_destroy": (None, [vp]),
+        "sc_writer_packet_take": (c_int, [vp, ctypes.POINTER(WriterPacket), vp, c_int]),
+        "sc_writer_set_bitrate": (c_int, [vp, c_int, c_int, c_int]),
+        "sc_writer_keyframe": (c_int, [vp]),
     }
 
 
@@ -1086,8 +1097,10 @@ class Writer:
                  video_kbps: int = 6000, keyframe_frames: int = 60, video_options: dict[str, str] | None = None,
                  audio_tracks: int = 1, audio_kbps: int = 160, container: str | None = None, queue_frames: int = 8,
                  container_options: dict[str, str] | None = None, track_titles: list[str] | None = None,
-                 b_frames: int = 0, device: int | None = None):
-        """``device``: the engine's ID3D11Device (Engine.device()) for a hardware encoder (h264_nvenc, ...) that
+                 b_frames: int = 0, device: int | None = None, packets: bool = False):
+        """packets: encode only (sc_writer_config.packets): ``target`` gets a small NUT file with the streams,
+        finished once the writer runs (open it for codec templates); the packets are taken with take_packet.
+        ``device``: the engine's ID3D11Device (Engine.device()) for a hardware encoder (h264_nvenc, ...) that
         takes the engine's pictures on the card from a linked share output; pictures from memory go up first."""
         if not media_ready():
             raise NativeError(-2, "the engine's writer isn't available")
@@ -1101,13 +1114,16 @@ class Writer:
                                     int(height), int(num), int(den), int(video_kbps), int(keyframe_frames),
                                     int(audio_tracks), int(audio_kbps), int(queue_frames),
                                     muxing.encode() if muxing else None, titles.encode() if titles else None,
-                                    max(0, min(4, int(b_frames))), device or None)
+                                    max(0, min(4, int(b_frames))), device or None, 1 if packets else 0)
         handle = ctypes.c_void_p()
         _check(self._lib.sc_writer_open(ctypes.byref(self._config), ctypes.byref(handle)))
         self._handle = handle
         self._lock = __import__("threading").Lock()
         self.width, self.height, self.tracks = int(width), int(height), int(audio_tracks)
         self.on_card = bool(device)
+        self.packets = bool(packets)
+        self._packet = WriterPacket()
+        self._buffer = (ctypes.c_uint8 * (1 << 20))()
 
     def _call(self, fn, *args) -> int:
         with self._lock:
@@ -1148,6 +1164,30 @@ class Writer:
             if not self._handle:
                 raise NativeError(-1, "the writer is closed")
             return self._handle.value
+
+    def take_packet(self):
+        """Packets mode: the oldest encoded packet as (track, keyframe, pts, dts, (tb_num, tb_den), bytes), track 0
+        the video and 1.. the sound; None when none is waiting."""
+        info = self._packet
+        while True:
+            code = self._call(self._lib.sc_writer_packet_take, ctypes.byref(info), self._buffer, len(self._buffer))
+            if code == 1:
+                return (info.track, bool(info.keyframe), info.pts, info.dts, (info.tb_num, info.tb_den),
+                        ctypes.string_at(self._buffer, info.size))
+            if code == 0:
+                return None
+            if code == -1 and info.size > len(self._buffer):  # SC_ERR_ARGUMENT: no room
+                self._buffer = (ctypes.c_uint8 * (info.size * 2))()  # a big keyframe: room for it, then again
+                continue
+            _check(code)
+
+    def set_bitrate(self, kbps: int, max_kbps: int = 0, buffer_kbits: int = 0) -> None:
+        """The video bitrate from the next picture on (a stream steering itself)."""
+        _check(self._call(self._lib.sc_writer_set_bitrate, int(kbps), int(max_kbps or 0), int(buffer_kbits or 0)))
+
+    def keyframe(self) -> None:
+        """The next picture is a keyframe."""
+        _check(self._call(self._lib.sc_writer_keyframe))
 
     def audio(self, block, track: int = 0) -> int:
         """Queue sound for ``track``: (n, 2) float32, 48 kHz, following the last block."""

@@ -14,6 +14,19 @@ if sys.platform == "win32":
 
 
 def pytest_configure(config):
+    _collect_on_main_thread()
+    _settings_in_a_folder()
+
+
+def _collect_on_main_thread():
+    """As the app does (core/pacing.py): a collection on a test's stream or encoder thread used to free a closed
+    page's widgets there, and the whole run crashed (Fatal Python error, 2026-11-18)."""
+    from sprigcast.core import pacing
+
+    pacing.collect_on_main_thread()
+
+
+def _settings_in_a_folder():
     """Settings written by tests go to .ini files in a temporary folder, never the registry. On the PC, tests
     had left HKCU\\Software\\SprigCastTests and SprigCastAddMenuTest behind (2026-11-17), and a test that forgot
     to change the app's name would have written into the user's real SprigCast settings."""

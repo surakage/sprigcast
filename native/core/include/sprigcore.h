@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 20
+#define SC_INTERFACE_VERSION 21
 
 enum {
     SC_OK = 0,
@@ -548,6 +548,12 @@ typedef struct sc_writer_config {
      * device from an output linked to it (sc_engine_output_link on an SC_OUTPUT_SHARE output); pictures from
      * memory (sc_writer_video) are copied up to the card first. NULL: pictures in memory only. */
     void *d3d11_device;
+    /* 1: encode only. The only file written is a small NUT file at `target`, finished once the writer runs: the
+     * streams with their codec headers as the encoders made them (a placeholder byte each, for demuxers to open it;
+     * for the caller's own muxers to copy). Every encoded packet is taken with sc_writer_packet_take, in the order
+     * made (a stream, clips, files written from the same packets). A video encoder started again after a failure (stats.recoveries)
+     * puts its codec headers in its keyframes. */
+    int packets;
 } sc_writer_config;
 enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
 /* sc_writer_video / sc_writer_audio results besides SC_OK. LATE: the writer already took a later frame number (two
@@ -572,6 +578,22 @@ SC_API int sc_writer_audio(sc_writer *writer, int track, const float *stereo, in
 SC_API int sc_writer_finish(sc_writer *writer);
 SC_API int sc_writer_wait(sc_writer *writer, int timeout_ms);
 SC_API int sc_writer_stats_get(sc_writer *writer, sc_writer_stats *out);
+/* Packets mode (sc_writer_config.packets): one encoded packet. track 0 is the video, 1.. the sound tracks; pts and
+ * dts count in tb_num / tb_den seconds. */
+typedef struct sc_writer_packet {
+    int track, keyframe;
+    int64_t pts, dts;
+    int tb_num, tb_den;
+    int size;
+} sc_writer_packet;
+/* The oldest packet not taken yet: 1 (its bytes copied to `data`), 0 (none waiting), or SC_ERR_ARGUMENT with
+ * info->size set when `capacity` is too small (it stays first). A writer whose packets aren't taken fails once
+ * 4096 wait (about a minute). */
+SC_API int sc_writer_packet_take(sc_writer *writer, sc_writer_packet *info, uint8_t *data, int capacity);
+/* The video bitrate from the next picture on (a stream steering itself); max_kbps / buffer_kbits 0 = unchanged. */
+SC_API int sc_writer_set_bitrate(sc_writer *writer, int kbps, int max_kbps, int buffer_kbits);
+/* The next picture is a keyframe (a recording starting from these packets, a viewer joining). */
+SC_API int sc_writer_keyframe(sc_writer *writer);
 SC_API void sc_writer_destroy(sc_writer *writer);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */

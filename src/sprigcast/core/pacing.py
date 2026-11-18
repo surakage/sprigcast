@@ -51,6 +51,46 @@ def _on_gc(phase: str, info: dict) -> None:
                  info.get("generation", -1), ms, info.get("collected", 0))
 
 
+# Cleanup on the window's thread only ------------------------------------------------------------------------------
+# A collection runs on whichever thread happens to allocate. When one on a stream, encoder or render thread finds
+# Qt objects in a reference cycle (a closed page's widgets), PySide defers deleting them to the main thread, and
+# for some of them it then called a null deleter: the test suite crashed that way every full run (2026-11-18,
+# a hotkeys page's widgets freed on a stream link's thread), and the app could too. A collection on another
+# thread now frees nothing (DEBUG_SAVEALL): what it finds is handed to the main thread, which lets go of it
+# when it next collects, and it is freed there.
+
+_main_ident = threading.main_thread().ident
+_deferred: list[list] = []  # garbage found by other threads' collections, held until the main thread collects
+_debug_before = 0
+
+
+def _cleanup_on_main(phase: str, info: dict) -> None:
+    global _debug_before
+    if threading.get_ident() == _main_ident:
+        if phase == "start" and _deferred:
+            _deferred.clear()  # unreachable again: this collection (or the next older one) frees it here
+        return
+    if phase == "start":
+        _debug_before = gc.get_debug()
+        gc.set_debug(_debug_before | gc.DEBUG_SAVEALL)
+        return
+    gc.set_debug(_debug_before)
+    if gc.garbage:
+        _deferred.append(gc.garbage[:])
+        gc.garbage.clear()
+
+
+def collect_on_main_thread() -> None:
+    """Only the main thread frees what Python's cycle collector finds (see above). Call once, at start-up."""
+    if _cleanup_on_main not in gc.callbacks:
+        gc.callbacks.insert(0, _cleanup_on_main)
+
+
+def deferred_count() -> int:
+    """Objects other threads' collections found that the main thread hasn't let go of yet (tests)."""
+    return sum(len(batch) for batch in _deferred)
+
+
 def watch_gc() -> None:
     if _on_gc not in gc.callbacks:
         gc.callbacks.append(_on_gc)
