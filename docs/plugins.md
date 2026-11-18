@@ -7,7 +7,7 @@ Plugins run with the same rights as SprigCast, so only add ones you trust.
 ## Set up
 
 1. Install SprigCast.
-2. Open **File → Open plugins folder**. It's `%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`.
+2. Open **Tools → Plugin store**, then **Open plugins folder** under **Your plugins** (also under **+ → Plugins**). It's `%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`.
 3. Put your `.py` file there and restart SprigCast.
 
 You don't need to install Python: SprigCast brings its own (3.12). A plugin can use Python's standard library and what SprigCast already ships with: NumPy, Pillow and PySide6 (Qt). Other packages from pip aren't there.

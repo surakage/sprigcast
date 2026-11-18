@@ -3,7 +3,7 @@
 It adds a card that says "Hello, NAME!" and counts waves. Press a hotkey (or call the API) and it waves again.
 
 To try it:
-1. Copy this file into SprigCast's plugins folder (File → Open plugins folder).
+1. Copy this file into SprigCast's plugins folder (Tools → Plugin store → Your plugins → Open plugins folder).
 2. Restart SprigCast.
 3. Add it with + → Plugins → Hello sprig. Double-click it to change the name and colour.
 4. Give "Hello sprig: Wave" a key in Tools → Hotkeys → Plugins, or call `hello_sprig.wave` from Streamer.bot.
