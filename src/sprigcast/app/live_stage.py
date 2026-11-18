@@ -436,7 +436,8 @@ class FitScroll(QScrollArea):
     def __init__(self, widget: QWidget, cap: int | None = None):
         super().__init__()
         self.cap = cap  # never taller than this either: past it, the content scrolls
-        self.cap_rows: tuple[QVBoxLayout, int] | None = None  # or: this many whole rows of this layout
+        self.cap_rows: tuple[QVBoxLayout, int] | None = None  # or: this many rows of this layout
+        self._wheel = 0  # a touchpad's part notches, until they add up to one row
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -482,24 +483,40 @@ class FitScroll(QScrollArea):
     def _bar(self) -> None:
         # The bar only when the rows really don't fit, so it never sits over them for a moment.
         fits = self.height() >= self._content.sizeHint().height()
-        self._whole_rows(fits)
+        if self.viewportMargins().bottom():
+            self.setViewportMargins(0, 0, 0, 0)  # (an older build hid a part row behind a blank band)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits
                                         else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
-    def _whole_rows(self, fits: bool) -> None:
-        """With cap_rows, a short column shows only whole rows: the part row's room is left empty instead."""
-        spare = 0
-        if self.cap_rows is not None and not fits:
-            rows, _count = self.cap_rows
-            used, room = 0, self.height()
-            for i in range(rows.count()):
-                step = rows.itemAt(i).sizeHint().height() + (rows.spacing() if i else 0)
-                if used + step > room:
-                    break
-                used += step
-            spare = room - used if used else 0
-        if self.viewportMargins().bottom() != spare:
-            self.setViewportMargins(0, 0, 0, spare)
+    def row_tops(self) -> list[int]:
+        """With cap_rows: where each row starts, the stops the wheel moves between."""
+        if self.cap_rows is None:
+            return []
+        rows, _count = self.cap_rows
+        tops, at = [], 0
+        for i in range(rows.count()):
+            tops.append(at)
+            at += rows.itemAt(i).sizeHint().height() + rows.spacing()
+        return tops
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        """With cap_rows, one wheel notch moves one whole row, so a short list always starts at a row's top
+        and every row is drawn and clickable (PC test 2026-11-18: a blank band hid Edit's second row)."""
+        bar = self.verticalScrollBar()
+        tops = self.row_tops()
+        if not tops or bar.maximum() <= 0:
+            super().wheelEvent(event)
+            return
+        self._wheel += event.angleDelta().y()
+        notches = int(self._wheel / 120)
+        if not notches:
+            event.accept()
+            return
+        self._wheel -= notches * 120
+        stops = sorted({min(top, bar.maximum()) for top in tops} | {bar.maximum()})
+        now = min(range(len(stops)), key=lambda i: abs(stops[i] - bar.value()))
+        bar.setValue(stops[max(0, min(len(stops) - 1, now - notches))])
+        event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         self._bar()
@@ -831,7 +848,7 @@ class LiveSide(QWidget):
                 row = self._place_row(place)
                 self.places.addWidget(row)
                 row.show()  # now, so the list measures its rows straight away
-            # Edit rows are taller: show three whole ones, so the list never stops partway through a row.
+            # Edit rows are taller: room for three, and the wheel moves a whole row at a time.
             self.places_scroll.cap_rows = (self.places, 3 if self.editing else 4) if places else None
             self.places_scroll._fit()
         from sprigcast.app.destinations import HEALTH_COLORS
