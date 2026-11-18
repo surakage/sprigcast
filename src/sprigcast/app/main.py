@@ -254,7 +254,7 @@ def run() -> None:
     from sprigcast.app import custom_docks
 
     if custom_docks.load():
-        custom_docks.web_engine_available()  # imports Qt WebEngine before the QApplication
+        custom_docks.import_web_engine()  # Qt WebEngine imported before the QApplication
     from sprigcast.app.theme import use_light_font_engine
 
     use_light_font_engine()  # 16 MB less than Qt's default on Windows
