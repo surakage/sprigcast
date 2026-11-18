@@ -1,6 +1,6 @@
 """Plugins: Python files that add new source kinds.
 
-Put a `.py` file in the plugins folder (File → Open plugins folder). At startup SprigCast
+Put a `.py` file in the plugins folder (Tools → Plugin store → Your plugins → Open plugins folder). At startup SprigCast
 imports every file there, and any installed package that declares a `sprigcast.plugins`
 entry point. A plugin registers sources exactly like the built-in ones:
 
