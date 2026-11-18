@@ -394,6 +394,7 @@ def run() -> None:
 
     from sprigcast.core import pacing
 
+    pacing.collect_on_main_thread()  # Qt objects in cycles are never freed on another thread (crashed tests)
     pacing.watch_gc()  # logs slow garbage collections (they made the late frames in long streams)
     beat_ms, watch_s = pacing.watch_window()  # SPRIGCAST_UI_STALL_MS=50: every window stall from 50 ms, with where
     pacing.watch_stalls(interval=watch_s)  # names the thread whenever something holds everything up for 200 ms

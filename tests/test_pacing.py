@@ -152,3 +152,32 @@ def test_a_stall_dump_names_the_thread_holding_the_lock():
     got = dump.take()
     assert "MainThread at test_pacing.py" in got and "test_a_stall_dump_names_the_thread_holding_the_lock" in got
     assert dump.take() == ""  # read once
+
+
+def test_only_the_main_thread_frees_what_the_cycle_collector_finds():
+    """A collection on another thread used to free a closed page's Qt widgets there, which crashed the test run
+    (2026-11-18). Now what it finds waits for the main thread's next collection."""
+    import threading
+
+    from sprigcast.core import pacing
+
+    pacing.collect_on_main_thread()
+
+    class Node:
+        def __init__(self):
+            self.me = self
+
+    def alive():
+        return sum(1 for o in gc.get_objects() if type(o) is Node)
+
+    def worker():
+        Node()
+        gc.collect()  # a collection on this thread finds the cycle but frees nothing
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert alive() == 1 and pacing.deferred_count() >= 1
+    gc.collect()
+    gc.collect()
+    assert alive() == 0 and pacing.deferred_count() == 0
