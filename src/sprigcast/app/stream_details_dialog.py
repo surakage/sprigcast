@@ -197,6 +197,11 @@ class Pane(QWidget):
             except Exception:  # noqa: BLE001
                 pass
             form.addLayout(_row("Privacy", self.privacy))
+            self.video_category = QComboBox()
+            for key, name in sorted(sd.YOUTUBE_CATEGORIES.items(), key=lambda kv: kv[1]):
+                self.video_category.addItem(name, key)
+            self.video_category.setStyleSheet(self.privacy.styleSheet())
+            form.addLayout(_row("Category", self.video_category))
             thumb = QWidget()
             tl = QHBoxLayout(thumb)
             tl.setContentsMargins(0, 0, 0, 0)
@@ -277,6 +282,8 @@ class Pane(QWidget):
         if self.description is not None:
             self.description.setPlainText(details.description)
             self.privacy.setCurrentIndex(max(0, self.privacy.findData(details.privacy)))
+            found = self.video_category.findData(details.video_category or "20")  # a new stream: Gaming
+            self.video_category.setCurrentIndex(max(0, found))
             self.waiting_note.setVisible(not details.broadcast_id)
         self.dialog.say("")
         self.dialog.refresh_save()
@@ -366,6 +373,7 @@ class Pane(QWidget):
         if self.description is not None:
             details.description = self.description.toPlainText()
             details.privacy = self.privacy.currentData()
+            details.video_category = self.video_category.currentData()
         return details
 
     def saved(self, details: sd.Details) -> None:
