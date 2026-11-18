@@ -14,6 +14,7 @@ A source class can also give:
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from PySide6.QtGui import QColor
@@ -39,6 +40,8 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.core import style
+
+log = logging.getLogger(__name__)
 
 
 PICTURE_FILES = "Pictures (*.png *.gif *.webp *.apng)"
@@ -113,6 +116,7 @@ class SettingsDialog(QDialog):
         self.secret_fields: dict[str, QLineEdit] = {}
         secrets_after = getattr(cls, "secrets_after", None)  # the field the secrets follow (else at the end)
         self.setWindowTitle(title)
+        self._opened_with = {k: settings.get(k, v) for k, v in defaults.items()}  # for the log line on OK
         self.setMinimumWidth(460)
         self.defaults = defaults
         self.fields: dict[str, Any] = {}
@@ -140,6 +144,10 @@ class SettingsDialog(QDialog):
                 self.look_note = QLabel()
                 self.look_note.setWordWrap(True)
                 self.look_note.setStyleSheet(f"color: {theme.MUTED}")
+                keep = self.look_note.sizePolicy()  # its room stays when it's empty: the dialog doesn't resize as
+                keep.setRetainSizeWhenHidden(True)  # you type (Qt couldn't fit the new size on the PC, 2026-11-18)
+                self.look_note.setSizePolicy(keep)
+                self.look_note.setMinimumHeight(self.look_note.fontMetrics().lineSpacing() * 2)
                 style_form.addRow("", self.look_note)
                 widget.textChanged.connect(self._check_look)
                 self._check_look()
@@ -149,6 +157,7 @@ class SettingsDialog(QDialog):
             self._add_secrets(form)
         if styled:
             reset = QPushButton("Reset style")
+            reset.setAutoDefault(False)  # Enter never resets the style: it means OK
             reset.clicked.connect(lambda: self._reset_style(styled))
             style_form.addRow("", reset)
         if "text" in defaults:
@@ -273,6 +282,7 @@ class SettingsDialog(QDialog):
             edit = QPlainTextEdit(str(value))
             edit.setFixedHeight(110 if key == "custom_look" else 80)
             if key == "custom_look":
+                edit.setTabChangesFocus(True)  # Tab goes on to the next box, as everywhere else in the form
                 edit.setPlaceholderText("text: #fff8e7\ncard: #10201880\ncorners: leaf\nhide: date")
             self.fields[key] = edit
             return edit
@@ -297,6 +307,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(edit, 1)
         button = QPushButton(text)
+        button.setAutoDefault(False)  # Enter means OK, not Pick… or Browse…
         button.clicked.connect(slot)
         layout.addWidget(button)
         return row
@@ -322,6 +333,8 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:
         for key, edit in self.secret_fields.items():
             save_secret(self.secrets[key], edit.text().strip())
+        changed = sorted(k for k, v in self.values().items() if v != self._opened_with.get(k))
+        log.info("settings %r: OK, changed %s", self.windowTitle(), ", ".join(changed) or "nothing")
         super().accept()
 
     def values(self) -> dict[str, Any]:
