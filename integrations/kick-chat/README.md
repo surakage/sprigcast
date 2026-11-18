@@ -50,6 +50,9 @@ Needs the Cloudflare account that has slothbloom.com, Node, and SprigCast's Kick
 
 ## Changing it
 
+**New Kick secret?** After regenerating it on kick.com, double-click `integrations\Update Kick secret.bat`: it asks
+for the secret once and puts it in both this relay and the sign-in helper.
+
 `npm test` runs the tests (Node 20+). `npx wrangler deploy` again after a change. SprigCast connects to
 `RELAY` in `src/sprigcast/chat/kick.py` (`SPRIGCAST_KICK_CHAT_URL` or the `kick/chat_relay` setting point it
 elsewhere for testing, e.g. `npx wrangler dev` on `ws://127.0.0.1:8787/v1/chat`).
