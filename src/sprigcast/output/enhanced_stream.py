@@ -19,7 +19,7 @@ from fractions import Fraction
 
 from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock
 from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE, encoder_hwaccel
-from sprigcast.output.replay import ReplayBuffer
+from sprigcast.output.shared_stream import SharedStreamEncoder
 from sprigcast.output.stream import (
     MAX_BACKLOG,
     RESUME_BACKLOG,
@@ -57,20 +57,26 @@ class _Track:
                 break
 
 
-class _TrackEncoder(ReplayBuffer):
+class _TrackEncoder(SharedStreamEncoder):
     """One quality of an Enhanced Broadcasting stream, encoded by the native engine's writer on its own thread
     (packets mode): the engine hands it frames at the track's size itself, and each packet goes to the stream
     (EnhancedStreamer._from_track). Keyframes come every keyint seconds of stream time on every track alike
-    (the writer keys the first picture at or past each multiple)."""
+    (the writer keys the first picture at or past each multiple).
+
+    Other destinations wanting the same picture (YouTube, Kick... at this quality's canvas, size and frame rate)
+    send these same packets as links (StreamSession.start): no extra encoder for them."""
 
     def __init__(self, owner: EnhancedStreamer, track: _Track, start_time: float):
         from sprigcast.core.scene import EncoderSettings
 
         cfg = track.cfg
         settings = EncoderSettings(keyint_sec=max(1, cfg.keyint_sec), b_frames=max(0, cfg.max_b_frames))
-        super().__init__(f"{owner.name}-track{track.index}", track.canvas.width, track.canvas.height, track.fps,
-                         cfg.bitrate_kbps, cfg.encoder, start_time, 0.0, "flv", settings, (cfg.width, cfg.height))
+        super().__init__(track.canvas, track.fps, cfg.bitrate_kbps, cfg.encoder, start_time, (cfg.width, cfg.height),
+                         settings)
         self.owner, self.track = owner, track
+
+    def request_keyframe(self) -> None:
+        pass  # a link joining waits for the next keyframe: Twitch needs every quality to key at the same instants
 
     def _video_options(self) -> dict[str, str]:
         return dict(self.track.cfg.options)
@@ -81,11 +87,10 @@ class _TrackEncoder(ReplayBuffer):
         if not self._writer_session():
             raise RuntimeError("the engine's writer couldn't start this quality")
 
-    def _keep(self, p) -> None:
-        pass  # nothing kept here: every packet goes to the stream
-
     def _on_packet(self, p) -> None:
         self.owner._from_track(self.track, p)
+        if self.links:
+            super()._on_packet(p)
 
 
 class EnhancedStreamer(Streamer):
