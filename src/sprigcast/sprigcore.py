@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 14  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 15  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -724,6 +724,36 @@ class MediaPicture(ctypes.Structure):
                 ("time", ctypes.c_double)]
 
 
+class WriterConfig(ctypes.Structure):
+    """include/sprigcore.h sc_writer_config."""
+
+    _fields_ = [("target", ctypes.c_char_p), ("format", ctypes.c_char_p), ("video_codec", ctypes.c_char_p),
+                ("video_options", ctypes.c_char_p), ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("fps_num", ctypes.c_int), ("fps_den", ctypes.c_int), ("video_kbps", ctypes.c_int),
+                ("keyframe_frames", ctypes.c_int), ("audio_tracks", ctypes.c_int), ("audio_kbps", ctypes.c_int),
+                ("queue_frames", ctypes.c_int)]
+
+
+class WriterStats(ctypes.Structure):
+    """include/sprigcore.h sc_writer_stats."""
+
+    _fields_ = [("state", ctypes.c_int), ("queued", ctypes.c_int), ("frames_in", ctypes.c_uint64),
+                ("frames_written", ctypes.c_uint64), ("frames_dropped", ctypes.c_uint64), ("bytes", ctypes.c_uint64),
+                ("write_seconds", ctypes.c_double), ("longest_write", ctypes.c_double), ("error", ctypes.c_char * 256)]
+
+    @property
+    def state_name(self) -> str:
+        return WRITER_STATES[self.state] if 0 <= self.state < len(WRITER_STATES) else "failed"
+
+    @property
+    def error_text(self) -> str:
+        return self.error.decode("utf-8", "replace")
+
+
+WRITER_STATES = ("opening", "running", "finished", "failed")
+WRITER_DROPPED, WRITER_REFUSED = 1, 2
+
+
 def _media_sigs() -> dict:
     c_int, vp = ctypes.c_int, ctypes.c_void_p
     text = ctypes.c_char_p
@@ -743,6 +773,13 @@ def _media_sigs() -> dict:
         "sc_media_set_picture": (c_int, [vp, c_int, c_int, c_int, c_int]),
         "sc_media_set_decode": (c_int, [vp, c_int]),
         "sc_media_debug_fault": (c_int, [vp, c_int]),
+        "sc_writer_open": (c_int, [ctypes.POINTER(WriterConfig), ctypes.POINTER(vp)]),
+        "sc_writer_video": (c_int, [vp, vp, c_int, ctypes.c_int64]),
+        "sc_writer_audio": (c_int, [vp, c_int, vp, c_int]),
+        "sc_writer_finish": (c_int, [vp]),
+        "sc_writer_wait": (c_int, [vp, c_int]),
+        "sc_writer_stats_get": (c_int, [vp, ctypes.POINTER(WriterStats)]),
+        "sc_writer_destroy": (None, [vp]),
     }
 
 
@@ -919,6 +956,91 @@ class MediaPlayer:
             handle, self._handle = self._handle, ctypes.c_void_p()
         if handle:
             self._lib.sc_media_destroy(handle)
+            drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class Writer:
+    """A recording or stream written by a thread of the engine's own (include/sprigcore.h sc_writer): pictures
+    (NV12) and sound (48 kHz stereo floats) are queued, and the writer thread encodes, muxes and writes them with
+    SprigCast's FFmpeg, never holding Python's lock. Every method is safe from any thread and returns at once
+    except :meth:`wait`."""
+
+    def __init__(self, target: str, video_codec: str, width: int, height: int, fps: tuple[int, int] | int = 30,
+                 video_kbps: int = 6000, keyframe_frames: int = 60, video_options: dict[str, str] | None = None,
+                 audio_tracks: int = 1, audio_kbps: int = 160, container: str | None = None, queue_frames: int = 8):
+        if not media_ready():
+            raise NativeError(-2, "the engine's writer isn't available")
+        self._lib = _media_lib()
+        num, den = (fps, 1) if isinstance(fps, int) else fps
+        options = ":".join(f"{k}={v}" for k, v in (video_options or {}).items())
+        self._config = WriterConfig(str(target).encode("utf-8"), container.encode() if container else None,
+                                    video_codec.encode(), options.encode() if options else None, int(width),
+                                    int(height), int(num), int(den), int(video_kbps), int(keyframe_frames),
+                                    int(audio_tracks), int(audio_kbps), int(queue_frames))
+        handle = ctypes.c_void_p()
+        _check(self._lib.sc_writer_open(ctypes.byref(self._config), ctypes.byref(handle)))
+        self._handle = handle
+        self._lock = __import__("threading").Lock()
+        self.width, self.height, self.tracks = int(width), int(height), int(audio_tracks)
+
+    def _call(self, fn, *args) -> int:
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the writer is closed")
+            return fn(self._handle, *args)
+
+    def video(self, nv12, pts: int, stride: int | None = None) -> int:
+        """Queue one NV12 picture (Y rows, then CbCr rows) at ``pts`` (in frames). SC_OK, WRITER_DROPPED (the queue
+        was full) or WRITER_REFUSED (finished or failed)."""
+        import numpy as np
+
+        data = np.ascontiguousarray(np.frombuffer(nv12, np.uint8) if not isinstance(nv12, np.ndarray) else nv12)
+        stride = stride or self.width
+        if data.nbytes < stride * self.height * 3 // 2:
+            raise NativeError(-1, "the picture is smaller than the writer's size")
+        code = self._call(self._lib.sc_writer_video, data.ctypes.data, int(stride), int(pts))
+        if code < 0:
+            _check(code)
+        return code
+
+    def audio(self, block, track: int = 0) -> int:
+        """Queue sound for ``track``: (n, 2) float32, 48 kHz, following the last block."""
+        import numpy as np
+
+        data = np.ascontiguousarray(block, dtype=np.float32).reshape(-1, 2)
+        code = self._call(self._lib.sc_writer_audio, int(track), data.ctypes.data, int(data.shape[0]))
+        if code < 0:
+            _check(code)
+        return code
+
+    def finish(self) -> None:
+        """Write what is queued, end the encoders and close the file (on the writer's thread)."""
+        _check(self._call(self._lib.sc_writer_finish))
+
+    def wait(self, timeout: float) -> bool:
+        """True once the writer's thread is done (finished or failed)."""
+        code = self._call(self._lib.sc_writer_wait, int(max(0.0, timeout) * 1000))
+        if code < 0:
+            _check(code)
+        return code == 1
+
+    def stats(self) -> WriterStats:
+        out = WriterStats()
+        _check(self._call(self._lib.sc_writer_stats_get, ctypes.byref(out)))
+        return out
+
+    def close(self) -> None:
+        """Give up whatever is still unwritten and free the writer (finish() and wait() first to keep it)."""
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_writer_destroy(handle)
             drain_log()
 
     def __del__(self):

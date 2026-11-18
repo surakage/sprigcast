@@ -23,6 +23,7 @@ from sprigcast import sprigcore
 av = pytest.importorskip("av")
 ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "native" / "core"
+MEDIA_SOURCES = ("base.cpp", "ffmpeg.cpp", "media.cpp", "writer.cpp")  # the parts of the engine without Direct3D
 
 
 @pytest.fixture(scope="session")
@@ -35,7 +36,7 @@ def player_lib(tmp_path_factory):
         out = tmp_path_factory.mktemp("sprigmedia") / "libsprigmedia.so"
         subprocess.run([compiler, "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
                         f"-I{CORE / 'include'}", f"-I{ROOT / 'native' / 'third_party' / 'ffmpeg' / 'include'}",
-                        "-o", str(out), str(CORE / "src" / "base.cpp"), str(CORE / "src" / "media.cpp"),
+                        "-o", str(out), *(str(CORE / "src" / name) for name in MEDIA_SOURCES),
                         "-ldl", "-pthread"], check=True)
         os.environ["SPRIGCAST_MEDIA_LIB"] = str(out)
         sprigcore._media_lib.cache_clear()
