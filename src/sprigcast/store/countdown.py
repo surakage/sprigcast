@@ -198,6 +198,15 @@ def paint(text: str, label: str, settings: dict[str, Any], counting: bool, vine:
     return cards.paint(width, card_words(text, label, counting, vine), detail=detail, look=cards.look_of(settings))
 
 
+def paint_fitted(text: str, label: str, settings: dict[str, Any], counting: bool, vine: float | None,
+                 has_vine: bool, detail: float = 1.0):
+    """paint, at the width the words need (card_width): measured on the pictures lane with the painting, not on
+    the render thread (the first measure with the card's font cost the stream timer's wake 35 ms on the PC)."""
+    look = cards.look_of(settings)
+    width = card_width(longest(settings), cards.even(text), label, has_vine, look)
+    return paint(text, label, settings, counting, vine, detail, width)
+
+
 # Telling the app (the source runs on the render thread; these run on the UI thread) ---------------
 
 
@@ -295,7 +304,6 @@ class CountdownSource(Source):
         self._was_done: bool | None = None  # last frame's state, to hear it reach 0
         self._asked_at = 0.0  # when it asked the UI thread to start it over (drawn once that's done)
         self._w = W  # the card on screen (a new width counts once its picture lands)
-        self._widths: tuple[tuple, int] | None = None
         self.status = "ok"
 
     @property
@@ -323,14 +331,6 @@ class CountdownSource(Source):
     def sleep(self) -> None:
         self._frame.release()  # the texture has the picture
 
-    def _width_for(self, text: str, label: str, vine: bool) -> int:
-        """card_width, worked out again only when the digits or words change (not every second)."""
-        look = cards.look_of(self.settings)
-        what = (longest(self.settings), cards.even(text), label, vine, look.key)
-        if self._widths is None or self._widths[0] != what:
-            self._widths = (what, card_width(*what[:4], look))
-        return self._widths[1]
-
     def video_frame(self) -> np.ndarray | None:
         if self._asked_at and time.monotonic() - self._asked_at < RESTART_WAIT:
             return None  # starting over: wait a moment for it rather than flash the old time
@@ -346,8 +346,9 @@ class CountdownSource(Source):
             label = ""  # the Done text says it all ("Starting in" over "Starting now" read twice)
         vine = read["vine"] if settings.get("vine", True) and not read["done"] else None
         gone = hidden(settings, read)
-        width = self._width_for(read["text"], label, read["vine"] is not None and bool(settings.get("vine", True)))
-        key = (width, gone, read["text"], label, read["counting"], vine, cards.look_of(settings).key, self.detail)
+        has_vine = read["vine"] is not None and bool(settings.get("vine", True))
+        key = (longest(settings), has_vine, gone, read["text"], label, read["counting"], vine,
+               cards.look_of(settings).key, self.detail)
         if gone:
             if key == self._shown:
                 return None  # nothing changed: nothing drawn, nothing uploaded
@@ -356,10 +357,10 @@ class CountdownSource(Source):
             self._frame.release()
             return painted.clear_frame(self._w, H)
         self._shown = None
-        frame = self._card.picture(key, paint, read["text"], label, dict(settings), read["counting"], vine,
-                                   self.detail, width)
+        frame = self._card.picture(key, paint_fitted, read["text"], label, dict(settings), read["counting"], vine,
+                                   has_vine, self.detail)
         if frame is not None:
-            self._w = self._card.landed[0]
+            self._w = int(frame.shape[1])  # the card's width as the lane painted it
         return frame
 
 

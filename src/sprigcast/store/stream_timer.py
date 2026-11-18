@@ -242,6 +242,14 @@ def paint(text: str, label: str, settings: dict[str, Any], counting: bool = True
     return cards.paint(width, card_words(text, label, counting), detail=detail, look=cards.look_of(settings))
 
 
+def paint_fitted(text: str, label: str, settings: dict[str, Any], counting: bool = True, detail: float = 1.0):
+    """paint, at the width the words need (timer_width): worked out on the pictures lane with the painting, not
+    on the render thread (the first measure with the card's font cost a wake 35 ms on the PC, 2026-11-18)."""
+    look = cards.look_of(settings)
+    width = timer_width(longest(settings), text, label, look)
+    return paint(text, label, settings, counting, detail, width)
+
+
 # Telling the app (the source runs on the render thread; these run on the UI thread) ---------------
 
 
@@ -339,20 +347,11 @@ class StreamTimerSource(Source):
         self._was_done: bool | None = None  # last frame's countdown state, to hear it reach 0
         self._asked_at = 0.0  # when it asked the UI thread to start it over (drawn once that's done)
         self._w = W  # the card on screen (a new width counts once its picture lands)
-        self._widths: tuple[tuple, int] | None = None  # (what it was worked out from, the width)
         self.status = "ok"
 
     @property
     def size(self) -> tuple[int, int]:
         return self._w, H
-
-    def _width_for(self, text: str, label: str) -> int:
-        """timer_width, worked out again only when the digits or words change (not every second)."""
-        look = cards.look_of(self.settings)
-        what = (longest(self.settings), cards.even(text), label, look.key)
-        if self._widths is None or self._widths[0] != what:
-            self._widths = (what, timer_width(what[0], text, label, look))
-        return self._widths[1]
 
     def start(self) -> None:
         self._came_on()
@@ -391,8 +390,8 @@ class StreamTimerSource(Source):
         if read["done"] and read["text"] != clock_text(0):
             label = ""  # the Done text says it all ("Starting in" over "Starting now" read twice)
         gone = hidden(settings, read)
-        width = self._width_for(read["text"], label)
-        key = (width, gone, read["text"], label, read["counting"], cards.look_of(settings).key, self.detail)
+        key = (longest(settings), gone, read["text"], label, read["counting"], cards.look_of(settings).key,
+               self.detail)
         if gone:
             if key == self._shown:
                 return None  # nothing changed: nothing drawn, nothing uploaded
@@ -401,10 +400,10 @@ class StreamTimerSource(Source):
             self._frame.release()
             return painted.clear_frame(self._w, H)
         self._shown = None
-        frame = self._card.picture(key, paint, read["text"], label, dict(settings), read["counting"], self.detail,
-                                   width)
+        frame = self._card.picture(key, paint_fitted, read["text"], label, dict(settings), read["counting"],
+                                   self.detail)
         if frame is not None:
-            self._w = self._card.landed[0]
+            self._w = int(frame.shape[1])  # the card's width as the lane painted it
         return frame
 
 
