@@ -544,6 +544,7 @@ void drop_gpu(sc_engine &e) {
             e.dev->context->Flush();
         }
         media_card_gone(e.dev->device.Get());
+        sc::writers_leave_device(e.dev->device.Get());  // encoders on it move to memory: the device can go
         sc_device_destroy(e.dev);
         e.dev = nullptr;
     }

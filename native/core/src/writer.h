@@ -25,5 +25,8 @@ int writer_feed_texture(const std::shared_ptr<void> &shared, void *texture, int6
 bool writer_on_card(const std::shared_ptr<void> &shared);
 int64_t writer_last(const std::shared_ptr<void> &shared);  // the newest frame number taken (-1: none)
 bool writer_size(const std::shared_ptr<void> &shared, int *width, int *height);
+// The engine lets go of this ID3D11Device (it rebuilds its own): every writer whose encoder is on it moves to
+// memory at its next step (the file goes on), so nothing keeps the old device alive until the recording ends.
+void writers_leave_device(void *device);
 
 }  // namespace sc

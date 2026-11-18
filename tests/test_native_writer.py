@@ -373,3 +373,28 @@ def test_packets_mode_encodes_and_hands_the_packets_over(player_lib, tmp_path, m
     with av.open(str(path)) as f:
         lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
     assert len(lumas) == 60 and abs(lumas[59] - (16 + 3 * 59)) <= 4
+
+
+def test_frames_keep_coming_while_the_encoder_opens_again(player_lib, tmp_path, monkeypatch, caplog):  # noqa: F811
+    """A graphics reset: the encoder takes about a second to open again (PC 2026-11-18: 1.03 s missing from both
+    files). The queue fills meanwhile; the newest picture stands for the frames that come, so none is lost."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "10")
+    monkeypatch.setenv("SPRIGCAST_WRITER_REOPEN_MS", "700")
+    caplog.set_level("INFO")
+    path = tmp_path / "held.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        for n in range(60):
+            assert writer.video(nv12(16 + 3 * n), n) == sprigcore.SC_OK  # never SC_WRITER_DROPPED
+            time.sleep(1 / 30)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated > 5
+    assert stats.frames_written == 60
+    with av.open(str(path)) as f:
+        assert sum(1 for _ in f.decode(video=0)) >= 59
+    sprigcore.drain_log()
+    assert any("goes on from memory (opened again in" in r.getMessage() for r in caplog.records)
