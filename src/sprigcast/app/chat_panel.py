@@ -51,6 +51,7 @@ NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle"}; an empty Twitch na
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube: a Twitch channel picked by hand
 HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle"}
 KEEP = 300  # messages kept on screen
+MENU_READY_MS = 5000  # after the panel is made: its ⋯ menu made ready (ChatPanel._ready_menu)
 EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
@@ -355,6 +356,7 @@ class ChatPanel(QWidget):
                                 .replace("border-radius: 15px", "border-radius: 10px"))
         self.more.setCursor(Qt.CursorShape.PointingHandCursor)
         self.more.clicked.connect(self._open_menu)
+        QTimer.singleShot(MENU_READY_MS, self, lambda: self._ready_menu() if self.isVisible() else None)
         top.addWidget(self.more)
         root.addLayout(top)
 
@@ -790,9 +792,27 @@ class ChatPanel(QWidget):
     # The ⋯ menu -------------------------------------------------------------------------
 
     def _open_menu(self) -> None:
-        menu = self.build_menu()
-        menu.exec(self.more.mapToGlobal(self.more.rect().bottomLeft()))
-        menu.deleteLater()
+        # Kept and made ready ahead (_ready_menu), opened with popup() (no second event loop in the click): made,
+        # styled and opened in the click it was 151 ms on the PC while live (2026-11-18).
+        self._ready_menu()
+        self._menu.popup(self.more.mapToGlobal(self.more.rect().bottomLeft()))
+
+    def _ready_menu(self) -> None:
+        """The ⋯ menu as it is now, made again only when what it holds changed."""
+        import shiboken6
+
+        kind, _ = self.source()
+        key = (bool(self.reading()), kind, bool(QSettings().value(LINK, "")), bool(self._account()),
+               self.web is not None)
+        menu = getattr(self, "_menu", None)
+        if menu is not None and shiboken6.isValid(menu) and self._menu_key == key:
+            return
+        if menu is not None and shiboken6.isValid(menu):
+            menu.deleteLater()
+        self._menu, self._menu_key = self.build_menu(), key
+        self._menu.ensurePolished()
+        self._menu.adjustSize()
+        self._menu.winId()
 
     def build_menu(self) -> QMenu:
         menu = QMenu(self)

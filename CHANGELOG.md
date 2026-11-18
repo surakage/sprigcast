@@ -158,6 +158,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
   times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to
   make too.
+- Chat's ⋯ menu is kept and made ready ahead instead of made in the click (151 ms). Drop-downs and number boxes
+  keep the wheel rule in their own wheel handling instead of an event filter each, and the Live lists fit their
+  height from their layout instead of a filter, so opening a pop-up no longer sends every one of them through
+  Python (51-63 ms). Panels → Web panels checks Qt WebEngine is there without importing it (51 ms).
 - Death count (v7) makes its stone, numbers and mound ahead, off the render thread, and starts a trip's clock with
   its first picture: the first death's stone came 3.5 s late on the PC, rise and flip unseen. Quick deaths each
   flip in turn (0, 1, 2 instead of 0 then 2); a flood waits for at most three flips.
