@@ -158,6 +158,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
   times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to
   make too.
+- Now playing (v7): Cover glow's sound dots didn't move (PC test 2026-11-18). Its wide row had dots half the row
+  tall, and a bar stayed a dot until the music passed that height. Bars are now at most 0.3 of the row wide and
+  grow up from their dot with the level, so every style moves with quiet music too.
 - Death count (v8) and Snap (v7): a death while a Snap polaroid was up waited, frozen with the rest of the screen,
   until the polaroid left, then jumped to its last number with no rise (PC test 2026-11-18). Snap's freeze now
   leaves Death count moving, so each death rises and flips in turn.
