@@ -359,7 +359,8 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
     dialog = sdd.StreamDetailsDialog(None, ["kick", "twitch"])
     assert time.time() - started < 0.15  # it doesn't wait on the web
     pane = dialog.panes["kick"]
-    assert list(dialog.chips) == ["kick", "twitch", "youtube"]
+    assert list(dialog.chips) == ["kick", "twitch"]  # only where you stream
+    assert len({chip.width() for chip in dialog.chips.values()}) == 1
     assert not dialog.save_button.isEnabled()
     assert _wait(dialog, lambda: pane.loaded)
     assert pane.title.text() == "Hi" and pane.category.text() == "Art"
@@ -375,6 +376,17 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
     assert dialog.panes["twitch"].signed_out.isVisibleTo(dialog)
     assert dialog.panes["twitch"].sign_in.text() == "Connect Twitch"
     assert not dialog.save_button.isEnabled()
+    dialog.done(0)
+    dialog.deleteLater()
+
+
+def test_no_streaming_places_means_no_chips(monkeypatch):
+    from sprigcast.app import stream_details_dialog as sdd
+
+    monkeypatch.setattr(sd, "load", lambda service: pytest.fail("nothing to read"))
+    dialog = sdd.StreamDetailsDialog(None, ["custom"])
+    assert dialog.chips == {} and not dialog.save_button.isEnabled()
+    dialog._save()
     dialog.done(0)
     dialog.deleteLater()
 
