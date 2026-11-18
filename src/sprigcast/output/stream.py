@@ -504,7 +504,36 @@ class StreamSession:
             if key is not None:
                 groups.setdefault(key, []).append(t)
         done: set[int] = set()
+        # Twitch Enhanced Broadcasting first: a destination wanting one of its qualities' pictures (YouTube or Kick
+        # at the same canvas, size and frame rate) sends that quality's packets, with no encoder of its own.
+        enhanced: list = []
+        for t in targets:
+            if t.enhanced is not None:
+                st, mine = cls._one(t, codec, encoder, delay_s, start_time)
+                taps += mine
+                owned[id(st)] = mine
+                enhanced.append((t.canvas.id, st))
+                done.add(id(t))
+        qualities = {(tr.canvas.id, (tr.cfg.width, tr.cfg.height), tr.fps): tr.encoder
+                     for _, st in enhanced for tr in getattr(st, "tracks", ()) if getattr(st, "native", False)}
+        borrowed_encoders: list = []
         for (canvas_id, size, fps, kbps, auto), group in groups.items():
+            borrowed = qualities.get((canvas_id, size, fps))
+            if borrowed is not None:
+                for t in group:
+                    link = StreamLink(t.name, t.server, t.key, borrowed, t.bandwidth_test)
+                    link.output_id = t.output_id or t.name
+                    link.delay_s = delay_s
+                    borrowed.links.append(link)
+                    streamers.append((canvas_id, link))
+                    done.add(id(t))
+                    link.start()
+                if all(borrowed is not b for b in borrowed_encoders):
+                    borrowed_encoders.append(borrowed)  # its links need sound: it encodes the stream's mix too
+                log.info("%s send%s Twitch's %dx%d quality (%d kbps): no encoder of their own",
+                         ", ".join(t.name for t in group), "" if len(group) > 1 else "s", size[0], size[1],
+                         borrowed.bitrate_kbps)
+                continue
             if len(group) < 2 and not share_all:
                 continue
             c = group[0].canvas
@@ -531,15 +560,17 @@ class StreamSession:
             taps += mine
             owned[id(st)] = mine
             streamers.append((t.canvas.id, st))
+        streamers += enhanced  # last: stopping, the links sending its qualities end before its encoders do
         session = cls(engine, streamers)
         session.taps = taps
         session.shared = shared
+        session.borrowed = borrowed_encoders
         session.owned = owned
         for canvas_id, callback, *size in taps:
             engine.add_frame_tap(canvas_id, callback, *size)
         for _, st in streamers:
             engine.mixer.add_tap(st.push_audio, ("stream",))
-        for enc in shared:
+        for enc in [*shared, *borrowed_encoders]:
             engine.mixer.add_tap(enc.push_audio, ("stream",))
         return session
 
@@ -551,7 +582,7 @@ class StreamSession:
         c = t.canvas
         if t.enhanced is not None:
             st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
-            taps = [(canvas_id, st.push_for(canvas_id)) for canvas_id in st.canvas_ids()]
+            taps = st.frame_taps()
         else:
             fps = min(t.fps or c.fps, c.fps)
             st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
@@ -642,7 +673,7 @@ class StreamSession:
             self.shared = list(shared)
         for _, st in self.streamers:
             self.engine.mixer.remove_tap(st.push_audio)
-        for enc in shared:
+        for enc in [*shared, *getattr(self, "borrowed", [])]:
             self.engine.mixer.remove_tap(enc.push_audio)
 
         def finish():

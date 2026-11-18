@@ -101,3 +101,117 @@ def test_a_lone_stream_gets_a_shared_encoder_on_the_writer(native):
     finally:
         session.stop()
     assert engine.frame_taps == [] and engine.mixer.taps == []
+
+
+def test_enhanced_broadcasting_tracks_encode_on_writers_with_aligned_keyframes(native, tmp_path):
+    """Each quality of an Enhanced Broadcasting stream is a packets-mode writer the engine feeds at its size; the
+    keyframes still land at the same instants on every track and carry the broadcast metrics."""
+    import time
+
+    import numpy as np
+    from test_enhanced import ANSWER
+
+    from sprigcast.core.scene import Canvas
+    from sprigcast.output import enhanced as e
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+    from sprigcast.render.engine import Frame
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    start = time.perf_counter()
+    st = EnhancedStreamer("Twitch", cfg, [h, v], start, user_key="live_user")
+    assert st.native
+    st._url = str(tmp_path / "out.flv")
+    taps = st.frame_taps()
+    assert [(c, size) for c, _cb, size in taps] == [("horizontal", (640, 360)), ("horizontal", (320, 180)),
+                                                     ("vertical", (360, 640))]
+    st.start()
+    for t in st.tracks:
+        assert t.encoder.wait_open()
+    for i in range(75):
+        when = start + 0.01 + i / 30
+        while time.perf_counter() < when:
+            time.sleep(0.002)
+        for c in (h, v):
+            data = np.full((c.height, c.width, 4), i * 3 % 255, np.uint8).tobytes()
+            for canvas_id, callback, _size in taps:
+                if canvas_id == c.id:
+                    callback(Frame(c.id, c.width, c.height, data, when))
+        st.push_audio(np.zeros((1600, 2), np.float32))
+    st.stop()
+    assert st.error is None, st.error
+    assert all(not t.encoder.running and t.encoder.error is None for t in st.tracks)
+    assert st.frames > 30
+
+    import av
+
+    with av.open(str(tmp_path / "out.flv")) as c:
+        sizes = [(s.codec_context.width, s.codec_context.height) for s in c.streams.video]
+        assert sizes == [(640, 360), (320, 180), (360, 640)]
+        keys, tagged = {}, []
+        for p in c.demux(video=list(range(3))):
+            if p.is_keyframe:
+                keys.setdefault(p.stream.index, []).append(round(float(p.pts * p.time_base), 2))
+                tagged.append(e.BPM_ERM_UUID in bytes(p))
+    assert keys[0] == keys[1] == keys[2] and len(keys[0]) >= 2, keys
+    assert all(tagged)
+
+
+def test_youtube_at_a_twitch_quality_sends_its_packets_without_an_encoder_of_its_own(native, tmp_path, monkeypatch):
+    """With Enhanced Broadcasting on the engine, another destination wanting the same picture as one of Twitch's
+    qualities (canvas, size, frame rate) sends that quality's packets: no extra encoder."""
+    import time
+
+    import numpy as np
+    from test_enhanced import ANSWER
+
+    from sprigcast.core.scene import Canvas
+    from sprigcast.output import enhanced as e
+    from sprigcast.render.engine import Frame
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    twitch = stream_mod.StreamTarget("Twitch", h, "rtmp://x/app", "live_user", 6000, output_id="tw")
+    twitch.enhanced, twitch.canvases = cfg, [h, v]
+    youtube = stream_mod.StreamTarget("YouTube", h, "rtmp://y/app", "yt", 8000, output_id="yt")
+    paths = {"tw": tmp_path / "tw.flv", "yt": tmp_path / "yt.flv"}
+    monkeypatch.setattr("sprigcast.output.shared_stream.StreamLink._default_open",
+                        lambda self, url: av.open(str(paths["yt"]), "w", format="flv"))
+    engine = stream_tests._Engine()
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+
+    real_init = EnhancedStreamer.__init__
+
+    def init(self, *a, **k):
+        real_init(self, *a, **k)
+        self._url = str(paths["tw"])
+    monkeypatch.setattr(EnhancedStreamer, "__init__", init)
+    session = stream_mod.StreamSession.start(engine, [twitch, youtube], "libx264")
+    try:
+        assert session.shared == [] and len(session.borrowed) == 1  # YouTube rides Twitch's 640x360 quality
+        assert len(engine.frame_taps) == 3 and len(engine.mixer.taps) == 3  # Twitch's 3 qualities; 2 streams + 1
+        start = time.perf_counter()
+        for i in range(75):
+            when = start + 0.01 + i / 30
+            while time.perf_counter() < when:
+                time.sleep(0.002)
+            for c in (h, v):
+                data = np.full((c.height, c.width, 4), i * 3 % 255, np.uint8).tobytes()
+                for canvas_id, callback in list(engine.frame_taps):
+                    if canvas_id == c.id:
+                        callback(Frame(c.id, c.width, c.height, data, when))
+            for tap in list(engine.mixer.taps):
+                tap(np.zeros((1600, 2), np.float32))
+        yt = next(st for _, st in session.streamers if getattr(st, "output_id", "") == "yt")
+        assert yt.connected
+    finally:
+        session.stop()
+    assert engine.frame_taps == [] and engine.mixer.taps == []
+    with av.open(str(paths["yt"])) as f:
+        assert sorted(s.type for s in f.streams) == ["audio", "video"]
+        assert sum(1 for _ in f.decode(video=0)) > 20
+    with av.open(str(paths["yt"])) as f:
+        sent = [bytes(p) for p in f.demux(video=0) if p.size]
+    assert sent and not any(e.BPM_ERM_UUID in b for b in sent)  # Twitch's metrics stay Twitch's

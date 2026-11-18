@@ -261,7 +261,14 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   so the camera closing or Python letting go of its own view can never leave the engine writing into freed memory.
   A recording or stream sharing that output keeps it, and the camera then takes Python's frames as before.
   `SPRIGCAST_NO_LINK=1` turns it off with the other links.
-- Next: Enhanced Broadcasting's tracks fed by the engine.
+- **Enhanced Broadcasting's qualities on writers (step 7).** With the native engine each quality of a Twitch
+  Enhanced Broadcasting stream is a packets-mode writer (`output/enhanced_stream.py` `_TrackEncoder`): the engine
+  makes its frames at that quality's size and links them to it, so no picture is converted or encoded in Python.
+  In packets mode a writer keys the first picture at or past every keyint of the frame numbers, so all qualities
+  key at the same instants (Twitch needs that). Python tags each keyframe with the broadcast metrics, puts the
+  packets on the connection's clock (a reconnect starts from the next keyframe), lets them go while the network
+  can't keep up and sends them; the sound is encoded as before. `SPRIGCAST_NO_PACKET_WRITER=1` keeps the old way.
+- Phase 4 is code-complete; next is the PC test of phases 1-4 on a build.
 
 ## Phases
 
@@ -272,7 +279,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
-| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
+| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
 | 5 | Sound: devices, mixer, filters, sync | |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
 | 7 | Capture and camera inside the engine | |

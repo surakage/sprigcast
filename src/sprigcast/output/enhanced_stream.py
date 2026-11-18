@@ -19,7 +19,14 @@ from fractions import Fraction
 
 from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock
 from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE, encoder_hwaccel
-from sprigcast.output.stream import MAX_BACKLOG, RESUME_BACKLOG, Streamer, log_live
+from sprigcast.output.shared_stream import SharedStreamEncoder
+from sprigcast.output.stream import (
+    MAX_BACKLOG,
+    RESUME_BACKLOG,
+    Streamer,
+    engine_encodes_streams,
+    log_live,
+)
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +57,42 @@ class _Track:
                 break
 
 
+class _TrackEncoder(SharedStreamEncoder):
+    """One quality of an Enhanced Broadcasting stream, encoded by the native engine's writer on its own thread
+    (packets mode): the engine hands it frames at the track's size itself, and each packet goes to the stream
+    (EnhancedStreamer._from_track). Keyframes come every keyint seconds of stream time on every track alike
+    (the writer keys the first picture at or past each multiple).
+
+    Other destinations wanting the same picture (YouTube, Kick... at this quality's canvas, size and frame rate)
+    send these same packets as links (StreamSession.start): no extra encoder for them."""
+
+    def __init__(self, owner: EnhancedStreamer, track: _Track, start_time: float):
+        from sprigcast.core.scene import EncoderSettings
+
+        cfg = track.cfg
+        settings = EncoderSettings(keyint_sec=max(1, cfg.keyint_sec), b_frames=max(0, cfg.max_b_frames))
+        super().__init__(track.canvas, track.fps, cfg.bitrate_kbps, cfg.encoder, start_time, (cfg.width, cfg.height),
+                         settings)
+        self.owner, self.track = owner, track
+
+    def request_keyframe(self) -> None:
+        pass  # a link joining waits for the next keyframe: Twitch needs every quality to key at the same instants
+
+    def _video_options(self) -> dict[str, str]:
+        return dict(self.track.cfg.options)
+
+    def _session(self) -> None:
+        if not self.uses_writer():
+            raise RuntimeError("the engine's writer isn't available")
+        if not self._writer_session():
+            raise RuntimeError("the engine's writer couldn't start this quality")
+
+    def _on_packet(self, p) -> None:
+        self.owner._from_track(self.track, p)
+        if self.links:
+            super()._on_packet(p)
+
+
 class EnhancedStreamer(Streamer):
     def __init__(self, name: str, config: EnhancedConfig, canvases: list, start_time: float,
                  user_key: str = ""):
@@ -68,6 +111,15 @@ class EnhancedStreamer(Streamer):
         self._lock = threading.Lock()
         self._rendered = 0  # renders of the main canvas offered to this stream
         self._worker_error: Exception | None = None
+        # With the native engine each quality is encoded by the engine's writer from frames the engine makes at
+        # its size (no picture passes through Python); Python only tags keyframes and sends the packets.
+        self.native = engine_encodes_streams()
+        self._live = None  # (container, session start in perf_counter seconds) while connected, native only
+        if self.native:
+            for track in self.tracks:
+                track.encoder = _TrackEncoder(self, track, start_time)
+                track.skipped = 0
+            self._video = self.tracks[0].encoder._video  # health checks look at the main quality's queue
 
     # Called from the render thread -----------------------------------------------------
 
@@ -77,6 +129,30 @@ class EnhancedStreamer(Streamer):
     def push_for(self, canvas_id: str):
         """A frame-tap callback for one canvas."""
         return lambda frame: self._push(canvas_id, frame)
+
+    def frame_taps(self) -> list[tuple]:
+        """(canvas id, callback, NV12 size or None) for each frame tap this stream needs (StreamSession)."""
+        if self.native:
+            return [(t.canvas.id, t.encoder.push_frame, t.encoder.gpu_size) for t in self.tracks]
+        return [(canvas_id, self.push_for(canvas_id)) for canvas_id in self.canvas_ids()]
+
+    def start(self) -> None:
+        if self.native:
+            for track in self.tracks:
+                track.encoder.start()
+        super().start()
+
+    def _run(self) -> None:
+        try:
+            super()._run()
+        finally:
+            if self.native:
+                self._stop_encoders()  # also when it ended between connections
+
+    def _stop_encoders(self, timeout: float = 15.0) -> None:
+        for track in self.tracks:
+            if track.encoder.running:
+                track.encoder.stop(timeout)
 
     def push_frame(self, frame) -> None:  # single-canvas callers (and tests)
         self._push(self.tracks[0].canvas.id, frame)
@@ -210,6 +286,8 @@ class EnhancedStreamer(Streamer):
                 log_live(self)
 
     def _session(self) -> None:
+        if self.native:
+            return self._native_session()
         container, finished = None, False
         try:
             container, audio = self._open()
@@ -244,6 +322,119 @@ class EnhancedStreamer(Streamer):
                     if finished:
                         raise
                     log.warning("closing stream %s failed: %s", self.name, self.redact(str(exc)))
+
+    # Native engine: the tracks' writers encode, packets come here ----------------------------------------------------
+
+    def _native_session(self) -> None:
+        container, finished = None, False
+        try:
+            container = self._open_container()
+            deadline = time.monotonic() + 15
+            for track in self.tracks:
+                enc = track.encoder
+                while enc._templates is None:  # its writer is still opening
+                    if enc.error is not None:
+                        raise RuntimeError(f"quality {track.index + 1}: {enc.error}")
+                    if self._stop.is_set():
+                        return
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(f"quality {track.index + 1}'s encoder did not start")
+                    time.sleep(0.02)
+            for track in self.tracks:
+                track.stream = container.add_stream_from_template(track.encoder._templates[0])
+                track.started = False
+            audio = container.add_stream("aac", rate=SAMPLE_RATE)
+            audio.layout = "stereo"
+            audio.bit_rate = self.config.audio_kbps * 1000
+            self._send_q = queue.Queue()
+            self._send_error = None
+            self._backlog_bytes = 0
+            self._delay_line = self._new_delay_line(self._send_q)
+            self._sender = threading.Thread(
+                target=self._send_loop, args=(container,), name=f"sprigcast-send-{self.name}", daemon=True
+            )
+            self._sender.start()
+            self._live = (container, self.start_time)  # the tracks' packets go out from their next keyframe
+            while not self._stop.is_set():
+                self._write_audio(container, audio)
+                for track in self.tracks:
+                    if track.encoder.error is not None:
+                        raise RuntimeError(f"quality {track.index + 1}: {track.encoder.error}")
+                if self._send_error is not None:
+                    raise self._send_error
+                time.sleep(0.01)
+            self._stop_encoders()  # their last packets go out before the stream's end
+            self._live = None
+            self._write_audio(container, audio)
+            self._mux(container, audio.encode(None))
+            finished = True
+        finally:
+            self._live = None
+            if container is not None and self._sender is not None and self._before_close(container):
+                try:
+                    container.close()
+                except Exception as exc:
+                    if finished:
+                        raise
+                    log.warning("closing stream %s failed: %s", self.name, self.redact(str(exc)))
+
+    def _from_track(self, track: _Track, p) -> None:
+        """A packet from a track's writer (its encoder thread): from the track's first keyframe since this
+        connection began, on the connection's clock, keyframes tagged with the broadcast metrics."""
+        import av
+
+        live = self._live
+        if live is None or p.kind != "video":
+            return
+        container, began = live
+        enc = track.encoder
+        offset = round((began - enc.start_time) / p.time_base)  # the connection's 0 in this track's frame numbers
+        if p.pts is not None and p.pts < offset:
+            return  # encoded before this connection
+        if self._congested_for(track, p):
+            return
+        if not track.started:
+            if not p.keyframe:
+                return
+            track.started = True
+        data = p.payload()
+        track.frames += 1
+        if p.keyframe:
+            now = time.time()
+            data += bpm_sei(
+                track.metrics, cts=now, fer=now, ferc=now, pir=now,
+                session=(self._rendered, 0, sum(t.dropped for t in self.tracks), sum(t.frames for t in self.tracks)),
+                rendition=(enc.frames, track.dropped, track.frames),
+            )
+        packet = av.Packet(data)
+        packet.pts = None if p.pts is None else p.pts - offset
+        packet.dts = None if p.dts is None else p.dts - offset
+        packet.time_base = p.time_base
+        packet.is_keyframe = p.keyframe
+        packet.stream = track.stream
+        if track.index == 0:
+            self.frames, self.dropped, self._rendered = track.frames, track.dropped, enc.frames + enc.dropped
+            self.encode_seconds = enc.encode_seconds
+        self._mux(container, [packet])
+
+    def _congested_for(self, track: _Track, p) -> bool:
+        """The network can't keep up: this track's packets are let go until it can, then it goes on from a
+        keyframe (all tracks key at the same instants, so they come back together)."""
+        track.dropped = track.encoder.dropped + track.skipped
+        if not self.connected:
+            return False
+        backlog = self.backlog_seconds()
+        if getattr(track, "skipping", False):
+            if backlog < RESUME_BACKLOG and p.keyframe:
+                track.skipping = False
+                return False
+            track.skipped += 1
+            return True
+        if backlog > MAX_BACKLOG:
+            track.skipping = True
+            track.skipped += 1
+            return True
+        return False
 
     def _track_loop(self, container, track: _Track) -> None:
         try:
