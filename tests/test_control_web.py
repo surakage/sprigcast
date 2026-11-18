@@ -93,3 +93,28 @@ def test_one_port_serves_links_and_websockets():
         ws.close()
         sock.close()
         server.stop()
+
+
+def test_api_bloom_families_in_one_pass_match_linked_with():
+    """The API's look at what changed asked linked_with scene by scene (409 ms on the PC with a big garden)."""
+    import random
+    from types import SimpleNamespace
+
+    from sprigcast.control.native import NativeApi
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection
+
+    rng = random.Random(7)
+    for _ in range(200):
+        shapes = ["horizontal", "vertical", "third"][:rng.randint(1, 3)]
+        n = rng.randint(1, 20)
+        scenes = [Scene(id=f"s{i}", name=f"S{i}", canvas=rng.choice(shapes), kind=rng.choice(["show", "show", "part"]))
+                  for i in range(n)]
+        for s in scenes:
+            if rng.random() < 0.5:
+                s.linked_to = f"s{rng.randrange(n)}"
+        col = SceneCollection(canvases=[Canvas(id=c, width=10, height=10) for c in shapes], scenes=scenes)
+        api = NativeApi.__new__(NativeApi)
+        api.host = SimpleNamespace(collection=col)
+        families = api._families()
+        for s in scenes:
+            assert [x.id for x in families[s.id]] == [x.id for x in col.linked_with(s.id)]

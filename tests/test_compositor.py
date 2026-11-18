@@ -394,8 +394,36 @@ def test_a_sleeping_sources_texture_waits_for_it_to_wake(compositor):
     compositor.forget("gif")
     compositor.upload("other", np.zeros((4, 4, 3), np.uint8))  # another size or kind: a texture of its own
     assert compositor.textures["other"] is not tex
-    compositor.prune(now=time.monotonic() + compositor.SPARE_KEEP_S + 1)  # not wanted for a minute: freed
-    assert compositor._take_spare_texture((8, 6), 4) is None
+    compositor.prune(now=time.monotonic() + compositor.SPARE_KEEP_S + 1)  # not wanted for a minute: a small
+    assert compositor._take_spare_texture((8, 6), 4) is tex  # picture's stays (made again, a wake frame waited)
+    compositor.textures["gif"] = tex
+    compositor.forget("gif")
+    big = compositor.SMALL_TEXTURE_BYTES // 4 + 1  # pixels: one more than a small picture has
+    compositor.upload("big", np.zeros((1, big, 4), np.uint8))
+    compositor.forget("big")
+    compositor.prune(now=time.monotonic() + compositor.SPARE_KEEP_S + 1)
+    assert compositor._take_spare_texture((big, 1), 4) is None  # a big one goes after a minute
+    assert compositor._take_spare_texture((8, 6), 4) is tex
+
+
+def test_small_spare_textures_kept_only_up_to_their_share():
+    """Past a minute, only the newest small spares stay, SMALL_KEEP_BYTES of them; the rest are freed."""
+    import time
+
+    from sprigcast.render.compositor import Compositor
+
+    class Tex:
+        components = 4
+
+        def __init__(self, size):
+            self.size = size
+
+    comp = Compositor.__new__(Compositor)
+    now = time.monotonic()
+    side = 1024  # 4 MB each: four fit SMALL_KEEP_BYTES
+    comp._spare_textures = [(Tex((side, side)), now - 100 + i) for i in range(6)]
+    old = comp._old_spare_textures(now)
+    assert old == [t for t, _ in comp._spare_textures[:2]][::-1]  # the two oldest
 
 
 def test_spares_past_their_time_are_freed_a_few_each_frame():

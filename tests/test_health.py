@@ -228,3 +228,23 @@ def test_garden_check_reuses_rows_and_goes_away_when_closed(app):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert not [c for c in parent.children() if type(c).__name__ == "PopUp"]
     parent.deleteLater()
+
+
+def test_garden_rows_change_in_place_while_live(app):
+    """Live, a place's line says its kbps each second: the row's words change, the row isn't made again, and a tile's
+    colour is a property the page's style picks (no style sheet of its own)."""
+    from sprigcast.app.garden_check import GardenCheckPage, GardenSnapshot
+
+    snaps = [GardenSnapshot(cpu=5.0, ram_mb=200, rows=[("Twitch", "Main · 6000 kbps", "good", "Good")])]
+    page = GardenCheckPage(lambda: snaps[-1], [])
+    row = page.rows.itemAt(0).widget()
+    dot, title, info, state = row.parts
+    snaps.append(GardenSnapshot(cpu=6.0, ram_mb=200, dropped=3,
+                                rows=[("Twitch", "Main · 5800 kbps", "warning", "Slow")]))
+    page.refresh()
+    assert page.rows.itemAt(0).widget() is row and info.text() == "Main · 5800 kbps" and state.text() == "Slow"
+    assert state.property("level") == "warning" and dot.property("level") == "warning"
+    assert page.values["dropped"].property("tone") == "warn" and page.values["dropped"].styleSheet() == ""
+    snaps.append(GardenSnapshot(rows=[]))
+    page.refresh()
+    assert page.rows.count() == 1 and page.rows.itemAt(0).widget().text() == "No places to stream yet."

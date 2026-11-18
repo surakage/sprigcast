@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import shiboken6
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QFrame,
@@ -69,16 +70,17 @@ class GardenSnapshot:
 
 
 def _tile(label: str) -> tuple[QFrame, QLabel]:
+    """Styled by the page (ROW_STYLE): three style sheets of its own per tile were 24 for the eight."""
     tile = QFrame()
     tile.setObjectName("gardenTile")
-    tile.setStyleSheet(f"#gardenTile {{ background: {theme.RAISED}; border-radius: 14px; }}")
     box = QVBoxLayout(tile)
     box.setContentsMargins(14, 10, 14, 12)
     box.setSpacing(2)
     small = QLabel(label)
-    small.setStyleSheet(f"color: {theme.MUTED}; font-size: 12px; background: transparent;")
+    small.setObjectName("tileName")
     big = QLabel("–")
-    big.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 18px; font-weight: 700; background: transparent;")
+    big.setObjectName("tileValue")
+    big.setProperty("tone", "bright")
     box.addWidget(small)
     box.addWidget(big)
     return tile, big
@@ -86,8 +88,16 @@ def _tile(label: str) -> tuple[QFrame, QLabel]:
 
 def _section(text: str) -> QLabel:
     label = QLabel(text)
-    label.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 15px; font-weight: 700; background: transparent;")
+    label.setObjectName("gardenSection")  # styled by the page (ROW_STYLE)
     return label
+
+
+def _restyle(widget: QWidget, name: str, value: str) -> None:
+    """A new value for a property the page's style picks colours by, shown straight away."""
+    widget.setProperty(name, value)
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
 
 
 CHIP_OK = (f"color: {theme.ACCENT}; background: {theme.SELECT_BG}; border-radius: 13px; padding: 0 12px;"
@@ -125,6 +135,7 @@ class GardenCheckPage(QWidget):
         title = QLabel("Garden check")
         title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 22px; font-weight: 700; background: transparent;")
         self.mood = QLabel("")
+        self.mood.setObjectName("gardenMood")
         words.addStretch(1)
         words.addWidget(title)
         words.addWidget(self.mood)
@@ -148,6 +159,7 @@ class GardenCheckPage(QWidget):
         grid = QGridLayout()
         grid.setSpacing(10)
         self.values: dict[str, QLabel] = {}
+        self._shown: dict[str, tuple[str, str]] = {}
         for i, (key, label) in enumerate(self.TILES):
             tile, value = _tile(label)
             grid.addWidget(tile, i // 4, i % 4)
@@ -223,34 +235,47 @@ class GardenCheckPage(QWidget):
         if getattr(self, "_level", None) != level:  # once a second: restyle only when the mood changes
             self._level = level
             self.mood.setText(line)
-            self.mood.setStyleSheet(f"color: {LEVEL_COLOURS[level]}; font-weight: 600; background: transparent;")
+            _restyle(self.mood, "level", level)  # coloured by the page's style (ROW_STYLE)
             self.sloth.set_art(picture)
 
-        def put(key: str, text: str, colour: str = theme.TEXT_BRIGHT) -> None:
+        shown = self._shown  # what each tile says and its tone, kept here: no asking Qt each second
+
+        def put(key: str, text: str, tone: str = "bright") -> None:
+            if shown.get(key) == (text, tone):
+                return
+            was = shown.get(key, ("–", "bright"))
+            shown[key] = (text, tone)
             label = self.values[key]
-            if label.text() != text:
+            if was[0] != text:
                 label.setText(text)
-            style = f"color: {colour}; font-size: 18px; font-weight: 700; background: transparent;"
-            if label.styleSheet() != style:  # a new stylesheet re-polishes: only when the colour changes
-                label.setStyleSheet(style)
+            if was[1] != tone:  # re-polishes: only when the colour changes
+                _restyle(label, "tone", tone)
 
         put("cpu", f"{s.cpu:.1f}%" if s.cpu is not None else "–")
         put("ram", f"{s.ram_mb:.0f} MB" if s.ram_mb is not None else "–")
         put("gpu", f"{s.gpu:.0f}%" if s.gpu is not None else "–")
         put("disk", f"{s.disk_gb:.0f} GB" if s.disk_gb is not None else "–",
-            theme.WARN if s.disk_gb is not None and s.disk_gb < 10 else theme.TEXT_BRIGHT)
-        put("dropped", f"{s.dropped}", theme.WARN if s.dropped else theme.TEXT_BRIGHT)
+            "warn" if s.disk_gb is not None and s.disk_gb < 10 else "bright")
+        put("dropped", f"{s.dropped}", "warn" if s.dropped else "bright")
         put("render", f"{s.render_ms:.1f} ms" if s.render_ms is not None else "–")
         put("upload", f"{s.upload_kbps / 1000:.1f} Mbps" if s.upload_kbps else "Not live",
-            theme.MUTED if s.upload_kbps is None else theme.TEXT_BRIGHT)
-        put("recording", s.recording or "Off", theme.LIVE_TEXT if s.recording else theme.MUTED)
+            "muted" if s.upload_kbps is None else "bright")
+        put("recording", s.recording or "Off", "live" if s.recording else "muted")
         self._show_overload(s.overload)
 
         # Rows and chips are made again only when what they say changes, not every second.
         lists = (tuple(s.rows), tuple(s.checks))
-        if getattr(self, "_lists", None) == lists:
+        before = getattr(self, "_lists", None)
+        if before == lists:
             return
         self._lists = lists
+        if before is not None and before[1] == lists[1] and len(before[0]) == len(lists[0]) and lists[0]:
+            # Live, each place's line says its kbps: the same rows with new words, changed in place. Made again
+            # each second they were 110-160 ms a second on the PC while live (2026-11-18).
+            for parts, old_row, new_row in zip(self._row_parts, before[0], lists[0]):
+                self._update_row(parts, old_row, new_row)
+            return
+        self._row_parts: list[tuple[QLabel, QLabel, QLabel, QLabel]] = []
         while self.rows.count():
             widget = self.rows.takeAt(0).widget()
             if widget is not None:
@@ -258,6 +283,7 @@ class GardenCheckPage(QWidget):
                 widget.deleteLater()
         for i, (name, detail, row_level, word) in enumerate(s.rows):
             row = self._row(name, detail, row_level, word, first=i == 0)
+            self._row_parts.append(row.parts)
             self.rows.addWidget(row)
             row.show()
         if not s.rows:
@@ -351,10 +377,38 @@ class GardenCheckPage(QWidget):
         line.addWidget(title)
         line.addWidget(info, 1)
         line.addWidget(state)
+        row.parts = (dot, title, info, state)
         return row
 
+    @staticmethod
+    def _update_row(parts: tuple[QLabel, QLabel, QLabel, QLabel], old: tuple, new: tuple) -> None:
+        """A row's words and colour from `old` to `new` (name, detail, level, word), changing only what differs."""
+        dot, title, info, state = parts
+        if not all(shiboken6.isValid(w) for w in parts):
+            return
+        name, detail, level, word = new
+        if name != old[0]:
+            title.setText(name)
+        if detail != old[1]:
+            info.setText(detail)
+        if word != old[3]:
+            state.setText(word)
+        if level != old[2]:
+            level = level if level in LEVEL_COLOURS else "idle"
+            _restyle(dot, "level", level)
+            _restyle(state, "level", level)
 
+
+TONES = {"bright": theme.TEXT_BRIGHT, "warn": theme.WARN, "muted": theme.MUTED, "live": theme.LIVE_TEXT}
 ROW_STYLE = (
+    f"#gardenTile {{ background: {theme.RAISED}; border-radius: 14px; }}"
+    f"#tileName {{ color: {theme.MUTED}; font-size: 12px; background: transparent; }}"
+    "#tileValue { font-size: 18px; font-weight: 700; background: transparent; }"
+    + "".join(f'#tileValue[tone="{tone}"] {{ color: {colour}; }}' for tone, colour in TONES.items())
+    + f"#gardenSection {{ color: {theme.TEXT_BRIGHT}; font-size: 15px; font-weight: 700; background: transparent; }}"
+    "#gardenMood { font-weight: 600; background: transparent; }"
+    + "".join(f'#gardenMood[level="{lv}"] {{ color: {colour}; }}' for lv, colour in LEVEL_COLOURS.items())
+    +
     "#healthRow { background: transparent; border: none; }"
     f'#healthRow[ruled="true"] {{ border-top: 1px solid {theme.EDGE}; }}'
     "#healthDot { background: transparent; font-size: 10px; }"
