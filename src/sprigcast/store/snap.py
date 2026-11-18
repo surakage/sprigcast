@@ -38,9 +38,9 @@ from sprigcast.plugin_hooks import on_air, register_before_screenshot, register_
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "snap", "name": "Snap", "version": 6, "adds": "Source",
+PLUGIN = {"id": "snap", "name": "Snap", "version": 7, "adds": "Source",
           "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot.",
-          "new": "Lighter: its animation is drawn by SprigCast's engine."}
+          "new": "A Death count keeps moving while the screen holds still."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down
@@ -625,13 +625,16 @@ def still_items(col, scene, keep: set[str], canvas: str, seen: frozenset = froze
     return out
 
 
-def _not_shown_in_screenshots(col) -> set[str]:
+def _not_held(col) -> set[str]:
+    """What keeps moving through the freeze: Snap, what isn't in screenshots, and pop-ups that say holds_still =
+    False (Death count: frozen, two quick deaths showed nothing until the polaroid left, then the last number)."""
     from sprigcast.core.source import source_class
 
     out = set()
     for source in col.sources:
         cls = source_class(source.kind)
-        if source.kind == "snap" or (cls is not None and not getattr(cls, "in_screenshots", True)):
+        if source.kind == "snap" or (cls is not None and (not getattr(cls, "in_screenshots", True)
+                                                          or not getattr(cls, "holds_still", True))):
             out.add(source.id)
     return out
 
@@ -645,7 +648,7 @@ def before_screenshot(api, shapes: list[str]):
     hold, let_go = getattr(api.host, "hold", None), getattr(api.host, "let_go", None)
     if not snaps or hold is None or let_go is None:
         return None
-    keep = _not_shown_in_screenshots(col)
+    keep = _not_held(col)
     ids: list[str] = []
     for canvas_id in shapes:
         scene = col.active_scene(canvas_id)

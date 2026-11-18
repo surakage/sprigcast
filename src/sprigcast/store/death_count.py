@@ -38,9 +38,9 @@ from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 7, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 8, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down.",
-          "new": "The first death shows at once, and quick deaths each flip in turn."}
+          "new": "Deaths show at once even while a Snap polaroid is up, and quick deaths each flip in turn."}
 
 KIND = "death_count"
 W, H = 800, 1000  # the box (same as Snap's, so it sits the same way on both shapes)
@@ -144,6 +144,7 @@ class DeathCountSource(Source):
     label = "Death count"
     defaults = {"count": 0, "label": "Deaths", "seconds": 3.0}
     sleeps = False  # a death can come while it's hidden; it costs nothing until then
+    holds_still = False  # Snap's freeze leaves it moving: a death while a polaroid is up rises then, not after
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
