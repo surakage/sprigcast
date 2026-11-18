@@ -13,18 +13,30 @@ from sprigcast.app.health import HealthRecord, duration
 LEVEL_COLOURS = {"good": theme.ACCENT, "warning": theme.WARN, "bad": theme.BAD}
 
 
+# The page's look in one style sheet, picked by object names and a "level" property: three style sheets per tile
+# and two per place were the Last streams page's 253 ms on the PC while live (2026-11-18).
+PAGE_STYLE = (
+    f"#healthTile {{ background: {theme.RAISED}; border-radius: 16px; }}"
+    f"#healthBig {{ color: {theme.TEXT_BRIGHT}; font-size: 20px; font-weight: 700; background: transparent; }}"
+    + "".join(f'#healthBig[level="{lv}"] {{ color: {colour}; }}' for lv, colour in LEVEL_COLOURS.items())
+    + f"#healthSmall, #healthNote {{ color: {theme.MUTED}; background: transparent; }}"
+    "#healthVerdict { font-size: 15px; font-weight: 600; background: transparent; }"
+    f"#healthPlace {{ color: {theme.TEXT}; font-weight: 600; background: transparent; }}"
+)
+
+
 def _tile(value: str, label: str, level: str = "") -> QWidget:
     tile = QWidget()
-    tile.setObjectName("healthTile")
-    tile.setStyleSheet(f"#healthTile {{ background: {theme.RAISED}; border-radius: 16px; }}")
+    tile.setObjectName("healthTile")  # styled by the page (PAGE_STYLE)
     box = QVBoxLayout(tile)
     box.setContentsMargins(16, 12, 16, 12)
     box.setSpacing(2)
     big = QLabel(value)
-    big.setStyleSheet(f"color: {LEVEL_COLOURS.get(level, theme.TEXT_BRIGHT)}; font-size: 20px; font-weight: 700;"
-                      " background: transparent;")
+    big.setObjectName("healthBig")
+    if level:
+        big.setProperty("level", level)
     small = QLabel(label)
-    small.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+    small.setObjectName("healthSmall")
     box.addWidget(big)
     box.addWidget(small)
     return tile
@@ -35,13 +47,14 @@ class HealthPage(QWidget):
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.records = records
+        self.setStyleSheet(PAGE_STYLE)
         self.setMinimumWidth(580)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(14)
         if not records:
             empty = QLabel("No streams yet. Go live and this fills in when you end.")
-            empty.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            empty.setObjectName("healthNote")
             box.addWidget(empty)
             return
         self.pick = QComboBox()
@@ -53,7 +66,7 @@ class HealthPage(QWidget):
         self.pick.setStyleSheet(combo_style())
         box.addWidget(self.pick)
         self.verdict = QLabel()
-        self.verdict.setStyleSheet("font-size: 15px; font-weight: 600; background: transparent;")
+        self.verdict.setObjectName("healthVerdict")
         box.addWidget(self.verdict)
         self.tiles = QGridLayout()
         self.tiles.setSpacing(10)
@@ -103,9 +116,9 @@ class HealthPage(QWidget):
                 bits.append(f"bitrate dipped to {p.lowest_kbps} of {p.target_kbps} kbps")
             row = QHBoxLayout()
             name = QLabel(p.name)
-            name.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600; background: transparent;")
+            name.setObjectName("healthPlace")
             note = QLabel("  ·  ".join(bits))
-            note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            note.setObjectName("healthNote")
             note.setWordWrap(True)
             row.addWidget(name)
             row.addSpacing(10)

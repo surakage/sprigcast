@@ -233,6 +233,7 @@ QSplitter::handle {{ background: {BG}; }}
 """
 
 
+looks_applied = 0  # how many times a theme was applied: a font may have changed since a widget measured itself
 _applied: str | None = None  # the theme last applied: re-applying it restyles every widget (~1 s)
 
 THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
@@ -410,6 +411,11 @@ def ui_burst(starts: bool = True) -> None:
         QTimer.singleShot(int(BURST_HOLD_S * 1000), _burst_over)
 
 
+def bursting() -> bool:
+    """Widgets are being made (a pop-up opening): the window's own repaints can wait a moment (meters)."""
+    return _usual_switch is not None
+
+
 def _burst_over() -> None:
     global _usual_switch
     left = _burst_until - time.monotonic()
@@ -466,6 +472,8 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
     if wanted == _applied:
         return wanted != "system"
     _applied = wanted
+    global looks_applied
+    looks_applied += 1  # widgets that remember their measurements measure again (live_stage.Elided)
     if _system_style is None:
         _system_style = app.style().name()
         _set_symbol_fallbacks(app)

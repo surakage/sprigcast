@@ -6,15 +6,18 @@ Remove or Update). Adding loads it at once, so it shows up under + → Plugins w
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, Signal
+from PySide6.QtCore import QObject, QSettings, Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast import plugin_store
 from sprigcast.app import theme
 from sprigcast.app.live_stage import heading
 from sprigcast.plugins import PluginReport
+
+log = logging.getLogger(__name__)
 
 HOLD_ON_AIR = "plugins/hold_on_air"
 
@@ -83,7 +86,8 @@ def _pill(text: str, primary: bool = False) -> QPushButton:
 class StoreRow(QFrame):
     """One plugin in the store."""
 
-    def __init__(self, page: PluginStorePage, plugin: plugin_store.StorePlugin):
+    def __init__(self, page: PluginStorePage, plugin: plugin_store.StorePlugin, version=None, read: bool = True):
+        """version: the installed version already read (read=False), so the row asks the disk nothing."""
         super().__init__()
         self.page, self.plugin = page, plugin
         self.setObjectName("storeRow")
@@ -115,14 +119,15 @@ class StoreRow(QFrame):
         self.button.clicked.connect(self._clicked)
         row.addWidget(self.update_button, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.refresh()
+        self.refresh(*(() if read else (version,)))
 
     @property
     def installed(self) -> int | None:
         return plugin_store.installed_version(self.page.plugins_dir, self.plugin.id)
 
-    def refresh(self) -> None:
-        version = self.installed
+    def refresh(self, *known) -> None:
+        """known: (the installed version,) when it has just been read elsewhere (off the window's thread)."""
+        version = known[0] if known else self.installed
         self.button.setText("Remove" if version is not None else "Add")
         _restyle(self.button, "primary", version is None)  # Add stands out, Remove doesn't
         self.button.setEnabled(self.page.plugins_dir is not None)
@@ -150,7 +155,9 @@ class PluginStorePage(QWidget):
     changed = Signal()  # a plugin was added or removed: menus that list plugin sources should refresh
 
     def __init__(self, plugins_dir: Path | None, report: PluginReport | None, open_plugins_folder=None,
-                 collection=None, parent: QWidget | None = None, on_air: bool = False):
+                 collection=None, parent: QWidget | None = None, on_air: bool = False, known=None):
+        """known: (the store's plugins, {plugin id: installed version}) read off the window's thread (read_store);
+        None: read here."""
         super().__init__(parent)
         self.plugins_dir = plugins_dir
         self.on_air = on_air  # live or recording when Settings opened
@@ -163,9 +170,10 @@ class PluginStorePage(QWidget):
         sbox.addWidget(_hint("Extras you can add when you want them. Each one adds something new to SprigCast; "
                              "nothing here runs until you add it."))
         sbox.addSpacing(4)
-        plugins = plugin_store.catalog()
+        plugins, versions = known if known is not None else (plugin_store.catalog(), None)
         for plugin in plugins:
-            row = StoreRow(self, plugin)
+            row = (StoreRow(self, plugin) if versions is None
+                   else StoreRow(self, plugin, versions.get(plugin.id), read=False))
             self.rows[plugin.id] = row
             sbox.addWidget(row)
         if not plugins:
@@ -307,20 +315,47 @@ class PluginStoreWindow(QDialog):
         row.addWidget(close)
         root.addLayout(row)
 
-    def _fill(self) -> None:
+    def _fill(self, known=None) -> None:
         if "store" in self.__dict__:
             return
         from sprigcast.app.output_page import _scrolled
 
         plugins_dir, report, open_plugins_folder, collection, on_air = self._args
         self._waiting = False
-        self.store = PluginStorePage(plugins_dir, report, open_plugins_folder, collection, on_air=on_air)
+        self.store = PluginStorePage(plugins_dir, report, open_plugins_folder, collection, on_air=on_air,
+                                     known=known)
         self.store.changed.connect(self.changed)
         self._slot.addWidget(_scrolled(self.store), 1)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         if self._waiting:
-            from PySide6.QtCore import QTimer
+            self._waiting = False
+            # The store's list and what's installed are read on a worker (a file read per plugin on the window's
+            # thread was 113-167 ms of the open on the PC while live, 2026-11-18); the cards are made once it's back.
+            from sprigcast.core import workers
 
-            QTimer.singleShot(30, self, self._fill)  # after the window's first paint
+            read = _StoreRead()  # no parent: the worker may finish after this window closed
+            read.done.connect(self._read_back, Qt.ConnectionType.QueuedConnection)
+            plugins_dir = self._args[0]
+            workers.run(lambda: read.done.emit(read_store(plugins_dir)), name="plugin store")
+
+    def _read_back(self, known) -> None:
+        import shiboken6
+
+        if shiboken6.isValid(self):
+            self._fill(known)
+
+
+class _StoreRead(QObject):
+    done = Signal(object)
+
+
+def read_store(plugins_dir: Path | None) -> tuple[list, dict] | None:
+    """The store's plugins and the installed version of each (None: not added). Reads files: not on the UI thread."""
+    try:
+        plugins = plugin_store.catalog()
+        return plugins, {p.id: plugin_store.installed_version(plugins_dir, p.id) for p in plugins}
+    except Exception:  # noqa: BLE001 (the window then reads them itself, as it used to)
+        log.exception("plugin store: couldn't read the store")
+        return None

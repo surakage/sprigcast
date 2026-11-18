@@ -486,12 +486,16 @@ def test_item_views_dont_repaint_when_a_pop_up_takes_the_focus(qapp):
 def test_elided_measures_once_and_again_in_a_new_font(qapp):
     from sprigcast.app.live_stage import Elided
 
+    from sprigcast.app import theme
+
     label = Elided("Twitch · 6000 kbps")
+    label.ensurePolished()
     first = label.sizeHint()
     assert label.sizeHint() is first  # answered from memory: no call into Qt
     font = label.font()
     font.setPixelSize(font.pixelSize() * 2 if font.pixelSize() > 0 else 30)
     label.setFont(font)
+    theme.looks_applied += 1  # a new theme: measured again
     assert label.sizeHint().width() > first.width()
     label.setText("Twitch · 6000 kbps and a good deal more")
     assert label.sizeHint().width() > first.width()
