@@ -44,7 +44,10 @@ def ask() -> bool:
     safe = box.addButton("Safe mode", QMessageBox.ButtonRole.AcceptRole)
     normal = box.addButton("Start normally", QMessageBox.ButtonRole.RejectRole)
     box.setDefaultButton(normal)
-    box.exec()
+    from sprigcast.app.logbook import crash_notes_paused
+
+    with crash_notes_paused():  # COM's own handled 0x8001010d notes while it waits (see there)
+        box.exec()
     chosen = box.clickedButton() is safe
     box.deleteLater()
     return chosen
