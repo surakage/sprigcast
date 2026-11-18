@@ -138,6 +138,22 @@ SOFT_FIELD_STYLE = (  # borderless inputs on the Build inspector
 # Small header buttons (a card's Edit, + Add, ⚙; a pop-up's "Last streams"): a compact button, never bare text.
 LINK_STYLE = button_style(12, "4px 11px")
 
+# Every scroll bar keeps clear of what it scrolls: the bar's own left margin (8 px) is the gap, so
+# rows, buttons and text never touch it, and nothing else needs its own padding. The handle is 6 px wide
+# at the far edge; the top and bottom margins keep it off rounded corners.
+SCROLL_GAP = 8
+SCROLL_BARS = f"""
+QScrollBar:vertical {{ background: transparent; width: {6 + SCROLL_GAP + 4}px; margin: 8px 4px 8px {SCROLL_GAP}px; }}
+QScrollBar:horizontal {{ background: transparent; height: {6 + SCROLL_GAP + 4}px; margin: {SCROLL_GAP}px 8px 4px 8px; }}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background: {EDGE_STRONG}; border-radius: 3px; }}
+QScrollBar::handle:vertical {{ min-height: 30px; }}
+QScrollBar::handle:horizontal {{ min-width: 30px; }}
+QScrollBar::handle:hover {{ background: {MUTED}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+""".strip()
+
+
 STYLESHEET = f"""
 QWidget {{ selection-background-color: {SELECT_BG}; selection-color: {SELECT_TEXT}; }}
 QMainWindow::separator {{ background: {BG}; width: 6px; height: 6px; }}
@@ -220,14 +236,7 @@ QSlider::handle:horizontal {{
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 QProgressBar {{ background: {CHROME}; border: 1px solid {EDGE}; border-radius: 7px; text-align: center; color: {TEXT}; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 6px; }}
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background: {EDGE_STRONG}; border-radius: 3px; }}
-QScrollBar::handle:vertical {{ min-height: 30px; }}
-QScrollBar::handle:horizontal {{ min-width: 30px; }}
-QScrollBar::handle:hover {{ background: {MUTED}; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
-QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+{SCROLL_BARS}
 QStatusBar {{ background: {CHROME}; color: {MUTED}; border-top: 1px solid {EDGE}; }}
 QSplitter::handle {{ background: {BG}; }}
 """
