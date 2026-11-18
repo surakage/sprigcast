@@ -140,7 +140,8 @@ def test_a_stall_dump_names_the_thread_holding_the_lock():
     assert short.startswith("render (holding the lock) at compositor.py:943 upload <- engine.py:1870 _tick")
     assert "nvenc_d3d11.py:597 encode_texture" in short
 
-    dump = _StallDump()
+    assert _StallDump().file is None  # off unless SPRIGCAST_STALL_DUMPS=1: it reads running threads' stacks
+    dump = _StallDump(on=True)
     import faulthandler
     import time as _time
 

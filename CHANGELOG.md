@@ -150,6 +150,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Settings (a destination, the Sound card's gear) and Hotkeys show their window at once and fill it in just after;
   the Stream, Audio, Recording and Video pages are made in parts a tick apart; a warm-up a little after start (not while live) makes
   the first open about half as long. Instant replay sends a tiny clear picture on wake (was a full frame, 47-68 ms).
+- Fixed a crash while live when UI Automation (a screen reader, the PC's menu sweep) asked the window something
+  during a menu: Windows handles that error and carries on, but the crash note then read every running
+  thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
+  only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
 - Help → Export report makes the report on a worker and saves it straight to the desktop, shown in its folder
   (the save box and the build on the window's thread froze it 310 ms). For the pop-up sweep, SPRIGCAST_UI_STALL_MS=50
   logs every window stall from 50 ms with where the window's thread was (the usual watch starts at 250 ms).

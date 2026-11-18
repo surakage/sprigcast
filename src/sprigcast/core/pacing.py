@@ -339,12 +339,27 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
 
 
-class _StallDump:
-    """Every thread's stack printed by faulthandler while Python's lock is held (see DUMP_AFTER_S)."""
+def stall_dumps_on(environ=None) -> bool:
+    """Whether the stall watch has faulthandler print every stack during long stalls: only when asked for
+    (SPRIGCAST_STALL_DUMPS=1). It reads the stacks of threads that are still running, the one holding the lock
+    among them; reading the render thread's stack while it ran killed SprigCast once (crash note, 2026-11-17
+    20:57), so a show never risks it unless someone is chasing a stall."""
+    import os
 
-    def __init__(self) -> None:
+    return (environ if environ is not None else os.environ).get("SPRIGCAST_STALL_DUMPS", "") not in ("", "0")
+
+
+class _StallDump:
+    """Every thread's stack printed by faulthandler while Python's lock is held (see DUMP_AFTER_S), when
+    stall_dumps_on(); otherwise it does nothing."""
+
+    def __init__(self, on: bool | None = None) -> None:
         import tempfile
 
+        self.armed_at = float("-inf")
+        if not (stall_dumps_on() if on is None else on):
+            self.file = None
+            return
         try:
             self.file = tempfile.TemporaryFile()
         except OSError:

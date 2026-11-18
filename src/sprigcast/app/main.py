@@ -217,7 +217,10 @@ def run() -> None:
     _announce_running()
     _quiet_start_log()
     if sys.stderr is not None:
-        faulthandler.enable()  # if a native library crashes, print where instead of closing silently
+        from sprigcast.app.logbook import crash_dumps_all_threads
+
+        # if a native library crashes, print where instead of closing silently (only its own thread on Windows)
+        faulthandler.enable(all_threads=crash_dumps_all_threads())
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     from sprigcast.core.quiet import quiet_libraries
 
