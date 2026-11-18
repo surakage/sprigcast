@@ -80,6 +80,11 @@ moment); `2@60` is an access violation; `4@60` a stuck frame (the log says so, t
 `1@60x7` faults seven times running, so the engine stops and the log says the Python compositor draws again.
 Recordings and streams should carry on through all of them.
 
+To try SprigCast.exe's own crash guard, which catches what nothing else does, start it with
+`SPRIGCAST_CRASH_TEST=30` (an unguarded access violation on a thread of its own, 30 s in) or
+`SPRIGCAST_CRASH_TEST=30,main` (on the window's thread). Expect a crash.log entry, a .dmp in the Logs folder
+(its thread named `crash-test` for the first), the run ending within 15 s, and "closed unexpectedly" on the next start.
+
 ## In the app (`SPRIGCAST_ENGINE=native`)
 
 render/native_bridge.py: the render thread hands every new source picture to the native engine too, and a
