@@ -95,6 +95,26 @@ int main() {
         CHECK(sc_mixer_wait(clocked, 2, 1000, &now) == 1 && now > 2);
         sc_mixer_destroy(clocked);
     }
+    {  // Built-in filters: a -6.02 dB gain then invert polarity, before the mix.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(0, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0};
+        int a = 0, tap = 0, track = SC_TRACK_STREAM;
+        CHECK(sc_mixer_source_add(mixer, &one, &a) == SC_OK && sc_mixer_tap_add(mixer, &track, 1, &tap) == SC_OK);
+        sc_mixer_filter filters[2]{};
+        filters[0].kind = SC_FILTER_GAIN;
+        filters[0].p[0] = 20.0f * std::log10(0.5f);
+        filters[1].kind = SC_FILTER_INVERT;
+        CHECK(sc_mixer_source_filters(mixer, a, filters, 2) == SC_OK);
+        CHECK(sc_mixer_source_filters(mixer, 999, filters, 2) == SC_ERR_ARGUMENT);
+        std::vector<float> block(SC_MIXER_BLOCK * 2, 0.25f), out(SC_MIXER_BLOCK * 2);
+        CHECK(sc_mixer_source_push(mixer, a, block.data(), SC_MIXER_BLOCK) == SC_OK);
+        CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+        int64_t index = -1;
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+        CHECK(std::abs(out[0] + 0.125f) < 1e-5f && std::abs(out.back() + 0.125f) < 1e-5f);
+        sc_mixer_destroy(mixer);
+    }
     {  // Sound capture: the test tone reaches the mix; a missing device and the default open and close cleanly
        // (CI has no sound card: they only say why they aren't capturing).
         sc_mixer *mixer = nullptr;
