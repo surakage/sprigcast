@@ -57,7 +57,6 @@ PLACE_CARDS_STYLE = (
     f"#placeCards::item:hover {{ background: {theme.RAISED_HOVER}; }}"
     f"#placeCards::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
 )
-REMOVE_STYLE = theme.SMALL_PILL_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
 
 
 def _heading(text: str, size: int) -> QLabel:
@@ -109,6 +108,11 @@ PAGE_STYLE = (
     f"#streamCard {{ background: {theme.CARD}; border-radius: 20px; }}"
     f"#streamMuted {{ color: {theme.MUTED}; }}"
     "#streamScroll, #streamForm { background: transparent; }"
+    f"#streamWarn {{ color: {theme.WARN}; }}"
+    f"#streamDivider {{ background: {theme.EDGE}; }}"
+    + PLACE_CARDS_STYLE
+    + theme.button_style(13, "6px 13px", "QPushButton#streamSmall, QPushButton#streamRemove")
+    + f"QPushButton#streamRemove {{ color: {theme.BAD}; }}"
 )
 
 
@@ -161,7 +165,7 @@ class StreamPage(QWidget):
         top = QHBoxLayout()
         top.addWidget(_heading("Places", 17), 1)
         self.add_button = QPushButton("+ Add")
-        self.add_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.add_button.setObjectName("streamSmall")
         self.add_button.setToolTip("Add another place to stream")
         self.add_button.clicked.connect(self._add)
         top.addWidget(self.add_button)
@@ -170,14 +174,13 @@ class StreamPage(QWidget):
         self.list.setObjectName("placeCards")
         self.list.setFixedWidth(220)
         self.list.setFrameShape(QListWidget.Shape.NoFrame)
-        self.list.setStyleSheet(PLACE_CARDS_STYLE)
         self.list.currentRowChanged.connect(self._load)
         left.addWidget(self.list, 1)
         root.addLayout(left)
         root.addSpacing(22)
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background: {theme.EDGE};")
+        divider.setObjectName("streamDivider")
         root.addWidget(divider)
         root.addSpacing(6)
 
@@ -208,7 +211,7 @@ class StreamPage(QWidget):
         hero.addWidget(self.enabled_label)
         hero.addWidget(self.enabled)
         self.remove_button = QPushButton("Remove")
-        self.remove_button.setStyleSheet(REMOVE_STYLE)
+        self.remove_button.setObjectName("streamRemove")
         self.remove_button.setToolTip("Remove this place (and its saved stream key)")
         self.remove_button.clicked.connect(self._remove)
         hero.addWidget(self.remove_button)
@@ -268,7 +271,7 @@ class StreamPage(QWidget):
         form.addRow(self.signin_label, self.signin_row)
         self.signin_error = QLabel()
         self.signin_error.setWordWrap(True)
-        self.signin_error.setStyleSheet(f"color: {theme.WARN}")
+        self.signin_error.setObjectName("streamWarn")
         self.signin_error.hide()
         form.addRow("", self.signin_error)
         self.key_label = QLabel("Stream key")

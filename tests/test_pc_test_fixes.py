@@ -257,7 +257,7 @@ def test_a_wheel_over_an_unclicked_drop_down_never_changes_it(qapp):
     page.show()
     other.setFocus()
     qapp.processEvents()
-    wheel_guard.settle()  # (on a timer just after they're made)
+    wheel_guard.settle(step=None)  # (on a timer just after they're made)
     assert combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
     assert spin.focusPolicy() != Qt.FocusPolicy.WheelFocus
     qapp.sendEvent(combo, _wheel_event())
@@ -280,6 +280,7 @@ def test_no_app_wide_python_hooks_and_the_ui_gets_the_lock_while_building(qapp):
     combo = QComboBox()
     wheel_guard.guard(combo)
     wheel_guard.guard(combo)  # once per widget
+    wheel_guard.settle(step=None)
     assert combo.property(wheel_guard.GUARDED)
     assert the_guard.eventFilter(combo, _wheel_event()) is True
 
@@ -347,8 +348,11 @@ def test_the_style_has_no_python_in_it_and_menus_are_still_rounded(qapp):
 
     style = theme.roomy_style()
     assert type(style).__module__.startswith("PySide6")  # no Python subclass: Qt never calls back per widget
-    for box in (QComboBox(), QSpinBox(), QDoubleSpinBox()):
-        assert box.property(wheel_guard.GUARDED)
+    boxes = (QComboBox(), QSpinBox(), QDoubleSpinBox())
+    assert all(box._guard_due for box in boxes)  # noted at once, with no call into Qt
+    wheel_guard.settle(step=None)  # the rest just after
+    for box in boxes:
+        assert box.property(wheel_guard.GUARDED) and box.focusPolicy() == Qt.FocusPolicy.StrongFocus
     spin = QSpinBox()
     assert spin.lineEdit().textMargins().left() == theme.NUMBER_PAD
     spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -442,3 +446,60 @@ def test_hotkeys_count_before_the_rows_are_made(qapp):
     assert page.count.text() == "1 key set"  # said at once; only actions on the page count
     page.finish()
     assert page.count.text() == "1 key set"
+
+
+def test_item_views_dont_repaint_when_a_pop_up_takes_the_focus(qapp):
+    """Qt's item views repaint their whole viewport when the window loses or gets back the focus; the Library's
+    and Inside list's rows paint in Python (101-156 ms per pop-up over Build mode, PC 2026-11-18)."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.build_stage import InsideList
+    from sprigcast.app.library import LibraryTree
+
+    class Spy(QObject):
+        paints = 0
+
+        def eventFilter(self, _obj, event):  # noqa: N802
+            if event.type() == QEvent.Type.Paint:
+                Spy.paints += 1
+            return False
+
+    spy = Spy()
+    for view in (LibraryTree(), InsideList()):
+        view.resize(200, 200)
+        view.show()
+        qapp.processEvents()
+        view.viewport().installEventFilter(spy)
+        qapp.processEvents()  # anything still due from showing
+        Spy.paints = 0
+        for kind in (QEvent.Type.WindowDeactivate, QEvent.Type.WindowActivate):
+            QApplication.sendEvent(view, QEvent(kind))
+        qapp.processEvents()
+        assert Spy.paints == 0, type(view).__name__
+        view.viewport().update()
+        qapp.processEvents()
+        assert Spy.paints == 1  # still paints when something changes
+        view.close()
+
+
+def test_elided_measures_once_and_again_in_a_new_font(qapp):
+    from sprigcast.app.live_stage import Elided
+
+    label = Elided("Twitch · 6000 kbps")
+    first = label.sizeHint()
+    assert label.sizeHint() is first  # answered from memory: no call into Qt
+    font = label.font()
+    font.setPixelSize(font.pixelSize() * 2 if font.pixelSize() > 0 else 30)
+    label.setFont(font)
+    assert label.sizeHint().width() > first.width()
+    label.setText("Twitch · 6000 kbps and a good deal more")
+    assert label.sizeHint().width() > first.width()
+
+
+def test_start_with_windows_is_read_once(monkeypatch):
+    from sprigcast.app import autostart
+
+    monkeypatch.setattr(autostart, "supported", lambda: True)
+    monkeypatch.setattr(autostart, "_known", True)
+    assert autostart.enabled() is True  # remembered: the registry isn't read again for Settings

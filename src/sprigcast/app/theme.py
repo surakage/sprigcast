@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, QStandardPaths, Qt
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen, QTransform
 from PySide6.QtWidgets import QApplication
 
@@ -435,6 +435,9 @@ def ticked(action, on: bool) -> None:
 NUMBER_PAD = 12  # px between a number and the left edge of its box, the same as text fields
 
 
+_ACTIVATION = frozenset((QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate))
+
+
 def same_when_inactive(palette: QPalette) -> None:
     """The window's colours don't change when another window (a pop-up) takes the focus. Qt repaints a whole
     window on that change unless both colour groups match, and Windows' own palette (its accent, inactive
@@ -444,6 +447,16 @@ def same_when_inactive(palette: QPalette) -> None:
     for role in QPalette.ColorRole:
         if role != QPalette.ColorRole.NColorRoles:
             palette.setBrush(inactive, role, palette.brush(active, role))
+
+
+def view_activation(view: QWidget, event) -> bool | None:
+    """For an item view's event(): a pop-up taking or giving back the focus doesn't repaint it. Qt's item views
+    repaint their whole viewport on that change, whatever the colours; the Library's rows paint in Python, and
+    every pop-up opened over Build mode repainted them twice (101-156 ms, PC 2026-11-18). Their colours don't change
+    (same_when_inactive), so nothing needs it. Returns the answer, or None to go on as usual."""
+    if event.type() in _ACTIVATION:
+        return True  # taken here: passed on, the view (and its viewport, sent it next) would repaint
+    return None
 
 
 def apply_theme(app: QApplication, name: str | None = None) -> bool:

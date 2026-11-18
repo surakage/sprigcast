@@ -168,20 +168,25 @@ class BarGroup(QFrame):
         return button
 
 
+_NEW_LOOK = frozenset((QEvent.Type.FontChange, QEvent.Type.StyleChange))
+
+
 class Elided(QLabel):
     """A one-line label that ends in "…" when it hasn't room (the whole text is in its tooltip)."""
 
     def __init__(self, text: str = ""):
         super().__init__()
         self._full = ""
+        self._hint = None
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(30)
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802
+        if text != self._full:
+            self._hint = None
         self._full = text
-        self.setToolTip(text)
-        self._fit()
+        self._fit()  # (sets the tooltip too)
 
     def text(self) -> str:
         return self._full
@@ -195,12 +200,16 @@ class Elided(QLabel):
         super().setText(shown)
         self.setToolTip(self._full if shown != self._full else "")
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in _NEW_LOOK:
+            self._hint = None  # measured again in its new font
+
     def sizeHint(self) -> QSize:  # noqa: N802
-        # Asked many times per layout pass (each from C++, through Python): worked out once per text and font.
-        # Measured each time, a Garden check's rows held the window 78 ms on the PC while live (2026-11-18).
-        key = (self._full, self.font().key())
-        if getattr(self, "_hint_key", None) != key:
-            self._hint_key = key
+        # Asked many times per layout pass (each from C++, through Python): worked out once per text and font,
+        # and then answered with no call into Qt at all. Measured each time, a Garden check's rows held the
+        # window 78 ms on the PC while live; asking for the font's key each time was still 97 ms (2026-11-18).
+        if self._hint is None:
             self._hint = QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
         return self._hint
 

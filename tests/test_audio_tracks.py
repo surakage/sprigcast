@@ -135,6 +135,7 @@ def test_audio_page_sets_switch_tracks_and_which_sounds_go_where(monkeypatch):
     col = _collection()
     col.sources.append(SourceConfig(id="song", kind="media", name="Song", settings={"group": "Music"}))
     page = AudioPage(col, {"audio_input": ["Wave"]})
+    page.finish()  # (the rows past the first few come a tick apart)
     assert set(page.track_ticks) == {"desktop", "mic", "mic-2", "song"}
     assert not page.track_ticks["song"][1].isChecked()  # music starts off the VOD-safe track
     assert page.track_kept[0].isChecked() and not page.track_kept[0].isEnabled()
@@ -187,6 +188,7 @@ def test_sounds_tab_sets_volume_mono_balance_sync_and_who_hears_it():
     QApplication.instance() or QApplication([])
     col = _collection()
     page = AudioPage(col, {})
+    page.finish()
     mic = page.sound_rows["mic"]
     mic["volume"].setValue(-4.5)
     mic["mono"].setChecked(True)

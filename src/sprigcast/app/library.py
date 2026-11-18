@@ -264,6 +264,10 @@ class LibraryTree(QTreeWidget):
             "#library::branch { background: transparent; image: none; border: none; }")
         self.itemClicked.connect(self._toggle_folder)
 
+    def event(self, event) -> bool:  # noqa: D102
+        handled = theme.view_activation(self, event)  # no repaint when a pop-up takes the focus
+        return super().event(event) if handled is None else handled
+
     def _toggle_folder(self, item: QTreeWidgetItem, _column: int) -> None:
         """One click opens or folds a folder (there's no arrow to aim for)."""
         if item.data(0, ROLE_ROW) == "folder":
