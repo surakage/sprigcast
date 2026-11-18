@@ -312,3 +312,44 @@ def test_off_unless_asked_for(monkeypatch):
     assert not gpu_share.turned_off()
     monkeypatch.setenv("SPRIGCAST_NO_GPU_SHARE", "1")
     assert gpu_share.turned_off()
+
+
+def test_a_registered_texture_is_held_until_it_is_unregistered(monkeypatch):
+    """PC native run 2026-11-17 20:23:46: the engine made its outputs again and freed the old texture pool; the
+    stream's next frame unregistered textures that were gone and the driver crashed. NVENC holds no reference of
+    its own, so the encoder holds one per registered texture and lets go only after unregistering it."""
+    import ctypes
+    from types import SimpleNamespace
+
+    from sprigcast.output import nvenc_d3d11 as nv
+
+    calls = []
+
+    def fn(index, *_argtypes):
+        def call(_encoder, arg=None):
+            calls.append(("fn", index))
+            if index == nv.F_REGISTER:
+                nv.RegisterResource.from_address(arg).registeredResource = 1000 + len(calls)
+            return 0
+        return call
+
+    monkeypatch.setattr(nv, "_fn", fn)
+    monkeypatch.setattr(nv, "_add_ref", lambda com: calls.append(("ref", com.value)))
+    monkeypatch.setattr(nv, "_release", lambda com: calls.append(("release", com.value)))
+    enc = nv.D3D11Encoder.__new__(nv.D3D11Encoder)
+    enc.shared, enc.encoder, enc._registered, enc._pool = True, ctypes.c_void_p(1), {}, None
+    enc.width, enc.height, enc.frame, enc.output = 64, 36, 0, ctypes.c_void_p(2)
+    enc.api = (nv.API_MAJOR, nv.API_MINOR)
+    old, new = object(), object()
+    for pool, texture in ((old, 0x10), (old, 0x10), (new, 0x20)):
+        frame = SimpleNamespace(pool=pool, key=(id(pool), texture), texture=texture, width=64, height=36)
+        try:
+            enc.encode_texture(frame)
+        except Exception:  # noqa: BLE001 - reading a fake bitstream: only the order of calls matters here
+            pass
+    refs = [c for c in calls if c[0] in ("ref", "release")]
+    assert refs == [("ref", 0x10), ("release", 0x10), ("ref", 0x20)]  # registered once, held, let go after
+    unregister_at = calls.index(("fn", nv.F_UNREGISTER))
+    assert unregister_at < calls.index(("release", 0x10))
+    enc._unregister_all()
+    assert calls[-1] == ("release", 0x20) and enc._registered == {}
