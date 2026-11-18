@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 25
+#define SC_INTERFACE_VERSION 26
 
 enum {
     SC_OK = 0,
@@ -724,6 +724,26 @@ typedef struct sc_capture_stats {
 SC_API int sc_capture_open(sc_mixer *mixer, int source, const wchar_t *device, int loopback, sc_capture **out);
 SC_API int sc_capture_stats_get(sc_capture *capture, sc_capture_stats *out);
 SC_API void sc_capture_close(sc_capture *capture);
+
+/* Sound playback (playback.cpp): one of a mixer's mixes (a track, or the monitor mix) played on a playback device
+ * with WASAPI on a thread of its own, so monitoring never passes through Python. At most 120 ms is buffered: older
+ * sound is dropped so it never drifts behind. It finds its device again by itself (every 2 s) and follows the
+ * Windows default. Close it before the mixer.
+ * what: SC_MIXER_MONITOR or a track (SC_TRACK_*). device: the friendly name; NULL or "" = the Windows default;
+ * "sprigcast-test-sink" = plays nowhere, in real time (checks). States are SC_CAPTURE_*'s (CAPTURING: playing). */
+typedef struct sc_playback sc_playback;
+typedef struct sc_playback_stats {
+    int state;            /* SC_CAPTURE_* (SC_CAPTURE_CAPTURING = playing) */
+    int channels, rate;   /* what the device plays */
+    uint64_t frames;      /* device frames played so far */
+    uint64_t underruns;   /* times it ran out and played silence */
+    uint64_t dropped;     /* 48 kHz frames dropped to stay within 120 ms */
+    wchar_t device[128];  /* the device's name */
+    char error[256];      /* why it isn't playing, if it isn't */
+} sc_playback_stats;
+SC_API int sc_playback_open(sc_mixer *mixer, int what, const wchar_t *device, sc_playback **out);
+SC_API int sc_playback_stats_get(sc_playback *playback, sc_playback_stats *out);
+SC_API void sc_playback_close(sc_playback *playback);
 
 #ifdef __cplusplus
 }

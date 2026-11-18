@@ -290,6 +290,12 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   (`tests/test_native_filters.py` checks them block by block). A chain with any other filter (the FFmpeg ones),
   or a sound a plugin listens to, keeps its whole chain in Python. New settings keep each filter's state.
   `SPRIGCAST_NO_NATIVE_FILTERS=1` runs every chain in Python.
+- **Playback** (`sc_playback_*`, `playback.cpp`): monitoring, and "Sound out" (the stream mix on a device such as a
+  virtual cable), are played by a WASAPI thread of the engine's straight from the mix (`EngineMonitor` in
+  `audio/native_mixer.py`, made by `make_monitor`). At most 120 ms waits, so it never drifts behind; when it runs
+  dry the device gets silence until 20 ms is waiting again. It finds its device again every 2 s and follows the
+  Windows default. If the engine can't open it, Python's `Monitor` plays it. `sprigcast-test-sink` plays nowhere,
+  for checks (`tests/test_native_playback.py`, `core_tests.cpp`). `SPRIGCAST_NO_NATIVE_MONITOR=1` plays from Python.
 - Next: the sound filters in C++ (so filtered sounds stay in the engine too) and the monitor output.
 
 ## Phases
@@ -302,7 +308,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
-| 5 | Sound: devices, mixer, filters, sync | In progress: the mixer, device capture and built-in filters are in the engine behind the switch; next is the monitor output |
+| 5 | Sound: devices, mixer, filters, sync | Built behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC test next |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
 | 7 | Capture and camera inside the engine | |
 | 8 | Old Python engine and its packages removed | |

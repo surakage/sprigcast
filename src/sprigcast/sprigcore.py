@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 25  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 26  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -928,6 +928,15 @@ class CaptureStats(ctypes.Structure):
                 ("error", ctypes.c_char * 256)]
 
 
+class PlaybackStats(ctypes.Structure):
+    _fields_ = [("state", ctypes.c_int), ("channels", ctypes.c_int), ("rate", ctypes.c_int),
+                ("frames", ctypes.c_uint64), ("underruns", ctypes.c_uint64), ("dropped", ctypes.c_uint64),
+                ("device", ctypes.c_wchar * 128), ("error", ctypes.c_char * 256)]
+
+
+PLAYBACK_TEST_SINK = "sprigcast-test-sink"
+
+
 def _media_sigs() -> dict:
     c_int, vp = ctypes.c_int, ctypes.c_void_p
     text = ctypes.c_char_p
@@ -977,6 +986,9 @@ def _media_sigs() -> dict:
         "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
         "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
         "sc_capture_close": (None, [vp]),
+        "sc_playback_open": (c_int, [vp, c_int, ctypes.c_wchar_p, ctypes.POINTER(vp)]),
+        "sc_playback_stats_get": (c_int, [vp, ctypes.POINTER(PlaybackStats)]),
+        "sc_playback_close": (None, [vp]),
     }
 
 
@@ -1340,18 +1352,47 @@ class SoundCapture:
         with self._lock:
             handle, self._handle = self._handle, None
         if handle:
-            self._lib.sc_capture_close(handle)  # joins its thread: no push after this
+            self._close_handle(handle)
         mixer = self._mixer
         if mixer is not None:
             captures = mixer.__dict__.get("_captures", [])
             if self in captures:
                 captures.remove(self)
 
+    def _close_handle(self, handle) -> None:
+        self._lib.sc_capture_close(handle)  # joins its thread: no push after this
+
     def __del__(self):
         try:
             self.close()
         except Exception:  # noqa: BLE001 (never from a destructor)
             pass
+
+
+class SoundPlayback(SoundCapture):
+    """One of a SoundMixer's mixes played on a playback device by the engine (include/sprigcore.h sc_playback):
+    WASAPI on a thread of its own. Made by SoundMixer.play; closed before the mixer."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p, mixer: SoundMixer):
+        super().__init__(lib, handle, mixer)
+        self._stats = PlaybackStats()
+
+    def stats(self) -> dict:
+        """{"state": "playing" ..., "device", "error", "frames", "underruns", "dropped", "channels", "rate"}."""
+        with self._lock:
+            if not self._handle:
+                return {"state": "closed", "device": "", "error": "", "frames": 0, "underruns": 0, "dropped": 0,
+                        "channels": 0, "rate": 0}
+            _check(self._lib.sc_playback_stats_get(self._handle, ctypes.byref(self._stats)))
+            st = self._stats
+            state = CAPTURE_STATES[st.state] if 0 <= st.state < len(CAPTURE_STATES) else "failed"
+            return {"state": "playing" if state == "capturing" else state, "device": st.device,
+                    "error": st.error.decode("utf-8", "replace"), "frames": int(st.frames),
+                    "underruns": int(st.underruns), "dropped": int(st.dropped), "channels": st.channels,
+                    "rate": st.rate}
+
+    def _close_handle(self, handle) -> None:
+        self._lib.sc_playback_close(handle)  # joins its thread and removes its tap
 
 
 class SoundMixer:
@@ -1477,6 +1518,18 @@ class SoundMixer:
                                              ctypes.byref(out)))
             made = SoundCapture(self._lib, out, self)
             self.__dict__.setdefault("_captures", []).append(made)
+            return made
+
+    def play(self, what: int, device: str = "") -> SoundPlayback:
+        """Play a mix (MIXER_MONITOR or a track's index) on a playback device (by name; "" = the Windows default)."""
+        with self._lock:
+            handle = self._handle
+            if not handle:
+                raise NativeError(-1, "the mixer is closed")
+            out = ctypes.c_void_p()
+            _check(self._lib.sc_playback_open(handle, int(what), device or "", ctypes.byref(out)))
+            made = SoundPlayback(self._lib, out, self)
+            self.__dict__.setdefault("_captures", []).append(made)  # closed before the mixer, as captures are
             return made
 
     def close(self) -> None:

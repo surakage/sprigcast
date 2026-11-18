@@ -201,7 +201,16 @@ class QuickPage:
         self.target = target
         if not self._initialized:
             target = self._start_quick(target, w, h)
-        self.window.setRenderTarget(QQuickRenderTarget.fromD3D11Texture(target.texture, QSize(w, h)))
+        try:
+            self.window.setRenderTarget(self._render_target(QQuickRenderTarget, target.texture, QSize(w, h)))
+        except Exception as exc:
+            if old is None:
+                raise
+            log.warning("browser source %s: the new texture couldn't be drawn to (%s), the old one stays", self.id,
+                        exc)
+            self._drop_target(target)
+            self.target = old
+            return
         if old is not None:
             old.close()
         self._waiting_since = None
@@ -248,16 +257,36 @@ class QuickPage:
             target = self.target = self.host.target_for(self.id, w, h, pointer)  # on Qt Quick's own device
         return target
 
+    def _render_target(self, render_target, texture: int, size):
+        """The page texture as Qt Quick's render target, in whichever form this PySide takes the pointer (on the PC
+        an int over 2^31 was refused here too: "Found signature (texture: int, pixelSize, sampleCount)")."""
+        why = []
+        for label, (pointer,) in self._pointer_forms_of(texture):
+            try:
+                made = render_target.fromD3D11Texture(pointer, size)
+                if label != "ints" and not getattr(self, "_said_texture_form", False):
+                    self._said_texture_form = True
+                    log.info("browser source %s: the page texture went to Qt Quick as a %s", self.id, label)
+                return made
+            except Exception as exc:  # noqa: BLE001 - PySide's binding refuses this form: try the next
+                why.append(f"{label}: {exc}")
+        raise RuntimeError("Qt Quick can't take the page texture here (" + " | ".join(why)[:400] + ")")
+
     @staticmethod
-    def _pointer_forms(target):
-        """The ways a PySide build may take the Direct3D pointers: as ints, or as shiboken VoidPtrs (on the PC an
-        int over 2^31 was refused: "Found signature (device: int, context: int)")."""
-        yield "ints", (target.device, target.context)
+    def _pointer_forms_of(*pointers):
+        """Pointers as ints, then as shiboken VoidPtrs."""
+        yield "ints", tuple(pointers)
         try:
             from shiboken6 import VoidPtr
         except ImportError:
             return
-        yield "VoidPtr", (VoidPtr(target.device), VoidPtr(target.context))
+        yield "VoidPtr", tuple(VoidPtr(p) for p in pointers)
+
+    @staticmethod
+    def _pointer_forms(target):
+        """The ways a PySide build may take the Direct3D pointers: as ints, or as shiboken VoidPtrs (on the PC an
+        int over 2^31 was refused: "Found signature (device: int, context: int)")."""
+        yield from QuickPage._pointer_forms_of(target.device, target.context)
 
     def _drop_target(self, target) -> None:
         if self.target is target:

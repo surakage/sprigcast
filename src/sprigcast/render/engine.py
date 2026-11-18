@@ -18,8 +18,8 @@ import numpy as np
 
 from sprigcast.audio import listen
 from sprigcast.audio.mixer import Ducking
-from sprigcast.audio.native_mixer import make_mixer
-from sprigcast.audio.monitor import Monitor
+from sprigcast.audio.native_mixer import make_mixer, make_monitor
+from sprigcast.audio.monitor import Monitor  # noqa: F401 (Python's mixer plays with it, via make_monitor)
 from sprigcast.core.events import (
     AudioLevels,
     EngineError,
@@ -156,7 +156,7 @@ class Engine:
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
         self._stopping: threading.Thread | None = None  # see stop(wait=False)
         self.mixer = make_mixer(lambda levels: self.events.put(AudioLevels(levels)))  # the engine's, or Python's
-        self.monitor = Monitor()  # plays monitored sources on the speakers, opened only when one is
+        self.monitor = make_monitor(self.mixer)  # plays monitored sources on the speakers, opened only when one is
         self._monitoring = False
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
@@ -1081,7 +1081,7 @@ class Engine:
             current.stop()
             self._sound_out = None
         if device:
-            out = Monitor(device)
+            out = make_monitor(self.mixer, device)
             out.start()
             self.mixer.add_tap(out.write, ("stream",))
             self._sound_out = out

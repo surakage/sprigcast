@@ -115,6 +115,21 @@ int main() {
         CHECK(std::abs(out[0] + 0.125f) < 1e-5f && std::abs(out.back() + 0.125f) < 1e-5f);
         sc_mixer_destroy(mixer);
     }
+    {  // Sound playback: the monitor mix plays on the test sink in real time, and closes before the mixer.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(1, &mixer) == SC_OK);
+        sc_playback *playback = nullptr;
+        CHECK(sc_playback_open(mixer, SC_MIXER_MONITOR, L"sprigcast-test-sink", &playback) == SC_OK && playback);
+        sc_playback_stats st{};
+        for (int i = 0; i < 100 && (st.frames < 4800 || st.state != SC_CAPTURE_CAPTURING); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            CHECK(sc_playback_stats_get(playback, &st) == SC_OK);
+        }
+        CHECK(st.state == SC_CAPTURE_CAPTURING && st.frames >= 4800 && st.rate == 48000 && st.channels == 2);
+        sc_playback_close(playback);
+        CHECK(sc_playback_open(nullptr, SC_MIXER_MONITOR, nullptr, &playback) == SC_ERR_ARGUMENT);
+        sc_mixer_destroy(mixer);
+    }
     {  // Sound capture: the test tone reaches the mix; a missing device and the default open and close cleanly
        // (CI has no sound card: they only say why they aren't capturing).
         sc_mixer *mixer = nullptr;

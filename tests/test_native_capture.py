@@ -123,3 +123,27 @@ def test_the_switch_keeps_pythons_capture(player_lib, monkeypatch, off):  # noqa
         assert mic.handed == [] and mic.pushed == 1
     finally:
         m.stop()
+
+
+def test_which_side_captures_is_logged_with_why(player_lib, monkeypatch, caplog):  # noqa: F811
+    import logging
+
+    from sprigcast.core.filters import AudioChain
+
+    monkeypatch.setattr(native_mixer, "source_tracks", lambda s: ("stream",))
+    m = NativeMixer(lambda levels: None, clocked=False)
+    try:
+        mic = _Mic(sprigcore.CAPTURE_TEST_TONE)
+        with caplog.at_level(logging.INFO, logger="sprigcast.audio.native_mixer"):
+            m.set_sources([mic])
+            m.tick()
+            m.tick()
+            from types import SimpleNamespace
+
+            mic.audio_chain = AudioChain([SimpleNamespace(id="f", kind="low_cut", enabled=True, settings={})])
+            m.tick()
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("sound mic:")]
+        assert lines == [f"sound mic: the engine captures {sprigcore.CAPTURE_TEST_TONE}",
+                         "sound mic: Python captures it: it has filters only Python has (LowCut)"]
+    finally:
+        m._engine.close()
