@@ -41,6 +41,12 @@ LABELS = {"twitch": "Twitch", "youtube": "YouTube", "kick": "Kick"}
 TITLE_MAX = {"twitch": 140, "youtube": 100, "kick": 100}
 DESCRIPTION_MAX = 5000
 PRIVACY = ("public", "unlisted", "private")
+# YouTube's categories a video can be put in (the same everywhere). YouTube picks the game itself from what's
+# played: its API has no way to name the game, so Gaming is as close as an app gets.
+YOUTUBE_CATEGORIES = {"1": "Film & Animation", "2": "Autos & Vehicles", "10": "Music", "15": "Pets & Animals",
+                      "17": "Sports", "19": "Travel & Events", "20": "Gaming", "22": "People & Blogs",
+                      "23": "Comedy", "24": "Entertainment", "25": "News & Politics", "26": "Howto & Style",
+                      "27": "Education", "28": "Science & Technology", "29": "Nonprofits & Activism"}
 THUMB_MAX_BYTES = 2 * 1024 * 1024  # YouTube's limit for a custom thumbnail
 TWITCH_TAGS_MAX, TWITCH_TAG_LEN = 10, 25
 
@@ -74,6 +80,7 @@ class Details:
     broadcast_id: str = ""  # YouTube: the stream being edited, "" = none waiting (Save makes one)
     starts: str = ""  # YouTube: its scheduled start, which an update has to send back
     thumbnail: str = ""  # YouTube: the current thumbnail's web address, to show it
+    video_category: str = ""  # YouTube: the category id (YOUTUBE_CATEGORIES); "" = leave it as it is
     note: str = ""  # after a save: what didn't go through although the rest did (the thumbnail)
 
 
@@ -387,11 +394,16 @@ def _youtube_load() -> Details:
         if found is None:
             return Details(privacy="public")
         snippet, status = found.get("snippet") or {}, found.get("status") or {}
+        try:  # the category sits on the stream's video
+            video = (_yt(token, "GET", f"videos?part=snippet&id={found.get('id', '')}").get("items") or [{}])[0]
+        except DetailsError:
+            video = {}
         thumbs = snippet.get("thumbnails") or {}
         thumb = next((thumbs[k].get("url", "") for k in ("medium", "high", "default") if k in thumbs), "")
         return Details(title=snippet.get("title", ""), description=snippet.get("description", ""),
                        privacy=status.get("privacyStatus", "public"), broadcast_id=found.get("id", ""),
-                       starts=snippet.get("scheduledStartTime", ""), thumbnail=thumb)
+                       starts=snippet.get("scheduledStartTime", ""), thumbnail=thumb,
+                       video_category=str((video.get("snippet") or {}).get("categoryId") or ""))
 
     return _with_token("youtube", call)
 
@@ -440,6 +452,22 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
             log.info("stream details: youtube made a stream waiting on the SprigCast key")
 
     _with_token("youtube", call)
+    missed = []
+    if details.video_category in YOUTUBE_CATEGORIES:
+        def category(token):
+            video = (_yt(token, "GET", f"videos?part=snippet&id={details.broadcast_id}").get("items") or [{}])[0]
+            old = video.get("snippet") or {}
+            if str(old.get("categoryId") or "") == details.video_category:
+                return  # already there: no call spent
+            keep = {k: old[k] for k in ("tags", "defaultLanguage", "defaultAudioLanguage") if old.get(k)}
+            _yt(token, "PUT", "videos?part=snippet", {"id": details.broadcast_id, "snippet": {
+                **keep, "title": title, "description": snippet["description"], "categoryId": details.video_category}})
+
+        try:
+            _with_token("youtube", category)
+        except DetailsError as exc:
+            log.info("stream details: youtube category not saved: %s", exc)
+            missed.append(("category", ""))
     if thumbnail:
         def upload(token):
             _call("POST", f"{YOUTUBE_UPLOAD}/thumbnails/set?videoId={details.broadcast_id}", token, data=thumbnail,
@@ -448,7 +476,10 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
         try:
             _with_token("youtube", upload)
         except DetailsError as exc:  # the rest is saved: say what didn't go
-            details.note = f"Saved, but not the thumbnail. {exc}"
+            missed.append(("thumbnail", str(exc)))
+    if missed:
+        what = " or ".join(name for name, _ in missed)
+        details.note = " ".join([f"Saved, but not the {what}.", *(why for _, why in missed if why)])
 
 
 def thumbnail_bytes(path: str) -> bytes:

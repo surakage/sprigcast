@@ -134,9 +134,11 @@ def test_youtube_edits_the_stream_live_now_else_the_soonest_waiting(monkeypatch)
     web.on("GET", LIVE, [{"items": []}, {"items": [_broadcast("live1", "2026-11-18T01:00:00Z", "On now")]}])
     web.on("GET", WAITING, {"items": [_broadcast("later", "2026-11-20T01:00:00Z"),
                                       _broadcast("soon", "2026-11-19T01:00:00Z", "Soon")]})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=soon", {"items": [{"snippet": {"categoryId": "24"}}]})
+    web.on("GET", sd.YOUTUBE_API + "/videos", sd.DetailsError("no video"))
     first = sd.load("youtube")
-    assert (first.broadcast_id, first.title, first.privacy, first.starts) == \
-        ("soon", "Soon", "unlisted", "2026-11-19T01:00:00Z")
+    assert (first.broadcast_id, first.title, first.privacy, first.starts, first.video_category) == \
+        ("soon", "Soon", "unlisted", "2026-11-19T01:00:00Z", "24")
     assert sd.load("youtube").broadcast_id == "live1"
 
 
@@ -150,6 +152,25 @@ def test_youtube_saves_title_description_and_privacy_keeping_the_start(monkeypat
     assert web.calls[-1]["body"] == {"id": "b1", "snippet": {"title": "New", "description": "All about sloths",
                                                              "scheduledStartTime": "2026-11-19T01:00:00Z"},
                                      "status": {"privacyStatus": "private"}}
+
+
+def test_youtube_category_goes_on_the_video_keeping_its_tags(monkeypatch):
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", {})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=b1",
+           [{"items": [{"snippet": {"categoryId": "24", "tags": ["sloth"], "title": "Old"}}]},
+            {"items": [{"snippet": {"categoryId": "20"}}]}, sd.DetailsError("YouTube said 500.")])
+    web.on("PUT", sd.YOUTUBE_API + "/videos?part=snippet", {})
+    details = sd.Details(title="New", description="d", broadcast_id="b1", starts="s", video_category="20")
+    assert sd.save("youtube", details).note == ""
+    assert web.calls[-1]["body"] == {"id": "b1", "snippet": {"tags": ["sloth"], "title": "New", "description": "d",
+                                                             "categoryId": "20"}}
+    count = len(web.calls)
+    sd.save("youtube", details)  # already Gaming: nothing more is sent
+    assert web.calls[-1]["method"] == "GET" and len(web.calls) == count + 2
+    assert sd.save("youtube", details).note == "Saved, but not the category."
+    assert "20" in sd.YOUTUBE_CATEGORIES and sd.YOUTUBE_CATEGORIES["20"] == "Gaming"
 
 
 def test_youtube_with_nothing_waiting_makes_a_stream_on_the_sprigcast_key(monkeypatch):
