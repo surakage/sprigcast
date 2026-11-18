@@ -127,7 +127,7 @@ class ImageSource(Source):
         if DECODE_ASIDE:
             from sprigcast.core import workers
 
-            self._decoding = workers.run(load_rgba, self._path(), name="picture decode")
+            self._decoding = workers.picture(load_rgba, self._path(), name="picture decode")
 
     def sleep(self) -> None:
         self._decoding = None  # a decode still running is let go when it ends

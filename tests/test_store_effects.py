@@ -381,7 +381,7 @@ def test_the_gravestone_rises_flips_the_number_and_sinks(added, tmp_path):
     _col, _host, dc, api = _dc_setup(added, tmp_path, 6)
     to_array = __import__("sys").modules["sprigcast_plugin_death_count"].to_array
     first = dc.video_frame()
-    assert first.shape == (1000, 800, 4) and not first[..., 3].any()  # see-through until it changes
+    assert first.shape == (2, 2, 4) and not first[..., 3].any()  # see-through (a tiny clear picture) until it changes
     assert dc.video_frame() is None
 
     api.run("deaths.add", {})

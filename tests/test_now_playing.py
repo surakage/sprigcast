@@ -101,7 +101,15 @@ def test_it_listens_only_while_on_screen(fake):
     watcher = FakeWatcher.made[-1]
     assert watcher.running
     source.sleep()
-    assert not watcher.running
+    assert watcher.running  # it lingers: a bloom switched back to soon doesn't start it again
+    source.wake()
+    assert FakeWatcher.made[-1] is watcher and watcher.running
+    source.sleep()
+    linger = source._linger
+    assert linger is not None
+    linger.cancel()
+    source._quiet_if_asleep(linger)  # LINGER_S asleep: it stops listening
+    assert not watcher.running and source._watcher is None
     source.wake()
     assert FakeWatcher.made[-1].running and FakeWatcher.made[-1] is not watcher
     source.set_hidden(True)

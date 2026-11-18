@@ -140,6 +140,12 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   renderer, not a whole copy of the garden (544 ms and ~440 skipped stream frames on the PC), and it isn't an undo step.
 - Switching back to a bloom of many sources spreads their first pictures over a few frames (24 MB a frame at most)
   and the switch waits for them, so nothing pops in late; a "waking frame" log line names each slow source.
+- Bloom switches got lighter again: texts, clock cards, pictures and Now playing are drawn one at a time on a
+  pictures lane instead of four at once (they crowded out the render thread); Stream timer and Local time paint
+  there too; the new bloom's sprigs are drawn once it shows, not while the old one is held; a Slide show keeps
+  its slide while hidden; Now playing keeps listening 2 minutes off screen; Death count sends a tiny clear picture.
+- The PNGtuber folder is read again on a worker (the window answers from the last read), with one disk read per
+  folder; Freeze hotkeys on big sprigs no longer hold the window (each sprig walked once, one commit).
 - Texts, Local time and the stream timer keep their picture while their bloom is off screen, and draw again only
   if what they show changed: each was drawn again on every bloom switch (10-14 ms each on the PC).
 - Switching back to a bloom full of sources: their textures wait a minute after the bloom leaves the screen and

@@ -134,7 +134,7 @@ class LocalTimeSource(Source):
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
         self._frame = painted.Frame()
-        self._shown: tuple | None = None  # what's on the card now
+        self._card = painted.Aside(self._frame)  # painted on the pictures lane, not the render thread
         self.status = "ok"
 
     @property
@@ -143,7 +143,7 @@ class LocalTimeSource(Source):
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
-        self._shown = None  # draw it again with the new look
+        self._card.forget()  # draw it again with the new look
 
     def wake(self) -> None:
         pass  # the card is drawn again only if the time on it changed (keeps_picture)
@@ -154,7 +154,5 @@ class LocalTimeSource(Source):
     def video_frame(self) -> np.ndarray | None:
         clock, under = words(datetime.now(), self.settings)
         key = (clock, under, self.settings.get("text_color"), self.settings.get("card_color"), self.detail)
-        if key == self._shown:
-            return None  # nothing changed: nothing drawn, nothing uploaded
-        self._shown = key
-        return self._frame(paint(clock, under, self.settings, self.detail))
+        # nothing changed: nothing drawn, nothing uploaded
+        return self._card.picture(key, paint, clock, under, dict(self.settings), self.detail)

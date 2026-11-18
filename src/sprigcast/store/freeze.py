@@ -21,7 +21,8 @@ import time
 
 from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
-from sprigcast.plugin_hooks import filter_off, filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
+from sprigcast.plugin_hooks import (filter_off, filter_on, find_filter, not_here, on_air_sources,
+                                    register_hotkeys, register_item_menu)
 
 PLUGIN = {"id": "freeze", "name": "Freeze", "version": 1, "adds": "Effect",
           "about": "Freeze a sprig, game or camera on one frame for a set time, then it's live again. Great for redeems."}
@@ -60,9 +61,10 @@ def freeze(api, sources, seconds: float | None = None) -> dict:
         if not frozen(source):
             run += 1  # a new freeze: it catches the picture showing now
         until = time.time() + secs if secs > 0 else 0
-        filter_on(api, source, "freeze", "Freeze", {"run": run, "until": until})
+        filter_on(api, source, "freeze", "Freeze", {"run": run, "until": until}, commit=False)
         _end_later(api, source.id, secs)
         done.append(source.name)
+    api.host.commit("filters")  # once for them all: a sprig's sources freeze together
     return {"frozen": done, "seconds": secs or None}
 
 
@@ -174,7 +176,8 @@ def _run_hotkey(api, hid):
         if source is None:
             return "That source is gone."
         sources, name = [source], source.name
-    if not any(on_air(api.col, s.id) for s in sources):  # freezing what isn't on air does nothing you'd see
+    showing = on_air_sources(api.col)
+    if not any(s.id in showing for s in sources):  # freezing what isn't on air does nothing you'd see
         return not_here(name)
     freeze(api, sources)
     return None

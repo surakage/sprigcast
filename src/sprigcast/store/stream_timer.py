@@ -386,7 +386,8 @@ class StreamTimerSource(Source):
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
         self._frame = painted.Frame()
-        self._shown: tuple | None = None  # what's on the card now
+        self._shown: tuple | None = None  # the clear card's key while it's hidden (the painted ones: self._card)
+        self._card = painted.Aside(self._frame)  # painted on the pictures lane, not the render thread
         self._was_done: bool | None = None  # last frame's countdown state, to hear it reach 0
         self._asked_at = 0.0  # when it asked the UI thread to start it over (drawn once that's done)
         self.status = "ok"
@@ -411,6 +412,7 @@ class StreamTimerSource(Source):
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
         self._shown = None  # draw it again with the new look
+        self._card.forget()
         self._asked_at = 0.0
 
     def sleep(self) -> None:
@@ -431,13 +433,15 @@ class StreamTimerSource(Source):
         gone = hidden(settings, read)
         key = (gone, read["text"], label, read["counting"], settings.get("text_color"), settings.get("card_color"),
                self.detail)
-        if key == self._shown:
-            return None  # nothing changed: nothing drawn, nothing uploaded
-        self._shown = key
         if gone:
+            if key == self._shown:
+                return None  # nothing changed: nothing drawn, nothing uploaded
+            self._shown = key
+            self._card.drop()
             self._frame.release()
             return painted.clear_frame(W, H)
-        return self._frame(paint(read["text"], label, settings, read["counting"], self.detail))
+        self._shown = None
+        return self._card.picture(key, paint, read["text"], label, dict(settings), read["counting"], self.detail)
 
 
 # The API, hotkeys and right-click ----------------------------------------------------------------

@@ -139,6 +139,54 @@ class Frame:
         self._held = None
 
 
+DRAW_ASIDE = True  # clock cards are painted on the pictures lane (core/workers.py); tests turn it off
+
+
+class Aside:
+    """A card painted on the pictures lane, not on the render thread: picture(key, paint, *args) gives the newest
+    finished frame (or None: nothing new). The card on screen stays as it is until the new one lands, a frame or
+    two later. Painting a Stream timer or Local time card took 15-27 ms of the PC's render thread each second it
+    changed, and on every bloom switch that brought one back (2026-11-18 heavy run, "waking frame")."""
+
+    def __init__(self, frame: Frame):
+        self._frame = frame
+        self._job = None  # (key, Future) being painted
+        self._shown = None  # key of the last frame handed over (or being painted)
+
+    def forget(self) -> None:
+        """Paint it again next time, even if the key is the same (a new look)."""
+        self._shown = None
+
+    def drop(self) -> None:
+        """Something else is on the card now (a clear frame): a painting still running is never handed over."""
+        self._job = None
+        self._shown = None
+
+    def picture(self, key, paint, *args) -> np.ndarray | None:
+        job = self._job
+        if job is not None:
+            if not job[1].done():
+                return None  # the one being painted lands first; a newer key is painted after it
+            self._job = None
+            frame = job[1].result()  # its error (a plugin's paint) is the source's, as when painted here
+            if key != job[0]:
+                self._start(key, paint, args)
+            return frame
+        if key == self._shown:
+            return None
+        if not DRAW_ASIDE:
+            self._shown = key
+            return self._frame(paint(*args))
+        self._start(key, paint, args)
+        return None
+
+    def _start(self, key, paint, args) -> None:
+        from sprigcast.core import workers
+
+        self._shown = key
+        self._job = (key, workers.picture(lambda: self._frame(paint(*args)), name="card painting"))
+
+
 class _Kept:
     """A QImage's bytes for NumPy, keeping the image alive as long as an array of them is (Python 3.12's buffer
     protocol: NumPy holds this object, not only a pointer)."""

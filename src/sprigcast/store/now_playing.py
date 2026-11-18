@@ -61,6 +61,7 @@ SPEEDS = tuple((n, str(n)) for n in range(1, 6))
 SLIDE_PX = 40  # box units a second for each step of Slide speed (2: 80, about two letters a second)
 SLIDE_GAP = 140  # box units between the end of a sliding title and its start coming round again
 SLIDE_REST = 1.5  # seconds a sliding title rests at its start each time round
+LINGER_S = 120.0  # asleep this long, it stops listening to Windows (see NowPlayingSource.sleep)
 BAR_FPS = 30  # at most this many frames a second while something moves
 RATE = 48_000
 N = 2048  # the bars' FFT size
@@ -834,7 +835,7 @@ class Bands:
 # The source ------------------------------------------------------------------------------------------
 
 make_watcher = MediaWatcher  # tests swap in a stand-in
-run_job = workers.run  # tests swap in one that runs straight away
+run_job = workers.picture  # the pictures lane (core/workers.py); tests swap in one that runs straight away
 _LATEST: dict[str, Track | None] = {}  # source id -> what it shows, for nowplaying.get
 
 
@@ -876,6 +877,7 @@ class NowPlayingSource(Source):
         self._still: tuple | None = None  # (key, picture, Look, words): the part that doesn't move
         self._turn = 0  # goes up when it sleeps: frames asked for before then are dropped
         self._busy = False
+        self._linger: threading.Timer | None = None  # stops the watcher a while after it went to sleep
         self._ready = None  # a finished frame (QImage) for the next video_frame
         self._last = 0.0  # when the last frame was asked for
         self._flat = False  # the bars were still (silence) in the last frame
@@ -893,18 +895,59 @@ class NowPlayingSource(Source):
 
     def wake(self) -> None:
         self._shown = None
+        self._stay()
+        with self._lock:
+            track = self._track  # heard while it lingered: apps can ask about it again
+        if track is not None:
+            _LATEST[self.id] = track
         if not self._hidden:
             self._listen()
 
     def sleep(self) -> None:
-        self._quiet()
+        """Off screen: no bars, no pictures. It keeps listening to Windows for LINGER_S, so a bloom switched back
+        to soon doesn't start the watcher again: starting it on every wake cost the PC's switch frame 70 ms
+        (2026-11-18 heavy run, "now_playing-1 70.2"). Then it stops listening too."""
+        self._deaf()
+        _LATEST.pop(self.id, None)  # off screen: apps hear nothing's playing on it, as before
+        self._turn += 1  # frames asked for before now are dropped
+        self._busy = False
         self._frame.release()
         self._still = None
         self._ready = None
         self._shown = None
+        if self._watcher is not None:
+            timer = threading.Timer(LINGER_S, self._quiet_if_asleep)
+            timer.args = (timer,)
+            timer.daemon = True
+            timer.name = "now-playing-linger"
+            with self._lock:
+                old, self._linger = self._linger, timer
+            if old is not None:
+                old.cancel()
+            timer.start()
 
     def stop(self) -> None:
+        self._stay()
         self._quiet()
+
+    def _stay(self) -> None:
+        """Called back (or closed): the stop waiting to happen after a sleep doesn't."""
+        with self._lock:
+            timer, self._linger = self._linger, None
+        if timer is not None:
+            timer.cancel()
+
+    def _quiet_if_asleep(self, timer) -> None:
+        """LINGER_S after it went to sleep (its own thread): asleep all that time, it stops listening."""
+        with self._lock:
+            if self._linger is not timer:
+                return  # woke meanwhile
+            self._linger = None
+            watcher, self._watcher = self._watcher, None
+            self._track = None  # back on screen it shows the song as it is then
+        _LATEST.pop(self.id, None)
+        if watcher is not None:
+            watcher.stop()
 
     def set_hidden(self, hidden: bool) -> None:
         self._hidden = hidden
@@ -968,8 +1011,10 @@ class NowPlayingSource(Source):
             old, self._track = self._track, track
             if track is not None and (old is None or (old.title, old.artist) != (track.title, track.artist)):
                 self._since = time.monotonic()
-        _LATEST[self.id] = track
         self.status = "ok"
+        if self.asleep:
+            return  # lingering off screen: kept for when it's back, not told to apps
+        _LATEST[self.id] = track
         _tell(self.id, track)
 
     def _problem(self, text: str) -> None:

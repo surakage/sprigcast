@@ -103,7 +103,9 @@ def _text_drawn_in_place(monkeypatch):
     """In the app a text that changes is drawn again on a worker (sources/text.py DRAW_ASIDE); tests that change
     a text check the new picture on the very next frame, so here it's drawn in place. test_text_plugins checks
     the worker path."""
+    from sprigcast.core import painted
     from sprigcast.sources import image, text
 
     monkeypatch.setattr(text, "DRAW_ASIDE", False)
     monkeypatch.setattr(image, "DECODE_ASIDE", False)  # likewise a picture shown again (test_sources checks it)
+    monkeypatch.setattr(painted, "DRAW_ASIDE", False)  # and clock cards (test_text_plugins checks the lane)

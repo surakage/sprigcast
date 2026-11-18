@@ -95,6 +95,10 @@ class SlideShowSource(Source):
     label = "Slide show"
     defaults = {"folder": "", "seconds": 5.0, "shuffle": False, "loop": True, "width": 1920, "height": 1080}
     sleeps = True
+    # Asleep, its texture stays: back on screen it shows the slide it had (no decode, no upload) and moves on
+    # when that slide's time is up. Made and sent again on every wake it took 40 ms of the PC's switch frame
+    # (2026-11-18 heavy run, "slideshow-1 40.6").
+    keeps_picture = True
     fills_canvas = True  # added from + → Plugins it starts at 0, 0 the size of the canvas
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -133,7 +137,7 @@ class SlideShowSource(Source):
             self._load_folder()
 
     def wake(self) -> None:
-        self._pending = True  # the texture went while hidden: show the current slide again
+        pass  # its texture stayed (keeps_picture): nothing to send until the next slide
 
     def video_frame(self) -> np.ndarray | None:
         now = time.monotonic()
@@ -194,4 +198,4 @@ class SlideShowSource(Source):
 
         from sprigcast.core import workers
 
-        workers.run(run, name="slide-show-next")
+        workers.picture(run, name="slide-show-next")

@@ -115,7 +115,7 @@ def test_a_changed_text_is_drawn_on_a_worker(monkeypatch):
         _time.sleep(0.005)
         frame = src.video_frame()
     assert frame is not None and frame.shape[1] > 60
-    assert drawn_on and drawn_on[0].startswith("sprigcast-work")
+    assert drawn_on and drawn_on[0].startswith("sprigcast-pictures")  # the one pictures lane
 
 
 def test_a_text_keeps_its_picture_while_asleep_and_draws_again_only_if_it_changed():
