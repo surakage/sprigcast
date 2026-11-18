@@ -148,7 +148,7 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   each of ~3,600 widgets, each waiting its turn while streaming); drop-downs, number boxes and menus get the
   wheel guard, room and rounded corners as they're made. Folders (Logs, Recordings) open without holding the window.
 - Settings (a destination, the Sound card's gear) and Hotkeys show their window at once and fill it in just after;
-  the Stream and Audio pages are made in parts a tick apart; a warm-up a little after start (not while live) makes
+  the Stream, Audio, Recording and Video pages are made in parts a tick apart; a warm-up a little after start (not while live) makes
   the first open about half as long. Instant replay sends a tiny clear picture on wake (was a full frame, 47-68 ms).
 - Spare sprig targets and textures past their minute (and an ended recording's copies) are freed a little each
   frame, not all at once: that held the graphics card 300+ ms about a minute after a Stop or a bloom switch.

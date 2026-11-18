@@ -773,7 +773,10 @@ class SettingsWindow(QDialog):
         self.recording_page = RecordingPage(
             self.collection.recording, self.default_recordings_folder, encoder, self.collection.canvases
         )
-        self.recording_tabs = RecordingTabs(self.collection, encoder, self.recording_page, recording=self.recording)
+        self.recording_tabs = RecordingTabs(self.collection, encoder, self.recording_page, recording=self.recording,
+                                            parts_later=True)
+        for _part in self.recording_tabs.later:  # one part a tick (_slice); Save makes any left first
+            self._slice(self.recording_tabs.take_part)
         tabs = self.recording_tabs.tabs
         for i in range(tabs.count()):  # each of its tabs scrolls on its own
             name, widget = tabs.tabText(i), tabs.widget(i)
@@ -887,10 +890,23 @@ class SettingsWindow(QDialog):
         if locked:
             widgets.insert(0, _hint("Stop streaming and recording to change the canvases."))
         self._video_expert()
-        self.camera_tab = CameraTab(self.collection)
         self.video_tabs = QTabWidget()
         self.video_tabs.addTab(_scrolled(_page(*widgets)), "Canvases")
-        self.video_tabs.addTab(_scrolled(self.camera_tab), "Virtual camera")
+        self.video_tabs.addTab(QWidget(), "Virtual camera")  # made a tick later (_slice), or now if it's asked
+
+        def camera():
+            self.camera_tab = CameraTab(self.collection)
+            tabs = self.video_tabs
+            current = tabs.currentIndex()
+            stand_in = tabs.widget(1)
+            tabs.removeTab(1)
+            tabs.insertTab(1, _scrolled(self.camera_tab), "Virtual camera")
+            tabs.setCurrentIndex(current)
+            stand_in.deleteLater()
+        if self._subs.get("Video") == "Virtual camera":
+            camera()
+        else:
+            self._slice(camera)
         return self.video_tabs
 
     def _video_expert(self) -> None:
