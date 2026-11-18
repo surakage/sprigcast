@@ -261,3 +261,85 @@ def test_ending_a_stream_from_the_window_doesnt_wait_for_the_encoders():
     assert time.perf_counter() - began < 1.0 and not session.finished(0.05)
     release.set()
     assert session.finished(5)
+
+
+def _feed_both(enc, engine, seconds, fps=30):
+    """Frames and sound to the stream's encoder and to whatever the pool tapped (test_shared_encoder FakeEngine)."""
+    data = bytes(W * H * 4)
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        frame = Frame("horizontal", W, H, data, time.perf_counter())
+        block = np.zeros((1600, 2), dtype=np.float32)
+        for target in [enc, *[cb.__self__ for cb in engine.taps.get("horizontal", [])]]:
+            target.push_frame(frame)
+        for cb in [enc.push_audio, *engine.audio]:
+            cb(block)
+        time.sleep(1 / fps)
+
+
+def test_clips_started_while_live_keep_their_seconds_in_the_streams_encoder(tmp_path):
+    from test_shared_encoder import FakeEngine
+
+    from sprigcast.output.shared import EncoderPool, SharedReplay
+
+    enc = SharedStreamEncoder(_Canvas(), 30, 800, "libx264", time.perf_counter())
+    path = tmp_path / "live.flv"
+    link = StreamLink("tw", "unused", "key", enc, open_container=lambda u: av.open(str(path), "w", format="flv"))
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    pool = EncoderPool(FakeEngine())
+    replay = SharedReplay.start(pool, [_Canvas()], tmp_path, 1.0, 800, container="mkv", codec="libx264",
+                                stream_encoders={"horizontal": enc})
+    try:
+        assert replay.buffers == [enc] and not pool.encoders and "replay" in enc.holders and enc.seconds == 1.0
+        _feed(enc, 2.5)
+        clip = replay.save()[0]
+        assert clip.suffix == ".mkv" and "horizontal" in clip.stem
+        with av.open(str(clip)) as f:
+            assert f.format.name.startswith("matroska") and sum(1 for _ in f.decode(video=0)) >= 25
+        assert replay.stop() is None  # the stream still has it: nothing to stop
+        assert "replay" not in enc.holders and enc.seconds == 0.0 and enc.running
+        _feed(enc, 0.3)
+    finally:
+        link.stop()
+        enc.stop()
+    with av.open(str(path)) as f:  # the stream's own packets were never disturbed by the clip ring file
+        assert sum(1 for _ in f.decode(video=0)) > 60
+
+
+def test_clips_move_to_the_streams_encoder_once_it_holds_as_much_and_back_after(tmp_path):
+    from test_shared_encoder import FakeEngine
+
+    from sprigcast.output.shared import EncoderPool, SharedReplay
+
+    engine = FakeEngine()
+    pool = EncoderPool(engine)
+    replay = SharedReplay.start(pool, [_Canvas()], tmp_path, 1.0, 800, codec="libx264")
+    own = replay.buffers[0]
+    enc = SharedStreamEncoder(_Canvas(), 30, 800, "libx264", time.perf_counter())
+    enc.start()
+    try:
+        _feed_both(enc, engine, 1.5)
+        replay.follow({"horizontal": enc})  # going live: the stream's encoder fills up first
+        assert replay.buffers == [own] and "replay" in enc.holders and enc.seconds == 1.0
+        _feed_both(enc, engine, 2.5)
+        replay.follow({"horizontal": enc})
+        assert replay.buffers == [enc] and not pool.encoders  # one encoder for the canvas now
+        deadline = time.monotonic() + 10
+        while own.running and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not own.running  # stopped on a thread of its own
+        assert replay.save()[0].exists()
+        # The stream ends: clips go back to an encoder of their own, the stream's lets go once that is full.
+        enc.holders.discard("stream")
+        replay.follow({})
+        assert replay.buffers == [enc] and len(pool.encoders) == 1
+        _feed_both(enc, engine, 2.5)
+        replay.follow({})
+        assert replay.buffers[0] is pool.encoders["horizontal"] and "replay" not in enc.holders
+        assert enc.seconds == 0.0
+        replay.stop(wait=True)
+        assert not pool.encoders
+    finally:
+        enc.stop()

@@ -424,74 +424,183 @@ class SharedRecording:
 
 
 class SharedReplay:
-    """The replay buffer: the shared encoders keep their last `seconds`, saved on demand."""
+    """The replay buffer: the shared encoders keep their last `seconds`, saved on demand.
 
-    def __init__(self, pool: EncoderPool, encoders: list[CanvasEncoder], folder: Path, container: str):
+    While live with "Same as stream" on (and clips hearing what the stream hears), a canvas's clips come from
+    the stream's own encoder instead of a second one: on an NVIDIA card that is one NVENC session (about
+    160 MB) less for the whole stream. Moving over (follow) keeps the old encoder until the new one holds as many
+    seconds, so a clip saved meanwhile is never shorter; the stream ending moves clips back the same way.
+    """
+
+    def __init__(self, pool: EncoderPool, encoders: list, folder: Path, container: str, canvases=None,
+                 seconds: float = 0.0, settings: dict | None = None, borrowed: set | None = None):
         self.pool, self.buffers, self.folder, self.container = pool, encoders, folder, container
+        self.canvases = list(canvases) if canvases is not None else []
+        self.canvas_ids = [getattr(c, "id", None) or e.canvas_id for c, e in zip(self.canvases, encoders)] \
+            if self.canvases else [e.canvas_id for e in encoders]
+        self.seconds = seconds
+        self._settings = settings or {}  # how to start a canvas encoder for clips again (pool.acquire)
+        self._borrowed = set(borrowed or ())  # canvas ids whose clips come from the stream's encoder
+        self._next: dict[str, tuple] = {}  # canvas id -> (encoder filling up to take over, borrowed?)
 
     @classmethod
     def start(cls, pool: EncoderPool, canvases: list, folder: Path, seconds: float, bitrate_kbps: int,
               container: str = "mkv", codec: str | None = None, encoder=None,
-              short_side: int | None = None) -> SharedReplay:
+              short_side: int | None = None, stream_encoders: dict | None = None) -> SharedReplay:
+        """stream_encoders (canvas id -> a live stream's encoder): those canvases keep their clips in the stream's
+        encoder (see follow)."""
         codec = codec or resolve_codec(encoder)
-        encoders = []
+        settings = {"bitrate_kbps": bitrate_kbps, "container": container, "codec": codec, "encoder": encoder,
+                    "short_side": short_side}
+        encoders, borrowed = [], set()
         for canvas in canvases:
+            shared = (stream_encoders or {}).get(canvas.id)
+            if shared is not None and shared.running:
+                shared.hold("replay")
+                shared.seconds = seconds
+                borrowed.add(canvas.id)
+                encoders.append(shared)
+                continue
             enc = pool.acquire("replay", canvas, bitrate_kbps, container, codec, encoder, short_side)
             enc.seconds = seconds
             encoders.append(enc)
-        return cls(pool, encoders, folder, container)
+        if borrowed:
+            log.info("clips of %s from the stream's encoder (Same as stream)", ", ".join(sorted(borrowed)))
+        return cls(pool, encoders, folder, container, canvases, seconds, settings, borrowed)
+
+    def follow(self, stream_encoders: dict, ending: list | None = None) -> None:
+        """Call about once a second (UI thread): stream_encoders (canvas id -> a live stream's encoder, empty when
+        clips shouldn't share it) is where each canvas's clips should come from. An encoder taking over first
+        fills up to the clip length; then it serves the clips and the old one is let go (an encoder nobody else
+        uses goes into `ending`, for the caller to stop on a thread of its own, or stops on one here)."""
+        mine = ending is None
+        ending = [] if mine else ending
+        for i, canvas_id in enumerate(self.canvas_ids):
+            canvas = self.canvases[i] if i < len(self.canvases) else None
+            want = stream_encoders.get(canvas_id)
+            if want is not None and not want.running:
+                want = None
+            current, borrowed = self.buffers[i], canvas_id in self._borrowed
+            nxt = self._next.get(canvas_id)
+            if want is not None and borrowed and current is want:
+                if nxt is not None:  # the stream came back before the move away finished
+                    self._let_go(canvas_id, *self._next.pop(canvas_id), ending)
+                continue
+            if want is None and not borrowed:
+                if nxt is not None:  # the stream ended before the move to it finished
+                    self._let_go(canvas_id, *self._next.pop(canvas_id), ending)
+                continue
+            if canvas is None and want is None:
+                continue  # no way to start a canvas encoder again: stay on the stream's
+            if nxt is not None and (nxt[0] is not want if want is not None else nxt[1]):
+                self._let_go(canvas_id, *self._next.pop(canvas_id), ending)  # another stream encoder now
+                nxt = None
+            if nxt is None:
+                try:
+                    if want is not None:
+                        want.hold("replay")
+                        want.seconds = self.seconds
+                        nxt = (want, True)
+                    else:
+                        st = self._settings
+                        enc = self.pool.acquire("replay", canvas, st.get("bitrate_kbps", 6000),
+                                                st.get("container", self.container), st.get("codec", "libx264"),
+                                                st.get("encoder"), st.get("short_side"))
+                        enc.seconds = self.seconds
+                        nxt = (enc, False)
+                except Exception as exc:  # noqa: BLE001 - clips stay where they are; tried again next time
+                    log.warning("clips of %s can't move to %s: %s", canvas_id,
+                                "the stream's encoder" if want is not None else "their own encoder", exc)
+                    continue
+                self._next[canvas_id] = nxt
+                log.info("clips of %s moving to %s", canvas_id,
+                         "the stream's encoder (Same as stream)" if nxt[1] else "their own encoder")
+            enc, enc_borrowed = nxt
+            have = current.buffered_seconds if current.running else 0.0
+            if enc.running and enc.buffered_seconds + 0.5 < min(self.seconds, have):
+                continue  # still filling up: clips keep coming from the old one
+            self._next.pop(canvas_id, None)
+            self.buffers[i] = enc
+            if enc_borrowed:
+                self._borrowed.add(canvas_id)
+            else:
+                self._borrowed.discard(canvas_id)
+            self._let_go(canvas_id, current, borrowed, ending)
+            log.info("clips of %s now from %s", canvas_id,
+                     "the stream's encoder (Same as stream)" if enc_borrowed else "their own encoder")
+        if mine and ending:
+            self._end_later(ending)
+
+    def _let_go(self, canvas_id: str, enc, borrowed: bool, ending: list) -> None:
+        enc.seconds = 0.0  # whoever still uses it needn't keep the seconds
+        if borrowed:
+            enc.let_go("replay")  # the stream's: it ends here if the stream has (on_last_let_go)
+        else:
+            self.pool.release("replay", canvas_id, ending)
+
+    @staticmethod
+    def _end_later(ending: list) -> threading.Thread:
+        def end() -> None:
+            for enc in ending:
+                try:
+                    enc.stop()
+                except Exception as exc:  # noqa: BLE001 (nothing is lost: its clips moved on)
+                    log.warning("ending the clip encoder of %s: %s", enc.canvas_id, exc)
+
+        thread = threading.Thread(target=end, name="clips-end")
+        thread.start()
+        return thread
 
     def save(self) -> list[Path]:
         """Save every canvas's last seconds, each to its own file, named with the same time."""
         when = datetime.now()
-        return [enc.save(replay_path(self.folder, enc.canvas_id, when, self.container)) for enc in self.buffers]
+        return [enc.save(replay_path(self.folder, canvas_id, when, self.container), container=self.container)
+                for canvas_id, enc in zip(self.canvas_ids, self.buffers)]
 
     def save_later(self, done) -> list[Path]:
         """As save(), without waiting for the files: returns their names at once and writes them on a thread of
         its own, then calls done(files written, problems) from that thread. Each encoder is only asked what
         the clip holds (between two frames); it goes on encoding while the file is written."""
         when = datetime.now()
-        jobs = [(enc, replay_path(self.folder, enc.canvas_id, when, self.container), enc.clip_snapshot())
-                for enc in self.buffers]
+        jobs = [(canvas_id, enc, replay_path(self.folder, canvas_id, when, self.container), enc.clip_snapshot())
+                for canvas_id, enc in zip(self.canvas_ids, self.buffers)]
 
         def write() -> None:
             written, problems = [], []
-            for enc, path, snapshot in jobs:
+            for canvas_id, enc, path, snapshot in jobs:
                 try:
-                    written.append(enc.write_clip(path, snapshot))
+                    written.append(enc.write_clip(path, snapshot, self.container))
                 except Exception as exc:  # noqa: BLE001 (this canvas's clip only)
                     log.warning("saving the clip %s: %s", path.name, exc)
-                    problems.append(f"{enc.canvas_id}: {exc}")
+                    problems.append(f"{canvas_id}: {exc}")
             done(written, problems)
 
         threading.Thread(target=write, name="clip-save", daemon=True).start()
-        return [path for _enc, path, _snapshot in jobs]
+        return [path for _canvas_id, _enc, path, _snapshot in jobs]
 
     @property
     def errors(self) -> list[str]:
-        return [f"{e.canvas_id}: {e.error}" for e in self.buffers if e.error]
+        return [f"{cid}: {e.error}" for cid, e in zip(self.canvas_ids, self.buffers) if e.error]
 
     def stop(self, wait: bool = False) -> threading.Thread | None:
         """Clips off. An encoder nobody else uses stops on a thread of its own (returned; None when there is
         none): stopping waits for its queued frames and deletes its file of kept seconds, which froze the window
         for 314 ms when it ran here (PC test 2026-11-17). wait: stop them here instead (the app is closing)."""
         ending: list = []
-        for enc in self.buffers:
-            enc.seconds = 0.0  # a recording still running keeps the encoder; it needn't keep the seconds
-            self.pool.release("replay", enc.canvas_id, ending)
+        # A recording or stream still running keeps its encoder; it needn't keep the seconds.
+        for canvas_id, enc in zip(self.canvas_ids, self.buffers):
+            self._let_go(canvas_id, enc, canvas_id in self._borrowed, ending)
+        for canvas_id, (enc, borrowed) in list(self._next.items()):
+            self._let_go(canvas_id, enc, borrowed, ending)
+        self._next.clear()
+        self._borrowed.clear()
         if not ending:
             return None
-
-        def end() -> None:
+        if wait:
             for enc in ending:
                 try:
                     enc.stop()
                 except Exception as exc:  # noqa: BLE001 (nothing is lost: clips are already off)
                     log.warning("ending the clip encoder of %s: %s", enc.canvas_id, exc)
-
-        if wait:
-            end()
             return None
-        thread = threading.Thread(target=end, name="clips-end")
-        thread.start()
-        return thread
+        return self._end_later(ending)

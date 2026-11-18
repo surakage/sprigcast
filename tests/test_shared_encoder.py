@@ -258,7 +258,7 @@ def test_a_clip_that_cant_be_written_says_so(tmp_path):
     replay = SharedReplay.start(pool, CANVASES[:1], tmp_path, 10, 800, codec="libx264")
     _feed(engine, time.perf_counter(), 60, pool=pool)
     enc = replay.buffers[0]
-    enc.write_clip = lambda path, snapshot: (_ for _ in ()).throw(OSError("disk full"))
+    enc.write_clip = lambda path, snapshot, container=None: (_ for _ in ()).throw(OSError("disk full"))
     answered = threading.Event()
     result: list = []
     replay.save_later(lambda written, problems: (result.extend([written, problems]), answered.set()))
