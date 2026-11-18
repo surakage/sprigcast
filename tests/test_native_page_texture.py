@@ -53,7 +53,7 @@ def test_a_page_drawn_on_the_card_shows_without_passing_through_memory():
     bridge = native_bridge.NativeCanvases(col, warp=True)
     target = None
     try:
-        luid = sprigcore.engine_luid(bridge.engine)
+        luid = bridge.engine.luid()
         assert luid is not None
         target = sprigcore.PageTarget(luid, 64, 48, f"{slot.shm.name}-tex1")
         _draw(target, (1.0, 0.0, 0.0, 1.0))

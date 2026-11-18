@@ -216,8 +216,12 @@ class NativeCanvases:
         """Browser pages are drawn on the engine's card (sources/browser.use_card), once it has a device."""
         if self._card_told or self.failed or sys.platform != "win32":
             return
+        luid_of = getattr(self.engine, "luid", None)
+        if luid_of is None:  # a stand-in engine (tests)
+            self._card_told = True
+            return
         try:
-            luid = sprigcore.engine_luid(self.engine)
+            luid = luid_of()
         except Exception as exc:  # noqa: BLE001 - pages stay in memory
             log.info("native engine: its card is unknown (%s): browser pages stay in memory", exc)
             self._card_told = True

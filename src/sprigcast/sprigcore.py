@@ -709,6 +709,10 @@ class Engine:
         _check(_need().sc_engine_device(self.handle, ctypes.byref(device), ctypes.byref(rebuilds)))
         return device.value or 0, rebuilds.value
 
+    def luid(self) -> tuple[int, int] | None:
+        """The graphics card the engine draws on (see engine_luid)."""
+        return engine_luid(self)
+
     def take_texture(self, index: int, slot: int) -> tuple[int, tuple | None, int]:
         """The oldest finished frame of a shared output: (state, frame, frames dropped so far). state 1: frame
         is (NV12 texture pointer with a reference of the caller's, pool id, entry, when it was drawn in
