@@ -123,6 +123,12 @@ def _quiet(text: str = "") -> QLabel:
     return label
 
 
+def best_first(names: list[str], text: str) -> list[str]:
+    """The exact name first, then names that start with what was typed, then the rest as found."""
+    low = text.strip().lower()
+    return sorted(names, key=lambda n: (n.lower() != low, not n.lower().startswith(low)))
+
+
 class Pane(QWidget):
     """One platform's fields, with its sign-in state."""
 
@@ -178,7 +184,8 @@ class Pane(QWidget):
             self._model = QStringListModel(self)
             completer = QCompleter(self._model, self)
             completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            completer.setCompletionMode(QCompleter.CompletionMode.UnfilteredPopupCompletion)
+            completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)  # narrows as you type
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
             completer.activated.connect(self._picked)
             self.category.setCompleter(completer)
             self.category.textEdited.connect(self._typed)
@@ -304,7 +311,7 @@ class Pane(QWidget):
             self.waiting_note.setText(LAST_TEXT if details.from_last else WAITING_TEXT)
             self.waiting_note.setVisible(not details.broadcast_id)
             self.show_dual_note(details.vertical_key_name)
-        self.dialog.say("")
+        self.dialog.say("" if self.description is not None else details.note)
         self.dialog.refresh_save()
 
     def show_dual_note(self, key_name: str) -> None:
@@ -336,9 +343,11 @@ class Pane(QWidget):
             return  # a failed look-up says nothing; typing on looks again
         for cid, name in found or []:
             self.found[name] = cid
-        self._model.setStringList([name for _, name in found or []])
+        self._model.setStringList(best_first([name for _, name in found or []], text))
         if found and self.category.hasFocus():
-            self.category.completer().complete()
+            completer = self.category.completer()
+            completer.setCompletionPrefix(self.category.text())  # the list keeps up with what's typed by now
+            completer.complete()
 
     def _picked(self, name: str) -> None:
         self.category.setText(name)
