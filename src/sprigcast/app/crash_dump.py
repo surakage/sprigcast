@@ -60,13 +60,37 @@ def prune(folder: Path, keep: int = KEEP) -> int:
     return removed
 
 
+def _launcher_guard(path: str) -> bool:
+    """SprigCast.exe's own crash guard (native/launcher/launcher.c), set up to write to path. False when this isn't
+    SprigCast.exe (python.exe while developing), or it's an older one without it."""
+    if Path(sys.executable).name.lower() != "sprigcast.exe":
+        return False
+    try:
+        exe = ctypes.WinDLL(sys.executable)  # the running exe itself: its exported functions
+        guard = exe.sprigcast_crash_guard
+    except (OSError, AttributeError):
+        return False
+    guard.argtypes = [ctypes.c_wchar_p]
+    guard.restype = ctypes.c_int
+    return bool(guard(path))
+
+
 def install(folder: Path) -> bool:
-    """Write a minidump into folder if SprigCast crashes in native code. True when set up (Windows only)."""
+    """Write a minidump into folder if SprigCast crashes in native code. True when set up (Windows only).
+
+    In SprigCast.exe the launcher's guard does it, in plain C, and always ends the process (a crash on a worker
+    thread hung the window for 25 minutes with the Python callback below, PC 2026-11-18). The Python callback
+    is only for python.exe, while developing."""
     if sys.platform != "win32" or _installed:
         return bool(_installed)
     try:
         folder.mkdir(parents=True, exist_ok=True)
         prune(folder)
+        target = str(folder / dump_name())
+        if _launcher_guard(target):
+            _installed.update(path=target, by="launcher")
+            log.info("crash dumps: SprigCast.exe's guard")
+            return True
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         dbghelp = ctypes.WinDLL("dbghelp")  # loaded now: nothing to load while crashing
         kernel32.CreateFileW.restype = ctypes.c_void_p
