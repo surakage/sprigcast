@@ -128,12 +128,28 @@ class Frame:
         if image.format() != QImage.Format.Format_ARGB32_Premultiplied:
             image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
         w, h = image.width(), image.height()
-        rows = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(h, image.bytesPerLine())[:, : w * 4]
-        self._held = image  # the array is a view of it: it has to outlive the upload
+        # The array is a view of the image, and keeps it alive itself: a picture the render thread holds back
+        # (the native engine draws, Python's compositor gets it later) outlives the next one painted. Kept only
+        # here before, a held-back Stream timer read freed memory in glBufferData (PC run 2026-11-18, 18:37).
+        rows = np.frombuffer(_Kept(image), dtype=np.uint8).reshape(h, image.bytesPerLine())[:, : w * 4]
+        self._held = image
         return rows.reshape(h, w, 4)
 
     def release(self) -> None:
         self._held = None
+
+
+class _Kept:
+    """A QImage's bytes for NumPy, keeping the image alive as long as an array of them is (Python 3.12's buffer
+    protocol: NumPy holds this object, not only a pointer)."""
+
+    __slots__ = ("image",)
+
+    def __init__(self, image):
+        self.image = image
+
+    def __buffer__(self, flags: int) -> memoryview:
+        return memoryview(self.image.constBits())
 
 
 def clear_frame(w: int, h: int) -> np.ndarray:

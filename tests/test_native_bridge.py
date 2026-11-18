@@ -812,7 +812,11 @@ def test_a_screenshot_of_a_canvas_the_engine_draws_is_read_from_the_engine():
     screenshot.grab(engine, ["h", "v"], timeout=0.05)
     assert taps == ["shot:v"]  # the one the engine doesn't draw comes from Python, as before
     engine._sources["snap"] = SimpleNamespace(in_screenshots=False)
-    assert engine.native_shot("h") is None  # something stays out of screenshots: Python draws without it
+    # PC run 2026-11-18: a Snap source anywhere sent every screenshot to Python's compositor. Only one on air in
+    # the canvas does now (Python draws the canvas without it).
+    assert engine.native_shot("h") is not None
+    engine._on_air_sources = lambda collection, canvas_id=None: {"snap"} if canvas_id == "h" else set()
+    assert engine.native_shot("h") is None
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows' own thread list (runs in CI with the engine checks)")
