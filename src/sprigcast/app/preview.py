@@ -112,7 +112,8 @@ class Preview(QWidget):
             self._image_data = None
             self._image = QImage(data, width, height, width * 4, fmt).copy()
         self.aspect = canvas_size or (width, height)  # editing works in canvas pixels, whatever the image size
-        self.update()
+        if not theme.bursting():  # a pop-up being made: the next frame paints (77 ms under Hotkeys on the PC)
+            self.update()
 
     def set_inner_frame(self, data: bytes, width: int, height: int) -> None:
         """The part being edited in place, rendered alone (premultiplied RGBA)."""

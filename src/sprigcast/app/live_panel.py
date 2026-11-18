@@ -200,7 +200,7 @@ class BloomTile(QPushButton):
 
     def changeEvent(self, event) -> None:  # noqa: N802
         if event.type() == event.Type.FontChange:
-            self._key_for = self._shown_for = self._small = None  # measure again in the new font
+            self._key_for = self._shown_for = self._small = self._look = None  # measure and draw again in it
         super().changeEvent(event)
 
     def _shown_text(self, width: float) -> str:
@@ -229,11 +229,29 @@ class BloomTile(QPushButton):
         super().hideEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        """Drawn once into a picture per look (size, hover, on air, name, key, colour) and then only copied: a
+        pop-up opening over the window, or the screen waking, repaints every tile (496 ms with the Settings gear
+        during a monitor wake while live on the PC, 2026-11-18)."""
+        ratio = self.devicePixelRatioF()
+        enabled = self.isEnabled()
+        hover = enabled and self.underMouse()
+        look = (self.width(), self.height(), ratio, hover, self.isChecked(), enabled, self.text(), self.key,
+                self.colour, self.wrap, theme.looks_applied)
+        if getattr(self, "_look", None) != look:
+            picture = QPixmap(round(self.width() * ratio), round(self.height() * ratio))
+            picture.setDevicePixelRatio(ratio)
+            picture.fill(Qt.GlobalColor.transparent)
+            self._draw(picture, hover)
+            self._look, self._picture = look, picture
         p = QPainter(self)
+        p.drawPixmap(0, 0, self._picture)
+        p.end()
+
+    def _draw(self, device, hover: bool) -> None:
+        p = QPainter(device)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         radius = min(outer.height(), self.HEIGHT - 2) / 2  # a two-line tile keeps the pill's round ends
-        hover = self.underMouse() and self.isEnabled()
         theme.paint_button(p, outer, radius, hover)
         p.setPen(Qt.PenStyle.NoPen)
         on_air = self.isChecked()

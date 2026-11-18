@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Bloom tiles draw themselves once per look and then only copy that picture: a pop-up opening, or the screen
+  waking, repainted every tile (496 ms during a monitor wake). While a pop-up is being made the preview waits
+  for the next frame and the Live places list for the next second. The Sound gear's rows come half a row a tick,
+  the Plugin store's cards a few a tick, and one-line labels fit their text only when it or their width changes.
 - The Plugin store reads its list and what's installed on a worker before making its cards (113-167 ms). Last streams
   shares one style sheet and, opened on its own, doesn't fill the Garden check's "now" view too (150-253 ms).
   One-line labels no longer run Python on every style or font change, the Garden check's chips are lighter, and

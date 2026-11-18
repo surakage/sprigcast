@@ -179,6 +179,7 @@ class Elided(QLabel):
         self._full = ""
         self._hint = self._draft = None
         self._hint_look = 0
+        self._fitted = None  # (text, width) last fitted
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(30)
         self.setText(text)
@@ -197,7 +198,14 @@ class Elided(QLabel):
         self._fit()
 
     def _fit(self) -> None:
-        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(10, self.width()))
+        """What fits in its width. Only when the text or width changed: a pop-up opening lays its labels out a few
+        times over, and fitting each every time was 93 ms of the Garden check's open on the PC (2026-11-18)."""
+        width = max(10, self.width())
+        key = (self._full, width, self.testAttribute(_POLISHED), theme.looks_applied)  # (styled: its font is set)
+        if self._fitted == key:
+            return
+        self._fitted = key
+        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, width)
         super().setText(shown)
         self.setToolTip(self._full if shown != self._full else "")
 

@@ -591,6 +591,7 @@ def test_plugin_store_reads_its_files_off_the_window_thread(app, monkeypatch):
     end = time.monotonic() + 5
     while "store" not in w.__dict__ and time.monotonic() < end:
         app.processEvents()
+    w.store.finish()
     assert "slide_show" in w.store.rows and w.store.rows["slide_show"].button.text() == "Add"
     assert threads and threading.main_thread() not in threads
     w.close()

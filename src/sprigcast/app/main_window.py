@@ -6296,8 +6296,9 @@ class MainWindow(QMainWindow):
             level, text = live_line(st)
             states[getattr(st, "output_id", st.name)] = (level, text)
             worst = max(worst, level, key=lambda lv: rank.get(lv, 0))
-        self._live_destinations({k: v[0] for k, v in states.items()},
-                                {k: v[1].split(" · ")[0] for k, v in states.items()})
+        if not theme.bursting():  # a pop-up being made: next second's (65 ms under Hotkeys on the PC)
+            self._live_destinations({k: v[0] for k, v in states.items()},
+                                    {k: v[1].split(" · ")[0] for k, v in states.items()})
         report = getattr(self, "_stream_report", None)
         if report is not None:
             try:
