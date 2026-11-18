@@ -209,3 +209,16 @@ def test_the_helper_isnt_asked_again_after_a_refusal(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     reply = oauth_loopback.post_form("https://helper.test", {"code": "c"}, "the helper", tries=2)
     assert reply["error"] == "invalid_grant" and len(seen) == 1
+
+
+def test_a_destination_sign_in_leaves_the_stream_details_sign_in_alone(monkeypatch):
+    """Google revokes the whole grant: revoking the destination's token would end Stream details' sign-in."""
+    from sprigcast.output import stream_details
+
+    posts = []
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append(url) or {})
+    monkeypatch.setattr(stream_details, "account", lambda service: "Sloth Bloom" if service == "youtube" else "")
+    service_signin._revoke("youtube", "https://oauth2.googleapis.com/revoke", {"token": "t"})
+    assert posts == []
+    service_signin._revoke("kick", "https://id.kick.com/oauth/revoke?token=t", {})
+    assert posts == ["https://id.kick.com/oauth/revoke?token=t"]  # nothing kept for Kick: thrown away
