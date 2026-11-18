@@ -144,6 +144,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   pictures lane instead of four at once (they crowded out the render thread); Stream timer and Local time paint
   there too; the new bloom's sprigs are drawn once it shows, not while the old one is held; a Slide show keeps
   its slide while hidden; Now playing keeps listening 2 minutes off screen; Death count sends a tiny clear picture.
+- Opening Settings or any pop-up no longer pauses the canvases: the app style is plain Qt (it called Python for
+  each of ~3,600 widgets, each waiting its turn while streaming); drop-downs, number boxes and menus get the
+  wheel guard, room and rounded corners as they're made. Folders (Logs, Recordings) open without holding the window.
 - The PNGtuber folder is read again on a worker (the window answers from the last read), with one disk read per
   folder; Freeze hotkeys on big sprigs no longer hold the window (each sprig walked once, one commit).
 - Texts, Local time and the stream timer keep their picture while their bloom is off screen, and draw again only
