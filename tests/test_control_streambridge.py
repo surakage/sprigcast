@@ -300,7 +300,9 @@ def test_remote_starts_never_wait_on_the_doctor():
     assert answer["ok"] is False and answer["error"]["code"] == "doctor_warnings"
     assert answer["error"]["warnings"] == ["Your PC is busy (CPU 95%)."] and host.live is None
     assert _fails(api, "stream.toggle") == "doctor_warnings" and host.live is None
-    assert _ok(api, "stream.start", force=True) == {"on": True, "warnings": ["Your PC is busy (CPU 95%)."]}
+    assert _ok(api, "stream.start", force=True) == {"on": True, "warnings": ["Your PC is busy (CPU 95%)."],
+                                                    "places": [{"id": "out-1", "service": "twitch",
+                                                                "shape": "horizontal"}]}
     assert host.live is not None
     assert _fails(api, "record.start") == "doctor_warnings" and host.rec is None
     assert _ok(api, "record.toggle", force=True)["on"] is True and host.rec is not None
@@ -308,7 +310,7 @@ def test_remote_starts_never_wait_on_the_doctor():
     host = DoctorHost(_host().collection)
     host.warnings = []
     host.start_stream = lambda force=False: None
-    assert _ok(NativeApi(host), "stream.start") == {"on": True}
+    assert _ok(NativeApi(host), "stream.start")["on"] is True
 
 
 def test_obs_door_starts_never_wait_on_the_doctor():

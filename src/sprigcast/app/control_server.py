@@ -198,11 +198,14 @@ class WindowHost:
         session = self.w.streaming
         if session is None:
             return None
-        streamers = [st for _, st in session.streamers]
+        streamers = list({id(st): st for _, st in session.streamers}.values())
+        # Every place sends the same pictures: "frames" is one place's count (the most any sent) and "skipped"
+        # the most any place skipped, as one output would report them. A sum counted each frame once per place
+        # (35,885 frames at 302 s for two places on the PC, 2026-11-18).
         return {
             "seconds": session.elapsed,
-            "frames": sum(getattr(st, "frames", 0) for st in streamers),
-            "skipped": sum(getattr(st, "dropped", 0) for st in streamers),
+            "frames": max((getattr(st, "frames", 0) for st in streamers), default=0),
+            "skipped": max((getattr(st, "dropped", 0) for st in streamers), default=0),
             "bytes": sum(getattr(st, "bytes_out", 0) for st in streamers),
             "reconnecting": any(not getattr(st, "connected", True) and not getattr(st, "delay_left", lambda: 0.0)()
                                 for st in streamers),

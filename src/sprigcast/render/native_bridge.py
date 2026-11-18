@@ -205,7 +205,8 @@ class NativeCanvases:
         self.can_share = True  # until the engine says its device can't draw NV12 textures
         self._pools: dict[int, CardPool] = {}  # the engine's pool id -> its CardPool (the newest few)
         self._output_scale: dict[int, str] = {}
-        self._last_out: dict[tuple[str, tuple[int, int]], float] = {}  # newest frame time handed on, per output
+        self._last_out: dict[tuple[str, tuple], float] = {}  # newest frame time handed on, per (canvas, output_key)
+        self._served: dict[tuple[str, tuple[int, int]], float] = {}  # newest Python handed on, per (canvas, size)
         self._dropped: dict[tuple[int, int], int] = {}  # (canvas slot, output slot) -> frames the engine dropped
         # (canvas slot, output slot) -> (recording, its writer, (start, fps, keep)): outputs the engine hands to a
         # writer itself (link_taps)
@@ -433,10 +434,16 @@ class NativeCanvases:
 
     # ---- recordings and streams ---------------------------------------------------------------------------------
 
-    def output_key(self, size: tuple[int, int] | None, on_card: bool) -> tuple | None:
+    def output_key(self, size: tuple[int, int] | None, on_card: bool, owner: int | None = None) -> tuple | None:
         """What names an output the native engine makes: its NV12 size and whether its frames stay on the
-        card (asked for and possible). None: a full-size RGBA tap, which only Python's compositor makes."""
-        return None if size is None else (tuple(size), bool(on_card and self.can_share))
+        card (asked for and possible), and for a recording or stream through the engine's own writer, id() of it
+        (owner): it gets an output of its own, so the engine hands it every frame itself, on the card too, even
+        when another one takes the same size (render/engine.py _output_keys). None: a full-size RGBA tap, which
+        only Python's compositor makes."""
+        if size is None:
+            return None
+        key = (tuple(size), bool(on_card and self.can_share))
+        return key if owner is None else (*key, owner)
 
     def serves(self, canvas_id: str, keys) -> bool:
         """Whether the native engine can make every one of these outputs (output_key): NV12 only, at most
@@ -461,8 +468,7 @@ class NativeCanvases:
             out = current.pop(key)
             self._unlink(slot, out)
             self._dropped.pop((slot, out), None)
-            if not any(k[0] == key[0] for k in current):
-                self._last_out.pop((canvas_id, key[0]), None)
+            self._last_out.pop((canvas_id, key), None)
             self._guard("output", self.engine.set_output, slot, out, 0, 0)
         free = [o for o in range(sprigcore.ENGINE_OUTPUTS) if o not in current.values()]
         for key in want:
@@ -481,8 +487,9 @@ class NativeCanvases:
         now = time.perf_counter()
         made = []  # what each output had made, to tell a feed that stopped from one whose frames weren't taken
         for canvas_id, slot in self._slots.items():
-            for (size, on_card), out in self._outputs.get(slot, {}).items():
-                last = self._last_out.get((canvas_id, size))
+            for key, out in self._outputs.get(slot, {}).items():
+                size, on_card = key[0], key[1]
+                last = self._last_out.get((canvas_id, key))
                 made.append(f"{canvas_id} {size[0]}x{size[1]}{' on the card' if on_card else ''}: last frame "
                             f"{f'{now - last:.1f} s ago' if last else 'never'}, "
                             f"{self._dropped.get((slot, out), 0)} missed by the engine")
@@ -492,6 +499,7 @@ class NativeCanvases:
         for canvas_id in list(self._slots):
             self.set_outputs(canvas_id, ())
         self._last_out.clear()
+        self._served.clear()
         return True
 
     def take_outputs(self, canvas_id: str, key: tuple) -> list:
@@ -502,10 +510,10 @@ class NativeCanvases:
         out = self._outputs.get(slot, {}).get(key) if slot is not None else None
         if out is None or self.failed:
             return []
-        size, on_card = key
+        size, on_card = key[0], key[1]
         frames = []
         before = self.output_drops
-        last = self._last_out.get((canvas_id, size), 0.0)
+        last = max(self._last_out.get((canvas_id, key), 0.0), self._served.get((canvas_id, size), 0.0))
         for _ in range(sprigcore.ENGINE_OUTPUTS * 2):  # the queue holds a few; never loop for ever
             if on_card:
                 got = self._guard("output frame", self.engine.take_texture, slot, out)
@@ -532,7 +540,7 @@ class NativeCanvases:
             if drawn > last:
                 frames.append(frame)
                 last = drawn
-        self._last_out[(canvas_id, size)] = last
+        self._last_out[(canvas_id, key)] = last
         self.lost = self.output_drops - before  # what the engine let go of since the last call, for the outputs' counts
         return frames
 
@@ -734,8 +742,8 @@ class NativeCanvases:
     def served(self, canvas_id: str, size: tuple[int, int], drawn: float) -> None:
         """Python's compositor handed on a frame of this output drawn at `drawn`: a native frame from before
         then would go backwards, so it's let go."""
-        key = (canvas_id, size)
-        self._last_out[key] = max(self._last_out.get(key, 0.0), drawn)
+        key = (canvas_id, tuple(size))
+        self._served[key] = max(self._served.get(key, 0.0), drawn)
 
     def check(self, now: float) -> None:
         """About once a second: the engine's health. A faulted engine turns this off."""
