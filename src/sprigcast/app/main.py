@@ -216,6 +216,9 @@ def run() -> None:
     QCoreApplication.setOrganizationName("Slothbloom")
     _announce_running()
     _quiet_start_log()
+    from sprigcast.core import thread_names
+
+    thread_names.install()  # crash dumps name the thread (Windows)
     if sys.stderr is not None:
         from sprigcast.app.logbook import crash_dumps_all_threads
 

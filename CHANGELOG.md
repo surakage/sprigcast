@@ -173,6 +173,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   crashing thread left the window Not Responding for 25 minutes). A fault Windows survives (one in a window's
   paint) is dumped once and the run goes on. The crash report names the last fault, not COM's own handled
   "0x8001010d" notes before it, and the Slide show's Qt fallback keeps its picture alive while Qt reads it.
+- Crash dumps name each thread (Windows): every thread SprigCast starts tells Windows its name, and adds "(ending)"
+  once its work is done. The 12:21 crash on 2026-11-18 was in a thread Python was tearing down, and the dump
+  couldn't say which one.
 - The Garden check, Last stream and the command palette hand Python's lock back quickly while they open, as the
   other pop-ups do (57-76 ms), and the Plugin store makes its cards two a tick, handing it back quickly too
   (147 ms over its fill).
