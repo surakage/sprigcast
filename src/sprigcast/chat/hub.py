@@ -50,7 +50,9 @@ class ChatHub(QObject):
         wanted = self.names() if self.reasons else {}
         for platform in list(self.readers):
             if platform not in wanted:
-                self.readers.pop(platform).stop()
+                reader = self.readers.pop(platform)
+                reader.stop()
+                log.info("chat %s %s: stopped", platform, reader.channel)  # in the logbook
                 self.states.pop(platform, None)
         for platform, name in wanted.items():
             if platform not in PLATFORMS:

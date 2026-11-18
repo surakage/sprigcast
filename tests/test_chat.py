@@ -176,10 +176,13 @@ def test_mentions_stand_out_and_scrolling_up_shows_a_jump_pill(app):
     view.show()
     for i in range(60):
         view.add(ChatMessage("twitch", "a", f"line {i}"))
+    assert view.document().isEmpty()  # drawn together, a moment later
+    view.flush()
     app.processEvents()
     assert not view.jump.isVisible()  # following along: always at the newest line
     view.verticalScrollBar().setValue(0)  # scrolled up to read
     view.add(ChatMessage("twitch", "a", "new one"))
+    view.flush()
     assert view.jump.isVisible() and view.verticalScrollBar().value() == 0
     view.jump.click()
     assert not view.jump.isVisible() and view.at_bottom()
@@ -187,6 +190,7 @@ def test_mentions_stand_out_and_scrolling_up_shows_a_jump_pill(app):
     view.names = frozenset({"surakage"})  # a line that mentions you is washed green, the next one isn't
     view.add(ChatMessage("twitch", "a", "@surakage hi"))
     view.add(ChatMessage("twitch", "a", "plain"))
+    view.flush()
     last = view.document().lastBlock()
     assert last.previous().blockFormat().background().color().name() == chat_panel.theme.SELECT_BG
     assert not last.blockFormat().hasProperty(last.blockFormat().Property.BackgroundBrush)
@@ -199,6 +203,7 @@ def test_emote_cache_starts_over_instead_of_growing(app, monkeypatch):
     view = chat_panel.ChatView()
     view._asked.update({"a", "b", "c", "d"})
     view.add(ChatMessage("youtube", "a", "hi", images={"yt-1": "https://yt3.ggpht.com/emoji-1"}))
+    view.flush()
     assert not view._asked and view._urls == {"yt-1": "https://yt3.ggpht.com/emoji-1"}
     assert [m.text for m in view.messages] == ["hi"]
 
@@ -297,3 +302,27 @@ def test_a_dropped_chat_says_it_is_reconnecting(app, monkeypatch):
     assert panel.view.notice.isHidden()
     panel.hub._state("twitch", "waiting: stream ended")  # ended, not dropped
     assert panel.view.notice.isHidden()
+
+
+def test_a_busy_chat_is_drawn_in_batches_and_clears_only_remove_their_lines(app):
+    from sprigcast.app import chat_panel
+
+    view = chat_panel.ChatView()
+    view.resize(300, 400)
+    for i in range(500):  # more than KEEP arrive between two draws
+        view.add(ChatMessage("twitch", "a", f"line {i}", id=f"t{i}", user_id=str(i % 7)))
+    assert view._flush.isActive() and len(view._pending) == chat_panel.KEEP
+    view.flush()
+    assert view.document().blockCount() == len(view.messages) == chat_panel.KEEP
+    assert view.document().lastBlock().text().endswith("line 499")
+    view.remove(platform="twitch", user_id="3")  # a timeout: that user's lines go, the rest stay put
+    texts = [view.document().findBlockByNumber(i).text() for i in range(view.document().blockCount())]
+    assert len(texts) == len(view.messages) and all(t.endswith(m.text) for t, m in zip(texts, view.messages))
+    assert all(m.user_id != "3" for m in view.messages)
+    last = view.messages[-1].id
+    view.remove(platform="twitch", message_id=last)  # the newest line deleted
+    assert view.document().blockCount() == len(view.messages)
+    assert view.document().lastBlock().text().endswith(view.messages[-1].text)
+    view.add(ChatMessage("twitch", "a", "after"))
+    view.remove(platform="twitch", message_id="nope")  # a delete waits for nothing: the batch is drawn first
+    assert view.document().lastBlock().text().endswith("after")

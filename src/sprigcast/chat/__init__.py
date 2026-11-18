@@ -12,6 +12,8 @@ A reader is a QObject with `platform`, `channel`, `start(name)`, `stop()` and th
 
 from __future__ import annotations
 
+import colorsys
+import zlib
 from dataclasses import dataclass, field
 
 
@@ -80,9 +82,6 @@ NAME_COLOURS = ("#7fd6a2", "#9cc9ff", "#f2b880", "#d8a6ff", "#f5d76e", "#7fe0d6"
 def readable_colour(colour: str, name: str) -> str:
     """The chatter's colour, lifted if it would vanish on a dark background; a steady pick if they have none.
     Plain Python (no Qt), so the chat source can use it on the render thread too."""
-    import colorsys
-    import zlib
-
     if not colour:
         return NAME_COLOURS[zlib.crc32(name.lower().encode()) % len(NAME_COLOURS)]
     raw = colour.lstrip("#")

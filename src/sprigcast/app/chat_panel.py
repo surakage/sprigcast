@@ -51,6 +51,7 @@ NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle"}; an empty Twitch na
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube: a Twitch channel picked by hand
 HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
 KEEP = 300  # messages kept on screen
+FLUSH_MS = 100  # new lines are drawn together this often
 MENU_READY_MS = 5000  # after the panel is made: its ⋯ menu made ready (ChatPanel._ready_menu)
 EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
@@ -150,6 +151,13 @@ class ChatView(QTextBrowser):
         self._relayout.setSingleShot(True)
         self._relayout.setInterval(120)
         self._relayout.timeout.connect(self._pictures_arrived)
+        # A busy chat (xqc's: dozens of lines a second) is drawn in batches: one document edit, one layout and
+        # one scroll per FLUSH_MS, not one each (a line at a time froze the window for 400 ms on 2026-11-18).
+        self._pending: list[ChatMessage] = []
+        self._flush = QTimer(self)
+        self._flush.setSingleShot(True)
+        self._flush.setInterval(FLUSH_MS)
+        self._flush.timeout.connect(self.flush)
         self.jump = QPushButton("New messages ↓", self)
         self.jump.setStyleSheet(GO_STYLE.replace("padding: 7px 16px", "padding: 5px 14px")
                                 .replace("border-radius: 15px", "border-radius: 13px"))
@@ -190,13 +198,37 @@ class ChatView(QTextBrowser):
         return bar.value() >= bar.maximum() - 4
 
     def add(self, message: ChatMessage) -> None:
-        stay = self.at_bottom()
-        if len(self._asked) > EMOTE_CACHE:
-            self._fresh_cache()
+        """A new line: kept now, drawn with the others that arrive in the same FLUSH_MS."""
         self.messages.append(message)
         self._urls.update(message.images)
-        self.append(message_html(message, self.mixed, self.names))
-        self._wash(self.document().lastBlock(), mentions(message.text, self.names))
+        self._pending.append(message)
+        if len(self._pending) > KEEP:
+            del self._pending[:-KEEP]
+        if not self._flush.isActive():
+            self._flush.start()
+
+    def flush(self) -> None:
+        """Draw the waiting lines in one go."""
+        from PySide6.QtGui import QTextCursor
+
+        self._flush.stop()
+        pending, self._pending = self._pending, []
+        if not pending:
+            return
+        stay = self.at_bottom()
+        if len(self._asked) > EMOTE_CACHE:
+            self._fresh_cache()  # redraws every kept line, the waiting ones included
+        else:
+            document = self.document()
+            cursor = QTextCursor(document)
+            cursor.beginEditBlock()  # one change for the whole batch: laid out once
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            for message in pending:
+                if not document.isEmpty():
+                    cursor.insertBlock(cursor.blockFormat(), cursor.charFormat())
+                cursor.insertHtml(message_html(message, self.mixed, self.names))
+                self._wash_with(cursor, mentions(message.text, self.names))
+            cursor.endEditBlock()
         if stay:
             self.to_bottom()
         else:
@@ -231,18 +263,44 @@ class ChatView(QTextBrowser):
         self.redraw()
 
     def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False) -> None:
-        """A moderator deleted a message, timed someone out, or cleared chat (on one platform)."""
+        """A moderator deleted a message, timed someone out, or cleared chat (on one platform).
+        Only those lines leave the page; the rest isn't rebuilt (a full redraw cost 60 ms on a Twitch clear)."""
+        from PySide6.QtGui import QTextCursor
+
         def goes(m: ChatMessage) -> bool:
             if platform and m.platform != platform:
                 return False
             return everything or bool(message_id and m.id == message_id) or bool(user_id and m.user_id == user_id)
 
-        kept = [m for m in self.messages if not goes(m)]
-        if len(kept) != len(self.messages):
-            self.messages = deque(kept, maxlen=KEEP)
+        self.flush()
+        gone = [i for i, m in enumerate(self.messages) if goes(m)]
+        if not gone:
+            return
+        document = self.document()
+        if document.blockCount() != len(self.messages) or len(gone) == len(self.messages):
+            self.messages = deque((m for m in self.messages if not goes(m)), maxlen=KEEP)
             self.redraw()
+            return
+        stay = self.at_bottom()
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        for i in reversed(gone):  # from the bottom up, so the earlier block numbers still hold
+            block = document.findBlockByNumber(i)
+            cursor.setPosition(block.position())
+            if block.next().isValid():
+                cursor.setPosition(block.next().position(), QTextCursor.MoveMode.KeepAnchor)
+            else:  # the last line: take the break before it instead
+                cursor.setPosition(block.previous().position() + block.previous().length() - 1)
+                cursor.setPosition(block.position() + block.length() - 1, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+        cursor.endEditBlock()
+        self.messages = deque((m for m in self.messages if not goes(m)), maxlen=KEEP)
+        if stay:
+            self.to_bottom()
 
     def redraw(self) -> None:
+        self._pending.clear()  # every kept line is drawn below
+        self._flush.stop()
         self.setHtml("".join(message_html(m, self.mixed, self.names) for m in self.messages))
         block = self.document().firstBlock()
         for message in self.messages:
@@ -256,7 +314,10 @@ class ChatView(QTextBrowser):
         copies the one before it, so every line sets it either way)."""
         from PySide6.QtGui import QTextCursor
 
-        cursor = QTextCursor(block)
+        ChatView._wash_with(QTextCursor(block), on)
+
+    @staticmethod
+    def _wash_with(cursor, on: bool) -> None:
         fmt = cursor.blockFormat()
         if on:
             fmt.setBackground(QColor(theme.SELECT_BG))
@@ -267,6 +328,8 @@ class ChatView(QTextBrowser):
         cursor.setBlockFormat(fmt)
 
     def clear_chat(self) -> None:
+        self._pending.clear()
+        self._flush.stop()
         self.messages.clear()
         self.clear()
         self.jump.hide()
