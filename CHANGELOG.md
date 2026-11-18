@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Pop-up cards (Garden check, Last stream, Get started, Starter kit and the rest) draw their soft shadow once per
+  size instead of blurring the whole card on every repaint, and the Stream doctor lost its two blurred shadows
+  (96 ms). The encoder overload check runs on a worker instead of the window's thread every meter tick (62 ms),
+  Last stream fills its tiles a tick after it shows (81-90 ms), and the main window no longer watches every event
+  of the stage splitter and an empty tiles area (69 ms).
 - Last streams no longer opens its drop-down as a window of its own for a moment (90-133 ms). The Garden check
   fills its rows a tick after it opens (75-101 ms), a Settings page is put in its place a tick after it's made and
   General's lower cards come a tick later still (62-131 ms), the + Add menu is made ready ahead (67 ms), and labels

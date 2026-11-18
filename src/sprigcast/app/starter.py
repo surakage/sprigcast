@@ -16,14 +16,12 @@ import math
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -306,6 +304,9 @@ class StarterDialog(QDialog):
     A rounded, raised card like the app's other pop-ups (no square window frame); drag it by any empty spot.
     """
 
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self._card)
+
     def __init__(self, cameras: list, monitors: list, mics: list[str], fresh: bool, both_shapes: bool,
                  parent: QWidget | None = None, speakers: list[str] | None = None,
                  running_apps: list[str] | None = None):
@@ -321,11 +322,7 @@ class StarterDialog(QDialog):
         card.setObjectName("starterCard")
         card.setStyleSheet(f"#starterCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
                            " border-radius: 24px; }")
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 190))
-        card.setGraphicsEffect(shadow)
+        self._card = card  # its shadow: drawn once per size, under it (paintEvent, theme.paint_card_shadow)
         outer.addWidget(card)
         root = QVBoxLayout(card)
         root.setContentsMargins(26, 22, 26, 22)
