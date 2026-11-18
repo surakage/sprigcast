@@ -386,8 +386,17 @@ def _sentence(note: str) -> str:
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
                    ("x", "X"), ("custom", "Custom RTMP"))
-CHIP_STYLE = theme.button_style(10, "2px 10px", extra="min-height: 16px; font-size: 11px;")
-REMOVE_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
+# Edit mode's tools: every one the same 30 x 28 rounded button with one icon, evenly spaced.
+TOOL_STYLE = theme.button_style(9, "0px", extra="min-width: 30px; max-width: 30px; min-height: 26px; max-height: 26px;")
+SURE_STYLE = theme.button_style(9, "0px 10px", extra="min-height: 26px; max-height: 26px; font-size: 11px;") + (
+    f"QPushButton {{ background: {theme.BAD}; color: #ffffff; border-color: {theme.BAD}; }}")
+
+
+def tool_icon(name: str) -> QIcon:
+    """An Edit tool's icon, faint when the tool can't be used (Move up on the first place)."""
+    made = QIcon(icons.icon(name, theme.TEXT, 16))
+    made.addPixmap(icons.pixmap(name, theme.EDGE_STRONG, 16), QIcon.Mode.Disabled)
+    return made
 
 
 def side_card() -> QFrame:
@@ -427,6 +436,7 @@ class FitScroll(QScrollArea):
     def __init__(self, widget: QWidget, cap: int | None = None):
         super().__init__()
         self.cap = cap  # never taller than this either: past it, the content scrolls
+        self.cap_rows: tuple[QVBoxLayout, int] | None = None  # or: this many whole rows of this layout
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -453,10 +463,18 @@ class FitScroll(QScrollArea):
         self._fit_due = False
         self._fit()
 
+    def _cap(self) -> int | None:
+        if self.cap_rows is None:
+            return self.cap
+        rows, count = self.cap_rows
+        heights = [rows.itemAt(i).sizeHint().height() for i in range(min(count, rows.count()))]
+        return sum(heights) + rows.spacing() * max(0, len(heights) - 1) if heights else self.cap
+
     def _fit(self) -> None:
         height = self._content.sizeHint().height()
-        if self.cap is not None:
-            height = min(height, self.cap)
+        cap = self._cap()
+        if cap is not None:
+            height = min(height, cap)
         self.setMaximumHeight(max(1, height))  # never taller than the content
         self.updateGeometry()
         self._bar()
@@ -464,8 +482,24 @@ class FitScroll(QScrollArea):
     def _bar(self) -> None:
         # The bar only when the rows really don't fit, so it never sits over them for a moment.
         fits = self.height() >= self._content.sizeHint().height()
+        self._whole_rows(fits)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits
                                         else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def _whole_rows(self, fits: bool) -> None:
+        """With cap_rows, a short column shows only whole rows: the part row's room is left empty instead."""
+        spare = 0
+        if self.cap_rows is not None and not fits:
+            rows, _count = self.cap_rows
+            used, room = 0, self.height()
+            for i in range(rows.count()):
+                step = rows.itemAt(i).sizeHint().height() + (rows.spacing() if i else 0)
+                if used + step > room:
+                    break
+                used += step
+            spare = room - used if used else 0
+        if self.viewportMargins().bottom() != spare:
+            self.setViewportMargins(0, 0, 0, spare)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         self._bar()
@@ -473,7 +507,8 @@ class FitScroll(QScrollArea):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         hint = self._content.sizeHint()
-        return QSize(hint.width(), hint.height() if self.cap is None else min(hint.height(), self.cap))
+        cap = self._cap()
+        return QSize(hint.width(), hint.height() if cap is None else min(hint.height(), cap))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         shortest = self.SHORTEST if self.cap is None else 40  # a capped list may shrink and scroll
@@ -796,6 +831,8 @@ class LiveSide(QWidget):
                 row = self._place_row(place)
                 self.places.addWidget(row)
                 row.show()  # now, so the list measures its rows straight away
+            # Edit rows are taller: show three whole ones, so the list never stops partway through a row.
+            self.places_scroll.cap_rows = (self.places, 3 if self.editing else 4) if places else None
             self.places_scroll._fit()
         from sprigcast.app.destinations import HEALTH_COLORS
 
@@ -829,7 +866,9 @@ class LiveSide(QWidget):
             tools = self.place_tools.get(place.id)
             if tools:
                 tall = place.canvas == "vertical"
-                tools["shape"].setText("Vertical" if tall else "Horizontal")
+                tools["shape"].setIcon(tool_icon("portrait" if tall else "landscape"))
+                tools["shape"].setToolTip(("Vertical" if tall else "Horizontal") + " canvas: click to swap")
+                tools["shape"].setProperty("shape", "vertical" if tall else "horizontal")
                 if "test" in tools:
                     tools["test"].blockSignals(True)
                     tools["test"].setChecked(bool(place.test))
@@ -884,40 +923,36 @@ class LiveSide(QWidget):
         box.installEventFilter(self)  # a press and a pull starts dragging it
         if self.editing:
             tools_row = QHBoxLayout()
-            tools_row.setContentsMargins(0, 2, 0, 4)
+            tools_row.setContentsMargins(44, 0, 0, 2)  # under the name, so the tools read as this place's
             tools_row.setSpacing(6)
             tools: dict[str, QPushButton] = {}
 
-            def chip(key: str, text: str, tip: str, style: str = CHIP_STYLE) -> QPushButton:
-                b = QPushButton(text)
-                b.setStyleSheet(style)
+            def tool(key: str, icon_name: str, tip: str) -> QPushButton:
+                b = QPushButton()
+                b.setStyleSheet(TOOL_STYLE)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
                 b.setToolTip(tip)
+                b.setIcon(tool_icon(icon_name))
+                b.setIconSize(QSize(16, 16))
                 tools[key] = b
                 tools_row.addWidget(b)
                 return b
 
-            chip("shape", "", "Which canvas this place gets: click to swap").clicked.connect(
-                lambda _=False, pid=place.id: self.on_place(pid, "shape"))
+            tool("shape", "landscape", "").clicked.connect(lambda _=False, pid=place.id: self.on_place(pid, "shape"))
             if place.test is not None:
-                test = chip("test", "Test", "Bandwidth test: send to Twitch without going live")
+                test = tool("test", "upload", "Bandwidth test: send to Twitch without going live")
                 test.setCheckable(True)
                 test.toggled.connect(lambda _on, pid=place.id: self.on_place(pid, "test"))
             order = [p.id for p in self._places]
             at = order.index(place.id) if place.id in order else 0
-            for key, icon, tip, step in (("up", "chevron-up", "Move up", -1), ("down", "chevron-down", "Move down", 1)):
-                move = chip(key, "", tip, CHIP_STYLE + "QPushButton:disabled { background: transparent; }")
-                arrow = QIcon(icons.icon(icon, theme.TEXT, 14))
-                arrow.addPixmap(icons.pixmap(icon, theme.EDGE_STRONG, 14), QIcon.Mode.Disabled)  # at the end: faint
-                move.setIcon(arrow)
+            for key, icon_name, tip, step in (("up", "chevron-up", "Move up", -1), ("down", "chevron-down", "Move down", 1)):
+                move = tool(key, icon_name, tip)
                 move.setEnabled(0 <= at + step < len(order))
                 move.clicked.connect(lambda _=False, pid=place.id, k=key: self.on_place(pid, k))
-            gear = chip("settings", "", "Key, bitrate and everything else")
-            gear.setIcon(icons.icon("gear", size=14))
-            gear.clicked.connect(
-                lambda _=False, pid=place.id: self.on_destination(pid))
             tools_row.addStretch(1)
-            remove = chip("remove", "Remove", "Remove this place (click twice)", REMOVE_CHIP_STYLE)
+            tool("settings", "gear", "Key, bitrate and everything else").clicked.connect(
+                lambda _=False, pid=place.id: self.on_destination(pid))
+            remove = tool("remove", "trash", "Remove this place")
             remove.clicked.connect(lambda _=False, pid=place.id, b=remove: self._remove_clicked(pid, b))
             outer.addLayout(tools_row)
             self.place_tools[place.id] = tools
@@ -999,9 +1034,11 @@ class LiveSide(QWidget):
             self.on_place(place_id, f"to:{to}")
 
     def _remove_clicked(self, place_id: str, button: QPushButton) -> None:
-        """First click asks ("Sure?"), the second removes."""
-        if button.text() != "Sure?":
-            button.setText("Sure?")
+        """First click asks (the bin turns red: "Remove?"), the second removes."""
+        if button.text() != "Remove?":
+            button.setIcon(QIcon())
+            button.setText("Remove?")
+            button.setStyleSheet(SURE_STYLE)
             return
         self.on_place(place_id, "remove")
 

@@ -427,7 +427,7 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         assert side.editing and side.manage.text() == "Done" and side.all_settings.isVisibleTo(side.where_card)
         tools = side.place_tools["tw"]
         tools["shape"].click()
-        assert col.outputs[0].canvas == "vertical" and side.place_tools["tw"]["shape"].text() == "Vertical"
+        assert col.outputs[0].canvas == "vertical" and side.place_tools["tw"]["shape"].property("shape") == "vertical"
         side.place_tools["tw"]["test"].click()
         assert col.outputs[0].bandwidth_test
         assert "test" not in side.place_tools["tt"]  # TikTok has no test mode
@@ -436,7 +436,7 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         remove = side.place_tools[col.outputs[2].id]["remove"]
         gone = col.outputs[2].id
         remove.click()
-        assert remove.text() == "Sure?" and len(col.outputs) == 4
+        assert remove.text() == "Remove?" and len(col.outputs) == 4
         remove.click()
         assert gone not in [o.id for o in col.outputs] and removed_keys == [f"sprigcast/{gone}"]
         assert len(opened) == 2
