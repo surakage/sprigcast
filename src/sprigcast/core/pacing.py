@@ -19,6 +19,7 @@ from __future__ import annotations
 import gc
 import logging
 import sys
+import threading
 import time
 
 log = logging.getLogger(__name__)
@@ -357,10 +358,13 @@ class _StallDump:
         if self.file is None or now - self.armed_at < DUMP_REARM_S:
             return
         self.armed_at = now
-        try:
-            faulthandler.dump_traceback_later(DUMP_AFTER_S, repeat=False, file=self.file)
-        except (RuntimeError, ValueError, OSError):
-            self.file = None
+        with _dump_lock:
+            if _closing["at"] is not None:
+                return  # faulthandler's one timer is the exit guard's now (exit_guard)
+            try:
+                faulthandler.dump_traceback_later(DUMP_AFTER_S, repeat=False, file=self.file)
+            except (RuntimeError, ValueError, OSError):
+                self.file = None
 
     def take(self) -> str:
         """What a dump printed since the last look, shortened, or ""."""
@@ -378,6 +382,53 @@ class _StallDump:
         import threading
 
         return shorten_dump(text, {t.ident: t.name for t in threading.enumerate()})
+
+
+# SprigCast closing: if it hasn't ended EXIT_LIMIT_S after the window closed, it ends anyway. faulthandler's
+# timer does it from a thread of its own, without Python's lock, so a thread stuck holding the lock (or in the
+# graphics driver) can't stop it; every thread's stack goes to the log first. The native simple run
+# (2026-11-18) had SprigCast still running 15 s after its window was told to close, and it had to be killed.
+EXIT_LIMIT_S = 20.0
+_dump_lock = threading.Lock()
+_closing: dict = {"at": None, "file": None, "on": False}  # on: set by app/main.py (never in tests)
+
+
+def exit_guard(limit_s: float = EXIT_LIMIT_S) -> None:
+    """The window is closing (everything worth keeping is saved): end the process if it's still here after
+    limit_s. Once; the stall watch stops dumping stacks from now on."""
+    import faulthandler
+    import logging as _logging
+
+    with _dump_lock:
+        if _closing["at"] is not None or not _closing["on"]:
+            return
+        _closing["at"] = time.monotonic()
+        stream = next((h.stream for h in _logging.getLogger().handlers
+                       if isinstance(h, _logging.FileHandler) and getattr(h, "stream", None) is not None), None)
+        try:
+            if stream is not None:
+                stream.write(f"(if SprigCast is still closing in {limit_s:.0f} s, it ends then; "
+                             "the stacks below show what held it)\n")
+                stream.flush()
+            faulthandler.dump_traceback_later(limit_s, repeat=False, file=stream or sys.stderr, exit=True)
+            _closing["file"] = stream
+        except (RuntimeError, ValueError, OSError, AttributeError):
+            log.warning("exit guard not set", exc_info=True)
+
+
+def use_exit_guard(on: bool = True) -> None:
+    """SprigCast itself (app/main.py) closes with the guard; tests that close windows don't."""
+    _closing["on"] = on
+
+
+def exit_guard_off() -> None:
+    """Let the guard go (tests)."""
+    import faulthandler
+
+    with _dump_lock:
+        if _closing["at"] is not None:
+            faulthandler.cancel_dump_traceback_later()
+        _closing["at"], _closing["file"] = None, None
 
 
 def shorten_dump(text: str, names: dict | None = None, frames: int = 4) -> str:

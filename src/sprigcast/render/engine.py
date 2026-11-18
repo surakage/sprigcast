@@ -52,6 +52,11 @@ CAMERA_SLEEP_MAX = 300.0
 CAMERA_BACK_SOON_S = 600.0
 GRAPHICS_LOST_TICKS = 30  # frames failing this many ticks in a row: the graphics driver reset, start graphics again
 GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again this often
+# Starts of the graphics close together wait longer each time (2, 4, 8 ... up to 60 s): each one makes every
+# source again. The native simple run (2026-11-18) restarted ~10 times a minute for 5 minutes on a picture that
+# kept failing, and memory climbed ~1 GB a minute.
+GRAPHICS_RESTART_CALM_S = 120.0  # a start this long after the last one counts as the first again
+GRAPHICS_RESTART_MAX_S = 60.0
 FIRST_UPLOAD_BYTES = 24 * 1024 * 1024  # first pictures after a wake copied to the card per tick, at most (+1)
 WAKE_LOG_S = 0.003  # a source this slow on a frame that woke some is named in the "waking frame" log line
 SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thread is (the late-frame line says)
@@ -489,6 +494,7 @@ class Engine:
 
         late_logged, late_held = float("-inf"), 0
         failed_run, reset_checked, rebuild_after = 0, 0.0, 0.0
+        restarted_at, restarts = float("-inf"), 0  # graphics starts close together (GRAPHICS_RESTART_CALM_S)
         gpu = self._gpu_wait(compositor)
         gpu_waited = 0.0
         skipped_gpu, gpu_logged = 0, float("-inf")
@@ -545,6 +551,9 @@ class Engine:
                         else:
                             compositor, gpu = fresh
                             failed_run, last_problem = 0, None
+                            restarts = restarts + 1 if started - restarted_at < GRAPHICS_RESTART_CALM_S else 1
+                            restarted_at = started
+                            rebuild_after = started + min(GRAPHICS_RESTART_MAX_S, GRAPHICS_RETRY_S * 2 ** (restarts - 1))
                             continue
                 if gpu is not None:
                     gpu.mark()
@@ -638,8 +647,8 @@ class Engine:
             self._retire(source)
         self._sources.clear()
         for held in (self._last_shown, self._failing, self._failed_said, self._camera_wait, self._slept_at,
-                     self._caught, self._missed):
-            held.clear()
+                     self._caught, self._missed, self._held_back):
+            held.clear()  # the held-back pictures too: one that broke the copy must not break the new graphics
         self._part_textures, self._parts_used = {}, set()
         try:
             self._sync_sources(fresh)
@@ -1450,6 +1459,24 @@ class Engine:
             except Exception:
                 log.exception("frame tap for %s failed", target.id)
 
+    def _upload_held(self, compositor, held_back: dict) -> None:
+        """Pictures held back for Python's compositor, now that it draws again. One that fails to copy is let go
+        (said once for all of them), never tried again: the native simple run (2026-11-18) had a held-back
+        Local time picture fail every tick, restart the graphics once a minute for 5 minutes, and keep
+        the stream at 0 frames, because the same picture was kept and copied again after every restart."""
+        failed = []
+        for source_id, (frame, order, layout) in held_back.items():
+            source = self._sources.get(source_id)
+            if source is None or getattr(source, "asleep", False):
+                continue  # gone, or asleep: it sends a fresh picture when it wakes
+            try:
+                self._upload(compositor, source_id, frame, order, layout, held=True)
+            except Exception:  # noqa: BLE001 - _upload said which and why
+                failed.append(source_id)
+        if failed:
+            log.warning("let go of held-back pictures that failed to copy: %s (their next pictures are copied as "
+                        "usual)", ", ".join(failed))
+
     def _upload(self, compositor, source_id: str, frame, order: str, layout, held: bool = False) -> None:
         """compositor.upload, saying which source's picture it was if the copy fails. The PC heavy run
         (2026-11-17) had an access violation inside the copy to the card, twice, with nothing to say whose."""
@@ -1965,12 +1992,12 @@ class Engine:
         self._python_drew = native is None or self._python_draws(native, taps)
         if self._held_back:
             if self._python_drew or native is None:  # it draws again: it gets the newest pictures it skipped
-                for source_id, (frame, order, layout) in self._held_back.items():
-                    if source_id in self._sources:
-                        self._upload(compositor, source_id, frame, order, layout, held=True)
+                held_back, self._held_back = self._held_back, {}
+                self._upload_held(compositor, held_back)
                 self._mark("pictures held back")
-            self._held_back = {} if self._python_drew or native is None else \
-                {sid: held for sid, held in self._held_back.items() if sid in self._sources}
+            else:  # only sources still drawn keep one waiting (a bloom gone to sleep lets go of its pictures)
+                self._held_back = {sid: held for sid, held in self._held_back.items()
+                                   if sid in self._sources and not getattr(self._sources[sid], "asleep", False)}
         if not self._python_drew:
             self._part_textures, self._parts_used = {}, set()  # nothing Python draws this tick shows a sprig
         elif self._collection.parts():

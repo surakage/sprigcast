@@ -128,3 +128,30 @@ def test_a_card_that_wont_start_yet_is_tried_again_not_every_tick(made, monkeypa
         assert _until(lambda: "bg" in made[-1].textures)
     finally:
         engine.stop()
+
+
+def test_restarts_close_together_wait_longer_each_time(made, monkeypatch):
+    """Native simple run (2026-11-18): a picture that failed every frame restarted the graphics ~10 times a
+    minute for 5 minutes, each time making every source again, and memory climbed ~1 GB a minute. Restarts
+    close together now wait 2, 4, 8 ... s (here scaled down)."""
+    engine = Engine(_collection())
+    monkeypatch.setattr(engine_module, "GRAPHICS_LOST_TICKS", 2)
+    monkeypatch.setattr(engine_module, "GRAPHICS_RETRY_S", 0.1)
+    real_tick = engine._tick
+    broken = {"on": False}
+
+    def tick(compositor, now):
+        if broken["on"]:
+            raise RuntimeError("access violation")  # fails on every card, old or new
+        real_tick(compositor, now)
+
+    monkeypatch.setattr(engine, "_tick", tick)
+    engine.start()
+    try:
+        assert _until(lambda: len(made) == 1 and "bg" in engine._sources)
+        broken["on"] = True
+        time.sleep(2.0)
+        # Without waiting longer each time: a restart every 2 ticks, ~60. With it: 0.1, 0.2, 0.4, 0.8 s apart.
+        assert 2 <= len(made) <= 7, len(made)
+    finally:
+        engine.stop()
