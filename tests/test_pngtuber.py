@@ -619,3 +619,27 @@ def test_the_settings_form_has_pickers_for_the_two_pictures(tuber):
     assert {"idle_picture", "talk_picture"} <= set(dialog.fields)
     assert dialog.fields["folder"].text() == "" and dialog.fields["folder"].placeholderText() == "Sloth (built in)"
     assert list(defaults)[:3] == ["folder", "idle_picture", "talk_picture"]
+
+
+def test_a_folder_without_a_model_is_logged_once_not_every_look(tuber, monkeypatch, tmp_path, caplog):
+    import logging
+
+    folder = tmp_path / "resized-images"
+    _picture(folder / "Cozy.png", (200, 150, 100, 255))
+    _picture(folder / "Pog.png", (200, 150, 100, 255))
+    _picture(folder / "Rage.png", (200, 150, 100, 255))
+    source = create_source("pngtuber", "t", {"folder": str(folder)})
+    key = (folder, None, None)
+    with caplog.at_level(logging.INFO, logger=tuber.log.name):
+        for _ in range(5):
+            source._load(key)
+        said = [r.getMessage() for r in caplog.records if "no model" in r.getMessage()]
+        assert said == ["pngtuber: no model: No Idle or Talk picture in resized-images"]
+        (folder / "Rage.png").unlink()  # two pictures named anything: a model
+        source._load(key)
+        assert source.status == "ok"
+        (folder / "Pog.png").unlink()
+        (folder / "Cozy.png").unlink()
+        source._load(key)  # broken again later: said again
+        said = [r.getMessage() for r in caplog.records if "no model" in r.getMessage()]
+        assert said[-1] == "pngtuber: no model: No pictures in resized-images" and len(said) == 2

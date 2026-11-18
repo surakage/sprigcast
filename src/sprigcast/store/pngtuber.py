@@ -394,9 +394,12 @@ def _fit(frame, scale: float, box: tuple[int, int, int]) -> tuple[np.ndarray, in
     return bgra, x0 + int(left), y0 + int(top)
 
 
-def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[str, Path] | None = None) -> Model:
+def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[str, Path] | None = None,
+               warn=None) -> Model:
     """Open and fit every picture of the model (on a worker thread: Pillow lets other threads run).
-    picked: idle and talk pictures chosen one by one (see scan)."""
+    picked: idle and talk pictures chosen one by one (see scan). warn(text): where a picture that
+    won't open is told (the log)."""
+    warn = warn or log.warning
     found = scan(folder, picked)
     _SCANS[folder, (picked or {}).get("idle"), (picked or {}).get("talk")] = (time.monotonic(), found)
     if not found or any(not p.is_file() for p in (picked or {}).values()):
@@ -407,7 +410,7 @@ def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[
             try:
                 sizes[expression, state] = _measure(path)
             except Exception as exc:
-                log.warning("pngtuber: couldn't open %s: %s", path.name, exc)
+                warn(f"pngtuber: couldn't open {path.name}: {exc}")
     if not any(state in ("idle", "talk") for _e, state in sizes):
         raise ModelError("Couldn't open the pictures")
     w, h = box
@@ -427,7 +430,7 @@ def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[
             fitted, durations = _open_frames(found[expression][state], most,
                                              lambda f: _fit(f, scale, (w, h, HOP)))
         except Exception as exc:
-            log.warning("pngtuber: couldn't open %s: %s", found[expression][state].name, exc)
+            warn(f"pngtuber: couldn't open {found[expression][state].name}: {exc}")
             continue
         if fitted:
             pictures.setdefault(expression, {})[state] = Picture(fitted, list(np.cumsum(durations)))
@@ -598,6 +601,7 @@ class PngtuberSource(Source):
         self._lock = threading.Lock()
         self._model: Model | None = None
         self._model_key: tuple | None = None
+        self._said: set[str] = set()  # problems already in the log (until a model loads)
         self._loading: tuple | None = None  # model_key being loaded
         self._failed: tuple | None = None
         self._failed_at = 0.0
@@ -685,18 +689,24 @@ class PngtuberSource(Source):
             self._loading = key
         threading.Thread(target=self._load, args=(key,), name=f"pngtuber-{self.id}", daemon=True).start()
 
+    def _say(self, text: str, level: int = logging.WARNING) -> None:
+        """Log it, unless it was said already: a folder looked at again every 10 s says it once."""
+        if text not in self._said:
+            self._said.add(text)
+            log.log(level, text)
+
     def _load(self, key: tuple) -> None:
         folder, idle, talk = key
         picked = {s: p for s, p in (("idle", idle), ("talk", talk)) if p is not None}
         try:
-            model = load_model(folder, picked=picked)
+            model = load_model(folder, picked=picked, warn=self._say)
         except ModelError as exc:
             self.status = str(exc)
             self._failed, self._failed_at = key, time.monotonic()
-            log.info("pngtuber: no model: %s", exc)
+            self._say(f"pngtuber: no model: {exc}", logging.INFO)
             model = None
         except Exception as exc:
-            log.warning("pngtuber: couldn't load %s: %s", folder, exc)
+            self._say(f"pngtuber: couldn't load {folder}: {exc}")
             self.status = "Couldn't open the pictures"
             self._failed, self._failed_at = key, time.monotonic()
             model = None
@@ -709,6 +719,7 @@ class PngtuberSource(Source):
                 self._key = self._from = None
                 self._shown = None
                 self.status = "ok"
+                self._said.clear()  # a problem coming back later is said again
                 log.info("pngtuber: model %s, expressions %s", _name(folder or idle or talk),
                          ", ".join(model.expressions))
 
