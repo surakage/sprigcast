@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Death count (v7) makes its stone, numbers and mound ahead, off the render thread, and starts a trip's clock with
+  its first picture: the first death's stone came 3.5 s late on the PC, rise and flip unseen. Quick deaths each
+  flip in turn (0, 1, 2 instead of 0 then 2); a flood waits for at most three flips.
+- A browser page in a bloom Snap freezes no longer remakes its texture every 3 s: with the new engine, a frozen
+  page's pictures are still taken (the page never waits) but its frozen picture stays on screen.
 - Pop-up cards (Garden check, Last stream, Get started, Starter kit and the rest) draw their soft shadow once per
   size instead of blurring the whole card on every repaint, and the Stream doctor lost its two blurred shadows
   (96 ms). The encoder overload check runs on a worker instead of the window's thread every meter tick (62 ms),
