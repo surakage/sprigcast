@@ -7,7 +7,7 @@ Plugins run with the same rights as SprigCast, so only add ones you trust.
 ## Set up
 
 1. Install SprigCast.
-2. Open **File → Open plugins folder**. It's `%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`.
+2. Open **Tools → Plugin store**, then **Open plugins folder** under **Your plugins** (also under **+ → Plugins**). It's `%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`.
 3. Put your `.py` file there and restart SprigCast.
 
 You don't need to install Python: SprigCast brings its own (3.12). A plugin can use Python's standard library and what SprigCast already ships with: NumPy, Pillow and PySide6 (Qt). Other packages from pip aren't there.
@@ -15,6 +15,19 @@ You don't need to install Python: SprigCast brings its own (3.12). A plugin can 
 Files whose name starts with `_` are skipped. A plugin that fails to load is skipped too, and its error shows under **Your plugins** in Tools → Plugin store and in the log (`Documents\SprigCast\Logs`). It never stops SprigCast.
 
 The first start puts `countdown_example.py` in the folder: a small working plugin to copy from.
+
+## Start here: Hello sprig
+
+[hello_sprig.py](plugins/hello_sprig.py) is the smallest plugin that shows every basic part, with a comment on each
+line that matters. Copy it into your plugins folder, restart, and add it with **+ → Plugins → Hello sprig**. It has:
+
+1. **A source**: `@register("example_hello_sprig")` puts a card under + → Plugins.
+2. **Settings**: `defaults` gives it a name, a colour and a wave count. Double-click the card to change them.
+3. **Drawing**: `video_frame()` draws the card with Pillow, only when a setting changed.
+4. **An action**: `hello_sprig.wave`, for Streamer.bot, Stream Deck or a web link.
+5. **A hotkey**: Hello sprig: Wave, in Tools → Hotkeys → Plugins.
+
+Rename `KIND`, `label` and the action and hotkey names, and it's yours.
 
 ## Your first plugin
 
@@ -36,7 +49,9 @@ class ShoutSource(TextSource):
 
 Save it as `shout.py`, restart, then add it with **+ → Plugins → Shout**. Double-click it to change the text.
 
-The id you give `@register` is saved with the user's blooms, so never change it once people use your plugin.
+The id you give `@register` is saved with the user's blooms, so never change it once people use your plugin. Make it
+unique too: a plugin that uses the same id as a built-in source or a Plugin store plugin takes its place. Start it
+with your own name, like `ana_shout`.
 
 ## What a plugin can add
 

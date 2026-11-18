@@ -253,7 +253,15 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   once, the new one puts its codec headers in its keyframes, so the streams' muxers go on. `SPRIGCAST_NO_PACKET_WRITER=1`
   keeps these encoders in PyAV (and a lone stream on its own `Streamer`). Tests: `tests/test_packet_writer.py`
   runs the shared-encoder and stream tests on the writer.
-- Next: Enhanced Broadcasting's tracks and the virtual camera fed by the engine.
+- **The virtual camera fed by the engine (step 6, interface 22).** While an app watches SprigCast Camera, the
+  render thread links the camera's output to its shared block (`sc_engine_output_link_camera`,
+  `render/native_bridge.py` `link_taps`, `output/virtualcam.py` `VirtualCamera.link_camera`): the frame thread
+  writes every frame into the block itself, in the middle of the size the app asked for with black around it, with
+  the block's count odd while writing. The engine maps the block by name itself and unmaps it when the link ends,
+  so the camera closing or Python letting go of its own view can never leave the engine writing into freed memory.
+  A recording or stream sharing that output keeps it, and the camera then takes Python's frames as before.
+  `SPRIGCAST_NO_LINK=1` turns it off with the other links.
+- Next: Enhanced Broadcasting's tracks fed by the engine.
 
 ## Phases
 

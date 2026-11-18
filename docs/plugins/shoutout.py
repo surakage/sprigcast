@@ -1,6 +1,6 @@
 """Shout-out: a text card that says "Go follow NAME!", changed from Streamer.bot, a hotkey or a right-click.
 
-Copy this file into SprigCast's plugins folder (File → Open plugins folder) and restart SprigCast.
+Copy this file into SprigCast's plugins folder (Tools → Plugin store → Your plugins → Open plugins folder) and restart SprigCast.
 Then add it with + → Plugins → Shout-out.
 """
 

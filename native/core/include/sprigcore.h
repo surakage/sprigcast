@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 21
+#define SC_INTERFACE_VERSION 22
 
 enum {
     SC_OK = 0,
@@ -433,6 +433,14 @@ SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const s
  * frame number the writer took (-1: none), so whoever feeds it next goes on from there. *linked (optional): 1 if
  * the output was still linked. */
 SC_API int sc_engine_output_unlink(sc_engine *engine, int index, int slot, int64_t *last_pts, int *linked);
+/* Links an output to the virtual camera instead (interface 22): the frame thread writes each finished frame into
+ * the camera's shared block `name` (output/virtualcam.py's layout), in the middle of a width x height frame with black
+ * around it when the output is smaller. The engine maps the block itself and unmaps it when the link ends
+ * (sc_engine_output_unlink, another link, a new output size), so Python may close its own view at any time. keep: as
+ * for a writer. sc_engine_output_camera_frames: the frames written since it was linked (0: not linked). */
+SC_API int sc_engine_output_link_camera(sc_engine *engine, int index, int slot, const wchar_t *name, int width,
+                                        int height, int keep);
+SC_API int sc_engine_output_camera_frames(sc_engine *engine, int index, int slot, uint64_t *frames);
 /* IUnknown::Release on a pointer one of the calls above gave. */
 SC_API void sc_com_release(void *unknown);
 /* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++

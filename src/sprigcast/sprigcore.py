@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 21  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 22  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -260,6 +260,8 @@ def _lib():
         "sc_com_release": (None, [vp]),
         "sc_engine_output_link": (c_int, [vp, c_int, c_int, ctypes.POINTER(OutputLink)]),
         "sc_engine_output_unlink": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(c_int)]),
+        "sc_engine_output_link_camera": (c_int, [vp, c_int, c_int, ctypes.c_wchar_p, c_int, c_int, c_int]),
+        "sc_engine_output_camera_frames": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_uint64)]),
         "sc_engine_output_take": (c_int, [vp, c_int, c_int, vp, ctypes.c_size_t, ctypes.POINTER(c_int),
                                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint64)]),
     }
@@ -761,6 +763,20 @@ class Engine:
         if self._handle:
             _check(_need().sc_engine_output_unlink(self._handle, index, slot, ctypes.byref(last), ctypes.byref(linked)))
         return last.value, bool(linked.value)
+
+    def link_camera(self, index: int, slot: int, name: str, width: int, height: int, keep: bool = False) -> None:
+        """Write every frame of a plain output into the virtual camera's shared block ``name`` (a width x height
+        frame; a smaller output goes in the middle), on the engine's own thread. The engine maps the block itself and
+        unmaps it when unlink_output (or another link) ends this one. Raises NativeError when it can't."""
+        _check(_need().sc_engine_output_link_camera(self.handle, index, slot, name, int(width), int(height),
+                                                    1 if keep else 0))
+
+    def camera_frames(self, index: int, slot: int) -> int:
+        """Frames the engine wrote into the camera's block since linking it (0: no camera link there)."""
+        frames = ctypes.c_uint64(0)
+        if self._handle:
+            _check(_need().sc_engine_output_camera_frames(self._handle, index, slot, ctypes.byref(frames)))
+        return frames.value
 
     def debug_fault(self, kind: int) -> None:
         """Crash gate checks (tests only): 1 exception, 2 access violation, 3 lost card, 4 a 3 s stuck frame."""
