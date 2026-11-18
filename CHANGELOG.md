@@ -168,9 +168,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Auto. It's now matched to that sound, and anything unknown is refused, saying which sounds there are.
 - PNGtuber (v4) with the new engine: each of its pictures goes to the graphics card once, then a bounce or a held
   mouth only says where it goes; a mouth or blink fade sends just the part that changes.
-- A crash in native code always ends SprigCast now: SprigCast.exe writes the crash dump itself, in plain C on a
-  thread made at start, and waits for it at most 15 s (a Python callback writing it from the crashing thread left
-  the window Not Responding for 25 minutes). The crash report names the last fault, not COM's own handled
+- A crash in native code can no longer hang SprigCast: SprigCast.exe writes the crash dump itself, in plain C on a
+  thread made at start, and ends the run if it isn't written within 15 s (a Python callback writing it from the
+  crashing thread left the window Not Responding for 25 minutes). A fault Windows survives (one in a window's
+  paint) is dumped once and the run goes on. The crash report names the last fault, not COM's own handled
   "0x8001010d" notes before it, and the Slide show's Qt fallback keeps its picture alive while Qt reads it.
 - The Garden check, Last stream and the command palette hand Python's lock back quickly while they open, as the
   other pop-ups do (57-76 ms), and the Plugin store makes its cards two a tick, handing it back quickly too
