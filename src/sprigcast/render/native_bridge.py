@@ -540,6 +540,24 @@ class NativeCanvases:
                 out = current[key] = free.pop(0)
                 self._guard("output", self.engine.set_output, slot, out, key[0][0], key[0][1], scale, key[1])
 
+    def pause_outputs(self, canvas_id: str, keys, scale: str = "bilinear") -> None:
+        """Python draws this canvas's outputs for a moment (a Move or stinger transition): the engine's outputs
+        stay, with their texture pools, but their recordings are unlinked (they take Python's frames meanwhile)
+        and the engine's frames are let go. Dropped and made again for each transition, every transition made
+        new pools, and a writer on the card keeps each texture it was handed (PC soak 2026-11-18). Once the
+        engine draws the canvas again, set_outputs with the same keys changes nothing and the links come back
+        on the same textures."""
+        self.set_outputs(canvas_id, keys, scale)
+        slot = self._slots.get(canvas_id)
+        if slot is None or self.failed:
+            return
+        for out in list(self._outputs.get(slot, {}).values()):
+            if (slot, out) in self._links:
+                self._unlink(slot, out)
+        for key in list(self._outputs.get(slot, {})):
+            self.take_outputs(canvas_id, key)  # let go of (CardFrames give their textures back when dropped)
+        self.lost = 0
+
     def reset_outputs(self) -> bool:
         """Let go of every output; the render thread names them again next tick (render/engine.py
         refresh_outputs): a feed that stopped starts over (new texture pools: frames still held elsewhere

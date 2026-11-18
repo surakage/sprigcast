@@ -162,6 +162,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   waits for a camera gave its outputs back to Python and made them again after, with new textures each time, and
   the recording's encoder on the graphics card keeps every texture it was handed. The engine now keeps drawing the
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
+  Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
+  transition, then goes back to the engine's same textures.
 - Now playing (v7): Cover glow's sound dots didn't move (PC test 2026-11-18). Its wide row had dots half the row
   tall, and a bar stayed a dot until the music passed that height. Bars are now at most 0.3 of the row wide and
   grow up from their dot with the level, so every style moves with quiet music too.
