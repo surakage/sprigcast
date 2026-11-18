@@ -117,6 +117,10 @@ struct Core {
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
     std::deque<int64_t> faults;  // SPRIGCAST_WRITER_FAULT (tests): pictures whose encoding fails ("10" or "10,20")
     int64_t encoded = 0;
+    // Packets mode: a keyframe starts every `gop` frames of the stream's own clock (the first picture at or past
+    // each multiple), so writers fed the same frames at their own rates key at the same instants (Enhanced
+    // Broadcasting's tracks, a stream joined later).
+    int64_t key_group = -1;
     // Packets mode (cfg->packets): encoded packets wait here for sc_writer_packet_take instead of being written.
     bool packets = false;
     struct Out {
@@ -534,7 +538,12 @@ void Core::run() {
                     }
                     for (; k < picture.count && !abort.load(); ++k) {  // the encoder keeps its own reference
                         picture.frame->pts = picture.pts + k;
-                        encode_video(picture.frame.get(), picture.key && k == 0);
+                        bool aligned = false;
+                        if (packets && picture.frame->pts / gop > key_group) {
+                            key_group = picture.frame->pts / gop;
+                            aligned = true;
+                        }
+                        encode_video(picture.frame.get(), (picture.key && k == 0) || aligned);
                         std::lock_guard<std::mutex> hold(lock);
                         ++frames_written;
                     }

@@ -6190,6 +6190,14 @@ class MainWindow(QMainWindow):
                 return None
         log.info("Enhanced Broadcasting: %s", config.describe())
         vertical = any(t.canvas_index > 0 for t in config.tracks)
+        if output.enhanced_vertical and not vertical:
+            # Twitch decides per channel and PC: a channel not yet allowed Dual Format, or a PC Twitch thinks can't
+            # encode both, gets horizontal qualities only.
+            why = ("Turn on a vertical canvas to send it to Twitch too." if len(canvases) < 2 else
+                   "Twitch didn't ask for the vertical canvas this time, so it goes live horizontal only.")
+            log.warning("Enhanced Broadcasting: vertical asked for but not sent (%s)", why)
+            if not quiet:
+                self.statusBar().showMessage(why, 15000)
         target.name = f"Twitch Enhanced ({len(config.tracks)} qualities{', + vertical' if vertical else ''})"
         target.enhanced, target.canvases = config, canvases
         return target
