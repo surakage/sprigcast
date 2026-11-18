@@ -243,8 +243,9 @@ def remove() -> bool:
 class SharedBlock:
     """The camera's shared memory, at a raw address (a Windows file mapping, or a test buffer)."""
 
-    def __init__(self, address: int, size: int = BLOCK_SIZE, close=None):
+    def __init__(self, address: int, size: int = BLOCK_SIZE, close=None, name: str = ""):
         self.address, self.size = address, size
+        self.name = name  # the mapping's name: the native engine maps it itself (VirtualCamera.link_camera)
         self._close = close
         # The render thread copies frames in while the UI thread may close it (camera turned off): closing
         # waits for a copy in progress, and nothing is read or written once it's closed (unmapped memory).
@@ -331,7 +332,7 @@ def open_block() -> SharedBlock | None:
     def close():
         k32.UnmapViewOfFile(view)
         k32.CloseHandle(handle)
-    return SharedBlock(view, BLOCK_SIZE, close)
+    return SharedBlock(view, BLOCK_SIZE, close, name)
 
 
 def now_ms() -> int:
@@ -451,6 +452,23 @@ class VirtualCamera:
     @property
     def watched(self) -> bool:
         return self.tap is not None
+
+    # The native engine writes the frames itself (render/native_bridge.py link_taps) ------------------------------
+
+    linked = False
+
+    def link_camera(self):
+        """(block name, camera width, camera height) for the native engine to write this camera's frames into the
+        block itself, on its own thread: no Python per frame. None while it can't (no app watching, a test's block
+        with no name). Asked on the render thread each tick."""
+        block, tap = self.block, self.tap
+        if block is None or tap is None or block.closed or not block.name or os.environ.get("SPRIGCAST_NO_LINK"):
+            return None
+        return block.name, tap[2][0], tap[2][1]
+
+    def unlinked(self, _last_pts: int = -1) -> None:
+        """The engine stopped writing the frames: they come through _on_frame again."""
+        self.linked = False
 
     # Once a second ------------------------------------------------------------------------
 

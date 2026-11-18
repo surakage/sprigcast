@@ -580,9 +580,15 @@ class NativeCanvases:
                  if w is not None and (not on_card or (getattr(w, "on_card", False) and _wants_card(o)))]
             chosen = next(((o, w) for o, w in wanting if entry is not None and o is entry[0]), None) or \
                 next(iter(wanting), None)
-            if entry is not None and (chosen is None or chosen[0] is not entry[0] or chosen[1] is not entry[1]):
+            camera = None if chosen is not None or on_card else self._camera_for(owners)
+            changed = entry is not None and (chosen is None or chosen[0] is not entry[0] or chosen[1] is not entry[1])
+            if changed and (camera is None or camera[0] is not entry[0] or camera[1] != entry[1]):
                 self._unlink(slot, out)
                 entry = None
+            if camera is not None:
+                if self._link_camera(canvas_id, slot, out, entry, camera, len(owners) > 1):
+                    linked.add(id(camera[0]))
+                continue
             if chosen is None:
                 continue
             owner, writer = chosen
@@ -610,6 +616,53 @@ class NativeCanvases:
             linked.add(id(owner))
         return linked
 
+    def _camera_for(self, owners):
+        """(owner, (block name, width, height)) of the virtual camera among an output's takers, if it can be fed
+        by the engine itself (VirtualCamera.link_camera)."""
+        for o in owners:
+            ask = getattr(o, "link_camera", None)
+            if o is None or ask is None or self._refused(o):
+                continue
+            try:
+                where = ask()
+            except Exception:  # asked again next tick
+                log.exception("native engine: asking the virtual camera where to write failed")
+                continue
+            if where:
+                return o, tuple(where)
+        return None
+
+    def _link_camera(self, canvas_id: str, slot: int, out: int, entry, camera, keep: bool) -> bool:
+        """The engine writes this output's frames into the virtual camera's block itself (no Python per frame)."""
+        owner, where = camera
+        settings = ("camera", keep)
+        if entry is not None and entry[2] == settings:
+            return True
+        try:
+            self.engine.link_camera(slot, out, where[0], where[1], where[2], keep=keep)
+        except Exception as exc:  # noqa: BLE001 - the camera takes its frames through Python
+            self._refuse(owner)
+            log.warning("native engine: the virtual camera can't take frames from the engine itself (%s); they go "
+                        "through Python", exc)
+            return False
+        if entry is None:
+            log.info("native engine: %s frames go straight to the virtual camera (%dx%d)", canvas_id, where[1],
+                     where[2])
+        owner.linked = True
+        self._links[(slot, out)] = (owner, where, settings)
+        return True
+
+    def camera_frames(self, owner) -> int:
+        """Frames the engine wrote into the virtual camera's block for this owner's links."""
+        total = 0
+        for (slot, out), (o, _where, settings) in list(self._links.items()):
+            if o is owner and settings and settings[0] == "camera":
+                try:
+                    total += self.engine.camera_frames(slot, out)
+                except Exception as exc:  # noqa: BLE001 - only a count
+                    log.debug("native engine: the camera's frame count: %s", exc)
+        return total
+
     def _refused(self, owner) -> bool:
         try:
             return owner in self._link_refused
@@ -633,10 +686,11 @@ class NativeCanvases:
             last, _linked = self.engine.unlink_output(slot, out)
         except Exception:  # the writer still knows
             log.exception("native engine: unlinking an output failed")
-        try:
-            last = max(last, int(writer.stats().last_pts))
-        except Exception as exc:  # noqa: BLE001 - closed: nothing more is written to it anyway
-            log.debug("native engine: the unlinked writer's numbers are gone (%s)", exc)
+        if hasattr(writer, "stats"):  # not the virtual camera's block
+            try:
+                last = max(last, int(writer.stats().last_pts))
+            except Exception as exc:  # noqa: BLE001 - closed: nothing more is written to it anyway
+                log.debug("native engine: the unlinked writer's numbers are gone (%s)", exc)
         try:
             owner.unlinked(last)
         except Exception:
