@@ -219,6 +219,7 @@ class NativeCanvases:
         self._signature = None
         self._last_upload: dict[str, float] = {}
         self._media: dict[str, object] = {}  # source id -> the engine's player its pictures come straight from
+        self._held: set[str] = set()  # browser pages whose pictures the engine takes but doesn't show (a freeze)
         # source id -> art key -> (its engine id, cacheKey, bytes, the list it was last used in)
         self._arts: dict[str, dict[str, tuple[str, int, int, int]]] = {}
         self._lists = 0
@@ -285,12 +286,22 @@ class NativeCanvases:
             self._forget_arts(source_id)
         self._guard("upload", self.engine.upload, source_id, frame, channel_order, size, keep=keep)
 
-    def attach_media(self, source_id: str, player) -> bool:
+    def attach_media(self, source_id: str, player, held: bool = False) -> bool:
         """``player`` (a sprigcore.MediaPlayer, the name of a browser page's shared memory block, or None) is where
         the engine takes this source's pictures from, each frame, by itself. True while it does: the render thread
-        then sends it none."""
+        then sends it none. ``held``: a page's block frozen (Snap's freeze): the engine keeps its picture but still
+        takes the page's, which would otherwise wait for it (and make its texture again every few seconds: PC,
+        2026-11-18)."""
         if self.failed:
             return False
+        held = bool(held) and isinstance(player, str)
+        if held != (source_id in self._held):
+            if held:
+                self._held.add(source_id)
+            else:
+                self._held.discard(source_id)
+            if isinstance(player, str) or not held:
+                self._guard("hold", self.engine.hold_shared, source_id, held)
         had = self._media.get(source_id)
         if had is player or (isinstance(player, str) and had == player):
             return player is not None
@@ -353,6 +364,7 @@ class NativeCanvases:
         for gone in (set(self._last_upload) | set(self._media) | set(self._arts)) - set(source_ids):
             self._last_upload.pop(gone, None)
             self._media.pop(gone, None)
+            self._held.discard(gone)
             self._forget_arts(gone)
             self._guard("forget", self.engine.forget, gone)
 

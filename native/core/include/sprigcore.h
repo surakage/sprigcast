@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 28
+#define SC_INTERFACE_VERSION 29
 
 enum {
     SC_OK = 0,
@@ -339,6 +339,10 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, struct sc_medi
  * pictures never pass through Python. name = NULL (or empty) goes back to sc_engine_source_upload (the source keeps
  * the picture it has); sc_engine_source_forget detaches it too. */
 SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t *name);
+/* Source `id`'s shared pictures (sc_engine_source_shared) held still (held = 1, a freeze) or shown again (0): while
+ * held the engine still takes each new picture, so the writer never waits on it, but the source keeps the one it
+ * has. Detaching the block forgets the hold. */
+SC_API int sc_engine_source_shared_hold(sc_engine *engine, uint64_t id, int held);
 /* Source `id` shows what audio visualizer `visual` draws (sc_visual_open): every frame the engine takes its newest
  * drawing itself, so neither the sound nor the pictures pass through Python. visual = NULL goes back to
  * sc_engine_source_upload (the source keeps the picture it has); sc_engine_source_media and

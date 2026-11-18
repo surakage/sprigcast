@@ -133,6 +133,7 @@ def test_art_goes_to_the_card_once(monkeypatch):
     bridge = native_bridge.NativeCanvases.__new__(native_bridge.NativeCanvases)
     bridge.engine, bridge.failed = Engine(), False
     bridge._arts, bridge._last_upload, bridge._media, bridge._lists = {}, {}, {}, 0
+    bridge._held = set()
     card = _picture(60, 40)
     for frame in range(3):
         d = drawn.Drawn(200, 100)

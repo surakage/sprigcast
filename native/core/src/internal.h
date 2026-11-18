@@ -123,7 +123,9 @@ int upload_nv12(sc_device &device, uint64_t id, const uint8_t *data, const sc_up
 // A browser page's newest picture, drawn by the browser helper into the texture shared as `name`
 // (page_texture.cpp), copied into source `id` (its top-left `width` x `height`). SC_NOT_YET while the helper
 // still holds the texture. `page` keeps the opened texture from one frame to the next. Takes device.lock.
-int source_page(sc_device &device, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height);
+// copy = false: the picture is taken (the helper may draw the next) but the source keeps the one it has (a freeze).
+int source_page(sc_device &device, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height,
+                bool copy = true);
 
 }  // namespace sc
 

@@ -1973,8 +1973,12 @@ class Engine:
             freeze = frozen.get(source_id) if frozen else None
             # A video the engine's own player decodes: the native engine takes its pictures itself, frame by frame
             # (not while it is frozen or asleep: then it keeps the picture it has).
-            direct = native is not None and native.attach_media(
-                source_id, None if source.asleep or freeze is not None else getattr(source, "engine_player", None))
+            player = None if source.asleep else getattr(source, "engine_player", None)
+            # Frozen, a player is let go (it keeps its picture); a browser page's block stays, held, so the page
+            # isn't left waiting for the engine to take its pictures.
+            if freeze is not None and not isinstance(player, str):
+                player = None
+            direct = native is not None and native.attach_media(source_id, player, held=freeze is not None)
             if source.asleep or not self._budget_allows(source_id) or (
                     self._failing and now < self._failing.get(source_id, 0.0)):
                 if freeze is not None and source_id in textures:
