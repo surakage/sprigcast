@@ -161,6 +161,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Death count (v8) and Snap (v7): a death while a Snap polaroid was up waited, frozen with the rest of the screen,
   until the polaroid left, then jumped to its last number with no rise (PC test 2026-11-18). Snap's freeze now
   leaves Death count moving, so each death rises and flips in turn.
+- PNGtuber: an app setting Mic (listen_to) to a sound's id or name without "sound:" was kept but quietly heard as
+  Auto. It's now matched to that sound, and anything unknown is refused, saying which sounds there are.
 - PNGtuber (v4) with the new engine: each of its pictures goes to the graphics card once, then a bounce or a held
   mouth only says where it goes; a mouth or blink fade sends just the part that changes.
 - A media source copies each new picture before taking the lock the canvas reads it under, and one long frame

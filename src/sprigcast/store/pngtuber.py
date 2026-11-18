@@ -56,7 +56,7 @@ from sprigcast.core import drawn
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 4, "adds": "Source",
+PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 5, "adds": "Source",
           "about": "Your avatar pictures talk when you do: blinks, a little bounce and expressions.",
           "new": "Lighter: its pictures are drawn by SprigCast's engine."}
 
@@ -557,6 +557,24 @@ def _listen_choices(collection=None) -> list[tuple[str, str]]:
     return out
 
 
+def check_listen(col, value) -> str:
+    """An app's Mic setting as one this understands: auto, a SprigCast sound (sound:<id>, or its id or name alone),
+    or a Windows mic (device:<name>). Anything else is refused: before, it was kept and quietly heard as Auto."""
+    text = str(value or "").strip()
+    sounds = [s for s in getattr(col, "sources", []) or [] if s.kind in ("audio_input", "audio_output", "app_audio")]
+    if text.lower() in ("", "auto", "mic", "auto (your mic)"):
+        return "auto"
+    if text.startswith(DEVICE) and len(text) > len(DEVICE):
+        return text
+    bare = text[len(SOUND):] if text.startswith(SOUND) else text
+    for s in sounds:
+        if bare == s.id or bare.lower() == s.id.lower() or bare.lower() == s.name.lower():
+            return SOUND + s.id
+    names = ", ".join(sorted(s.name for s in sounds)) or "none"
+    raise ValueError(f"listen_to {text!r} isn't a sound here: use auto, a sound's name or id ({names}), "
+                     f"or device:<Windows mic name>.")
+
+
 def sound_for(setting: str, collection) -> str | None:
     """The id of the SprigCast sound to follow for this Mic setting, or None to open a mic itself."""
     setting = str(setting or "auto")
@@ -598,6 +616,14 @@ class PngtuberSource(Source):
     own_sprig = (W, H)
     own_sprig_corner = "bottom_right"  # bottom left is Now playing's
     channel_order = "pBGRA"
+
+    @staticmethod
+    def check_settings(col, settings: dict[str, Any]) -> dict[str, Any]:
+        """For apps (source.set / source.new): Mic (listen_to) takes a sound's name or id and is kept as the
+        choice it matches; anything unknown is refused, saying why."""
+        if "listen_to" in settings:
+            settings["listen_to"] = check_listen(col, settings["listen_to"])
+        return settings
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
