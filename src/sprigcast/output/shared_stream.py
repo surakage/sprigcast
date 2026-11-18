@@ -30,19 +30,48 @@ from sprigcast.output.stream import (
     RETRY_MAX,
     SEVERITY,
     log_live,
+    explain_connect,
+    open_ingest,
     stream_url,
 )
 
 log = logging.getLogger(__name__)
 
 
+SHARE_WITHIN = 0.25  # destinations whose bitrates are this close (of the higher one) share one encoder
+
+
 def share_key(target) -> tuple | None:
-    """What two stream targets must have in common to share an encoder; None when this one can't."""
+    """What stream targets must have in common to share an encoder (the same picture); None when one can't."""
     if target.enhanced is not None:
         return None
     c = target.canvas
     size = target.size or (c.width, c.height)
-    return c.id, tuple(size), min(target.fps or c.fps, c.fps), target.bitrate_kbps, bool(target.auto_bitrate)
+    return c.id, tuple(size), min(target.fps or c.fps, c.fps)
+
+
+def bitrate_groups(targets: list) -> list[tuple[int, bool, list]]:
+    """Destinations wanting the same picture, split into encoders by bitrate: (kbps, auto-pilot, targets).
+
+    One encoder serves every destination whose own bitrate is within SHARE_WITHIN of the encoder's, and the
+    encoder never goes above what any of them accepts (its service's limit, target.max_kbps). The highest
+    bitrates go first, so each encoder runs as high as its destinations allow: YouTube 9000 and Kick 8000 share
+    one at 8000 (Kick's limit), Twitch at 6000 gets its own. Three destinations had three encoders before (PC
+    2026-11-18: the card's video engine at 90%, and auto-pilot lowering every stream for it)."""
+    groups: list[list] = []  # [kbps, members]
+    for t in sorted(targets, key=lambda t: -int(t.bitrate_kbps)):
+        want = int(t.bitrate_kbps)
+        ceiling = int(getattr(t, "max_kbps", 0) or 0) or want
+        for group in groups:
+            kbps = min(group[0], ceiling)
+            if all(abs(int(m.bitrate_kbps) - kbps) <= SHARE_WITHIN * max(int(m.bitrate_kbps), kbps)
+                   for m in [*group[1], t]):
+                group[0] = kbps
+                group[1].append(t)
+                break
+        else:
+            groups.append([min(want, ceiling), [t]])
+    return [(kbps, all(bool(m.auto_bitrate) for m in members), members) for kbps, members in groups]
 
 
 class SharedStreamEncoder(FileTap, ReplayBuffer):
@@ -101,6 +130,21 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
     def hold(self, who: str) -> None:
         with self._hold_lock:
             self.holders.add(who)
+        self.links_changed()
+
+    def links_changed(self) -> None:
+        """A link connected or dropped. With no destination taking the packets and nobody else using them (a
+        "Same as stream" recording, clips), encoding is wasted work: the encoder rests (paused) until a link is
+        back. The 3-way test on 2026-11-18 kept an encoder busy for 10 min for a Kick that never connected."""
+        with self._hold_lock:
+            wanted = any(link._ready for link in self.links) or self.holders != {"stream"} or self.seconds > 0 \
+                or self.file_path is not None or self._templates is None  # not open yet: links wait for it
+            if wanted and self.paused_since is not None:
+                self.resume()
+                log.info("shared stream %s: a destination is connected again, encoding", self.canvas_id)
+            elif not wanted and self.paused_since is None and self.links:
+                self.pause()
+                log.info("shared stream %s: no destination is connected, encoding rests", self.canvas_id)
 
     def let_go(self, who: str) -> bool:
         """`who` is done with the encoder. Returns True when nobody else holds it (then on_last_let_go runs)."""
@@ -110,6 +154,8 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
             finish, self.on_last_let_go = (self.on_last_let_go, None) if last else (None, self.on_last_let_go)
         if finish is not None:
             finish()
+        else:
+            self.links_changed()
         return last
 
     def _on_packet(self, p: _Packet) -> None:
@@ -385,9 +431,7 @@ class StreamLink:
     # Link thread: connect, send, reconnect -----------------------------------------------
 
     def _default_open(self, url: str):
-        import av
-
-        return av.open(url, "w", format="flv")
+        return open_ingest(url)
 
     def _connect(self):
         out = self._open_container(self._url)
@@ -398,6 +442,16 @@ class StreamLink:
         video_t, audio_t = self.shared._templates[:2]
         streams = self.shared._ask(lambda: {"video": out.add_stream_from_template(video_t),
                                             "audio": out.add_stream_from_template(audio_t)})
+        if self._open_container == self._default_open:
+            try:
+                with explain_connect(self._url):
+                    out.start_encoding()  # connect now, on this thread, not at the first packet
+            except Exception:
+                try:
+                    out.close()
+                except Exception:  # noqa: BLE001, S110 - it never connected: nothing to end
+                    pass
+                raise
         return out, streams
 
     def _send(self, out, streams, p: _Packet) -> None:
@@ -434,6 +488,7 @@ class StreamLink:
 
                 self._delay_line = DelayLine(self.delay_s, self._release, f"delay-{self.name}")
             self._ready = True
+            self.shared.links_changed()
             self.shared.request_keyframe()
             while not self._stop.is_set():
                 item = self._q.get()
@@ -447,6 +502,7 @@ class StreamLink:
         finally:
             self._ready = False
             self.connected = False
+            self.shared.links_changed()
             if self._delay_line is not None:
                 self._delay_line.close()
                 self._delay_line = None
