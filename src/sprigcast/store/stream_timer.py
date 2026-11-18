@@ -22,6 +22,12 @@ Apps hear "timer.done" when a countdown reaches 0 on screen.
 Settings: Label (small words above the time, e.g. "Starting in"), Done text (shown when a countdown ends,
 e.g. "Starting now"), Hide when stopped, Text colour and Card colour (a colour ending in 00 is see-through).
 
+For a countdown on its own (a "Starting soon" bloom), the Countdown plugin is made for it. Countdown stays here
+so timers set up before it keep working.
+
+It's SprigCast's clock card (core/cards.py): a leaf-cut card with a sprig that's green while the time moves.
+Its box is the card, so a selection hugs it.
+
 It's light: off screen it does nothing at all, and on screen the card is drawn again only when the time
 on it changes, once a second. Where a stopwatch or countdown is is kept with your blooms, so it carries on
 after a restart.
@@ -33,27 +39,28 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 import numpy as np
 
 from sprigcast.control.native import ApiError, commit_settings, register_action, send_event
-from sprigcast.core import painted
+from sprigcast.core import cards, painted
+from sprigcast.core.cards import clock_text, until_time
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import output_since, register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 2, "adds": "Source",
+PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 3, "adds": "Source",
           "about": "How long you've been live, a countdown or a stopwatch, in a small card on stream.",
-          "new": "Stays crisp at any size, and starts bigger."}
+          "new": "A new SprigCast look, and its box hugs the card."}
 
 KIND = "stream_timer"
-W, H = 640, 220  # the card's box, like Local time's; scale it on the canvas like anything else
-ACCENT = "#4fd88f"
+H = cards.H
+W = 416  # how wide the card starts (its box follows the words: timer_width)
+OLD_W = 640  # the box before version 3, with the card at its left
 MOST_MINUTES = 24 * 60
 RESTART_WAIT = 0.5  # seconds a countdown coming on screen waits to be started over before it draws anyway
 
@@ -62,32 +69,6 @@ COUNT_FROM = (("stream", "Going live"), ("record", "Recording"), ("either", "Liv
 
 
 # What the timer reads ------------------------------------------------------------------------------
-
-
-def clock_text(seconds: float) -> str:
-    """1:02:03 from an hour on, 4:05 below it."""
-    s = max(0, int(seconds))
-    h, rest = divmod(s, 3600)
-    m, s = divmod(rest, 60)
-    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
-
-
-def until_time(text: str, now: datetime) -> datetime | None:
-    """The moment "8:30 PM", "8pm" or "20:30" means: today, or tomorrow if that was over 12 hours ago."""
-    m = re.fullmatch(r"\s*(\d{1,2})(?:[:.](\d{2}))?\s*([ap])?\.?\s*(?:m\.?)?\s*", str(text or ""), re.I)
-    if not m or not (m[2] or m[3]):  # a bare "8" could be morning or night: say which
-        return None
-    hour, minute = int(m[1]), int(m[2] or 0)
-    if m[3]:
-        if not 1 <= hour <= 12:
-            return None
-        hour = hour % 12 + (12 if m[3].lower() == "p" else 0)
-    if hour > 23 or minute > 59:
-        return None
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if (now - target).total_seconds() > 12 * 3600:
-        target += timedelta(days=1)
-    return target
 
 
 def _float(settings: dict[str, Any], key: str, default: float = 0.0) -> float:
@@ -227,73 +208,39 @@ def added(settings: dict[str, Any], seconds: float, now: float) -> dict[str, Any
 # Drawing ------------------------------------------------------------------------------------------
 
 
-def _colour(text: str, fallback: str):
-    from PySide6.QtGui import QColor
-
-    text = str(text or "").strip()
-    if text.startswith("#") and len(text) == 9:  # #rrggbbaa
-        c = QColor(text[:7])
-        c.setAlpha(int(text[7:], 16))
-        return c if c.isValid() else QColor(fallback)
-    c = QColor(text)
-    return c if c.isValid() else QColor(fallback)
+def card_words(text: str, label: str, counting: bool) -> cards.Words:
+    return cards.Words(text, label, small_on_top=True, badge="sprig" if counting else "sprig_quiet")
 
 
-def paint(text: str, label: str, settings: dict[str, Any], counting: bool = True, detail: float = 1.0):
-    """The card as a QImage (premultiplied), W x H: the label small above the time. The card hugs the words
-    and sits at the left of the box, so it grows to the right and stays tucked in the corner. detail: pixels
-    drawn per box unit."""
-    from PySide6.QtCore import QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF
+def longest(settings: dict[str, Any]) -> str:
+    """The longest time the card will show with these settings, digits as 0: its box is at least this wide, so
+    it stays put while the seconds tick (a countdown: its whole length). Time live and a stopwatch grow a digit
+    as they go (at 10:00 and 1:00:00)."""
+    mode = mode_of(settings)
+    if mode in ("uptime", "stopwatch"):
+        return "0:00"
+    if mode == "countdown" and not to_a_time(settings):
+        total = minutes_of(settings) * 60 - _float(settings, "banked")
+        return cards.even(clock_text(max(total, 0.0)))
+    return "00:00"
 
-    image, p = painted.canvas(W, H, detail)
-    big = QFont()
-    big.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
-    big.setWeight(QFont.Weight.Bold)
-    big.setPixelSize(84 if label else 100)
-    small = QFont(big)
-    small.setPixelSize(36)
-    small.setWeight(QFont.Weight.DemiBold)
-    pad, dot_room, right = 14, 70, 40
-    room = W - 2 * pad - dot_room - right
-    big_m = QFontMetricsF(big)
-    text_w = big_m.horizontalAdvance(re.sub(r"\d", "0", text))  # the same width while the seconds tick
-    if text_w > room:  # a long Done text: smaller, then cut with "…"
-        big.setPixelSize(max(40, int(big.pixelSize() * room / text_w)))
-        big_m = QFontMetricsF(big)
-        text = big_m.elidedText(text, Qt.TextElideMode.ElideRight, room)
-        text_w = min(room, big_m.horizontalAdvance(text))
-    if label:
-        small_m = QFontMetricsF(small)
-        label = small_m.elidedText(label, Qt.TextElideMode.ElideRight, room)
-        text_w = max(text_w, small_m.horizontalAdvance(label) + 4)
-    card_w = min(W - 2 * pad, dot_room + text_w + right)
-    x0 = pad
-    clock_mid = H - pad - 18 - 52 if label else H / 2
-    card = _colour(settings.get("card_color"), "#151c19e0")
-    text_c = _colour(settings.get("text_color"), "#f2f7f3")
-    if card.alpha():
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(card)
-        p.drawRoundedRect(QRectF(x0, pad, card_w, H - 2 * pad), 40, 40)
-        dot = QColor(ACCENT) if counting else QColor(text_c)  # green while it moves, quiet when it's still
-        if not counting:
-            dot.setAlphaF(dot.alphaF() * 0.4)
-        p.setBrush(dot)
-        p.drawEllipse(QRectF(x0 + 34, clock_mid - 9, 18, 18))
-    left = x0 + dot_room
-    flags = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-    if label:
-        p.setFont(small)
-        muted = QColor(text_c)
-        muted.setAlphaF(muted.alphaF() * 0.62)
-        p.setPen(muted)
-        p.drawText(QRectF(left + 4, pad + 18, W, 52), flags, label)
-    p.setFont(big)
-    p.setPen(text_c)
-    p.drawText(QRectF(left, clock_mid - 52, W, 104), flags, text)
-    p.end()
-    return image
+
+def timer_width(longest_text: str, text: str, label: str) -> int:
+    """The box for the card: the longest time it will show, or what it shows now if that's longer (a Done
+    text is allowed to shrink to fit, down to 60%)."""
+    shown = [cards.Words(longest_text, label)]
+    if any(c.isdigit() for c in text):
+        shown.append(cards.Words(cards.even(text), label))
+    else:
+        shown.append(cards.Words(text, label, shrink=0.6))
+    return cards.card_width(shown)
+
+
+def paint(text: str, label: str, settings: dict[str, Any], counting: bool = True, detail: float = 1.0,
+          width: int = W):
+    """The card as a QImage (premultiplied), width x H: the label small above the time."""
+    return cards.paint(width, card_words(text, label, counting), settings.get("text_color"),
+                       settings.get("card_color"), detail)
 
 
 # Telling the app (the source runs on the render thread; these run on the UI thread) ---------------
@@ -380,6 +327,7 @@ class StreamTimerSource(Source):
     sharp = True  # drawn at the size it's shown
     own_sprig = (W, H)
     own_sprig_corner = "top_left"
+    card_box = (OLD_W, "left")  # the box it had before (main_window keeps the card where it was)
     own_sprig_height = 0.14  # starts readable: the card about a seventh of the canvas tall
     channel_order = painted.Frame.channel_order
 
@@ -390,11 +338,20 @@ class StreamTimerSource(Source):
         self._card = painted.Aside(self._frame)  # painted on the pictures lane, not the render thread
         self._was_done: bool | None = None  # last frame's countdown state, to hear it reach 0
         self._asked_at = 0.0  # when it asked the UI thread to start it over (drawn once that's done)
+        self._w = W  # the card on screen (a new width counts once its picture lands)
+        self._widths: tuple[tuple, int] | None = None  # (what it was worked out from, the width)
         self.status = "ok"
 
     @property
     def size(self) -> tuple[int, int]:
-        return W, H
+        return self._w, H
+
+    def _width_for(self, text: str, label: str) -> int:
+        """timer_width, worked out again only when the digits or words change (not every second)."""
+        what = (longest(self.settings), cards.even(text), label)
+        if self._widths is None or self._widths[0] != what:
+            self._widths = (what, timer_width(what[0], text, label))
+        return self._widths[1]
 
     def start(self) -> None:
         self._came_on()
@@ -430,18 +387,25 @@ class StreamTimerSource(Source):
                 _UI.finished.emit(self.id)
             self._was_done = read["done"]
         label = str(settings.get("label", "") or "").strip()
+        if read["done"] and read["text"] != clock_text(0):
+            label = ""  # the Done text says it all ("Starting in" over "Starting now" read twice)
         gone = hidden(settings, read)
-        key = (gone, read["text"], label, read["counting"], settings.get("text_color"), settings.get("card_color"),
-               self.detail)
+        width = self._width_for(read["text"], label)
+        key = (width, gone, read["text"], label, read["counting"], settings.get("text_color"),
+               settings.get("card_color"), self.detail)
         if gone:
             if key == self._shown:
                 return None  # nothing changed: nothing drawn, nothing uploaded
             self._shown = key
             self._card.drop()
             self._frame.release()
-            return painted.clear_frame(W, H)
+            return painted.clear_frame(self._w, H)
         self._shown = None
-        return self._card.picture(key, paint, read["text"], label, dict(settings), read["counting"], self.detail)
+        frame = self._card.picture(key, paint, read["text"], label, dict(settings), read["counting"], self.detail,
+                                   width)
+        if frame is not None:
+            self._w = self._card.landed[0]
+        return frame
 
 
 # The API, hotkeys and right-click ----------------------------------------------------------------

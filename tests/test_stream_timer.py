@@ -129,9 +129,11 @@ def test_it_draws_only_when_the_time_on_it_changes(timer, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(timer.time, "time", lambda: now[0])
     source = create_source("stream_timer", "st", timer.started({"mode": "stopwatch", "label": "Just chatting"}, 1000.0))
-    assert source.size == (640, 220)
     first = source.video_frame()
-    assert first.shape == (220, 640, 4) and first[..., 3].any()
+    w, h = source.size
+    assert h == 220 and 300 < w < 640  # the box is the card (the old box was 640 wide with room beside it)
+    assert first.shape == (220, w, 4) and first[..., 3].any()
+    assert first[:, :8, 3].any() and first[:, -8:, 3].any()  # the card reaches both sides of its box
     now[0] = 1000.5
     assert source.video_frame() is None  # the same second: nothing drawn
     now[0] = 1001.0

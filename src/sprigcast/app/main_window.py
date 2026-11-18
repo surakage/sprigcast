@@ -2953,6 +2953,11 @@ class MainWindow(QMainWindow):
                     plugin_hooks.levels_heard(self.api, event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
+                moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
+                if moved:
+                    self._changed()  # its places moved so the card stays put
+                elif touched:
+                    self._settings_changed(touched)  # only the width it's laid out for: the light way
                 for preview in [*self.previews.values(), self.part_preview]:
                     preview.sizes, preview.statuses = self.source_sizes, self.source_statuses
                 self._refresh_source_labels()

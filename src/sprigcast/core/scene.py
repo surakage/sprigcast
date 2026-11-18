@@ -76,6 +76,9 @@ def align_share(align: str) -> tuple[float, float]:
     return (i % 3) / 2, (i // 3) / 2
 
 
+CARD_W = "card_w"  # a clock card's settings: the box width its places are laid out for (keep_cards_put)
+
+
 class SceneItem(BaseModel):
     source: str
     x: float = 0.0  # top-left corner of its box (unrotated), canvas pixels
@@ -878,6 +881,7 @@ class SceneCollection(BaseModel):
             taken = self.overlay_boxes(there, canvas_id) if corner else []
             return self.readable_place(size, corner, height_share, band_share, there, source_id, taken)
 
+        self._mark_card_box(source_id, size)
         blooms = self.linked_with(scene.id) if scene.kind == "show" else [scene]
         part = Scene(id=self.new_id("part"), name=name, canvas=scene.canvas, kind="part",
                      items=[fitted(scene.canvas, blooms[0] if blooms else scene)])
@@ -890,6 +894,57 @@ class SceneCollection(BaseModel):
             self.sources.append(placement)
             bloom.items.append(SceneItem(source=placement.id))  # last is on top
         return part
+
+    def _mark_card_box(self, source_id: str, size: tuple[int, int]) -> None:
+        """A clock card placed now is laid out for its own_sprig width (see keep_cards_put)."""
+        from sprigcast.core.source import source_class
+
+        config = next((s for s in self.sources if s.id == source_id), None)
+        if config is not None and getattr(source_class(config.kind), "card_box", None) and CARD_W not in config.settings:
+            config.settings = {**config.settings, CARD_W: float(size[0])}
+
+    def keep_cards_put(self, sizes: dict[str, tuple[int, int]]) -> tuple[bool, list[SourceConfig]]:
+        """Clock cards (Countdown, Stream timer, Local time: a class with card_box) have a box as wide as the card,
+        which changes with their settings. When one's width isn't the one its places were laid out for, move each
+        place so the card stays put: one on the left of its canvas keeps its left edge, one on the right its right
+        edge, one in the middle its centre. A card from before its box hugged it was laid out for the old box
+        (card_box: (width, the side the card sat on in it)). Returns (whether a place moved: save the garden, the
+        sources whose settings changed: if only those, the light way will do)."""
+        from sprigcast.core.source import source_class
+
+        moved, touched = False, []
+        canvases = {c.id: c for c in self.canvases}
+        for config in self.sources:
+            box = getattr(source_class(config.kind), "card_box", None)
+            size = sizes.get(config.id)
+            if not box or not size or size[0] <= 0:
+                continue
+            new_w = float(size[0])
+            laid = config.settings.get(CARD_W)
+            try:
+                laid_w, side = (float(laid), None) if laid is not None else (float(box[0]), box[1])
+            except (TypeError, ValueError):
+                laid_w, side = new_w, None
+            if abs(new_w - laid_w) >= 0.5:
+                for scene in self.scenes:
+                    canvas = canvases.get(scene.canvas)
+                    for item in scene.items:
+                        if item.source != config.id or item.bounded or canvas is None:
+                            continue
+                        grow = (new_w - laid_w) * item.scale
+                        where = side
+                        if where is None:
+                            middle = item.x + laid_w * item.scale / 2
+                            where = "left" if middle < canvas.width / 3 else "right" if middle > canvas.width * 2 / 3 \
+                                else "centre"
+                        shift = grow if where == "right" else grow / 2 if where == "centre" else 0.0
+                        if shift:
+                            item.x -= shift
+                            moved = True
+            if laid is None or abs(new_w - laid_w) >= 0.5:
+                config.settings = {**config.settings, CARD_W: new_w}
+                touched.append(config)
+        return moved, touched
 
     def overlay_boxes(self, scene: Scene, canvas_id: str) -> list[tuple[float, float, float, float]]:
         """Where the plugin sprigs on top of this bloom (a clock, now playing: a sprig holding one smaller
@@ -1013,6 +1068,7 @@ class SceneCollection(BaseModel):
         size = getattr(cls, "own_sprig", None)
         corner = getattr(cls, "own_sprig_corner", None)
         if size:
+            self._mark_card_box(item.source, tuple(size))
             taken = self.overlay_boxes(layout, layout.canvas) + self.plugin_boxes(layout) if corner else []
             spot = self.readable_place(tuple(size), corner, getattr(cls, "own_sprig_height", None),
                                        getattr(cls, "own_sprig_band", None), layout, item.source, taken)

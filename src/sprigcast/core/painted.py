@@ -152,6 +152,7 @@ class Aside:
         self._frame = frame
         self._job = None  # (key, Future) being painted
         self._shown = None  # key of the last frame handed over (or being painted)
+        self.landed = None  # key of the last frame handed over: what's on screen from the next tick
 
     def forget(self) -> None:
         """Paint it again next time, even if the key is the same (a new look)."""
@@ -169,6 +170,7 @@ class Aside:
                 return None  # the one being painted lands first; a newer key is painted after it
             self._job = None
             frame = job[1].result()  # its error (a plugin's paint) is the source's, as when painted here
+            self.landed = job[0]
             if key != job[0]:
                 self._start(key, paint, args)
             return frame
@@ -176,7 +178,9 @@ class Aside:
             return None
         if not DRAW_ASIDE:
             self._shown = key
-            return self._frame(paint(*args))
+            frame = self._frame(paint(*args))
+            self.landed = key
+            return frame
         self._start(key, paint, args)
         return None
 

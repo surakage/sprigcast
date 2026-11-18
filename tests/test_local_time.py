@@ -40,9 +40,11 @@ def test_it_draws_only_when_the_words_change(clock, monkeypatch):
     times = iter([datetime(2026, 11, 14, 20, 3, s) for s in (1, 2, 3)] + [datetime(2026, 11, 14, 20, 4, 0)])
     monkeypatch.setattr(clock, "datetime", type("Fixed", (), {"now": staticmethod(lambda: next(times))}))
     source = create_source("local_time", "t", {})
-    assert source.size == (640, 220)
+    w, h = source.size
+    assert h == 220 and 300 < w < 640  # the box is the card (the old box was 640 wide with room beside it)
     first = source.video_frame()
-    assert first.shape == (220, 640, 4) and first[..., 3].any()
+    assert first.shape == (220, w, 4) and first[..., 3].any()
+    assert first[:, :8, 3].any() and first[:, -8:, 3].any()  # the card reaches both sides of its box
     assert source.video_frame() is None and source.video_frame() is None  # same minute: nothing drawn
     assert source.video_frame() is not None  # 8:04
     source.update({**source.settings, "card_color": "#00000000"})
