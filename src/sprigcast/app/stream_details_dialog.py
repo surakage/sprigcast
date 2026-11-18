@@ -41,6 +41,7 @@ from sprigcast.output import stream_details as sd
 log = logging.getLogger(__name__)
 
 LABEL_W = 92
+CHIP_W = 104  # every platform chip the same width
 SEARCH_WAIT_MS = 350  # look a category up once typing pauses
 PRIVACY_NAMES = {"public": "Public", "unlisted": "Unlisted", "private": "Private"}
 BOX_STYLE = (f"QPlainTextEdit {{ background: {theme.CARD}; border: 1px solid {theme.EDGE_STRONG}; border-radius: 14px;"
@@ -392,7 +393,8 @@ class Pane(QWidget):
 
 
 class StreamDetailsDialog(CardDialog):
-    """modal(StreamDetailsDialog(...)). services: the platforms in your Destinations, first one shown first."""
+    """modal(StreamDetailsDialog(...)). services: the platforms in your Destinations, first one shown first.
+    Only those get a chip; with none, the card says to add one."""
 
     def __init__(self, parent: QWidget | None = None, services: list[str] | None = None,
                  youtube_key_ref: str | None = None, connect_twitch: Callable[[QWidget], object] | None = None):
@@ -400,14 +402,14 @@ class StreamDetailsDialog(CardDialog):
         self.jobs = Jobs(self)
         self.youtube_key_ref = youtube_key_ref
         self.connect_twitch = connect_twitch or (lambda _parent: None)
-        order = [s for s in (services or []) if s in sd.SERVICES]
-        order += [s for s in sd.SERVICES if s not in order]
+        order = list(dict.fromkeys(s for s in (services or []) if s in sd.SERVICES))  # only where you stream
 
         chips = QHBoxLayout()
         chips.setSpacing(8)
         self.chips: dict[str, QPushButton] = {}
         for service in order:
             chip = QPushButton(sd.LABELS[service])
+            chip.setFixedWidth(CHIP_W)  # all the same size
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
             chip.clicked.connect(lambda _=False, s=service: self.show_service(s))
             chips.addWidget(chip)
@@ -436,7 +438,11 @@ class StreamDetailsDialog(CardDialog):
         self.body.addLayout(bottom)
         self.current = ""
         self._saving = False
-        self.show_service(order[0])
+        if order:
+            self.show_service(order[0])
+        else:
+            self.pane_box.addWidget(_quiet("Add Twitch, YouTube or Kick under Destinations first."))
+            self.refresh_save()
 
     def show_service(self, service: str) -> None:
         """Show one platform's pane; it reads its details the first time it's shown."""
