@@ -95,6 +95,7 @@ class SettingsDialog(QDialog):
         self.collection = collection
         self.choices: dict[str, Any] = dict(getattr(cls, "choices", None) or {})
         self.secrets: dict[str, str] = dict(getattr(cls, "secrets", None) or {})
+        self.placeholders: dict[str, str] = dict(getattr(cls, "placeholders", None) or {})  # shown when empty
         self.secret_fields: dict[str, QLineEdit] = {}
         secrets_after = getattr(cls, "secrets_after", None)  # the field the secrets follow (else at the end)
         self.setWindowTitle(title)
@@ -181,6 +182,8 @@ class SettingsDialog(QDialog):
             self.fields[key] = edit
             return edit
         edit = QLineEdit(str(value))
+        if key in self.placeholders:
+            edit.setPlaceholderText(self.placeholders[key])
         self.fields[key] = edit
         if key.endswith("color"):
             return self._with_button(edit, "Pick…", lambda: self._pick_color(edit))

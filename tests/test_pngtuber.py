@@ -615,6 +615,7 @@ def test_the_settings_form_has_pickers_for_the_two_pictures(tuber):
     from sprigcast.app.settings_dialog import SettingsDialog
 
     defaults = tuber.PngtuberSource.defaults
-    dialog = SettingsDialog("PNGtuber", defaults, dict(defaults))
+    dialog = SettingsDialog("PNGtuber", defaults, dict(defaults), cls=tuber.PngtuberSource)
     assert {"idle_picture", "talk_picture"} <= set(dialog.fields)
+    assert dialog.fields["folder"].text() == "" and dialog.fields["folder"].placeholderText() == "Sloth (built in)"
     assert list(defaults)[:3] == ["folder", "idle_picture", "talk_picture"]
