@@ -554,6 +554,60 @@ def test_media_source_keeps_the_python_player_otherwise(player_lib, files, monke
     assert MediaSource("m2", {**MediaSource.defaults, "path": files["video"]})._native is None
 
 
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_a_video_decoded_on_the_card_reaches_the_engine_and_python_alike(player_lib, files):
+    """hw_decode with the engine attached: on a real card the pictures stay on the engine's device (media_card);
+    on WARP (CI) they come in memory. Either way the canvas shows the video and it moves, and Python asking for
+    pictures too (a projector) gets them, in memory."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render import native_bridge
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=320, height=240)],
+        sources=[SourceConfig(id="clip", kind="media", name="Clip", settings={"path": files["video"]})],
+        scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="clip", x=0, y=0, align="top_left")])],
+        active_scenes={"h": "a"},
+    )
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    player = sprigcore.MediaPlayer(playing=True)
+    try:
+        player.set_decode(True)
+        player.set_options(True, False, True, 1.0)
+        player.set_file(files["video"], True, True)
+        player.control(sprigcore.MEDIA_START)
+        assert bridge.attach_media("clip", player)
+        bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+        bridge.watch("h", (320, 240), 0)
+
+        def shown(seconds=5.0):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                player.read_audio(240)
+                got = bridge.take("h")
+                if got is not None:
+                    img = np.frombuffer(got[0], np.uint8).reshape(240, 320, 4)
+                    if img[..., 3].min() == 255:
+                        return img
+                time.sleep(0.005)
+            return None
+
+        one = shown()
+        assert one is not None and not bridge.failed
+        two, deadline = one, time.monotonic() + 5
+        while (two == one).all() and time.monotonic() < deadline:
+            two = shown()
+        assert not (two == one).all() and not bridge.failed
+        got, deadline = None, time.monotonic() + 5
+        while got is None and time.monotonic() < deadline:
+            got = player.video_frame()
+            player.read_audio(240)
+            time.sleep(0.005)
+        assert got is not None and not bridge.failed  # Python's own reads still get pictures, in memory
+    finally:
+        player.close()
+        bridge.close()
+
+
 def test_decoding_on_the_graphics_card_is_the_engines_too(player_lib, files, monkeypatch):
     """hw_decode: the engine's player asks for the graphics card (Direct3D 11 on Windows) and falls back to the CPU
     where there is none (this container): the video plays either way, and turning it on or off reopens the file

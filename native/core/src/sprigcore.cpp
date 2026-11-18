@@ -258,9 +258,18 @@ SC_API int sc_device_create(int index, int flags, sc_device **out) {
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
                                             D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0};
         auto dev = std::make_unique<sc_device>();
-        HRESULT hr = D3D11CreateDevice(adapter.Get(), type, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
-                                       static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &dev->device,
-                                       &dev->level, &dev->context);
+        // Asked with video support first, so videos can decode on this same device (media.cpp media_card); a
+        // card or driver without it gets a device all the same.
+        HRESULT hr = E_FAIL;
+        if (type != D3D_DRIVER_TYPE_WARP)
+            hr = D3D11CreateDevice(adapter.Get(), type, nullptr,
+                                   D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT, levels,
+                                   static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &dev->device, &dev->level,
+                                   &dev->context);
+        if (FAILED(hr))
+            hr = D3D11CreateDevice(adapter.Get(), type, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
+                                   static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &dev->device,
+                                   &dev->level, &dev->context);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "D3D11CreateDevice", hr);
         // An encoder session on this device works from its own thread: Direct3D keeps the two apart.
         ComPtr<ID3D11Multithread> guard;

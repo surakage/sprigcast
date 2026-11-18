@@ -295,6 +295,7 @@ void drop_gpu(sc_engine &e) {
             e.dev->context->ClearState();
             e.dev->context->Flush();
         }
+        media_card_gone(e.dev->device.Get());
         sc_device_destroy(e.dev);
         e.dev = nullptr;
     }
@@ -366,6 +367,7 @@ bool build(sc_engine &e) {
         log_line(SC_LOG_WARNING, "engine: the device is rebuilt (rebuild " + std::to_string(rebuilds) +
                                      "); kept pictures, looks, shapes and the snapshot are back");
     }
+    media_card(e.dev->device.Get());  // videos reopened from now on decode on the new device
     std::lock_guard<std::mutex> lock(e.state);
     e.device_out = e.dev->device;
     return true;
@@ -807,7 +809,20 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (seen.first != player.get()) seen = {player.get(), 0};
         MediaDue due;
         media_due(player, &seen.second, &due);
-        if (due.what == SC_MEDIA_PICTURE) {
+        if (due.what == SC_MEDIA_PICTURE && due.texture) {  // still on the card, where the decoder left it
+            e.kept_sources.erase(id);
+            ComPtr<ID3D11Device> on;
+            auto *texture = static_cast<ID3D11Texture2D *>(due.texture);
+            texture->GetDevice(&on);
+            // One decoded on the device before a rebuild is skipped: the player's next ones come in memory.
+            const int code = on.Get() == e.dev->device.Get() ? source_nv12(*e.dev, id, texture, due.slice, due.how)
+                                                             : SC_OK;
+            if (code != SC_OK) {
+                log_line(SC_LOG_WARNING, "engine: a video's picture on the card couldn't be taken: " +
+                                             std::string(sc_last_error()));
+                media_card_refused();  // the next ones come in memory; this one is skipped
+            }
+        } else if (due.what == SC_MEDIA_PICTURE) {
             e.kept_sources.erase(id);
             check(sc_source_upload(e.dev, id, due.data, &due.how));
         } else if (due.what == SC_MEDIA_BLANK) {
@@ -1104,6 +1119,7 @@ SC_API int sc_engine_create(int adapter, int flags, sc_engine **out) {
             return fail(SC_ERR_INTERNAL, "sc_engine_create: no events");
         }
         e->device_out = e->dev->device;
+        media_card(e->dev->device.Get());  // videos asked to decode on the card decode on the engine's device
         e->stats.running = 1;  // from now: a call made before the thread's first moment still waits for frames
         e->threads[0] = CreateThread(nullptr, 0, frame_main, e.get(), 0, nullptr);
         e->threads[1] = e->threads[0] ? CreateThread(nullptr, 0, watchdog_main, e.get(), 0, nullptr) : nullptr;
