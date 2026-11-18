@@ -551,8 +551,12 @@ class RecordingTabs(QWidget):
     TABS = ("Recording", "Clips")
 
     def __init__(self, collection: SceneCollection, encoder_name: str, recording_page: QWidget,
-                 recording: bool = False, parent: QWidget | None = None):
+                 recording: bool = False, parent: QWidget | None = None, parts_later: bool = False):
+        """parts_later: the encoder, source, space and file name boxes and the Clips tab are made by later
+        (one part each, Settings makes them a tick apart: SettingsWindow._slice) or by finish()."""
         super().__init__(parent)
+        self.later: list = []
+        self._expert = False
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabWidget()
@@ -597,37 +601,76 @@ class RecordingTabs(QWidget):
         inner.addLayout(split_row)
         recording_group.setEnabled(not recording)
         box.addWidget(recording_group)
-        self.record_form = EncoderForm("Encoder", rec.encoder, encoder_name)
-        self.record_form.setEnabled(not recording)
-        box.addWidget(self.record_form)
-        from sprigcast.app.source_record_box import SourceRecordBox
+        self.recording = recording
 
-        self.source_record = SourceRecordBox(collection)
-        self.source_record.setEnabled(not recording)
-        box.addWidget(self.source_record)
-        self.space = SpaceBox(collection, getattr(recording_page, "folder", None))
-        box.addWidget(self.space)
-        self.names = FileNamesBox()
-        box.addWidget(self.names)
-        box.addStretch(1)
-        self.tabs.addTab(record_tab, "Recording")
+        def encoder():
+            self.record_form = EncoderForm("Encoder", rec.encoder, encoder_name)
+            self.record_form.setEnabled(not recording)
+            self.record_form.set_expert(self._expert)
+            box.insertWidget(box.count() - 1, self.record_form)
+
+        def sources():
+            from sprigcast.app.source_record_box import SourceRecordBox
+
+            self.source_record = SourceRecordBox(collection)
+            self.source_record.setEnabled(not recording)
+            box.insertWidget(box.count() - 1, self.source_record)
+
+        def space():
+            self.space = SpaceBox(collection, getattr(recording_page, "folder", None))
+            box.insertWidget(box.count() - 1, self.space)
+
+        def names():
+            self.names = FileNamesBox()
+            self.names.setVisible(self._expert)
+            box.insertWidget(box.count() - 1, self.names)
 
         clips_tab = QWidget()
-        box = _tab_box(clips_tab)
-        box.addWidget(self._clips_group(collection))
+
+        def clips():
+            clips_box = _tab_box(clips_tab)
+            clips_box.addWidget(self._clips_group(collection))
+            clips_box.addStretch(1)
+
         box.addStretch(1)
+        self.tabs.addTab(record_tab, "Recording")
         self.tabs.addTab(clips_tab, "Clips")
-        self.recording = recording
-        self.set_expert(False)
+        parts = [encoder, sources, space, names, clips]
+        if parts_later:
+            self.later = parts
+        else:
+            for part in parts:
+                part()
+
+    def __getattr__(self, name: str):
+        """A box asked for before its part was made (parts_later): make them now."""
+        later = self.__dict__.get("later")
+        if not later or name.startswith("_"):
+            raise AttributeError(name)
+        self.finish()
+        return object.__getattribute__(self, name)
+
+    def take_part(self) -> None:
+        """Make the next part still waiting (parts_later)."""
+        if self.later:
+            self.later.pop(0)()
+
+    def finish(self) -> None:
+        while self.later:
+            self.take_part()
 
     def set_expert(self, on: bool) -> None:
-        self.record_form.set_expert(on)
-        self.names.setVisible(on)
+        self._expert = bool(on)
+        if "record_form" in self.__dict__:
+            self.record_form.set_expert(on)
+        if "names" in self.__dict__:
+            self.names.setVisible(on)
 
     def show_tab(self, name: str) -> None:
         self.tabs.setCurrentIndex(1 if name in ("Clips", "Replay") else 0)
 
     def apply_to(self, collection: SceneCollection) -> None:
+        self.finish()
         if not self.recording:
             collection.recording.encoder = self.record_form.values()
             self.source_record.apply_to(collection)
