@@ -65,3 +65,21 @@ def test_the_crash_report_names_the_last_real_fault_not_com_noise():
 
 def test_outside_sprigcast_exe_the_launcher_guard_isnt_used(tmp_path):
     assert crash_dump._launcher_guard(str(tmp_path / "x.dmp")) is False  # python.exe (tests): the Python way
+
+
+def test_crash_notes_pause_on_windows_and_come_back(monkeypatch):
+    import faulthandler
+
+    from sprigcast.app import logbook
+
+    calls = []
+    monkeypatch.setattr(faulthandler, "is_enabled", lambda: True)
+    monkeypatch.setattr(faulthandler, "disable", lambda: calls.append("off"))
+    monkeypatch.setattr(faulthandler, "enable", lambda **kw: calls.append("on"))
+    with logbook.crash_notes_paused(platform="win32") as paused:
+        assert paused and calls == ["off"]
+    assert calls == ["off", "on"]
+    calls.clear()
+    with logbook.crash_notes_paused(platform="linux") as paused:
+        assert not paused
+    assert calls == []

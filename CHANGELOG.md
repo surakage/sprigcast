@@ -177,6 +177,7 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   once its work is done. The 12:21 crash on 2026-11-18 was in a thread Python was tearing down, and the dump
   couldn't say which one.
 - `SPRIGCAST_CRASH_TEST=<seconds>[,main]` crashes SprigCast on purpose, to test the crash guard on a PC.
+- The safe-mode question after a crash no longer adds a "0x8001010d" note to crash.log while it waits.
 - The Garden check, Last stream and the command palette hand Python's lock back quickly while they open, as the
   other pop-ups do (57-76 ms), and the Plugin store makes its cards two a tick, handing it back quickly too
   (147 ms over its fill).
