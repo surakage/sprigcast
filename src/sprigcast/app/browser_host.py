@@ -310,6 +310,9 @@ class _Page:
         self.dirty = False
         self.host.store(self.id, self.grab())
 
+    def reload(self) -> None:
+        self.page.triggerAction(self.page.WebAction.ReloadAndBypassCache)
+
     def grab(self) -> np.ndarray:
         from PySide6.QtGui import QImage
 
@@ -397,6 +400,12 @@ class BrowserHost(QObject):
         self.state_of = None  # callable: () -> {"blooms": {shape: name}, "streaming", "recording", "shapes": {id: shape}}
         self._state: dict[str, Any] = {}
         self._state_ticking = False  # a one-shot check is queued (no timer object: nothing ties the host's life to it)
+        # Pages drawn on the native engine's card (app/browser_quick.py), set by the browser helper: card is the
+        # engine's LUID; target_for(id, w, h, device) makes a sprigcore.PageTarget; card_drawn(id, target) tells
+        # the engine a new picture is there.
+        self.card: tuple[int, int] | None = None
+        self.target_for = None
+        self.card_drawn = None
 
     # Any thread ---------------------------------------------------------------------
 
@@ -445,12 +454,21 @@ class BrowserHost(QObject):
             page.interacting.raise_()
             page.interacting.activateWindow()
             return page.interacting
-        page.interacting = InteractWindow(page, title, parent)
+        if hasattr(page, "want_memory"):
+            from sprigcast.app.browser_quick import InteractQuick
+
+            page.interacting = InteractQuick(page, title, parent)
+        else:
+            page.interacting = InteractWindow(page, title, parent)
         page.interacting.show()
         return page.interacting
 
     def reload(self, source_id: str) -> None:
         self._request.emit("reload", source_id, None)
+
+    def want_memory(self, source_id: str) -> None:
+        """SprigCast reads this page's pictures itself for now (only pages drawn on the card care)."""
+        self._request.emit("memory", source_id, None)
 
     # UI thread ----------------------------------------------------------------------
 
@@ -507,7 +525,7 @@ class BrowserHost(QObject):
         try:
             if action == "open":
                 if page is None:
-                    self.pages[source_id] = _Page(self, source_id, value)
+                    self.pages[source_id] = self._new_page(source_id, value)
                     self._check_state()
                     self._tick_state()
                 else:
@@ -518,9 +536,22 @@ class BrowserHost(QObject):
             elif action == "pause" and page is not None:
                 page.set_paused(bool(value))
             elif action == "reload" and page is not None:
-                page.page.triggerAction(page.page.WebAction.ReloadAndBypassCache)
+                page.reload()
+            elif action == "memory" and hasattr(page, "want_memory"):
+                page.want_memory()
         except Exception:  # a broken page must never take the app down
             log.exception("browser source %s: %s failed", source_id, action)
+
+    def _new_page(self, source_id: str, settings: dict[str, Any]):
+        """On the engine's card when the helper was given one, else (or if that fails) a widget page."""
+        if self.card is not None and self.target_for is not None:
+            from sprigcast.app import browser_quick
+
+            try:
+                return browser_quick.QuickPage(self, source_id, settings)
+            except Exception as exc:  # noqa: BLE001 - the widget page still works
+                log.warning("browser source %s: can't be drawn on the card (%s), drawn in memory", source_id, exc)
+        return _Page(self, source_id, settings)
 
     def shutdown(self) -> None:
         self._shut = True

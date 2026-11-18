@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 15
+#define SC_INTERFACE_VERSION 16
 
 enum {
     SC_OK = 0,
@@ -333,6 +333,26 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, struct sc_medi
  * pictures never pass through Python. name = NULL (or empty) goes back to sc_engine_source_upload (the source keeps
  * the picture it has); sc_engine_source_forget detaches it too. */
 SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t *name);
+/* A browser page drawn on the card by the browser helper (page_texture.cpp): the helper makes a device on the
+ * engine's card (its LUID, from sc_d3d_device_luid) and a texture shared as "<block>-tex<n>" with a keyed mutex
+ * (key 0: the helper may draw, between sc_page_target_begin and _end; key 1: a picture waits for the engine). In the
+ * block's header (sc_engine_source_shared) slot 2 then means "on the card", with n after it; the engine copies the
+ * picture (premultiplied RGBA) on the card. */
+typedef struct sc_page_target sc_page_target;
+SC_API int sc_d3d_device_luid(void *d3d11_device, uint32_t *low, int32_t *high);
+/* device = NULL makes a device on the card with that LUID; else the target uses that device (one an earlier target
+ * of the same page made, so Qt Quick goes on drawing with the device it started with). */
+SC_API int sc_page_target_create(uint32_t luid_low, int32_t luid_high, void *device, int width, int height,
+                                 const wchar_t *name, sc_page_target **out);
+SC_API int sc_page_target_handles(sc_page_target *target, void **device, void **context, void **texture);
+SC_API int sc_page_target_begin(sc_page_target *target, int timeout_ms); /* 1: drawing may start; 0: not yet */
+/* Between begin and end: the picture drawn, read back as straight-alpha RGBA rows (for Python's own drawing). */
+SC_API int sc_page_target_read(sc_page_target *target, uint8_t *rgba, int stride);
+/* Between begin and end: the whole texture one premultiplied colour (a page not drawn yet; tests). */
+SC_API int sc_page_target_fill(sc_page_target *target, const float *rgba);
+/* publish = 1: the engine may take the picture (key 1); 0: drawn only to be read back, the helper keeps it. */
+SC_API int sc_page_target_end(sc_page_target *target, int publish);
+SC_API void sc_page_target_destroy(sc_page_target *target);
 SC_API int sc_engine_look_set(sc_engine *engine, uint64_t id, const float *table, int n);
 SC_API int sc_engine_mask_set(sc_engine *engine, uint64_t id, const uint8_t *rgba, int width, int height, int luma);
 SC_API int sc_engine_snapshot_set(sc_engine *engine, const sc_snapshot *snapshot);

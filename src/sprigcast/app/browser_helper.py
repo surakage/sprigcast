@@ -12,7 +12,7 @@ doesn't start Chromium again). If it stops, it starts again and opens the same p
 (SPRIGCAST_BROWSER_IN_PROCESS, or it can't start) pages are drawn in SprigCast itself, as before.
 
 Messages: SprigCast -> helper are JSON lines on its stdin ({"op": "open", "id": ..., "settings": ...}, close,
-pause, reload, state, interact, quit). Helper -> SprigCast are length-prefixed JSON on its stdout, sometimes
+pause, reload, state, interact, memory (SprigCast reads a page's pictures itself for now), quit). Helper -> SprigCast are length-prefixed JSON on its stdout, sometimes
 followed by bytes: "frames" (a page's shared memory block), "sound" (float32 stereo, 48 kHz), "desktop" (the
 page's sound plays on the desktop instead, and why), "log".
 """
@@ -36,7 +36,10 @@ log = logging.getLogger(__name__)
 
 LINGER_S = 90.0  # the helper stays this long after its last page closed, then ends (its memory goes back)
 RESTART_AFTER_S = 2.0  # a helper that stopped is started again this long after, with the same pages
-HEADER = 64  # bytes before the two picture slots: seq (u64), width, height, slot (u32 each)
+CARD_ENV = "SPRIGCAST_BROWSER_CARD"  # "low,high": the native engine's card, pages are drawn on it (browser_quick)
+MEMORY_ASK_S = 0.5  # while SprigCast reads a page drawn on the card itself, it asks for memory pictures this often
+HEADER = 64  # bytes before the two picture slots: seq (u64), width, height, slot, texture number (u32 each)
+ON_CARD = 2  # the slot of a picture drawn on the card (app/browser_quick.py), read by the engine there
 SOUND_MS = 20  # the helper sends each page's sound this often
 
 
@@ -90,6 +93,17 @@ class FrameSlot:
         struct.pack_into("<Q", self.buf, 0, seq)
         return True
 
+    def mark_on_card(self, w: int, h: int, texture: int) -> None:
+        """A picture drawn on the card into texture number ``texture`` (shared as "<name>-tex<n>", see
+        app/browser_quick.py): the engine copies it there; nothing is in the slots."""
+        seq = struct.unpack_from("<Q", self.buf, 0)[0] + 1
+        struct.pack_into("<IIII", self.buf, 8, w, h, ON_CARD, texture)
+        struct.pack_into("<Q", self.buf, 0, seq)
+
+    def on_card(self) -> bool:
+        """The newest picture is on the card (the engine takes it there), not in the slots."""
+        return struct.unpack_from("<Q", self.buf, 0)[0] != 0 and struct.unpack_from("<I", self.buf, 16)[0] == ON_CARD
+
     def painted(self) -> bool:
         """A picture newer than the last time this was asked (taken or not)."""
         seq = struct.unpack_from("<Q", self.buf, 0)[0]
@@ -103,8 +117,8 @@ class FrameSlot:
             return None
         w, h, slot, _ = struct.unpack_from("<IIII", self.buf, 8)
         size = w * h * 4
-        if not w or not h or size > self.capacity:
-            return None
+        if not w or not h or size > self.capacity or slot > 1:
+            return None  # on the card (slot 2): not in memory; the helper sends one when asked (want_memory)
         start = HEADER + slot * self.capacity
         frame = np.frombuffer(self.buf, dtype=np.uint8, count=size, offset=start).reshape(h, w, 4).copy()
         if struct.unpack_from("<Q", self.buf, 0)[0] > seq + 1:
@@ -172,6 +186,9 @@ class RemoteHost:
         self._shut = False
         self._timer = None
         self.starts = 0  # helpers started (a test, and the log, can tell a restart)
+        self.card: tuple[int, int] | None = None  # the native engine's card (use_card): pages are drawn on it
+        self._started_card: tuple[int, int] | None = None  # the card the running helper was given
+        self._asked: dict[str, float] = {}  # source id -> when pictures in memory were last asked for
         from PySide6.QtCore import QCoreApplication, QTimer
 
         if QCoreApplication.instance() is not None and threading.current_thread() is threading.main_thread():
@@ -189,15 +206,21 @@ class RemoteHost:
             if self.proc is not None and self.proc.poll() is None:
                 return True
             flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            env = dict(os.environ)
+            env.pop(CARD_ENV, None)
+            if self.card is not None:
+                env[CARD_ENV] = f"{self.card[0]},{self.card[1]}"
             try:
                 self.proc = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                             stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+                                             stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True, env=env)
             except OSError as exc:
                 log.warning("browser helper didn't start: %s", exc)
                 self.proc = None
                 return False
             self.starts += 1
-            log.info("browser helper started (pid %s)", self.proc.pid)
+            self._started_card = self.card
+            log.info("browser helper started (pid %s%s)", self.proc.pid,
+                     ", pages drawn on the engine's card" if self.card is not None else "")
             self._reader = threading.Thread(target=self._read, args=(self.proc,), name="sprigcast-browser-pipe",
                                             daemon=True)
             self._reader.start()
@@ -279,6 +302,35 @@ class RemoteHost:
         elif kind == "log":
             log.log(int(header.get("level", logging.INFO)), "browser helper: %s", header.get("text", ""))
 
+    def use_card(self, luid: tuple[int, int] | None) -> None:
+        """The native engine draws on this card (None: no engine): pages are drawn on it from now on. A helper
+        already running without it starts again (in the background) with the same pages."""
+        with self._lock:
+            luid = tuple(luid) if luid is not None else None
+            if luid == self.card:
+                return
+            self.card = luid
+            proc = self.proc
+            if luid is None or proc is None or proc.poll() is not None or self._started_card == luid:
+                return
+            self.proc = None  # its pipe reader sees it isn't the helper any more and doesn't start it again
+            for slot in self._frames.values():
+                slot.close()
+            self._frames.clear()
+
+        def again() -> None:
+            self._quit(proc)  # first: two helpers can't share the saved profile
+            with self._lock:
+                if not self._wanted or self._shut or not self._ensure():
+                    return
+                for source_id, settings in list(self._wanted.items()):
+                    self._send({"op": "open", "id": source_id, "settings": settings})
+                    if self._paused.get(source_id):
+                        self._send({"op": "pause", "id": source_id, "paused": True})
+
+        log.info("browser helper: starting again to draw pages on the engine's card")
+        threading.Thread(target=again, name="sprigcast-browser-card", daemon=True).start()
+
     def _set_sound(self, source_id: str, on: bool) -> None:
         if not on:
             self._sounds.pop(source_id, None)
@@ -344,6 +396,7 @@ class RemoteHost:
             self._wanted.pop(source_id, None)
             self._paused.pop(source_id, None)
             self._sounds.pop(source_id, None)
+            self._asked.pop(source_id, None)
             slot = self._frames.pop(source_id, None)
         if slot is not None:
             slot.close()
@@ -372,9 +425,19 @@ class RemoteHost:
         if slot is None:
             return None
         try:
-            return slot.read()
+            frame = slot.read()
+            if frame is None and slot.on_card():
+                self._ask_memory(source_id)
+            return frame
         except (TypeError, ValueError):  # closed just now
             return None
+
+    def _ask_memory(self, source_id: str) -> None:
+        """SprigCast draws this page itself for now (the engine isn't taking it): pictures in memory, please."""
+        now = time.monotonic()
+        if now - self._asked.get(source_id, 0.0) >= MEMORY_ASK_S:
+            self._asked[source_id] = now
+            self._send({"op": "memory", "id": source_id})
 
     def read_audio(self, source_id: str, n: int) -> np.ndarray | None:
         sound = self._sounds.get(source_id)
@@ -454,6 +517,26 @@ class _PipeLog(logging.Handler):
             pass
 
 
+def _card_from_env() -> tuple[int, int] | None:
+    """The engine's card from SprigCast (CARD_ENV), with Qt Quick set up to draw on it; None when pages are drawn
+    in memory (no native engine, not Windows, or Qt Quick's WebEngine missing). Before the QApplication."""
+    text = os.environ.get(CARD_ENV, "")
+    if not text:
+        return None
+    try:
+        low, high = (int(part) for part in text.split(","))
+        from sprigcast.app import browser_quick
+
+        if not browser_quick.available():
+            log.info("browser pages drawn in memory: Qt Quick's WebEngine isn't here")
+            return None
+        browser_quick.prepare()
+        return low, high
+    except Exception as exc:  # noqa: BLE001 - memory pages still work
+        log.warning("browser pages drawn in memory: %s", exc)
+        return None
+
+
 def serve() -> None:
     """The helper: the pages, drawn with Qt WebEngine on this process's own window thread."""
     from PySide6.QtCore import QCoreApplication, QObject, Qt, QTimer, Signal
@@ -476,6 +559,7 @@ def serve() -> None:
     root.addHandler(_PipeLog(emit))
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = browser_host.chromium_flags(
         os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""))
+    card = _card_from_env()
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication([sys.argv[0] if sys.argv else "sprigcast-browser"])
     app.setOrganizationName("Slothbloom")  # the same saved profile (cookies, local storage) as before
@@ -486,20 +570,42 @@ def serve() -> None:
     host_state: list[dict] = [{}]
     slots: dict[str, FrameSlot] = {}
     made = [0]
+    textures = [0]
 
-    def store(source_id: str, frame: np.ndarray) -> None:
-        h, w = frame.shape[:2]
+    def slot_for(source_id: str, pixels: int) -> FrameSlot:
         slot = slots.get(source_id)
-        if slot is None or w * h * 4 > slot.capacity:
+        if slot is None or pixels * 4 > slot.capacity:
             if slot is not None:
                 slot.close()
             made[0] += 1
             name = f"sprigcast-{os.getpid()}-{made[0]}"
-            slot = slots[source_id] = FrameSlot.create(name, w * h)
+            slot = slots[source_id] = FrameSlot.create(name, pixels)
             emit({"kind": "frames", "id": source_id, "name": name})
-        slot.write(frame)
+        return slot
+
+    def store(source_id: str, frame: np.ndarray) -> None:
+        h, w = frame.shape[:2]
+        slot_for(source_id, w * h).write(frame)
 
     host.store = store
+
+    if card is not None:
+        from sprigcast import sprigcore
+
+        def target_for(source_id: str, w: int, h: int, device: int | None = None):
+            """A page's texture on the engine's card, named after its block (the engine opens it by that)."""
+            slot = slot_for(source_id, w * h)  # room for its pictures in memory too (want_memory)
+            textures[0] += 1
+            target = sprigcore.PageTarget(card, w, h, f"{slot.shm.name}-tex{textures[0]}", device)
+            target.number, target.block = textures[0], slot.shm.name
+            return target
+
+        def card_drawn(source_id: str, target) -> None:
+            slot = slots.get(source_id)
+            if slot is not None and slot.shm.name == target.block:
+                slot.mark_on_card(target.size[0], target.size[1], target.number)
+
+        host.card, host.target_for, host.card_drawn = card, target_for, card_drawn
     real_set_sound = host.set_sound
 
     def set_sound(source_id: str, sound) -> None:
@@ -545,6 +651,8 @@ def serve() -> None:
             host.pause(source_id, bool(message.get("paused")))
         elif op == "reload":
             host.reload(source_id)
+        elif op == "memory":
+            host.want_memory(source_id)
         elif op == "state":
             host_state[0] = message.get("state") or {}
             host._check_state()

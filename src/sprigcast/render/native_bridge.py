@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 
 from sprigcast import sprigcore
@@ -208,6 +209,28 @@ class NativeCanvases:
         if self._faults:
             log.warning("native engine: SPRIGCAST_ENGINE_FAULT is set: %d deliberate faults planned", len(self._faults))
         log.info("native engine: drawing the previews (%s)", "software" if warp else "graphics card")
+        self._card_told = False
+        self._tell_card()
+
+    def _tell_card(self) -> None:
+        """Browser pages are drawn on the engine's card (sources/browser.use_card), once it has a device."""
+        if self._card_told or self.failed or sys.platform != "win32":
+            return
+        luid_of = getattr(self.engine, "luid", None)
+        if luid_of is None:  # a stand-in engine (tests)
+            self._card_told = True
+            return
+        try:
+            luid = luid_of()
+        except Exception as exc:  # noqa: BLE001 - pages stay in memory
+            log.info("native engine: its card is unknown (%s): browser pages stay in memory", exc)
+            self._card_told = True
+            return
+        if luid is not None:
+            self._card_told = True
+            from sprigcast.sources import browser
+
+            browser.use_card(luid)
 
     # ---- what goes in ------------------------------------------------------------------------------------------
 
@@ -254,6 +277,8 @@ class NativeCanvases:
         if player is None:
             self._media.pop(source_id, None)
             return False
+        if isinstance(player, str):
+            self._tell_card()
         self._media[source_id] = player
         if isinstance(player, str):
             self._guard("shared", self.engine.attach_shared, source_id, player)

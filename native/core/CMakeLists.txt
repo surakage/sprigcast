@@ -18,7 +18,7 @@ if(MSVC)
 endif()
 
 add_library(sprigcore SHARED src/base.cpp src/sprigcore.cpp src/compositor.cpp src/engine.cpp src/transition.cpp
-            src/nv12.cpp src/nv12_source.cpp src/ffmpeg.cpp src/media.cpp src/writer.cpp)
+            src/nv12.cpp src/nv12_source.cpp src/ffmpeg.cpp src/media.cpp src/writer.cpp src/page_texture.cpp)
 target_include_directories(sprigcore PUBLIC include)
 # FFmpeg headers only (the libraries are loaded at run time from PyAV: native/third_party/ffmpeg/README.md).
 target_include_directories(sprigcore SYSTEM PRIVATE ../third_party/ffmpeg/include)

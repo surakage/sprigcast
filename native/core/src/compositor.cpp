@@ -176,7 +176,7 @@ struct Renderer {
         p.pic_h = s.pic_h;
         p.planar = s.planar;
         std::memcpy(p.yuv, s.yuv, sizeof p.yuv);
-        p.premul = s.format == SC_FMT_PBGRA;
+        p.premul = s.format == SC_FMT_PBGRA || s.premultiplied;
         switch (s.format) {
             case SC_FMT_BGRA: case SC_FMT_PBGRA: p.swizzle = 1; break;
             case SC_FMT_RGB: p.swizzle = 2; break;
@@ -535,6 +535,7 @@ SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data,
             device->context->UpdateSubresource(s.texture.Get(), 0, nullptr, data, static_cast<UINT>(stride), 0);
         }
         s.format = fmt;
+        s.premultiplied = false;
         s.planar = fmt == SC_FMT_I420 ? 1 : (fmt == SC_FMT_I420A ? 2 : 0);
         s.pic_w = w;
         s.pic_h = s.planar == 2 ? h * 2 / 5 : (s.planar == 1 ? h * 2 / 3 : h);

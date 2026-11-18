@@ -110,6 +110,7 @@ int nv12_copy_target(sc_device &dev, Source &s, const D3D11_TEXTURE2D_DESC &like
 
 void describe(Source &s, const sc_upload &how, int w, int h) {
     s.format = SC_FMT_I420;
+    s.premultiplied = false;
     s.planar = 1;
     s.pic_w = w;
     s.pic_h = h;

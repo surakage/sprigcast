@@ -20,7 +20,12 @@ import pefile
 
 # The PySide6 modules SprigCast imports (grep "PySide6.Qt" in src).
 QT_MODULES = {"QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg",
-              "QtWebEngineCore", "QtWebEngineWidgets", "QtWebChannel", "QtWebSockets"}
+              "QtWebEngineCore", "QtWebEngineWidgets", "QtWebChannel", "QtWebSockets",
+              # Browser pages drawn on the native engine's card (app/browser_quick.py): a Qt Quick page.
+              "QtQml", "QtQuick", "QtWebEngineQuick"}
+# The QML modules browser_quick.py's page imports (QtQuick, QtWebEngine, QtWebChannel) and QtQml under them.
+# QtQuick's sub-folders (Controls, Dialogs, ...) go: the page uses none of them.
+QML_KEEP = {"QtQml": True, "QtQuick": False, "QtWebEngine": True, "QtWebChannel": True}  # True: with sub-folders
 # Qt plugin folders a widgets app with web pages loads: windows, pictures, icons, the style,
 # secure connections and network status. (Windows typing, IME included, is in the platform plugin;
 # platforminputcontexts only holds Qt's on-screen keyboard, which needs Qt Quick.)
@@ -77,8 +82,19 @@ def prune_pyside(pyside: Path) -> None:
         for f in plugins.rglob(name):
             remove(f)
 
+    # QML modules: only the page's.
+    qml = pyside / "qml"
+    for folder in qml.iterdir() if qml.is_dir() else []:
+        if folder.name not in QML_KEEP:
+            remove(folder)
+        elif not QML_KEEP[folder.name]:
+            for inner in folder.iterdir():
+                if inner.is_dir():
+                    remove(inner)
+
     # Every DLL reachable from what's kept.
     roots = [pyside / f"{m}.pyd" for m in QT_MODULES] + [pyside / "QtWebEngineProcess.exe"]
+    roots += [f for f in qml.rglob("*.dll")] if qml.is_dir() else []
     roots += [f for f in plugins.rglob("*.dll")] if plugins.is_dir() else []
     roots += [f for f in pyside.glob("*.dll") if not f.name.lower().startswith(("qt6",) + FFMPEG)]
     needed: set[str] = set(QT_ALWAYS)
@@ -106,7 +122,7 @@ def prune_pyside(pyside: Path) -> None:
     for f in pyside.glob("*.exe"):
         if f.name != "QtWebEngineProcess.exe":
             remove(f)
-    for name in ("qml", "metatypes", "typesystems", "include", "glue", "doc", "examples", "scripts"):
+    for name in ("metatypes", "typesystems", "include", "glue", "doc", "examples", "scripts"):
         remove(pyside / name)
     translations = pyside / "translations"
     for f in translations.glob("*.qm"):

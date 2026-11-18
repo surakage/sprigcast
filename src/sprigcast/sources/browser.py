@@ -12,11 +12,14 @@ reload_on_air (reload the page each time a bloom showing it goes on air).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 
 import numpy as np
 
 from sprigcast.core.source import Source, register
+
+log = logging.getLogger(__name__)
 
 # Same idea as OBS's default, so overlays made for OBS look the same here.
 DEFAULT_CSS = "body { background-color: rgba(0, 0, 0, 0); margin: 0px auto; overflow: hidden; }"
@@ -74,6 +77,17 @@ _host: Host | None = None
 def set_host(host: Host | None) -> None:
     global _host
     _host = host
+
+
+def use_card(luid: tuple[int, int] | None) -> None:
+    """The native engine draws on this graphics card (its LUID; None: no engine): the browser helper draws pages
+    on it too, so their pictures never pass through memory (app/browser_quick.py). Any thread."""
+    use = getattr(_host, "use_card", None)
+    if use is not None:
+        try:
+            use(luid)
+        except Exception:  # noqa: BLE001 - pages still work in memory
+            log.warning("browser pages: couldn't move them onto the engine's card", exc_info=True)
 
 
 def page_url(settings: dict[str, Any]) -> str:

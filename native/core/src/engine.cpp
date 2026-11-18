@@ -73,6 +73,8 @@ struct SharedPictures {
     size_t size = 0;
     uint64_t seen = 0;
     bool said = false;  // a block that won't open is said once
+    sc::PageTexture page;  // the page's texture, when the helper draws it on the card (slot 2)
+    bool page_said = false;
 
     SharedPictures() = default;
     SharedPictures(const SharedPictures &) = delete;
@@ -111,13 +113,26 @@ struct SharedPictures {
         std::atomic_thread_fence(std::memory_order_acquire);
         return value;
     }
-    // The counter of a picture not taken yet, with where it is and how to read it; 0 when there is none.
-    uint64_t newest(const uint8_t **data, sc_upload *how) const {
+    // A picture on the card: slot 2, then the number of the texture it is in (shared as "<block>-tex<n>").
+    static constexpr uint32_t ON_CARD = 2;
+    // The counter of a picture not taken yet, with where it is and how to read it; 0 when there is none. A
+    // picture on the card gives no data: `texture` names its texture and `how` its size.
+    uint64_t newest(const uint8_t **data, sc_upload *how, std::wstring *texture) const {
         if (!view) return 0;
         const uint64_t seq = counter();
         if (seq == 0 || seq == seen) return 0;
-        uint32_t head[3];
+        uint32_t head[4];
         std::memcpy(head, view + 8, sizeof head);
+        if (head[2] == ON_CARD) {
+            if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384) return 0;
+            *data = nullptr;
+            *how = sc_upload{};
+            how->format = SC_FMT_RGBA;
+            how->width = static_cast<int>(head[0]);
+            how->height = static_cast<int>(head[1]);
+            *texture = name + L"-tex" + std::to_wstring(head[3]);
+            return seq;
+        }
         const size_t capacity = (size - HEADER) / 2;
         const size_t bytes = static_cast<size_t>(head[0]) * head[1] * 4;
         if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384 || bytes > capacity || head[2] > 1) return 0;
@@ -349,7 +364,10 @@ void check(int code) {
 void drop_gpu(sc_engine &e) {
     e.shown.clear();
     e.media_seen.clear();  // a new device gets each player's picture again
-    for (auto &[id, block] : e.shared_open) block.seen = 0;  // and each shared block's
+    for (auto &[id, block] : e.shared_open) {  // and each shared block's, its texture opened on the new device
+        block.seen = 0;
+        block.page = sc::PageTexture();
+    }
     for (auto &r : e.readers) r = Reader();
     for (auto &row : e.out_readers)
         for (auto &r : row) r = OutReader();
@@ -922,9 +940,26 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (block.name != name && !block.open(name)) continue;
         const uint8_t *data = nullptr;
         sc_upload how{};
-        const uint64_t seq = block.newest(&data, &how);
+        std::wstring texture;
+        const uint64_t seq = block.newest(&data, &how, &texture);
         if (!seq) continue;
         e.kept_sources.erase(id);
+        if (!data) {  // drawn on the card by the helper: copied there, never through memory
+            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height);
+            if (code == SC_NOT_YET) continue;
+            if (code != SC_OK) {
+                if (!block.page_said) {
+                    block.page_said = true;
+                    log_line(SC_LOG_WARNING, std::string("engine: a browser page's picture on the card couldn't be "
+                                                         "taken: ") + sc_last_error());
+                }
+                block.seen = seq;  // the next one is tried afresh
+                continue;
+            }
+            block.page_said = false;
+            block.seen = seq;
+            continue;
+        }
         check(sc_source_upload(e.dev, id, data, &how));
         if (block.counter() <= seq + 1) block.seen = seq;  // else overwritten while copied: taken again next frame
     }
