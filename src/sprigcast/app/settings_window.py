@@ -250,6 +250,8 @@ def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
 
 
 FILL_AFTER_MS = 30  # the window shows first, then its page is made (fill_after_show)
+STAND_IN = "settingsStandIn"
+PAGE_LATE_MS = 400  # a picked page still not in its place this long after: put it in now (_make_sure_shown)
 SLICE_GAP_MS = 20  # between the parts of a page made a tick apart (SettingsWindow._slice)
 
 
@@ -314,7 +316,9 @@ class SettingsWindow(QDialog):
         self.on_clear_data = None  # the main window's clear_all_data(parent)
         for name in TABS:
             QListWidgetItem(name, self.tabs)
-            self.stack.addWidget(QWidget())  # stands in until the page is made
+            stand_in = QWidget()  # stands in until the page is made
+            stand_in.setObjectName(STAND_IN)
+            self.stack.addWidget(stand_in)
         self.tabs.currentRowChanged.connect(self._show_row)
 
         self.search = QLineEdit()
@@ -559,7 +563,11 @@ class SettingsWindow(QDialog):
         if getattr(self, "_closed", False):
             self._slices.clear()
             return
-        self._slices.pop(0)()
+        call = self._slices.pop(0)
+        try:
+            call()
+        except Exception:  # noqa: BLE001  one part going wrong never stops the parts after it (pages stay blank)
+            log.exception("settings: part of a page failed to make")
         if self._slices:
             from PySide6.QtCore import QTimer
 
@@ -567,7 +575,11 @@ class SettingsWindow(QDialog):
 
     def _flush_slices(self) -> None:
         while self._slices:
-            self._slices.pop(0)()
+            call = self._slices.pop(0)
+            try:
+                call()
+            except Exception:  # noqa: BLE001
+                log.exception("settings: part of a page failed to make")
 
     def soon(self, call) -> None:
         """call() once the first page is made (now, if it is)."""
@@ -587,9 +599,31 @@ class SettingsWindow(QDialog):
 
     def _show_row(self, row: int) -> None:
         if 0 <= row < len(TABS):
+            if self._fill_tab is not None:
+                # Picked before the window's first page was filled in (a busy PC can be late with it): fill in this
+                # one, not the page it opened on. Filled in later, it took the window back to General (2026-11-18).
+                self._fill_tab = TABS[row]
             self.ensure(TABS[row])
             self.stack.setCurrentIndex(row)
             self._tab_changed(row)
+            if self.isVisible() and self._stand_in(row):
+                from PySide6.QtCore import QTimer
+
+                QTimer.singleShot(PAGE_LATE_MS, self, lambda: self._make_sure_shown(row))
+
+    def _stand_in(self, row: int) -> bool:
+        widget = self.stack.widget(row)
+        return widget is not None and widget.objectName() == STAND_IN
+
+    def _make_sure_shown(self, row: int) -> None:
+        """The picked page is made but not yet in its place: its parts wait on timers that a busy UI can hold
+        back. Put everything waiting in now, so a picked page never stays blank or on the last one."""
+        if getattr(self, "_closed", False) or self.tabs.currentRow() != row or not self._stand_in(row):
+            return
+        log.warning("settings: the %s page was still waiting after %d ms; putting it in now", TABS[row], PAGE_LATE_MS)
+        self._flush_slices()
+        if self.stack.currentIndex() != row:
+            self.stack.setCurrentIndex(row)
 
     def current_tab(self) -> str:
         return TABS[self.tabs.currentRow()]

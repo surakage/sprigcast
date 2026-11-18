@@ -8,6 +8,7 @@ from PySide6.QtCore import QCoreApplication, QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig  # noqa: E402
+from sprigcast.app.settings_window import TABS, SettingsWindow  # noqa: E402
 
 
 @pytest.fixture
@@ -527,6 +528,62 @@ def test_a_window_closed_before_its_page_fills_makes_nothing(app):
     w.reject()
     w._fill()
     assert not w._built
+
+
+def test_a_page_picked_before_the_window_fills_in_stays_picked(app):
+    """PC 2026-11-18 (blooms switching every 15 s): the first Settings window wouldn't switch pages. A page picked
+    before the window had filled in its first page was taken back to General when that fill came."""
+    import time
+
+    w = _window(_collection(), tab="General", fill_after_show=True)
+    w.show()
+    w.tabs.setCurrentRow(TABS.index("Accounts"))  # before the fill's timer
+    deadline = time.monotonic() + 3
+    while (w._fill_tab is not None or w._slices) and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+    app.processEvents()
+    assert w.current_tab() == "Accounts" and w.stack.currentIndex() == TABS.index("Accounts")
+    assert not w._stand_in(TABS.index("Accounts"))
+    w.close()
+
+
+def test_a_picked_page_waiting_on_held_back_timers_is_put_in_anyway(app, caplog):
+    """Its parts wait on timers a busy UI can hold back (or a part can fail): the picked page still shows."""
+    w = _window(_collection(), tab="General")
+    w.show()
+    app.processEvents()
+    w._slice(lambda: 1 / 0)  # a part that fails never stops the parts after it
+    w._flush_slices()
+    w.ensure("Accounts")  # made, waiting to be put in
+    w._slices.insert(0, w._slices.pop())  # (as a slice that never got its tick)
+    w.tabs.setCurrentRow(TABS.index("Accounts"))
+    assert w._stand_in(TABS.index("Accounts"))
+    w._make_sure_shown(TABS.index("Accounts"))
+    assert not w._stand_in(TABS.index("Accounts")) and w.stack.currentIndex() == TABS.index("Accounts")
+    w.close()
+
+
+def test_the_gear_opens_settings_while_the_warm_up_one_is_off_screen(app, tmp_path, monkeypatch):
+    """The off-screen warm-up Settings counted as "already open": a gear click in its 2 s did nothing."""
+    from PySide6.QtCore import Qt
+
+    from sprigcast.app import main_window as mw
+
+    shown = []
+    monkeypatch.setattr(mw, "modal", lambda window: shown.append(window))
+    window = mw.MainWindow(_collection(), tmp_path / "scenes.json")
+    try:
+        window.show()
+        window.warm_settings()
+        warm = [x for x in app.topLevelWidgets() if isinstance(x, SettingsWindow) and x.isVisible()]
+        assert warm and warm[0].testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        window._open_settings()
+        assert len(shown) == 1 and shown[0] is not warm[0]
+    finally:
+        for x in shown:
+            x.deleteLater()
+        window.close()
 
 
 def test_hotkey_cards_are_made_a_tick_apart_and_saving_early_keeps_them_all(app):

@@ -6371,8 +6371,9 @@ class MainWindow(QMainWindow):
         self._open_settings()
 
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
-        open_now = next((w for w in QApplication.topLevelWidgets()
-                         if isinstance(w, SettingsWindow) and w.isVisible()), None)
+        # (not the off-screen warm-up one: a gear click in its 2 s did nothing, "already open")
+        open_now = next((w for w in QApplication.topLevelWidgets() if isinstance(w, SettingsWindow) and w.isVisible()
+                         and not w.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)), None)
         if open_now is not None:  # already open (behind another window, say): bring it forward
             log.info("settings: already open, brought forward")
             open_now.raise_()
