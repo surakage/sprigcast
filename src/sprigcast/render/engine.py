@@ -1979,9 +1979,9 @@ class Engine:
             # A video the engine's own player decodes: the native engine takes its pictures itself, frame by frame
             # (not while it is frozen or asleep: then it keeps the picture it has).
             player = None if source.asleep else getattr(source, "engine_player", None)
-            # Frozen, a player is let go (it keeps its picture); a browser page's block stays, held, so the page
-            # isn't left waiting for the engine to take its pictures.
-            if freeze is not None and not isinstance(player, str):
+            # Frozen, a player is let go (it keeps its picture); a browser page's block or a capture stays, held, so
+            # the page isn't left waiting for the engine to take its pictures, and a capture needn't start over.
+            if freeze is not None and not (isinstance(player, str) or getattr(player, "holds", False)):
                 player = None
             direct = native is not None and native.attach_media(source_id, player, held=freeze is not None)
             if source.asleep or not self._budget_allows(source_id) or (

@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 29
+#define SC_INTERFACE_VERSION 30
 
 enum {
     SC_OK = 0,
@@ -343,6 +343,38 @@ SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t
  * held the engine still takes each new picture, so the writer never waits on it, but the source keeps the one it
  * has. Detaching the block forgets the hold. */
 SC_API int sc_engine_source_shared_hold(sc_engine *engine, uint64_t id, int held);
+/* Source `id` shows a window or a display, captured with Windows Graphics Capture on the engine's own device: every
+ * frame the engine copies the newest picture on the card, so a screen's pictures never pass through memory or
+ * Python. `window` is an HWND or `monitor` an HMONITOR (the other 0); both 0 stops the capture (the source keeps the
+ * picture it has), and sc_engine_source_forget stops it too. flags: SC_SCREEN_*. interval_ms: at most one picture
+ * this often (0 = every one Windows draws). The same values again keep the capture running; new ones start it over.
+ * The capture starts on the frame thread: sc_engine_capture_state says how it went. */
+enum {
+    SC_SCREEN_CURSOR = 1,  /* the mouse pointer drawn in */
+    SC_SCREEN_BORDER = 2,  /* Windows' yellow border kept (it can't be turned off before Windows 11) */
+    SC_SCREEN_OPAQUE = 4   /* alpha ignored: a game's picture is solid */
+};
+enum {
+    SC_SCREEN_NONE = 0,     /* not asked for */
+    SC_SCREEN_STARTING = 1, /* asked for, no picture yet */
+    SC_SCREEN_RUNNING = 2,  /* pictures coming */
+    SC_SCREEN_ENDED = 3,    /* the window closed or the display went: ask again (a new target) */
+    SC_SCREEN_REFUSED = 4   /* this PC can't capture in the engine: capture another way */
+};
+SC_API int sc_engine_source_capture(sc_engine *engine, uint64_t id, uint64_t window, uint64_t monitor, int flags,
+                                    int interval_ms);
+/* A capture held still (held = 1, a freeze) or shown again (0): while held the engine still takes Windows'
+ * pictures but the source keeps the one it has. Stopping the capture forgets the hold. */
+SC_API int sc_engine_source_capture_hold(sc_engine *engine, uint64_t id, int held);
+/* How source `id`'s capture is doing: state SC_SCREEN_*, the size of its pictures (0 before the first) and how
+ * many it has shown. Any pointer may be NULL. */
+SC_API int sc_engine_capture_state(sc_engine *engine, uint64_t id, int *state, int *width, int *height,
+                                   uint64_t *frames);
+/* Source `id`'s captured picture as BGRA rows (`stride` bytes apart), for a frame Python draws itself. Its size goes
+ * to width and height; SC_ERR_ARGUMENT when there is no picture yet or it is bigger than max_width x max_height
+ * (then width and height say what it needs). */
+SC_API int sc_engine_capture_read(sc_engine *engine, uint64_t id, uint8_t *bgra, int stride, int max_width,
+                                  int max_height, int *width, int *height);
 /* Source `id` shows what audio visualizer `visual` draws (sc_visual_open): every frame the engine takes its newest
  * drawing itself, so neither the sound nor the pictures pass through Python. visual = NULL goes back to
  * sc_engine_source_upload (the source keeps the picture it has); sc_engine_source_media and

@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 29  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 30  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -34,6 +34,9 @@ ERRORS = {-1: "bad argument", -2: "graphics device", -3: "shader", -4: "out of m
           -6: "faulted", -7: "graphics card lost", -8: "timed out"}
 FAULTED, DEVICE_LOST, TIMEOUT = -6, -7, -8  # FAULTED, DEVICE_LOST: the device is shut off (crash gate)
 UPLOAD_KEEP = 1
+# Screen capture in the engine (sc_engine_source_capture): flags, then how a capture is doing.
+SCREEN_CURSOR, SCREEN_BORDER, SCREEN_OPAQUE = 1, 2, 4
+SCREEN_NONE, SCREEN_STARTING, SCREEN_RUNNING, SCREEN_ENDED, SCREEN_REFUSED = 0, 1, 2, 3, 4
 ENGINE_CANVASES = 4
 ENGINE_OUTPUTS = 4  # NV12 outputs per canvas (SC_ENGINE_OUTPUTS)
 OUTPUT_SHARE = 1  # an output whose frames stay on the card as NV12 textures (SC_OUTPUT_SHARE)
@@ -259,6 +262,12 @@ def _lib():
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
         "sc_engine_source_shared_hold": (c_int, [vp, ctypes.c_uint64, c_int]),
         "sc_engine_source_visual": (c_int, [vp, ctypes.c_uint64, vp]),
+        "sc_engine_source_capture": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, c_int, c_int]),
+        "sc_engine_source_capture_hold": (c_int, [vp, ctypes.c_uint64, c_int]),
+        "sc_engine_capture_state": (c_int, [vp, ctypes.c_uint64, ctypes.POINTER(c_int), ctypes.POINTER(c_int),
+                                            ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_uint64)]),
+        "sc_engine_capture_read": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int, ctypes.POINTER(c_int),
+                                           ctypes.POINTER(c_int)]),
         "sc_d3d_device_luid": (c_int, [vp, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_int32)]),
         "sc_page_target_create": (c_int, [ctypes.c_uint32, ctypes.c_int32, vp, c_int, c_int, ctypes.c_wchar_p, out]),
         "sc_page_target_handles": (c_int, [vp, out, out, out]),
@@ -390,6 +399,60 @@ def _upload_args(frame, channel_order: str, size):
 
         how.yuv[:] = planar_layout("I420/" + _rest if kind == "NV12" else channel_order)[1]
     return pixels, how
+
+
+class CaptureTarget:
+    """A window (an HWND) or a display (an HMONITOR) for the engine to capture (Engine.attach_capture), made by
+    sources/capture.py. Two are equal when they ask for the same capture: a new ``serial`` starts it over (a window
+    that closed, found again). The render thread links it to the engine, so the source can ask how it is doing and
+    read its picture for the frames Python draws itself."""
+
+    holds = True  # a freeze keeps it running, held (render/engine.py), so it needn't start again afterwards
+
+    def __init__(self, window: int = 0, monitor: int = 0, flags: int = 0, interval_ms: int = 0, serial: int = 0):
+        self.window, self.monitor = int(window or 0), int(monitor or 0)
+        self.flags, self.interval_ms, self.serial = int(flags), max(0, min(10000, int(interval_ms))), int(serial)
+        self._link: tuple[Engine, str] | None = None
+
+    def _values(self) -> tuple[int, int, int, int, int]:
+        return self.window, self.monitor, self.flags, self.interval_ms, self.serial
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, CaptureTarget) and self._values() == other._values()
+
+    def __hash__(self) -> int:
+        return hash(self._values())
+
+    def __repr__(self) -> str:
+        what = f"window {self.window:#x}" if self.window else f"display {self.monitor:#x}"
+        return f"CaptureTarget({what}, flags {self.flags}, every {self.interval_ms} ms, #{self.serial})"
+
+    def link(self, engine: Engine | None, source_id: str = "") -> None:
+        self._link = (engine, source_id) if engine is not None else None
+
+    @property
+    def linked(self) -> bool:
+        return self._link is not None
+
+    def state(self) -> tuple[int, int, int, int]:
+        """(SCREEN_*, width, height, pictures shown); SCREEN_NONE while no engine has it."""
+        link = self._link
+        if link is None:
+            return SCREEN_NONE, 0, 0, 0
+        try:
+            return link[0].capture_state(link[1])
+        except NativeError:
+            return SCREEN_NONE, 0, 0, 0
+
+    def read(self):
+        """The newest picture as BGRA rows, or None (no engine, or no picture yet)."""
+        link = self._link
+        if link is None:
+            return None
+        try:
+            return link[0].capture_read(link[1])
+        except NativeError:
+            return None
 
 
 class Device:
@@ -678,6 +741,54 @@ class Engine:
         """Hold a shared source's picture still (a freeze) while the engine keeps taking the page's pictures, so the
         page never waits for it; False shows them again."""
         _check(_need().sc_engine_source_shared_hold(self.handle, key(source_id), int(bool(held))))
+
+    def attach_capture(self, source_id: str, target: CaptureTarget | None) -> None:
+        """Source ``source_id`` shows a window or display captured on the engine's own device (Windows Graphics
+        Capture): the frame thread copies each new picture on the card. None stops the capture (the source keeps
+        the picture it has)."""
+        if target is None:
+            _check(_need().sc_engine_source_capture(self.handle, key(source_id), 0, 0, 0, 0))
+        else:
+            _check(_need().sc_engine_source_capture(self.handle, key(source_id), int(target.window),
+                                                    int(target.monitor), int(target.flags), int(target.interval_ms)))
+
+    def hold_capture(self, source_id: str, held: bool) -> None:
+        """Hold a capture's picture still (a freeze) while the engine keeps taking Windows' pictures."""
+        _check(_need().sc_engine_source_capture_hold(self.handle, key(source_id), int(bool(held))))
+
+    def capture_state(self, source_id: str) -> tuple[int, int, int, int]:
+        """(state SCREEN_*, width, height, pictures shown) of a source's capture."""
+        state, width, height, frames = ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_uint64()
+        _check(_need().sc_engine_capture_state(self.handle, key(source_id), ctypes.byref(state), ctypes.byref(width),
+                                               ctypes.byref(height), ctypes.byref(frames)))
+        return state.value, width.value, height.value, frames.value
+
+    def capture_read(self, source_id: str, into=None):
+        """A source's captured picture as an (h, w, 4) BGRA array (``into`` reused when it is that size), or None
+        when there is none yet: for a frame Python draws itself."""
+        import numpy as np
+
+        lib = _need()
+        width, height = ctypes.c_int(), ctypes.c_int()
+        if into is not None and into.ndim == 3 and into.shape[2] == 4 and into.flags.c_contiguous:
+            code = lib.sc_engine_capture_read(self.handle, key(source_id), into.ctypes.data, into.shape[1] * 4,
+                                              into.shape[1], into.shape[0], ctypes.byref(width), ctypes.byref(height))
+            if code == SC_OK:
+                return into if (height.value, width.value) == into.shape[:2] else into[:height.value, :width.value]
+        else:
+            code = lib.sc_engine_capture_read(self.handle, key(source_id), None, 0, 0, 0, ctypes.byref(width),
+                                              ctypes.byref(height))
+        if code not in (SC_OK, -1):
+            _check(code)
+        if width.value < 1 or height.value < 1:
+            return None
+        frame = np.empty((height.value, width.value, 4), dtype=np.uint8)
+        code = lib.sc_engine_capture_read(self.handle, key(source_id), frame.ctypes.data, width.value * 4,
+                                          width.value, height.value, ctypes.byref(width), ctypes.byref(height))
+        if code == -1:
+            return None  # it changed size in between: the next frame reads it
+        _check(code)
+        return frame
 
     def set_look(self, name: str, table) -> None:
         import numpy as np
@@ -1125,6 +1236,13 @@ def media_ready() -> bool:
                     lib.sc_last_error().decode("utf-8", "replace") or ERRORS.get(code, code))
     drain_log()
     return code == SC_OK
+
+
+def use_native_capture() -> bool:
+    """True when windows and displays are captured by the engine itself (SPRIGCAST_ENGINE=native, on Windows);
+    SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1 keeps the capture in Python (windows-capture)."""
+    return (sys.platform == "win32" and engine_choice() == "native" and not os.environ.get(
+        "SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO") and available())
 
 
 def use_native_media() -> bool:
