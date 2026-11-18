@@ -153,3 +153,21 @@ def test_number_boxes_get_room_on_both_sides():
     assert left.lineEdit().textMargins().left() == theme.NUMBER_PAD
     m = centred.lineEdit().textMargins()
     assert m.left() == m.right() == theme.NUMBER_PAD // 2
+
+
+def test_a_view_dropped_by_another_thread_mid_look_is_skipped():
+    """PC run 2026-11-18: a slideshow failed to start with KeyError 'replay-instant_replay-1': the render thread
+    listed the views, then Instant replay (on a worker) dropped its view before the render thread looked it up."""
+    engine = Engine(_collection())
+    engine.set_view("replay-instant_replay-1", "h", "bloom", "b")
+    assert engine._view_scene("replay-instant_replay-1")[1].id == "b"
+    engine.set_view("replay-instant_replay-1", None)
+    assert engine._view_scene("replay-instant_replay-1") == (None, None)
+    assert engine._on_air_view("replay-instant_replay-1", engine._collection.canvases[0], {"h": object()}) is None
+
+    class Racing(dict):  # the name is listed, then gone when looked up
+        def __iter__(self):
+            return iter(["gone"])
+
+    engine.views = Racing()
+    assert all(scene.id != "view:gone" for scene in engine._drawn_scenes(engine._collection))

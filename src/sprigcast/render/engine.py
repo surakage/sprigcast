@@ -314,7 +314,10 @@ class Engine:
         """The scene a view draws, or None when what it names is gone."""
         from sprigcast.core.scene import Scene, SceneItem
 
-        canvas_id, kind, ref = self.views[name]
+        entry = self.views.get(name)  # set_view (any thread) may have just dropped it: PC run 2026-11-18 had
+        if entry is None:  # a KeyError here fail a slideshow's start while Instant replay let go of its view
+            return None, None
+        canvas_id, kind, ref = entry
         collection = self._collection
         canvas = next((c for c in collection.canvases if c.id == canvas_id), None)
         if canvas is None:
@@ -343,11 +346,12 @@ class Engine:
         riders: dict[str, list[str]] = {}
         active = self._collection.active_scenes
         enabled = {c.id for c in self._collection.canvases if c.enabled}
-        for name in sorted(self.views):
+        current = self.views  # one look: set_view (any thread) swaps in a new dict
+        for name in sorted(current):
             outputs = taps.get(f"view:{name}", ())
             if not outputs or any(size is None for _cb, size in outputs):
                 continue
-            canvas_id, kind, ref = self.views[name]
+            canvas_id, kind, ref = current[name]
             if kind == "bloom" and canvas_id in enabled and ref == active.get(canvas_id):
                 riders.setdefault(canvas_id, []).append(name)
                 continue
@@ -408,7 +412,10 @@ class Engine:
         it shows the transition, as the stream does)."""
         if not drawn or canvas.id not in drawn:
             return None
-        _canvas_id, kind, ref = self.views[name]
+        entry = self.views.get(name)
+        if entry is None:
+            return None
+        _canvas_id, kind, ref = entry
         if kind != "bloom" or ref != self._collection.active_scenes.get(canvas.id):
             return None
         return drawn[canvas.id]
@@ -705,9 +712,10 @@ class Engine:
         self._plan = None  # a placement's hidden items are settings too (see _sprig_plan)
 
     @staticmethod
-    def _on_air_sources(collection: SceneCollection) -> set[str]:
-        """Sources in the blooms on air now, and in the sprigs inside them."""
-        stack = [s for s in (collection.active_scene(c.id) for c in collection.canvases if c.enabled) if s]
+    def _on_air_sources(collection: SceneCollection, canvas_id: str | None = None) -> set[str]:
+        """Sources in the blooms on air now (in one canvas, or all), and in the sprigs inside them."""
+        stack = [s for s in (collection.active_scene(c.id) for c in collection.canvases
+                             if c.enabled and (canvas_id is None or c.id == canvas_id)) if s]
         seen, found = {s.id for s in stack}, set()
         while stack:
             scene = stack.pop()
@@ -1467,8 +1475,9 @@ class Engine:
         if native is None or native.failed or not native.draws(canvas_id):
             return None
         try:
-            if self._not_in_screenshots():
-                return None
+            hidden = self._not_in_screenshots()
+            if hidden and hidden & self._on_air_sources(self._collection, canvas_id):
+                return None  # Snap's polaroid is up in this canvas: Python draws it without it
             slot = native._slots.get(canvas_id)
             size = native.engine._sizes.get(slot) if slot is not None else None
             if size is None:
