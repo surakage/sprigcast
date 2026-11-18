@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- More from the second live sweep: the Audio page's sound rows are made a few per tick (263 ms); the control pictures
+  are written once per run, not checked on disk at every open (137 ms on Last streams); one-line labels work out
+  their size once per text (Garden check); the Plugin store shows first and fills after (94 ms); Missing files (and
+  the check after a garden switch) look for the files on a worker (110 ms); the Settings warm-up after start is
+  made in parts too (111 ms).
 - Pop-ups from the PC's sweep while live open without holding the window: the modules they load are loaded by the
   warm-up (the Audio page was 256 ms, the plugin store 138 ms); device-name patterns are made at start (186 ms);
   Hotkeys uses one style sheet and makes its cards a tick apart (427 ms); the Transitions pop-up makes each tab when

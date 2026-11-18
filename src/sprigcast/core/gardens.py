@@ -517,6 +517,20 @@ def _usable(value: str) -> bool:
 
 def missing_files(collection: SceneCollection) -> list[str]:
     """Files the garden points at that aren't there any more (pictures, videos, pages, looks, stingers)."""
+    return absent(wanted_files(collection))
+
+
+def absent(wanted: list[str]) -> list[str]:
+    """The usable paths in `wanted` that aren't there, once each. Reads the disk: a worker's job."""
+    out: list[str] = []
+    for value in wanted:
+        if _usable(value) and value not in out and not Path(value).exists():
+            out.append(value)
+    return out
+
+
+def wanted_files(collection: SceneCollection) -> list[str]:
+    """Every file the garden points at (no disk reads)."""
     wanted: list[str] = []
     for source in collection.sources:
         for key in FILE_KEYS.get(source.kind, ()):
@@ -526,11 +540,7 @@ def missing_files(collection: SceneCollection) -> list[str]:
                 wanted.append(str(flt.settings.get("file", "") or ""))
     for transition in [collection.transition, *(r.transition for r in collection.transition_rules)]:
         wanted += [transition.stinger.path, transition.stinger.vertical_path, transition.wipe_image]
-    out: list[str] = []
-    for value in wanted:
-        if _usable(value) and value not in out and not Path(value).exists():
-            out.append(value)
-    return out
+    return wanted
 
 
 def replace_file(collection: SceneCollection, old: str, new: str) -> int:

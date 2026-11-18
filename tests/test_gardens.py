@@ -381,3 +381,28 @@ def test_background_work_hands_back_its_result_and_errors(window):
     assert _Progress(window, "x").run(lambda p: (p(1, 2), 42)[1]) == 42
     with pytest.raises(ValueError):
         _Progress(window, "x").run(lambda p: (_ for _ in ()).throw(ValueError("no")))
+
+
+def test_missing_files_window_looks_on_a_worker_and_lists_them(tmp_path):
+    """Looked for on the window's thread, opening it held the window 110 ms on the PC while live."""
+    import time
+
+    from PySide6.QtWidgets import QApplication, QLabel, QWidget
+
+    from sprigcast.app.gardens_menu import MissingFiles
+
+    app = QApplication.instance() or QApplication([])
+    col = _starter()
+    gone = str(tmp_path / "gone.png")
+    col.sources[0].kind = "image"
+    col.sources[0].settings = {"path": gone}
+    host = QWidget()
+    host.collection = col
+    box = MissingFiles(host)
+    box.looked.result(timeout=10)
+    end = time.monotonic() + 5
+    names = []
+    while "gone.png" not in names and time.monotonic() < end:
+        app.processEvents()
+        names = [label.text() for label in box.rows.findChildren(QLabel)]
+    assert "gone.png" in names and box.look.isVisibleTo(box)

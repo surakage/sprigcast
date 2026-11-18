@@ -141,9 +141,11 @@ class AudioPage(QWidget):
         box.addStretch(1)
 
     def finish(self) -> None:
-        """Make every tab still waiting (before reading what's picked)."""
+        """Make every tab and sound row still waiting (before reading what's picked)."""
         for name in list(self.later):
             self.build_tab(name)
+        while getattr(self, "_rows_waiting", None):
+            self._sound_row(*self._rows_waiting.pop(0))
 
     def _ducking_row(self) -> QHBoxLayout:
         """Ducking's amounts, next to the sounds it lowers (Live's Mic first switch turns it on and off)."""
@@ -286,62 +288,87 @@ class AudioPage(QWidget):
                 head.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 head.setToolTip(f"Track {text}: {self.collection.audio.track_name(int(text))}")
             grid.addWidget(head, 0, col)
-        for row, source in enumerate(sounds, 1):
-            st = source.settings
-            grid.addWidget(QLabel(source.name), row, 0)
-            volume = QDoubleSpinBox()
-            volume.setRange(-60.0, 12.0)
-            volume.setSingleStep(0.5)
-            volume.setDecimals(1)
-            volume.setSuffix(" dB")
-            volume.setValue(float(st.get("volume_db", 0.0) or 0.0))
-            volume.setFixedWidth(108)
-            grid.addWidget(volume, row, 1)
-            mono = QCheckBox()
-            mono.setChecked(bool(st.get("mono", False)))
-            grid.addWidget(mono, row, 2, alignment=Qt.AlignmentFlag.AlignCenter)
-            balance = QSlider(Qt.Orientation.Horizontal)
-            balance.setRange(-100, 100)
-            balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
-            balance.setFixedWidth(90)
-            balance.setToolTip("Left / right (double-click the Sound card's slider to centre)")
-            balance.valueChanged.connect(lambda v, b=balance: b.setToolTip(
-                "Centre" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
-            grid.addWidget(balance, row, 3)
-            sync = QSpinBox()
-            sync.setRange(0, 2000)
-            sync.setSingleStep(10)
-            sync.setSuffix(" ms")
-            sync.setValue(int(st.get("delay_ms", 0) or 0))
-            sync.setFixedWidth(100)
-            sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
-            grid.addWidget(sync, row, 4)
-            hear = QComboBox()
-            current = st.get("monitor", False)
-            for text, value in self.HEAR:
-                hear.addItem(text, value)
-            hear.setCurrentIndex(2 if current == "only" else 1 if current else 0)
-            hear.setEnabled(source.kind != "audio_output")  # desktop sound already plays on your speakers
-            hear.setFixedWidth(118)
-            grid.addWidget(hear, row, 5)
-            ticks = []
-            for n in range(1, tracks + 1):
-                tick = QCheckBox()
-                tick.setChecked(on_track(source, n))
-                tick.setToolTip(f"{source.name} on {self.collection.audio.track_name(n)} (track {n})")
-                grid.addWidget(tick, row, 5 + n, alignment=Qt.AlignmentFlag.AlignCenter)
-                ticks.append(tick)
-            self.track_ticks[source.id] = ticks
-            self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
-                                          "hear": hear}
-            ticks[0].toggled.connect(lambda _on, sid=source.id: self._row_ticks(sid))
-            hear.currentIndexChanged.connect(lambda _i, sid=source.id: self._row_ticks(sid))
-            self._row_ticks(source.id)
+        self._rows_waiting = [(grid, row, source, tracks) for row, source in enumerate(sounds, 1)]
+        for _ in range(min(self.ROWS_NOW, len(self._rows_waiting))):
+            self._sound_row(*self._rows_waiting.pop(0))
+        if self._rows_waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
         grid.setColumnStretch(0, 1)
         box.addLayout(grid)
         legend = " · ".join(f"{n} {self.collection.audio.track_name(n)}" for n in range(1, tracks + 1))
         box.addWidget(_hint(f"Tracks: {legend}"))
         return group
+
+    ROWS_NOW = 4  # sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK)
+    ROWS_PER_TICK = 3
+    ROW_GAP_MS = 15
+
+    def _more_rows(self) -> None:
+        """A few more sound rows. All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
+        the PC while live (2026-11-18 pop-up sweep)."""
+        waiting = self._rows_waiting
+        for _ in range(self.ROWS_PER_TICK):
+            if not waiting:
+                break
+            self._sound_row(*waiting.pop(0))
+        if waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
+
+    def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int) -> None:
+        st = source.settings
+        grid.addWidget(QLabel(source.name), row, 0)
+        volume = QDoubleSpinBox()
+        volume.setRange(-60.0, 12.0)
+        volume.setSingleStep(0.5)
+        volume.setDecimals(1)
+        volume.setSuffix(" dB")
+        volume.setValue(float(st.get("volume_db", 0.0) or 0.0))
+        volume.setFixedWidth(108)
+        grid.addWidget(volume, row, 1)
+        mono = QCheckBox()
+        mono.setChecked(bool(st.get("mono", False)))
+        grid.addWidget(mono, row, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        balance = QSlider(Qt.Orientation.Horizontal)
+        balance.setRange(-100, 100)
+        balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
+        balance.setFixedWidth(90)
+        balance.setToolTip("Left / right (double-click the Sound card's slider to centre)")
+        balance.valueChanged.connect(lambda v, b=balance: b.setToolTip(
+            "Centre" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
+        grid.addWidget(balance, row, 3)
+        sync = QSpinBox()
+        sync.setRange(0, 2000)
+        sync.setSingleStep(10)
+        sync.setSuffix(" ms")
+        sync.setValue(int(st.get("delay_ms", 0) or 0))
+        sync.setFixedWidth(100)
+        sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
+        grid.addWidget(sync, row, 4)
+        hear = QComboBox()
+        current = st.get("monitor", False)
+        for text, value in self.HEAR:
+            hear.addItem(text, value)
+        hear.setCurrentIndex(2 if current == "only" else 1 if current else 0)
+        hear.setEnabled(source.kind != "audio_output")  # desktop sound already plays on your speakers
+        hear.setFixedWidth(118)
+        grid.addWidget(hear, row, 5)
+        ticks = []
+        for n in range(1, tracks + 1):
+            tick = QCheckBox()
+            tick.setChecked(on_track(source, n))
+            tick.setToolTip(f"{source.name} on {self.collection.audio.track_name(n)} (track {n})")
+            grid.addWidget(tick, row, 5 + n, alignment=Qt.AlignmentFlag.AlignCenter)
+            ticks.append(tick)
+        self.track_ticks[source.id] = ticks
+        self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
+                                      "hear": hear}
+        ticks[0].toggled.connect(lambda _on, sid=source.id: self._row_ticks(sid))
+        hear.currentIndexChanged.connect(lambda _i, sid=source.id: self._row_ticks(sid))
+        self._row_ticks(source.id)
 
     def _row_ticks(self, source_id: str) -> None:
         """Just me: on no track. VOD-safe is a part of track 1, so it needs track 1."""

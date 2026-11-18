@@ -557,3 +557,17 @@ def test_hotkey_cards_are_made_a_tick_apart_and_saving_early_keeps_them_all(app)
     w.page.edits[first].setKeySequence(QKeySequence("Ctrl+Alt+9"))
     w.save_button.click()  # before the other cards are made: they're made then, and nothing is lost
     assert len(w.page.cards) == total and w.result() and col.hotkeys == {first: "Ctrl+Alt+9"}
+
+
+def test_plugin_store_window_shows_first_and_fills_after(app):
+    """Made before it showed, the store held the window 94 ms on the PC while live."""
+    from sprigcast.app.plugin_store_page import PluginStoreWindow
+    from sprigcast.plugins import PluginReport
+
+    w = PluginStoreWindow(None, PluginReport(), None, _collection(), fill_after_show=True)
+    assert "store" not in w.__dict__
+    seen = []
+    w.changed.connect(lambda: seen.append(1))
+    w._fill()
+    w.store.changed.emit()
+    assert seen == [1] and "slide_show" in w.store.rows

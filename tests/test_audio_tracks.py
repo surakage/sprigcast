@@ -223,3 +223,27 @@ def test_settings_opens_on_audio_sounds_and_the_sound_card_has_a_way_there(monke
     card.on_settings = lambda: opened.append(True)
     card.settings.click()
     assert opened == [True]
+
+
+def test_many_sound_rows_are_made_a_few_per_tick_and_saving_makes_the_rest():
+    """All rows at once held the window 263 ms on the PC while live."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    app = QApplication.instance() or QApplication([])
+    col = _collection()
+    col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(8)]
+    sounds = [s.id for s in col.sources if s.kind in ("audio_input", "audio_output")]
+    page = AudioPage(col, {}, first="Sounds")
+    assert len(page.sound_rows) == AudioPage.ROWS_NOW < len(sounds)
+    end = time.monotonic() + 5
+    while len(page.sound_rows) < len(sounds) and time.monotonic() < end:
+        app.processEvents()
+    assert set(page.sound_rows) == set(sounds)
+
+    again = AudioPage(col, {}, first="Sounds")
+    again.apply_to(col)  # before the rest are made: they're made then
+    assert set(again.sound_rows) == set(sounds)

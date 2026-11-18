@@ -6365,6 +6365,8 @@ class MainWindow(QMainWindow):
         window.restart_requested.connect(lambda: QTimer.singleShot(0, self, self.restart_app))
         modal(window)
 
+    WARM_SETTINGS_MS = 2_000  # the off-screen Settings is let go this long after it's shown
+
     def warm_settings(self) -> None:
         """Once, a little after start (not while live or recording): make Settings' Stream page off screen and let
         it go. Qt then has the style rules, fonts and icons it needs ready, and opening Settings later takes about
@@ -6375,11 +6377,14 @@ class MainWindow(QMainWindow):
             return
         try:
             window = SettingsWindow(self.collection, default_recordings_folder=self._default_recordings_folder(),
-                                    encoder="", audio_devices={}, tab="Stream", parent=self)
+                                    encoder="", audio_devices={}, tab="Stream", parent=self, fill_after_show=True)
             window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-            window.show()
-            window.hide()
-            window.deleteLater()
+            window.show()  # made in parts a tick apart, like a real open (all at once: 111 ms on the PC)
+
+            def done() -> None:
+                window.hide()
+                window.deleteLater()
+            QTimer.singleShot(self.WARM_SETTINGS_MS, window, done)
         except Exception:  # only a warm-up: Settings still opens as before
             log.warning("settings warm-up failed", exc_info=True)
 
@@ -6445,10 +6450,10 @@ class MainWindow(QMainWindow):
         window = PluginStoreWindow(self.plugins_dir, self.plugin_report,
                                    self._open_plugins_folder if self.plugins_dir is not None else None,
                                    self.collection, on_air=self.streaming is not None or self.recording is not None,
-                                   parent=self)
-        window.store.changed.connect(self._fill_more_menu)
+                                   parent=self, fill_after_show=True)
+        window.changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
-        window.store.changed.connect(
+        window.changed.connect(
             lambda: self.engine.send(ReplaceCollection(self.collection.snapshot())))
         modal(window)
         self._plugin_updates()  # an Update pressed while on air waits until the stream and recording stop
