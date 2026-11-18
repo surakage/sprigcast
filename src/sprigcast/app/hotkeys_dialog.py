@@ -39,8 +39,12 @@ class HotkeyRow(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 2, 0, 2)
         row.setSpacing(10)
-        name = QLabel(label)
-        name.setWordWrap(True)
+        from sprigcast.app.live_stage import Elided
+
+        # One line, ending in "…" when it hasn't room (all of it on hover): a word-wrapped label is measured
+        # again for its height on every layout, and each step of rows laid the whole page out again (PC
+        # 2026-11-18, about 280 ms of the open while live).
+        name = Elided(label)
         row.addWidget(name, 1)
         self.edit = QKeySequenceEdit(QKeySequence(combo))
         self.edit.setMaximumSequenceLength(1)
@@ -102,11 +106,14 @@ class HotkeysPage(QWidget):
         self.cards: list[tuple[QFrame, list[HotkeyRow]]] = []
         self._layout, self._hotkeys = layout, dict(collection.hotkeys)
         # Made a few rows at a time (ROWS_PER_STEP): a whole card at once was still 60-80 ms on the PC while live.
+        found = sections(collection)
         self._waiting = [(title, items[i:i + self.ROWS_PER_STEP], i == 0)
-                         for title, items in sections(collection)
+                         for title, items in found
                          for i in range(0, max(1, len(items)), self.ROWS_PER_STEP)]
         layout.addStretch(1)
         self.on_done = None  # called once every card is made
+        made = {action for _t, items in found for action, _label in items}
+        self._say_count(sum(1 for a, combo in self._hotkeys.items() if combo and a in made))
         if cards_later:
             self._next_card()
         else:
@@ -139,13 +146,14 @@ class HotkeysPage(QWidget):
         if not self._waiting:
             return
         self._add_card(*self._waiting.pop(0))
-        self._update_count()
         if self._waiting:
             from PySide6.QtCore import QTimer
 
             QTimer.singleShot(self.CARD_GAP_MS, self, self._next_card)  # not after the page is gone
-        elif self.on_done is not None:
-            self.on_done()
+        else:
+            self._update_count()  # once, not each step (it reads every key box made so far)
+            if self.on_done is not None:
+                self.on_done()
 
     def finish(self) -> None:
         """Make every card still waiting, now (before reading or saving the keys)."""
@@ -164,7 +172,9 @@ class HotkeysPage(QWidget):
             card.setVisible(shown > 0)
 
     def _update_count(self, *_):
-        n = sum(1 for e in self.edits.values() if not e.keySequence().isEmpty())
+        self._say_count(sum(1 for e in self.edits.values() if not e.keySequence().isEmpty()))
+
+    def _say_count(self, n: int) -> None:
         self.count.setText("No keys set" if n == 0 else "1 key set" if n == 1 else f"{n} keys set")
 
     def result_hotkeys(self) -> dict[str, str]:

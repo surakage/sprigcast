@@ -435,6 +435,17 @@ def ticked(action, on: bool) -> None:
 NUMBER_PAD = 12  # px between a number and the left edge of its box, the same as text fields
 
 
+def same_when_inactive(palette: QPalette) -> None:
+    """The window's colours don't change when another window (a pop-up) takes the focus. Qt repaints a whole
+    window on that change unless both colour groups match, and Windows' own palette (its accent, inactive
+    selections) doesn't: every pop-up repainted the main window as it opened and again as it closed, its bloom
+    tiles and panels painting in Python (76-214 ms of opening Settings or the Plugin store, PC 2026-11-18)."""
+    active, inactive = QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive
+    for role in QPalette.ColorRole:
+        if role != QPalette.ColorRole.NColorRoles:
+            palette.setBrush(inactive, role, palette.brush(active, role))
+
+
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
     global _system_style, _applied
@@ -472,6 +483,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
         palette.setColor(role, QColor(color))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(MUTED))
+    same_when_inactive(palette)
     app.setPalette(palette)
     app.setStyleSheet(STYLESHEET + nature_rules())
     return True

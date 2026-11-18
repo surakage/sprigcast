@@ -27,14 +27,13 @@ def hold_on_air() -> bool:
 def _hint(text: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
-    label.setStyleSheet(theme.MUTED_STYLE)
+    label.setObjectName("storeHint")  # styled by the page (PAGE_STYLE)
     return label
 
 
 def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
     card = QFrame()
     card.setObjectName("storeCard")
-    card.setStyleSheet(f"#storeCard {{ background: {theme.CARD}; border-radius: 20px; }}")
     box = QVBoxLayout(card)
     box.setContentsMargins(28, 22, 28, 24)
     box.setSpacing(14)
@@ -43,17 +42,39 @@ def _card(title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
     return card, box
 
 
-ADD_STYLE = theme.PILL_STYLE + (f"QPushButton:enabled {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT};"
-                                 f" font-weight: 600; }}"
-                                 f"QPushButton:enabled:hover {{ background: {theme.ACCENT_HOVER}; }}")
+# The whole page's look in one style sheet, picked by object names and properties: each row had six style sheets
+# of its own (its card, name, tag, note and two pills, then the pill's again), and the store's cards were 333 ms of
+# the PC's open while live (2026-11-18).
+PAGE_STYLE = (
+    f"#storeCard {{ background: {theme.CARD}; border-radius: 20px; }}"
+    f"#storeRow {{ background: {theme.PANEL}; border-radius: 16px; }}"
+    f"#storeHint {{ color: {theme.MUTED}; }}"
+    f"#storeName {{ color: {theme.TEXT_BRIGHT}; font-weight: 600; font-size: 14px; }}"
+    f"#storeTag {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; border-radius: 9px;"
+    " padding: 2px 10px; font-size: 11px; }"
+    f"#storeNote {{ color: {theme.ACCENT}; font-size: 12px; }}"
+    f'#storeNote[tone="bad"] {{ color: {theme.BAD}; }}'
+    + theme.button_style(19, "10px 14px", selector="QPushButton#storePill")
+    + f'QPushButton#storePill[primary="true"]:enabled {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT};'
+    " font-weight: 600; }"
+    f'QPushButton#storePill[primary="true"]:enabled:hover {{ background: {theme.ACCENT_HOVER}; }}'
+)
 
 
-REMOVE_STYLE = theme.PILL_STYLE
+def _restyle(widget: QWidget, name: str, value) -> None:
+    """A new value for a property PAGE_STYLE picks by, shown straight away (only when it changes)."""
+    if widget.property(name) == value:
+        return
+    widget.setProperty(name, value)
+    if widget.testAttribute(Qt.WidgetAttribute.WA_WState_Polished):  # not yet shown: it's styled when it is
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
 
 
 def _pill(text: str, primary: bool = False) -> QPushButton:
     button = QPushButton(text)
-    button.setStyleSheet(ADD_STYLE if primary else theme.PILL_STYLE)
+    button.setObjectName("storePill")
+    button.setProperty("primary", primary)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setMinimumWidth(96)
     return button
@@ -66,7 +87,6 @@ class StoreRow(QFrame):
         super().__init__()
         self.page, self.plugin = page, plugin
         self.setObjectName("storeRow")
-        self.setStyleSheet(f"#storeRow {{ background: {theme.PANEL}; border-radius: 16px; }}")
         row = QHBoxLayout(self)
         row.setContentsMargins(20, 16, 16, 16)
         row.setSpacing(16)
@@ -75,18 +95,17 @@ class StoreRow(QFrame):
         top = QHBoxLayout()
         top.setSpacing(10)
         self.name = QLabel(plugin.name)
-        self.name.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; font-size: 14px;")
+        self.name.setObjectName("storeName")
         top.addWidget(self.name)
         if plugin.adds:
             tag = QLabel(plugin.adds)
-            tag.setStyleSheet(f"background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; border-radius: 9px;"
-                              " padding: 2px 10px; font-size: 11px;")
+            tag.setObjectName("storeTag")
             top.addWidget(tag)
         top.addStretch(1)
         text.addLayout(top)
         text.addWidget(_hint(plugin.about))
         self.note = QLabel()
-        self.note.setStyleSheet(f"color: {theme.ACCENT}; font-size: 12px;")
+        self.note.setObjectName("storeNote")
         self.note.hide()
         text.addWidget(self.note)
         row.addLayout(text, 1)
@@ -105,19 +124,19 @@ class StoreRow(QFrame):
     def refresh(self) -> None:
         version = self.installed
         self.button.setText("Remove" if version is not None else "Add")
-        self.button.setStyleSheet(REMOVE_STYLE if version is not None else ADD_STYLE)
+        _restyle(self.button, "primary", version is None)  # Add stands out, Remove doesn't
         self.button.setEnabled(self.page.plugins_dir is not None)
         self.update_button.setVisible(version is not None and version < self.plugin.version
                                       and self.plugin.id not in plugin_store.waiting)
         error = self.page.report.failed.get(f"{self.plugin.id}.py") if self.page.report else None
         if error:
             self.note.setText(f"Couldn't load: {error}")
-            self.note.setStyleSheet(f"color: {theme.BAD}; font-size: 12px;")
+            _restyle(self.note, "tone", "bad")
             self.note.show()
 
     def say(self, text: str) -> None:
         self.note.setText(text)
-        self.note.setStyleSheet(f"color: {theme.ACCENT}; font-size: 12px;")
+        _restyle(self.note, "tone", "ok")
         self.note.setVisible(bool(text))
 
     def _clicked(self) -> None:
@@ -138,6 +157,7 @@ class PluginStorePage(QWidget):
         self.collection = collection  # to warn before removing a plugin something still uses
         self.report = report if report is not None else PluginReport()
         self.rows: dict[str, StoreRow] = {}
+        self.setStyleSheet(PAGE_STYLE)
 
         store, sbox = _card("Plugin store")
         sbox.addWidget(_hint("Extras you can add when you want them. Each one adds something new to SprigCast; "

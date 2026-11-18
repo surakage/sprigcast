@@ -403,3 +403,42 @@ def test_api_screenshots_are_taken_off_the_window_thread(tmp_path, monkeypatch):
         assert len(seen) == 2 and all(t is not threading.main_thread() for t in seen)
     finally:
         w.close()
+
+
+def test_pop_ups_dont_repaint_the_window_behind(qapp):
+    """Qt repaints a whole window when it loses the focus to a pop-up unless its active and inactive colours match;
+    Windows' own palette doesn't, so every pop-up repainted the main window (PC 2026-11-18)."""
+    from PySide6.QtGui import QColor, QPalette
+
+    from sprigcast.app.theme import same_when_inactive
+
+    palette = QPalette()
+    palette.setColor(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight, QColor("#123456"))
+    palette.setColor(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight, QColor("#abcdef"))
+    same_when_inactive(palette)
+    assert palette.isEqual(QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive)
+    assert palette.color(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight) == QColor("#abcdef")
+
+
+def test_number_box_chevrons_are_drawn_once(qapp):
+    from sprigcast.app.transitions_panel import ChevronSpin
+
+    box = ChevronSpin()
+    box.resize(120, 40)
+    first = box.grab()
+    pix = ChevronSpin._chevrons[box.devicePixelRatioF()]
+    box.grab()
+    assert ChevronSpin._chevrons[box.devicePixelRatioF()] is pix and not first.isNull()
+
+
+def test_hotkeys_count_before_the_rows_are_made(qapp):
+    from sprigcast.app.hotkeys_dialog import HotkeysPage
+    from sprigcast.app.hotkeys import TOGGLE_STREAM
+    from sprigcast.core.scene import Canvas, SceneCollection
+
+    collection = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)])
+    collection.hotkeys = {TOGGLE_STREAM: "Ctrl+Alt+S", "nothing_like_this": "Ctrl+Alt+Q"}
+    page = HotkeysPage(collection, cards_later=True)
+    assert page.count.text() == "1 key set"  # said at once; only actions on the page count
+    page.finish()
+    assert page.count.text() == "1 key set"

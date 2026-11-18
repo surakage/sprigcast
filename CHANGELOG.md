@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Opening or closing a pop-up no longer repaints the whole window behind it: its colours stay the same when it
+  loses the focus (Windows' own palette changed them, and every bloom tile and panel painted again: 76-214 ms of
+  opening Settings, the Plugin store, Web panels or Paths > New while live). The Plugin store's rows share one style
+  sheet instead of six each (333 ms), Hotkeys' action names are one line each (a wrapped name was measured again on
+  every step of rows) and number boxes draw their chevrons once.
 - Pop-ups no longer pause while an app is connected to the Control API: it works out which blooms belong
   together in one pass instead of once per bloom (409 ms on the PC while live). The Sound gear's rows set up
   their drop-downs and track ticks without asking Qt back for each one (300 ms). Garden check and Last streams

@@ -12,7 +12,7 @@ import os
 from collections.abc import Callable
 
 from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -476,15 +476,30 @@ class ChevronSpin(QSpinBox):
 
     ARROWS = 34  # the width the chevrons take on the right
 
+    _chevrons: dict[float, QPixmap] = {}  # by screen scale: both chevrons drawn once, not on every paint
+
+    @classmethod
+    def _chevron_pixmap(cls, ratio: float) -> QPixmap:
+        pix = cls._chevrons.get(ratio)
+        if pix is None:
+            from sprigcast.app import icons
+
+            pix = QPixmap(round(16 * ratio), round(30 * ratio))
+            pix.setDevicePixelRatio(ratio)
+            pix.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pix)
+            icons.paint_icon(p, QRectF(0, 0, 16, 16), "chevron-up", theme.MUTED, 1.6)
+            icons.paint_icon(p, QRectF(0, 14, 16, 16), "chevron-down", theme.MUTED, 1.6)
+            p.end()
+            cls._chevrons[ratio] = pix
+        return pix
+
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
-        from sprigcast.app import icons
-
+        # Painted every time the box repaints (73 ms of the Hotkeys open, PC 2026-11-18, while live): one picture.
         p = QPainter(self)
-        x = self.width() - self.ARROWS
-        mid = self.height() / 2
-        icons.paint_icon(p, QRectF(x + 8, mid - 15, 16, 16), "chevron-up", theme.MUTED, 1.6)
-        icons.paint_icon(p, QRectF(x + 8, mid - 1, 16, 16), "chevron-down", theme.MUTED, 1.6)
+        p.drawPixmap(self.width() - self.ARROWS + 8, round(self.height() / 2) - 15,
+                     self._chevron_pixmap(self.devicePixelRatioF()))
         p.end()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
