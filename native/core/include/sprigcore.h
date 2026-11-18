@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 23
+#define SC_INTERFACE_VERSION 24
 
 enum {
     SC_OK = 0,
@@ -694,6 +694,26 @@ SC_API int sc_mixer_tick(sc_mixer *mixer, int count);
  * timeout. *now: blocks mixed so far. */
 SC_API int sc_mixer_wait(sc_mixer *mixer, int64_t after, int timeout_ms, int64_t *now);
 SC_API int sc_mixer_levels(sc_mixer *mixer, int id, sc_mixer_level *out);
+
+/* Sound capture (capture.cpp): a microphone or desktop sound read with WASAPI on a thread of its own and pushed
+ * straight into a mixer's sound (as sc_mixer_source_push), at 48 kHz stereo. It finds its device again by itself
+ * (every 2 s) and follows the Windows default. Close it before the mixer or the mixer's sound goes.
+ * device: the friendly name (as PortAudio lists it, without " [Loopback]"); NULL or "" = the Windows default;
+ * "sprigcast-test-tone" = a 440 Hz tone with no sound card (checks). loopback: desktop sound (an output device;
+ * a recording device of that name is read as one). */
+typedef struct sc_capture sc_capture;
+enum { SC_CAPTURE_STARTING = 0, SC_CAPTURE_CAPTURING, SC_CAPTURE_NOT_FOUND, SC_CAPTURE_LOST, SC_CAPTURE_FAILED };
+typedef struct sc_capture_stats {
+    int state;            /* SC_CAPTURE_* */
+    int channels, rate;   /* what the device gives */
+    uint64_t frames;      /* 48 kHz frames pushed so far */
+    uint64_t gaps;        /* times Windows said samples were lost */
+    wchar_t device[128];  /* the device read now, by name */
+    char error[256];      /* why it isn't capturing, in words */
+} sc_capture_stats;
+SC_API int sc_capture_open(sc_mixer *mixer, int source, const wchar_t *device, int loopback, sc_capture **out);
+SC_API int sc_capture_stats_get(sc_capture *capture, sc_capture_stats *out);
+SC_API void sc_capture_close(sc_capture *capture);
 
 #ifdef __cplusplus
 }

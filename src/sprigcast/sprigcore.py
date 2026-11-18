@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 23  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 24  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -911,6 +911,16 @@ class MixerLevel(ctypes.Structure):
                 ("underruns", ctypes.c_uint64)]
 
 
+CAPTURE_STATES = ("starting", "capturing", "not found", "lost", "failed")  # SC_CAPTURE_*
+CAPTURE_TEST_TONE = "sprigcast-test-tone"
+
+
+class CaptureStats(ctypes.Structure):
+    _fields_ = [("state", ctypes.c_int), ("channels", ctypes.c_int), ("rate", ctypes.c_int),
+                ("frames", ctypes.c_uint64), ("gaps", ctypes.c_uint64), ("device", ctypes.c_wchar * 128),
+                ("error", ctypes.c_char * 256)]
+
+
 def _media_sigs() -> dict:
     c_int, vp = ctypes.c_int, ctypes.c_void_p
     text = ctypes.c_char_p
@@ -956,6 +966,9 @@ def _media_sigs() -> dict:
         "sc_mixer_tick": (c_int, [vp, c_int]),
         "sc_mixer_wait": (c_int, [vp, ctypes.c_int64, c_int, ctypes.POINTER(ctypes.c_int64)]),
         "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
+        "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
+        "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
+        "sc_capture_close": (None, [vp]),
     }
 
 
@@ -1294,6 +1307,45 @@ class Writer:
             pass
 
 
+class SoundCapture:
+    """A microphone or desktop sound the engine reads itself (include/sprigcore.h sc_capture): WASAPI on a thread of
+    its own, pushed straight into one sound of a SoundMixer. Made by SoundMixer.capture; closed before the mixer."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p, mixer: SoundMixer):
+        self._lib, self._handle, self._mixer = lib, handle, mixer
+        self._stats = CaptureStats()
+        self._lock = __import__("threading").Lock()
+
+    def stats(self) -> dict:
+        """{"state": "capturing" ..., "device", "error", "frames", "gaps", "channels", "rate"}."""
+        with self._lock:
+            if not self._handle:
+                return {"state": "closed", "device": "", "error": "", "frames": 0, "gaps": 0, "channels": 0,
+                        "rate": 0}
+            _check(self._lib.sc_capture_stats_get(self._handle, ctypes.byref(self._stats)))
+            st = self._stats
+            state = CAPTURE_STATES[st.state] if 0 <= st.state < len(CAPTURE_STATES) else "failed"
+            return {"state": state, "device": st.device, "error": st.error.decode("utf-8", "replace"),
+                    "frames": int(st.frames), "gaps": int(st.gaps), "channels": st.channels, "rate": st.rate}
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_capture_close(handle)  # joins its thread: no push after this
+        mixer = self._mixer
+        if mixer is not None:
+            captures = mixer.__dict__.get("_captures", [])
+            if self in captures:
+                captures.remove(self)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (never from a destructor)
+            pass
+
+
 class SoundMixer:
     """The engine's sound mixer (include/sprigcore.h sc_mixer): one 48 kHz stereo mix of every sound, mixed on a
     thread of the engine's own (clocked) so it never waits on Python. audio/native_mixer.py drives it like
@@ -1397,7 +1449,24 @@ class SoundMixer:
             lv = self._level
             return lv.peak_db, lv.rms_db, lv.level, int(lv.underruns)
 
+    def capture(self, source: int, device: str = "", loopback: bool = False) -> SoundCapture:
+        """Read a microphone or desktop sound (by name; "" = the Windows default) straight into this sound."""
+        with self._lock:
+            handle = self._handle
+            if not handle:
+                raise NativeError(-1, "the mixer is closed")
+            out = ctypes.c_void_p()
+            _check(self._lib.sc_capture_open(handle, int(source), device or "", int(bool(loopback)),
+                                             ctypes.byref(out)))
+            made = SoundCapture(self._lib, out, self)
+            self.__dict__.setdefault("_captures", []).append(made)
+            return made
+
     def close(self) -> None:
+        with self._lock:
+            captures, self.__dict__["_captures"] = self.__dict__.get("_captures", []), []
+        for c in captures:  # they push into this mixer: they end first
+            c.close()
         handle, self._handle = self._handle, None
         if handle:
             self._lib.sc_mixer_destroy(handle)
