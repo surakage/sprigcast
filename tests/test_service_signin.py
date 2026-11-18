@@ -125,3 +125,40 @@ def test_no_secret_ships_in_the_app():
 
     text = inspect.getsource(service_signin)
     assert "GOCSPX" not in text and "client_secret" not in text
+
+
+def test_a_vertical_youtube_place_gets_its_own_key_for_dual_stream(monkeypatch):
+    """YouTube's Dual stream takes the vertical feed on a second key: never the horizontal one."""
+    made = []
+    streams = [{"contentDetails": {"isReusable": True}, "snippet": {"title": "SprigCast"},
+                "cdn": {"ingestionInfo": {"streamName": "wide"}}}]
+    monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"items": list(streams)})
+
+    class Reply:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self.body
+
+    def urlopen(request, timeout=10):
+        import json
+
+        body = json.loads(request.data)
+        made.append(body["snippet"]["title"])
+        return Reply(json.dumps({"cdn": {"ingestionInfo": {"streamName": "tall"}}}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert service_signin._youtube_key("tok") == "wide"
+    assert service_signin._youtube_key("tok", vertical=True) == "tall" and made == ["SprigCast Vertical"]
+    streams.append({"contentDetails": {"isReusable": True}, "snippet": {"title": "SprigCast Vertical"},
+                    "cdn": {"ingestionInfo": {"streamName": "tall"}}})
+    streams.reverse()  # the vertical one listed first: horizontal still gets its own
+    assert service_signin._youtube_key("tok") == "wide"
+    assert service_signin._youtube_key("tok", vertical=True) == "tall" and len(made) == 1

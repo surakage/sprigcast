@@ -676,7 +676,11 @@ class StreamPage(QWidget):
             return
         from sprigcast.app.signin_dialog import SignInDialog
 
-        dialog = SignInDialog(output.service or "", self)
+        from sprigcast.output import service_signin
+
+        vertical = output.service == "youtube" and output.canvas == "vertical"  # its own key for Dual stream
+        extra = {"begin": lambda s: service_signin.begin(s, vertical=True)} if vertical else {}
+        dialog = SignInDialog(output.service or "", self, **extra)
         try:
             ok = bool(dialog.exec())
             fetched, error = dialog.fetched if ok else None, dialog.error

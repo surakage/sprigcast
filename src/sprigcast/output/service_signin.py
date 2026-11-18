@@ -113,6 +113,7 @@ class Flow:
     waiter: Waiter
     verifier: str
     keep: bool = False  # Stream details: stay signed in instead of fetching the key
+    vertical: bool = False  # YouTube: the key for a vertical destination (Dual stream needs a second key)
 
     def finish(self, cancelled: threading.Event | None = None) -> Fetched:
         """Wait for the browser, then read the account and key. Raises SignInError / Cancelled."""
@@ -136,7 +137,7 @@ class Flow:
         return fetched
 
 
-def begin(service: str, keep: bool = False) -> Flow:
+def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
     """Start a sign-in: read the Client ID and open the loopback server. Run it on the UI thread.
 
     keep: for Stream details, which stays signed in (asks for a refresh token and permission to edit)."""
@@ -166,7 +167,7 @@ def begin(service: str, keep: bool = False) -> Flow:
         raise SignInError(f"Port {waiter.port} is busy, so {label} sign-in can't finish. Close what uses it and "
                           "try again.") from exc
     log.info("sign-in: %s started, waiting on port %d", service, waiter.port)
-    return Flow(service, f"{auth}?{urllib.parse.urlencode(params)}", waiter, verifier, keep)
+    return Flow(service, f"{auth}?{urllib.parse.urlencode(params)}", waiter, verifier, keep, vertical)
 
 
 def _run(service: str, cancelled: threading.Event | None, open_url: Callable[[str], object]) -> Fetched:
@@ -209,13 +210,18 @@ def _youtube_rest(flow: Flow, code: str) -> Fetched:
     if not channels:
         raise SignInError("That Google account has no YouTube channel yet.")
     account = channels[0]["snippet"].get("title", "YouTube")
-    key = _youtube_key(token)
+    key = _youtube_key(token, flow.vertical)
     _revoke("https://oauth2.googleapis.com/revoke", {"token": token})
     return Fetched(account=account, key=key)
 
 
-def _youtube_key(token: str) -> str:
-    """The first reusable stream key, or a new one called SprigCast."""
+VERTICAL_KEY_NAME = "SprigCast Vertical"
+
+
+def _youtube_key(token: str, vertical: bool = False) -> str:
+    """The first reusable stream key, or a new one called SprigCast. vertical: the key called SprigCast Vertical
+    (made when there's none), never the horizontal one: YouTube's Dual stream takes the vertical feed on a key
+    of its own, picked in Live Control Room."""
     import json
     import urllib.request
 
@@ -228,11 +234,13 @@ def _youtube_key(token: str) -> str:
         raise
     usable = [s for s in streams if (s.get("contentDetails") or {}).get("isReusable", True)
               and (s.get("cdn") or {}).get("ingestionType", "rtmp") == "rtmp"]
+    named = [s for s in usable if (s.get("snippet") or {}).get("title") == VERTICAL_KEY_NAME]
+    usable = named if vertical else [s for s in usable if s not in named]
     if usable:
         log.info("sign-in: youtube using an existing reusable stream key")
         return usable[0]["cdn"]["ingestionInfo"]["streamName"]
     log.info("sign-in: youtube has no reusable stream key, making one")
-    body = {"snippet": {"title": "SprigCast"},
+    body = {"snippet": {"title": VERTICAL_KEY_NAME if vertical else "SprigCast"},
             "cdn": {"frameRate": "variable", "ingestionType": "rtmp", "resolution": "variable"},
             "contentDetails": {"isReusable": True}}
     request = urllib.request.Request(f"{YOUTUBE_API}/liveStreams?part=snippet,cdn,contentDetails",
