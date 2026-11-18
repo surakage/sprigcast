@@ -422,3 +422,24 @@ def test_a_very_long_reopen_still_holds_the_newest_picture(player_lib, tmp_path,
     assert stats.state_name == "finished", stats.error_text
     assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated > 0
     assert stats.frames_written == 150
+
+
+def test_what_waited_is_written_without_dropping_new_frames(player_lib, tmp_path, monkeypatch):  # noqa: F811
+    """After the reopen the encoder writes the pictures that waited while new ones keep coming: the extra room stays
+    until it has caught up (PC 2026-11-18: 25 frames dropped right after a 0.9 s reopen)."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "10")
+    monkeypatch.setenv("SPRIGCAST_WRITER_REOPEN_MS", "700")
+    monkeypatch.setenv("SPRIGCAST_WRITER_SLOW_MS", "20")  # 50 a second against 30 coming: catches up in about 1 s
+    path = tmp_path / "caught.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        for n in range(90):
+            assert writer.video(nv12(16 + 2 * n), n) == sprigcore.SC_OK
+            time.sleep(1 / 30)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated == 0
+    assert stats.frames_written == 90
