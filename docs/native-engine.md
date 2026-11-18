@@ -173,8 +173,20 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   a page's pictures never pass through Python (`BrowserSource.engine_player` gives the block's name, and
   `engine_tick` only notes the first paint and the sound status). A picture overwritten while it was copied is
   taken again the next frame; a device rebuild takes the newest again. Pages drawn in SprigCast's own process
-  (`SPRIGCAST_BROWSER_IN_PROCESS`) go through Python as before. Pages are still drawn by Chromium into memory in the
-  helper: a texture shared from Chromium itself would need Qt WebEngine drawn through Qt Quick on Direct3D 11.
+  (`SPRIGCAST_BROWSER_IN_PROCESS`) go through Python as before.
+- **Browser pages on the card (`native/core/src/page_texture.cpp`, `app/browser_quick.py`).** With the native
+  engine, SprigCast starts the helper with the engine's card (`SPRIGCAST_BROWSER_CARD`, its LUID from
+  `sc_d3d_device_luid`; `NativeCanvases` tells `sources/browser.use_card`, and a helper already running starts
+  again with the same pages). The helper then draws each page with Qt Quick on Direct3D 11 (`QuickPage`: a
+  `WebEngineView` in a `QQuickRenderControl`) into a texture it makes on that card (`sc_page_target_*`), shared
+  by name as `<block>-tex<n>` with a keyed mutex: key 0 the helper draws, key 1 a picture waits for the engine.
+  The block's header says slot 2 ("on the card") and n; the engine's `sc::source_page` copies the picture on the
+  card into the page's source (premultiplied). Chromium's picture never leaves the card. A resized page gets a
+  new texture on the same device. While SprigCast reads a page itself (its own compositor, a projector),
+  `RemoteHost.take` asks for memory pictures (`memory`, every 0.5 s) and the page writes them to the block as
+  before for 2 s at a time. A page the engine stops taking for 1 s gets a new texture. If the card can't be used
+  (no Qt Quick WebEngine, the texture can't be made, Qt Quick doesn't start on the device) the page is a widget
+  page in memory, as before.
 - **Checks:** `tests/test_native_media.py` plays real files made with PyAV: a video with sound, a GIF looping
   from memory, a see-through WebM, a sound file, seeking, pausing, speed, shrink, sleep and wake, broken and
   missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone

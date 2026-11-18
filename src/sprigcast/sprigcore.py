@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 15  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 16  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -231,6 +231,14 @@ def _lib():
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
+        "sc_d3d_device_luid": (c_int, [vp, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_int32)]),
+        "sc_page_target_create": (c_int, [ctypes.c_uint32, ctypes.c_int32, vp, c_int, c_int, ctypes.c_wchar_p, out]),
+        "sc_page_target_handles": (c_int, [vp, out, out, out]),
+        "sc_page_target_begin": (c_int, [vp, c_int]),
+        "sc_page_target_end": (c_int, [vp, c_int]),
+        "sc_page_target_read": (c_int, [vp, vp, c_int]),
+        "sc_page_target_fill": (c_int, [vp, vp]),
+        "sc_page_target_destroy": (None, [vp]),
         "sc_engine_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_engine_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
         "sc_engine_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
@@ -477,6 +485,72 @@ class Canvas:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def device_luid(device: int) -> tuple[int, int]:
+    """The LUID (low, high) of the graphics card a Direct3D 11 device pointer is on."""
+    low, high = ctypes.c_uint32(), ctypes.c_int32()
+    _check(_need().sc_d3d_device_luid(device, ctypes.byref(low), ctypes.byref(high)))
+    return low.value, high.value
+
+
+def engine_luid(engine: "Engine") -> tuple[int, int] | None:
+    """The card the engine draws on, for the browser helper to draw pages on the same one; None while it has no
+    device (rebuilding)."""
+    device, _ = engine.device()
+    if not device:
+        return None
+    try:
+        return device_luid(device)
+    finally:
+        com_release(device)
+
+
+class PageTarget:
+    """A browser page's texture on the card (include/sprigcore.h sc_page_target), made by the browser helper on
+    the engine's card and shared by ``name``: Qt Quick draws the page into it between :meth:`begin` and
+    :meth:`end`, and the engine copies it into the page's source."""
+
+    def __init__(self, luid: tuple[int, int], width: int, height: int, name: str, device: int | None = None):
+        """``device``: an earlier target's :attr:`device`, so a resized page keeps drawing with the same one."""
+        lib = _need()
+        handle = ctypes.c_void_p()
+        _check(lib.sc_page_target_create(luid[0], luid[1], device, int(width), int(height), name,
+                                         ctypes.byref(handle)))
+        self._handle, self.name, self.size = handle, name, (int(width), int(height))
+        device, context, texture = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+        _check(lib.sc_page_target_handles(handle, ctypes.byref(device), ctypes.byref(context), ctypes.byref(texture)))
+        self.device, self.context, self.texture = device.value, context.value, texture.value
+
+    def begin(self, timeout_ms: int = 0) -> bool:
+        """True when drawing may start (the engine took the last picture); False: not yet."""
+        code = _need().sc_page_target_begin(self._handle, int(timeout_ms))
+        if code < 0:
+            _check(code)
+        return code == 1
+
+    def read(self):
+        """Between begin and end: the picture drawn, as straight-alpha RGBA (h, w, 4) uint8."""
+        import numpy as np
+
+        w, h = self.size
+        rgba = np.empty((h, w, 4), np.uint8)
+        _check(_need().sc_page_target_read(self._handle, rgba.ctypes.data, w * 4))
+        return rgba
+
+    def fill(self, rgba: tuple[float, float, float, float]) -> None:
+        """Between begin and end: the whole texture one colour (premultiplied, 0..1)."""
+        colour = (ctypes.c_float * 4)(*rgba)
+        _check(_need().sc_page_target_fill(self._handle, colour))
+
+    def end(self, publish: bool = True) -> None:
+        """The picture is drawn. ``publish``: the engine may take it; else it was only drawn to be read back."""
+        _check(_need().sc_page_target_end(self._handle, int(bool(publish))))
+
+    def close(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle:
+            _need().sc_page_target_destroy(handle)
 
 
 def com_release(pointer: int) -> None:

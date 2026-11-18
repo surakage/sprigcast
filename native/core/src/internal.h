@@ -48,7 +48,17 @@ struct Source {
     ComPtr<ID3D11RenderTargetView> target;
     ComPtr<ID3D11Texture2D> nv12, nv12_staging;
     ComPtr<ID3D11ShaderResourceView> nv12_y, nv12_uv;
+    bool premultiplied = false;   // RGBA with premultiplied alpha (a browser page drawn on the card)
 };
+
+// A browser page's texture shared by the browser helper, opened on the engine's device (sc::source_page).
+struct PageTexture {
+    std::wstring name;
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<IDXGIKeyedMutex> mutex;
+};
+
+constexpr int SC_NOT_YET = 1;  // source_page: the picture isn't ready yet (taken next frame)
 
 struct Look {
     ComPtr<ID3D11ShaderResourceView> view;
@@ -101,6 +111,10 @@ int source_nv12(sc_device &device, uint64_t id, ID3D11Texture2D *picture, unsign
 // holds the same picture as I420 rows (width bytes each) for the ordinary upload. Takes device.lock.
 int upload_nv12(sc_device &device, uint64_t id, const uint8_t *data, const sc_upload &how,
                 std::vector<uint8_t> &rows, bool &done);
+// A browser page's newest picture, drawn by the browser helper into the texture shared as `name`
+// (page_texture.cpp), copied into source `id` (its top-left `width` x `height`). SC_NOT_YET while the helper
+// still holds the texture. `page` keeps the opened texture from one frame to the next. Takes device.lock.
+int source_page(sc_device &device, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height);
 
 }  // namespace sc
 
