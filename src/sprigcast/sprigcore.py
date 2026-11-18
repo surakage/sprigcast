@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 18  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 19  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -839,7 +839,7 @@ class WriterConfig(ctypes.Structure):
                 ("fps_num", ctypes.c_int), ("fps_den", ctypes.c_int), ("video_kbps", ctypes.c_int),
                 ("keyframe_frames", ctypes.c_int), ("audio_tracks", ctypes.c_int), ("audio_kbps", ctypes.c_int),
                 ("queue_frames", ctypes.c_int), ("format_options", ctypes.c_char_p),
-                ("track_titles", ctypes.c_char_p), ("b_frames", ctypes.c_int)]
+                ("track_titles", ctypes.c_char_p), ("b_frames", ctypes.c_int), ("d3d11_device", ctypes.c_void_p)]
 
 
 class WriterStats(ctypes.Structure):
@@ -1085,7 +1085,9 @@ class Writer:
                  video_kbps: int = 6000, keyframe_frames: int = 60, video_options: dict[str, str] | None = None,
                  audio_tracks: int = 1, audio_kbps: int = 160, container: str | None = None, queue_frames: int = 8,
                  container_options: dict[str, str] | None = None, track_titles: list[str] | None = None,
-                 b_frames: int = 0):
+                 b_frames: int = 0, device: int | None = None):
+        """``device``: the engine's ID3D11Device (Engine.device()) for a hardware encoder (h264_nvenc, ...) that
+        takes the engine's pictures on the card from a linked share output; pictures from memory go up first."""
         if not media_ready():
             raise NativeError(-2, "the engine's writer isn't available")
         self._lib = _media_lib()
@@ -1098,12 +1100,13 @@ class Writer:
                                     int(height), int(num), int(den), int(video_kbps), int(keyframe_frames),
                                     int(audio_tracks), int(audio_kbps), int(queue_frames),
                                     muxing.encode() if muxing else None, titles.encode() if titles else None,
-                                    max(0, min(4, int(b_frames))))
+                                    max(0, min(4, int(b_frames))), device or None)
         handle = ctypes.c_void_p()
         _check(self._lib.sc_writer_open(ctypes.byref(self._config), ctypes.byref(handle)))
         self._handle = handle
         self._lock = __import__("threading").Lock()
         self.width, self.height, self.tracks = int(width), int(height), int(audio_tracks)
+        self.on_card = bool(device)
 
     def _call(self, fn, *args) -> int:
         with self._lock:

@@ -195,3 +195,36 @@ def test_an_output_linked_to_a_writer_is_written_without_python(player_lib, tmp_
     writer.close()
     with av.open(str(path)) as f:
         assert len(list(f.decode(video=0))) == stats.frames_written
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_frames_on_the_card_go_only_to_a_writer_on_the_engines_device(player_lib, tmp_path):  # noqa: F811
+    """Phase 4 step 4: an output whose frames stay on the card links only to a writer whose encoder is on the
+    engine's device; one whose encoder can't take them there fails to open cleanly (the recording then goes
+    through PyAV), and the engine carries on."""
+    assert sprigcore.media_ready()
+    plain = sprigcore.Writer(str(tmp_path / "plain.mkv"), "libx264", 64, 36, fps=30, audio_tracks=0,
+                             video_options={"preset": "ultrafast"})
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        eng.set_canvas(0, 64, 36)
+        eng.set_output(0, 0, 64, 36, share=True)
+        with pytest.raises(sprigcore.NativeError):
+            eng.link_output(0, 0, plain, time.perf_counter(), 30)  # its encoder takes pictures in memory
+        device, _rebuilds = eng.device()
+        assert device
+        try:
+            card = sprigcore.Writer(str(tmp_path / "card.mkv"), "libx264", 64, 36, fps=30, audio_tracks=0,
+                                    device=device)
+        finally:
+            sprigcore.com_release(device)
+        assert card.on_card
+        deadline = time.monotonic() + 10
+        while card.stats().state_name == "opening" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert card.stats().state_name == "failed"  # x264 takes no frames on the card
+        assert "on the card" in card.stats().error_text
+        with pytest.raises(sprigcore.NativeError):
+            eng.link_output(0, 0, card, time.perf_counter(), 30, keep=True)  # others would share them
+        card.close()
+        assert not eng.stats()["faulted"]
+    plain.close()

@@ -8,11 +8,25 @@
 #include "ffmpeg.h"
 #include "writer.h"
 
+#if defined(_WIN32)
+#  include <d3d11.h>
+#  if defined(_MSC_VER)
+#    pragma warning(push, 0)
+#  endif
+extern "C" {
+#  include <libavutil/hwcontext_d3d11va.h>
+}
+#  if defined(_MSC_VER)
+#    pragma warning(pop)
+#  endif
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -57,7 +71,12 @@ struct Core {
     int width = 0, height = 0, fps_num = 30, fps_den = 1, video_kbps = 6000, gop = 60, audio_kbps = 160;
     int tracks = 1;
     size_t queue_limit = 8;
-
+    // Frames on the card (cfg->d3d11_device): the encoder takes NV12 textures of that device straight from the
+    // engine (writer_feed_texture), and pictures from memory are copied up to the card first.
+    void *device = nullptr;          // ID3D11Device*, a reference held
+    AVBufferRef *hw_device = nullptr, *hw_frames = nullptr;
+    std::vector<void *> seen;        // every texture handed over, a reference held until the encoder is closed:
+                                     // NVENC remembers registered textures by pointer and holds none itself
     std::mutex lock;
     std::condition_variable wake, done_cv;
     struct Picture {
@@ -85,10 +104,18 @@ struct Core {
 
     void run();
     void open();
+    void open_card();
+    void upload(FramePtr &picture);
     void write_packets(AVCodecContext *enc, AVStream *stream);
     void encode_video(AVFrame *frame);
     void encode_sound(Track &t, bool flush);
     void close_all(bool trailer);
+    ~Core() {
+#if defined(_WIN32)
+        for (void *t : seen) static_cast<IUnknown *>(t)->Release();
+        if (device) static_cast<IUnknown *>(device)->Release();
+#endif
+    }
     void set_failed(const std::string &why) {
         std::lock_guard<std::mutex> hold(lock);
         if (error.empty()) error = why;
@@ -107,12 +134,19 @@ void Core::open() {
 
     const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
     if (!codec) throw Error("no video encoder named " + video_codec);
+    if (device) open_card();
     for (int attempt = 0; attempt < 2; ++attempt) {  // NV12 first, then I420 for an encoder without it
         venc = ff.avcodec_alloc_context3(codec);
         if (!venc) throw std::bad_alloc();
         venc->width = width;
         venc->height = height;
         venc->pix_fmt = attempt == 0 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+        if (hw_frames) {  // frames on the card: one way only
+            venc->pix_fmt = AV_PIX_FMT_D3D11;
+            venc->sw_pix_fmt = AV_PIX_FMT_NV12;
+            venc->hw_frames_ctx = ff.av_buffer_ref(hw_frames);
+            if (!venc->hw_frames_ctx) throw std::bad_alloc();
+        }
         venc->time_base = AVRational{fps_den, fps_num};
         venc->framerate = AVRational{fps_num, fps_den};
         venc->bit_rate = static_cast<int64_t>(video_kbps) * 1000;
@@ -132,7 +166,8 @@ void Core::open() {
             break;
         }
         ff.avcodec_free_context(&venc);
-        if (attempt == 1) must(r, ("the video encoder " + video_codec).c_str());
+        if (attempt == 1 || hw_frames)
+            must(r, ("the video encoder " + video_codec + (hw_frames ? " (frames on the card)" : "")).c_str());
     }
     vstream = ff.avformat_new_stream(out, nullptr);
     if (!vstream) throw std::bad_alloc();
@@ -171,6 +206,41 @@ void Core::open() {
     must(header, "the header");
     pkt = ff.av_packet_alloc();
     if (!pkt) throw std::bad_alloc();
+}
+
+void Core::open_card() {
+#if defined(_WIN32)
+    hw_device = ff.av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!hw_device) throw std::bad_alloc();
+    auto *dctx = reinterpret_cast<AVD3D11VADeviceContext *>(reinterpret_cast<AVHWDeviceContext *>(hw_device->data)->hwctx);
+    auto *d3d = static_cast<ID3D11Device *>(device);
+    d3d->AddRef();  // the device context lets go of it when freed
+    dctx->device = d3d;
+    must(ff.av_hwdevice_ctx_init(hw_device), "the graphics card for the encoder");
+    hw_frames = ff.av_hwframe_ctx_alloc(hw_device);
+    if (!hw_frames) throw std::bad_alloc();
+    auto *frames = reinterpret_cast<AVHWFramesContext *>(hw_frames->data);
+    frames->format = AV_PIX_FMT_D3D11;
+    frames->sw_format = AV_PIX_FMT_NV12;
+    frames->width = width;
+    frames->height = height;
+    frames->initial_pool_size = 0;  // textures for pictures from memory are made as needed
+    must(ff.av_hwframe_ctx_init(hw_frames), "frames on the card for the encoder");
+#else
+    throw Error("frames on the card need Windows");
+#endif
+}
+
+// A picture from memory, for an encoder that takes frames on the card: copied up into a texture of its own.
+void Core::upload(FramePtr &picture) {
+    if (!hw_frames || picture->format == AV_PIX_FMT_D3D11) return;
+    FramePtr card(ff.av_frame_alloc());
+    if (!card) throw std::bad_alloc();
+    must(ff.av_hwframe_get_buffer(hw_frames, card.get(), 0), "a texture for a picture");
+    must(ff.av_hwframe_transfer_data(card.get(), picture.get(), 0), "copying a picture to the card");
+    card->color_range = picture->color_range;
+    card->colorspace = picture->colorspace;
+    picture = std::move(card);
 }
 
 void Core::write_packets(AVCodecContext *enc, AVStream *stream) {
@@ -268,6 +338,19 @@ void Core::close_all(bool trailer) {
     audio.clear();
     if (pkt) ff.av_packet_free(&pkt);
     i420.reset();
+    AVBufferRef *frames_ctx = nullptr, *device_ctx = nullptr;
+    std::vector<void *> gone;
+    {
+        std::lock_guard<std::mutex> hold(lock);  // feed_texture takes hw_frames under it
+        std::swap(frames_ctx, hw_frames);
+        std::swap(device_ctx, hw_device);
+        gone.swap(seen);
+    }
+    if (frames_ctx) ff.av_buffer_unref(&frames_ctx);
+    if (device_ctx) ff.av_buffer_unref(&device_ctx);
+#if defined(_WIN32)
+    for (void *t : gone) static_cast<IUnknown *>(t)->Release();  // the encoder is gone: nothing remembers them
+#endif
 }
 
 void Core::run() {
@@ -306,6 +389,14 @@ void Core::run() {
                 encode_sound(audio[i], false);
             }
             if (picture.frame) {
+                const bool mine = picture.frame->format == AV_PIX_FMT_NV12;  // an NV12 buffer to fill again
+                FramePtr own;
+                if (hw_frames && mine) {  // from memory, for frames on the card: copied up first
+                    own = std::move(picture.frame);
+                    picture.frame.reset(ff.av_frame_clone(own.get()));
+                    if (!picture.frame) throw std::bad_alloc();
+                    upload(picture.frame);
+                }
                 for (int64_t k = 0; k < picture.count && !abort.load(); ++k) {  // the encoder keeps its own reference
                     picture.frame->pts = picture.pts + k;
                     encode_video(picture.frame.get());
@@ -313,7 +404,11 @@ void Core::run() {
                     ++frames_written;
                 }
                 std::lock_guard<std::mutex> hold(lock);
-                if (spare.size() < 4) spare.push_back(std::move(picture.frame));
+                if (own) {
+                    if (spare.size() < 4) spare.push_back(std::move(own));
+                } else if (mine && spare.size() < 4) {
+                    spare.push_back(std::move(picture.frame));
+                }  // a texture's frame: let go here, its texture goes back to the engine when the encoder is done
             }
             if (last) break;
         }
@@ -397,6 +492,105 @@ int feed(Core &c, const uint8_t *nv12, int stride, int64_t first, int64_t last) 
     return SC_OK;
 }
 
+#if defined(_WIN32)
+struct TextureHold {  // a texture handed over by the engine, until the encoder lets go of its frame
+    ID3D11Texture2D *texture;
+    std::function<void()> done;
+};
+
+void let_go_of_texture(void *opaque, uint8_t *) {
+    auto *hold = static_cast<TextureHold *>(opaque);
+    try {
+        if (hold->done) hold->done();
+    } catch (...) {
+    }
+    hold->texture->Release();
+    delete hold;
+}
+#endif
+
+// An NV12 texture of the writer's device and size for frames first .. last (frames on the card). SC_OK: the writer
+// has it and calls `done` once the encoder is finished with it. Anything else: not taken (`done` isn't called).
+int feed_texture(Core &c, void *texture, int64_t first, int64_t last, std::function<void()> done) {
+#if defined(_WIN32)
+    if (!texture) return SC_ERR_ARGUMENT;
+    auto *tex = static_cast<ID3D11Texture2D *>(texture);
+    D3D11_TEXTURE2D_DESC desc;
+    tex->GetDesc(&desc);
+    ID3D11Device *owner = nullptr;
+    tex->GetDevice(&owner);
+    const bool same = owner == c.device;
+    if (owner) owner->Release();
+    AVBufferRef *frames_ctx = nullptr;
+    if (!same || desc.Format != DXGI_FORMAT_NV12 || static_cast<int>(desc.Width) != c.width ||
+        static_cast<int>(desc.Height) != c.height)
+        return SC_ERR_ARGUMENT;  // another device (the engine rebuilt its own) or another size
+    {
+        std::lock_guard<std::mutex> hold(c.lock);
+        ++c.frames_in;
+        if (c.state == SC_WRITER_FAILED || c.state == SC_WRITER_FINISHED || c.finishing) return SC_WRITER_REFUSED;
+        if (c.state != SC_WRITER_RUNNING || !c.hw_frames) {
+            ++c.frames_dropped;
+            return SC_WRITER_DROPPED;  // still opening: the encoder isn't there to take it yet
+        }
+        if (last <= c.last_pts) {
+            ++c.frames_late;
+            return SC_WRITER_LATE;
+        }
+        if (c.pictures.size() >= c.queue_limit) {
+            ++c.frames_dropped;
+            return SC_WRITER_DROPPED;
+        }
+        const bool known = std::find(c.seen.begin(), c.seen.end(), texture) != c.seen.end();
+        if (!known && c.seen.size() >= 128) return SC_ERR_ARGUMENT;  // the engine made its pools again too often
+        frames_ctx = ff.av_buffer_ref(c.hw_frames);  // the writer thread may close it any time after this lock
+        if (!frames_ctx) throw std::bad_alloc();
+        if (!known) {
+            tex->AddRef();
+            c.seen.push_back(texture);
+        }
+    }
+    FramePtr f(ff.av_frame_alloc());
+    if (!f) {
+        ff.av_buffer_unref(&frames_ctx);
+        throw std::bad_alloc();
+    }
+    f->format = AV_PIX_FMT_D3D11;
+    f->width = c.width;
+    f->height = c.height;
+    f->data[0] = static_cast<uint8_t *>(texture);
+    f->data[1] = nullptr;  // array slice 0
+    f->color_range = AVCOL_RANGE_MPEG;
+    f->colorspace = AVCOL_SPC_BT709;
+    f->hw_frames_ctx = frames_ctx;  // f's now
+    auto *hold = new TextureHold{tex, std::move(done)};
+    tex->AddRef();
+    f->buf[0] = ff.av_buffer_create(reinterpret_cast<uint8_t *>(hold), sizeof *hold, let_go_of_texture, hold, 0);
+    if (!f->buf[0]) {
+        hold->done = nullptr;  // not taken: the caller gives it back
+        tex->Release();
+        delete hold;
+        throw std::bad_alloc();
+    }
+    {
+        std::lock_guard<std::mutex> hold_lock(c.lock);
+        if (last <= c.last_pts) {  // another feed got in meanwhile: let go of it here, as taken
+            ++c.frames_late;
+            return SC_OK;          // f's free gives the texture back
+        }
+        first = std::max(first, c.last_pts + 1);
+        c.last_pts = last;
+        c.frames_repeated += static_cast<uint64_t>(last - first);
+        c.pictures.push_back(Core::Picture{first, last - first + 1, std::move(f)});
+    }
+    c.wake.notify_one();
+    return SC_OK;
+#else
+    (void)c, (void)texture, (void)first, (void)last, (void)done;
+    return SC_ERR_ARGUMENT;
+#endif
+}
+
 }  // namespace
 
 struct sc_writer {
@@ -442,6 +636,14 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
         core->tracks = cfg->audio_tracks;
         core->audio_kbps = std::max(32, cfg->audio_kbps);
         core->queue_limit = static_cast<size_t>(std::clamp(cfg->queue_frames, 2, 120));
+        if (cfg->d3d11_device) {
+#if defined(_WIN32)
+            static_cast<IUnknown *>(cfg->d3d11_device)->AddRef();
+            core->device = cfg->d3d11_device;
+#else
+            return sc::fail(SC_ERR_ARGUMENT, "sc_writer_open: frames on the card need Windows");
+#endif
+        }
         core->sounds.resize(static_cast<size_t>(core->tracks));
         auto w = std::make_unique<sc_writer>();
         w->core = core;
@@ -564,6 +766,18 @@ int writer_feed(const std::shared_ptr<void> &shared, const uint8_t *nv12, int wi
     auto *c = static_cast<Core *>(shared.get());
     if (!c || width != c->width || height != c->height || last < first || first < 0) return SC_ERR_ARGUMENT;
     return feed(*c, nv12, width, first, last);
+}
+
+int writer_feed_texture(const std::shared_ptr<void> &shared, void *texture, int64_t first, int64_t last,
+                        std::function<void()> done) {
+    auto *c = static_cast<Core *>(shared.get());
+    if (!c || last < first || first < 0) return SC_ERR_ARGUMENT;
+    return feed_texture(*c, texture, first, last, std::move(done));
+}
+
+bool writer_on_card(const std::shared_ptr<void> &shared) {
+    auto *c = static_cast<Core *>(shared.get());
+    return c && c->device != nullptr;
 }
 
 int64_t writer_last(const std::shared_ptr<void> &shared) {

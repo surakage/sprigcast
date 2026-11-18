@@ -1060,7 +1060,19 @@ class Recorder:
 
         if not sprigcore.use_native_media():
             return False
-        return not self.uses_direct()
+        # SprigCast's own NVENC: through the writer too, with FFmpeg's NVENC taking the native engine's frames on
+        # the card (_card_device), unless SPRIGCAST_NO_CARD_WRITER keeps it in Python (DirectVideo).
+        return not self.uses_direct() or (self.gpu_size is not None and not os.environ.get("SPRIGCAST_NO_CARD_WRITER"))
+
+    def _card_device(self):
+        """For SprigCast's own NVENC through the writer: the native engine's device (a c_void_p with a reference
+        of the caller's) for the writer's encoder, which then takes the engine's frames there. None: no NVENC of
+        SprigCast's own here, or no device to share (the engine can't share frames, or is rebuilding)."""
+        if not self.uses_direct():
+            return None
+        from sprigcast.render import gpu_share
+
+        return gpu_share.native_device()
 
     def _writer_session(self) -> bool:
         """The whole recording through the engine's writer. False when the writer couldn't start (before any
@@ -1071,6 +1083,9 @@ class Recorder:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         muxing = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else None
         titles = [self.track_titles.get(t, t.title()) for t in self.tracks] if len(self.tracks) > 1 else None
+        device = self._card_device()
+        if self.uses_direct() and device is None:
+            return False  # recorded through PyAV with SprigCast's own NVENC, as before
         self._opening = True
         writer = None
         try:
@@ -1080,19 +1095,22 @@ class Recorder:
                 video_options=self._video_options(), audio_tracks=len(self.tracks),
                 audio_kbps=self.encoder.audio_kbps, container=CONTAINERS[self.container_kind],
                 queue_frames=WRITER_QUEUE, container_options=muxing, track_titles=titles,
-                b_frames=max(0, min(4, self.encoder.b_frames)))
+                b_frames=max(0, min(4, self.encoder.b_frames)), device=device.value if device else None)
             stats = self._writer_opened(writer)
             why = stats.error_text if stats.state_name == "failed" else ""
         except Exception as exc:  # noqa: BLE001 - PyAV records it instead
             why = str(exc) or type(exc).__name__
+        finally:
+            if device:
+                sprigcore.com_release(device.value)  # the writer holds a reference of its own
         if why:
             log.warning("%s: the engine's writer couldn't start (%s); recording through PyAV", self.path.stem, why)
             self.writer = None
             if writer is not None:
                 writer.close()
             return False
-        log.info("%s: written by the engine (%s, %dx%d at %d fps)", self.path.stem, self.codec, self.out_width,
-                 self.out_height, self.fps)
+        log.info("%s: written by the engine (%s, %dx%d at %d fps%s)", self.path.stem, self.codec, self.out_width,
+                 self.out_height, self.fps, ", frames on the graphics card" if writer.on_card else "")
         self._opening = False
         self._opened.set()
         try:
@@ -1140,6 +1158,15 @@ class Recorder:
         """What the engine numbers this recording's frames by: (start in perf_counter seconds, frames a second,
         the last frame number queued, how long a hole it fills)."""
         return self.start_time, self.fps, self._last_queued, FILL_LONG_S
+
+    _card_lost = False  # an encoder on the card through the writer, whose frames now come from memory
+
+    def card_lost(self, why: str) -> None:
+        """The native engine can't hand this recording's writer its frames on the card any more (render thread):
+        from now on they come from memory, and the writer copies them up to its encoder's card."""
+        if not self._card_lost:
+            self._card_lost = True
+            log.warning("%s: frames on the card stopped (%s); they come from memory now", self.path.stem, why)
 
     def unlinked(self, last_pts: int) -> None:
         """The engine stopped handing frames over (render thread): Python's frames go on after ``last_pts``."""
@@ -1259,6 +1286,12 @@ class Recorder:
     def wants_gpu_frames(self) -> bool:
         """Asked by the render thread each tick: hand this output its frames on the card (render/gpu_share.py)?
         Only once SprigCast's NVENC is open on the shared device, and never after one failed."""
+        writer = self.writer
+        if writer is not None and getattr(writer, "on_card", False):
+            # The engine hands them to the writer itself (native_bridge link_taps): only once it's open and
+            # Python's own frames are written, so none of them comes here.
+            return (not self._card_lost and not self._opening and not self._frames_closed and self.error is None
+                    and not self._stop.is_set() and (self.linked or self._video.empty()))
         direct = self._direct
         return (direct is not None and direct.shared and not self._gpu_failed and not self._opening
                 and not self._frames_closed

@@ -176,6 +176,16 @@ class CardFrame:
                 pass
 
 
+def _wants_card(owner) -> bool:
+    """Whether a recording still takes its frames on the card (Recorder.wants_gpu_frames)."""
+    wants = getattr(owner, "wants_gpu_frames", None)
+    try:
+        return bool(wants()) if wants is not None else False
+    except Exception:  # asked again next tick
+        log.exception("native engine: asking a recording about frames on the card failed")
+        return False
+
+
 class NativeCanvases:
     """The native engine as the render thread uses it. Every call is safe: a failure turns it off (``failed``)
     and the Python compositor carries on alone."""
@@ -543,11 +553,31 @@ class NativeCanvases:
         linked: set[int] = set()
         for key, owners in owners_of.items():
             out = current.get(key)
-            if out is None or key[1]:
-                continue  # frames on the card go to SprigCast's own NVENC
+            if out is None:
+                continue
             entry = self._links.get((slot, out))
-            wanting = [(o, w) for o in owners if o is not None and not self._refused(o)
-                       for w in [getattr(o, "link_writer", lambda: None)()] if w is not None]
+            on_card = bool(key[1])
+            if on_card and entry is not None and entry[2][3] != self._rebuilds:
+                # The engine made its device again: its textures can't go to an encoder opened on the old one.
+                # The recording goes on with pictures from memory, which its writer copies up itself.
+                self._unlink(slot, out)
+                entry = None
+                for o in owners:
+                    lost = getattr(o, "card_lost", None)
+                    if lost is not None:
+                        lost("the native engine made its graphics device again")
+            # Frames on the card go only to a writer that takes them there (its encoder on the engine's device),
+            # and only when nothing else takes that output's frames (a stream of the same size, on SprigCast's
+            # own NVENC): a writer sharing them takes pictures from memory instead, linked as those.
+            if on_card and len(owners) > 1:
+                for o in owners:
+                    lost = getattr(o, "card_lost", None) if getattr(o, "link_writer", lambda: None)() else None
+                    if lost is not None:
+                        lost("another output takes the same frames on the card")
+            wanting = [] if on_card and len(owners) > 1 else \
+                [(o, w) for o in owners if o is not None and not self._refused(o)
+                 for w in [getattr(o, "link_writer", lambda: None)()]
+                 if w is not None and (not on_card or (getattr(w, "on_card", False) and _wants_card(o)))]
             chosen = next(((o, w) for o, w in wanting if entry is not None and o is entry[0]), None) or \
                 next(iter(wanting), None)
             if entry is not None and (chosen is None or chosen[0] is not entry[0] or chosen[1] is not entry[1]):
@@ -557,19 +587,24 @@ class NativeCanvases:
                 continue
             owner, writer = chosen
             start, fps, last, fill = owner.link_numbers()
-            settings = (start, fps, len(owners) > 1)
+            settings = (start, fps, len(owners) > 1, self._rebuilds if on_card else None)
             if entry is None or entry[2] != settings:
                 try:
                     self.engine.link_output(slot, out, writer, start, fps, last_pts=last, keep=settings[2],
                                             fill_seconds=fill)
                 except Exception as exc:  # noqa: BLE001 - this recording takes its frames through Python
+                    lost = getattr(owner, "card_lost", None) if on_card else None
+                    if lost is not None:  # its frames come from memory from the next tick, linked as those
+                        lost(str(exc))
+                        continue
                     self._refuse(owner)
                     log.warning("native engine: %s can't take frames from the engine itself (%s); they go through "
                                 "Python", getattr(getattr(owner, "path", None), "stem", "a recording"), exc)
                     continue
                 if entry is None:
-                    log.info("native engine: %s %dx%d frames go straight to %s's writer", canvas_id, key[0][0],
-                             key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"))
+                    log.info("native engine: %s %dx%d frames go straight to %s's writer%s", canvas_id, key[0][0],
+                             key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"),
+                             " on the card" if on_card else "")
                 owner.linked = True
                 self._links[(slot, out)] = (owner, writer, settings)
             linked.add(id(owner))

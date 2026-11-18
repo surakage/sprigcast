@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 18
+#define SC_INTERFACE_VERSION 19
 
 enum {
     SC_OK = 0,
@@ -544,6 +544,10 @@ typedef struct sc_writer_config {
     const char *format_options;   /* muxer options, "key=value" lines ("movflags=..."), or NULL */
     const char *track_titles;     /* each sound track's title, separated by \n (left out when one track), or NULL */
     int b_frames;                 /* 0-4 */
+    /* An ID3D11Device* (the engine's, sc_engine_device): the encoder (NVENC, AMF) takes NV12 textures of that
+     * device from an output linked to it (sc_engine_output_link on an SC_OUTPUT_SHARE output); pictures from
+     * memory (sc_writer_video) are copied up to the card first. NULL: pictures in memory only. */
+    void *d3d11_device;
 } sc_writer_config;
 enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
 /* sc_writer_video / sc_writer_audio results besides SC_OK. LATE: the writer already took a later frame number (two
