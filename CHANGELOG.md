@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- The Plugin store reads its list and what's installed on a worker before making its cards (113-167 ms). Last streams
+  shares one style sheet and, opened on its own, doesn't fill the Garden check's "now" view too (150-253 ms).
+  One-line labels no longer run Python on every style or font change, the Garden check's chips are lighter, and
+  the sound meters skip a few beats while a pop-up is being made.
 - Pop-ups over Build mode no longer repaint the Library and Inside lists (101-156 ms each time). The Sound gear's
   drop-downs and number boxes are set up with almost no work as they're made, the rest a moment later (243 ms),
   and its sound rows come one a tick. Settings → General no longer reads the registry for "Start SprigCast when

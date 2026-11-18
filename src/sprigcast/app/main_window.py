@@ -2965,7 +2965,9 @@ class MainWindow(QMainWindow):
                 for source_id, (_peak, rms) in event.levels.items():
                     if rms > -50:  # above the hiss: something was heard
                         heard[source_id] = now
-                if self.mode == "live":
+                if theme.bursting():
+                    pass  # a pop-up opening: the meters skip a few beats (moving them was 69 ms of its build)
+                elif self.mode == "live":
                     self.live_side.set_levels(event.levels)
                 else:
                     self.sound_strips.set_levels(event.levels)

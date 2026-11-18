@@ -571,3 +571,26 @@ def test_plugin_store_window_shows_first_and_fills_after(app):
     w._fill()
     w.store.changed.emit()
     assert seen == [1] and "slide_show" in w.store.rows
+
+
+def test_plugin_store_reads_its_files_off_the_window_thread(app, monkeypatch):
+    """A file read per plugin on the window's thread was 113-167 ms of the open on the PC while live."""
+    import threading
+    import time
+
+    from sprigcast import plugin_store
+    from sprigcast.app.plugin_store_page import PluginStoreWindow
+    from sprigcast.plugins import PluginReport
+
+    threads = []
+    real = plugin_store.installed_version
+    monkeypatch.setattr(plugin_store, "installed_version",
+                        lambda d, pid: threads.append(threading.current_thread()) or real(d, pid))
+    w = PluginStoreWindow(None, PluginReport(), None, _collection(), fill_after_show=True)
+    w.show()
+    end = time.monotonic() + 5
+    while "store" not in w.__dict__ and time.monotonic() < end:
+        app.processEvents()
+    assert "slide_show" in w.store.rows and w.store.rows["slide_show"].button.text() == "Add"
+    assert threads and threading.main_thread() not in threads
+    w.close()

@@ -115,7 +115,9 @@ class GardenCheckPage(QWidget):
              ("dropped", "Frames dropped"), ("render", "Render time"), ("upload", "Upload"), ("recording", "Recording"))
 
     def __init__(self, snapshot: Callable[[], GardenSnapshot], records: list, open_logs: Callable[[], None] | None = None,
-                 parent: QWidget | None = None, make_lighter: Callable[[], str] | None = None):
+                 parent: QWidget | None = None, make_lighter: Callable[[], str] | None = None, fill: bool = True):
+        """fill False: the numbers, rows and checks are filled when "now" is first shown (opened on the last
+        streams, filling them as well was 150 ms of the open on the PC while live, 2026-11-18)."""
         super().__init__(parent)
         from sprigcast.app.empty import ArtPicture
 
@@ -205,7 +207,9 @@ class GardenCheckPage(QWidget):
         self.done.setCursor(Qt.CursorShape.PointingHandCursor)
         buttons.addWidget(self.done)
         root.addLayout(buttons)
-        self.refresh()
+        self._filled = False
+        if fill:
+            self.refresh()
 
     @property
     def page(self):
@@ -220,6 +224,8 @@ class GardenCheckPage(QWidget):
     def show_view(self, view: str) -> None:
         """"now" or "health" (the last streams)."""
         self.stack.setCurrentWidget(self.page if view == "health" else self.stack.widget(0))
+        if view != "health" and not self._filled:
+            self.refresh()
         self.history.setText("Back to now" if view == "health" else "Last streams")
 
     def refresh(self) -> None:
@@ -228,6 +234,7 @@ class GardenCheckPage(QWidget):
         except Exception:  # a number that can't be read this second shows next second
             return
         self.show_snapshot(snap)
+        self._filled = True
 
     def show_snapshot(self, s: GardenSnapshot) -> None:
         level = s.level()
@@ -299,7 +306,6 @@ class GardenCheckPage(QWidget):
                 widget.deleteLater()
         for i, (label, ok, tip) in enumerate(s.checks):
             chip = QLabel(("✓  " if ok else "!  " if ok is False else "–  ") + label)
-            chip.setFixedHeight(26)
             chip.setObjectName("checkChip")  # styled by the page (ROW_STYLE), not a style sheet of its own
             chip.setProperty("state", "ok" if ok else "warn" if ok is False else "quiet")
             chip.setToolTip(tip)
@@ -417,6 +423,7 @@ ROW_STYLE = (
     "#healthState { font-weight: 600; background: transparent; }"
     + "".join(f'#healthDot[level="{lv}"], #healthState[level="{lv}"] {{ color: {colour}; }}'
               for lv, colour in LEVEL_COLOURS.items())
+    + "#checkChip { min-height: 26px; max-height: 26px; }"
     + "".join(f'#checkChip[state="{state}"] {{ {style} }}'
               for state, style in (("ok", CHIP_OK), ("warn", CHIP_WARN), ("quiet", CHIP_QUIET)))
 )
@@ -429,7 +436,7 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
     from sprigcast.app.transitions_panel import PopUp
 
     pop = PopUp("Garden check", parent, bare=True)  # the page has its own title (with the sloth) and buttons
-    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter)
+    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter, fill=view != "health")
     pop.add_tab("garden", "Garden check", pop.garden)
     pop.show_tab("garden")
     pop.garden.done.clicked.connect(pop.accept)

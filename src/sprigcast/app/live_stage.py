@@ -168,7 +168,7 @@ class BarGroup(QFrame):
         return button
 
 
-_NEW_LOOK = frozenset((QEvent.Type.FontChange, QEvent.Type.StyleChange))
+_POLISHED = Qt.WidgetAttribute.WA_WState_Polished
 
 
 class Elided(QLabel):
@@ -177,14 +177,15 @@ class Elided(QLabel):
     def __init__(self, text: str = ""):
         super().__init__()
         self._full = ""
-        self._hint = None
+        self._hint = self._draft = None
+        self._hint_look = 0
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(30)
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802
         if text != self._full:
-            self._hint = None
+            self._hint = self._draft = None
         self._full = text
         self._fit()  # (sets the tooltip too)
 
@@ -200,18 +201,23 @@ class Elided(QLabel):
         super().setText(shown)
         self.setToolTip(self._full if shown != self._full else "")
 
-    def changeEvent(self, event) -> None:  # noqa: N802
-        super().changeEvent(event)
-        if event.type() in _NEW_LOOK:
-            self._hint = None  # measured again in its new font
-
     def sizeHint(self) -> QSize:  # noqa: N802
-        # Asked many times per layout pass (each from C++, through Python): worked out once per text and font,
-        # and then answered with no call into Qt at all. Measured each time, a Garden check's rows held the
-        # window 78 ms on the PC while live; asking for the font's key each time was still 97 ms (2026-11-18).
-        if self._hint is None:
-            self._hint = QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
-        return self._hint
+        # Asked many times per layout pass (each from C++, through Python): worked out once per text, once the
+        # label has its style (and font), and then answered with no call into Qt at all. Measured each time, a
+        # Garden check's rows held the window 78 ms on the PC while live; asking for the font's key each time was
+        # still 97 ms, and a Python changeEvent to notice new fonts 150 ms (2026-11-18). A new theme (the one
+        # way its font changes later) measures again.
+        if self._hint is not None and self._hint_look == theme.looks_applied:
+            return self._hint
+        polished = self.testAttribute(_POLISHED)
+        if not polished and self._draft is not None:
+            return self._draft  # not styled yet (its font may still change): measured once meanwhile
+        hint = QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
+        if polished:
+            self._hint, self._hint_look = hint, theme.looks_applied
+        else:
+            self._draft = hint
+        return hint
 
 
 class GardenCheck(QPushButton):
