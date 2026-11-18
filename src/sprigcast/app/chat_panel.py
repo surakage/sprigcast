@@ -49,7 +49,7 @@ SOURCE = "chat/source"  # "chat" (your channels, mixed) | "link" | "" (nothing p
 LINK = "chat/link"
 NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle"}; an empty Twitch name = your account
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube: a Twitch channel picked by hand
-HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle"}
+HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
 KEEP = 300  # messages kept on screen
 MENU_READY_MS = 5000  # after the panel is made: its ⋯ menu made ready (ChatPanel._ready_menu)
 EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
@@ -525,7 +525,7 @@ class ChatPanel(QWidget):
         self.link_field.setStyleSheet(FIELD_STYLE)
         self.link_field.returnPressed.connect(self._use_link)
         layout.addWidget(self.link_field)
-        hint = QLabel("Twitch and YouTube links read chat natively. Any other page shows here as it is.")
+        hint = QLabel("Twitch, YouTube and Kick links read chat natively. Any other page shows here as it is.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
         layout.addWidget(hint)
@@ -627,7 +627,7 @@ class ChatPanel(QWidget):
             return
         lower = text.lower()
         is_link = "://" in text or "." in text or "/" in text
-        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu")) if host in lower), None) if is_link else "twitch"
+        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com")) if host in lower), None) if is_link else "twitch"
         name = name_for(platform, text) if platform else None
         if name:
             names = saved_names()

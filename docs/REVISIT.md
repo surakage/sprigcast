@@ -17,15 +17,6 @@ the git history named in its entry, but rebuild it to today's rules rather than 
 - **To come back:** a fresh design that runs outside the SprigCast process (a helper process), so a crash there can never take the stream down. Or lean on TikFinity /
   Streamer.bot, which already read TikTok and can call SprigCast's API.
 
-### Kick chat
-- **Removed:** 2026-11-17 (#430). The code was `src/sprigcast/chat/kick.py`. Streaming to Kick and Kick
-  sign-in stay.
-- **Why:** it read kick.com's private channel API and its Pusher chat feed. Neither is an official API,
-  and kick.com sits behind Cloudflare, which already refused SprigCast's sign-in (1010/403, #420, #425).
-  It was the same kind of risk as TikTok chat.
-- **To come back:** Kick's official developer API, once it offers chat to desktop apps (today it only
-  sends chat to a web server by webhook).
-
 ### VST3 sound filters
 - **Removed:** 2026-11-17 (#430), with the `pedalboard` library. The code was the `vst` filter in
   `src/sprigcast/core/filters.py` and its "Open plug-in" button in the Filters window. A saved VST filter
@@ -85,6 +76,17 @@ the git history named in its entry, but rebuild it to today's rules rather than 
   isn't an official API, so any Wave Link update could break it. It was only tested against a fake server.
   It was light, with one local connection and no polling.
 - **To come back:** an official Wave Link API from Elgato.
+
+## Brought back
+
+### Kick chat
+- **Removed** 2026-11-17 (#430): it read kick.com's private channel API and Pusher feed, behind Cloudflare.
+- **Back** 2026-11-18, rebuilt on Kick's official developer API. Kick sends chat only to a web server by
+  webhook, so SprigCast's relay (`integrations/kick-chat`, a Cloudflare Worker at kickchat.slothbloom.com)
+  takes the signed webhooks and passes each channel's chat down a WebSocket to `src/sprigcast/chat/kick.py`.
+  The app never calls kick.com. It reads only while the Chat panel or a chat source wants Kick, and a failure
+  is a quiet status with a slow retry.
+- **Still to check:** the relay deployed and Kick's webhook URL set (its README), then chat on a real Kick stream.
 
 ## Cleanup on PCs that ran an earlier build
 

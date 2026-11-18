@@ -1,0 +1,33 @@
+# Deploy steps: README.md in this folder.
+name = "sprigcast-kick-chat"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# slothbloom.com's DNS is on Cloudflare: this makes https://kickchat.slothbloom.com (SprigCast reads Kick chat there).
+routes = [{ pattern = "kickchat.slothbloom.com", custom_domain = true }]
+
+# The Client ID is public (it's in the app too). The secret is NOT here: set it with
+#   npx wrangler secret put KICK_CLIENT_SECRET
+[vars]
+KICK_CLIENT_ID = "01M7JQPKVG11WQPN9YZDNZV8KW"
+# (Top-level keys must stay above the [[...]] tables below, or TOML files them under the last table.)
+
+# One small object per Kick channel someone is reading. It sleeps between messages (hibernation), so an
+# open chat costs nothing while it's quiet, and it tidies its Kick subscription away when the last reader leaves.
+[[durable_objects.bindings]]
+name = "CHANNELS"
+class_name = "Channel"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Channel"]
+
+# At most 20 chat connections a minute from one address.
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "4458"
+
+  [ratelimits.simple]
+  limit = 20
+  period = 60

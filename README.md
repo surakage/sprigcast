@@ -118,7 +118,7 @@ src/sprigcast/
   sources/   built-in sources: capture, camera, image, color, text, browser, media, chat, sound, sprigs
   audio/     mixer that combines sounds into 48 kHz stereo tracks
   output/    recorder, replay and clips, streamer, our own NVENC encoder, Twitch Enhanced Broadcasting
-  chat/      Twitch and YouTube chat
+  chat/      Twitch, YouTube and Kick chat
   control/   the control API (SprigCast's own and the obs-websocket compatibility mode)
   app/       PySide6 windows: Live and Build screens, settings, wizard, theme and art
   plugins.py loads source plugins from the plugins folder and entry points
