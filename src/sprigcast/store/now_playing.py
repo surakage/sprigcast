@@ -44,10 +44,10 @@ from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 6, "adds": "Source",
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 7, "adds": "Source",
           "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover, a time bar and "
                    "sound bars. No keys needed.",
-          "new": "Lighter: its moving parts are drawn by SprigCast's engine."}
+          "new": "Sound bars move with quiet music too, and Cover glow's dots move at all."}
 
 KIND = "now_playing"
 W, H = 1100, 200  # the card's box (the card hugs the words, from the left); scale it on the canvas like anything else
@@ -831,8 +831,7 @@ def _bars_listed(d, r, count: int, bands: np.ndarray | None, rgba) -> None:
     """_bars() as two pieces of one tall bar picture each: its top (round end and as much of the bar as shows)
     and its round bottom end."""
     count = max(1, count)
-    w = r.width() / count
-    bar = w * 0.62
+    w, bar = _bar_size(r, count)
     k = d.width / W
     rgba = tuple(int(v) for v in rgba)
     pw, ph = max(2, round(bar * k)), max(4, round(max(bar, r.height()) * k))  # made at the size it's shown
@@ -840,8 +839,7 @@ def _bars_listed(d, r, count: int, bands: np.ndarray | None, rgba) -> None:
     py = ph / max(bar, r.height())  # picture pixels per box unit, up and down
     over = 0.5 if rgba[3] == 255 else 0.0
     for i in range(count):
-        level = float(bands[i]) if bands is not None and i < len(bands) else 0.0
-        h = max(bar, r.height() * min(1.0, level))
+        h = _bar_height(r, bar, bands, i)
         x, bottom = r.x() + i * w + (w - bar) / 2, r.bottom()
         top = min(h - bar / 2 + over, ph / py)  # down under the bottom end's edge: no seam
         d.image(key, pill, x, bottom - h, bar, top, (0, 0, pw, top * py))
@@ -917,18 +915,30 @@ def _times(p, lay: Look, position: float, length: float, text_c, accent) -> None
         p.drawText(r, right, f"-{clock(length - position)}")
 
 
+def _bar_size(r, count: int) -> tuple[float, float]:
+    """(room per bar, bar width). The width is at most 0.3 of the row's height: Cover glow's wide row of short
+    bars had dots half the row tall, so music under half loud showed every dot the same (PC test 2026-11-18)."""
+    w = r.width() / count
+    return w, min(w * 0.62, r.height() * 0.3)
+
+
+def _bar_height(r, bar: float, bands: np.ndarray | None, i: int) -> float:
+    """A bar grows up from its dot with the level, so quiet music moves it too (it used to stay a dot until the
+    level passed the dot's own height)."""
+    level = float(bands[i]) if bands is not None and i < len(bands) else 0.0
+    return bar + (r.height() - bar) * min(1.0, max(0.0, level))
+
+
 def _bars(p, r, count: int, bands: np.ndarray | None, accent) -> None:
     """Rounded bars standing on the bottom of r, the lowest a dot."""
     from PySide6.QtCore import QRectF, Qt
 
     count = max(1, count)
-    w = r.width() / count
-    bar = w * 0.62
+    w, bar = _bar_size(r, count)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(accent)
     for i in range(count):
-        level = float(bands[i]) if bands is not None and i < len(bands) else 0.0
-        h = max(bar, r.height() * min(1.0, level))
+        h = _bar_height(r, bar, bands, i)
         p.drawRoundedRect(QRectF(r.x() + i * w + (w - bar) / 2, r.bottom() - h, bar, h), bar / 2, bar / 2)
 
 

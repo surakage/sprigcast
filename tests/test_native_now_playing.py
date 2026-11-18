@@ -106,3 +106,16 @@ def test_the_engine_draws_the_card_like_python_paints_it(np_mod):  # noqa: F811
                 c.render("b")
                 got = np.frombuffer(c.read_bgra(), np.uint8).reshape(listed.height, listed.width, 4).astype(int)
             _close(got, _array(listed.paint()), mean=2.0, most_off=0.02)
+
+
+@pytest.mark.parametrize("style", ["band", "canopy", "glow", "ring"])
+def test_the_bars_move_with_quiet_music_in_every_style(np_mod, style):  # noqa: F811
+    """Cover glow's dots were half its row tall and stayed dots until the music passed half loud (PC test)."""
+    settings = {**np_mod.NowPlayingSource.defaults, "style": style}
+    track = np_mod.Track("Song", "Band", length=200.0, position=50.0)
+    base, lay, words = np_mod.still(track, settings, 1.0, True)
+    shown = [_array(np_mod.frame_listed(base, lay, words, settings, 1.0, 1.0, 50.0, 200.0,
+                                        np.full(64, level, np.float32), {}).paint()) for level in (0.0, 0.15, 0.3)]
+    x, y, w, h = (int(v) for v in lay.bars)
+    rows = [s[y:y + h, x:x + w].max(axis=2) for s in shown]
+    assert (rows[0] != rows[1]).any() and (rows[1] != rows[2]).any()
