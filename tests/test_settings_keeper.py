@@ -31,17 +31,16 @@ def live(tmp_path, monkeypatch):
     return q
 
 
-def test_settings_and_pairings_survive_an_update_that_loses_them(tmp_path, live):
+def test_settings_survive_an_update_that_loses_them(tmp_path, live):
     config = tmp_path / "config"
-    assert settings_keeper.keep(config, live) >= 9  # the old version closing (or 30 s after its start)
-    for key in ("control/port", "control/enabled", "control/devices", "window/geometry", "window/mode",
+    assert settings_keeper.keep(config, live) >= 8  # the old version closing (or 30 s after its start)
+    for key in ("control/port", "control/enabled", "window/geometry", "window/mode",
                 "general/optimized"):  # what the 2026-11-17 update lost
         live.remove(key)
     live.setValue("general/theme", "light")  # changed since the copy: stays as it is
     back = settings_keeper.restore(config, live)  # the new version's first start
-    assert set(back) == {"control/port", "control/enabled", "control/devices", "window/geometry", "window/mode",
-                         "general/optimized"}
-    assert live.value("control/port", type=int) == 4456 and live.value("control/devices") == "dpapi:streambridge+soak"
+    assert set(back) == {"control/port", "control/enabled", "window/geometry", "window/mode", "general/optimized"}
+    assert live.value("control/port", type=int) == 4456
     assert bytes(live.value("window/geometry")) == b"\x01\x02geometry" and live.value("window/mode") == "live"
     assert live.value("general/theme") == "light"
     assert settings_keeper.restore(config, live) == []  # nothing missing: nothing to do
@@ -53,6 +52,7 @@ def test_an_emptied_registry_comes_back_whole(tmp_path, live):
     live.clear()
     settings_keeper.restore(config, live)
     assert live.value("control/password") == "dpapi:pw" and live.value("control/local_key") == "dpapi:local"
+    assert not live.contains("control/devices")  # paired devices never come from a copy
 
 
 def test_what_sprigcast_removes_on_purpose_stays_removed(tmp_path, live):
@@ -81,7 +81,7 @@ def test_uninstall_takes_keys_and_pairings_out_of_the_copy(tmp_path, live):
     config = tmp_path / "config"
     settings_keeper.keep(config, live)
     copy = QSettings(str(settings_keeper.path(config)), QSettings.Format.IniFormat)
-    assert forget_keys.forget_settings(copy) == 3
+    assert forget_keys.forget_settings(copy) == 2  # password and local key (devices are never in the copy)
     copy = QSettings(str(settings_keeper.path(config)), QSettings.Format.IniFormat)
     assert not copy.contains("control/password") and not copy.contains("control/devices")
     assert copy.value("control/port", type=int) == 4456  # choices stay for a reinstall
@@ -97,3 +97,20 @@ def test_installing_an_update_never_touches_the_settings():
     assert "Software\\Slothbloom\\SprigCast" in deleting and "{localappdata}\\Slothbloom\\SprigCast" in deleting
     assert "DeleteSprigCastData()" in text.split("usPostUninstall", 1)[1].split("\nend;", 1)[0]
     assert text.count("DeleteSprigCastData") == 2  # defined, and called only there
+
+
+def test_paired_devices_are_never_copied_or_put_back(tmp_path, live):
+    """PC 2026-11-18: an install brought back the pre-wipe device list and dropped the harness paired since."""
+    config = tmp_path / "config"
+    live.setValue("control/devices_unreadable", "dpapi:old")
+    settings_keeper.keep(config, live)
+    copy = QSettings(str(settings_keeper.path(config)), QSettings.Format.IniFormat)
+    assert not copy.contains("control/devices") and not copy.contains("control/devices_unreadable")
+    copy.setValue("control/devices", "dpapi:pre-wipe list")  # a copy made by an older SprigCast
+    copy.sync()
+    live.remove("control/devices")
+    assert "control/devices" not in settings_keeper.restore(config, live)
+    assert not live.contains("control/devices")
+    live.setValue("control/devices", "dpapi:paired since")
+    settings_keeper.restore(config, live)
+    assert live.value("control/devices") == "dpapi:paired since"  # a newer pairing is never written over

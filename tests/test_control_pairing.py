@@ -334,3 +334,16 @@ def test_not_inside_a_store_app_package_off_windows():
     from sprigcast.app.main import inside_package
 
     assert inside_package() == ""
+
+
+def test_paired_devices_and_secrets_are_read_only_from_sprigcasts_own_settings(monkeypatch):
+    """Qt also reads HKLM and Slothbloom's OrganizationDefaults for anything missing; an old device list or
+    password left there must never come back (PC 2026-11-18)."""
+    from pathlib import Path
+
+    from sprigcast.app import control_server
+
+    q = control_server._own_settings()
+    assert not q.fallbacksEnabled()
+    src = Path(control_server.__file__).read_text(encoding="utf-8")
+    assert "QSettings().value(DEVICES" not in src
