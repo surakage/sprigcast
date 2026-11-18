@@ -154,23 +154,39 @@ def test_youtube_saves_title_description_and_privacy_keeping_the_start(monkeypat
                                      "status": {"privacyStatus": "private"}}
 
 
-def test_youtube_category_goes_on_the_video_keeping_its_tags(monkeypatch):
+def test_youtube_category_goes_on_the_video_with_its_tags(monkeypatch):
     _signed_in("youtube")
     web = Web(monkeypatch)
     web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", {})
     web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=b1",
            [{"items": [{"snippet": {"categoryId": "24", "tags": ["sloth"], "title": "Old"}}]},
-            {"items": [{"snippet": {"categoryId": "20"}}]}, sd.DetailsError("YouTube said 500.")])
+            {"items": [{"snippet": {"categoryId": "20", "tags": ["sloth"]}}]}, sd.DetailsError("YouTube said 500.")])
     web.on("PUT", sd.YOUTUBE_API + "/videos?part=snippet", {})
-    details = sd.Details(title="New", description="d", broadcast_id="b1", starts="s", video_category="20")
+    details = sd.Details(title="New", description="d", broadcast_id="b1", starts="s", video_category="20",
+                         tags=["sloth"], old_tags=["sloth"])
     assert sd.save("youtube", details).note == ""
-    assert web.calls[-1]["body"] == {"id": "b1", "snippet": {"tags": ["sloth"], "title": "New", "description": "d",
-                                                             "categoryId": "20"}}
+    assert web.calls[-1]["body"] == {"id": "b1", "snippet": {"title": "New", "description": "d",
+                                                             "categoryId": "20", "tags": ["sloth"]}}
     count = len(web.calls)
-    sd.save("youtube", details)  # already Gaming: nothing more is sent
+    sd.save("youtube", details)  # already Gaming with these tags: nothing more is sent
     assert web.calls[-1]["method"] == "GET" and len(web.calls) == count + 2
-    assert sd.save("youtube", details).note == "Saved, but not the category."
+    assert sd.save("youtube", details).note == "Saved, but not the category or tags."
     assert "20" in sd.YOUTUBE_CATEGORIES and sd.YOUTUBE_CATEGORIES["20"] == "Gaming"
+
+
+def test_youtube_tags_are_saved_on_the_video(monkeypatch):
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", {})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=b1",
+           {"items": [{"snippet": {"categoryId": "20", "defaultLanguage": "en"}}]})
+    web.on("PUT", sd.YOUTUBE_API + "/videos?part=snippet", {})
+    saved = sd.save("youtube", sd.Details(title="T", broadcast_id="b1", starts="s", tags=["Sloth facts", "cozy"]))
+    assert web.calls[-1]["body"]["snippet"] == {"defaultLanguage": "en", "title": "T", "description": "",
+                                                "categoryId": "20", "tags": ["Sloth facts", "cozy"]}
+    assert saved.old_tags == ["Sloth facts", "cozy"]
+    assert sd.split_tags("Cozy, #Sloth  facts, cozy,") == ["Cozy", "Sloth facts"]
+    assert sd.youtube_tag_problem(["x" * 30] * 20) and sd.youtube_tag_problem(["Cozy"]) is None
 
 
 def test_youtube_with_nothing_waiting_makes_a_stream_on_the_sprigcast_key(monkeypatch):
@@ -233,7 +249,13 @@ def test_kick_reads_and_saves_title_and_category(monkeypatch):
     assert (details.title, details.category, details.category_id) == ("Hi", "Art", "15")
     details.title = "New"
     sd.save("kick", details)
-    assert web.calls[-1]["body"] == {"stream_title": "New", "category_id": 15}
+    assert web.calls[-1]["body"] == {"stream_title": "New", "category_id": 15}  # no tags then, none sent
+    details.tags = ["Cozy", "#Sloth facts", "cozy"]
+    sd.save("kick", details)
+    assert web.calls[-1]["body"]["custom_tags"] == ["Cozy", "Sloth facts"]
+    details.tags = []
+    sd.save("kick", details)
+    assert web.calls[-1]["body"]["custom_tags"] == []  # cleared on purpose
 
 
 def test_kick_category_search_falls_back_to_the_newer_one(monkeypatch):
