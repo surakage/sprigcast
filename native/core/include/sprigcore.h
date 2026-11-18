@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 14
+#define SC_INTERFACE_VERSION 15
 
 enum {
     SC_OK = 0,
@@ -479,6 +479,42 @@ typedef struct sc_media_picture {
 SC_API int sc_media_ffmpeg_load(const char *avutil, const char *avcodec, const char *avformat, const char *swscale,
                                 const char *swresample);
 SC_API int sc_media_ffmpeg_ready(void);
+
+/* ---- Writing a recording or stream (writer.cpp) -----------------------------------------------------------
+ * A file or stream written by a thread of the engine's own with SprigCast's FFmpeg (load it first with
+ * sc_media_ffmpeg_load). sc_writer_open returns at once: opening (a stream may take seconds to connect),
+ * encoding, muxing and writing all happen on the writer's thread. Pictures are NV12 (`stride` bytes a row, the
+ * CbCr rows after the Y rows) with `pts` counted in frames; sound is 48 kHz stereo floats, interleaved, each
+ * track's blocks back to back. A picture that finds `queue_frames` waiting is dropped (and counted).
+ * sc_writer_finish asks for the rest to be written and the file closed; sc_writer_wait waits for that;
+ * sc_writer_destroy gives up whatever is left (a stream stuck connecting stops waiting) and frees it. A fault
+ * inside FFmpeg ends the writer (state FAILED, error says why), never the app. */
+typedef struct sc_writer sc_writer;
+typedef struct sc_writer_config {
+    const char *target;         /* file path or stream URL, UTF-8 */
+    const char *format;         /* muxer ("mp4", "matroska", "mov", "flv"), or NULL to go by the target's name */
+    const char *video_codec;    /* an FFmpeg encoder: "libx264", "h264_nvenc", "hevc_amf", ... */
+    const char *video_options;  /* encoder options, "key=value:key=value" */
+    int width, height, fps_num, fps_den;
+    int video_kbps, keyframe_frames;
+    int audio_tracks, audio_kbps; /* AAC tracks (0-6) */
+    int queue_frames;             /* pictures that may wait (2-120) */
+} sc_writer_config;
+enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
+enum { SC_WRITER_DROPPED = 1, SC_WRITER_REFUSED = 2 }; /* sc_writer_video / sc_writer_audio results besides SC_OK */
+typedef struct sc_writer_stats {
+    int state, queued;
+    uint64_t frames_in, frames_written, frames_dropped, bytes;
+    double write_seconds, longest_write;
+    char error[256];
+} sc_writer_stats;
+SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out);
+SC_API int sc_writer_video(sc_writer *writer, const uint8_t *nv12, int stride, int64_t pts);
+SC_API int sc_writer_audio(sc_writer *writer, int track, const float *stereo, int frames);
+SC_API int sc_writer_finish(sc_writer *writer);
+SC_API int sc_writer_wait(sc_writer *writer, int timeout_ms);
+SC_API int sc_writer_stats_get(sc_writer *writer, sc_writer_stats *out);
+SC_API void sc_writer_destroy(sc_writer *writer);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
 SC_API int sc_media_create(int playing, sc_media **out);

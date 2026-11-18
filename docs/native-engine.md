@@ -180,6 +180,19 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone
   with g++ and runs the same checks there; in CI they run against `sprigcore.dll`.
 
+## Phase 4: recording and streaming (`native/core/src/writer.cpp`)
+
+- **The writer (`sc_writer_*`, step 1).** A file or stream written by a thread of the engine's own: NV12
+  pictures and 48 kHz stereo sound are queued (a picture that finds the queue full is dropped and counted), and
+  the writer thread encodes them with any FFmpeg encoder (x264, NVENC, AMF, QSV), adds up to six AAC tracks,
+  muxes and writes, never holding Python's lock. Opening, a stream's connecting included, happens on that
+  thread; giving up interrupts FFmpeg's waiting. A fault inside FFmpeg ends that output (state "failed", with
+  why), never the app. FFmpeg's table is shared with the player (`src/ffmpeg.h`); like the player the writer
+  builds on Linux, so `tests/test_native_writer.py` writes and reads back real files there and in CI.
+- Next: the engine hands its output frames to a writer itself (no Python per frame), the recorder uses it on
+  the native engine, then pictures on the card straight into hardware encoders, streams with reconnects, and
+  Instant replay's buffer.
+
 ## Phases
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7
