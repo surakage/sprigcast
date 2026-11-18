@@ -36,8 +36,9 @@ def wanted() -> bool:
 
 @dataclass
 class Place:
-    """One picture drawn: `image` (a QImage) into the box x, y, w, h of the coordinates `transform` (a QTransform)
-    maps onto the source's box, the part `src` (x, y, w, h in the picture's pixels, None: all of it)."""
+    """One picture drawn: `image` (a QImage) into the box x, y, w, h of the coordinates `transform` maps onto the
+    source's box (m11, m12, m21, m22, dx, dy, as QTransform's: x' = m11 x + m21 y + dx), the part `src` (x, y, w,
+    h in the picture's pixels, None: all of it)."""
 
     key: str
     image: object
@@ -46,7 +47,7 @@ class Place:
     w: float
     h: float
     src: tuple[float, float, float, float] | None
-    transform: object
+    transform: tuple[float, float, float, float, float, float]
     opacity: float
     clip: tuple[float, float, float, float] | None
 
@@ -68,21 +69,23 @@ def solid(rgba: tuple[int, int, int, int]):
     return found
 
 
-def disc(rgba: tuple[int, int, int, int]):
-    """A soft-edged disc of one colour filling a small square picture, for drawEllipse()."""
-    key = ("disc", rgba)
+def disc(rgba: tuple[int, int, int, int], size: int = 32):
+    """A soft-edged disc of one colour filling a square picture `size` pixels wide, for drawEllipse() (made at the
+    size it's shown, its edge stays as smooth as QPainter's)."""
+    size = max(2, int(size))
+    key = ("disc", rgba, size)
     found = _SOLID.get(key)
     if found is None:
         from PySide6.QtCore import QRectF, Qt
         from PySide6.QtGui import QColor, QImage, QPainter
 
-        found = QImage(32, 32, QImage.Format.Format_ARGB32_Premultiplied)
+        found = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
         found.fill(Qt.GlobalColor.transparent)
         p = QPainter(found)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(*rgba))
-        p.drawEllipse(QRectF(0.5, 0.5, 31, 31))
+        p.drawEllipse(QRectF(0, 0, size, size))
         p.end()
         if len(_SOLID) > 64:
             _SOLID.clear()
@@ -90,13 +93,17 @@ def disc(rgba: tuple[int, int, int, int]):
     return found
 
 
-class Drawn:
-    def __init__(self, width: int, height: int):
-        from PySide6.QtGui import QTransform
+_IDENTITY = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
 
+
+class Drawn:
+    # The transform is kept as six numbers, not a QTransform: a list of a few hundred pictures a frame (Now
+    # playing's sliding words) spent most of its time crossing into Qt for each point.
+
+    def __init__(self, width: int, height: int):
         self.width, self.height = int(width), int(height)
         self.places: list[Place] = []
-        self._transform = QTransform()
+        self._transform = _IDENTITY
         self._opacity = 1.0
         self._clip: tuple[float, float, float, float] | None = None
         self._stack: list[tuple] = []
@@ -106,9 +113,7 @@ class Drawn:
     # The painter's state -------------------------------------------------------------------------------------
 
     def save(self) -> None:
-        from PySide6.QtGui import QTransform
-
-        self._stack.append((QTransform(self._transform), self._opacity, self._clip, self._brush))
+        self._stack.append((self._transform, self._opacity, self._clip, self._brush))
 
     def restore(self) -> None:
         if self._stack:
@@ -117,13 +122,24 @@ class Drawn:
     def translate(self, dx, dy: float | None = None) -> None:
         if dy is None:  # a QPointF, as QPainter takes it
             dx, dy = dx.x(), dx.y()
-        self._transform.translate(dx, dy)
+        a, b, c, d, e, f = self._transform
+        self._transform = (a, b, c, d, a * dx + c * dy + e, b * dx + d * dy + f)
 
     def rotate(self, degrees: float) -> None:
-        self._transform.rotate(degrees)
+        a, b, c, d, e, f = self._transform
+        r = math.radians(degrees)
+        cos, sin = math.cos(r), math.sin(r)
+        if degrees % 90 == 0:  # as QTransform: exact for quarter turns
+            cos, sin = round(cos), round(sin)
+        self._transform = (cos * a + sin * c, cos * b + sin * d, -sin * a + cos * c, -sin * b + cos * d, e, f)
 
     def scale(self, sx: float, sy: float) -> None:
-        self._transform.scale(sx, sy)
+        a, b, c, d, e, f = self._transform
+        self._transform = (a * sx, b * sx, c * sy, d * sy, e, f)
+
+    def _map(self, x: float, y: float) -> tuple[float, float]:
+        a, b, c, d, e, f = self._transform
+        return a * x + c * y + e, b * x + d * y + f
 
     def opacity(self, value: float | None = None) -> float:
         """As QPainter.setOpacity: this opacity from here on (until restore), not multiplied. With no value, the
@@ -134,8 +150,9 @@ class Drawn:
 
     def clip(self, x: float, y: float, w: float, h: float) -> None:
         """Only this box (in the current coordinates, which mustn't be turned) shows of what's drawn next."""
-        r = self._transform.mapRect(_rect(x, y, w, h))
-        box = (r.x(), r.y(), r.width(), r.height())
+        corners = [self._map(px, py) for px, py in ((x, y), (x + w, y), (x, y + h), (x + w, y + h))]
+        xs, ys = [p[0] for p in corners], [p[1] for p in corners]
+        box = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
         if self._clip is not None:
             box = _intersect(self._clip, box)
         self._clip = box
@@ -146,9 +163,7 @@ class Drawn:
               src: tuple[float, float, float, float] | None = None) -> None:
         if image is None or w <= 0 or h <= 0 or self._opacity <= 0.0:
             return
-        from PySide6.QtGui import QTransform
-
-        self.places.append(Place(key, image, float(x), float(y), float(w), float(h), src, QTransform(self._transform),
+        self.places.append(Place(key, image, float(x), float(y), float(w), float(h), src, self._transform,
                                  self._opacity, self._clip))
         self._painted = None
 
@@ -198,7 +213,7 @@ class Drawn:
     def paint(self):
         """The list painted with a QPainter (a QImage, premultiplied ARGB)."""
         from PySide6.QtCore import QPointF, QRectF, Qt
-        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtGui import QImage, QPainter, QTransform
 
         image = QImage(max(1, self.width), max(1, self.height), QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(Qt.GlobalColor.transparent)
@@ -209,7 +224,7 @@ class Drawn:
             p.save()
             if place.clip is not None:
                 p.setClipRect(QRectF(*place.clip))
-            p.setTransform(place.transform)
+            p.setTransform(QTransform(*place.transform))
             p.setOpacity(place.opacity)
             src = QRectF(*place.src) if place.src else QRectF(QPointF(0, 0), QPointF(place.image.width(),
                                                                                        place.image.height()))
@@ -240,17 +255,17 @@ class Drawn:
         for place in self.places:
             iw, ih = place.image.width(), place.image.height()
             sx, sy, sw, sh = place.src if place.src else (0.0, 0.0, float(iw), float(ih))
-            t = place.transform
-            corner = t.map(_point(place.x, place.y))
-            across = t.map(_point(place.x + place.w, place.y)) - corner
-            down = t.map(_point(place.x, place.y + place.h)) - corner
-            width, height = math.hypot(across.x(), across.y()), math.hypot(down.x(), down.y())
+            a, b, c, d, e, f = place.transform
+            ax, ay = a * place.w, b * place.w  # the box's top edge and left edge, mapped
+            dx, dy = c * place.h, d * place.h
+            width, height = math.hypot(ax, ay), math.hypot(dx, dy)
             if width <= 1e-6 or height <= 1e-6 or sw <= 0 or sh <= 0:
                 continue
-            middle = t.map(_point(place.x + place.w / 2, place.y + place.h / 2))
-            rotation = math.degrees(math.atan2(across.y(), across.x()))
+            mx, my = place.x + place.w / 2, place.y + place.h / 2
+            middle_x, middle_y = a * mx + c * my + e, b * mx + d * my + f
+            rotation = math.degrees(math.atan2(ay, ax)) if ay else (0.0 if ax > 0 else 180.0)
             crop = [sx, sy, iw - sx - sw, ih - sy - sh]
-            x, y = middle.x() - width / 2, middle.y() - height / 2
+            x, y = middle_x - width / 2, middle_y - height / 2
             if place.clip is not None:
                 if abs(rotation) > 3.0:
                     pass  # turned well over: not clipped (the plugins clip only upright or barely wobbling pictures)
@@ -269,18 +284,6 @@ class Drawn:
                 continue
             out.append((place.key, place.image, x, y, width, height, rotation, tuple(whole), place.opacity))
         return out
-
-
-def _rect(x, y, w, h):
-    from PySide6.QtCore import QRectF
-
-    return QRectF(x, y, w, h)
-
-
-def _point(x, y):
-    from PySide6.QtCore import QPointF
-
-    return QPointF(x, y)
 
 
 def _intersect(a, b) -> tuple[float, float, float, float]:

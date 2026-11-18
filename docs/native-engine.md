@@ -322,6 +322,13 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   compositor gets the list painted (`Drawn.picture`), the same pixels the plugin painted before
   (`tests/test_native_drawn.py`). A picture uploaded for the source (the show is over) replaces the list and lets
   its art go; a source keeps at most 16 spare pictures (48 MB) beyond those its newest list uses.
+  `Drawn` keeps its transform as six numbers (crossing into Qt for every point cost more than painting).
+- **Now playing** (`store/now_playing.frame_listed`): the card's still part and its words are pictures made once
+  per song; a sliding line is cut into thin upright slices on whole pixels, each with the opacity of the fade at
+  the room's edges (the painted card faded them with a composition mask); the sound bars are two pieces of one
+  rounded-bar picture each; only the time bar and times are painted, into a picture of their own size, when they
+  change (a second's clock, half a pixel of bar). While it fades in or out it's painted as before
+  (`tests/test_native_now_playing.py`).
 
 ## Phases
 

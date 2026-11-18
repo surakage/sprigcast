@@ -39,15 +39,15 @@ import numpy as np
 
 from sprigcast.audio import listen
 from sprigcast.control.native import ApiError, register_action, send_event
-from sprigcast.core import painted, style, workers
+from sprigcast.core import drawn, painted, style, workers
 from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 5, "adds": "Source",
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 6, "adds": "Source",
           "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover, a time bar and "
                    "sound bars. No keys needed.",
-          "new": "A Style tab: your own colours, font and corners, and a custom look box."}
+          "new": "Lighter: its moving parts are drawn by SprigCast's engine."}
 
 KIND = "now_playing"
 W, H = 1100, 200  # the card's box (the card hugs the words, from the left); scale it on the canvas like anything else
@@ -687,11 +687,21 @@ def frame(base, lay: Look, words: tuple, settings: dict[str, Any], detail: float
         q.fillRect(QRectF(0, 0, room.width(), room.height()), fade)
         q.end()
         p.drawImage(QRectF(room.x(), room.y(), room.width(), room.height()), strip)
+    if lay.bars is not None:
+        _bars(p, _rect(lay.bars), lay.bar_count, bands, style.qcolor(_look_of(settings).accent))
+    _time(p, lay, settings, position, length)
+    p.end()
+    return image
+
+
+def _time(p, lay: Look, settings: dict[str, Any], position: float | None, length: float) -> None:
+    """The time bar (or ring) and the times."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QPen
+
     st = _look_of(settings)
     accent = style.qcolor(st.accent)
     text_c = style.qcolor(st.text)
-    if lay.bars is not None:
-        _bars(p, _rect(lay.bars), lay.bar_count, bands, accent)
     if lay.time_bar is not None and position is not None and length > 0:
         share = min(1.0, max(0.0, position / length))
         r = _rect(lay.time_bar)
@@ -721,8 +731,153 @@ def frame(base, lay: Look, words: tuple, settings: dict[str, Any], detail: float
                 p.setBrush(text_c)
                 p.drawEllipse(QPointF(r.x() + r.width() * share, r.center().y()), r.height() * 1.3, r.height() * 1.3)
         _times(p, lay, position, length, text_c, accent)
+
+
+def frame_listed(base, lay: Look, words: tuple, settings: dict[str, Any], detail: float, t: float,
+                 position: float | None, length: float, bands: np.ndarray | None, memo: dict | None = None):
+    """frame() as a list of pictures for the engine to draw (core/drawn.py): the still part and the words are
+    pictures made once per song, the sliding words are cut into thin upright slices whose opacity follows the
+    fade at the room's edges, the bars are discs and boxes, and only the time part is painted, in a picture of
+    just its own size, when it changes (a second's clock, half a pixel of the bar)."""
+    from PySide6.QtCore import QRectF
+
+    memo = {} if memo is None else memo
+    out_w, out_h = max(1, round(W * detail)), max(1, round(H * detail))
+    d = drawn.Drawn(out_w, out_h)
+    d.scale(out_w / W, out_h / H)
+    d.drawImage(QRectF(0, 0, W, H), base)
+    speed = slide_speed(settings)
+    for spot, made in ((lay.title, words[0]), (lay.under, words[1])):
+        if spot is None or made is None:
+            continue
+        picture, width = made
+        room = _rect(spot)
+        off = slid(t, width, room.width(), speed)
+        src_w, src_h = picture.width() / detail, picture.height() / detail
+        if not off and width <= room.width() + 0.5:
+            d.drawImage(QRectF(room.x(), room.y(), src_w, src_h), picture)
+            continue
+        # frame() slides them in a strip of whole units, stretched onto the room
+        rw, rh = float(max(1, int(room.width()))), float(max(1, int(room.height())))
+        fx, fy = room.width() / rw, room.height() / rh
+        for x0, x1, alpha in _fade_slices(room.x() * out_w / W, room.width() * out_w / W, room.width(), off != 0,
+                                          max(1, round(out_w / W))):
+            d.save()
+            left, right = x0 * W / out_w, x1 * W / out_w
+            d.clip(left, room.y(), right - left, room.height())
+            d.opacity(alpha)
+            for x in (-off, -off + width + SLIDE_GAP):
+                at = room.x() + x * fx
+                if at < right and at + src_w * fx > left:  # a copy that shows in this slice
+                    d.drawImage(QRectF(at, room.y(), src_w * fx, src_h * fy), picture)
+            d.restore()
+    if lay.bars is not None:
+        _bars_listed(d, _rect(lay.bars), lay.bar_count, bands, style.qcolor(_look_of(settings).accent).getRgb())
+    part = _time_part(lay, settings, detail, position, length, memo)
+    if part is not None:
+        picture, box = part
+        d.image("time", picture, *box)
+    return d
+
+
+def _fade_slices(left_px: float, width_px: float, room: float, left: bool,
+                 step: int = 1) -> list[tuple[float, float, float]]:
+    """frame()'s fade across a sliding line's room (from left_px, width_px wide, in the picture's pixels; `room`
+    box units wide) as (x0, x1, opacity) slices on whole pixels: `step` pixels wide where it fades, one slice where
+    it doesn't (slices off the pixel grid leave seams where a clip rounds)."""
+    edge = min(0.08, 28 / max(1.0, room))
+    a, z = round(left_px), round(left_px + width_px)
+    b, c = round(left_px + edge * width_px), round(left_px + (1 - edge) * width_px)
+
+    def at(x0: int, x1: int) -> float:  # the fade's opacity in a slice's middle
+        f = ((x0 + x1) / 2 - left_px) / max(1e-6, width_px)
+        return 1.0 if edge <= 0 else max(0.0, min(1.0, f / edge, (1 - f) / edge))
+
+    def run(start: int, end: int) -> list[tuple[float, float, float]]:
+        cuts = list(range(start, end, step)) + [end]
+        return [(float(x0), float(x1), at(x0, x1)) for x0, x1 in zip(cuts, cuts[1:]) if x1 > x0]
+
+    out = run(a, b) if left else []
+    out.append((float(b if left else a), float(c), 1.0))
+    return out + run(c, z)
+
+
+_PILLS: dict = {}
+
+
+def _pill(rgba: tuple[int, int, int, int], w: int, h: int):
+    """A rounded bar of one colour, w x h pixels, ends round (made once per colour and size)."""
+    key = (rgba, w, h)
+    found = _PILLS.get(key)
+    if found is None:
+        from PySide6.QtCore import QRectF, Qt
+        from PySide6.QtGui import QColor, QImage, QPainter
+
+        found = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        found.fill(Qt.GlobalColor.transparent)
+        p = QPainter(found)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(*rgba))
+        p.drawRoundedRect(QRectF(0, 0, w, h), w / 2, w / 2)
+        p.end()
+        if len(_PILLS) > 16:
+            _PILLS.clear()
+        _PILLS[key] = found
+    return found
+
+
+def _bars_listed(d, r, count: int, bands: np.ndarray | None, rgba) -> None:
+    """_bars() as two pieces of one tall bar picture each: its top (round end and as much of the bar as shows)
+    and its round bottom end."""
+    count = max(1, count)
+    w = r.width() / count
+    bar = w * 0.62
+    k = d.width / W
+    rgba = tuple(int(v) for v in rgba)
+    pw, ph = max(2, round(bar * k)), max(4, round(max(bar, r.height()) * k))  # made at the size it's shown
+    pill, key = _pill(rgba, pw, ph), f"pill:{rgba}:{pw}:{ph}"
+    py = ph / max(bar, r.height())  # picture pixels per box unit, up and down
+    over = 0.5 if rgba[3] == 255 else 0.0
+    for i in range(count):
+        level = float(bands[i]) if bands is not None and i < len(bands) else 0.0
+        h = max(bar, r.height() * min(1.0, level))
+        x, bottom = r.x() + i * w + (w - bar) / 2, r.bottom()
+        top = min(h - bar / 2 + over, ph / py)  # down under the bottom end's edge: no seam
+        d.image(key, pill, x, bottom - h, bar, top, (0, 0, pw, top * py))
+        d.image(key, pill, x, bottom - bar / 2, bar, bar / 2, (0, ph - bar / 2 * py, pw, bar / 2 * py))
+
+
+def _time_part(lay: Look, settings: dict[str, Any], detail: float, position: float | None, length: float,
+               memo: dict):
+    """The time bar and times painted into a picture of just their box, (picture, (x, y, w, h)), made again only
+    when what it shows changes."""
+    if lay.time_bar is None or position is None or length <= 0:
+        return None
+    import math
+
+    from PySide6.QtCore import QRectF
+
+    r = _rect(lay.time_bar)
+    m = r.height() * 1.3 + 2 if lay.style == "glow" else 2.0
+    box = r.adjusted(-m, -m, m, m)
+    if lay.times is not None:
+        box = box.united(_rect(lay.times).adjusted(-2, -2, 2, 2))
+    if lay.style == "band":
+        box = box.intersected(_rect(lay.card).adjusted(-1, -1, 1, 1))
+    x0, y0 = math.floor(box.x()), math.floor(box.y())
+    bw, bh = math.ceil(box.right()) - x0, math.ceil(box.bottom()) - y0
+    share = min(1.0, max(0.0, position / length))
+    key = (id(lay), detail, int(position), int(length), round(share * r.width() * detail * 2), bw, bh)
+    found = memo.get("time")
+    if found is not None and found[0] == key:
+        return found[1], (x0, y0, bw, bh)
+    image, p = painted.canvas(bw, bh, detail)
+    p.translate(-x0, -y0)
+    _time(p, lay, settings, position, length)
     p.end()
-    return image
+    memo["time"] = (key, image)
+    return image, (x0, y0, bw, bh)
 
 
 def _sweep(r, accent):
@@ -879,7 +1034,8 @@ class NowPlayingSource(Source):
         self._turn = 0  # goes up when it sleeps: frames asked for before then are dropped
         self._busy = False
         self._linger: threading.Timer | None = None  # stops the watcher a while after it went to sleep
-        self._ready = None  # a finished frame (QImage) for the next video_frame
+        self._ready = None  # a finished frame (QImage, or a drawn.Drawn for the engine) for the next video_frame
+        self._memo: dict = {}  # frame_listed's time part, made again only when it changes
         self._last = 0.0  # when the last frame was asked for
         self._flat = False  # the bars were still (silence) in the last frame
         self._slides = False  # the words are longer than their room
@@ -1077,6 +1233,8 @@ class NowPlayingSource(Source):
             except RuntimeError:  # the pool is shutting down (SprigCast closing)
                 self._busy = False
         ready, self._ready = self._ready, None
+        if isinstance(ready, drawn.Drawn):
+            return ready
         return self._frame(ready) if ready is not None else None
 
     def _draw(self, turn: int, track: Track, settings: dict[str, Any], detail: float, t: float,
@@ -1095,9 +1253,13 @@ class NowPlayingSource(Source):
                 flat = float(levels.max(initial=0.0)) < STILL
             else:
                 flat = True
-            image = frame(base, lay, words, settings, detail, t, position, track.length, levels)
-            if alpha < 0.999:
-                image = _faded(image, alpha)
+            if alpha >= 0.999 and drawn.wanted():  # the engine draws it from a list (fading: painted)
+                image = frame_listed(base, lay, words, settings, detail, t, position, track.length, levels,
+                                     self._memo)
+            else:
+                image = frame(base, lay, words, settings, detail, t, position, track.length, levels)
+                if alpha < 0.999:
+                    image = _faded(image, alpha)
             if turn == self._turn:
                 self._slides = moving(lay)
                 self._flat = flat

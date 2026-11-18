@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Now playing (v6) with the new engine: the card is handed over as a list of pictures (cover card, words,
+  sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
+  times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to
+  make too.
 - Chat's ⋯ menu is kept and made ready ahead instead of made in the click (151 ms). Drop-downs and number boxes
   keep the wheel rule in their own wheel handling instead of an event filter each, and the Live lists fit their
   height from their layout instead of a filter, so opening a pop-up no longer sends every one of them through
