@@ -138,6 +138,7 @@ from sprigcast.core.events import (
     SourceInfo,
     Stats,
 )
+from sprigcast.core import awake
 from sprigcast.core.edit import cover
 from sprigcast.core.filters import filter_kind, settings_for
 from sprigcast.core.looks import LOOKS, SHAPES
@@ -2958,6 +2959,7 @@ class MainWindow(QMainWindow):
             self._refresh_recording_status()
         if self.streaming is not None:
             self._refresh_stream_status()
+        awake.hold(self.recording is not None or self.streaming is not None)
         self._grab_thumbs()
 
     def _changed(self, save: bool = True) -> None:
@@ -3081,6 +3083,7 @@ class MainWindow(QMainWindow):
 
         pacing.ui_rest()  # a hidden window isn't one that doesn't answer
         pacing.exit_guard()  # whatever gets stuck from here on, SprigCast ends (after saving, below)
+        awake.hold(False)
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()
