@@ -212,7 +212,7 @@ def _youtube_rest(flow: Flow, code: str) -> Fetched:
         raise SignInError("That Google account has no YouTube channel yet.")
     account = channels[0]["snippet"].get("title", "YouTube")
     key = _youtube_key(token, flow.vertical)
-    _revoke("https://oauth2.googleapis.com/revoke", {"token": token})
+    _revoke("youtube", "https://oauth2.googleapis.com/revoke", {"token": token})
     return Fetched(account=account, key=key)
 
 
@@ -282,15 +282,22 @@ def _kick_rest(flow: Flow, code: str) -> Fetched:
     stream = channel.get("stream") or {}
     if not stream.get("key"):
         raise SignInError("Kick didn't share the stream key. Sign in again and allow it.")
-    _revoke(f"https://id.kick.com/oauth/revoke?{urllib.parse.urlencode({'token': token})}", {})
+    _revoke("kick", f"https://id.kick.com/oauth/revoke?{urllib.parse.urlencode({'token': token})}", {})
     return Fetched(account=str(channel.get("slug") or "Kick"), key=stream["key"], server=str(stream.get("url") or ""))
 
 
 SIGN_IN = {"youtube": youtube, "kick": kick}
 
 
-def _revoke(url: str, fields: dict) -> None:
-    """Throw the sign-in away: SprigCast kept only the key. Best effort."""
+def _revoke(service: str, url: str, fields: dict) -> None:
+    """Throw the sign-in away: SprigCast kept only the key. Best effort.
+    Not while Stream details keeps a sign-in for the same service: Google (and maybe Kick) revoke the whole
+    grant, which would end that sign-in too. The unrevoked token simply runs out within hours."""
+    from sprigcast.output import stream_details
+
+    if stream_details.account(service):
+        log.info("sign-in: %s kept, Stream details is signed in with it too", service)
+        return
     try:
         post_form(url, fields, "the service")
     except SignInError:
