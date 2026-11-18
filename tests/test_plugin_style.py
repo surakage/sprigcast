@@ -162,3 +162,39 @@ def test_the_style_tab(app):  # noqa: F811
     assert dialog.values() == defaults
     one = SettingsDialog("Box", {"width": 4, "color": "#fff"}, {})
     assert one.findChild(QTabWidget) is None
+
+
+def test_clock_cards_take_the_look(app):  # noqa: F811
+    from PySide6.QtGui import QColor
+
+    from sprigcast.core import cards
+
+    words = cards.Words("8:42 PM", "Wed, Nov 18", badge="moon")
+    plain = cards.card_width([words])
+    assert cards.card_width([words], cards.look_of({})) == plain
+    assert cards.card_width([words], cards.look_of({"text_scale": 150})) > plain
+    assert cards.card_width([words], cards.look_of({"custom_look": "hide: badge"})) < plain
+    for settings in ({}, {"corners": "round"}, {"corners": "square", "font": "Georgia", "text_scale": 200},
+                     {"custom_look": "card: #fff8e7; border: 3 pink; shadow: on; hide: badge, vine, label"},
+                     {"custom_look": "corners: 0; size: 50%"}, {"custom_look": "}}}{{{ nonsense"}):
+        look = cards.look_of(settings)
+        width = cards.card_width([words], look)
+        image = cards.paint(width, cards.Words("4:59", "Starting in", small_on_top=True, vine=0.5), look=look)
+        assert (image.width(), image.height()) == (width, cards.H)
+    red = cards.paint(400, words, look=cards.look_of({"card_color": "#ff0000"}))
+    assert QColor.fromRgba(red.pixel(200, 200)).red() > 200
+    square = cards.paint(400, words, look=cards.look_of({"corners": "square"}))
+    assert QColor.fromRgba(square.pixel(6, 6)).alpha() > 0  # leaf-cut by default; square fills the corner
+    assert QColor.fromRgba(cards.paint(400, words).pixel(6, 6)).alpha() == 0
+
+
+def test_the_clock_plugins_have_the_style_tab(added):  # noqa: F811
+    from sprigcast.core.source import create_source
+
+    for plugin, kind in (("local_time", "local_time"), ("countdown", "countdown_timer"),
+                         ("stream_timer", "stream_timer")):
+        added(plugin)
+        source = create_source(kind, "s", {})
+        assert {"font", "text_scale", "corners", "custom_look", "accent_color"} <= set(source.defaults)
+        source.update({**source.settings, "text_scale": 160})
+        source.update({**source.settings, "custom_look": "size: 160%"})  # the same look: the same box
