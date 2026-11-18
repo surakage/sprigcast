@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 13  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 14  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -230,6 +230,7 @@ def _lib():
         "sc_engine_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload), c_int]),
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
+        "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
         "sc_engine_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_engine_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
         "sc_engine_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
@@ -543,6 +544,12 @@ class Engine:
             _check(lib.sc_engine_source_media(self.handle, key(source_id), None))
         else:
             _check(player._call(lambda media: lib.sc_engine_source_media(self.handle, key(source_id), media)))
+
+    def attach_shared(self, source_id: str, name: str | None) -> None:
+        """Source ``source_id`` shows the pictures in the shared memory block ``name`` (a browser page's, written
+        by app/browser_helper.py FrameSlot): the frame thread copies each new one onto the card itself. None goes
+        back to :meth:`upload` (the source keeps the picture it has)."""
+        _check(_need().sc_engine_source_shared(self.handle, key(source_id), name or None))
 
     def set_look(self, name: str, table) -> None:
         import numpy as np

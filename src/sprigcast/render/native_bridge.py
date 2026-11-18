@@ -238,17 +238,28 @@ class NativeCanvases:
         self._guard("upload", self.engine.upload, source_id, frame, channel_order, size, keep=keep)
 
     def attach_media(self, source_id: str, player) -> bool:
-        """``player`` (a sprigcore.MediaPlayer, or None) is where the engine takes this source's pictures from,
-        each frame, by itself. True while it does: the render thread then sends it none."""
+        """``player`` (a sprigcore.MediaPlayer, the name of a browser page's shared memory block, or None) is where
+        the engine takes this source's pictures from, each frame, by itself. True while it does: the render thread
+        then sends it none."""
         if self.failed:
             return False
-        if self._media.get(source_id) is not player:
-            if player is None:
-                del self._media[source_id]
-            else:
-                self._media[source_id] = player
+        had = self._media.get(source_id)
+        if had is player or (isinstance(player, str) and had == player):
+            return player is not None
+        if isinstance(had, str):
+            if not isinstance(player, str):  # a block let go (a new one would replace it)
+                self._guard("shared", self.engine.attach_shared, source_id, None)
+        elif had is not None and (player is None or isinstance(player, str)):  # a player let go
+            self._guard("media", self.engine.attach_media, source_id, None)
+        if player is None:
+            self._media.pop(source_id, None)
+            return False
+        self._media[source_id] = player
+        if isinstance(player, str):
+            self._guard("shared", self.engine.attach_shared, source_id, player)
+        else:
             self._guard("media", self.engine.attach_media, source_id, player)
-        return player is not None and not self.failed
+        return not self.failed
 
     def forget_gone(self, source_ids) -> None:
         for gone in (set(self._last_upload) | set(self._media)) - set(source_ids):

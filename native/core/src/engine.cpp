@@ -12,6 +12,7 @@
 #include <mmsystem.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <string>
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #  define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
@@ -58,6 +60,75 @@ struct Pic {
     std::vector<uint8_t> data;
     sc_upload how{};
     bool keep = false;
+};
+
+// A browser page's pictures in the browser helper's shared memory (sc_engine_source_shared; the writer is
+// app/browser_helper.py FrameSlot): a 64-byte header, u64 counter then u32 width, height and slot, and two slots
+// splitting the rest of the block, as the block's size rounds up to whole pages on both sides.
+struct SharedPictures {
+    static constexpr size_t HEADER = 64;
+    std::wstring name;
+    HANDLE mapping = nullptr;
+    const uint8_t *view = nullptr;
+    size_t size = 0;
+    uint64_t seen = 0;
+    bool said = false;  // a block that won't open is said once
+
+    SharedPictures() = default;
+    SharedPictures(const SharedPictures &) = delete;
+    SharedPictures &operator=(const SharedPictures &) = delete;
+    ~SharedPictures() { close(); }
+
+    void close() {
+        if (view) UnmapViewOfFile(view);
+        if (mapping) CloseHandle(mapping);
+        view = nullptr;
+        mapping = nullptr;
+        size = 0;
+        seen = 0;
+    }
+    bool open(const std::wstring &want) {
+        if (name != want) said = false;
+        close();
+        name = want;
+        mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, want.c_str());
+        if (mapping) view = static_cast<const uint8_t *>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
+        MEMORY_BASIC_INFORMATION about{};
+        if (view && VirtualQuery(view, &about, sizeof about)) size = about.RegionSize;
+        if (!view || size <= HEADER) {
+            if (!said) {
+                said = true;
+                log_line(SC_LOG_WARNING, "engine: a browser page's pictures can't be read (error " +
+                                             std::to_string(GetLastError()) + "); it keeps its picture");
+            }
+            close();
+            return false;
+        }
+        return true;
+    }
+    uint64_t counter() const {
+        const uint64_t value = *reinterpret_cast<const volatile uint64_t *>(view);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return value;
+    }
+    // The counter of a picture not taken yet, with where it is and how to read it; 0 when there is none.
+    uint64_t newest(const uint8_t **data, sc_upload *how) const {
+        if (!view) return 0;
+        const uint64_t seq = counter();
+        if (seq == 0 || seq == seen) return 0;
+        uint32_t head[3];
+        std::memcpy(head, view + 8, sizeof head);
+        const size_t capacity = (size - HEADER) / 2;
+        const size_t bytes = static_cast<size_t>(head[0]) * head[1] * 4;
+        if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384 || bytes > capacity || head[2] > 1) return 0;
+        *data = view + HEADER + head[2] * capacity;
+        *how = sc_upload{};
+        how->format = SC_FMT_RGBA;
+        how->width = static_cast<int>(head[0]);
+        how->height = static_cast<int>(head[1]);
+        how->stride = static_cast<int>(head[0]) * 4;
+        return seq;
+    }
 };
 
 struct LookData {
@@ -206,6 +277,7 @@ struct sc_engine {
     std::unordered_map<uint64_t, std::vector<uint8_t>> spare;   // buffers to reuse for the next picture
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, std::shared_ptr<void>> medias;  // sources shown straight from a media player
+    std::unordered_map<uint64_t, std::wstring> shareds;          // sources shown from another process's memory
     std::unordered_map<uint64_t, LookData> looks;
     std::unordered_map<uint64_t, MaskData> masks;
     std::shared_ptr<const SnapData> snapshot;
@@ -227,6 +299,7 @@ struct sc_engine {
     RunningTransition running[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> kept_sources;
     std::unordered_map<uint64_t, std::pair<const void *, uint64_t>> media_seen;  // source -> (player, serial taken)
+    std::unordered_map<uint64_t, SharedPictures> shared_open;  // the blocks of `shareds`, opened by the frame thread
     std::unordered_map<uint64_t, LookData> kept_looks;
     std::unordered_map<uint64_t, MaskData> kept_masks;
     std::shared_ptr<const SnapData> kept_snapshot;
@@ -276,6 +349,7 @@ void check(int code) {
 void drop_gpu(sc_engine &e) {
     e.shown.clear();
     e.media_seen.clear();  // a new device gets each player's picture again
+    for (auto &[id, block] : e.shared_open) block.seen = 0;  // and each shared block's
     for (auto &r : e.readers) r = Reader();
     for (auto &row : e.out_readers)
         for (auto &r : row) r = OutReader();
@@ -769,10 +843,12 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::shared_ptr<const SnapData> snapshot;
     std::vector<PreviewCfg> previews;
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> medias;
+    std::vector<std::pair<uint64_t, std::wstring>> shareds;
     uint64_t detach_seen;
     {
         std::lock_guard<std::mutex> lock(e.state);
         medias.assign(e.medias.begin(), e.medias.end());
+        shareds.assign(e.shareds.begin(), e.shareds.end());
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
         std::copy(std::begin(e.transitions), std::end(e.transitions), transitions);
         for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
@@ -834,6 +910,23 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             e.kept_sources.erase(id);
             check(sc_source_upload(e.dev, id, nothing, &how));
         }
+    }
+    // Browser pages (another process's shared memory): the newest picture, copied onto the card from there.
+    for (auto found = e.shared_open.begin(); found != e.shared_open.end();) {
+        const bool here = std::any_of(shareds.begin(), shareds.end(),
+                                      [&](const auto &s) { return s.first == found->first; });
+        found = here ? std::next(found) : e.shared_open.erase(found);
+    }
+    for (auto &[id, name] : shareds) {
+        SharedPictures &block = e.shared_open[id];
+        if (block.name != name && !block.open(name)) continue;
+        const uint8_t *data = nullptr;
+        sc_upload how{};
+        const uint64_t seq = block.newest(&data, &how);
+        if (!seq) continue;
+        e.kept_sources.erase(id);
+        check(sc_source_upload(e.dev, id, data, &how));
+        if (block.counter() <= seq + 1) block.seen = seq;  // else overwritten while copied: taken again next frame
     }
     std::vector<std::pair<uint64_t, std::vector<uint8_t>>> used;
     for (auto &[id, pic] : uploads) {
@@ -1240,6 +1333,7 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->uploads.erase(id);
         engine->spare.erase(id);
         engine->medias.erase(id);
+        engine->shareds.erase(id);
         engine->forgets.insert(id);
         return SC_OK;
     });
@@ -1256,6 +1350,21 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, sc_media *medi
             engine->forgets.erase(id);
         } else {
             engine->medias.erase(id);
+        }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t *name) {
+    return engine_call(engine, "sc_engine_source_shared", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_shared: no id");
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (name && *name) {
+            engine->shareds[id] = name;
+            engine->uploads.erase(id);  // a picture Python sent before isn't drawn over the page's
+            engine->forgets.erase(id);
+        } else {
+            engine->shareds.erase(id);
         }
         return SC_OK;
     });

@@ -167,6 +167,14 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   I420 upload of the same picture gives. A card that can't read NV12 textures in shaders gets them repacked in
   memory instead (logged once). `sc::source_nv12` takes a texture already on the card (a slice of a decoder's
   texture array): how the card's decoder hands pictures over.
+- **Browser pages (`sc_engine_source_shared`).** A page runs in the browser helper process and writes its
+  pictures into a shared memory block (`app/browser_helper.py` `FrameSlot`: two slots and a counter). On the
+  native engine the frame thread opens that block itself and copies each new picture straight onto the card, so
+  a page's pictures never pass through Python (`BrowserSource.engine_player` gives the block's name, and
+  `engine_tick` only notes the first paint and the sound status). A picture overwritten while it was copied is
+  taken again the next frame; a device rebuild takes the newest again. Pages drawn in SprigCast's own process
+  (`SPRIGCAST_BROWSER_IN_PROCESS`) go through Python as before. Pages are still drawn by Chromium into memory in the
+  helper: a texture shared from Chromium itself would need Qt WebEngine drawn through Qt Quick on Direct3D 11.
 - **Checks:** `tests/test_native_media.py` plays real files made with PyAV: a video with sound, a GIF looping
   from memory, a see-through WebM, a sound file, seeking, pausing, speed, shrink, sleep and wake, broken and
   missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone
@@ -180,7 +188,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
-| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Next: pictures from the card's decoder straight to the compositor, browser pages |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
 | 5 | Sound: devices, mixer, filters, sync | |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
