@@ -535,7 +535,7 @@ class StreamSession:
         c = t.canvas
         if t.enhanced is not None:
             st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
-            taps = [(canvas_id, st.push_for(canvas_id)) for canvas_id in st.canvas_ids()]
+            taps = st.frame_taps()
         else:
             fps = min(t.fps or c.fps, c.fps)
             st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,

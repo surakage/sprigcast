@@ -101,3 +101,58 @@ def test_a_lone_stream_gets_a_shared_encoder_on_the_writer(native):
     finally:
         session.stop()
     assert engine.frame_taps == [] and engine.mixer.taps == []
+
+
+def test_enhanced_broadcasting_tracks_encode_on_writers_with_aligned_keyframes(native, tmp_path):
+    """Each quality of an Enhanced Broadcasting stream is a packets-mode writer the engine feeds at its size; the
+    keyframes still land at the same instants on every track and carry the broadcast metrics."""
+    import time
+
+    import numpy as np
+    from test_enhanced import ANSWER
+
+    from sprigcast.core.scene import Canvas
+    from sprigcast.output import enhanced as e
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+    from sprigcast.render.engine import Frame
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    start = time.perf_counter()
+    st = EnhancedStreamer("Twitch", cfg, [h, v], start, user_key="live_user")
+    assert st.native
+    st._url = str(tmp_path / "out.flv")
+    taps = st.frame_taps()
+    assert [(c, size) for c, _cb, size in taps] == [("horizontal", (640, 360)), ("horizontal", (320, 180)),
+                                                     ("vertical", (360, 640))]
+    st.start()
+    for t in st.tracks:
+        assert t.encoder.wait_open()
+    for i in range(75):
+        when = start + 0.01 + i / 30
+        while time.perf_counter() < when:
+            time.sleep(0.002)
+        for c in (h, v):
+            data = np.full((c.height, c.width, 4), i * 3 % 255, np.uint8).tobytes()
+            for canvas_id, callback, _size in taps:
+                if canvas_id == c.id:
+                    callback(Frame(c.id, c.width, c.height, data, when))
+        st.push_audio(np.zeros((1600, 2), np.float32))
+    st.stop()
+    assert st.error is None, st.error
+    assert all(not t.encoder.running and t.encoder.error is None for t in st.tracks)
+    assert st.frames > 30
+
+    import av
+
+    with av.open(str(tmp_path / "out.flv")) as c:
+        sizes = [(s.codec_context.width, s.codec_context.height) for s in c.streams.video]
+        assert sizes == [(640, 360), (320, 180), (360, 640)]
+        keys, tagged = {}, []
+        for p in c.demux(video=list(range(3))):
+            if p.is_keyframe:
+                keys.setdefault(p.stream.index, []).append(round(float(p.pts * p.time_base), 2))
+                tagged.append(e.BPM_ERM_UUID in bytes(p))
+    assert keys[0] == keys[1] == keys[2] and len(keys[0]) >= 2, keys
+    assert all(tagged)

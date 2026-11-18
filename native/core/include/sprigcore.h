@@ -559,8 +559,10 @@ typedef struct sc_writer_config {
     /* 1: encode only. The only file written is a small NUT file at `target`, finished once the writer runs: the
      * streams with their codec headers as the encoders made them (a placeholder byte each, for demuxers to open it;
      * for the caller's own muxers to copy). Every encoded packet is taken with sc_writer_packet_take, in the order
-     * made (a stream, clips, files written from the same packets). A video encoder started again after a failure (stats.recoveries)
-     * puts its codec headers in its keyframes. */
+     * made (a stream, clips, files written from the same packets). A video encoder started again after a failure
+     * (stats.recoveries) puts its codec headers in its keyframes. Keyframes start every keyframe_frames frames of
+     * the frame numbers (the first picture at or past each multiple), so writers fed at their own rates key at the
+     * same instants. */
     int packets;
 } sc_writer_config;
 enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
