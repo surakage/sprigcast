@@ -13,13 +13,12 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSettings, QSize, QStandardPaths, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QColor,
     QCursor,
-    QDesktopServices,
     QGuiApplication,
     QIcon,
     QImage,
@@ -62,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.modal import modal
+from sprigcast.app.open_folder import open_folder
 from sprigcast.app.labels import literal
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
@@ -2740,7 +2740,7 @@ class MainWindow(QMainWindow):
 
             subprocess.Popen(["explorer", "/select,", str(path)])
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+        open_folder(path.parent)
 
     def shortcut_lines(self) -> list[tuple[str, str]]:
         """(keys, what) for Help → Keyboard shortcuts: every menu action with a shortcut, plus canvas moves."""
@@ -4655,7 +4655,7 @@ class MainWindow(QMainWindow):
         if self.plugins_dir is None:
             return
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.plugins_dir)))
+        open_folder(self.plugins_dir)
 
     def _add_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose image", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)")
@@ -5426,7 +5426,7 @@ class MainWindow(QMainWindow):
     def _open_recordings_folder(self) -> None:
         folder = self._recordings_folder()
         folder.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        open_folder(folder)
 
     def _on_record_clicked(self) -> None:
         if self.recording is not None and confirm_enabled(CONFIRM_RECORDING):
@@ -7173,14 +7173,11 @@ class MainWindow(QMainWindow):
         return count
 
     def _open_logs(self) -> None:
-        from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices
-
         from sprigcast.app.logbook import log_dir
 
         folder = log_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        open_folder(folder)
 
     def first_run_optimizer(self) -> None:
         """Once on a fresh install: Get started (which makes the blooms too), then Optimize for this PC

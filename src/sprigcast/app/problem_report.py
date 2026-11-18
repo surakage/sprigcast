@@ -24,8 +24,8 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.modal import modal
+from sprigcast.app.open_folder import open_folder
 from sprigcast.app import theme, tester_report
 from sprigcast.app.card import CardDialog, field_label
 
@@ -250,7 +251,7 @@ class ContentsCard(CardDialog):
         folder = self.path.with_suffix("")
         with zipfile.ZipFile(self.path) as z:
             z.extractall(folder)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        open_folder(folder)
 
     def _save_copy(self) -> None:
         picked, _ = QFileDialog.getSaveFileName(self, "Save copy", str(tester_report.default_folder() /
@@ -296,7 +297,7 @@ def _reveal(path: Path) -> None:
 
         subprocess.Popen(["explorer", "/select,", str(path)])
         return
-    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+    open_folder(path.parent)
 
 
 def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threading.Thread | None:

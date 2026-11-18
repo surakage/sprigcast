@@ -278,54 +278,96 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
 
 
 def guarded_style(base: str):
-    """The system look, with what every SprigCast style does as widgets are made: the wheel guard on each
-    drop-down and number box, and the quick lock hand-over (ui_burst)."""
-    from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QProxyStyle
+    """The system look. A plain Qt style: no Python in it (see roomy_style)."""
+    from PySide6.QtWidgets import QStyleFactory
 
-    class GuardedStyle(QProxyStyle):
-        def polish(self, target, *rest):
-            ui_burst(starts=_opens_window(target, rest))
-            if not rest and isinstance(target, (QComboBox, QAbstractSpinBox)):
-                from sprigcast.app import wheel_guard
-
-                wheel_guard.guard(target)
-            return super().polish(target, *rest)
-
-    return GuardedStyle(base)
+    fit_widgets()
+    return QStyleFactory.create(base)
 
 
 def roomy_style():
-    """Fusion, plus room inside every number box in the app.
+    """Fusion. A plain Qt style with no Python in it: what every drop-down, number box and menu needs is done
+    as each one is made (fit_widgets), not in the style.
 
-    Qt ignores stylesheet padding for the text of a spin box (its inner line edit sits flush against the
-    left edge), so numbers would touch the edge of their rounded box. Every spin box gets text margins
-    when it is polished instead: one place, so no number box anywhere can miss it.
+    The style used to be a Python subclass whose polish() Qt called for every widget: ~3,600 calls for
+    Settings → Stream, each waiting for Python's lock while the render thread and workers ran. Opening a
+    pop-up froze the window and the canvases for a second (PC 2026-11-18: Settings → Stream 1.5 s, the minute
+    at 26 fps). Measured with two busy Python threads: 1,348 ms with the Python style, 291 ms without.
     """
-    from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QMenu, QProxyStyle, QStyleFactory
+    from PySide6.QtWidgets import QStyleFactory
 
-    class RoomyStyle(QProxyStyle):
-        def polish(self, target, *rest):
-            ui_burst(starts=_opens_window(target, rest))  # a window or pop-up being built: hand the lock over quickly
-            if not rest and isinstance(target, QMenu) and not target.testAttribute(
-                    Qt.WidgetAttribute.WA_TranslucentBackground):
-                # Every menu is a true rounded card: no square window corners or square shadow behind it.
-                target.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-                target.setWindowFlags(target.windowFlags() | Qt.WindowType.FramelessWindowHint
-                                      | Qt.WindowType.NoDropShadowWindowHint)
-            if not rest and isinstance(target, (QComboBox, QAbstractSpinBox)):
-                from sprigcast.app import wheel_guard
-
-                wheel_guard.guard(target)  # its own filter: no app-wide one (see wheel_guard)
-            if not rest and isinstance(target, QAbstractSpinBox):
-                edit = target.lineEdit()
-                if edit is not None:
-                    centred = bool(target.alignment() & Qt.AlignmentFlag.AlignHCenter)
-                    edit.setTextMargins(*((NUMBER_PAD // 2, 0, NUMBER_PAD // 2, 0) if centred
-                                          else (NUMBER_PAD, 0, 4, 0)))
-            return super().polish(target, *rest)
-
+    fit_widgets()
     # A new one each time: QApplication.setStyle takes ownership and deletes the style it replaces.
-    return RoomyStyle(QStyleFactory.create("Fusion"))
+    return QStyleFactory.create("Fusion")
+
+
+_fitted = False
+
+
+def fit_widgets() -> None:
+    """Once: each drop-down and number box gets the wheel guard as it's made (and a number box room for its
+    number, see wheel_guard), and each menu is a rounded card before it's first shown.
+    These hook the Python calls that make or show them, so Qt never calls into Python for every widget."""
+    global _fitted
+    if _fitted:
+        return
+    _fitted = True
+    from PySide6.QtWidgets import (QAbstractSpinBox, QComboBox, QDoubleSpinBox, QMenu, QMenuBar, QPushButton,
+                                   QSpinBox, QSystemTrayIcon, QToolButton)
+
+    from sprigcast.app import wheel_guard
+
+    for cls in (QComboBox, QSpinBox, QDoubleSpinBox):
+        made = cls.__init__
+
+        def init(self, *args, _made=made, **kwargs):
+            _made(self, *args, **kwargs)
+            wheel_guard.guard(self)
+        cls.__init__ = init
+    aligned = QAbstractSpinBox.setAlignment
+
+    def set_alignment(self, *args, **kwargs):
+        aligned(self, *args, **kwargs)
+        wheel_guard.number_room(self)  # centred: room on both sides
+    QAbstractSpinBox.setAlignment = set_alignment
+
+    def before(cls, name: str, menu_at) -> None:
+        call = getattr(cls, name)
+
+        def hooked(self, *args, _call=call, **kwargs):
+            menu = menu_at(self, args)
+            if menu is not None:
+                rounded_menus(menu)
+            result = _call(self, *args, **kwargs)
+            if isinstance(result, QMenu):  # addMenu("title") makes the submenu
+                rounded_menus(result)
+            return result
+        setattr(cls, name, hooked)
+
+    itself = lambda self, args: self if isinstance(self, QMenu) else None  # noqa: E731
+    given = lambda self, args: next((a for a in args if isinstance(a, QMenu)), None)  # noqa: E731
+    before(QMenu, "exec", itself)
+    before(QMenu, "popup", itself)
+    before(QMenu, "addMenu", given)
+    before(QMenuBar, "addMenu", given)
+    before(QPushButton, "setMenu", given)
+    before(QToolButton, "setMenu", given)
+    before(QSystemTrayIcon, "setContextMenu", given)
+
+
+def rounded_menus(menu) -> None:
+    """Every menu a true rounded card: no square window corners or square shadow behind it (and its submenus)."""
+    from PySide6.QtWidgets import QMenu
+
+    for each in [menu, *menu.findChildren(QMenu)]:
+        try:
+            if each.isVisible() or each.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground):
+                continue  # done already (or showing: new window flags would hide it)
+            each.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            each.setWindowFlags(each.windowFlags() | Qt.WindowType.FramelessWindowHint
+                                | Qt.WindowType.NoDropShadowWindowHint)
+        except RuntimeError:  # deleted meanwhile
+            continue
 
 
 # While the window builds widgets (Settings, any pop-up), Qt calls back into Python thousands of times
@@ -344,18 +386,6 @@ BURST_MAX_S = 3.0
 _burst_until = 0.0
 _burst_began = 0.0
 _usual_switch: float | None = None
-
-
-def _opens_window(target, rest) -> bool:
-    """A polish of a window being shown (a dialog or pop-up opening): the start of a burst of widgets. Not a
-    widget styled before it's placed (no parent yet, so also a "window"): Live screen pieces are made again
-    on refreshes that way."""
-    if rest:
-        return False
-    try:
-        return bool(target.isWindow() and target.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide))
-    except (AttributeError, RuntimeError):  # not a widget, or one already deleted
-        return False
 
 
 def ui_burst(starts: bool = True) -> None:

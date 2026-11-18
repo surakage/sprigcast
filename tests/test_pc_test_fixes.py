@@ -246,7 +246,7 @@ def test_a_wheel_over_an_unclicked_drop_down_never_changes_it(qapp):
 
     wheel_guard.install(qapp)
     before = qapp.style().name()
-    qapp.setStyle(theme.guarded_style(before))  # the system look: the guard still comes with polishing
+    qapp.setStyle(theme.guarded_style(before))  # the system look: boxes still get the guard as they're made
     page = QWidget()
     lay = QVBoxLayout(page)
     other, combo, spin = QLineEdit(), QComboBox(), QSpinBox()
@@ -257,6 +257,7 @@ def test_a_wheel_over_an_unclicked_drop_down_never_changes_it(qapp):
     page.show()
     other.setFocus()
     qapp.processEvents()
+    wheel_guard.settle()  # (on a timer just after they're made)
     assert combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
     assert spin.focusPolicy() != Qt.FocusPolicy.WheelFocus
     qapp.sendEvent(combo, _wheel_event())
@@ -294,8 +295,8 @@ def test_no_app_wide_python_hooks_and_the_ui_gets_the_lock_while_building(qapp):
 
 def test_restyling_on_the_live_screen_never_keeps_the_quick_hand_over_on(qapp, monkeypatch):
     """Build 44094725157's heavy run: any restyle (a label recoloured every second) restarted the burst, so the
-    lock changed hands every 0.1 ms for good and the canvases fell to 14-41 fps. Only a window being shown
-    starts one now, and one never lasts more than BURST_MAX_S."""
+    lock changed hands every 0.1 ms for good and the canvases fell to 14-41 fps. Only a pop-up opening starts
+    one now (modal(), Settings), and one never lasts more than BURST_MAX_S."""
     import sys
 
     from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QWidget
@@ -320,7 +321,8 @@ def test_restyling_on_the_live_screen_never_keeps_the_quick_hand_over_on(qapp, m
         assert sys.getswitchinterval() == usual
     dialog = QDialog(window)
     QVBoxLayout(dialog).addWidget(QLabel("Settings"))
-    dialog.show()  # a pop-up: a burst while its widgets are made
+    theme.ui_burst()  # a pop-up opening (modal() starts one): a burst while its widgets are made
+    dialog.show()
     qapp.processEvents()
     assert sys.getswitchinterval() <= theme.BURST_SWITCH_S
     clock = [theme._burst_began + theme.BURST_MAX_S + 1]
@@ -332,3 +334,31 @@ def test_restyling_on_the_live_screen_never_keeps_the_quick_hand_over_on(qapp, m
     assert sys.getswitchinterval() == usual
     dialog.close()
     window.close()
+
+
+def test_the_style_has_no_python_in_it_and_menus_are_still_rounded(qapp):
+    """PC 2026-11-18: opening any pop-up paused the canvases about a second (Settings → Stream 1.5 s). Qt called
+    the Python style's polish() for each of ~3,600 widgets, each waiting for Python's lock. The style is plain
+    Qt now; drop-downs, number boxes and menus get what they need as they're made or shown."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox, QDoubleSpinBox, QMenu, QPushButton, QSpinBox
+
+    from sprigcast.app import theme, wheel_guard
+
+    style = theme.roomy_style()
+    assert type(style).__module__.startswith("PySide6")  # no Python subclass: Qt never calls back per widget
+    for box in (QComboBox(), QSpinBox(), QDoubleSpinBox()):
+        assert box.property(wheel_guard.GUARDED)
+    spin = QSpinBox()
+    assert spin.lineEdit().textMargins().left() == theme.NUMBER_PAD
+    spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    assert spin.lineEdit().textMargins().left() == theme.NUMBER_PAD // 2
+    menu = QMenu()
+    sub = menu.addMenu("More")
+    assert sub.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    button_menu = QMenu()
+    QPushButton().setMenu(button_menu)
+    assert button_menu.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    other = QMenu()
+    theme.rounded_menus(other)
+    assert other.windowFlags() & Qt.WindowType.FramelessWindowHint

@@ -14,6 +14,7 @@ from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from sprigcast.app import theme
+from sprigcast.app.open_folder import open_folder
 
 ART_FOLDER = Path(__file__).with_name("art")
 _pictures: dict[str, QPixmap] = {}
@@ -375,10 +376,7 @@ class SavedNote(QWidget):
         if self.on_click is not None:
             self.on_click()
         elif self.folder is not None:
-            from PySide6.QtCore import QUrl
-            from PySide6.QtGui import QDesktopServices
-
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.folder)))
+            open_folder(self.folder)
         self._timer.stop()
         self._fade_to(0.0, 200)
 
