@@ -1522,6 +1522,25 @@ def event_group(name: str) -> str:
             "sources": "source", "plugins": "plugin", "effect": "filter"}.get(head, head)
 
 
+# Actions that only look: answering one changes nothing, so it needn't start a full look for events
+# (control_server soon). An app reconnecting 23 times a minute to ask record.status started a full look
+# (every source's settings written out as JSON) each time (PC native run, 2026-11-17).
+LOOKING_SUFFIXES = (".list", ".get", ".status", ".info", ".actions", ".stats", ".current", ".kinds")
+
+
+def may_change(message: Any) -> bool:
+    """Whether running this message could change anything (a welcome, an events choice or only looking can't)."""
+    if not isinstance(message, dict):
+        return False
+    if "steps" in message:
+        steps = message["steps"] if isinstance(message["steps"], list) else []
+        return any(may_change(step) for step in steps if isinstance(step, dict) and "do" in step)
+    name = message.get("do")
+    if name is None:
+        return False
+    return not (isinstance(name, str) and name.endswith(LOOKING_SUFFIXES))
+
+
 @dataclass
 class NativeSession:
     """One app on the SprigCast API. receive() yields texts to send or a Close."""
@@ -1535,6 +1554,7 @@ class NativeSession:
     events: set[str] = field(default_factory=lambda: set(EVENT_GROUPS))
     salt: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     challenge: str = field(default_factory=lambda: secrets.token_urlsafe(24))
+    may_change: bool = True  # whether the last message received could have changed something (may_change)
 
     def hello(self) -> str:
         hello: dict[str, Any] = {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
@@ -1568,6 +1588,7 @@ class NativeSession:
         if not isinstance(message, dict):
             yield Close(4002, "Messages must be JSON objects.")
             return
+        self.may_change = may_change(message)
         if not self.welcomed:
             if "pair" in message:
                 device = self.pairing.redeem(message["pair"], message.get("name", "")) if self.pairing else None

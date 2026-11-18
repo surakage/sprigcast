@@ -142,3 +142,56 @@ def test_a_hole_is_filled_with_one_picture_and_frames_never_go_back(player_lib, 
     lumas = [int(frame.to_ndarray()[:H].mean()) for frame in frames]
     assert abs(lumas[0] - 20) <= 4 and all(abs(v - 200) <= 4 for v in lumas[1:10])
     assert all(abs(v - 90) <= 4 for v in lumas[10:])
+
+
+def _next_output_frame(eng, within: float) -> bool:
+    """Whether output slot 0 of canvas 0 hands over a frame within `within` seconds."""
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        if eng.take_output(0, 0, 64, 36) is not None:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_an_output_linked_to_a_writer_is_written_without_python(player_lib, tmp_path):  # noqa: F811
+    """Phase 4: the frame thread hands each output frame to the engine's own writer itself, numbered by when it was
+    drawn; nothing comes back to Python unless asked (keep), and a writer let go never harms the engine."""
+    assert sprigcore.media_ready()
+    path = tmp_path / "linked.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", 64, 36, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=30)
+    with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+        eng.set_canvas(0, 64, 36)
+        eng.set_output(0, 0, 64, 36)
+        eng.set_output(0, 1, 32, 18)
+        with pytest.raises(sprigcore.NativeError):
+            eng.link_output(0, 1, writer, time.perf_counter(), 30)  # not the writer's size
+        start = time.perf_counter()
+        eng.link_output(0, 0, writer, start, 30, fill_seconds=5.0)
+        time.sleep(1.5)
+        assert eng.take_output(0, 0, 64, 36) is None  # the writer had them all
+        eng.link_output(0, 0, writer, start, 30, keep=True, fill_seconds=5.0)  # the same writer: numbering goes on
+        assert _next_output_frame(eng, 5.0)
+        last, linked = eng.unlink_output(0, 0)
+        assert linked and last >= 25
+        assert eng.unlink_output(0, 0) == (-1, False)
+        writer.finish()
+        assert writer.wait(20)
+        stats = writer.stats()
+        assert stats.state_name == "finished", stats.error_text
+        assert stats.last_pts == last and last - 2 <= stats.frames_written <= last + 1  # from frame 0 or 1, no holes
+        # A writer let go while linked: the link ends by itself, the engine carries on.
+        other = sprigcore.Writer(str(tmp_path / "gone.mkv"), "libx264", 64, 36, fps=30, audio_tracks=0,
+                                 video_options={"preset": "ultrafast"})
+        eng.link_output(0, 0, other, time.perf_counter(), 30)
+        time.sleep(0.3)
+        other.close()
+        time.sleep(0.5)
+        assert _next_output_frame(eng, 5.0)  # the link ended: frames come back again
+        assert eng.unlink_output(0, 0)[1] is False
+        assert not eng.stats()["faulted"]
+    writer.close()
+    with av.open(str(path)) as f:
+        assert len(list(f.decode(video=0))) == stats.frames_written

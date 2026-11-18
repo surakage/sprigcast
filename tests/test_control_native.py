@@ -394,3 +394,36 @@ def test_the_half_second_watch_writes_settings_out_only_after_a_change(monkeypat
     server._edited = True
     server.notify(full=False)
     assert server.native.calls == [True] + [False] * (control_server.FULL_EVERY - 1) + [True, True]
+
+
+def test_only_asking_never_starts_a_full_look():
+    """PC native run 2026-11-17: an app reconnecting 23 times a minute to ask a status started a full look (every
+    source's settings as JSON on the window's thread) each time; only a message that may change something does."""
+    from sprigcast.app import control_server
+    from sprigcast.control.native import may_change
+
+    assert not may_change({"do": "record.status"}) and not may_change({"do": "sources.list"})
+    assert not may_change({"auth": "x"}) and not may_change({"events": "all"})
+    assert may_change({"do": "record.start"}) and may_change({"do": "item.hide", "item": "Cam"})
+    assert not may_change({"steps": [{"do": "stream.status"}, {"wait": 10}]})
+    assert may_change({"steps": [{"do": "stream.status"}, {"do": "bloom.show", "bloom": "BRB"}]})
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+
+        def sendTextMessage(self, text):
+            self.sent.append(text)
+
+    server = control_server.ControlServer.__new__(control_server.ControlServer)
+    server._notify_queued, server._edited = False, False
+    looks = []
+    server.soon = lambda: looks.append(1)
+    socket = Socket()
+    session = NativeSession(api=NativeApi(FakeHost(_collection())))
+    server.sessions = {socket: session}
+    server._received(socket, json.dumps({"events": "all"}))
+    server._received(socket, json.dumps({"do": "record.status", "id": 1}))
+    assert socket.sent and looks == []
+    server._received(socket, json.dumps({"do": "record.start", "id": 2}))
+    assert looks
