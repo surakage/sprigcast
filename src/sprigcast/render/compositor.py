@@ -866,6 +866,7 @@ class Compositor:
         self.targets: dict[str, _CanvasTarget] = {}
         self._spare: list[tuple[_CanvasTarget, float]] = []  # sprig targets let go of, kept for reuse (prune)
         self._spare_textures: list[tuple] = []  # sleeping sources' textures, kept for reuse (forget)
+        self._to_free: list = []  # spares past their time, freed a few each frame (free_some)
         self.nv12_program = self.ctx.program(vertex_shader=NV12_VERTEX, fragment_shader=NV12_FRAGMENT)
         self.nv12_vao = self.ctx.vertex_array(self.nv12_program, [])
         self.nv12_targets: dict[tuple[str, tuple[int, int]], _Nv12Target] = {}
@@ -1643,18 +1644,40 @@ class Compositor:
             if kind == "canvas" and key.startswith("part:"):
                 self._keep_spare(target, now)
             else:
-                target.release()
+                self._to_free.append(target)  # a few each frame (free_some): an ended recording's copies too
         textures = [entry for entry in self._spare_textures if now - entry[1] > self.SPARE_KEEP_S]
         if textures:
             self._spare_textures = [e for e in self._spare_textures if now - e[1] <= self.SPARE_KEEP_S]
-            for tex, _since in textures:
-                tex.release()
+            self._to_free += [tex for tex, _since in textures]
         old = [entry for entry in self._spare if now - entry[1] > self.SPARE_KEEP_S]
         if old:
             self._spare = [entry for entry in self._spare if now - entry[1] <= self.SPARE_KEEP_S]
-            for target, _since in old:
-                target.release()
+            self._to_free += [target for target, _since in old]
+        self.free_some()
         return len(stale)
+
+    # Spares let go of all at once (a bloom's sprigs and pictures, a minute after a switch or a Stop) held the
+    # graphics card 300+ ms on the PC: "graphics card behind 311.7 ms" 50-70 s after a Stop or a switch,
+    # 2026-11-18. They're freed a little each frame instead (free_some, called by the engine every tick).
+    FREE_PER_TICK = 16 * 1024 * 1024
+
+    def free_some(self) -> int:
+        """Free up to FREE_PER_TICK bytes of what's waiting to be freed (at least one thing). Returns how many."""
+        freed = spent = 0
+        while self._to_free:
+            thing = self._to_free[-1]
+            size = getattr(thing, "size", None)
+            try:
+                nbytes = int(size[0]) * int(size[1]) * int(getattr(thing, "components", 4) or 4)
+            except (TypeError, ValueError, IndexError):
+                nbytes = self.FREE_PER_TICK // 4
+            if freed and spent + nbytes > self.FREE_PER_TICK:
+                break
+            self._to_free.pop()
+            thing.release()
+            spent += nbytes
+            freed += 1
+        return freed
 
     def release(self) -> None:
         for tex in self.textures.values():
@@ -1669,6 +1692,9 @@ class Compositor:
         for tex, _since in self._spare_textures:
             tex.release()
         self._spare_textures = []
+        for thing in self._to_free:
+            thing.release()
+        self._to_free = []
         for nv12 in self.nv12_targets.values():
             nv12.release()
         for scaled in self.scaled_targets.values():

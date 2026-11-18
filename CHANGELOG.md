@@ -150,6 +150,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Settings (a destination, the Sound card's gear) and Hotkeys show their window at once and fill it in just after;
   the Stream and Audio pages are made in parts a tick apart; a warm-up a little after start (not while live) makes
   the first open about half as long. Instant replay sends a tiny clear picture on wake (was a full frame, 47-68 ms).
+- Spare sprig targets and textures past their minute (and an ended recording's copies) are freed a little each
+  frame, not all at once: that held the graphics card 300+ ms about a minute after a Stop or a bloom switch.
 - The PNGtuber folder is read again on a worker (the window answers from the last read), with one disk read per
   folder; Freeze hotkeys on big sprigs no longer hold the window (each sprig walked once, one commit).
 - Texts, Local time and the stream timer keep their picture while their bloom is off screen, and draw again only
