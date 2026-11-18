@@ -36,7 +36,7 @@ MODULES = [
     "sprigcast.app.getting_started", "sprigcast.app.media_dialog", "sprigcast.app.game_dialog",
     "sprigcast.app.camera_popup", "sprigcast.app.web_page_dialog", "sprigcast.app.browser_quick",
     "sprigcast.app.source_record_box", "sprigcast.app.signin_dialog", "sprigcast.app.settings_file",
-    "sprigcast.app.projector",
+    "sprigcast.app.projector", "sprigcast.app.stream_details_dialog",
 ]
 WINDOWS_ONLY = ["sprigcast.output.nvenc_d3d11"]
 
