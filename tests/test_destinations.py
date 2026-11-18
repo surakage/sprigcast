@@ -870,3 +870,54 @@ def test_a_view_of_the_bloom_on_air_shares_the_canvas_already_drawn():
     engine.set_view("camera", "v", "bloom", "b")  # a bloom that isn't on air: drawn on its own
     engine._render_views(fake, {}, 10.2, taps, {"v": shared})
     assert fake.drawn == ["view:camera", "view:camera"]
+
+
+def test_edit_rows_all_draw_and_take_clicks_in_a_short_list(app, tmp_path, monkeypatch):
+    """PC test 2026-11-18 (#593): in Edit the list was ~140 px tall but only its top ~80 px drew (one row),
+    a blank band hid the second row and its tools, and clicks there missed."""
+    import keyring
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    col.outputs = [Output(id="yt", type="stream", service="youtube", canvas="horizontal"),
+                   Output(id="tw", type="stream", service="twitch", canvas="horizontal"),
+                   Output(id="yt2", type="stream", service="youtube", canvas="vertical")]
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.resize(1280, 720)
+        w.show()
+        w._set_mode("live")
+        side = w.live_side
+        side.set_editing(True)
+        for _ in range(5):
+            app.processEvents()
+        scroll = side.places_scroll
+        content = scroll._content.sizeHint().height()
+        assert scroll.height() < content  # short: the list scrolls
+        assert scroll.viewportMargins().bottom() == 0 and scroll.viewport().height() == scroll.height()
+        gear = side.place_tools["tw"]["settings"]  # the second row's tools
+        spot = gear.mapTo(scroll.viewport(), gear.rect().center())
+        if spot.y() < scroll.viewport().height():  # on screen: a click there lands on it
+            assert scroll.viewport().childAt(spot) is gear or gear.isAncestorOf(scroll.viewport().childAt(spot))
+        bar = scroll.verticalScrollBar()
+        tops = scroll.row_tops()
+
+        def wheel(dy: int) -> None:
+            centre = QPointF(scroll.width() / 2, scroll.height() / 2)
+            scroll.wheelEvent(QWheelEvent(centre, scroll.mapToGlobal(centre), QPoint(), QPoint(0, dy),
+                                          Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                          Qt.ScrollPhase.NoScrollPhase, False))
+
+        wheel(-120)  # one notch down: the next row's top (or the end)
+        assert bar.value() == min(tops[1], bar.maximum())
+        wheel(-60)  # half a notch (a touchpad): nothing yet
+        assert bar.value() == min(tops[1], bar.maximum())
+        wheel(120)
+        wheel(120)
+        assert bar.value() == 0
+    finally:
+        w.close()
