@@ -117,6 +117,9 @@ struct Core {
     // again after a graphics reset, about a second) holds the newest picture longer instead of losing frames.
     std::chrono::steady_clock::time_point taken_at = std::chrono::steady_clock::now();
     uint64_t frames_held = 0;  // frames written as a repeat of the newest picture while the thread was busy
+    // While the encoder opens again (to_memory), pictures from memory queue past queue_limit, up to REOPEN_BYTES of
+    // them, so the file keeps moving pictures instead of a still (PC 2026-11-18: up to 0.4 s still).
+    bool reopening = false;
     int64_t hole_from = -1;    // frames of textures lost with the encoder on the card start here (writer thread)
     double write_seconds = 0, longest_write = 0;
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
@@ -154,7 +157,7 @@ struct Core {
     void to_memory(const std::string &why, bool failed = true);
     std::atomic<bool> leave{false};  // writers_leave_device: the engine let go of this encoder's device
     void upload(FramePtr &picture);
-    void write_packets(AVCodecContext *enc, AVStream *stream);
+    void write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use = nullptr);
     void encode_video(AVFrame *frame, bool key = false);
     void encode_sound(Track &t, bool flush);
     void close_all(bool trailer);
@@ -314,31 +317,32 @@ void Core::upload(FramePtr &picture) {
     picture = std::move(card);
 }
 
-void Core::write_packets(AVCodecContext *enc, AVStream *stream) {
+void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
+    AVPacket *p = use ? use : pkt;  // the helper finishing an old encoder brings its own
     for (;;) {
-        const int r = ff.avcodec_receive_packet(enc, pkt);
+        const int r = ff.avcodec_receive_packet(enc, p);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return;
         must(r, "encoding");
         if (packets) {  // for the caller to take: copied out, in the encoder's own time base
             Out o;
             o.track = stream->index;
-            o.key = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-            o.pts = pkt->pts;
-            o.dts = pkt->dts;
+            o.key = (p->flags & AV_PKT_FLAG_KEY) != 0;
+            o.pts = p->pts;
+            o.dts = p->dts;
             o.tb = enc->time_base;
-            o.data.assign(pkt->data, pkt->data + pkt->size);
-            ff.av_packet_unref(pkt);
+            o.data.assign(p->data, p->data + p->size);
+            ff.av_packet_unref(p);
             std::lock_guard<std::mutex> hold(lock);
             if (outs.size() >= 4096) throw WriteError("the encoded packets weren't taken for a minute");
             bytes += o.data.size();
             outs.push_back(std::move(o));
             continue;
         }
-        ff.av_packet_rescale_ts(pkt, enc->time_base, stream->time_base);
-        pkt->stream_index = stream->index;
-        const int size = pkt->size;
+        ff.av_packet_rescale_ts(p, enc->time_base, stream->time_base);
+        p->stream_index = stream->index;
+        const int size = p->size;
         const double began = now_s();
-        const int w = ff.av_interleaved_write_frame(out, pkt);  // takes the packet's data, leaves it blank
+        const int w = ff.av_interleaved_write_frame(out, p);  // takes the packet's data, leaves it blank
         const double spent = now_s() - began;
         if (w < 0) throw WriteError("writing: " + av_text(w));
         std::lock_guard<std::mutex> hold(lock);
@@ -403,25 +407,13 @@ void Core::to_memory(const std::string &why, bool failed) {
                                              : "; the video encoder starts again from memory and the file goes on"));
     const auto began = std::chrono::steady_clock::now();
     uint64_t held_before = 0;
-    {
-        std::lock_guard<std::mutex> hold(lock);
-        held_before = frames_held;
-    }
-    if (venc) {
-        try {  // what it had already made goes in the file
-            ff.avcodec_send_frame(venc, nullptr);
-            write_packets(venc, vstream);
-        } catch (const WriteError &) {
-            throw;
-        } catch (...) {  // a broken encoder may not finish: its last frames are lost
-        }
-        ff.avcodec_free_context(&venc);
-    }
     AVBufferRef *frames_ctx = nullptr, *device_ctx = nullptr;
     std::vector<void *> gone;
     void *old_device = nullptr;
     {
         std::lock_guard<std::mutex> hold(lock);  // feed_texture takes hw_frames under it
+        held_before = frames_held;
+        reopening = true;
         std::swap(frames_ctx, hw_frames);
         std::swap(device_ctx, hw_device);
         std::swap(old_device, device);  // nothing of the old device is held any more: it can go (PC 2026-11-18)
@@ -429,6 +421,49 @@ void Core::to_memory(const std::string &why, bool failed) {
         on_card = false;
         if (failed) ++recoveries;
     }
+    // The old encoder finishes (its last frames go in the file) on a helper thread while the new one opens here:
+    // the wait is the longer of the two, not both (PC 2026-11-18: up to 912 ms, the picture still meanwhile). The new
+    // encoder writes nothing until the old one is done, so the file's order holds.
+    AVCodecContext *old = venc;
+    venc = nullptr;
+    std::exception_ptr old_failed;
+    double flush_ms = 0.0;
+    std::thread finishing_old;
+    if (old) {
+        finishing_old = std::thread([&, old]() mutable {
+            sc::name_thread(L"sprigcast-writer-finish");
+            const auto from = std::chrono::steady_clock::now();
+            AVPacket *own = ff.av_packet_alloc();
+            try {
+                if (own) {
+                    ff.avcodec_send_frame(old, nullptr);
+                    write_packets(old, vstream, own);
+                }
+            } catch (const WriteError &) {
+                old_failed = std::current_exception();
+            } catch (...) {  // a broken encoder may not finish: its last frames are lost
+            }
+            if (own) ff.av_packet_free(&own);
+            ff.avcodec_free_context(&old);
+            flush_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count();
+        });
+    }
+    std::exception_ptr open_failed;
+    try {
+        i420.reset();
+        if (reopen_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(reopen_ms));  // tests: slow reopen
+        const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
+        if (!codec) throw Error("no video encoder named " + video_codec);
+        // Packets mode: the caller's muxers hold the first encoder's headers, which a new encoder may not match. Its
+        // headers go in the keyframes themselves instead (decoders take headers that come with the pictures).
+        open_video(codec, !packets && (out->oformat->flags & AVFMT_GLOBALHEADER) != 0);
+    } catch (...) {
+        open_failed = std::current_exception();
+    }
+    const double open_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    if (finishing_old.joinable()) finishing_old.join();
+    // The old device's last references go once its encoder is gone.
     if (frames_ctx) ff.av_buffer_unref(&frames_ctx);
     if (device_ctx) ff.av_buffer_unref(&device_ctx);
 #if defined(_WIN32)
@@ -437,13 +472,12 @@ void Core::to_memory(const std::string &why, bool failed) {
 #else
     (void)old_device;
 #endif
-    i420.reset();
-    if (reopen_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(reopen_ms));  // tests: a slow reopen
-    const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
-    if (!codec) throw Error("no video encoder named " + video_codec);
-    // Packets mode: the caller's muxers hold the first encoder's headers, which a new encoder may not match. Its
-    // headers go in the keyframes themselves instead (decoders take headers that come with the pictures).
-    open_video(codec, !packets && (out->oformat->flags & AVFMT_GLOBALHEADER) != 0);
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        reopening = false;
+    }
+    if (old_failed) std::rethrow_exception(old_failed);
+    if (open_failed) std::rethrow_exception(open_failed);
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - began);
     uint64_t held = 0;
     {
@@ -452,7 +486,9 @@ void Core::to_memory(const std::string &why, bool failed) {
         taken_at = std::chrono::steady_clock::now();
     }
     sc::log_line(SC_LOG_INFO, "writer: " + target + ": the video encoder goes on from memory (opened again in " +
-                                  std::to_string(took.count()) + " ms; " + std::to_string(held) +
+                                  std::to_string(took.count()) + " ms: the new one opened in " +
+                                  std::to_string(static_cast<int>(open_ms)) + " ms while the old one finished in " +
+                                  std::to_string(static_cast<int>(flush_ms)) + " ms; " + std::to_string(held) +
                                   " frames held the newest picture meanwhile, none lost)");
 }
 
@@ -663,6 +699,18 @@ int hold_newest(Core &c, int64_t last) {
     return 1;
 }
 
+// While the encoder opens again, more pictures from memory may wait than queue_limit: up to REOPEN_BYTES of them
+// (about half a second at 1080p60, more when smaller), so the file goes on moving rather than holding a still. Back
+// to queue_limit as soon as it's open; the extra frames are freed as they're written. `c.lock` held.
+constexpr size_t REOPEN_BYTES = size_t{96} << 20;
+constexpr size_t REOPEN_MOST = 90;
+bool reopen_room(const Core &c) {
+    if (!c.reopening) return false;
+    const size_t frame = static_cast<size_t>(c.width) * static_cast<size_t>(c.height) * 3 / 2;
+    const size_t room = std::clamp(frame ? REOPEN_BYTES / frame : c.queue_limit, c.queue_limit, REOPEN_MOST);
+    return c.pictures.size() < room;
+}
+
 // One picture for frames first .. last (one frame, or a hole filled with it). Never waits on the writer thread.
 int feed(Core &c, const uint8_t *nv12, int stride, int64_t first, int64_t last) {
     FramePtr f;
@@ -674,7 +722,7 @@ int feed(Core &c, const uint8_t *nv12, int stride, int64_t first, int64_t last) 
             ++c.frames_late;
             return SC_WRITER_LATE;
         }
-        if (c.pictures.size() >= c.queue_limit) {
+        if (c.pictures.size() >= c.queue_limit && !reopen_room(c)) {
             const int held = hold_newest(c, last);
             if (held == 1) return SC_OK;
             if (held == 0) {
