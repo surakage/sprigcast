@@ -554,6 +554,7 @@ class PngtuberSource(Source):
     defaults = {"folder": "", "idle_picture": "", "talk_picture": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.08,
                 "bounce": True, "blink": True}
     choices = {"listen_to": _listen_choices}
+    placeholders = {"folder": "Sloth (built in)"}  # an empty Folder is the sample sloth
     sleeps = True  # off air it stops listening and lets the pictures go
     slow_wake = True  # a switch to a bloom showing it waits (briefly) for its pictures to load again
     own_sprig = (W, H)
