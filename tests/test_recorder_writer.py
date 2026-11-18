@@ -100,6 +100,11 @@ def test_only_files_on_the_native_engine_use_it(native, monkeypatch, tmp_path):
     assert not rec.uses_writer()
     monkeypatch.setenv("SPRIGCAST_ENGINE", "native")
     monkeypatch.setattr(Recorder, "uses_direct", lambda self: True)  # SprigCast's own NVENC takes card frames
+    assert rec.uses_writer()  # with FFmpeg's NVENC on the engine's device (_card_device)
+    monkeypatch.setenv("SPRIGCAST_NO_CARD_WRITER", "1")
+    assert not rec.uses_writer()
+    monkeypatch.delenv("SPRIGCAST_NO_CARD_WRITER")
+    monkeypatch.setenv("SPRIGCAST_CPU_CONVERT", "1")  # no NV12 from the engine: no frames on the card either
     assert not rec.uses_writer()
     from sprigcast.output.replay import ReplayBuffer
     from sprigcast.output.stream import Streamer
@@ -214,3 +219,122 @@ def test_a_paused_or_stopping_recording_is_unlinked(native, tmp_path, monkeypatc
     assert bridge.link_taps("h", taps) == set() and not rec.linked and len(bridge.engine.unlinks) == 2
     bridge.fail("test")  # nothing linked is left behind
     assert rec.error is None
+
+
+class _CardWriter:
+    """Stands in for a sprigcore.Writer whose encoder takes the engine's frames on the card."""
+
+    on_card = True
+
+    def stats(self):
+        class _S:
+            last_pts = 5
+
+        return _S()
+
+
+def _card_recorder(tmp_path, name="card.mkv"):
+    rec = Recorder(tmp_path / name, W, H, FPS, 800, "h264_nvenc", 0.0, "mkv")
+    rec.writer, rec._opening = _CardWriter(), False
+    return rec
+
+
+def test_frames_on_the_card_go_only_to_a_card_writer_that_takes_them_alone(native, tmp_path, monkeypatch):
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+
+    monkeypatch.setattr(sprigcore, "Engine", _LinkEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"], bridge.can_share = 0, True
+    card, memory = ((W, H), True), ((W, H), False)
+    bridge.set_outputs("h", [card, memory])
+    rec = _card_recorder(tmp_path)
+    assert rec.wants_gpu_frames()
+    assert bridge.link_taps("h", [(rec.push_frame, card)]) == {id(rec)} and rec.linked
+    assert bridge.engine.links[(0, bridge._outputs[0][card])][4] is False  # nothing else takes them
+    # A recording through PyAV's writer of the same size can't take card frames from the engine.
+    plain = Recorder(tmp_path / "plain.mkv", W, H, FPS, 800, "libx264", 0.0, "mkv")
+    plain.writer, plain._opening = object(), False
+    rec2 = _card_recorder(tmp_path, "two.mkv")
+    rec2.writer = plain.writer
+    assert bridge.link_taps("h", [(plain.push_frame, card)]) == set()
+    # Two take the same card frames (a stream on SprigCast's own NVENC): the card writer takes memory frames.
+    other = Recorder(tmp_path / "stream.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv")
+    assert bridge.link_taps("h", [(rec.push_frame, card), (other.push_frame, card)]) == set()
+    assert not rec.linked and not rec.wants_gpu_frames()
+    assert bridge.link_taps("h", [(rec.push_frame, memory), (other.push_frame, card)]) == {id(rec)}
+
+
+def test_a_rebuilt_engine_device_sends_a_card_writer_memory_frames(native, tmp_path, monkeypatch):
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+
+    monkeypatch.setattr(sprigcore, "Engine", _LinkEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"], bridge.can_share = 0, True
+    card = ((W, H), True)
+    bridge.set_outputs("h", [card])
+    rec = _card_recorder(tmp_path)
+    assert bridge.link_taps("h", [(rec.push_frame, card)]) == {id(rec)}
+    bridge._rebuilds += 1  # its textures are another device's now
+    assert bridge.link_taps("h", [(rec.push_frame, card)]) == set()
+    assert not rec.linked and not rec.wants_gpu_frames() and rec._last_queued == 5
+
+
+def test_a_refused_card_link_sends_memory_frames_and_keeps_linking(native, tmp_path, monkeypatch):
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+
+    class _Refusing(_LinkEngine):
+        def link_output(self, index, slot, writer, *a, **k):
+            if self.share.get((index, slot)):
+                raise sprigcore.NativeError(-1, "frames on the card go only to a writer that takes them there")
+            super().link_output(index, slot, writer, *a, **k)
+
+        def set_output(self, index, slot, width, height, scale="bilinear", share=False):
+            self.share = getattr(self, "share", {})
+            self.share[(index, slot)] = share
+            super().set_output(index, slot, width, height, scale, share)
+
+    monkeypatch.setattr(sprigcore, "Engine", _Refusing)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"], bridge.can_share = 0, True
+    card, memory = ((W, H), True), ((W, H), False)
+    bridge.set_outputs("h", [card, memory])
+    rec = _card_recorder(tmp_path)
+    assert bridge.link_taps("h", [(rec.push_frame, card)]) == set() and not rec.wants_gpu_frames()
+    assert bridge.link_taps("h", [(rec.push_frame, memory)]) == {id(rec)}
+
+
+def test_own_nvenc_with_no_engine_device_records_through_pyav(native, tmp_path, monkeypatch):
+    from sprigcast.render import gpu_share
+
+    monkeypatch.setattr(Recorder, "uses_direct", lambda self: True)
+    monkeypatch.setattr(gpu_share, "native_device", lambda: None)
+    opened = []
+    monkeypatch.setattr(sprigcore, "Writer", lambda *a, **k: opened.append(k))
+    rec = Recorder(tmp_path / "x.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv")
+    assert rec.uses_writer() and rec._writer_session() is False and opened == []
+
+
+def test_own_nvenc_opens_the_writer_on_the_engines_device(native, tmp_path, monkeypatch):
+    import ctypes
+
+    from sprigcast.render import gpu_share
+
+    monkeypatch.setattr(Recorder, "uses_direct", lambda self: True)
+    monkeypatch.setattr(gpu_share, "native_device", lambda: ctypes.c_void_p(0x1234))
+    released, opened = [], []
+    monkeypatch.setattr(sprigcore, "com_release", released.append)
+
+    def refuse(*a, **k):
+        opened.append(k.get("device"))
+        raise sprigcore.NativeError(-2, "no NVENC here")
+
+    monkeypatch.setattr(sprigcore, "Writer", refuse)
+    rec = Recorder(tmp_path / "x.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv")
+    assert rec._writer_session() is False  # PyAV records it with SprigCast's own NVENC instead
+    assert opened == [0x1234] and released == [0x1234]

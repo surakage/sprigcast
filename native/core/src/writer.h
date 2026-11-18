@@ -6,6 +6,7 @@
 #include "sprigcore.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace sc {
@@ -16,6 +17,12 @@ std::shared_ptr<void> writer_share(sc_writer *w);
 // May throw (out of memory): the caller is inside a guard.
 int writer_feed(const std::shared_ptr<void> &shared, const uint8_t *nv12, int width, int height, int64_t first,
                 int64_t last);
+// An NV12 texture (ID3D11Texture2D*) of the writer's device and size, for a writer opened with frames on the card:
+// SC_OK and `done` is called (on any thread) once the encoder is finished with it; anything else and it wasn't
+// taken. SC_ERR_ARGUMENT: not this writer's device or size, or the writer doesn't take frames on the card.
+int writer_feed_texture(const std::shared_ptr<void> &shared, void *texture, int64_t first, int64_t last,
+                        std::function<void()> done);
+bool writer_on_card(const std::shared_ptr<void> &shared);
 int64_t writer_last(const std::shared_ptr<void> &shared);  // the newest frame number taken (-1: none)
 bool writer_size(const std::shared_ptr<void> &shared, int *width, int *height);
 

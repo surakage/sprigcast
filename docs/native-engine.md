@@ -220,8 +220,20 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   Python's frames go on after the last frame number the writer took. The engine holds a share of the writer, so
   a writer closed while linked just refuses frames and the link ends by itself. Other outputs of the same size
   still take the frames (the link keeps them queued). `SPRIGCAST_NO_LINK=1` turns linking off.
-- Next: pictures on the card straight into hardware encoders through the writer, streams with reconnects, and
-  Instant replay's buffer.
+- **Frames on the card into the writer (step 4, interface 19).** A recording on SprigCast's own NVENC goes
+  through the writer too: it opens on the engine's Direct3D 11 device (`sc_writer_config.d3d11_device`) with
+  FFmpeg's NVENC taking D3D11 textures, and the canvas's on-card output is linked to it. The frame thread then
+  hands each finished texture to the writer (`writer_feed_texture`): no copy through memory and no Python per
+  frame. The texture goes back to the engine's pool once the encoder is done with it; the writer holds a
+  reference to every texture it has seen until the encoder is closed, because NVENC remembers registered
+  textures by pointer (the #521 crash). Only a writer on the card takes an on-card output, and only alone: a
+  stream of the same size on SprigCast's own NVENC sharing it, a refused link or a rebuilt engine device
+  (`Recorder.card_lost`) send the recording memory frames instead, which the writer copies up to its card. If
+  the writer can't open there (no NVENC, the device mid-rebuild) the recording goes through PyAV with
+  SprigCast's own NVENC as before. `SPRIGCAST_NO_CARD_WRITER=1` keeps those recordings in Python. A device that
+  is truly lost (driver reset) fails a recording on the card, since its encoder can't move to the new device.
+- Next: a replay buffer of the stream's size sharing the stream's encoder, streams with reconnects, and Instant
+  replay's buffer.
 
 ## Phases
 

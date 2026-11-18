@@ -258,36 +258,46 @@ void clear_shared(Output &o) {
 // _assign_pts): a draw a little late still gets the next number, a spare draw (a 60 fps canvas, a 30 fps file) is
 // skipped, a draw really late leaves a gap, and a gap up to `fill` seconds is filled with this picture. Returns
 // whether the frame should also be queued for Python (keep). Never throws: a link that fails just ends.
+// The frame numbers a draw at `drawn` fills (first .. pts), or false for a spare draw. `use` must be held.
+bool link_number(const Link &l, double drawn, int64_t &first, int64_t &pts) {
+    const double fps = static_cast<double>(l.fps_num) / l.fps_den;
+    const double x = (drawn - l.start) * fps;
+    const int64_t expected = l.last + 1;
+    if (x < static_cast<double>(expected) - 0.4) return false;
+    if (l.last < 0) {
+        pts = std::max<int64_t>(0, static_cast<int64_t>(std::floor(x + 0.3)));
+    } else {
+        pts = x < static_cast<double>(expected) + 0.9 ? expected : std::llround(x);
+    }
+    first = pts;
+    if (l.last >= 0 && pts - l.last > 1 && static_cast<double>(pts - l.last - 1) <= l.fill * fps) first = l.last + 1;
+    return true;
+}
+
+// What the writer said about a frame: the numbering goes on, or the link ends. `use` must be held.
+void link_result(Link &l, int r, int64_t pts) {
+    if (r == SC_WRITER_LATE) {
+        l.last = std::max(pts, sc::writer_last(l.writer));
+    } else if (r == SC_OK || r == SC_WRITER_DROPPED) {
+        l.last = pts;
+    } else {  // finished, failed, or not its size or device any more: the link ends
+        sc::log_line(r == SC_WRITER_REFUSED ? SC_LOG_DEBUG : SC_LOG_WARNING,
+                     r == SC_WRITER_REFUSED ? "output link: the writer is done; link ended"
+                                            : "output link: the frame doesn't fit the writer (size or graphics card); "
+                                              "link ended");
+        l.writer.reset();
+        l.ended = true;
+    }
+}
+
 bool hand_over(Link &l, const OutFrame &f, int w, int h) {
     std::lock_guard<std::mutex> hold(l.use);
     if (!l.writer) return true;
     try {
-        const double fps = static_cast<double>(l.fps_num) / l.fps_den;
-        const double x = (f.drawn - l.start) * fps;
-        const int64_t expected = l.last + 1;
-        if (x < static_cast<double>(expected) - 0.4) return l.keep;
-        int64_t pts;
-        if (l.last < 0) {
-            pts = std::max<int64_t>(0, static_cast<int64_t>(std::floor(x + 0.3)));
-        } else {
-            pts = x < static_cast<double>(expected) + 0.9 ? expected : std::llround(x);
-        }
-        int64_t first = pts;
-        if (l.last >= 0 && pts - l.last > 1 && static_cast<double>(pts - l.last - 1) <= l.fill * fps)
-            first = l.last + 1;
-        const int r = sc::writer_feed(l.writer, f.data.data(), w, h, first, pts);
-        if (r == SC_WRITER_LATE) {
-            l.last = std::max(pts, sc::writer_last(l.writer));
-        } else if (r == SC_OK || r == SC_WRITER_DROPPED) {
-            l.last = pts;
-        } else {  // finished, failed, or not its size any more: the link ends
-            sc::log_line(r == SC_WRITER_REFUSED ? SC_LOG_DEBUG : SC_LOG_WARNING,
-                         r == SC_WRITER_REFUSED ? "output link: the writer is done; link ended"
-                                                : "output link: the frame isn't the writer's size; link ended");
-            l.writer.reset();
-            l.ended = true;
-            return true;
-        }
+        int64_t first = 0, pts = 0;
+        if (!link_number(l, f.drawn, first, pts)) return l.keep;
+        link_result(l, sc::writer_feed(l.writer, f.data.data(), w, h, first, pts), pts);
+        if (l.ended) return true;
     } catch (...) {
         sc::log_line(SC_LOG_WARNING, "output link: handing a frame to the writer failed; link ended");
         l.writer.reset();
@@ -296,6 +306,26 @@ bool hand_over(Link &l, const OutFrame &f, int w, int h) {
     }
     return l.keep;
 }
+
+// Lets the writer give a texture back to the engine once its encoder is done, even after the engine is gone.
+// The writer only queues what it gives back (any thread, maybe while the engine's state lock is held by whatever
+// let go of the writer's last share); the frame thread takes them back before looking for a free texture.
+struct Alive {
+    struct Returned {
+        int index, slot;
+        uint64_t pool;
+        int entry;
+    };
+    std::mutex m;
+    sc_engine *engine = nullptr;
+    std::vector<Returned> returned;
+};
+
+// A shared output's texture, to a linked writer whose encoder takes frames on the card. 1: the writer has it (it
+// gives it back through `alive` when done). 0: a spare draw or a frame the writer didn't keep: give it back now.
+// -1: the link ended: Python takes this frame.
+int hand_over_texture(Link &l, const std::shared_ptr<Alive> &alive, int index, int slot, uint64_t pool, int entry,
+                      ID3D11Texture2D *texture, double drawn);
 
 struct OutputWant {  // the frame thread's copy of what Python asked for
     int width = 0, height = 0, scale = 0;
@@ -335,6 +365,8 @@ struct PreviewGpu {
 struct sc_engine {
     int adapter = -1, flags = 0;
     int64_t born = 0;
+
+    std::shared_ptr<Alive> alive = std::make_shared<Alive>();
 
     // ---- shared with Python's threads: guarded by `state` ----
     std::mutex state;
@@ -761,6 +793,14 @@ void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, cons
             if (out.serial == want.serial) ++out.dropped;
             return;
         }
+        {
+            std::lock_guard<std::mutex> a(e.alive->m);  // textures a linked writer's encoder is done with
+            for (const Alive::Returned &back : e.alive->returned) {
+                Output &o = e.outputs[back.index][back.slot];
+                if (o.pool == back.pool) o.busy[back.entry] = false;
+            }
+            e.alive->returned.clear();
+        }
         for (int i = 0; i < SC_ENGINE_SHARE_POOL && free < 0; ++i) {
             if (!out.busy[i]) free = i;
         }
@@ -774,6 +814,25 @@ void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, cons
     check(drew);
     if (drew != SC_OK) return;  // nothing worth encoding in that texture
     dev.context->Flush();  // sent to the card before the encoder's thread asks for it
+    std::shared_ptr<Link> link;
+    {
+        std::lock_guard<std::mutex> st(e.state);
+        Output &out = e.outputs[index][slot];
+        if (out.pool != r.pool) return;
+        link = out.link;
+        if (link) out.busy[free] = true;  // the writer's until it gives it back
+    }
+    if (link) {  // a writer whose encoder takes frames on the card: straight to it, nothing through Python
+        const int taken =
+            hand_over_texture(*link, e.alive, index, slot, r.pool, free, r.entries[free].texture.Get(), drawn);
+        std::lock_guard<std::mutex> st(e.state);
+        Output &out = e.outputs[index][slot];
+        if (link->ended.load() && out.link == link) out.link.reset();
+        if (taken == 1) return;
+        if (out.pool != r.pool) return;
+        out.busy[free] = false;
+        if (taken == 0) return;
+    }
     std::lock_guard<std::mutex> st(e.state);
     Output &out = e.outputs[index][slot];
     if (out.pool != r.pool) return;
@@ -894,6 +953,29 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
     r.drawn[s] = drawn;
     r.serial[s] = want.serial;
     r.next = (s + 1) % 3;
+}
+
+int hand_over_texture(Link &l, const std::shared_ptr<Alive> &alive, int index, int slot, uint64_t pool, int entry,
+                      ID3D11Texture2D *texture, double drawn) {
+    std::lock_guard<std::mutex> hold(l.use);
+    if (!l.writer) return -1;
+    try {
+        int64_t first = 0, pts = 0;
+        if (!link_number(l, drawn, first, pts)) return 0;
+        auto done = [alive, index, slot, pool, entry] {
+            std::lock_guard<std::mutex> a(alive->m);
+            if (alive->engine) alive->returned.push_back(Alive::Returned{index, slot, pool, entry});
+        };
+        const int r = sc::writer_feed_texture(l.writer, texture, first, pts, done);
+        link_result(l, r, pts);
+        if (r == SC_OK) return 1;
+        return l.ended ? -1 : 0;
+    } catch (...) {
+        sc::log_line(SC_LOG_WARNING, "output link: handing a texture to the writer failed; link ended");
+        l.writer.reset();
+        l.ended = true;
+        return -1;
+    }
 }
 
 // One frame: take Python's work, send it to the card, draw every canvas, show the previews.
@@ -1304,6 +1386,7 @@ SC_API int sc_engine_create(int adapter, int flags, sc_engine **out) {
         if (!out) return fail(SC_ERR_ARGUMENT, "sc_engine_create: no output");
         *out = nullptr;
         auto e = std::make_unique<sc_engine>();
+        e->alive->engine = e.get();
         e->adapter = adapter;
         e->flags = flags;
         e->born = qpc();
@@ -1356,6 +1439,10 @@ SC_API void sc_engine_destroy(sc_engine *engine) {
         drop_gpu(*engine);
         CloseHandle(engine->quit);
         CloseHandle(engine->wake);
+        {
+            std::lock_guard<std::mutex> hold(engine->alive->m);  // a writer giving a texture back finds no engine
+            engine->alive->engine = nullptr;
+        }
         delete engine;
         log_line(SC_LOG_INFO, "engine: stopped");
     } catch (...) {
@@ -1702,8 +1789,11 @@ SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const s
         {
             std::lock_guard<std::mutex> lock(engine->state);
             Output &out = engine->outputs[index][slot];
-            if (out.share || out.width != ww || out.height != wh)
-                return fail(SC_ERR_ARGUMENT, "sc_engine_output_link: the output isn't a plain one of the writer's size");
+            if (out.width != ww || out.height != wh)
+                return fail(SC_ERR_ARGUMENT, "sc_engine_output_link: the output isn't the writer's size");
+            if (out.share && (!sc::writer_on_card(share) || link->keep))
+                return fail(SC_ERR_ARGUMENT, "sc_engine_output_link: frames on the card go only to a writer that takes "
+                                             "them there, and to nothing else");
             l = out.link;
             if (!l || l->ended.load()) {
                 l = out.link = std::make_shared<Link>();  // its writer is set below
