@@ -167,8 +167,8 @@ def test_file_menu_exports_a_report(tmp_path, monkeypatch):
 
     w = MainWindow(_collection(), tmp_path / "scenes.json")
     try:
-        file_menu = w.menuBar().actions()[0].menu()
-        assert "Export report…" in [a.text() for a in file_menu.actions()]
+        help_menu = w.menuBar().actions()[6].menu()
+        assert "Export report…" in [a.text() for a in help_menu.actions()]
         made = w.export_report(tmp_path / "SprigCast report", reveal=False)
         app.processEvents()
         assert made == tmp_path / "SprigCast report.zip"

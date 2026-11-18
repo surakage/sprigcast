@@ -213,20 +213,9 @@ class GardenControl:
             self.fill(menu, kind)
 
     def fill(self, menu: QMenu, kind: str) -> None:
-        """The list first (a tick on the one in use), then New…, Duplicate…, Rename…, Remove, Import, Export."""
-        from sprigcast.app.theme import ticked
-
+        """New…, Duplicate…, Rename…, Remove, then Import and Export. Switching is the header chip's job."""
         menu.clear()
         entries = self.shelf.gardens() if kind == "garden" else self.shelf.paths()
-        current = (self.shelf.garden() if kind == "garden" else self.shelf.path()).id
-        locked = kind == "path" and self.busy()
-        for entry in entries:
-            action = menu.addAction(entry.name.replace("&", "&&"))
-            ticked(action, entry.id == current)
-            action.setEnabled(not locked or entry.id == current)
-            if entry.id != current:
-                action.triggered.connect(lambda _=False, e=entry.id: self._pick(kind, e))
-        menu.addSeparator()
         menu.addAction("New…").triggered.connect(lambda: self._ask_new(kind, copy=False))
         menu.addAction("Duplicate…").triggered.connect(lambda: self._ask_new(kind, copy=True))
         menu.addAction("Rename…").triggered.connect(lambda: self._ask_rename(kind))
@@ -255,6 +244,21 @@ class GardenControl:
         exports.addAction(f"Just the {COLLECTION}…").triggered.connect(lambda: self._export(kind))
         exports.addAction("With its files…").triggered.connect(lambda: self._export_pack())
         menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
+        menu.addAction("Show file").triggered.connect(lambda: self.w._show_garden_file())
+
+    def switch_choices(self) -> list[tuple[str, str, bool, object]]:
+        """(group, name, in use, switch) for each garden and path: the palette lists them, as the chip does."""
+        out = []
+        for kind in ("garden", "path"):
+            entries = self.shelf.gardens() if kind == "garden" else self.shelf.paths()
+            current = (self.shelf.garden() if kind == "garden" else self.shelf.path()).id
+            locked = kind == "path" and self.busy()
+            for entry in entries:
+                if locked and entry.id != current:
+                    continue
+                out.append((cap(WORDS[kind][0]), entry.name, entry.id == current,
+                            lambda k=kind, e=entry.id: self._pick(k, e)))
+        return out
 
     def _other_apps(self) -> dict[str, list[Path]]:
         """OBS and Streamlabs scene collections on this PC (Windows keeps them under %APPDATA%)."""
