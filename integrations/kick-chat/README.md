@@ -28,6 +28,10 @@ It's separate from the sign-in helper, so a problem here can't touch sign-in. Co
 
 ## Deploy (once)
 
+**Easiest:** double-click `Set up Kick chat.bat` in this folder. It checks Node, signs you in to Cloudflare if
+needed, deploys, asks for the Kick client secret, then opens Kick's developer settings and shows the webhook
+URL and scope to set there (step 2 below). The steps it runs:
+
 Needs the Cloudflare account that has slothbloom.com, Node, and SprigCast's Kick app
 (kick.com → Settings → Developer, the same app as sign-in, Client ID in `wrangler.toml`).
 
