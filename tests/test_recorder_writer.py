@@ -379,3 +379,45 @@ def test_the_virtual_camera_is_fed_by_the_engine_itself(monkeypatch):
     cam.block.closed = True  # the app closed the camera
     assert bridge.link_taps("h", [(cam._on_frame, key)]) == set()
     assert bridge.engine.unlinks == [(0, 0), (0, 0)] and not cam.linked
+
+
+def test_two_card_writers_of_one_size_each_get_their_own_output_on_the_card(native, tmp_path, monkeypatch):
+    """A recording beside a stream's encoder of the same size: each is handed its frames on the card by the engine
+    (PC 2026-11-18: sharing one output sent the recording through Python, horizontal.mkv at 57.17 fps)."""
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+    from sprigcast.render.engine import Engine as RenderEngine
+
+    monkeypatch.setattr(sprigcore, "Engine", _LinkEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"], bridge.can_share = 0, True
+    rec, stream = _card_recorder(tmp_path), _card_recorder(tmp_path, "stream.mkv")
+    for r in (rec, stream):
+        monkeypatch.setattr(r, "uses_writer", lambda: True)
+    taps = [(rec.push_frame, (W, H)), (stream.push_frame, (W, H))]
+    keys = RenderEngine._output_keys(bridge, taps)
+    assert keys[0] != keys[1] and all(k[:2] == ((W, H), True) for k in keys)
+    bridge.set_outputs("h", keys)
+    assert bridge.link_taps("h", [(cb, key) for (cb, _size), key in zip(taps, keys)]) == {id(rec), id(stream)}
+    assert rec.wants_gpu_frames() and stream.wants_gpu_frames()  # neither lost the card
+    assert all(link[4] is False for link in bridge.engine.links.values()) and len(bridge.engine.links) == 2
+
+
+def test_more_writers_than_engine_outputs_share_outputs_again(native, tmp_path, monkeypatch):
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+    from sprigcast.render.engine import Engine as RenderEngine
+
+    monkeypatch.setattr(sprigcore, "Engine", _LinkEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"], bridge.can_share = 0, True
+    recs = [_card_recorder(tmp_path, f"r{i}.mkv") for i in range(sprigcore.ENGINE_OUTPUTS + 1)]
+    for r in recs:
+        monkeypatch.setattr(r, "uses_writer", lambda: True)
+    keys = RenderEngine._output_keys(bridge, [(r.push_frame, (W, H)) for r in recs])
+    assert set(keys) == {((W, H), True)}  # one shared output, as before, rather than Python drawing
+    plain = Recorder(tmp_path / "plain.mkv", W, H, FPS, 800, "libx264", 0.0, "mkv")
+    monkeypatch.setattr(plain, "uses_writer", lambda: False)
+    assert RenderEngine._output_keys(bridge, [(plain.push_frame, (W, H))]) == [((W, H), False)]

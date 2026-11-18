@@ -85,6 +85,7 @@ Error codes:
 | `busy` | already doing it, e.g. already live |
 | `unknown_action` | no such action |
 | `doctor_warnings` | going live or recording would have asked first (the Stream doctor, low space): nothing started; `warnings` lists why, and `force: true` goes ahead |
+| `places_differ` | stream.start was given `places` and the places switched on aren't exactly those: nothing started; `places` lists the ones switched on |
 | `plugin_missing` | the action comes with a store plugin that isn't added; the message names it |
 | `failed` | something went wrong inside SprigCast |
 
@@ -315,7 +316,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `stream.start` | Go live to every place that's switched on. If the Stream doctor would warn first, nothing starts: doctor_warnings lists them. | `force` (optional): true: go live past the doctor's warnings |
+| `stream.start` | Go live to every place that's switched on; the answer lists them (places). If the Stream doctor would warn first, nothing starts: doctor_warnings lists them. places: the ids you expect to go live; if the places switched on differ, nothing starts (places_differ lists them). | `force` (optional): true: go live past the doctor's warnings; `places` (optional): list of place ids from places.list: go live only if exactly these are switched on |
 | `stream.status` | Live or not, for how long, dropped frames, and each place on its own. | none |
 | `stream.stop` | End the stream. | none |
 | `stream.toggle` | Go live, or end the stream (going live answers like stream.start). | `force` (optional): true: go live past the doctor's warnings |

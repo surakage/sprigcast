@@ -985,12 +985,28 @@ class NativeApi:
             raise ApiError("not_allowed", out)
         return {"on": True}
 
-    @action("stream.start", "Go live to every place that's switched on. If the Stream doctor would warn first, "
-            "nothing starts: doctor_warnings lists them.", force="?true: go live past the doctor's warnings")
+    @action("stream.start", "Go live to every place that's switched on; the answer lists them (places). If the "
+            "Stream doctor would warn first, nothing starts: doctor_warnings lists them. places: the ids you expect "
+            "to go live; if the places switched on differ, nothing starts (places_differ lists them).",
+            force="?true: go live past the doctor's warnings",
+            places="?list of place ids from places.list: go live only if exactly these are switched on")
     def stream_start(self, data):
         if self.host.stream_status() is not None:
             raise ApiError("busy", "Already live.")
-        return self._start(self.host.start_stream, data, "live")
+        going = [{"id": o.id, "service": o.service, "shape": o.canvas}
+                 for o in self.col.outputs if o.type == "stream" and o.enabled]
+        expected = _get(data, "places", list, optional=True)
+        if expected is not None:
+            if not all(isinstance(p, str) for p in expected):
+                raise _bad("places must be a list of place ids.")
+            if set(expected) != {p["id"] for p in going}:
+                # A place switched on earlier and forgotten would go live with the rest (PC test 2026-11-18).
+                raise ApiError("places_differ", "Not live: the places switched on aren't the ones asked for: "
+                               + (", ".join(p["service"] or p["id"] for p in going) or "none") + ".",
+                               places=going)
+        out = self._start(self.host.start_stream, data, "live")
+        out["places"] = going
+        return out
 
     @action("stream.stop", "End the stream.")
     def stream_stop(self, data):

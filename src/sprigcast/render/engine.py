@@ -83,6 +83,26 @@ class Frame:
         self.canvas_size = canvas_size or (width, height)  # the canvas it shows (a preview may be smaller)
 
 
+def _engine_writer(callback) -> bool:
+    """Whether a frame tap's owner (a Recorder) goes through the engine's own writer (Recorder.uses_writer), so
+    the native engine can hand it its frames itself (link_writer): asked whatever the writer is doing right now,
+    so its output stays the same for the whole recording."""
+    owner = getattr(callback, "__self__", None)
+    uses = getattr(owner, "uses_writer", None)
+    if owner is None or uses is None or not callable(getattr(owner, "link_writer", None)):
+        return False
+    try:
+        return bool(uses())
+    except Exception:  # noqa: BLE001 (never let a question break the tick)
+        return False
+
+
+def _engine_outputs(native) -> int:
+    from sprigcast import sprigcore
+
+    return int(getattr(native, "max_outputs", sprigcore.ENGINE_OUTPUTS))
+
+
 def _wants_gpu(callback) -> bool:
     """Whether a frame tap's owner (a Recorder) takes frames on the card right now (wants_gpu_frames)."""
     wants = getattr(getattr(callback, "__self__", None), "wants_gpu_frames", None)
@@ -1639,8 +1659,21 @@ class Engine:
     @staticmethod
     def _output_keys(native, outputs) -> list:
         """Each frame tap as the native engine names its output (native_bridge output_key): its NV12 size and
-        whether its encoder takes frames on the card. None for a full-size RGBA tap."""
-        return [native.output_key(size, size is not None and _wants_gpu(callback)) for callback, size in outputs]
+        whether its encoder takes frames on the card. None for a full-size RGBA tap.
+
+        A recording or stream that can take its frames from the engine itself (link_writer) gets an output of
+        its own while the engine has outputs to spare: two of them sharing one output meant only one could be
+        handed its frames (on the card, or at all), and the other took them through Python and lost some
+        (horizontal.mkv at 57.17 fps beside the stream's encoder on the PC, 2026-11-18). Each extra output is
+        one more scale on the graphics card, nothing on the CPU."""
+        plain = [(native.output_key(size, size is not None and _wants_gpu(callback)), callback)
+                 for callback, size in outputs]
+        own = [native.output_key(size, size is not None and _wants_gpu(callback), id(callback.__self__))
+               if key is not None and _engine_writer(callback) else key
+               for (key, callback), (_cb, size) in zip(plain, outputs)]
+        if len(set(own)) <= _engine_outputs(native):
+            return own
+        return [key for key, _callback in plain]  # too many: alike ones share, as before
 
     def _native_outputs(self, native, canvas, outputs) -> None:
         """Hand each output every frame the native engine finished for it, oldest first, each with the time

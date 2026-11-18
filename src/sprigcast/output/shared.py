@@ -107,13 +107,16 @@ class FileTap:
             return True
         return bool(self._ask(job))
 
-    def stop_file(self, timeout: float = 10.0) -> None:
+    def stop_file(self, timeout: float = 10.0, wait: bool = True) -> None:
         """Finish the file while the encoder keeps running (the replay buffer or a stream still needs it).
 
         A keyframe is asked for and the file ends just before it: everything shown before a keyframe
         has left the encoder by the time it comes out, so no frame is lost in the encoder's lookahead.
+        wait=False: only ask; file_finished() waits for it (on a thread of its own: up to a keyframe away, which
+        held the window 185 ms on the PC, 2026-11-18).
         """
         if not self.running:
+            self._file_done.set()
             return  # the encoder thread closed it on its way out
         self._file_done.clear()
 
@@ -124,7 +127,12 @@ class FileTap:
                 self._closing = True
                 self._force_key = True
         self._ask(job)
-        if not self._file_done.wait(timeout):  # frames stopped coming: close what we have
+        if wait:
+            self.file_finished(timeout)
+
+    def file_finished(self, timeout: float = 10.0) -> None:
+        """Wait for the file stop_file asked to finish; if frames stopped coming, close what there is."""
+        if not self._file_done.wait(timeout) and self.running:
             self._ask(self._close_file)
 
     # Encoder thread ---------------------------------------------------------------------
@@ -406,21 +414,32 @@ class SharedRecording:
         return written if written else list(self._paths)
 
     def stop(self, later: list | None = None) -> None:
-        """`later`: see EncoderPool.release. The files are finished once every encoder in it has stopped."""
+        """`later`: see EncoderPool.release. The files are finished once everything in it has stopped (stop()):
+        encoders nobody uses any more, and files of encoders that keep running, which end at their next
+        keyframe."""
         for canvas_id, enc in self.recorders:
-            if canvas_id in self.borrowed:  # the stream's encoder: finish the file, and it ends if the stream has
+            keeps = canvas_id in self.borrowed or self.pool.users(canvas_id) != {"recording"}
+            if keeps:  # the stream's encoder, or the replay buffer keeps it running: only the file ends
                 try:
-                    enc.stop_file()
+                    enc.stop_file(wait=later is None)
+                    if later is not None:
+                        later.append(_FileEnd(enc))
                 except Exception as exc:
                     log.warning("finishing %s: %s", canvas_id, exc)
-                enc.let_go("recording")
+            if canvas_id in self.borrowed:
+                enc.let_go("recording")  # and it ends if the stream has
                 continue
-            if self.pool.users(canvas_id) != {"recording"}:  # the replay buffer keeps the encoder running
-                try:
-                    enc.stop_file()
-                except Exception as exc:
-                    log.warning("finishing %s: %s", canvas_id, exc)
             self.pool.release("recording", canvas_id, later)  # if last: the encoder flushes into the file and stops
+
+
+class _FileEnd:
+    """In SharedRecording.stop's `later`: stop() waits for a file an encoder that keeps running finishes."""
+
+    def __init__(self, enc):
+        self.enc = enc
+
+    def stop(self) -> None:
+        self.enc.file_finished()
 
 
 class SharedReplay:

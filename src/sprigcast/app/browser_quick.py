@@ -41,7 +41,12 @@ Item {
     signal loaded(bool ok)
     signal crashed(int status, int code)
     property var scripts: []
-    property alias view: view
+    // Set from Python through these: Python can't hold the WebEngineView itself (PySide6 has no
+    // converter for QQuickWebEngineView*: the PC log said so and every page fell back to memory, 2026-11-18).
+    property alias profile: view.profile
+    property alias url: view.url
+    property alias audioMuted: view.audioMuted
+    property alias pageVisible: view.visible
 
     function run(code) { view.runJavaScript(code) }
     function reloadPage() { view.reloadAndBypassCache() }
@@ -148,8 +153,7 @@ class QuickPage:
         if self.root is None:
             raise RuntimeError("the page's QML didn't load")
         self.root.setParentItem(self.window.contentItem())
-        self.view = self.root.property("view")
-        self.view.setProperty("profile", profile)
+        self.root.setProperty("profile", profile)
         self.root.loaded.connect(self._loaded)
         self.root.crashed.connect(self._crashed)
         self.control.sceneChanged.connect(self._changed)
@@ -175,7 +179,7 @@ class QuickPage:
             self._set_up_sound()
             self._scripts()
             url = browser.page_url(settings)
-            self.view.setProperty("url", QUrl(url) if url else QUrl("about:blank"))
+            self.root.setProperty("url", QUrl(url) if url else QUrl("about:blank"))
         self._mute()
 
     def _resize(self, w: int, h: int) -> None:
@@ -215,7 +219,7 @@ class QuickPage:
 
     def _mute(self) -> None:
         to_mixer = self.sound is not None and not self.sound.on_desktop_reason
-        self.view.setProperty("audioMuted", bool(self.settings.get("mute", False)) or to_mixer)
+        self.root.setProperty("audioMuted", bool(self.settings.get("mute", False)) or to_mixer)
 
     def _set_up_sound(self) -> None:
         from sprigcast.sources.browser import sound_to_mixer
@@ -285,7 +289,7 @@ class QuickPage:
             return
         self.paused = paused
         self._call("run", f"window.__sprigcastVisible && window.__sprigcastVisible({'false' if paused else 'true'})")
-        self.view.setProperty("visible", not paused)  # hidden like a background tab: Chromium stops painting
+        self.root.setProperty("pageVisible", not paused)  # hidden like a background tab: Chromium stops painting
         self.timer.start(HIDDEN_TICK_MS if paused else max(4, round(1000 / browser.page_fps(self.settings))))
         if not paused:
             self.dirty = True

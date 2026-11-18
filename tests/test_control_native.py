@@ -112,7 +112,7 @@ def test_sounds_filters_and_sources():
 
 def test_outputs_and_transitions():
     api, host = _api()
-    assert _ok(api, "stream.toggle") == {"on": True}
+    assert _ok(api, "stream.toggle") == {"on": True, "places": []}
     assert _fails(api, "stream.start") == "busy"
     assert _ok(api, "stream.status")["on"] is True
     _ok(api, "stream.stop")
