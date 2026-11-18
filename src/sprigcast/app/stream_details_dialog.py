@@ -43,6 +43,8 @@ log = logging.getLogger(__name__)
 
 LABEL_W = 92
 CHIP_W = 104
+WAITING_TEXT = "Nothing is scheduled on YouTube. Save sets up your next stream."
+LAST_TEXT = "Nothing is scheduled on YouTube, so this is your last stream's. Save sets up your next one."
 DUAL_SETUP_URL = "https://www.youtube.com/live_dashboard"  # opens YouTube Studio's Live Control Room  # every platform chip the same width
 SEARCH_WAIT_MS = 350  # look a category up once typing pauses
 PRIVACY_NAMES = {"public": "Public", "unlisted": "Unlisted", "private": "Private"}
@@ -223,7 +225,7 @@ class Pane(QWidget):
             choose.clicked.connect(self._choose_thumb)
             tl.addWidget(choose)
             form.addLayout(_row("Thumbnail", thumb))
-            self.waiting_note = _quiet("Nothing is waiting on YouTube. Save sets up your next stream.")
+            self.waiting_note = _quiet(WAITING_TEXT)
             self.waiting_note.setVisible(False)
             form.addWidget(self.waiting_note)
             # Dual stream: YouTube's API can't join the vertical key to the stream, so say where it's done once.
@@ -287,18 +289,19 @@ class Pane(QWidget):
         self.details = details
         self.loaded = True
         self.form.setEnabled(True)
-        self.title.setText(details.title)
-        if self.category is not None:
-            self.category.setText(details.category)
-            if details.category:
-                self.found = {details.category: details.category_id}
-        if self.tags is not None:
-            self.tags.setText(", ".join(details.tags))
+        for field, text in ((self.title, details.title), (self.category, details.category),
+                            (self.tags, ", ".join(details.tags))):
+            if field is not None:
+                field.setText(text)
+                field.setCursorPosition(0)  # a long title opens at its start, not its end
+        if self.category is not None and details.category:
+            self.found = {details.category: details.category_id}
         if self.description is not None:
             self.description.setPlainText(details.description)
             self.privacy.setCurrentIndex(max(0, self.privacy.findData(details.privacy)))
             found = self.video_category.findData(details.video_category or "20")  # a new stream: Gaming
             self.video_category.setCurrentIndex(max(0, found))
+            self.waiting_note.setText(LAST_TEXT if details.from_last else WAITING_TEXT)
             self.waiting_note.setVisible(not details.broadcast_id)
             self.show_dual_note(details.vertical_key_name)
         self.dialog.say("")
