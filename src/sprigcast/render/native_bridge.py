@@ -24,6 +24,7 @@ import time
 import weakref
 
 from sprigcast import sprigcore
+from sprigcast.core import drawn, painted
 from sprigcast.core.scene import Scene, SceneCollection
 from sprigcast.render import native_snapshot
 from sprigcast.render.native_snapshot import SceneDraw
@@ -218,6 +219,9 @@ class NativeCanvases:
         self._signature = None
         self._last_upload: dict[str, float] = {}
         self._media: dict[str, object] = {}  # source id -> the engine's player its pictures come straight from
+        # source id -> art key -> (its engine id, cacheKey, bytes, the list it was last used in)
+        self._arts: dict[str, dict[str, tuple[str, int, int, int]]] = {}
+        self._lists = 0
         self._stats_at = 0.0
         self._rebuilds = 0
         self._faults = planned_faults(os.environ.get("SPRIGCAST_ENGINE_FAULT"))  # crash gate test on a PC
@@ -227,6 +231,7 @@ class NativeCanvases:
         log.info("native engine: drawing the previews (%s)", "software" if warp else "graphics card")
         self._card_told = False
         self._tell_card()
+        drawn.ENGINE = True  # store plugins may hand over lists of pictures (core/drawn.py)
 
     def _tell_card(self) -> None:
         """Browser pages are drawn on the engine's card (sources/browser.use_card), once it has a device."""
@@ -265,6 +270,7 @@ class NativeCanvases:
     def fail(self, why: str) -> None:
         if not self.failed:
             self.failed = True
+            drawn.ENGINE = False
             log.error("native engine: %s; the Python compositor draws the previews again", why)
             self._unlink_all()
 
@@ -275,6 +281,8 @@ class NativeCanvases:
         last = self._last_upload.get(source_id)
         self._last_upload[source_id] = now
         keep = last is None or now - last > STILL_AFTER_S
+        if source_id in self._arts:  # a picture again (the show is over): its list's art can go
+            self._forget_arts(source_id)
         self._guard("upload", self.engine.upload, source_id, frame, channel_order, size, keep=keep)
 
     def attach_media(self, source_id: str, player) -> bool:
@@ -303,10 +311,49 @@ class NativeCanvases:
             self._guard("media", self.engine.attach_media, source_id, player)
         return not self.failed
 
+    SPARE_ARTS = 16  # pictures a drawn source keeps on the card beyond those its newest list uses...
+    SPARE_BYTES = 48 << 20  # ...and at most this much of them (the oldest used go first)
+
+    def draw_list(self, source_id: str, picture: drawn.Drawn) -> None:
+        """A source's picture as a list of pictures (core/drawn.py): new art goes to the card once (kept, so it
+        comes back after a rebuild), then only where each picture goes."""
+        if self.failed:
+            return
+        self._last_upload.pop(source_id, None)
+        self._lists += 1
+        turn = self._lists
+        arts = self._arts.setdefault(source_id, {})
+        items, used = [], set()
+        for art_key, image, x, y, w, h, rotation, crop, opacity in picture.items():
+            known = arts.get(art_key)
+            stamp = image.cacheKey()
+            if known is None or known[1] != stamp:
+                art_id = known[0] if known is not None else f"{source_id}/art/{art_key}"
+                frame = painted.Frame()(image)
+                self._guard("art", self.engine.upload, art_id, frame, "pBGRA", None, keep=True)
+                if self.failed:
+                    return
+                known = (art_id, stamp, frame.nbytes, turn)
+            arts[art_key] = (*known[:3], turn)
+            used.add(art_key)
+            items.append((known[0], x, y, w, h, rotation, crop, opacity, image.width(), image.height()))
+        spare = sorted((k for k in arts if k not in used), key=lambda k: arts[k][3], reverse=True)  # newest first
+        kept, held = 0, 0
+        for art_key in spare:
+            kept, held = kept + 1, held + arts[art_key][2]
+            if kept > self.SPARE_ARTS or held > self.SPARE_BYTES:
+                self._guard("art", self.engine.forget, arts.pop(art_key)[0])
+        self._guard("draws", self.engine.draws, source_id, picture.width, picture.height, items)
+
+    def _forget_arts(self, source_id: str) -> None:
+        for art_id, *_rest in self._arts.pop(source_id, {}).values():
+            self._guard("forget", self.engine.forget, art_id)
+
     def forget_gone(self, source_ids) -> None:
-        for gone in (set(self._last_upload) | set(self._media)) - set(source_ids):
+        for gone in (set(self._last_upload) | set(self._media) | set(self._arts)) - set(source_ids):
             self._last_upload.pop(gone, None)
             self._media.pop(gone, None)
+            self._forget_arts(gone)
             self._guard("forget", self.engine.forget, gone)
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
@@ -772,6 +819,7 @@ class NativeCanvases:
             log.warning("native engine: a frame is stuck")
 
     def close(self) -> None:
+        drawn.ENGINE = False
         self._unlink_all()
         try:
             self.engine.close()

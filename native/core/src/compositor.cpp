@@ -153,9 +153,22 @@ struct Renderer {
     const Snapshot &snap;
     double time;
     ID3D11DeviceContext *c;
+    bool in_drawn = false;  // drawing a list: its pictures are plain sources, never another list
 
     bool piece_for(const sc_item &it, Piece &p) {
         auto &comp = dev.comp;
+        if (!in_drawn && !it.part) {
+            auto drawn = comp.drawn.find(it.source);
+            if (drawn != comp.drawn.end()) {
+                const Target &t = drawn->second.target;
+                if (!t.view) return false;
+                p.view = t.view.Get();
+                p.tex_w = p.size_w = t.width;
+                p.tex_h = p.size_h = t.height;
+                p.premul = true;
+                return true;
+            }
+        }
         if (it.part) {
             auto found = comp.parts.find(it.part);
             if (found == comp.parts.end()) return false;
@@ -313,18 +326,39 @@ struct Renderer {
         draw(k);
     }
 
-    void draw_scene(const sc_scene &scene, ID3D11RenderTargetView *target, int width, int height) {
+    void draw_items(const sc_item *items, int count, ID3D11RenderTargetView *target, int width, int height) {
         const float clear[4] = {0, 0, 0, 0};
         c->ClearRenderTargetView(target, clear);
         ID3D11RenderTargetView *targets[] = {target};
         c->OMSetRenderTargets(1, targets, nullptr);
         D3D11_VIEWPORT vp = {0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
         c->RSSetViewports(1, &vp);
-        const int first = scene.first_item, count = scene.item_count;
-        for (int i = 0; i < count; ++i) draw_item(snap.items[static_cast<size_t>(first + i)], width, height);
+        for (int i = 0; i < count; ++i) draw_item(items[i], width, height);
         c->OMSetRenderTargets(0, nullptr, nullptr);  // the target may be sampled next (a sprig)
         ID3D11ShaderResourceView *none[3] = {nullptr, nullptr, nullptr};
         c->PSSetShaderResources(0, 3, none);
+    }
+
+    void draw_scene(const sc_scene &scene, ID3D11RenderTargetView *target, int width, int height) {
+        draw_items(snap.items.data() + scene.first_item, scene.item_count, target, width, height);
+    }
+
+    // Sources drawn from a list whose list changed: drawn again, once, before any canvas uses them.
+    int draw_lists() {
+        for (auto &[id, d] : dev.comp.drawn) {
+            if (!d.dirty) continue;
+            Target &t = d.target;
+            if (t.width != d.width || t.height != d.height) {
+                const int code = make_target(dev.device.Get(), d.width, d.height, t);
+                if (code != SC_OK) return code;
+            }
+            in_drawn = true;
+            draw_items(d.items.data(), static_cast<int>(d.items.size()), t.target.Get(), t.width, t.height);
+            in_drawn = false;
+            d.dirty = false;
+            (void)id;
+        }
+        return SC_OK;
     }
 
     // Draws every sprig `scene` shows, inner ones first, each once.
@@ -457,7 +491,9 @@ int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, 
     Renderer r{dev, *snap, time, c};
     const sc_scene &scene = snap->scenes[snap->by_id.at(scene_id)];
     std::set<uint64_t> done, open{scene_id};
-    int code = r.draw_parts(scene, done, open, 0);
+    int code = r.draw_lists();
+    if (code != SC_OK) return code;
+    code = r.draw_parts(scene, done, open, 0);
     if (code != SC_OK) return code;
     r.draw_scene(scene, target, width, height);
     return SC_OK;
@@ -492,6 +528,7 @@ SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data,
         const bool three = fmt == SC_FMT_RGB || fmt == SC_FMT_BGR;
 
         std::lock_guard<std::mutex> lock(device->lock);
+        device->comp.drawn.erase(id);  // a picture again: no longer drawn from a list
         Source &s = device->comp.sources[id];
         const DXGI_FORMAT dxgi = planar ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
         if (!s.texture || s.data_w != w || s.data_h != h || (s.planar != 0) != planar) {
@@ -551,6 +588,30 @@ SC_API int sc_source_forget(sc_device *device, uint64_t id) {
     return device_call(device, "sc_source_forget", [&]() -> int {
         std::lock_guard<std::mutex> lock(device->lock);
         device->comp.sources.erase(id);
+        device->comp.drawn.erase(id);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_source_draws(sc_device *device, uint64_t id, int width, int height, const sc_item *items, int count) {
+    return device_call(device, "sc_source_draws", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_source_draws: no id");
+        std::lock_guard<std::mutex> lock(device->lock);
+        if (count < 0 || width <= 0 || height <= 0) {
+            device->comp.drawn.erase(id);
+            return SC_OK;
+        }
+        if (width > 8192 || height > 8192 || count > 4096 || (count > 0 && !items))
+            return fail(SC_ERR_ARGUMENT, "sc_source_draws: too big, or no items");
+        Drawn &d = device->comp.drawn[id];
+        d.width = width;
+        d.height = height;
+        d.items.assign(items, items + count);
+        for (sc_item &it : d.items) {
+            it.part = 0;        // pictures only: no sprigs...
+            it.effects = -1;    // ...and no snapshot effects (they belong to the snapshot)
+        }
+        d.dirty = true;
         return SC_OK;
     });
 }

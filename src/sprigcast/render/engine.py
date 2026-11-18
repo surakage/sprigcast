@@ -30,7 +30,7 @@ from sprigcast.core.events import (
     UpdateSourceSettings,
 )
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
-from sprigcast.core import pacing, retire
+from sprigcast.core import drawn, pacing, retire
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
 from sprigcast.core.source import Source, create_source, source_class
@@ -1517,6 +1517,8 @@ class Engine:
     def _upload(self, compositor, source_id: str, frame, order: str, layout, held: bool = False) -> None:
         """compositor.upload, saying which source's picture it was if the copy fails. The PC heavy run
         (2026-11-17) had an access violation inside the copy to the card, twice, with nothing to say whose."""
+        if isinstance(frame, drawn.Drawn):  # a list of pictures (core/drawn.py): Python's compositor gets it painted
+            frame = frame.picture()
         try:
             compositor.upload(source_id, frame, order, layout)
         except Exception:
@@ -2023,7 +2025,10 @@ class Engine:
                     self._held_back.pop(source_id, None)
                     self._upload(compositor, source_id, frame, source.channel_order, layout)
                 if native is not None and not direct:
-                    native.upload(source_id, frame, source.channel_order, layout)
+                    if isinstance(frame, drawn.Drawn):
+                        native.draw_list(source_id, frame)
+                    else:
+                        native.upload(source_id, frame, source.channel_order, layout)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
             if spent > slowest[1]:

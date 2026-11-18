@@ -309,6 +309,16 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   pixel (`tests/test_native_visualizer.py`). `NativeMixer.visual` makes one and points it at its sound on every
   block (again when the sound comes back); it closes before the mixer. If its thread faults, or the engine can't
   make one, Python hears and draws it again. `SPRIGCAST_NO_NATIVE_VISUALIZER=1` draws it in Python.
+- **Animations as lists of pictures** (`sc_engine_source_draws`, `core/drawn.py`): Snap's polaroid and the Death
+  count's gravestone were painted with a QPainter every frame they moved (Snap's on the render thread, holding
+  Python's lock all the while). With the native engine their `paint` draws into a `Drawn` instead: the same
+  QPainter calls (save, translate, rotate, scale, opacity, clip, pictures, boxes, discs), but nothing is painted.
+  Each picture (the art) goes to the card once, kept so it comes back after a rebuild; then each frame only says
+  where each one goes (`Drawn.items`: its box, turn about its middle, crop and opacity, as snapshot items). The
+  engine draws the list into the source's own picture once per new list, before any canvas uses it. Python's
+  compositor gets the list painted (`Drawn.picture`), the same pixels the plugin painted before
+  (`tests/test_native_drawn.py`). A picture uploaded for the source (the show is over) replaces the list and lets
+  its art go; a source keeps at most 16 spare pictures (48 MB) beyond those its newest list uses.
 
 ## Phases
 
@@ -321,7 +331,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
 | 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
-| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine |
+| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine; Snap's and Death count's animations are drawn by the engine from lists of pictures |
 | 7 | Capture and camera inside the engine | |
 | 8 | Old Python engine and its packages removed | |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |

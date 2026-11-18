@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 27
+#define SC_INTERFACE_VERSION 28
 
 enum {
     SC_OK = 0,
@@ -201,6 +201,12 @@ typedef struct sc_snapshot {
 
 SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data, const sc_upload *how);
 SC_API int sc_source_forget(sc_device *device, uint64_t id);
+/* Source `id` is drawn from a list of other sources' pictures (a store plugin's animation: the art uploaded once
+ * as sources of their own, then only where each goes, frame by frame): `items` (as in a snapshot, bottom first;
+ * `part` and `effects` are ignored) drawn onto a see-through width x height picture, which is then the source's
+ * picture wherever it shows. The list is copied and drawn once, before the next canvas that needs it. A picture
+ * uploaded for `id` replaces the list; count < 0 drops it. */
+SC_API int sc_source_draws(sc_device *device, uint64_t id, int width, int height, const sc_item *items, int count);
 /* A colour look: n x n x n RGB floats, red fastest (core/looks.py). */
 SC_API int sc_look_set(sc_device *device, uint64_t id, const float *table, int n);
 /* A shape picture: RGBA. luma = 1 when it has no transparency (white keeps, black cuts). */
@@ -339,6 +345,10 @@ SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t
  * sc_engine_source_forget detach it too. The engine keeps the drawings alive as long as it is attached. */
 struct sc_visual;
 SC_API int sc_engine_source_visual(sc_engine *engine, uint64_t id, struct sc_visual *visual);
+/* As sc_source_draws, for the engine: the newest list is drawn from the next frame on (and again after a rebuild,
+ * with the pictures it uses uploaded with SC_UPLOAD_KEEP). A picture uploaded for `id` replaces it. */
+SC_API int sc_engine_source_draws(sc_engine *engine, uint64_t id, int width, int height, const sc_item *items,
+                                  int count);
 /* A browser page drawn on the card by the browser helper (page_texture.cpp): the helper makes a device on the
  * engine's card (its LUID, from sc_d3d_device_luid) and a texture shared as "<block>-tex<n>" with a keyed mutex
  * (key 0: the helper may draw, between sc_page_target_begin and _end; key 1: a picture waits for the engine). In the
