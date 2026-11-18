@@ -4754,8 +4754,6 @@ class MainWindow(QMainWindow):
 
     def _fill_plugin_menu(self, menu: QMenu, source_id: str) -> None:
         """Right-click entries plugins add (Barrel roll, Hide it, Snap...)."""
-        from sprigcast import plugin_hooks
-
         entries: list[tuple[str, object]] = []
         plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id), lambda label, fn: entries.append((label, fn)))
         if entries:
@@ -5357,8 +5355,6 @@ class MainWindow(QMainWindow):
         the plugins' screenshot hook follow when the files are written."""
         from sprigcast.app import screenshot
 
-        from sprigcast import plugin_hooks
-
         ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
         folder = self._recordings_folder() / "Screenshots" if save else None
         # Plugins get ready first (Snap freezes the screen, so the picture is the moment it holds on stream).
@@ -5397,8 +5393,6 @@ class MainWindow(QMainWindow):
         return shot
 
     def _screenshot_saved(self, shots: list[dict], images: dict, folder, afters=()) -> None:
-        from sprigcast import plugin_hooks
-
         try:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
             if shots:
@@ -7529,8 +7523,6 @@ class MainWindow(QMainWindow):
         elif action == SCREENSHOT:
             self._screenshot(background=True)
         elif action.startswith("plugin:"):
-            from sprigcast import plugin_hooks
-
             plugin_hooks.run_hotkey(self.api, action, self._hotkey_note)
         elif action.startswith(GAME_PREFIX):
             self._game_grab(action[len(GAME_PREFIX):])

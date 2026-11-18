@@ -959,7 +959,7 @@ class SettingsWindow(QDialog):
         settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())
         level = self.priority.currentData()
         if level != priority.chosen():
-            settings.setValue(priority.SETTING, level)
+            priority.remember(level, settings)
             priority.set_cpu_priority(level)
 
     def _apply_video(self) -> None:

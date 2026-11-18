@@ -25,6 +25,19 @@ PAGE_STYLE = (
 )
 
 
+_STYLE: str | None = None
+
+
+def _page_style() -> str:
+    """PAGE_STYLE and the rounded drop-down's look, put together once."""
+    global _STYLE
+    if _STYLE is None:
+        from sprigcast.app.starter import combo_style
+
+        _STYLE = PAGE_STYLE + combo_style()
+    return _STYLE
+
+
 def _tile(value: str, label: str, level: str = "") -> QWidget:
     tile = QWidget()
     tile.setObjectName("healthTile")  # styled by the page (PAGE_STYLE)
@@ -47,7 +60,7 @@ class HealthPage(QWidget):
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.records = records
-        self.setStyleSheet(PAGE_STYLE)
+        self.setStyleSheet(_page_style())
         self.setMinimumWidth(580)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
@@ -60,10 +73,7 @@ class HealthPage(QWidget):
         self.pick = QComboBox()
         for r in records:
             self.pick.addItem(f"{r.started}  ·  {duration(r.seconds)}")
-        self.pick.setVisible(len(records) > 1)
-        from sprigcast.app.starter import combo_style
-
-        self.pick.setStyleSheet(combo_style())
+        self.pick.setVisible(len(records) > 1)  # (its look is in the page's style: one of its own was 95 ms)
         box.addWidget(self.pick)
         self.verdict = QLabel()
         self.verdict.setObjectName("healthVerdict")
