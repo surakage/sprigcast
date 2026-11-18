@@ -201,9 +201,16 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   thread; giving up interrupts FFmpeg's waiting. A fault inside FFmpeg ends that output (state "failed", with
   why), never the app. FFmpeg's table is shared with the player (`src/ffmpeg.h`); like the player the writer
   builds on Linux, so `tests/test_native_writer.py` writes and reads back real files there and in CI.
-- Next: the engine hands its output frames to a writer itself (no Python per frame), the recorder uses it on
-  the native engine, then pictures on the card straight into hardware encoders, streams with reconnects, and
-  Instant replay's buffer.
+- **Recordings through the writer (step 2, `output/recorder.py` `uses_writer`).** On the native engine a
+  recording to a file whose video isn't SprigCast's own NVENC (x264, AMF, Quick Sync, NVENC with B-frames or
+  lookahead) is written by the engine's writer: the recorder's thread only hands each picture (NV12, converted on
+  the card or from RGBA) and the sound over. Muxer options (MP4 in fragments), track titles and B-frames come
+  with it (interface 17). The writer's counts become the recorder's (frames, drops, bytes, time writing); a full
+  writer queue makes the recorder's own queue wait, so easing off and drops work as before. If the writer can't
+  start, the recording goes through PyAV as before. Streams and replay buffers still go through PyAV.
+  `SPRIGCAST_NO_WRITER=1` turns it off.
+- Next: the engine hands its output frames to a writer itself (no Python per frame), pictures on the card
+  straight into hardware encoders, streams with reconnects, and Instant replay's buffer.
 
 ## Phases
 

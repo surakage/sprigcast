@@ -46,6 +46,10 @@ FILL_LONG_S = 5.0
 FLOW_REPEAT_S = 10.0  # a feed still stopped is said again this often (and the caller tries again to put it right)
 VIDEO_QUEUE = 15  # frames waiting for the encoder (a quarter second at 60 fps); NV12 at output size, so at most ~45 MB at 1080p
 AUDIO_QUEUE = 256  # mixer blocks (about 5 s)
+WRITER_QUEUE = 8  # pictures the engine's writer keeps waiting (sprigcore.Writer): its own copies, on top of VIDEO_QUEUE
+WRITER_ROOM_S = 1.0  # longest wait for room in the writer's queue before a picture is handed over anyway
+WRITER_OPEN_S = 10.0  # the writer's encoder and file opening (a graphics card's encoder can take a second)
+WRITER_FINISH_S = 30.0  # what's queued written and the file closed, at stop
 CONTAINERS = {"mkv": "matroska", "mp4": "mp4", "flv": "flv"}
 
 TRACK_TITLES = {"stream": "Stream", "recording": "Everything", "vod": "VOD-safe", "voice": "Voice", "clips": "Clips",
@@ -996,6 +1000,8 @@ class Recorder:
         # Above the app's other threads (below the render thread): on a PC busy with a game and other
         # streaming apps the encoder was starved for whole bursts and frames dropped.
         raise_thread_priority(ABOVE_NORMAL)
+        if self.uses_writer() and self._writer_session():
+            return
         container, finished = None, False
         self._frames_closed = False  # a stream reconnecting runs a new session in the same recorder
         try:
@@ -1036,6 +1042,166 @@ class Recorder:
                     if finished:
                         raise  # the file's ending could not be written (disk full, drive removed)
                     log.warning("closing %s failed: %s", self.path, exc)
+
+    # The engine's own writer (native/core/src/writer.cpp) ----------------------------------------------------
+
+    allow_writer = True  # outputs that write somewhere of their own (a stream, a replay buffer) turn it off
+    writer = None  # the sprigcore.Writer this recording goes through, while it does
+
+    def uses_writer(self) -> bool:
+        """Encode, mux and write on the engine's own thread (sprigcore.Writer) instead of through PyAV here: with
+        the native engine (SPRIGCAST_ENGINE=native), for a file whose video isn't SprigCast's own NVENC (that one
+        takes frames on the card). Encoding then never holds Python's lock: x264, AMF and Quick Sync recordings
+        stop competing with the window and the render thread for it."""
+        if not self.allow_writer or os.environ.get("SPRIGCAST_NO_WRITER"):
+            return False
+        from sprigcast import sprigcore
+
+        if not sprigcore.use_native_media():
+            return False
+        return not self.uses_direct()
+
+    def _writer_session(self) -> bool:
+        """The whole recording through the engine's writer. False when the writer couldn't start (before any
+        frame was taken): the caller records through PyAV instead. Raises when it fails later."""
+        from sprigcast import sprigcore
+        from sprigcast.output.replay import FRAGMENTED
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        muxing = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else None
+        titles = [self.track_titles.get(t, t.title()) for t in self.tracks] if len(self.tracks) > 1 else None
+        self._opening = True
+        writer = None
+        try:
+            writer = sprigcore.Writer(
+                str(self.path), self.codec, self.out_width, self.out_height, fps=self.fps,
+                video_kbps=self.bitrate_kbps, keyframe_frames=self.fps * (self.encoder.keyint_sec or 2),
+                video_options=self._video_options(), audio_tracks=len(self.tracks),
+                audio_kbps=self.encoder.audio_kbps, container=CONTAINERS[self.container_kind],
+                queue_frames=WRITER_QUEUE, container_options=muxing, track_titles=titles,
+                b_frames=max(0, min(4, self.encoder.b_frames)))
+            stats = self._writer_opened(writer)
+            why = stats.error_text if stats.state_name == "failed" else ""
+        except Exception as exc:  # noqa: BLE001 - PyAV records it instead
+            why = str(exc) or type(exc).__name__
+        if why:
+            log.warning("%s: the engine's writer couldn't start (%s); recording through PyAV", self.path.stem, why)
+            self.writer = None
+            if writer is not None:
+                writer.close()
+            return False
+        log.info("%s: written by the engine (%s, %dx%d at %d fps)", self.path.stem, self.codec, self.out_width,
+                 self.out_height, self.fps)
+        self._opening = False
+        self._opened.set()
+        try:
+            while True:
+                stopping = self._stop.is_set()
+                self._writer_audio(writer)
+                try:
+                    pts, frame = self._video.get(timeout=0.05)
+                except queue.Empty:
+                    self._writer_numbers(writer)
+                    if stopping:
+                        break
+                    continue
+                self._writer_video(writer, frame, pts if isinstance(pts, range) else range(pts, pts + 1))
+                self._writer_numbers(writer)
+            self._writer_audio(writer)
+            writer.finish()
+            if not writer.wait(WRITER_FINISH_S):
+                raise RuntimeError(f"the file wasn't finished within {WRITER_FINISH_S:.0f} s")
+            stats = self._writer_numbers(writer)
+            if stats.state_name == "failed":
+                raise RuntimeError(stats.error_text or "the engine's writer failed")
+        finally:
+            self._let_go_of_frames()
+            self.writer = None
+            writer.close()
+        return True
+
+    def _writer_opened(self, writer):
+        """Wait for the writer's encoder and file to open (frames meanwhile keep only the newest few)."""
+        self.writer = writer
+        deadline = time.monotonic() + WRITER_OPEN_S
+        while True:
+            stats = writer.stats()
+            if stats.state_name != "opening" or time.monotonic() > deadline or self._stop.is_set():
+                return stats
+            time.sleep(0.01)
+
+    def _writer_video(self, writer, frame, slots: range) -> None:
+        """One picture for these output frames (more than one: a hole filled with it)."""
+        from sprigcast import sprigcore
+
+        began = time.perf_counter()
+        nv12 = self._writer_picture(frame)
+        if nv12 is None:
+            if self._counts_drops():
+                self.dropped += len(slots)
+            return
+        for slot in slots:
+            if slot <= self._last_pts:
+                continue  # rendered before the start, or a second tick in the same output frame slot
+            self._last_pts = slot
+            # The writer's queue full: wait for room here, so this recorder's own queue fills up and eases off or
+            # drops as it does with PyAV, instead of the writer dropping frames already taken.
+            deadline = time.perf_counter() + WRITER_ROOM_S
+            while writer.stats().queued >= WRITER_QUEUE and time.perf_counter() < deadline:
+                time.sleep(0.002)
+            code = writer.video(nv12, slot)
+            if code == sprigcore.WRITER_REFUSED:
+                raise RuntimeError(writer.stats().error_text or "the engine's writer stopped")
+        self.encode_seconds += time.perf_counter() - began
+
+    def _writer_picture(self, frame):
+        """The NV12 bytes the writer takes, at the output's size; None for a frame it can't take."""
+        fmt = getattr(frame, "fmt", "rgba")
+        if fmt == "nv12" and (frame.width, frame.height) == (self.out_width, self.out_height):
+            return frame.data
+        if fmt != "rgba":
+            return None  # a frame on the card: this recording doesn't take them (wants_gpu_frames)
+        import av
+        from av.video.reformatter import ColorRange, Colorspace
+
+        rgba = np.frombuffer(frame.data, dtype=np.uint8).reshape(self.height, self.width, 4)
+        vf = av.VideoFrame.from_ndarray(rgba, format="rgba")
+        if getattr(self, "_reformatter", None) is None:
+            from av.video.reformatter import VideoReformatter
+
+            self._reformatter = VideoReformatter()
+        vf = self._reformatter.reformat(vf, width=self.out_width, height=self.out_height, interpolation="BICUBIC",
+                                        format="nv12", dst_colorspace=Colorspace.ITU709,
+                                        dst_color_range=ColorRange.MPEG, threads=2)
+        return nv12_bytes(vf)
+
+    def _writer_audio(self, writer) -> None:
+        for _ in range(self._audio.qsize()):  # only what is queued now, so sound can never starve pictures
+            try:
+                block = self._audio.get_nowait()
+            except queue.Empty:
+                return
+            blocks = block if isinstance(block, tuple) else (block,) * len(self.tracks)
+            for track, one in enumerate(blocks[:len(self.tracks)]):
+                writer.audio(one, track)
+            self._samples += blocks[0].shape[0]
+
+    def _writer_numbers(self, writer):
+        """The writer's own counts become this recorder's: frames written, dropped, bytes, time writing."""
+        stats = writer.stats()
+        self.frames = int(stats.frames_written)
+        lost = int(stats.frames_dropped) - getattr(self, "_writer_dropped", 0)
+        if lost > 0:
+            self._writer_dropped = int(stats.frames_dropped)
+            if self._counts_drops():
+                self.dropped += lost
+        self.bytes_out = int(stats.bytes)
+        self.mux_seconds = float(stats.write_seconds)
+        self.longest_stall = float(stats.longest_write)
+        self.peak_queue = max(self.peak_queue, int(stats.queued) + self._video.qsize())
+        if stats.state_name == "failed":
+            raise RuntimeError(stats.error_text or "the engine's writer failed")
+        return stats
 
     def _fill(self, container, video, audio, frame, slots: range) -> None:
         """Writes a hole's picture for each of its slots, then the picture's own slot. Stops filling when the real
