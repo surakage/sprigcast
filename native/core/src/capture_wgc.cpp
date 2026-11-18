@@ -48,6 +48,7 @@ std::string hr_text(const char *what, HRESULT hr) {
 }  // namespace
 
 struct ScreenCapture::Impl {
+    HWND window = nullptr;           // a window capture's window: closed, the capture ends (Closed may not come)
     ID3D11Device *device = nullptr;  // the engine's: captures are dropped before it goes (engine.cpp drop_gpu)
     wdx::Direct3D11::IDirect3DDevice d3d{nullptr};
     wgc::GraphicsCaptureItem item{nullptr};
@@ -177,6 +178,7 @@ std::unique_ptr<ScreenCapture> ScreenCapture::start(sc_device &dev, const Captur
         }
 #endif
         c.opaque = (ask.flags & SC_SCREEN_OPAQUE) != 0;
+        c.window = reinterpret_cast<HWND>(static_cast<uintptr_t>(ask.window));
         if (ask.interval_ms > 0)
             c.step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::milliseconds(ask.interval_ms));
@@ -196,6 +198,10 @@ std::unique_ptr<ScreenCapture> ScreenCapture::start(sc_device &dev, const Captur
 bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
     Impl &c = *impl;
     if (c.broken || !c.pool) return false;
+    if (c.window && !IsWindow(c.window)) {  // Windows says Closed on the item's own time, or not at all (CI)
+        c.gone->store(true);
+        return false;
+    }
     try {
         wgc::Direct3D11CaptureFrame newest{nullptr};
         for (;;) {  // only the newest is shown; the older ones go back to Windows at once

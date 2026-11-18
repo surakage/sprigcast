@@ -1472,7 +1472,7 @@ bool idle(sc_engine &e) {
     if (std::any_of(std::begin(e.canvases), std::end(e.canvases), [](const CanvasCfg &c) { return c.width > 0; }))
         return false;
     return e.previews.empty() && e.uploads.empty() && e.forgets.empty() && e.looks.empty() && e.masks.empty() &&
-           !e.snapshot_new && !e.fault && e.detach_done == e.detach_asked;
+           !e.snapshot_new && !e.fault && e.detach_done == e.detach_asked && e.capture_wants.empty();
 }
 
 // Frame n's time from the start, in performance-counter ticks, without overflowing for months.
