@@ -688,7 +688,8 @@ class Recorder:
         Renders that fall in an output frame slot already taken (a 60 fps canvas feeding a 30 fps
         output) are skipped here, before the queue, so they neither take queue space nor count as drops.
         """
-        if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._frames_closed:
+        if self.error is not None or self._stop.is_set() or self.paused_since is not None or self._frames_closed \
+                or self.linked:
             return
         self.fed += 1
         before = self._last_queued
@@ -1120,6 +1121,33 @@ class Recorder:
             writer.close()
         return True
 
+    linked = False  # the native engine hands this recording's frames to its writer itself (link_writer)
+
+    def link_writer(self):
+        """The writer the native engine may hand this recording's frames to itself, on its own thread, right now
+        (render/native_bridge.py link_taps): no Python at all per frame. None while that can't be: no writer
+        (PyAV records, or a stream or replay buffer), still opening, paused, stopping, failed, or (to start a
+        link) frames of Python's still waiting to be written, which would come after the engine's."""
+        writer = self.writer
+        if writer is None or self._opening or self.error is not None or self._stop.is_set() \
+                or self.paused_since is not None or self._frames_closed or os.environ.get("SPRIGCAST_NO_LINK"):
+            return None
+        if not self.linked and not self._video.empty():
+            return None
+        return writer
+
+    def link_numbers(self) -> tuple[float, int, int, float]:
+        """What the engine numbers this recording's frames by: (start in perf_counter seconds, frames a second,
+        the last frame number queued, how long a hole it fills)."""
+        return self.start_time, self.fps, self._last_queued, FILL_LONG_S
+
+    def unlinked(self, last_pts: int) -> None:
+        """The engine stopped handing frames over (render thread): Python's frames go on after ``last_pts``."""
+        self.linked = False
+        self._last_queued = max(self._last_queued, last_pts)
+        self._last_pts = max(self._last_pts, last_pts)
+        self._last_frame = None  # a picture from before the link: never used to fill a hole after it
+
     def _writer_opened(self, writer):
         """Wait for the writer's encoder and file to open (frames meanwhile keep only the newest few)."""
         self.writer = writer
@@ -1190,6 +1218,11 @@ class Recorder:
         """The writer's own counts become this recorder's: frames written, dropped, bytes, time writing."""
         stats = writer.stats()
         self.frames = int(stats.frames_written)
+        taken, repeats = int(stats.frames_in), int(stats.frames_repeated)
+        if self.linked:  # the engine feeds it: the flow check (check_flow) sees frames arrive
+            self.fed += max(0, taken - getattr(self, "_writer_in", 0))
+        self.repeated += max(0, repeats - getattr(self, "_writer_repeats", 0))
+        self._writer_in, self._writer_repeats = taken, repeats
         lost = int(stats.frames_dropped) - getattr(self, "_writer_dropped", 0)
         if lost > 0:
             self._writer_dropped = int(stats.frames_dropped)

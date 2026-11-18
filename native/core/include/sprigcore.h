@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 17
+#define SC_INTERFACE_VERSION 18
 
 enum {
     SC_OK = 0,
@@ -410,6 +410,29 @@ SC_API int sc_engine_output_take_texture(sc_engine *engine, int index, int slot,
 /* Gives a shared frame's texture back for the engine to draw into again. A texture of a pool that is gone (the
  * output changed or the device was rebuilt) is simply forgotten. Works on a stopped engine too. */
 SC_API int sc_engine_output_give_back(sc_engine *engine, int index, int slot, uint64_t pool, int entry);
+/* Links a plain (not SC_OUTPUT_SHARE) output to a writer of its size (writer.cpp): from now on the frame thread
+ * hands each finished frame straight to the writer, numbered by when it was drawn: frame n is due at
+ * start + n * fps_den / fps_num (performance counter seconds), as Python's recorder numbers them (a draw a little late
+ * still gets the next number, a spare draw of a faster canvas is skipped, a hole up to fill_seconds long is filled
+ * with the next picture). Nothing goes through the caller per frame. last_pts: the last frame number the
+ * writer already has from elsewhere (-1: none). keep = 1 still queues frames for sc_engine_output_take too (other
+ * outputs share this one). Linking the same writer again changes start, rate, keep and fill and keeps the
+ * numbering. The link ends by itself when the writer refuses (finished or failed), when the output changes, and
+ * with sc_engine_output_unlink. The engine keeps a share of the writer, so sc_writer_destroy is safe at any time. */
+typedef struct sc_writer sc_writer; /* writer.cpp, below */
+typedef struct sc_output_link {
+    sc_writer *writer;
+    double start;
+    int fps_num, fps_den;
+    int64_t last_pts;
+    int keep;
+    double fill_seconds;
+} sc_output_link;
+SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const sc_output_link *link);
+/* Ends an output's link (none: nothing to do) after any frame being handed over: *last_pts (optional) gets the last
+ * frame number the writer took (-1: none), so whoever feeds it next goes on from there. *linked (optional): 1 if
+ * the output was still linked. */
+SC_API int sc_engine_output_unlink(sc_engine *engine, int index, int slot, int64_t *last_pts, int *linked);
 /* IUnknown::Release on a pointer one of the calls above gave. */
 SC_API void sc_com_release(void *unknown);
 /* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++
@@ -509,7 +532,6 @@ SC_API int sc_media_ffmpeg_ready(void);
  * sc_writer_finish asks for the rest to be written and the file closed; sc_writer_wait waits for that;
  * sc_writer_destroy gives up whatever is left (a stream stuck connecting stops waiting) and frees it. A fault
  * inside FFmpeg ends the writer (state FAILED, error says why), never the app. */
-typedef struct sc_writer sc_writer;
 typedef struct sc_writer_config {
     const char *target;         /* file path or stream URL, UTF-8 */
     const char *format;         /* muxer ("mp4", "matroska", "mov", "flv"), or NULL to go by the target's name */
@@ -524,15 +546,21 @@ typedef struct sc_writer_config {
     int b_frames;                 /* 0-4 */
 } sc_writer_config;
 enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
-enum { SC_WRITER_DROPPED = 1, SC_WRITER_REFUSED = 2 }; /* sc_writer_video / sc_writer_audio results besides SC_OK */
+/* sc_writer_video / sc_writer_audio results besides SC_OK. LATE: the writer already took a later frame number (two
+ * feeds met, as when an output linked to it takes over from Python): never written, never counted as dropped. */
+enum { SC_WRITER_DROPPED = 1, SC_WRITER_REFUSED = 2, SC_WRITER_LATE = 3 };
 typedef struct sc_writer_stats {
     int state, queued;
     uint64_t frames_in, frames_written, frames_dropped, bytes;
     double write_seconds, longest_write;
     char error[256];
+    int64_t last_pts;                          /* the newest frame number taken (-1: none yet) */
+    uint64_t frames_late, frames_repeated;     /* SC_WRITER_LATE; frames a filled hole wrote again */
 } sc_writer_stats;
 SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out);
 SC_API int sc_writer_video(sc_writer *writer, const uint8_t *nv12, int stride, int64_t pts);
+/* One picture for frames first .. last (a hole filled with it): one queue place, written last - first + 1 times. */
+SC_API int sc_writer_video_span(sc_writer *writer, const uint8_t *nv12, int stride, int64_t first, int64_t last);
 SC_API int sc_writer_audio(sc_writer *writer, int track, const float *stereo, int frames);
 SC_API int sc_writer_finish(sc_writer *writer);
 SC_API int sc_writer_wait(sc_writer *writer, int timeout_ms);

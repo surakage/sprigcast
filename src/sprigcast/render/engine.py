@@ -1645,10 +1645,18 @@ class Engine:
     def _native_outputs(self, native, canvas, outputs) -> None:
         """Hand each output every frame the native engine finished for it, oldest first, each with the time
         the engine drew it: NV12 bytes, or the frame on the card for an encoder that takes it there (outputs
-        alike share the frames)."""
+        alike share the frames). A recording through the engine's own writer is linked instead: the engine hands
+        its frames over itself (native_bridge link_taps)."""
         made: dict = {}
         lost: dict = {}
-        for (callback, _size), key in zip(outputs, self._output_keys(native, outputs)):
+        keys = self._output_keys(native, outputs)
+        link_taps = getattr(native, "link_taps", None)
+        # Recordings the engine hands frames to itself (its own writer): nothing for them here.
+        linked = link_taps(canvas.id, [(callback, key) for (callback, _size), key in zip(outputs, keys)]) \
+            if link_taps is not None else set()
+        for (callback, _size), key in zip(outputs, keys):
+            if id(getattr(callback, "__self__", None)) in linked:
+                continue
             if key not in made:
                 made[key] = [frame if key[1] else Frame(canvas.id, key[0][0], key[0][1], frame[0], frame[1], "nv12")
                              for frame in native.take_outputs(canvas.id, key)]

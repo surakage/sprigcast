@@ -671,7 +671,8 @@ class ControlServer(QObject):
         session = self.sessions.get(socket)
         if session is not None:
             self._pump(socket, session.receive(text))
-            self.soon()  # a request may have changed something: tell everyone (and the asker) once it settles
+            if getattr(session, "may_change", True):
+                self.soon()  # a request may have changed something: tell everyone (and the asker) once it settles
 
     def _pump(self, socket: QWebSocket, steps: Iterator[Step]) -> None:
         for step in steps:
@@ -687,7 +688,8 @@ class ControlServer(QObject):
                 socket.close(QWebSocketProtocol.CloseCode(step.code), step.reason)
                 return
             socket.sendTextMessage(step)
-            self.soon()  # a step list changes things between waits
+            if getattr(self.sessions.get(socket), "may_change", True):
+                self.soon()  # a step list changes things between waits
 
     # Events ----------------------------------------------------------------------------
 

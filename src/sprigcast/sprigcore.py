@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 17  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 18  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -258,6 +258,8 @@ def _lib():
                                                   ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_uint64)]),
         "sc_engine_output_give_back": (c_int, [vp, c_int, c_int, ctypes.c_uint64, c_int]),
         "sc_com_release": (None, [vp]),
+        "sc_engine_output_link": (c_int, [vp, c_int, c_int, ctypes.POINTER(OutputLink)]),
+        "sc_engine_output_unlink": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(c_int)]),
         "sc_engine_output_take": (c_int, [vp, c_int, c_int, vp, ctypes.c_size_t, ctypes.POINTER(c_int),
                                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint64)]),
     }
@@ -741,6 +743,25 @@ class Engine:
                                              size, ctypes.byref(fresh), ctypes.byref(drawn), ctypes.byref(dropped)))
         return (data, drawn.value, dropped.value) if fresh.value else None
 
+    def link_output(self, index: int, slot: int, writer: Writer, start: float, fps: tuple[int, int] | int,
+                    last_pts: int = -1, keep: bool = False, fill_seconds: float = 0.0) -> None:
+        """Hand every frame of a plain output straight to ``writer`` (of the output's size) on the engine's own thread,
+        numbered from ``start`` (time.perf_counter() seconds of frame 0) at ``fps`` and going on after ``last_pts``.
+        keep: frames are still queued for take_output (other outputs share this one). Linking the same writer
+        again changes these and keeps the numbering. Raises NativeError when the output doesn't fit the writer."""
+        num, den = (fps, 1) if isinstance(fps, int) else fps
+        link = OutputLink(writer.handle_value(), float(start), int(num), int(den), int(last_pts), 1 if keep else 0,
+                          float(fill_seconds))
+        _check(_need().sc_engine_output_link(self.handle, index, slot, ctypes.byref(link)))
+
+    def unlink_output(self, index: int, slot: int) -> tuple[int, bool]:
+        """End an output's link after any frame being handed over: (the last frame number its writer took,
+        -1 for none; whether it was still linked). Works on a stopped engine too."""
+        last, linked = ctypes.c_int64(-1), ctypes.c_int(0)
+        if self._handle:
+            _check(_need().sc_engine_output_unlink(self._handle, index, slot, ctypes.byref(last), ctypes.byref(linked)))
+        return last.value, bool(linked.value)
+
     def debug_fault(self, kind: int) -> None:
         """Crash gate checks (tests only): 1 exception, 2 access violation, 3 lost card, 4 a 3 s stuck frame."""
         _check(_need().sc_engine_debug_fault(self.handle, kind))
@@ -802,6 +823,14 @@ class MediaPicture(ctypes.Structure):
                 ("time", ctypes.c_double)]
 
 
+class OutputLink(ctypes.Structure):
+    """include/sprigcore.h sc_output_link."""
+
+    _fields_ = [("writer", ctypes.c_void_p), ("start", ctypes.c_double), ("fps_num", ctypes.c_int),
+                ("fps_den", ctypes.c_int), ("last_pts", ctypes.c_int64), ("keep", ctypes.c_int),
+                ("fill_seconds", ctypes.c_double)]
+
+
 class WriterConfig(ctypes.Structure):
     """include/sprigcore.h sc_writer_config."""
 
@@ -818,7 +847,8 @@ class WriterStats(ctypes.Structure):
 
     _fields_ = [("state", ctypes.c_int), ("queued", ctypes.c_int), ("frames_in", ctypes.c_uint64),
                 ("frames_written", ctypes.c_uint64), ("frames_dropped", ctypes.c_uint64), ("bytes", ctypes.c_uint64),
-                ("write_seconds", ctypes.c_double), ("longest_write", ctypes.c_double), ("error", ctypes.c_char * 256)]
+                ("write_seconds", ctypes.c_double), ("longest_write", ctypes.c_double), ("error", ctypes.c_char * 256),
+                ("last_pts", ctypes.c_int64), ("frames_late", ctypes.c_uint64), ("frames_repeated", ctypes.c_uint64)]
 
     @property
     def state_name(self) -> str:
@@ -830,7 +860,7 @@ class WriterStats(ctypes.Structure):
 
 
 WRITER_STATES = ("opening", "running", "finished", "failed")
-WRITER_DROPPED, WRITER_REFUSED = 1, 2
+WRITER_DROPPED, WRITER_REFUSED, WRITER_LATE = 1, 2, 3
 
 
 def _media_sigs() -> dict:
@@ -854,6 +884,7 @@ def _media_sigs() -> dict:
         "sc_media_debug_fault": (c_int, [vp, c_int]),
         "sc_writer_open": (c_int, [ctypes.POINTER(WriterConfig), ctypes.POINTER(vp)]),
         "sc_writer_video": (c_int, [vp, vp, c_int, ctypes.c_int64]),
+        "sc_writer_video_span": (c_int, [vp, vp, c_int, ctypes.c_int64, ctypes.c_int64]),
         "sc_writer_audio": (c_int, [vp, c_int, vp, c_int]),
         "sc_writer_finish": (c_int, [vp]),
         "sc_writer_wait": (c_int, [vp, c_int]),
@@ -1093,6 +1124,26 @@ class Writer:
         if code < 0:
             _check(code)
         return code
+
+    def video_span(self, nv12, first: int, last: int, stride: int | None = None) -> int:
+        """Queue one NV12 picture for frames first .. last (a hole filled with it): one place in the queue."""
+        import numpy as np
+
+        data = np.ascontiguousarray(np.frombuffer(nv12, np.uint8) if not isinstance(nv12, np.ndarray) else nv12)
+        stride = stride or self.width
+        if data.nbytes < stride * self.height * 3 // 2:
+            raise NativeError(-1, "the picture is smaller than the writer's size")
+        code = self._call(self._lib.sc_writer_video_span, data.ctypes.data, int(stride), int(first), int(last))
+        if code < 0:
+            _check(code)
+        return code
+
+    def handle_value(self) -> int:
+        """The sc_writer pointer, for linking an engine output to it (Engine.link_output)."""
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the writer is closed")
+            return self._handle.value
 
     def audio(self, block, track: int = 0) -> int:
         """Queue sound for ``track``: (n, 2) float32, 48 kHz, following the last block."""

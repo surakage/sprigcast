@@ -312,3 +312,4 @@ def test_the_engines_outputs_in_memory_are_the_picture(shape, tmp_path):
     if not nc.close_enough(stats):
         Image.fromarray(planes, "L").save(tmp_path / f"{name}-engine-output.png")
     assert nc.close_enough(stats), f"{name}: {stats} (engine output in {tmp_path})"
+

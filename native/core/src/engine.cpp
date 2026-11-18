@@ -8,12 +8,14 @@
 // stops trying and says so (faulted), and Python switches to its own engine.
 #include "internal.h"
 #include "media.h"
+#include "writer.h"
 
 #include <mmsystem.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -219,6 +221,17 @@ struct SharedFrame {  // a frame kept on the card: one of its pool's textures, w
     ID3D11Texture2D *texture = nullptr;
 };
 
+// An output linked to a writer (sc_engine_output_link): the frame thread hands it each finished frame itself.
+struct Link {
+    std::mutex use;                // held while a frame is handed over (and to change the fields below)
+    std::shared_ptr<void> writer;  // the writer's insides (writer.h); empty once the link ended
+    double start = 0, fill = 0;
+    int fps_num = 30, fps_den = 1;
+    int64_t last = -1;  // the last frame number handed over
+    bool keep = false;  // still queue frames for sc_engine_output_take
+    std::atomic<bool> ended{false};
+};
+
 struct Output {  // shared: an output Python asked for and its finished frames
     int width = 0, height = 0, scale = 0;
     bool share = false;   // frames stay on the card as NV12 textures (SC_OUTPUT_SHARE)
@@ -230,6 +243,7 @@ struct Output {  // shared: an output Python asked for and its finished frames
     uint64_t pool = 0;    // the texture pool the frame thread draws into now (0: none)
     bool busy[SC_ENGINE_SHARE_POOL] = {};  // waiting in `shared`, or out with Python until given back
     std::deque<SharedFrame> shared;
+    std::shared_ptr<Link> link;  // the writer it feeds itself, if any
 };
 
 // Lets go of an output's shared frames and forgets its pool. `state` must be held.
@@ -238,6 +252,49 @@ void clear_shared(Output &o) {
     o.shared.clear();
     std::fill(std::begin(o.busy), std::end(o.busy), false);
     o.pool = 0;
+}
+
+// Hands a finished frame to a linked writer, numbered as Python's recorder numbers its frames (output/recorder.py
+// _assign_pts): a draw a little late still gets the next number, a spare draw (a 60 fps canvas, a 30 fps file) is
+// skipped, a draw really late leaves a gap, and a gap up to `fill` seconds is filled with this picture. Returns
+// whether the frame should also be queued for Python (keep). Never throws: a link that fails just ends.
+bool hand_over(Link &l, const OutFrame &f, int w, int h) {
+    std::lock_guard<std::mutex> hold(l.use);
+    if (!l.writer) return true;
+    try {
+        const double fps = static_cast<double>(l.fps_num) / l.fps_den;
+        const double x = (f.drawn - l.start) * fps;
+        const int64_t expected = l.last + 1;
+        if (x < static_cast<double>(expected) - 0.4) return l.keep;
+        int64_t pts;
+        if (l.last < 0) {
+            pts = std::max<int64_t>(0, static_cast<int64_t>(std::floor(x + 0.3)));
+        } else {
+            pts = x < static_cast<double>(expected) + 0.9 ? expected : std::llround(x);
+        }
+        int64_t first = pts;
+        if (l.last >= 0 && pts - l.last > 1 && static_cast<double>(pts - l.last - 1) <= l.fill * fps)
+            first = l.last + 1;
+        const int r = sc::writer_feed(l.writer, f.data.data(), w, h, first, pts);
+        if (r == SC_WRITER_LATE) {
+            l.last = std::max(pts, sc::writer_last(l.writer));
+        } else if (r == SC_OK || r == SC_WRITER_DROPPED) {
+            l.last = pts;
+        } else {  // finished, failed, or not its size any more: the link ends
+            sc::log_line(r == SC_WRITER_REFUSED ? SC_LOG_DEBUG : SC_LOG_WARNING,
+                         r == SC_WRITER_REFUSED ? "output link: the writer is done; link ended"
+                                                : "output link: the frame isn't the writer's size; link ended");
+            l.writer.reset();
+            l.ended = true;
+            return true;
+        }
+    } catch (...) {
+        sc::log_line(SC_LOG_WARNING, "output link: handing a frame to the writer failed; link ended");
+        l.writer.reset();
+        l.ended = true;
+        return true;
+    }
+    return l.keep;
 }
 
 struct OutputWant {  // the frame thread's copy of what Python asked for
@@ -784,9 +841,23 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
         dev.context->Unmap(r.uvs[s].Get(), 0);
         dev.context->Unmap(r.ys[s].Get(), 0);
         frame.drawn = r.drawn[s];
+        std::shared_ptr<Link> link;
+        {
+            std::lock_guard<std::mutex> st(e.state);
+            const Output &out = e.outputs[index][slot];
+            if (out.serial != r.serial[s]) continue;  // made for a setting Python has since changed
+            link = out.link;
+        }
+        // Outside `state`: the copy into the writer never holds up Python's calls.
+        const bool keep = !link || hand_over(*link, frame, w, h);
         std::lock_guard<std::mutex> st(e.state);
         Output &out = e.outputs[index][slot];
-        if (out.serial != r.serial[s]) continue;  // made for a setting Python has since changed
+        if (link && link->ended.load() && out.link == link) out.link.reset();
+        if (out.serial != r.serial[s]) continue;
+        if (!keep) {  // the writer has it: nobody takes it here
+            if (out.spare.size() < 2) out.spare.push_back(std::move(frame.data));
+            continue;
+        }
         out.ready.push_back(std::move(frame));
         while (out.ready.size() > SC_ENGINE_OUTPUT_QUEUE) {  // Python fell behind: the oldest goes
             out.spare.push_back(std::move(out.ready.front().data));
@@ -1614,6 +1685,62 @@ SC_API int sc_engine_output_set(sc_engine *engine, int index, int slot, int widt
         out.dropped = 0;
         out.share_state = 0;
         clear_shared(out);
+        out.link.reset();  // a writer has one size: the caller links again if it wants
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const sc_output_link *link) {
+    return engine_call(engine, "sc_engine_output_link", [&]() -> int {
+        if (!link || !link->writer || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 ||
+            slot >= SC_ENGINE_OUTPUTS || link->fps_num < 1 || link->fps_den < 1 || !(link->fill_seconds >= 0))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_link: bad slot, writer or rate");
+        std::shared_ptr<void> share = sc::writer_share(link->writer);
+        int ww = 0, wh = 0;
+        sc::writer_size(share, &ww, &wh);
+        std::shared_ptr<Link> l;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            Output &out = engine->outputs[index][slot];
+            if (out.share || out.width != ww || out.height != wh)
+                return fail(SC_ERR_ARGUMENT, "sc_engine_output_link: the output isn't a plain one of the writer's size");
+            l = out.link;
+            if (!l || l->ended.load()) {
+                l = out.link = std::make_shared<Link>();  // its writer is set below
+            }
+        }
+        std::lock_guard<std::mutex> hold(l->use);
+        if (l->writer.get() != share.get()) {  // another writer: this one starts afresh
+            l->writer = share;
+            l->last = -1;
+        }
+        l->start = link->start;
+        l->fps_num = link->fps_num;
+        l->fps_den = link->fps_den;
+        l->keep = link->keep != 0;
+        l->fill = std::min(link->fill_seconds, 60.0);
+        l->last = std::max(l->last, link->last_pts);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_unlink(sc_engine *engine, int index, int slot, int64_t *last_pts, int *linked) {
+    return guarded("sc_engine_output_unlink", [&]() -> int {  // works on a stopped engine too
+        if (last_pts) *last_pts = -1;
+        if (linked) *linked = 0;
+        if (!engine || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_unlink: bad slot");
+        std::shared_ptr<Link> l;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            l.swap(engine->outputs[index][slot].link);
+        }
+        if (!l) return SC_OK;
+        std::lock_guard<std::mutex> hold(l->use);  // waits for a frame being handed over
+        if (linked) *linked = l->ended.load() ? 0 : 1;
+        if (last_pts) *last_pts = l->writer ? std::max(l->last, sc::writer_last(l->writer)) : l->last;
+        l->writer.reset();
+        l->ended = true;
         return SC_OK;
     });
 }

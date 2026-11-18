@@ -175,6 +175,9 @@ def test_a_long_render_tick_says_where_it_was_held_up():
     from sprigcast.core import pacing
 
     pacing.busy_begin("render")
+    # An hour ahead: the app's own stall watch (started by an earlier test, on the real clock) never calls it long
+    # while this test's thread is slow to start under load; only the checks below, on this clock, do.
+    pacing._busy["render"][1] += 3600.0
     began = pacing._busy["render"][1]
     seen = threading.Event()
 
