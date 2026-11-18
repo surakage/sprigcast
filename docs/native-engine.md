@@ -160,7 +160,7 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   while only the engine takes its pictures, each one stays in the decoder's texture: `media_due` hands the
   texture slice to `sc::source_nv12`, which copies it on the card. No picture crosses memory. The decoder keeps
   `AHEAD_FRAMES + 3` spare surfaces for pictures waiting to be shown. Memory again, picture by picture, when
-  Python asks for the same video (a projector) within a second, after a device rebuild until the file reopens
+  Python asks for the same video (a projector) within a second (the one on screen is copied for it once), after a device rebuild until the file reopens
   on the new device, for odd sizes, and for good if the engine can't take a picture on the card (logged once).
 - **NV12 sources (`SC_FMT_NV12`, `native/core/src/nv12_source.cpp`).** The compositor takes NV12 pictures:
   copied onto the card as NV12 and repacked there by a small shader into its I420 layout, line for line what an

@@ -934,6 +934,35 @@ PicturePtr Core::card_picture(const AVFrame *f) const {
 #endif
 }
 
+// A picture left on the card, copied to memory in the I420 layout make_picture gives NV12 (for Python's reads).
+// Null if the card won't give it.
+PicturePtr card_to_memory(const Picture &on_card) {
+    AVFrame *cpu = ff.av_frame_alloc();
+    if (!cpu) return nullptr;
+    std::shared_ptr<AVFrame> hold_cpu(cpu, [](AVFrame *g) { ff.av_frame_free(&g); });
+    if (ff.av_hwframe_transfer_data(cpu, on_card.card.get(), 0) < 0 || cpu->format != AV_PIX_FMT_NV12) return nullptr;
+    const int w = on_card.width, h = on_card.height, cw = w / 2, ch = h / 2;
+    auto pic = std::make_shared<Picture>();
+    pic->format = SC_FMT_I420;
+    pic->width = pic->stride = w;
+    pic->height = h + ch;
+    pic->matrix = on_card.matrix;
+    pic->full = on_card.full;
+    pic->data.resize(static_cast<size_t>(w) * pic->height);
+    uint8_t *y = pic->data.data();
+    uint8_t *uv = y + static_cast<size_t>(w) * h;
+    copy_rows(y, w, cpu->data[0], cpu->linesize[0], w, h);
+    for (int row = 0; row < ch; ++row) {
+        const uint8_t *from = cpu->data[1] + row * cpu->linesize[1];
+        uint8_t *to_row = uv + static_cast<size_t>(row) * w;
+        for (int x = 0; x < cw; ++x) {
+            to_row[x] = from[2 * x];
+            to_row[cw + x] = from[2 * x + 1];
+        }
+    }
+    return pic;
+}
+
 PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller, int as) {
     auto pic = std::make_shared<Picture>();
     int kind = 0;
@@ -1529,12 +1558,27 @@ SC_API int sc_media_video_frame(sc_media *media, uint64_t *seen, sc_media_pictur
         Core &c = *media->core;
         PicturePtr found;
         double at = 0;
+        PicturePtr on_card;
         {
             std::lock_guard<std::mutex> hold(c.lock);
             c.python_took.store(now_s());  // from now on the decoder copies its pictures to memory again
             c.advance();
             if (*seen == c.screen_serial) return SC_MEDIA_NO_PICTURE;
-            if (c.on_screen && c.on_screen->card) return SC_MEDIA_NO_PICTURE;  // the next one comes in memory
+            if (c.on_screen && c.on_screen->card) on_card = c.on_screen;
+        }
+        if (on_card) {  // the one on screen was left on the card for the engine: copied here, once, for Python
+            PicturePtr copied = card_to_memory(*on_card);
+            std::lock_guard<std::mutex> hold(c.lock);
+            if (c.on_screen == on_card) {
+                if (!copied) return SC_MEDIA_NO_PICTURE;  // the next one comes in memory
+                c.on_screen = copied;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> hold(c.lock);
+            c.advance();
+            if (*seen == c.screen_serial) return SC_MEDIA_NO_PICTURE;
+            if (c.on_screen && c.on_screen->card) return SC_MEDIA_NO_PICTURE;
             if (c.on_screen_blank || !c.on_screen) {
                 *seen = c.screen_serial;
                 return c.on_screen_blank ? SC_MEDIA_BLANK : SC_MEDIA_NO_PICTURE;
