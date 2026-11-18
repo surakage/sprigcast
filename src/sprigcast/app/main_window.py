@@ -167,6 +167,7 @@ from sprigcast.sources.media import file_filter as media_file_filter, is_sound_f
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 LEARNED_AFTER = 5  # sessions before Build's hints stop showing
+CARD_ENCODER_FULL, CARD_ENCODER_FULL_S = 85.0, 15.0  # graphics-card encoder this busy this long: warn once
 BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
 FOLDER_FLAGS = (Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
                 | Qt.ItemFlag.ItemIsDragEnabled)
@@ -6103,7 +6104,7 @@ class MainWindow(QMainWindow):
         kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
         target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
                               output.bandwidth_test and service.bandwidth_test, output_id=output.id,
-                              auto_bitrate=output.auto_bitrate)
+                              auto_bitrate=output.auto_bitrate, max_kbps=service.max_kbps)
         if (ask or quiet) and output.enhanced and output.service == "twitch":
             return self._enhanced_target(output, target, quiet=quiet), None
         return target, None
@@ -7202,6 +7203,28 @@ class MainWindow(QMainWindow):
                         ", ".join(watch.codecs.get(k, "?") for k in busy))
             self._offer_lighter(busy)
         self._overload_logged = busy
+        self._watch_card_encoder()
+
+    def _watch_card_encoder(self) -> None:
+        """The graphics card's video encoder nearly full (85% or more for 15 s while live or recording) can't
+        take a busy moment: frames go missing. Said once a session (the 3-way multistream on 2026-11-18 ran NVENC
+        at 89-91% with six encodes and dropped frames in both recordings)."""
+        load = (getattr(self, "last_resources", None) or {}).get("encoder")
+        now = time.monotonic()
+        if load is None or load < CARD_ENCODER_FULL or (self.streaming is None and self.recording is None):
+            self._card_full_since = None
+            return
+        since = getattr(self, "_card_full_since", None)
+        if since is None:
+            self._card_full_since = now
+            return
+        if now - since < CARD_ENCODER_FULL_S or getattr(self, "_card_full_said", False):
+            return
+        self._card_full_said = True
+        log.warning("the graphics card's encoder is %.0f%% busy with %d encodes: frames may go missing", load,
+                    self._encode_sessions())
+        self._saved_note(f"Your graphics card's encoder is {load:.0f}% busy",
+                         detail="Fewer outputs or a lower frame rate frees it", kind="warn", ms=20000)
 
     def _offer_lighter(self, busy: list[str]) -> None:
         """The first overload of a session: say so right away with the one-tap fix, not only in Garden check."""

@@ -185,7 +185,7 @@ class QuickPage:
     def _resize(self, w: int, h: int) -> None:
         """A texture of the page's size on the card (the first one also starts Qt Quick on its device). Raises
         when the first can't be made: the host then makes a widget page instead."""
-        from PySide6.QtQuick import QQuickGraphicsDevice, QQuickRenderTarget
+        from PySide6.QtQuick import QQuickRenderTarget
 
         self.window.setGeometry(0, 0, w, h)
         self.root.setWidth(w)
@@ -200,17 +200,51 @@ class QuickPage:
             return
         self.target = target
         if not self._initialized:
-            self.window.setGraphicsDevice(QQuickGraphicsDevice.fromDeviceAndContext(target.device, target.context))
-            if not self.control.initialize():
-                self.target = None
-                target.close()
-                raise RuntimeError("Qt Quick couldn't start on the engine's card")
-            self._initialized = True
+            target = self._start_quick(target, w, h)
         self.window.setRenderTarget(QQuickRenderTarget.fromD3D11Texture(target.texture, QSize(w, h)))
         if old is not None:
             old.close()
         self._waiting_since = None
         self.dirty = True
+
+    def _start_quick(self, target, w: int, h: int):
+        """Start Qt Quick on the page texture's device. Some PySide builds can't take Direct3D pointers
+        (fromDeviceAndContext refuses them: PC, 2026-11-18): then Qt Quick makes its own device on the engine's card
+        (fromAdapter, by the card's LUID) and the page's texture is made on that device instead. Returns the target
+        used."""
+        from PySide6.QtQuick import QQuickGraphicsDevice, QSGRendererInterface
+
+        try:
+            device = QQuickGraphicsDevice.fromDeviceAndContext(target.device, target.context)
+            own = False
+        except (TypeError, AttributeError) as exc:
+            luid = getattr(self.host, "card", None)
+            if luid is None or not hasattr(QQuickGraphicsDevice, "fromAdapter"):
+                self._drop_target(target)
+                raise RuntimeError(f"Qt Quick can't take the engine's card here ({exc})") from exc
+            log.info("browser source %s: Qt Quick makes its own device on the engine's card", self.id)
+            device = QQuickGraphicsDevice.fromAdapter(int(luid[0]) & 0xFFFFFFFF, int(luid[1]))
+            own = True
+        self.window.setGraphicsDevice(device)
+        if not self.control.initialize():
+            self._drop_target(target)
+            raise RuntimeError("Qt Quick couldn't start on the engine's card")
+        self._initialized = True
+        if own:
+            found = self.window.rendererInterface().getResource(self.window,
+                                                                  QSGRendererInterface.Resource.DeviceResource)
+            pointer = int(found) if found is not None else 0
+            if not pointer:
+                self._drop_target(target)
+                raise RuntimeError("Qt Quick's device on the card couldn't be read")
+            self._drop_target(target)
+            target = self.target = self.host.target_for(self.id, w, h, pointer)  # on Qt Quick's own device
+        return target
+
+    def _drop_target(self, target) -> None:
+        if self.target is target:
+            self.target = None
+        target.close()
 
     def _card_failed(self, why: str) -> None:
         if self.on_card:
