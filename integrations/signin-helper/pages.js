@@ -161,7 +161,8 @@ and deleting its settings removes everything it kept on your PC.</p>
 <h2>Other services</h2>
 <p>Kick and Twitch sign-ins work the same way: they're optional, the tokens stay on your PC, and they're used only
 for the features you sign in for, such as your stream key and stream details. Chat from YouTube and Twitch is read with only your channel
-name, with no sign-in.</p>
+name, with no sign-in. Kick chat comes through Kick's official API by way of SprigCast's chat relay
+(kickchat.slothbloom.com): it passes a channel's public chat on as it arrives and keeps none of it.</p>
 
 <h2>Other things SprigCast sends</h2>
 <ul>
