@@ -95,6 +95,38 @@ int main() {
         CHECK(sc_mixer_wait(clocked, 2, 1000, &now) == 1 && now > 2);
         sc_mixer_destroy(clocked);
     }
+    {  // Sound capture: the test tone reaches the mix; a missing device and the default open and close cleanly
+       // (CI has no sound card: they only say why they aren't capturing).
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(0, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0};
+        int sound = 0, tap = 0, track = SC_TRACK_STREAM;
+        CHECK(sc_mixer_source_add(mixer, &one, &sound) == SC_OK && sc_mixer_tap_add(mixer, &track, 1, &tap) == SC_OK);
+        sc_capture *tone = nullptr, *missing = nullptr, *usual = nullptr;
+        CHECK(sc_capture_open(mixer, sound, L"sprigcast-test-tone", 0, &tone) == SC_OK);
+        CHECK(sc_capture_open(mixer, sound, L"No such microphone", 0, &missing) == SC_OK);
+        CHECK(sc_capture_open(mixer, sound, nullptr, 1, &usual) == SC_OK);
+        sc_capture_stats st{};
+        for (int i = 0; i < 200 && (sc_capture_stats_get(tone, &st) == SC_OK && st.frames < 2 * SC_MIXER_BLOCK); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        CHECK(st.state == SC_CAPTURE_CAPTURING && st.frames >= 2 * SC_MIXER_BLOCK);
+        CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+        std::vector<float> out(SC_MIXER_BLOCK * 2);
+        int64_t index = 0;
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+        float peak = 0.0f;
+        for (float v : out) peak = std::fmax(peak, std::fabs(v));
+        CHECK(peak > 0.2f && peak < 0.26f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        CHECK(sc_capture_stats_get(missing, &st) == SC_OK && st.state != SC_CAPTURE_CAPTURING && st.frames == 0);
+        std::printf("capture: a missing device says \"%s\"\n", st.error);
+        CHECK(sc_capture_stats_get(usual, &st) == SC_OK);
+        std::printf("capture: the default desktop sound: state %d, \"%s\"\n", st.state, st.error);
+        sc_capture_close(tone);
+        sc_capture_close(missing);
+        sc_capture_close(usual);
+        sc_mixer_destroy(mixer);
+    }
 
     sc_device *dev = nullptr;
     CHECK(sc_device_create(-1, SC_DEVICE_WARP, &dev) == SC_OK);

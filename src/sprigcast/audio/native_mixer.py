@@ -7,7 +7,11 @@ mix. Sounds the engine plays itself (video and sound files) go straight from the
 are still made in Python and pushed in by the feeder thread here, one block ahead, with their filters applied. The
 feeder also hands the finished blocks to each output and the levels to the meters.
 
-SPRIGCAST_NO_NATIVE_MIXER=1 keeps Python's mixer.
+Microphones and desktop sounds with no filters are read by the engine too (sprigcore.SoundCapture, WASAPI on a
+thread of its own pushing straight into the mix); one whose device the engine can't find goes back to Python's
+capture.
+
+SPRIGCAST_NO_NATIVE_MIXER=1 keeps Python's mixer; SPRIGCAST_NO_NATIVE_CAPTURE=1 keeps Python's capture.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from sprigcast.core.filters import SOUND_LEVELS
 
 log = logging.getLogger(__name__)
 
+CAPTURE_GIVE_UP_S = 4.0  # a capture that never found its device by then goes back to Python's
 CATCH_UP = 4  # blocks pushed at most in one go after the feeder was held up (more would only add delay)
 WAIT_MS = 200
 
@@ -58,7 +63,9 @@ def make_mixer(report: Callable[[dict[str, tuple[float, float]]], None]):
 
     if wanted():
         try:
-            return NativeMixer(report)
+            mixer = NativeMixer(report)
+            log.info("sound: mixed by the engine (its own thread); SPRIGCAST_NO_NATIVE_MIXER=1 mixes in Python")
+            return mixer
         except Exception as exc:  # noqa: BLE001 (Python's mixer instead)
             log.warning("sound: the engine's mixer isn't available (%s); Python mixes", exc)
     return Mixer(report)
@@ -67,7 +74,7 @@ def make_mixer(report: Callable[[dict[str, tuple[float, float]]], None]):
 class _Sound:
     """One sound as the engine knows it."""
 
-    __slots__ = ("asleep", "id", "media", "obj", "settings")
+    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "id", "media", "obj", "refused", "settings")
 
     def __init__(self, obj, native_id: int):
         self.obj = obj
@@ -75,6 +82,10 @@ class _Sound:
         self.settings: tuple | None = None
         self.media = None  # the engine player it reads straight from, if any
         self.asleep: bool | None = None  # what the player was last told
+        self.capture = None  # the engine's capture of its device, if any (sprigcore.SoundCapture)
+        self.capture_key: tuple | None = None  # (device, loopback) it captures
+        self.capture_since = 0.0
+        self.refused: tuple | None = None  # a (device, loopback) the engine couldn't find: Python captures it
 
 
 class NativeMixer:
@@ -158,8 +169,11 @@ class NativeMixer:
 
     def stop(self) -> None:
         self._stop.set()
-        self._thread.join(timeout=2)
+        if self._thread.ident is not None:  # never started when ticked by hand (checks)
+            self._thread.join(timeout=2)
         self._let_go_of_players()
+        for sound in list(self._known.values()):
+            self._end_capture(sound, hand_back=True)  # Python's mixer (if any comes next) needs their sound
         self._engine.close()
 
     # The feeder ------------------------------------------------------------------------------------------
@@ -204,6 +218,8 @@ class NativeMixer:
         self._sync_taps()
         for _ in range(blocks):
             for source, sound in sounds:
+                if sound.capture is not None:
+                    continue  # the engine reads its device itself
                 if sound.media is None:
                     self._push(source, sound, heard)
                 else:
@@ -216,6 +232,7 @@ class NativeMixer:
         self.ticks += 1
         if self.ticks % LEVELS_EVERY == 0:
             self._levels(self._sounds)
+            self._watch_captures(self._sounds)
 
     def tick(self, measure: bool = True) -> None:
         """Unclocked (checks): mix one block now from what the sounds make now, as Mixer.tick does."""
@@ -240,9 +257,11 @@ class NativeMixer:
                 self._engine.set_source(sound.id, **settings)
                 sound.settings = tuple(settings.items())
             self._link(source, sound, heard)
+            self._capture(source, sound, heard)
             out.append((source, sound))
         for key in [k for k in self._known if k not in alive]:
             sound = self._known.pop(key)
+            self._end_capture(sound, hand_back=True)
             if sound.media is not None:
                 self._engine.link_media(sound.id, None)
             self._engine.remove_source(sound.id)
@@ -287,6 +306,72 @@ class NativeMixer:
             player.before_close(lambda engine=self._engine, sid=sound.id: _unlink(engine, sid))
         sound.media = player
         sound.asleep = asleep
+
+    def _capture(self, source, sound: _Sound, heard: dict) -> None:
+        """A microphone or desktop sound with no filters and no plugin listening: the engine reads its device."""
+        get = getattr(source, "native_capture", None)
+        key = None
+        if get is not None and not os.environ.get("SPRIGCAST_NO_NATIVE_CAPTURE") \
+                and getattr(source, "audio_chain", None) is None and getattr(source, "id", None) not in heard:
+            try:
+                key = tuple(get())
+            except Exception as exc:  # noqa: BLE001 (Python captures it)
+                self._problem(f"source {getattr(source, 'id', '?')} device", exc)
+        if key is not None and key == sound.refused:
+            key = None
+        if key == sound.capture_key:
+            return
+        self._end_capture(sound, hand_back=key is None)
+        if key is None:
+            return
+        try:
+            sound.capture = self._engine.capture(sound.id, key[0], key[1])
+        except Exception as exc:  # noqa: BLE001 (Python captures it)
+            self._problem(f"source {getattr(source, 'id', '?')} capture", exc)
+            sound.refused = key
+            source.engine_captures(False)
+            return
+        sound.capture_key, sound.capture_since = key, time.monotonic()
+        source.engine_captures(True)
+
+    def _end_capture(self, sound: _Sound, hand_back: bool) -> None:
+        if sound.capture is None:
+            return
+        capture, sound.capture, sound.capture_key = sound.capture, None, None
+        try:
+            capture.close()
+        except Exception as exc:  # noqa: BLE001 (closed with the mixer)
+            self._problem("closing a capture", exc)
+        if hand_back:
+            give = getattr(sound.obj, "engine_captures", None)
+            if give is not None:
+                give(False)
+
+    def _watch_captures(self, sounds) -> None:
+        """Now and then: each engine capture's state on its source; one that never found its device goes back to
+        Python's capture (its device list may know a name the engine doesn't)."""
+        now = time.monotonic()
+        for source, sound in sounds:
+            capture = sound.capture
+            if capture is None:
+                continue
+            try:
+                st = capture.stats()
+            except Exception as exc:  # noqa: BLE001
+                self._problem("a capture's state", exc)
+                continue
+            if st["state"] == "capturing":
+                source.status = f"capturing {st['device']}"
+                if st["channels"] > 2:
+                    source.status += f" ({st['channels']} channels mixed to stereo)"
+            elif st["state"] in ("not found", "failed") and not st["frames"] and now - sound.capture_since > \
+                    CAPTURE_GIVE_UP_S:
+                log.info("sound %s: the engine can't capture it (%s); Python captures it",
+                         getattr(source, "id", "?"), st["error"])
+                sound.refused = sound.capture_key
+                self._end_capture(sound, hand_back=True)
+            elif st["error"]:
+                source.status = st["error"]
 
     def _push(self, source, sound: _Sound, heard: dict) -> None:
         try:

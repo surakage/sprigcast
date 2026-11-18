@@ -270,6 +270,23 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   can't keep up and sends them; the sound is encoded as before. `SPRIGCAST_NO_PACKET_WRITER=1` keeps the old way.
 - Phase 4 is code-complete; next is the PC test of phases 1-4 on a build.
 
+## Phase 5: sound (`native/core/src/mixer.cpp`, `capture.cpp`)
+
+- **Mixer** (`sc_mixer_*`): one 48 kHz stereo mix, a block of 1024 samples at a time, on a clocked thread of the
+  engine's own. It does the same mix as `audio/mixer.py`: mono, balance, delay, the fade of a sound per bloom,
+  volume, ducking, the eight tracks, the clean track and the monitor mix. `audio/native_mixer.py` (`NativeMixer`)
+  takes the same calls as Python's `Mixer`; `make_mixer` picks it with the switch on and logs "sound: mixed by the
+  engine". Video and sound files go straight from their engine player into the mix. `SPRIGCAST_NO_NATIVE_MIXER=1`
+  keeps Python's mixer.
+- **Capture** (`sc_capture_*`): a microphone or desktop sound with no filters, and no plugin listening to it, is
+  read with WASAPI on a thread of its own and pushed straight into the mix. Windows converts the sound to 48 kHz
+  stereo itself; if a driver refuses, the engine converts it. The capture finds its device again every 2 s, and a
+  "Default" sound follows the Windows default. The device is matched by the name PortAudio lists. If the engine
+  can't find the device within 4 s, Python captures it instead. `SPRIGCAST_NO_NATIVE_CAPTURE=1` keeps Python's
+  capture. The device name `sprigcast-test-tone` makes a tone without a sound card, for checks
+  (`tests/test_native_capture.py`, `core_tests.cpp`).
+- Next: the sound filters in C++ (so filtered sounds stay in the engine too) and the monitor output.
+
 ## Phases
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7
@@ -280,7 +297,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
-| 5 | Sound: devices, mixer, filters, sync | |
+| 5 | Sound: devices, mixer, filters, sync | In progress: the mixer (merged) and device capture are in the engine behind the switch; next are the filters and the monitor output |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
 | 7 | Capture and camera inside the engine | |
 | 8 | Old Python engine and its packages removed | |
