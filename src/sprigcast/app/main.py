@@ -392,10 +392,13 @@ def run() -> None:
     from sprigcast.core import pacing
 
     pacing.watch_gc()  # logs slow garbage collections (they made the late frames in long streams)
-    pacing.watch_stalls()  # names the thread whenever something holds everything up for 200 ms or more
+    beat_ms, watch_s = pacing.watch_window()  # SPRIGCAST_UI_STALL_MS=50: every window stall from 50 ms, with where
+    pacing.watch_stalls(interval=watch_s)  # names the thread whenever something holds everything up for 200 ms
     beat = QTimer(window)  # and whenever the window itself stops answering, where it was (pacing.ui_beat)
+    if beat_ms < pacing.UI_BEAT_MS:
+        beat.setTimerType(Qt.PreciseTimer)
     beat.timeout.connect(pacing.ui_beat)
-    beat.start(pacing.UI_BEAT_MS)
+    beat.start(beat_ms)
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
     tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
     # Each piece waits for the end of a frame and they run seconds apart (see pacing.housekeeping): together, at

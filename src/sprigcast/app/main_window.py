@@ -247,6 +247,12 @@ class _Repotted(QObject):
     done = Signal(list)
 
 
+class _ReportSaved(QObject):
+    """Carries Export report's outcome (None, or the OSError) from its worker back to the window."""
+
+    done = Signal(object)
+
+
 
 class GearWatch(QObject):
     """Logs mouse presses that reach the Settings gear: the PC once saw clicks on it do nothing, with nothing
@@ -279,6 +285,7 @@ class MainWindow(QMainWindow):
             shelf.sync_path(collection)
         self.gardens = GardenControl(self, shelf)  # Gardens and Paths menus (scene collections, profiles)
         self.plugins_dir = plugins_dir
+        self._report_future = None  # Export report, while it is being made on a worker
         self.plugin_report = None  # set by main.run() after loading plugins
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
         self.last_bloom_id: str | None = self.selected_scene_id  # where a sprig's ← Back goes
@@ -2619,7 +2626,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
         help_menu.addSeparator()
         help_menu.addAction("Report a problem…").triggered.connect(lambda: self.report_problem())
-        help_menu.addAction("Export report…").triggered.connect(lambda: self.export_report())
+        help_menu.addAction("Export report").triggered.connect(lambda: self.export_report())
         help_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
         help_menu.addSeparator()
         help_menu.addAction("About SprigCast").triggered.connect(lambda: self._show_about())
@@ -2645,33 +2652,52 @@ class MainWindow(QMainWindow):
 
     def export_report(self, target: Path | None = None, reveal: bool = True) -> Path | None:
         """File → Export report: one .zip with the recent logs, stream reports, crash notes, this PC and the
-        settings that matter, private things hidden (app/tester_report.py). Shown in its folder after."""
+        settings that matter, private things hidden (app/tester_report.py), saved to the desktop and shown in
+        its folder. Made on a worker: building it on the window's thread, after a save box that took a while to
+        come up on its own, froze the window 310 ms on the PC (2026-11-18 pop-up sweep). Returns where it goes;
+        it's there once self._report_future is done."""
         from sprigcast.app import tester_report
+        from sprigcast.core import workers
 
+        if self._report_future is not None and not self._report_future.done():
+            self.statusBar().showMessage("Still saving the report…", 4000)
+            return None
         if target is None:
-            picked, _ = QFileDialog.getSaveFileName(
-                self, "Export report", str(tester_report.default_folder() / tester_report.default_name()),
-                "Zip files (*.zip)")
-            if not picked:
-                return None
-            target = Path(picked)
+            target = tester_report.default_folder() / tester_report.default_name()
         if target.suffix.lower() != ".zip":
             target = target.with_name(target.name + ".zip")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            tester_report.build(target, collection=self.collection, settings=QSettings(),
-                                plugins_dir=self.plugins_dir)
-        except OSError as exc:
-            log.warning("report: couldn't save %s: %s", target.name, exc)
-            self.statusBar().showMessage(f"Couldn't save the report: {exc.strerror or exc}", 8000)
+        # The worker reads a copy: the window may change the collection while the report is made.
+        collection = self.collection.model_copy(deep=True)
+        plugins_dir = self.plugins_dir
+        self.statusBar().showMessage("Saving the report…")
+
+        def make():
+            try:
+                tester_report.build(target, collection=collection, settings=QSettings(), plugins_dir=plugins_dir)
+            except OSError as exc:
+                return exc
+            if reveal and sys.platform == "win32":
+                import subprocess
+
+                subprocess.Popen(["explorer", "/select,", str(target)])
             return None
-        finally:
-            QApplication.restoreOverrideCursor()
+
+        saved = _ReportSaved(self)
+        saved.done.connect(lambda failed: self._report_saved(target, failed, reveal, saved),
+                           Qt.ConnectionType.QueuedConnection)  # emitted on the worker
+        self._report_future = workers.run(lambda: saved.done.emit(make()), name="export report")
+        return target
+
+    def _report_saved(self, target: Path, failed: OSError | None, reveal: bool, saved) -> None:
+        saved.deleteLater()
+        if failed is not None:
+            log.warning("report: couldn't save %s: %s", target.name, failed)
+            self.statusBar().showMessage(f"Couldn't save the report: {failed.strerror or failed}", 8000)
+            return
         log.info("report exported")
         self.statusBar().showMessage(f"Report saved: {target.name}", 8000)
-        if reveal:
-            self._reveal(target)
-        return target
+        if reveal and sys.platform != "win32":
+            open_folder(target.parent)
 
     def report_problem(self):
         """Help → Report a problem: what happened, then send it with the log (app/problem_report.py)."""

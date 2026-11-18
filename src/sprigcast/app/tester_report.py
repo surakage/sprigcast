@@ -1,4 +1,4 @@
-"""File → Export report…: one .zip a tester can send back when something goes wrong.
+"""File → Export report: one .zip a tester can send back when something goes wrong.
 
 Inside:
 

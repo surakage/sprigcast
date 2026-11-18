@@ -308,3 +308,42 @@ def test_a_slow_frame_step_names_where_the_window_was(monkeypatch):
     engine._mark("sprigs")
     assert "test_a_slow_frame_step_names_where_the_window_was" in engine._window_at
     assert "window at " in engine._where()
+
+
+def test_fine_window_watch_logs_short_stalls_with_where_they_were(caplog):
+    """SPRIGCAST_UI_STALL_MS=50 (the PC's pop-up sweep): every window stall from 50 ms is logged with the window
+    thread's stack, taken half way; shorter ones are dropped; without it the usual 250 ms watch is unchanged."""
+    import logging
+
+    from sprigcast.core import pacing
+
+    assert pacing.ui_fine_ms({}) is None and pacing.ui_fine_ms({"SPRIGCAST_UI_STALL_MS": "off"}) is None
+    assert pacing.ui_fine_ms({"SPRIGCAST_UI_STALL_MS": "5"}) == pacing.UI_FINE_MIN_MS
+    assert pacing.watch_window({}) == (pacing.UI_BEAT_MS, 0.05) and pacing._ui["fine"] is None
+    clock = [10.0]
+    pacing._ui.update(beat=None, ident=None, where=None, clock=lambda: clock[0])
+    try:
+        assert pacing.watch_window({"SPRIGCAST_UI_STALL_MS": "50"}) == (pacing.UI_FINE_BEAT_MS, pacing.UI_FINE_WATCH_S)
+        pacing.ui_beat()
+        seen = threading.Event()
+
+        def check(at):
+            pacing._check_window(at)
+            seen.set()
+
+        threading.Thread(target=check, args=(10.02,)).start()
+        seen.wait(2)
+        assert pacing._ui["where"] is None  # 20 ms: not yet half way
+        seen.clear()
+        threading.Thread(target=check, args=(10.03,)).start()
+        seen.wait(2)
+        assert "test_threads.py" in pacing._ui["where"]
+        clock[0] = 10.04
+        with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
+            pacing.ui_beat()  # 40 ms in all: dropped
+            assert "didn't answer" not in caplog.text and pacing._ui["where"] is None
+            clock[0] = 10.11
+            pacing.ui_beat()  # 70 ms, too short to be caught: still logged
+        assert "the window didn't answer for 70 ms; it was at (too short to catch where)" in caplog.text
+    finally:
+        pacing._ui.update(beat=None, ident=None, where=None, clock=time.perf_counter, fine=None)
