@@ -154,6 +154,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- The card after a crash (and Help → Report a problem) no longer holds the window: it opened with .exec() and froze
+  it 404 and 660 ms. The report is built and sent on a thread of its own, and "See what's sent" builds it on a worker.
 - Help → Export report makes the report on a worker and saves it straight to the desktop, shown in its folder
   (the save box and the build on the window's thread froze it 310 ms). For the pop-up sweep, SPRIGCAST_UI_STALL_MS=50
   logs every window stall from 50 ms with where the window's thread was (the usual watch starts at 250 ms).

@@ -119,11 +119,12 @@ def test_send_report_from_the_help_menu_and_fall_back_to_the_desktop(app, logs, 
     try:
         help_menu = [a.menu() for a in w.menuBar().actions() if a.text() == "&Help"][0]
         assert "Report a problem…" in [a.text() for a in help_menu.actions()]
-        monkeypatch.setattr(problem_report.ReportCard, "exec", lambda self: 1)
         sent = []
-        thread = problem_report.ask(w, sender=lambda path, kind, cause: sent.append((kind, path)) or "SC-ABC234",
-                                    show_result=False)
-        _run(app, thread)
+        card = problem_report.ask(w, sender=lambda path, kind, cause: sent.append((kind, path)) or "SC-ABC234",
+                                  show_result=False)
+        assert card.isVisible() and not card.isModal()  # it doesn't hold the window (it froze it 404-660 ms)
+        card.accept()  # Send report
+        _run(app, card.upload)
         assert sent and sent[0][0] == "problem"
 
         desktop = tmp_path / "Desktop"
@@ -132,7 +133,9 @@ def test_send_report_from_the_help_menu_and_fall_back_to_the_desktop(app, logs, 
         def offline(path, kind, cause):
             raise OSError("no connection")
 
-        _run(app, problem_report.ask(w, CRASH, sender=offline, show_result=False))
+        card = problem_report.ask(w, CRASH, sender=offline, show_result=False)
+        card.accept()
+        _run(app, card.upload)
         saved = list(desktop.glob("SprigCast report *.zip"))
         assert len(saved) == 1 and "summary.txt" in zipfile.ZipFile(saved[0]).namelist()
     finally:
