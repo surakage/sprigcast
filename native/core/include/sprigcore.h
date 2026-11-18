@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 19
+#define SC_INTERFACE_VERSION 20
 
 enum {
     SC_OK = 0,
@@ -560,6 +560,9 @@ typedef struct sc_writer_stats {
     char error[256];
     int64_t last_pts;                          /* the newest frame number taken (-1: none yet) */
     uint64_t frames_late, frames_repeated;     /* SC_WRITER_LATE; frames a filled hole wrote again */
+    int on_card;                               /* takes textures now (0 once its encoder left the card) */
+    int recoveries;                            /* times the video encoder failed and started again from memory
+                                                * (once at most: a second failure fails the writer) */
 } sc_writer_stats;
 SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out);
 SC_API int sc_writer_video(sc_writer *writer, const uint8_t *nv12, int stride, int64_t pts);

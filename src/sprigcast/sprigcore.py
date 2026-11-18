@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 19  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 20  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -848,7 +848,8 @@ class WriterStats(ctypes.Structure):
     _fields_ = [("state", ctypes.c_int), ("queued", ctypes.c_int), ("frames_in", ctypes.c_uint64),
                 ("frames_written", ctypes.c_uint64), ("frames_dropped", ctypes.c_uint64), ("bytes", ctypes.c_uint64),
                 ("write_seconds", ctypes.c_double), ("longest_write", ctypes.c_double), ("error", ctypes.c_char * 256),
-                ("last_pts", ctypes.c_int64), ("frames_late", ctypes.c_uint64), ("frames_repeated", ctypes.c_uint64)]
+                ("last_pts", ctypes.c_int64), ("frames_late", ctypes.c_uint64), ("frames_repeated", ctypes.c_uint64),
+                ("on_card", ctypes.c_int), ("recoveries", ctypes.c_int)]
 
     @property
     def state_name(self) -> str:
