@@ -63,6 +63,26 @@ jobs:
           # The bundled font (#428) is in the installed copy.
           & $py -c "import sprigcast, pathlib; f = pathlib.Path(sprigcast.__file__).parent / 'data' / 'fonts' / 'Nunito.ttf'; assert f.is_file(), f; print('font OK')"
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }
+      - name: Start SprigCast for 30 seconds with a video playing
+        shell: pwsh
+        run: |
+          # The whole app, started the way a person starts it (packaging/smoke.py): it must stay open, draw,
+          # play a video and log no errors. Catches what only breaks when everything starts at once.
+          # This runner has no graphics driver (OpenGL 1.1 only), so for this check only, Qt's software
+          # OpenGL (Mesa) sits beside SprigCast.exe as opengl32.dll. It's removed straight after: the
+          # installer was built before this step and never has it.
+          $home_ = "packaging\build\python"
+          $gl = Join-Path $home_ "opengl32.dll"
+          Copy-Item (Join-Path $home_ "Lib\site-packages\PySide6\opengl32sw.dll") $gl
+          try {
+            & "$home_\python.exe" packaging\smoke.py 30 (Resolve-Path "$home_\SprigCast.exe").Path
+            $code = $LASTEXITCODE
+          } finally {
+            Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith((Resolve-Path $home_).Path) } | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            Remove-Item $gl -Force
+          }
+          if ($code -ne 0) { throw "SprigCast didn't start cleanly (see the log above)" }
       - name: Fingerprints and a Microsoft Defender scan
         shell: pwsh
         run: |
