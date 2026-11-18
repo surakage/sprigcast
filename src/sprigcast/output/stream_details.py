@@ -396,22 +396,38 @@ def _yt(token: str, method: str, path: str, body: dict | None = None) -> dict:
     return _call(method, f"{YOUTUBE_API}/{path}", token, body, who="YouTube")
 
 
-def _youtube_broadcast(token: str) -> dict | None:
-    """The stream that's live now, else the soonest one waiting, else None."""
-    part = "id,snippet,status"
-    live = _yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=active&broadcastType=all&maxResults=5")
-    items = live.get("items") or []
+def _youtube_stream_for_key(token: str, stream_key: str | None) -> str | None:
+    """The id of the YouTube stream that this key belongs to, or None (no key, or not one of the channel's)."""
+    if not stream_key:
+        return None
+    streams = _yt(token, "GET", "liveStreams?part=id,cdn&mine=true&maxResults=50").get("items") or []
+    return next((s["id"] for s in streams
+                 if ((s.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") == stream_key), None)
+
+
+def _youtube_broadcast(token: str, stream_id: str | None = None) -> dict | None:
+    """The stream that's live now, else the soonest one waiting, else None. With a stream id (horizontal and
+    vertical each go to YouTube on their own key), only the ones that key goes to."""
+    part = "id,snippet,status,contentDetails"
+
+    def mine(items: list) -> list:
+        if not stream_id:
+            return items
+        return [b for b in items if (b.get("contentDetails") or {}).get("boundStreamId") == stream_id]
+
+    live = _yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=active&broadcastType=all&maxResults=25")
+    items = mine(live.get("items") or [])
     if items:
         return items[0]
-    waiting = _yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=upcoming&broadcastType=all"
-                                "&maxResults=25").get("items") or []
+    waiting = mine(_yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=upcoming&broadcastType=all"
+                                     "&maxResults=50").get("items") or [])
     waiting.sort(key=lambda b: (b.get("snippet") or {}).get("scheduledStartTime") or "9999")
     return waiting[0] if waiting else None
 
 
-def _youtube_load() -> Details:
+def _youtube_load(stream_key: str | None = None) -> Details:
     def call(token):
-        found = _youtube_broadcast(token)
+        found = _youtube_broadcast(token, _youtube_stream_for_key(token, stream_key))
         if found is None:
             return Details(privacy="public")
         snippet, status = found.get("snippet") or {}, found.get("status") or {}
@@ -581,9 +597,12 @@ def _kick_search(text: str) -> list[tuple[str, str]]:
 # What the pop-up calls (on a worker) -------------------------------------------------------------------
 
 
-def load(service: str) -> Details:
+def load(service: str, stream_key_ref: str | None = None) -> Details:
+    """stream_key_ref (YouTube): the destination's key, so each of your YouTube destinations edits its own stream."""
     log.info("stream details: reading %s", service)
-    return {"twitch": _twitch_load, "youtube": _youtube_load, "kick": _kick_load}[service]()
+    if service == "youtube":
+        return _youtube_load(get_key(stream_key_ref) if stream_key_ref else None)
+    return {"twitch": _twitch_load, "kick": _kick_load}[service]()
 
 
 def save(service: str, details: Details, thumbnail_path: str = "", stream_key_ref: str | None = None) -> Details:
