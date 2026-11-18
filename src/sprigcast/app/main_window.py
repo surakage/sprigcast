@@ -7111,6 +7111,9 @@ class MainWindow(QMainWindow):
         """How SprigCast and the streams are doing (tiles, stream health, quick checks), and the last streams."""
         from sprigcast.app.garden_check import garden_check_popup
 
+        # Python's lock handed back quickly while it's made and shown, as modal() does for the other pop-ups: this
+        # one opens with open(), and went without (Garden check 76 ms, Last stream 57 ms on the PC, 2026-11-18).
+        theme.ui_burst()
         pop = garden_check_popup(self._garden_snapshot, self._health_records(), self, self._open_logs,
                                  "health" if tab == "health" else "now", make_lighter=self._make_encoding_lighter)
         pop.open()
@@ -7507,6 +7510,7 @@ class MainWindow(QMainWindow):
         return made
 
     def _open_palette(self) -> CommandPalette:
+        theme.ui_burst()  # (as modal() does)
         palette = CommandPalette(self._palette_commands(), self)
         palette.open()
         return palette

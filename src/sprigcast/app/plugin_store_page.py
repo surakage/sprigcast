@@ -175,7 +175,7 @@ class PluginStorePage(QWidget):
         self._ids = [p.id for p in plugins]  # every store plugin, cards made or not yet
         # Read off the window's thread (known): the first few cards now, the rest a few a tick (all at once they
         # were 90 ms of the open on the PC while live, 2026-11-18). Read here (tests, older callers): all now.
-        now = plugins if known is None else plugins[:self.ROWS_PER_STEP]
+        now = plugins if known is None else plugins[:self.ROWS_FIRST]
         self._rows_waiting = list(plugins[len(now):])
         for plugin in now:
             self._add_row(plugin)
@@ -214,7 +214,8 @@ class PluginStorePage(QWidget):
         layout.addStretch(1)
         self._refresh_mine()
 
-    ROWS_PER_STEP = 4
+    ROWS_FIRST = 1  # cards made with the page itself (it's put in its scroll in the same go)
+    ROWS_PER_STEP = 2  # then this many a tick: 4 a tick were 147 ms over the fill on the PC while live (2026-11-18)
     ROW_GAP_MS = 15
 
     def _add_row(self, plugin) -> None:
@@ -229,6 +230,7 @@ class PluginStorePage(QWidget):
             self._sbox.insertWidget(self._sbox.indexOf(hold) - 1, row)
 
     def _more_rows(self) -> None:
+        theme.ui_burst()  # Python's lock handed back quickly while they're made (the open's own burst has ended)
         for plugin in self._rows_waiting[:self.ROWS_PER_STEP]:
             self._add_row(plugin)
         del self._rows_waiting[:self.ROWS_PER_STEP]
@@ -379,6 +381,7 @@ class PluginStoreWindow(QDialog):
         import shiboken6
 
         if shiboken6.isValid(self):
+            theme.ui_burst()  # (read back a moment after the open: its own burst has ended)
             self._fill(known)
 
 
