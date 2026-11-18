@@ -147,6 +147,7 @@ class Engine:
         # Sources that had a picture when they went to sleep (their texture let go): a switch back to their bloom
         # waits for their first picture, as for a camera, so the first uploads can be spread over a few ticks.
         self._had_picture: set[str] = set()
+        self._sprigs_held: frozenset = frozenset()  # canvases whose new bloom's sprigs weren't drawn this tick
         self._woke = 0  # sources woken this tick (the waking-frame log line)
         self._source_ms: dict[str, float] = {}  # source id -> average ms per frame it was asked for
         self._source_every: dict[str, int] = {}  # source id -> asked every Nth tick (over its budget)
@@ -801,15 +802,22 @@ class Engine:
         if asleep:
             self._waking[canvas_id] = (outgoing, time.perf_counter() + WAKE_WAIT_S, asleep)
 
+    def _switch_waits(self, compositor, canvas_id: str, now: float) -> bool:
+        """True while a switch on this canvas still waits for a picture (see _still_waking)."""
+        waiting = self._waking.get(canvas_id)
+        if waiting is None:
+            return False
+        _outgoing, give_up, ids = waiting
+        return now < give_up and not all(sid in compositor.textures
+                                         and getattr(self._sources.get(sid), "first_picture", True) for sid in ids)
+
     def _still_waking(self, compositor, canvas_id: str, now: float):
         """The scene to keep showing while a switch waits for a camera to open, or None to go ahead."""
         waiting = self._waking.get(canvas_id)
         if waiting is None:
             return None
-        outgoing, give_up, ids = waiting
-        if now < give_up and not all(sid in compositor.textures
-                                     and getattr(self._sources.get(sid), "first_picture", True) for sid in ids):
-            return outgoing
+        if canvas_id in self._sprigs_held or self._switch_waits(compositor, canvas_id, now):
+            return waiting[0]  # (held when its sprigs were left out this tick: shown the next, sprigs drawn)
         del self._waking[canvas_id]
         running = self._transitions.get(canvas_id)
         if running is not None and running.began is not None:
@@ -1301,12 +1309,19 @@ class Engine:
                      source_id, now - slept, wait)
         self._camera_wait[source_id] = wait
 
-    def _drawn_scenes(self, collection: SceneCollection) -> list:
+    def _drawn_scenes(self, collection: SceneCollection, held_back: frozenset = frozenset()) -> list:
+        """Scenes drawn right now. held_back: canvases whose bloom switched to is left out, for its sprigs: the
+        canvas still shows the old one (_wait_for_waking) this tick. Its sources wake, but its sprigs are drawn
+        from the tick it shows, not on every tick it waits (both blooms' sprigs each held tick: "sprigs 51.9 ms"
+        on the PC, 2026-11-18)."""
         drawn = []
         for canvas in collection.canvases:
             if not canvas.enabled:
                 continue
-            for scene_id in (collection.active_scenes.get(canvas.id), self.staged.get(canvas.id)):
+            on_air = collection.active_scenes.get(canvas.id)
+            for scene_id in (on_air, self.staged.get(canvas.id)):
+                if scene_id == on_air and canvas.id in held_back:
+                    continue
                 scene = next((s for s in collection.scenes if s.id == scene_id), None)
                 if scene is not None and scene not in drawn:
                     drawn.append(scene)
@@ -1384,7 +1399,8 @@ class Engine:
         # transition fades out of, the bloom being edited in Build, and the Part editor. The other blooms'
         # sprigs cost nothing until they are switched to.
         used: set[str] = set()
-        stack = self._move_light(collection, self._drawn_scenes(collection))
+        held = self._sprigs_held = frozenset(cid for cid in self._waking if self._switch_waits(compositor, cid, now))
+        stack = self._move_light(collection, self._drawn_scenes(collection, held))
         if self.editing_part:
             stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
             used.add(self.editing_part)
@@ -1998,6 +2014,7 @@ class Engine:
             else:  # only sources still drawn keep one waiting (a bloom gone to sleep lets go of its pictures)
                 self._held_back = {sid: held for sid, held in self._held_back.items()
                                    if sid in self._sources and not getattr(self._sources[sid], "asleep", False)}
+        self._sprigs_held = frozenset()
         if not self._python_drew:
             self._part_textures, self._parts_used = {}, set()  # nothing Python draws this tick shows a sprig
         elif self._collection.parts():

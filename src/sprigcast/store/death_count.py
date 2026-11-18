@@ -220,7 +220,9 @@ class DeathCountSource(Source):
             if self._clear:
                 self._clear = False
                 self._frame.release()
-                return painted.clear_frame(W, H)
+                # Nothing to show: a tiny see-through picture (it's stretched to the box). A whole clear card
+                # was sent on every wake, 26 ms of the PC's switch frame (2026-11-18, "death_count-1 26.1").
+                return painted.clear_frame(2, 2)
             return None
         t = time.monotonic() - job.started
         if t >= self._length(job):

@@ -181,7 +181,7 @@ class TextSource(Source):
                 # is the one before, a frame or two longer.
                 from sprigcast.core import workers
 
-                self._aside = workers.run(self._render_aside, name="text drawing")
+                self._aside = workers.picture(self._render_aside, name="text drawing")
         if not self._pending:
             return None
         self._pending = False

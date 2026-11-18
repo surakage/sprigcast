@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import random
 import re
 import threading
@@ -121,19 +122,30 @@ def read_name(stem: str) -> tuple[str | None, str] | None:
     return None
 
 
-def _subfolders(folder: Path) -> list[Path]:
+def _entries(folder: Path, want_dirs: bool) -> list[Path]:
+    """Subfolders or files of a folder, A-Z. os.scandir knows each entry's type from the folder listing itself
+    on Windows; Path.iterdir() then is_file() asked the disk once more per file (436 ms on the PC's window
+    thread for a big emotes folder, 2026-11-18)."""
+    found = []
     try:
-        return sorted((p for p in folder.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
+        with os.scandir(folder) as listing:
+            for entry in listing:
+                try:
+                    if entry.is_dir() if want_dirs else entry.is_file():
+                        found.append(entry.path)
+                except OSError:
+                    continue
     except OSError:
         return []
+    return sorted((Path(p) for p in found), key=lambda p: p.name.lower())
+
+
+def _subfolders(folder: Path) -> list[Path]:
+    return _entries(folder, True)
 
 
 def _pictures(folder: Path) -> list[Path]:
-    try:
-        return sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in PICTURES),
-                      key=lambda p: p.name.lower())
-    except OSError:
-        return []
+    return [p for p in _entries(folder, False) if p.suffix.lower() in PICTURES]
 
 
 def scan(folder: Path | None, picked: dict[str, Path] | None = None) -> dict[str, dict[str, Path]]:
@@ -250,16 +262,35 @@ def _sample() -> Path:
 
 
 _SCANS: dict[tuple, tuple[float, dict]] = {}
+_RESCANNING: set[tuple] = set()
+SCAN_FRESH_S = 5.0
 
 
 def expressions_in(settings: dict[str, Any]) -> list[str]:
-    """The expressions of a source's model (scanned at most every few seconds)."""
+    """The expressions of a source's model. Asked on the window's thread (hotkey lists, menus, the API): only
+    the very first time is the folder read here. After that it answers from what it found last, and if that's
+    over SCAN_FRESH_S old reads the folder again on a worker for next time."""
     key = model_key(settings)
     now = time.monotonic()
     cached = _SCANS.get(key)
-    if cached is None or now - cached[0] > 5:
-        cached = (now, scan(key[0], picked_pictures(settings)))
-        _SCANS[key] = cached
+    if cached is None:
+        cached = _SCANS[key] = (now, scan(key[0], picked_pictures(settings)))
+    elif now - cached[0] > SCAN_FRESH_S and key not in _RESCANNING:
+        _RESCANNING.add(key)
+        picked = picked_pictures(settings)
+
+        def rescan():
+            try:
+                _SCANS[key] = (time.monotonic(), scan(key[0], picked))
+            finally:
+                _RESCANNING.discard(key)
+
+        from sprigcast.core import workers
+
+        try:
+            workers.run(rescan, name="pngtuber folder")
+        except RuntimeError:  # the pool is shutting down (SprigCast closing)
+            _RESCANNING.discard(key)
     return expression_order(cached[1])
 
 
@@ -367,6 +398,7 @@ def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[
     """Open and fit every picture of the model (on a worker thread: Pillow lets other threads run).
     picked: idle and talk pictures chosen one by one (see scan)."""
     found = scan(folder, picked)
+    _SCANS[folder, (picked or {}).get("idle"), (picked or {}).get("talk")] = (time.monotonic(), found)
     if not found or any(not p.is_file() for p in (picked or {}).values()):
         raise ModelError(what_is_missing(folder, picked or {}))
     sizes: dict[tuple[str, str], tuple[int, int, int]] = {}

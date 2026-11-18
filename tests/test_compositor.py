@@ -369,7 +369,7 @@ def test_a_picture_shown_again_is_decoded_on_a_worker(monkeypatch, tmp_path):
         frame = src.video_frame()
         time.sleep(0.002)
     assert frame is not None and frame.shape == (6, 8, 4)
-    assert where and where[0].startswith("sprigcast-work")
+    assert where and where[0].startswith("sprigcast-pictures")
     assert src.video_frame() is None  # handed over once
 
 

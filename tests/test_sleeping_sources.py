@@ -463,3 +463,20 @@ def test_a_plugins_settings_reach_the_engine_without_a_whole_garden(monkeypatch)
     commit_settings(SimpleNamespace(commit_settings=light.append, commit=full.append), [1])
     commit_settings(SimpleNamespace(commit=full.append), [1], "timer")
     assert light == [[1]] and full == ["timer"]  # hosts without it (apps' test hosts) get the whole commit
+
+
+def test_a_held_switch_draws_the_new_blooms_sprigs_only_once_it_shows():
+    """While the old bloom is held for a waking source, the new bloom's sources wake but its sprigs aren't
+    drawn (both blooms' sprigs each held tick: "sprigs 51.9 ms" on the PC, 2026-11-18)."""
+    engine, col = _engine()
+    old = col.scenes[0]
+    col.active_scenes["h"] = "b"
+    engine._waking["h"] = (old, 1e9, {"soon"})
+    assert {s.id for s in engine._drawn_scenes(col)} == {"a", "b"}  # its sources wake
+    assert {s.id for s in engine._drawn_scenes(col, frozenset({"h"}))} == {"a"}  # its sprigs wait
+    fake = FakeCompositor()
+    fake.textures = {"soon": 1}
+    engine._sprigs_held = frozenset({"h"})  # left out this tick: it shows from the next one, sprigs drawn
+    assert engine._still_waking(fake, "h", 0.0) is old
+    engine._sprigs_held = frozenset()
+    assert engine._still_waking(fake, "h", 0.0) is None

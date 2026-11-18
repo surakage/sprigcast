@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 MAX_WORKERS = 4
 _pool: ThreadPoolExecutor | None = None
+_pictures: ThreadPoolExecutor | None = None
 
 
 def pool() -> ThreadPoolExecutor:
@@ -33,6 +34,27 @@ def run(job: Callable, *args, name: str = "") -> Future:
             log.exception("background job %s failed", name or getattr(job, "__name__", "?"))
             raise
     return pool().submit(logged)
+
+
+def picture(job: Callable, *args, name: str = "") -> Future:
+    """Run job(*args) on the one pictures lane: drawing a card or decoding a picture for the render thread.
+
+    These jobs hold Python's lock for much of their time (painting text, converting pixels). On the shared
+    pool, a bloom coming back sent its texts, clocks, pictures and Now playing to four workers at once, and the
+    render thread waited its turn behind all of them: its switch frame grew to 300+ ms on the PC (2026-11-18,
+    "telling sources shown or hidden" 71 ms for a few cheap calls). One at a time, it waits behind one at most.
+    """
+    global _pictures
+    if _pictures is None:
+        _pictures = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sprigcast-pictures")
+
+    def logged():
+        try:
+            return job(*args)
+        except Exception:
+            log.exception("picture job %s failed", name or getattr(job, "__name__", "?"))
+            raise
+    return _pictures.submit(logged)
 
 
 def wait_answering(job: Callable, *args, poll_ms: int = 10):

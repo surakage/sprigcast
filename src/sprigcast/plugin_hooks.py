@@ -207,30 +207,32 @@ def run_hotkey(api, action: str, say: Callable[[str], None] | None = None) -> bo
 
 def on_air(col, source_id: str) -> bool:
     """Is this source showing in a bloom that's on air now (any shape), directly or inside a sprig?"""
-    def shows(scene, seen) -> bool:
-        if scene.id in seen:
-            return False
-        seen = seen | {scene.id}
+    return source_id in on_air_sources(col)
+
+
+def on_air_sources(col) -> set[str]:
+    """Every source showing in a bloom on air now, however deep in sprigs. Each bloom and sprig is walked once,
+    with lookups by id: the walk it replaces went through every sprig again for each path to it, looking each
+    item's source up in the whole list, and a Freeze hotkey on a big sprig held the window 1 s (PC 2026-11-18)."""
+    configs = {s.id: s for s in col.sources}
+    scenes = {s.id: s for s in col.scenes}
+    stack = [scenes[i] for i in col.active_scenes.values() if i in scenes]
+    found: set[str] = set()
+    walked: set[str] = set()
+    while stack:
+        scene = stack.pop()
+        if scene.id in walked:
+            continue
+        walked.add(scene.id)
         for item in scene.items:
             if not item.visible:
                 continue
-            if item.source == source_id:
-                return True
-            try:
-                part = col.part_of(col.source(item.source))
-            except StopIteration:
-                continue
-            if part is not None and shows(col.shape_for(part, scene.canvas), seen):
-                return True
-        return False
-
-    for scene_id in col.active_scenes.values():
-        try:
-            if shows(col.scene(scene_id), frozenset()):
-                return True
-        except StopIteration:
-            continue
-    return False
+            found.add(item.source)
+            config = configs.get(item.source)
+            part = col.part_of(config) if config is not None else None
+            if part is not None:
+                stack.append(col.shape_for(part, scene.canvas))
+    return found
 
 
 def not_here(name: str) -> str:
@@ -257,11 +259,12 @@ def find_filter(source, kind: str):
     return next((f for f in source.filters if f.kind == kind), None)
 
 
-def filter_on(api, source, kind: str, name: str, settings: dict | None = None, seconds: float = 0.0):
+def filter_on(api, source, kind: str, name: str, settings: dict | None = None, seconds: float = 0.0,
+              commit: bool = True):
     """Switch on a source's filter of this kind (adding it the first time), and off again after seconds.
 
     seconds 0 keeps it on until filter_off. Triggering again while it's on restarts the time.
-    Returns the filter.
+    commit False: the caller commits once after switching on several (a sprig's sources). Returns the filter.
     """
     from sprigcast.core.filters import filter_kind
     from sprigcast.core.scene import Filter
@@ -280,7 +283,8 @@ def filter_on(api, source, kind: str, name: str, settings: dict | None = None, s
     key = (source.id, kind)
     run = _RUNS.get(key, 0) + 1
     _RUNS[key] = run
-    api.host.commit("filters")
+    if commit:
+        api.host.commit("filters")
     if seconds > 0:
         from PySide6.QtCore import QTimer
 
