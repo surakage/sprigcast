@@ -3,8 +3,8 @@
 A drop-down or number box takes the wheel only once you've clicked into it (it has the keyboard). Before,
 scrolling down Settings → Stream → Quality could flip the encoder to x264 without a click.
 
-Each drop-down and number box gets the filter itself just after it's made (theme.fit_widgets, guard). It used
-to be one filter on the whole app, which ran Python for every event of every widget: while streaming and
+The rule lives in the boxes' own wheelEvent (_wheel_rule); each one made gets its focus set just after it's made
+(theme.fit_widgets, guard). It used to be one filter on the whole app, then a filter per box, which ran Python for every event of every widget: while streaming and
 recording, other threads hold Python's lock, so each of those ~36,000 calls waited its turn and opening
 Settings froze the window for seconds (PC test, 2026-11-17).
 """
@@ -63,7 +63,33 @@ def _the_guard() -> WheelGuard:
     global _guard
     if _guard is None:
         _guard = WheelGuard(QApplication.instance())
+        _wheel_rule()
     return _guard
+
+
+_ruled = False
+
+
+def _wheel_rule() -> None:
+    """Every drop-down and number box: no wheel until it has the keyboard, in their wheelEvent itself.
+
+    Each box used to get an event filter (WheelGuard), and a filter hears every event of its box through Python:
+    opening any pop-up sent each box in the window behind it its window-activation events, each waiting for
+    Python's lock while live (Last stream 51 ms on the PC, 2026-11-18). The wheelEvent runs only for a wheel."""
+    global _ruled
+    if _ruled:
+        return
+    _ruled = True
+    for cls in _BOXES:
+        plain = cls.wheelEvent
+
+        def wheel(self, event, _plain=plain) -> None:
+            if not self.hasFocus():
+                event.ignore()  # not taken: Qt passes it on to the page behind
+                return
+            _plain(self, event)
+
+        cls.wheelEvent = wheel
 
 
 def guard(widget: QWidget) -> None:
@@ -102,8 +128,8 @@ def _fresh(widget: QWidget) -> None:
 
 
 def settle(step: int | None = SETTLE_STEP) -> None:
-    """Put the filter on the boxes made since the last time (and keep the wheel from focusing them), `step` of
-    them now and the rest a tick later; None: all of them now."""
+    """Keep the wheel from focusing the boxes made since the last time, `step` of them now and the rest a tick
+    later; None: all of them now."""
     import shiboken6
 
     boxes = _pending[:step]
@@ -112,7 +138,7 @@ def settle(step: int | None = SETTLE_STEP) -> None:
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(SETTLE_GAP_MS, settle)
-    the_guard = _the_guard()
+    _the_guard()
     for widget in boxes:
         if not shiboken6.isValid(widget):
             continue  # a pop-up closed meanwhile
@@ -120,8 +146,7 @@ def settle(step: int | None = SETTLE_STEP) -> None:
             # Qt gives a WheelFocus widget the focus before any filter sees the wheel, so a scroll could still
             # change a stream's Resolution (PC test, 2026-11-17).
             widget.setFocusPolicy(_STRONG)
-        widget.installEventFilter(the_guard)
-        widget.setProperty(GUARDED, True)
+        widget.setProperty(GUARDED, True)  # (the wheel itself: _wheel_rule)
 
 
 def install(app: QApplication) -> WheelGuard:

@@ -76,12 +76,24 @@ def preset_url(preset: str, channel: str) -> str:
     return PRESETS[preset][1].format(channel=channel.strip().lower()) if channel.strip() else ""
 
 
-def web_engine_available() -> bool:
+def import_web_engine() -> bool:
+    """Qt WebEngine imported now (it wants to be before the QApplication when there are web panels)."""
     try:
         from PySide6 import QtWebEngineWidgets  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+def web_engine_available() -> bool:
+    """Is Qt WebEngine installed? Found, not imported: the first import (Chromium's bindings) was 51 ms of opening
+    Panels → Web panels on the PC while live (2026-11-18); it's imported when a web panel is first made."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("PySide6.QtWebEngineWidgets") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 _profile = None

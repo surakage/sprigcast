@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Chat's ⋯ menu is kept and made ready ahead instead of made in the click (151 ms). Drop-downs and number boxes
+  keep the wheel rule in their own wheel handling instead of an event filter each, and the Live lists fit their
+  height from their layout instead of a filter, so opening a pop-up no longer sends every one of them through
+  Python (51-63 ms). Panels → Web panels checks Qt WebEngine is there without importing it (51 ms).
 - Pop-up cards (Garden check, Last stream, Get started, Starter kit and the rest) draw their soft shadow once per
   size instead of blurring the whole card on every repaint, and the Stream doctor lost its two blurred shadows
   (96 ms). The encoder overload check runs on a worker instead of the window's thread every meter tick (62 ms),

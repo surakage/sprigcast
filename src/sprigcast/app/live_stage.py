@@ -402,6 +402,20 @@ def side_card() -> QFrame:
 PLACES_HEIGHT = 4 * 44 + 3 * 8  # four destinations; more scroll inside the card
 
 
+class _ToldLayout(QVBoxLayout):
+    """A one-widget layout that calls told() when what's inside it changes size (rows came or went)."""
+
+    def __init__(self, widget: QWidget, told: Callable[[], None]):
+        super().__init__(widget)
+        self._told = told
+
+    def invalidate(self) -> None:
+        super().invalidate()
+        told = getattr(self, "_told", None)  # (invalidated once while it's made, before it has one)
+        if told is not None:
+            told()
+
+
 class FitScroll(QScrollArea):
     """Scrolls its widget only when the column is too short: as tall as the content when there is room,
     down to SHORTEST when there isn't. Never scrolls sideways."""
@@ -416,12 +430,29 @@ class FitScroll(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        self.setWidget(widget)
-        widget.installEventFilter(self)
+        # Told when the rows change by a layout around them (its invalidate), not an event filter: a filter on
+        # the scroll area heard every event of its rows through Python (Qt's own scroll area filter too, once
+        # overridden), 63 ms of a Garden check's open on the PC while live (2026-11-18).
+        self._fit_due = False
+        self._content = widget  # (measured itself: the layout around it keeps an old answer while it's hidden)
+        holder = QWidget()
+        around = _ToldLayout(holder, self._fit_soon)
+        around.setContentsMargins(0, 0, 0, 0)
+        around.addWidget(widget)
+        self.setWidget(holder)
+        self._fit()
+
+    def _fit_soon(self) -> None:
+        if not self._fit_due:
+            self._fit_due = True
+            QTimer.singleShot(0, self, self._fit_now)
+
+    def _fit_now(self) -> None:
+        self._fit_due = False
         self._fit()
 
     def _fit(self) -> None:
-        height = self.widget().sizeHint().height()
+        height = self._content.sizeHint().height()
         if self.cap is not None:
             height = min(height, self.cap)
         self.setMaximumHeight(max(1, height))  # never taller than the content
@@ -430,7 +461,7 @@ class FitScroll(QScrollArea):
 
     def _bar(self) -> None:
         # The bar only when the rows really don't fit, so it never sits over them for a moment.
-        fits = self.height() >= self.widget().sizeHint().height()
+        fits = self.height() >= self._content.sizeHint().height()
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits
                                         else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
@@ -438,18 +469,13 @@ class FitScroll(QScrollArea):
         self._bar()
         super().resizeEvent(event)
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
-            self._fit()  # rows came or went: ask the column for a new height
-        return super().eventFilter(watched, event)
-
     def sizeHint(self) -> QSize:  # noqa: N802
-        hint = self.widget().sizeHint()
+        hint = self._content.sizeHint()
         return QSize(hint.width(), hint.height() if self.cap is None else min(hint.height(), self.cap))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         shortest = self.SHORTEST if self.cap is None else 40  # a capped list may shrink and scroll
-        return QSize(0, min(shortest, self.widget().sizeHint().height()))
+        return QSize(0, min(shortest, self._content.sizeHint().height()))
 
 
 class LiveSide(QWidget):
