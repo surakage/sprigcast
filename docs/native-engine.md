@@ -230,8 +230,14 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   stream of the same size on SprigCast's own NVENC sharing it, a refused link or a rebuilt engine device
   (`Recorder.card_lost`) send the recording memory frames instead, which the writer copies up to its card. If
   the writer can't open there (no NVENC, the device mid-rebuild) the recording goes through PyAV with
-  SprigCast's own NVENC as before. `SPRIGCAST_NO_CARD_WRITER=1` keeps those recordings in Python. A device that
-  is truly lost (driver reset) fails a recording on the card, since its encoder can't move to the new device.
+  SprigCast's own NVENC as before. `SPRIGCAST_NO_CARD_WRITER=1` keeps those recordings in Python. 
+- **An encoder that fails once starts again (interface 20).** If the writer's video encoder fails mid-file (a
+  graphics driver reset, a lost card), the old encoder is flushed and let go of entirely (its frames on the card,
+  their textures, its FFmpeg contexts) and a new one carries on from memory into the same file; the engine's link
+  to the card ends and the recording takes memory frames (`sc_writer_stats.on_card` 0, `Recorder.card_lost`).
+  Once per writer: a second failure ends the file cleanly (`recoveries`). Writing errors (disk full) never
+  restart anything. `SPRIGCAST_WRITER_FAULT=20` (or `10,30`) fails the encoder at those pictures for tests;
+  `tests/test_native_writer.py` runs it, also under AddressSanitizer locally.
 - Next: a replay buffer of the stream's size sharing the stream's encoder, streams with reconnects, and Instant
   replay's buffer.
 
