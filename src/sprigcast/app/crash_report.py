@@ -58,6 +58,14 @@ class Crash:
         return "No error was recorded. It may have been ended from Task Manager, or the PC turned off"
 
 
+# Exceptions Windows reports to faulthandler that COM catches and handles itself: never what ended a run.
+NOISE_CODES = ("0x8001010d", "0x8001010e")  # RPC_E_CANTCALLOUT_ININPUTSYNCCALL, RPC_E_WRONG_THREAD
+
+
+def _noise(what: str) -> bool:
+    return any(code in what.lower() for code in NOISE_CODES)
+
+
 def section_header(pid: int | None = None, now: datetime | None = None, version: str = "") -> str:
     return f"\n{SECTION} {version} pid {pid or os.getpid()} started {(now or datetime.now()):%Y-%m-%d %H:%M:%S}\n"
 
@@ -74,7 +82,13 @@ def read_crash_log(text: str, pid: int) -> Crash:
     rest = text[match.end():]
     nxt = re.search(rf"^{re.escape(SECTION)}", rest, re.M)
     body = rest[: nxt.start()] if nxt else rest
-    fatal = re.search(r"^(?:Windows fatal exception|Fatal Python error): (.+)$", body, re.M)
+    # The last one that isn't noise: Windows hands faulthandler COM's own "call rejected" exceptions too, which COM
+    # handles itself ("code 0x8001010d"), and the PC's crash log of 2026-11-18 named one of those instead of the
+    # access violation after it.
+    fatal = None
+    for line in re.finditer(r"^(?:Windows fatal exception|Fatal Python error): (.+)$", body, re.M):
+        if not _noise(line.group(1)):
+            fatal = line
     if fatal:
         found.cause = fatal.group(1).strip()
         frames = re.findall(r'^\s+File "([^"]+)", line (\d+) in (\S+)', body[fatal.end():], re.M)
