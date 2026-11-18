@@ -582,6 +582,12 @@ def thumbnail_bytes(path: str) -> bytes:
 KICK_LAST_SETTING = "kick/details_last"  # QSettings: what SprigCast last saved to Kick (title etc.). Not secret.
 
 
+def _kick_named(channel: dict) -> str:
+    """The channel's category name; Kick sends an empty category (no name) while you're offline."""
+    category = channel.get("category")
+    return str(category.get("name") or "") if isinstance(category, dict) else ""
+
+
 def _kick_channel(token: str) -> dict:
     """The signed-in channel. Kick answers for "you" with no query; the channel name (slug) is the fallback."""
     channels = _call("GET", f"{KICK_API}/channels", token, who="Kick").get("data") or []
@@ -590,16 +596,17 @@ def _kick_channel(token: str) -> dict:
         channels = _call("GET", f"{KICK_API}/channels?slug={slug}", token, who="Kick").get("data") or []
     channel = channels[0] if channels and isinstance(channels[0], dict) else {}
     slug = channel.get("slug")
-    if slug and not (channel.get("stream_title") or channel.get("category")):  # asked by name, Kick may say more
+    if slug and not (channel.get("stream_title") or _kick_named(channel)):  # asked by name, Kick may say more
         named = _call("GET", f"{KICK_API}/channels?slug={urllib.parse.quote(str(slug))}", token,
                       who="Kick").get("data") or []
-        if named and isinstance(named[0], dict) and (named[0].get("stream_title") or named[0].get("category")):
+        if named and isinstance(named[0], dict) and (named[0].get("stream_title") or _kick_named(named[0])):
             channel = named[0]
     stream = channel.get("stream") if isinstance(channel.get("stream"), dict) else {}
     # What came back, never the values (the stream part carries the stream key).
-    log.info("stream details: kick sent %d channel(s), fields %s, stream fields %s; title %s, category %s, "
-             "tags %d, live %s", len(channels), sorted(channel), sorted(stream),
-             "set" if channel.get("stream_title") else "empty", "set" if channel.get("category") else "empty",
+    category = channel.get("category") if isinstance(channel.get("category"), dict) else {}
+    log.info("stream details: kick sent %d channel(s), fields %s, stream fields %s, category fields %s; title %s, "
+             "category %s, tags %d, live %s", len(channels), sorted(channel), sorted(stream), sorted(category),
+             "set" if channel.get("stream_title") else "empty", "named" if category.get("name") else "empty",
              len(stream.get("custom_tags") or channel.get("custom_tags") or []), bool(stream.get("is_live")))
     return channel
 
@@ -640,12 +647,19 @@ def _kick_load() -> Details:
         tags = [str(t) for t in tags if t] if isinstance(tags, list) else []
         details = Details(title=channel.get("stream_title", "") or "", category=category.get("name", "") or "",
                           category_id=str(category.get("id") or ""), tags=tags, old_tags=list(tags))
-        if not (details.title or details.category or details.tags):
-            details.unread = True
+        if not details.category:
+            details.category_id = ""  # an id with no name is Kick's offline placeholder
+        if not (details.title and details.category):  # offline, Kick leaves these out: fill from the last save
             last = _kick_last()
+            if not details.title and not details.tags:
+                details.unread = True  # Kick sends no tags offline either, so an empty box clears them
             if last:
-                last.unread = True
-            return last or details
+                details.title = details.title or last.title
+                if not details.category:
+                    details.category, details.category_id = last.category, last.category_id
+                if not details.tags:
+                    details.tags, details.old_tags = list(last.tags), list(last.tags)
+                details.from_last, details.note = True, last.note
         return details
 
     return _with_token("kick", call)
