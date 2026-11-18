@@ -168,6 +168,10 @@ class FakeNative:
     def set_outputs(self, canvas_id, keys, scale="bilinear"):
         self.outputs[canvas_id] = (sorted(set(keys)), scale)
 
+    def pause_outputs(self, canvas_id, keys, scale="bilinear"):
+        self.set_outputs(canvas_id, keys, scale)
+        self.paused = getattr(self, "paused", 0) + 1
+
     def take_outputs(self, canvas_id, key):
         self.clock += 1.0  # one frame a tick, each drawn later than the last
         size, on_card = key
@@ -318,7 +322,9 @@ def test_outputs_go_back_to_python_while_it_draws_the_canvas():
     fake.read_nv12 = lambda canvas_id, size: b"p"
     _run(engine, fake, seconds=0.25)
     assert got and all(f.data == b"p" for f in got)
-    assert engine._native.outputs["h"] == ([], "bicubic") and ("h", (64, 36)) in engine._native.python_served
+    # kept (not stopped and made again) while Python draws it: the engine's frames are let go meanwhile
+    assert engine._native.outputs["h"] == ([((64, 36), False)], "bicubic") and engine._native.paused > 0
+    assert ("h", (64, 36)) in engine._native.python_served
 
 
 def test_more_output_sizes_than_the_native_engine_has_room_for_stay_with_python():
@@ -714,6 +720,29 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     bridge.engine.hung = 0
     assert bridge.reset_outputs()  # a feed that stopped: every output starts over, nothing remembered
     assert bridge.engine.set[-1] == (0, 0, 0, 0) and bridge._outputs[0] == {} and bridge._last_out == {}
+
+
+def test_a_python_drawn_transition_keeps_the_outputs_and_their_textures(monkeypatch):
+    """A Move or stinger transition: the recording is unlinked and its frames come from Python meanwhile, but the
+    engine's output stays (its texture pool too) and its frames are let go. Dropped and made again each time,
+    each transition made a new pool the writer on the card kept (PC soak 2026-11-18)."""
+    monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
+    monkeypatch.setattr(sprigcore, "com_release", lambda pointer: None)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    card = bridge.output_key((64, 36), True)
+    bridge.set_outputs("h", [card])
+    unlinked = []
+    owner = SimpleNamespace(unlinked=unlinked.append)
+    bridge.engine.unlink_output = lambda slot, out: (41, True)
+    bridge._links[(0, 0)] = (owner, object(), ("settings",))
+    bridge.engine.queue = [(1, (0xA, 7, 2, 5.0), 0), (1, (0xB, 7, 3, 6.0), 0)]
+    bridge.pause_outputs("h", [card])
+    assert bridge.engine.set == [(0, 0, 64, 36, "card")]  # never stopped and made again: the same textures
+    assert unlinked == [41] and (0, 0) not in bridge._links  # the recording takes Python's frames meanwhile
+    assert sorted(bridge.engine.back) == [(0, 0, 7, 2), (0, 0, 7, 3)] and bridge.lost == 0  # let go
+    bridge.set_outputs("h", [card])  # the engine draws it again: nothing changes
+    assert bridge.engine.set == [(0, 0, 64, 36, "card")]
 
 
 def test_frames_on_the_card_go_back_to_the_engine_when_let_go(monkeypatch):

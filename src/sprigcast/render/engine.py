@@ -2114,7 +2114,12 @@ class Engine:
                 ridden = [*outputs, *self._rider_outputs(canvas.id, taps)]  # the virtual camera showing it, too
                 keys = self._output_keys(native, ridden)
                 native_out = native_shows and native.serves(canvas.id, keys)
-                native.set_outputs(canvas.id, keys if native_out else (), canvas.downscale)
+                pause = getattr(native, "pause_outputs", None)
+                if not native_out and pause is not None and extra and not native.handles(extra) \
+                        and native.draws(canvas.id) and native.serves(canvas.id, keys):
+                    pause(canvas.id, keys, canvas.downscale)  # a transition only Python draws: kept, not remade
+                else:
+                    native.set_outputs(canvas.id, keys if native_out else (), canvas.downscale)
                 if native_out:  # recordings and streams: the frames the native engine finished since last tick
                     self._native_outputs(native, canvas, ridden)
                     self._served_views.update(self._riders.get(canvas.id, ()))
