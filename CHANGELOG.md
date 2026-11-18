@@ -164,6 +164,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
   Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
   transition, then goes back to the engine's same textures.
+- New engine: display, window and game capture happen inside the engine. Windows hands each picture over on
+  the engine's own graphics device and it's copied there, so no screen picture is copied into memory, through
+  Python, and back (about 500 MB a second for a 1080p60 game). If the engine can't capture on a PC, the old
+  capture takes over by itself; SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1 always uses the old one.
 - Now playing (v7): Cover glow's sound dots didn't move (PC test 2026-11-18). Its wide row had dots half the row
   tall, and a bar stayed a dot until the music passed that height. Bars are now at most 0.3 of the row wide and
   grow up from their dot with the level, so every style moves with quiet music too.

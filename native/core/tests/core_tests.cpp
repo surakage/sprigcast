@@ -592,6 +592,68 @@ int main() {
         CHECK(st.faulted == 0 && st.running == 1);
         engine_draws_it("after a rebuild");
     }
+    // Screen capture in the engine: a display captured on the engine's device and read back, a window whose capture
+    // ends when it closes. CI may have no desktop to capture: then the capture says it couldn't, and nothing breaks.
+    {
+        CHECK(sc_engine_source_capture(eng, 21, 1, 2, 0, 0) == SC_ERR_ARGUMENT);  // a window and a display
+        CHECK(sc_engine_source_capture(eng, 21, 0, 1, 64, 0) == SC_ERR_ARGUMENT);  // unknown flags
+        int state = -1, w = 0, h = 0;
+        uint64_t frames = 0;
+        CHECK(sc_engine_capture_state(eng, 21, &state, &w, &h, &frames) == SC_OK && state == SC_SCREEN_NONE);
+        auto settle = [&](uint64_t id) {
+            for (int waited = 0; waited < 3000; waited += 20) {
+                sc_engine_capture_state(eng, id, &state, &w, &h, &frames);
+                if (state != SC_SCREEN_STARTING) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        };
+        const POINT origin = {0, 0};
+        HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+        CHECK(sc_engine_source_capture(eng, 21, 0, reinterpret_cast<uint64_t>(monitor), SC_SCREEN_CURSOR, 16) ==
+              SC_OK);
+        settle(21);
+        std::printf("display capture: state %d, %dx%d, %llu pictures\n", state, w, h,
+                    static_cast<unsigned long long>(frames));
+        CHECK(state == SC_SCREEN_RUNNING || state == SC_SCREEN_ENDED || state == SC_SCREEN_REFUSED);
+        if (state == SC_SCREEN_RUNNING) {
+            CHECK(w > 0 && h > 0 && frames > 0);
+            int rw = 0, rh = 0;
+            CHECK(sc_engine_capture_read(eng, 21, nullptr, 0, 0, 0, &rw, &rh) == SC_ERR_ARGUMENT);
+            CHECK(rw == w && rh == h);
+            std::vector<uint8_t> screen(static_cast<size_t>(rw) * rh * 4);
+            CHECK(sc_engine_capture_read(eng, 21, screen.data(), rw * 4, rw, rh, &rw, &rh) == SC_OK);
+            CHECK(sc_engine_source_capture_hold(eng, 21, 1) == SC_OK);
+            CHECK(sc_engine_source_capture_hold(eng, 21, 0) == SC_OK);
+        }
+        engine_draws_it("while a display is captured");
+        CHECK(sc_engine_source_capture(eng, 21, 0, 0, 0, 0) == SC_OK);  // stopped: the source keeps its picture
+        CHECK(sc_engine_capture_state(eng, 21, &state, nullptr, nullptr, nullptr) == SC_OK && state == SC_SCREEN_NONE);
+
+        HWND window = CreateWindowExW(0, L"STATIC", L"sprigcore capture check", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40,
+                                      40, 200, 120, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (window) {
+            CHECK(sc_engine_source_capture(eng, 22, reinterpret_cast<uint64_t>(window), 0, 0, 0) == SC_OK);
+            for (int i = 0; i < 50; ++i) {  // a window only draws while its messages are read
+                MSG msg;
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                sc_engine_capture_state(eng, 22, &state, &w, &h, &frames);
+                if (state != SC_SCREEN_STARTING) break;
+            }
+            std::printf("window capture: state %d, %dx%d\n", state, w, h);
+            const bool ran = state == SC_SCREEN_RUNNING;
+            DestroyWindow(window);
+            if (ran) {
+                for (int waited = 0; waited < 3000 && state == SC_SCREEN_RUNNING; waited += 20) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    sc_engine_capture_state(eng, 22, &state, nullptr, nullptr, nullptr);
+                }
+                CHECK(state == SC_SCREEN_ENDED);  // closed: SprigCast looks for it again
+            }
+            CHECK(sc_engine_source_forget(eng, 22) == SC_OK);
+        }
+        CHECK(sc_engine_source_forget(eng, 21) == SC_OK);
+    }
     // A stuck frame: the watchdog says so, and the engine goes on afterwards.
     CHECK(sc_engine_debug_fault(eng, 4) == SC_OK);
     CHECK(wait_until(eng, [](const sc_engine_stats &s) { return s.hung == 1; }, 3000, st));

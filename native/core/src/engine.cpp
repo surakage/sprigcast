@@ -9,6 +9,7 @@
 #include "internal.h"
 #include "media.h"
 #include "visual.h"
+#include "wgc.h"
 #include "writer.h"
 
 #include <mmsystem.h>
@@ -63,6 +64,29 @@ struct Pic {
     std::vector<uint8_t> data;
     sc_upload how{};
     bool keep = false;
+};
+
+// A capture Python asked for (sc_engine_source_capture): a new serial each time it starts over.
+struct CaptureWant {
+    sc::CaptureAsk ask;
+    uint64_t serial = 0;
+};
+
+// How it is doing, for sc_engine_capture_state (the serial it is about).
+struct CaptureShown {
+    int state = SC_SCREEN_NONE;
+    int width = 0, height = 0;
+    uint64_t frames = 0;
+    uint64_t serial = 0;
+};
+
+// The frame thread's capture for a want: made on the device, again after a rebuild; `done` once it ended or
+// couldn't start (Python asks again).
+struct CaptureRun {
+    std::unique_ptr<sc::ScreenCapture> cap;
+    uint64_t serial = 0;
+    uint64_t frames = 0;
+    bool done = false;
 };
 
 struct DrawList {  // sc_engine_source_draws: count < 0 drops it
@@ -457,6 +481,10 @@ struct sc_engine {
     std::unordered_map<uint64_t, std::wstring> shareds;          // sources shown from another process's memory
     std::set<uint64_t> shared_held;  // shareds held still (a freeze): their pictures taken, not shown
     std::unordered_map<uint64_t, std::shared_ptr<void>> visuals; // sources an audio visualizer draws (visual.cpp)
+    std::unordered_map<uint64_t, CaptureWant> capture_wants;     // sources captured in the engine (capture_wgc.cpp)
+    std::set<uint64_t> capture_held;                             // captures held still (a freeze)
+    std::unordered_map<uint64_t, CaptureShown> capture_states;
+    uint64_t next_capture = 1;
     std::unordered_map<uint64_t, DrawList> draws;                // the newest list per source, not yet sent
     std::unordered_map<uint64_t, LookData> looks;
     std::unordered_map<uint64_t, MaskData> masks;
@@ -481,6 +509,8 @@ struct sc_engine {
     std::unordered_map<uint64_t, DrawList> kept_draws;  // the lists drawn now, sent again after a rebuild
     std::unordered_map<uint64_t, std::pair<const void *, uint64_t>> media_seen;  // source -> (player, serial taken)
     std::unordered_map<uint64_t, SharedPictures> shared_open;  // the blocks of `shareds`, opened by the frame thread
+    std::unordered_map<uint64_t, CaptureRun> capture_runs;      // the captures of `capture_wants`
+    std::unordered_map<uint64_t, ComPtr<ID3D11Texture2D>> capture_staging;  // sc_engine_capture_read's, under `frame`
     std::unordered_map<uint64_t, LookData> kept_looks;
     std::unordered_map<uint64_t, MaskData> kept_masks;
     std::shared_ptr<const SnapData> kept_snapshot;
@@ -528,6 +558,8 @@ void check(int code) {
 }
 
 void drop_gpu(sc_engine &e) {
+    for (auto &[id, run] : e.capture_runs) run.cap.reset();  // made again on the new device (same serial)
+    e.capture_staging.clear();
     e.shown.clear();
     e.media_seen.clear();  // a new device gets each player's picture again
     for (auto &[id, block] : e.shared_open) {  // and each shared block's, its texture opened on the new device
@@ -1099,6 +1131,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> visuals;
     std::vector<std::pair<uint64_t, std::wstring>> shareds;
     std::set<uint64_t> shared_held;
+    std::vector<std::pair<uint64_t, CaptureWant>> captures;
+    std::set<uint64_t> captures_held;
+    std::vector<std::pair<uint64_t, CaptureShown>> capture_news;
     uint64_t detach_seen;
     {
         std::lock_guard<std::mutex> lock(e.state);
@@ -1106,6 +1141,8 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         visuals.assign(e.visuals.begin(), e.visuals.end());
         shareds.assign(e.shareds.begin(), e.shareds.end());
         shared_held = e.shared_held;
+        captures.assign(e.capture_wants.begin(), e.capture_wants.end());
+        captures_held = e.capture_held;
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
         std::copy(std::begin(e.transitions), std::end(e.transitions), transitions);
         for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
@@ -1221,6 +1258,52 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         check(sc_source_upload(e.dev, id, data, &how));
         if (block.counter() <= seq + 1) block.seen = seq;  // else overwritten while copied: taken again next frame
     }
+    // Screen, window and game captures (capture_wgc.cpp): the newest picture, copied on the card.
+    for (auto run = e.capture_runs.begin(); run != e.capture_runs.end();) {
+        const bool here = std::any_of(captures.begin(), captures.end(),
+                                      [&](const auto &c) { return c.first == run->first; });
+        if (!here) e.capture_staging.erase(run->first);
+        run = here ? std::next(run) : e.capture_runs.erase(run);
+    }
+    for (auto &[id, want] : captures) {
+        CaptureRun &run = e.capture_runs[id];
+        if (run.serial != want.serial) {
+            run = CaptureRun();
+            run.serial = want.serial;
+        }
+        if (run.done) continue;
+        if (run.cap && run.cap->device() != e.dev->device.Get()) run.cap.reset();
+        if (!run.cap) {
+            sc::CaptureRefusal refusal = sc::CaptureRefusal::NONE;
+            std::string why;
+            run.cap = sc::ScreenCapture::start(*e.dev, want.ask, refusal, why);
+            if (!run.cap) {
+                run.done = true;
+                const bool here = refusal != sc::CaptureRefusal::NOT_HERE;
+                log_line(here ? SC_LOG_INFO : SC_LOG_WARNING,
+                         "engine: a capture didn't start (" + why + ")" +
+                             (here ? "; SprigCast looks for it again" : "; SprigCast captures it another way"));
+                capture_news.emplace_back(id, CaptureShown{here ? SC_SCREEN_ENDED : SC_SCREEN_REFUSED, 0, 0,
+                                                           run.frames, want.serial});
+                continue;
+            }
+        }
+        const bool held = captures_held.count(id) != 0;  // frozen: taken so Windows draws on, the picture kept
+        const bool got = run.cap->take(*e.dev, id, !held);
+        if (got) {
+            e.kept_sources.erase(id);
+            ++run.frames;
+        }
+        if (run.cap->ended()) {
+            run.done = true;
+            run.cap.reset();
+            log_line(SC_LOG_INFO, "engine: a capture ended (its window closed, or the display went)");
+            capture_news.emplace_back(id, CaptureShown{SC_SCREEN_ENDED, 0, 0, run.frames, want.serial});
+        } else if (got) {
+            capture_news.emplace_back(id, CaptureShown{SC_SCREEN_RUNNING, run.cap->width(), run.cap->height(),
+                                                       run.frames, want.serial});
+        }
+    }
     std::vector<std::pair<uint64_t, std::vector<uint8_t>>> used;
     for (auto &[id, pic] : uploads) {
         check(sc_source_upload(e.dev, id, pic.data.data(), &pic.how));
@@ -1309,6 +1392,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
 
     std::lock_guard<std::mutex> lock(e.state);
     e.detach_done = detach_seen;
+    for (auto &[id, news] : capture_news) {
+        auto found = e.capture_states.find(id);
+        if (found != e.capture_states.end() && found->second.serial == news.serial) found->second = news;
+    }
     for (auto &[id, buffer] : used) {
         if (!e.uploads.count(id) && !e.forgets.count(id)) e.spare[id] = std::move(buffer);
     }
@@ -1647,6 +1734,9 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->draws.erase(id);
         engine->shareds.erase(id);
         engine->shared_held.erase(id);
+        engine->capture_wants.erase(id);
+        engine->capture_held.erase(id);
+        engine->capture_states.erase(id);
         engine->forgets.insert(id);
         return SC_OK;
     });
@@ -1730,6 +1820,83 @@ SC_API int sc_engine_source_shared_hold(sc_engine *engine, uint64_t id, int held
         else
             engine->shared_held.erase(id);
         return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_capture(sc_engine *engine, uint64_t id, uint64_t window, uint64_t monitor, int flags,
+                                    int interval_ms) {
+    return engine_call(engine, "sc_engine_source_capture", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_capture: no id");
+        if ((window && monitor) || interval_ms < 0 || interval_ms > 10000 ||
+            (flags & ~(SC_SCREEN_CURSOR | SC_SCREEN_BORDER | SC_SCREEN_OPAQUE)))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_source_capture: a window and a display, or bad flags");
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (!window && !monitor) {
+            engine->capture_wants.erase(id);
+            engine->capture_held.erase(id);
+            engine->capture_states.erase(id);
+            return SC_OK;
+        }
+        sc::CaptureAsk ask;
+        ask.window = window;
+        ask.monitor = monitor;
+        ask.flags = flags;
+        ask.interval_ms = interval_ms;
+        auto found = engine->capture_wants.find(id);
+        if (found != engine->capture_wants.end()) {
+            const sc::CaptureAsk &had = found->second.ask;
+            const int state = engine->capture_states[id].state;
+            if (had.window == window && had.monitor == monitor && had.flags == flags &&
+                had.interval_ms == interval_ms && state != SC_SCREEN_ENDED && state != SC_SCREEN_REFUSED)
+                return SC_OK;  // the same capture, still running
+        }
+        const uint64_t serial = engine->next_capture++;
+        engine->capture_wants[id] = CaptureWant{ask, serial};
+        engine->capture_states[id] = CaptureShown{SC_SCREEN_STARTING, 0, 0, 0, serial};
+        engine->uploads.erase(id);  // a picture Python sent before isn't drawn over the capture's
+        engine->forgets.erase(id);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_capture_hold(sc_engine *engine, uint64_t id, int held) {
+    return engine_call(engine, "sc_engine_source_capture_hold", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_capture_hold: no id");
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (held && engine->capture_wants.count(id))
+            engine->capture_held.insert(id);
+        else
+            engine->capture_held.erase(id);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_capture_state(sc_engine *engine, uint64_t id, int *state, int *width, int *height,
+                                   uint64_t *frames) {
+    return engine_call(engine, "sc_engine_capture_state", [&]() -> int {
+        CaptureShown shown;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            auto found = engine->capture_states.find(id);
+            if (found != engine->capture_states.end()) shown = found->second;
+        }
+        if (state) *state = shown.state;
+        if (width) *width = shown.width;
+        if (height) *height = shown.height;
+        if (frames) *frames = shown.frames;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_capture_read(sc_engine *engine, uint64_t id, uint8_t *bgra, int stride, int max_width,
+                                  int max_height, int *width, int *height) {
+    return engine_call(engine, "sc_engine_capture_read", [&]() -> int {
+        if (!width || !height) return fail(SC_ERR_ARGUMENT, "sc_engine_capture_read: nowhere for the size");
+        *width = *height = 0;
+        std::lock_guard<std::mutex> frame(engine->frame);
+        if (!engine->dev) return fail(SC_ERR_ARGUMENT, "sc_engine_capture_read: no device yet");
+        return sc::read_capture(*engine->dev, id, engine->capture_staging[id], bgra, stride, max_width, max_height,
+                                width, height);
     });
 }
 

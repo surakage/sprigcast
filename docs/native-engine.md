@@ -339,6 +339,26 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   differ, blended, with the rest of the picture drawn as four crops of the art around it; a fade between
   different shapes sends the blended box they cover together (`tests/test_native_pngtuber.py`).
 
+## Phase 7: capture inside the engine (`native/core/src/capture_wgc.cpp`)
+
+- **Display, window and game capture** (`sc_engine_source_capture`): Windows Graphics Capture with its frame pool
+  made on the engine's own device. Each frame the frame thread takes the newest picture (`TryGetNextFrame`, so no
+  thread of Windows' calls into the engine; older ones go straight back) and copies it on the card into the
+  source's B8G8R8A8 texture. No picture of the screen passes through memory or Python. The cursor, Windows'
+  yellow border and a game's solid picture are flags; at most one picture per frame interval is copied (and
+  Windows 11 24H2 is asked for no more). A window that changes size gets a pool of the new size.
+- `sources/capture.py`'s supervisor still finds the target (the window by title and process, the full-screen
+  game, the display by number) and hands the engine a `sprigcore.CaptureTarget`; the render thread attaches it like
+  a player. `sc_engine_capture_state` says starting, running (with the picture's size), ended (the window closed:
+  the supervisor finds it again, with a new serial) or refused (this PC can't: the `windows-capture` package
+  captures it, as without the engine). A capture nothing takes up within 5 s (the engine isn't drawing) goes back
+  to the package too.
+- A freeze keeps the capture running, held: Windows' pictures are still taken, the source keeps its own. A device
+  rebuild starts each capture again on the new device.
+- Frames Python draws itself (a Move transition) read the picture back (`sc_engine_capture_read`), as the package
+  copied every picture before.
+- `SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1` captures in Python.
+
 ## Phases
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7
@@ -351,6 +371,6 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
 | 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine; Snap's, Death count's, Now playing's and PNGtuber's animations are drawn by the engine from lists of pictures |
-| 7 | Capture and camera inside the engine | |
+| 7 | Capture and camera inside the engine | In progress: display, window and game capture in the engine (behind the switch); cameras next |
 | 8 | Old Python engine and its packages removed | |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |
