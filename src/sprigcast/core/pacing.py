@@ -491,7 +491,36 @@ def _check_busy(now: float) -> None:
 # (The PC saw the window busy 1.6 s some 10 s after a minimized start, with nothing in the log.)
 UI_BEAT_MS = 100
 UI_STALL_MS = 250.0
-_ui = {"beat": None, "ident": None, "where": None, "since": 0.0, "clock": time.perf_counter}
+# Fine mode, for the PC's pop-up sweep (SPRIGCAST_UI_STALL_MS=50): every stall from that many ms is logged, with
+# where the window's thread was. The beat and the watch then run faster (UI_FINE_BEAT_MS, UI_FINE_WATCH_S) and the
+# stack is taken half way, so a short stall is caught while it's still going; one that ends short of the limit is
+# dropped. Off unless asked for: it costs a little Python many times a second.
+UI_FINE_BEAT_MS = 10
+UI_FINE_WATCH_S = 0.01
+UI_FINE_MIN_MS = 20.0
+_ui = {"beat": None, "ident": None, "where": None, "since": 0.0, "clock": time.perf_counter, "fine": None}
+
+
+def ui_fine_ms(environ=None) -> float | None:
+    """The fine-mode limit asked for in SPRIGCAST_UI_STALL_MS, or None (the usual UI_STALL_MS watch)."""
+    import os
+
+    text = (environ if environ is not None else os.environ).get("SPRIGCAST_UI_STALL_MS", "").strip()
+    try:
+        ms = float(text)
+    except ValueError:
+        return None
+    return max(UI_FINE_MIN_MS, ms) if ms > 0 else None
+
+
+def watch_window(environ=None) -> tuple[int, float]:
+    """Set up the window watch: (the beat's ms, the stall watch's interval in s), fine if asked for."""
+    fine = ui_fine_ms(environ)
+    _ui["fine"] = fine
+    if fine is None:
+        return UI_BEAT_MS, 0.05
+    log.info("window stalls logged from %.0f ms", fine)
+    return UI_FINE_BEAT_MS, UI_FINE_WATCH_S
 
 
 def ui_beat() -> None:
@@ -499,12 +528,19 @@ def ui_beat() -> None:
     import threading
 
     now = _ui["clock"]()
-    if _ui["where"] is not None:
+    fine, beat = _ui.get("fine"), _ui["beat"]
+    if fine is not None and beat is not None:
+        took = 1000 * (now - beat)
+        if took >= fine:
+            log.info("the window didn't answer for %.0f ms; it was at %s", took,
+                     _ui["where"] or "(too short to catch where)")
+        _ui["where"] = None
+    elif _ui["where"] is not None:
         log.info("the window didn't answer for %.0f ms; it was at %s", 1000 * (now - _ui["since"]), _ui["where"])
         _ui["where"] = None
     _ui["beat"], _ui["ident"] = now, threading.get_ident()
     _ui["beats"] = _ui.get("beats", 0) + 1
-    if _ui["beats"] % WATCH_CHECK_BEATS == 0:
+    if _ui["beats"] % (WATCH_CHECK_BEATS * (UI_BEAT_MS // UI_FINE_BEAT_MS if fine else 1)) == 0:
         keep_watching()
 
 
@@ -516,8 +552,9 @@ def ui_rest() -> None:
 def _check_window(now: float) -> None:
     import threading
 
-    beat, ident = _ui["beat"], _ui["ident"]
-    if beat is None or _ui["where"] is not None or 1000 * (now - beat) < UI_STALL_MS:
+    beat, ident, fine = _ui["beat"], _ui["ident"], _ui.get("fine")
+    limit = UI_STALL_MS if fine is None else fine / 2
+    if beat is None or _ui["where"] is not None or 1000 * (now - beat) < limit:
         return
     frame = sys._current_frames().get(ident)
     if frame is None:
@@ -527,6 +564,8 @@ def _check_window(now: float) -> None:
     # Who else is running right then: a window held up on a trivial line is waiting for Python's lock, and
     # the thread holding it is among these (PC test 2026-11-17: 328 ms on a one-line check).
     others = busy_stacks({ident, threading.get_ident()})
+    if _ui["beat"] != beat:
+        return  # it answered meanwhile (fine mode looks often): this stack is from after the stall
     # Set once, whole: the window's thread may answer (ui_beat clears "where") at any moment. Adding to it in
     # a second step met None there once and stopped the watch for the rest of the session (2026-11-17).
     _ui["since"], _ui["where"] = beat, f"{where}; meanwhile {others}"
