@@ -439,6 +439,9 @@ def run() -> None:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
     pacing.use_exit_guard()  # closing can't hang for ever (pacing.exit_guard)
+    from sprigcast.core import crash_test
+
+    crash_test.schedule(QTimer.singleShot)  # SPRIGCAST_CRASH_TEST: crash on purpose, for testing the crash guard
     code = app.exec()
     window.engine.finish_stopping()  # the window is gone: now wait for drawing and sound to stop
     if app.property("sprigcast_restart"):  # Settings' Restart now
