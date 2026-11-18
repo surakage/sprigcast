@@ -77,6 +77,14 @@ struct Target {
     int width = 0, height = 0;
 };
 
+// A source drawn from a list of other sources' pictures (sc_source_draws): drawn into `target` when the list changes.
+struct Drawn {
+    int width = 0, height = 0;
+    std::vector<sc_item> items;
+    bool dirty = true;
+    Target target;
+};
+
 struct Snapshot {
     std::vector<sc_scene> scenes;
     std::vector<sc_item> items;
@@ -93,6 +101,7 @@ struct Compositor {
     std::unordered_map<uint64_t, Look> looks;
     std::unordered_map<uint64_t, Mask> masks;
     std::unordered_map<uint64_t, Target> parts;          // a sprig's drawing, by snapshot scene id
+    std::unordered_map<uint64_t, Drawn> drawn;           // sources drawn from a list (store plugins' animations)
     std::map<std::pair<uint64_t, int>, double> spins;    // (source, run) -> when its barrel roll started
     std::shared_ptr<const Snapshot> snapshot;
 };

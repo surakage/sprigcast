@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 27  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 28  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -110,6 +110,30 @@ class Item(ctypes.Structure):
         ("crop", ctypes.c_int * 4), ("bounds", ctypes.c_int), ("bounds_size", ctypes.c_float * 2),
         ("bounds_align", ctypes.c_int), ("fade", ctypes.c_float), ("effects", ctypes.c_int),
     ]
+
+
+CENTER = 4  # core/scene.py ALIGNS.index("center")
+
+
+def draw_items(items):
+    """[(picture source id, x, y, width, height, rotation, (left, top, right, bottom) crop, opacity, picture width,
+    picture height), ...] (core/drawn.py Drawn.items, with the art's source id and size) as the engine's items:
+    each picture's box at x, y (top left, unturned), turned about its middle. None: (None, -1), the list dropped."""
+    if items is None:
+        return None, -1
+    array = (Item * max(1, len(items)))()
+    for i, (source, x, y, w, h, rotation, crop, opacity, pw, ph) in enumerate(items):
+        it = array[i]
+        it.source = key(source)
+        it.x, it.y = float(x), float(y)
+        cw, ch = max(1, pw - crop[0] - crop[2]), max(1, ph - crop[1] - crop[3])
+        it.scale, it.scale_y = float(w) / cw, float(h) / ch
+        it.rotation = float(rotation)
+        it.align = CENTER
+        it.crop[:] = [int(c) for c in crop]
+        it.fade = float(opacity)
+        it.effects = -1
+    return array, len(items)
 
 
 class SceneEntry(ctypes.Structure):
@@ -214,6 +238,7 @@ def _lib():
         "sc_canvas_read_bgra": (c_int, [vp, vp, c_int]),
         "sc_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload)]),
         "sc_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
         "sc_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
@@ -229,6 +254,7 @@ def _lib():
         "sc_engine_canvas_show": (c_int, [vp, c_int, ctypes.c_uint64]),
         "sc_engine_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload), c_int]),
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_engine_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
         "sc_engine_source_visual": (c_int, [vp, ctypes.c_uint64, vp]),
@@ -397,6 +423,11 @@ class Device:
 
     def forget(self, source_id: str) -> None:
         _check(_need().sc_source_forget(self.handle, key(source_id)))
+
+    def draws(self, source_id: str, width: int, height: int, items) -> None:
+        """Source ``source_id`` drawn from a list of pictures (:func:`draw_items`); None drops the list."""
+        array, count = draw_items(items)
+        _check(_need().sc_source_draws(self.handle, key(source_id), int(width), int(height), array, count))
 
     def set_look(self, name: str, table) -> None:
         """A colour look: n x n x n x 3 floats, red fastest (core/looks.py)."""
@@ -613,6 +644,11 @@ class Engine:
 
     def forget(self, source_id: str) -> None:
         _check(_need().sc_engine_source_forget(self.handle, key(source_id)))
+
+    def draws(self, source_id: str, width: int, height: int, items) -> None:
+        """As :meth:`Device.draws`, drawn from the next frame on (and again after a rebuild)."""
+        array, count = draw_items(items)
+        _check(_need().sc_engine_source_draws(self.handle, key(source_id), int(width), int(height), array, count))
 
     def attach_media(self, source_id: str, player: "MediaPlayer | None") -> None:
         """Source ``source_id`` shows what ``player`` plays: the frame thread takes each picture from the player

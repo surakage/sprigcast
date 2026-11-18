@@ -65,6 +65,11 @@ struct Pic {
     bool keep = false;
 };
 
+struct DrawList {  // sc_engine_source_draws: count < 0 drops it
+    int width = 0, height = 0, count = -1;
+    std::vector<sc_item> items;
+};
+
 // A browser page's pictures in the browser helper's shared memory (sc_engine_source_shared; the writer is
 // app/browser_helper.py FrameSlot): a 64-byte header, u64 counter then u32 width, height and slot, and two slots
 // splitting the rest of the block, as the block's size rounds up to whole pages on both sides.
@@ -451,6 +456,7 @@ struct sc_engine {
     std::unordered_map<uint64_t, std::shared_ptr<void>> medias;  // sources shown straight from a media player
     std::unordered_map<uint64_t, std::wstring> shareds;          // sources shown from another process's memory
     std::unordered_map<uint64_t, std::shared_ptr<void>> visuals; // sources an audio visualizer draws (visual.cpp)
+    std::unordered_map<uint64_t, DrawList> draws;                // the newest list per source, not yet sent
     std::unordered_map<uint64_t, LookData> looks;
     std::unordered_map<uint64_t, MaskData> masks;
     std::shared_ptr<const SnapData> snapshot;
@@ -471,6 +477,7 @@ struct sc_engine {
     OutReader out_readers[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     RunningTransition running[SC_ENGINE_CANVASES];
     std::unordered_map<uint64_t, Pic> kept_sources;
+    std::unordered_map<uint64_t, DrawList> kept_draws;  // the lists drawn now, sent again after a rebuild
     std::unordered_map<uint64_t, std::pair<const void *, uint64_t>> media_seen;  // source -> (player, serial taken)
     std::unordered_map<uint64_t, SharedPictures> shared_open;  // the blocks of `shareds`, opened by the frame thread
     std::unordered_map<uint64_t, LookData> kept_looks;
@@ -555,6 +562,7 @@ void drop_gpu(sc_engine &e) {
 void give_up(sc_engine &e, const std::string &why) {
     drop_gpu(e);
     e.kept_sources.clear();
+    e.kept_draws.clear();
     e.kept_looks.clear();
     e.kept_masks.clear();
     e.kept_snapshot.reset();
@@ -603,6 +611,8 @@ bool build(sc_engine &e) {
     if (e.lost) {
         e.lost = false;
         for (auto &[id, pic] : e.kept_sources) check(sc_source_upload(e.dev, id, pic.data.data(), &pic.how));
+        for (auto &[id, d] : e.kept_draws)
+            check(sc_source_draws(e.dev, id, d.width, d.height, d.items.data(), d.count));
         for (auto &[id, look] : e.kept_looks) check(sc_look_set(e.dev, id, look.table.data(), look.n));
         for (auto &[id, m] : e.kept_masks)
             check(sc_mask_set(e.dev, id, m.rgba.data(), m.width, m.height, m.luma ? 1 : 0));
@@ -1078,6 +1088,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     TransitionCfg transitions[SC_ENGINE_CANVASES];
     OutputWant outputs[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     std::unordered_map<uint64_t, Pic> uploads;
+    std::unordered_map<uint64_t, DrawList> draws;
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, LookData> looks;
     std::unordered_map<uint64_t, MaskData> masks;
@@ -1104,6 +1115,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             }
         }
         uploads.swap(e.uploads);
+        draws.swap(e.draws);
         forgets.swap(e.forgets);
         looks.swap(e.looks);
         masks.swap(e.masks);
@@ -1115,6 +1127,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
 
     for (uint64_t id : forgets) {
         e.kept_sources.erase(id);
+        e.kept_draws.erase(id);
         check(sc_source_forget(e.dev, id));
     }
     // Videos, GIFs and sound files the engine plays: the picture due now, straight from the player.
@@ -1203,11 +1216,22 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::vector<std::pair<uint64_t, std::vector<uint8_t>>> used;
     for (auto &[id, pic] : uploads) {
         check(sc_source_upload(e.dev, id, pic.data.data(), &pic.how));
+        e.kept_draws.erase(id);
         if (pic.keep) {
             e.kept_sources[id] = std::move(pic);
         } else {
             e.kept_sources.erase(id);
             used.emplace_back(id, std::move(pic.data));
+        }
+    }
+    // Sources drawn from a list (after the pictures above, which the lists use).
+    for (auto &[id, d] : draws) {
+        check(sc_source_draws(e.dev, id, d.width, d.height, d.items.data(), d.count));
+        if (d.count < 0) {
+            e.kept_draws.erase(id);
+        } else {
+            e.kept_sources.erase(id);
+            e.kept_draws[id] = std::move(d);
         }
     }
     for (auto &[id, look] : looks) {
@@ -1600,6 +1624,7 @@ SC_API int sc_engine_source_upload(sc_engine *engine, uint64_t id, const uint8_t
         pic.how = *how;
         pic.keep = (flags & SC_UPLOAD_KEEP) != 0;
         engine->forgets.erase(id);
+        engine->draws.erase(id);  // a picture newer than a list sent before it
         return SC_OK;
     });
 }
@@ -1611,6 +1636,7 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->spare.erase(id);
         engine->medias.erase(id);
         engine->visuals.erase(id);
+        engine->draws.erase(id);
         engine->shareds.erase(id);
         engine->forgets.insert(id);
         return SC_OK;
@@ -1630,6 +1656,25 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, sc_media *medi
         } else {
             engine->medias.erase(id);
         }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_draws(sc_engine *engine, uint64_t id, int width, int height, const sc_item *items,
+                                  int count) {
+    return engine_call(engine, "sc_engine_source_draws", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_draws: no id");
+        if (count > 4096 || (count > 0 && !items) || width > 8192 || height > 8192)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_source_draws: too big, or no items");
+        DrawList d;
+        d.width = width;
+        d.height = height;
+        d.count = width > 0 && height > 0 ? count : -1;
+        if (d.count > 0) d.items.assign(items, items + count);
+        std::lock_guard<std::mutex> lock(engine->state);
+        engine->uploads.erase(id);  // the list is newer than a picture sent before it
+        engine->forgets.erase(id);
+        engine->draws[id] = std::move(d);
         return SC_OK;
     });
 }

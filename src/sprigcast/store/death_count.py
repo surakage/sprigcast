@@ -32,15 +32,15 @@ from typing import Any
 import numpy as np
 
 from sprigcast.control.native import ApiError, commit_settings, register_action, send_event
-from sprigcast.core import painted
+from sprigcast.core import drawn, painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 5, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 6, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down.",
-          "new": "Lighter on your PC: the number flip is drawn ahead of time."}
+          "new": "Lighter: its animation is drawn by SprigCast's engine."}
 
 KIND = "death_count"
 W, H = 800, 1000  # the box (same as Snap's, so it sits the same way on both shapes)
@@ -237,7 +237,8 @@ class DeathCountSource(Source):
             if self._still == key:
                 return None  # standing still: the last frame is still right
             self._still = key
-        return self._frame(self.paint(job, t))
+        picture = self.paint(job, t, listed=drawn.wanted())
+        return picture if isinstance(picture, drawn.Drawn) else self._frame(picture)
 
     @staticmethod
     def _still_from(job: _Job) -> float:
@@ -247,17 +248,21 @@ class DeathCountSource(Source):
             settled = max(settled, job.flip_at + max(FLIP, 0.4))
         return settled
 
-    def paint(self, job: _Job, t: float):
-        """The death count at t seconds into this trip, as a QImage."""
+    def paint(self, job: _Job, t: float, listed: bool = False):
+        """The death count at t seconds into this trip, as a QImage; listed: as a list of pictures for the engine
+        to draw (core/drawn.py), nothing painted."""
         from PySide6.QtCore import QPointF, QRectF, Qt
         from PySide6.QtGui import QColor, QImage, QPainter
 
-        image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)
-        p = QPainter(image)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        if listed:
+            image = p = drawn.Drawn(W, H)
+        else:
+            image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(Qt.GlobalColor.transparent)
+            p = QPainter(image)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
         sink_at = self._sink_at(job)
         end = sink_at + SINK
