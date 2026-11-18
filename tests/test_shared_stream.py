@@ -119,8 +119,8 @@ def test_a_link_that_cant_connect_retries_and_never_shows_the_key(monkeypatch):
     link.start()
     try:
         _feed(enc, 0.6)
-        assert wait_for(lambda: link.reconnects >= 1)
-        assert "disconnected" in link.status and "SECRET" not in link.status
+        assert wait_for(lambda: "disconnected" in link.status)  # written a moment after the count goes up
+        assert "SECRET" not in link.status
         assert link.summary().startswith("down: never connected")
     finally:
         link.stop()
@@ -413,8 +413,8 @@ def test_a_failed_connect_names_the_server_but_never_the_key(monkeypatch):
     link.start()
     try:
         _feed(enc, 0.6)
-        assert wait_for(lambda: link.reconnects >= 1)
-        assert f"couldn't connect to rtmp://127.0.0.1:{port}/app" in link.status
+        # The count goes up a moment before the status is written: wait for the words.
+        assert wait_for(lambda: f"couldn't connect to rtmp://127.0.0.1:{port}/app" in link.status)
         assert "SECRET" not in link.status
     finally:
         link.stop()

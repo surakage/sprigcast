@@ -17,7 +17,8 @@ from typing import Any
 import numpy as np
 
 from sprigcast.audio import listen
-from sprigcast.audio.mixer import Ducking, Mixer
+from sprigcast.audio.mixer import Ducking
+from sprigcast.audio.native_mixer import make_mixer
 from sprigcast.audio.monitor import Monitor
 from sprigcast.core.events import (
     AudioLevels,
@@ -154,7 +155,7 @@ class Engine:
         self._stopped_unknown: set[str] = set()  # sources whose plugin was removed while they ran
         self._thread = threading.Thread(target=self._run, name="sprigcast-render", daemon=True)
         self._stopping: threading.Thread | None = None  # see stop(wait=False)
-        self.mixer = Mixer(report=lambda levels: self.events.put(AudioLevels(levels)))
+        self.mixer = make_mixer(lambda levels: self.events.put(AudioLevels(levels)))  # the engine's, or Python's
         self.monitor = Monitor()  # plays monitored sources on the speakers, opened only when one is
         self._monitoring = False
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams

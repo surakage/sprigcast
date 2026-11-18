@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 22
+#define SC_INTERFACE_VERSION 23
 
 enum {
     SC_OK = 0,
@@ -638,6 +638,62 @@ SC_API int sc_media_read_audio(sc_media *media, float *out, int count, int aslee
 /* A check of the crash gate (tests only): the decoder thread faults at its next step. kind 1 throws a C++
  * exception, kind 2 writes through a null pointer. */
 SC_API int sc_media_debug_fault(sc_media *media, int kind);
+
+/* The sound mixer (mixer.cpp, docs/native-engine.md "Sound"): one 48 kHz stereo mix, SC_MIXER_BLOCK samples at a
+ * time, on a thread of its own paced by the clock (or by sc_mixer_tick for checks). Never waits on Python. */
+typedef struct sc_mixer sc_mixer;
+#define SC_MIXER_BLOCK 1024
+#define SC_MIXER_TRACKS 8
+enum { SC_TRACK_STREAM = 0, SC_TRACK_RECORDING, SC_TRACK_VOD, SC_TRACK_VOICE, SC_TRACK_CLIPS, SC_TRACK_TRACK4,
+       SC_TRACK_TRACK5, SC_TRACK_CLEAN };
+#define SC_MIXER_MONITOR (-1)      /* a tap entry: the monitor mix (sounds with monitor on) */
+#define SC_MIXER_SOURCE_TAP 1000   /* a tap entry SC_MIXER_SOURCE_TAP + id: that sound, after its volume */
+#define SC_MIXER_MASTER 0          /* sc_mixer_levels: the stream track; level = the ducking gain now */
+typedef struct sc_mixer_source_settings {
+    float gain;      /* volume, 1 = as it is */
+    int mono;        /* both sides as one */
+    float balance;   /* -1 left .. 0 centre .. 1 right */
+    int delay_ms;    /* sync offset, 0 .. 2000 */
+    uint32_t tracks; /* bit (1 << SC_TRACK_*) per track it goes to */
+    int monitor;     /* also in the monitor mix */
+    int voice;       /* leads ducking, and is never ducked */
+    int bloom_out;   /* sound per bloom: none of its blooms is on air (fades out over 0.25 s) */
+} sc_mixer_source_settings;
+typedef struct sc_mixer_ducking {
+    int enabled;
+    float amount_db, threshold_db, attack_ms, release_ms, hold_ms;
+} sc_mixer_ducking;
+typedef struct sc_mixer_level {
+    float peak_db, rms_db; /* the loudest since last asked, and the last block's (after volume and ducking) */
+    float level;           /* a sound: its last peak before ducking, after volume (a Ducking filter follows it) */
+    uint64_t underruns;    /* a pushed sound: times it ran dry */
+} sc_mixer_level;
+/* clocked = 1: its own thread mixes a block every 1024 / 48000 s. 0: only sc_mixer_tick mixes (checks). */
+SC_API int sc_mixer_create(int clocked, sc_mixer **out);
+SC_API void sc_mixer_destroy(sc_mixer *mixer);
+SC_API int sc_mixer_source_add(sc_mixer *mixer, const sc_mixer_source_settings *settings, int *id);
+SC_API int sc_mixer_source_set(sc_mixer *mixer, int id, const sc_mixer_source_settings *settings);
+SC_API int sc_mixer_source_remove(sc_mixer *mixer, int id);
+/* Samples (interleaved stereo floats) a sound made: queued (at most 200 ms), played from once a block is ahead. */
+SC_API int sc_mixer_source_push(sc_mixer *mixer, int id, const float *stereo, int frames);
+/* The sound reads straight from an engine player (NULL: pushed again). Once this returns the mixer no longer
+ * reads the old player: unlink before sc_media_destroy. asleep: as sc_media_read_audio. */
+SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int asleep);
+SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking);
+/* An output's queue of finished blocks: each holds `count` entries (SC_TRACK_*, SC_MIXER_MONITOR or
+ * SC_MIXER_SOURCE_TAP + id) one after another, SC_MIXER_BLOCK * 2 floats each. At most 64 wait; then the oldest
+ * goes and is counted. */
+SC_API int sc_mixer_tap_add(sc_mixer *mixer, const int *what, int count, int *id);
+SC_API int sc_mixer_tap_remove(sc_mixer *mixer, int id);
+/* The oldest waiting block of a tap into `out` (`capacity` floats): returns 1, or 0 when none waits. *index: its
+ * number (blocks mixed before it); *dropped: blocks this tap lost so far. */
+SC_API int sc_mixer_tap_take(sc_mixer *mixer, int id, float *out, int capacity, int64_t *index, uint64_t *dropped);
+/* An unclocked mixer mixes `count` blocks now. */
+SC_API int sc_mixer_tick(sc_mixer *mixer, int count);
+/* Waits up to timeout_ms for a block numbered after `after` (blocks mixed > after): 1 when there is one, 0 on
+ * timeout. *now: blocks mixed so far. */
+SC_API int sc_mixer_wait(sc_mixer *mixer, int64_t after, int timeout_ms, int64_t *now);
+SC_API int sc_mixer_levels(sc_mixer *mixer, int id, sc_mixer_level *out);
 
 #ifdef __cplusplus
 }

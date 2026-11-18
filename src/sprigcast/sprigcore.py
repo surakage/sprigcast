@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 22  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 23  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -888,6 +888,29 @@ WRITER_STATES = ("opening", "running", "finished", "failed")
 WRITER_DROPPED, WRITER_REFUSED, WRITER_LATE = 1, 2, 3
 
 
+MIXER_BLOCK = 1024  # SC_MIXER_BLOCK
+MIXER_TRACKS = ("stream", "recording", "vod", "voice", "clips", "track4", "track5", "clean")  # SC_TRACK_* order
+MIXER_MONITOR = -1  # SC_MIXER_MONITOR
+MIXER_SOURCE_TAP = 1000  # SC_MIXER_SOURCE_TAP
+MIXER_MASTER = 0  # SC_MIXER_MASTER
+
+
+class MixerSourceSettings(ctypes.Structure):
+    _fields_ = [("gain", ctypes.c_float), ("mono", ctypes.c_int), ("balance", ctypes.c_float),
+                ("delay_ms", ctypes.c_int), ("tracks", ctypes.c_uint32), ("monitor", ctypes.c_int),
+                ("voice", ctypes.c_int), ("bloom_out", ctypes.c_int)]
+
+
+class MixerDucking(ctypes.Structure):
+    _fields_ = [("enabled", ctypes.c_int), ("amount_db", ctypes.c_float), ("threshold_db", ctypes.c_float),
+                ("attack_ms", ctypes.c_float), ("release_ms", ctypes.c_float), ("hold_ms", ctypes.c_float)]
+
+
+class MixerLevel(ctypes.Structure):
+    _fields_ = [("peak_db", ctypes.c_float), ("rms_db", ctypes.c_float), ("level", ctypes.c_float),
+                ("underruns", ctypes.c_uint64)]
+
+
 def _media_sigs() -> dict:
     c_int, vp = ctypes.c_int, ctypes.c_void_p
     text = ctypes.c_char_p
@@ -918,6 +941,21 @@ def _media_sigs() -> dict:
         "sc_writer_packet_take": (c_int, [vp, ctypes.POINTER(WriterPacket), vp, c_int]),
         "sc_writer_set_bitrate": (c_int, [vp, c_int, c_int, c_int]),
         "sc_writer_keyframe": (c_int, [vp]),
+        "sc_mixer_create": (c_int, [c_int, ctypes.POINTER(vp)]),
+        "sc_mixer_destroy": (None, [vp]),
+        "sc_mixer_source_add": (c_int, [vp, ctypes.POINTER(MixerSourceSettings), ctypes.POINTER(c_int)]),
+        "sc_mixer_source_set": (c_int, [vp, c_int, ctypes.POINTER(MixerSourceSettings)]),
+        "sc_mixer_source_remove": (c_int, [vp, c_int]),
+        "sc_mixer_source_push": (c_int, [vp, c_int, vp, c_int]),
+        "sc_mixer_source_media": (c_int, [vp, c_int, vp, c_int]),
+        "sc_mixer_set_ducking": (c_int, [vp, ctypes.POINTER(MixerDucking)]),
+        "sc_mixer_tap_add": (c_int, [vp, ctypes.POINTER(c_int), c_int, ctypes.POINTER(c_int)]),
+        "sc_mixer_tap_remove": (c_int, [vp, c_int]),
+        "sc_mixer_tap_take": (c_int, [vp, c_int, vp, c_int, ctypes.POINTER(ctypes.c_int64),
+                                      ctypes.POINTER(ctypes.c_uint64)]),
+        "sc_mixer_tick": (c_int, [vp, c_int]),
+        "sc_mixer_wait": (c_int, [vp, ctypes.c_int64, c_int, ctypes.POINTER(ctypes.c_int64)]),
+        "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
     }
 
 
@@ -1089,10 +1127,20 @@ class MediaPlayer:
         """A crash gate check (tests only): the decoder thread faults at its next step."""
         self._call(self._lib.sc_media_debug_fault, kind)
 
+    def before_close(self, fn) -> None:
+        """Call fn() just before the player is freed (the engine's sound mixer stops reading it first)."""
+        self._closers = [*getattr(self, "_closers", ()), fn]
+
     def close(self) -> None:
         with self._lock:
             handle, self._handle = self._handle, ctypes.c_void_p()
         if handle:
+            for fn in getattr(self, "_closers", ()):
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001 (the mixer is gone already: nothing reads the player)
+                    log.exception("native media: letting the sound mixer go of a player failed")
+            self._closers = []
             self._lib.sc_media_destroy(handle)
             drain_log()
 
@@ -1243,4 +1291,119 @@ class Writer:
         try:
             self.close()
         except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class SoundMixer:
+    """The engine's sound mixer (include/sprigcore.h sc_mixer): one 48 kHz stereo mix of every sound, mixed on a
+    thread of the engine's own (clocked) so it never waits on Python. audio/native_mixer.py drives it like
+    audio/mixer.py's Mixer. Every method is safe from any thread."""
+
+    def __init__(self, clocked: bool = True):
+        lib = _media_lib()
+        if lib is None:
+            raise NativeError(-5, "the native engine isn't available")
+        self._lib = lib
+        handle = ctypes.c_void_p()
+        _check(lib.sc_mixer_create(int(clocked), ctypes.byref(handle)))
+        self._handle = handle
+        self._lock = __import__("threading").Lock()
+        self._level = MixerLevel()
+
+    def _call(self, fn, *args) -> int:
+        handle = self._handle
+        if not handle:
+            raise NativeError(-1, "the mixer is closed")
+        return fn(handle, *args)
+
+    @staticmethod
+    def _settings(gain=1.0, mono=False, balance=0.0, delay_ms=0, tracks=(), monitor=False, voice=False,
+                  bloom_out=False) -> MixerSourceSettings:
+        mask = 0
+        for name in tracks:
+            if name in MIXER_TRACKS:
+                mask |= 1 << MIXER_TRACKS.index(name)
+        return MixerSourceSettings(float(gain), int(bool(mono)), float(balance), int(delay_ms), mask,
+                                   int(bool(monitor)), int(bool(voice)), int(bool(bloom_out)))
+
+    def add_source(self, **settings) -> int:
+        out = ctypes.c_int()
+        _check(self._call(self._lib.sc_mixer_source_add, ctypes.byref(self._settings(**settings)), ctypes.byref(out)))
+        return out.value
+
+    def set_source(self, source: int, **settings) -> None:
+        _check(self._call(self._lib.sc_mixer_source_set, int(source), ctypes.byref(self._settings(**settings))))
+
+    def remove_source(self, source: int) -> None:
+        _check(self._call(self._lib.sc_mixer_source_remove, int(source)))
+
+    def push(self, source: int, block) -> None:
+        """Samples a sound made: float32 (n, 2) at 48 kHz."""
+        import numpy as np
+
+        data = np.ascontiguousarray(block, dtype=np.float32)
+        _check(self._call(self._lib.sc_mixer_source_push, int(source), data.ctypes.data, int(data.shape[0])))
+
+    def link_media(self, source: int, player: MediaPlayer | None, asleep: bool = False) -> None:
+        """The sound reads straight from an engine player (None: pushed again)."""
+        if player is None:
+            _check(self._call(self._lib.sc_mixer_source_media, int(source), None, 0))
+            return
+        with player._lock:  # against close(): it swaps the handle under this lock, then unlinks, then frees
+            if not player._handle:
+                raise NativeError(-1, "the player is closed")
+            _check(self._call(self._lib.sc_mixer_source_media, int(source), player._handle, int(bool(asleep))))
+
+    def set_ducking(self, enabled: bool, amount_db: float, threshold_db: float, attack_ms: float,
+                    release_ms: float, hold_ms: float) -> None:
+        d = MixerDucking(int(bool(enabled)), float(amount_db), float(threshold_db), float(attack_ms),
+                         float(release_ms), float(hold_ms))
+        _check(self._call(self._lib.sc_mixer_set_ducking, ctypes.byref(d)))
+
+    def add_tap(self, what: list[int]) -> int:
+        entries = (ctypes.c_int * len(what))(*what)
+        out = ctypes.c_int()
+        _check(self._call(self._lib.sc_mixer_tap_add, entries, len(what), ctypes.byref(out)))
+        return out.value
+
+    def remove_tap(self, tap: int) -> None:
+        _check(self._call(self._lib.sc_mixer_tap_remove, int(tap)))
+
+    def take(self, tap: int, entries: int):
+        """The oldest waiting block of a tap: (index, float32 array (entries, BLOCK, 2), dropped so far) or None."""
+        import numpy as np
+
+        out = np.empty((entries, MIXER_BLOCK, 2), np.float32)
+        index, dropped = ctypes.c_int64(), ctypes.c_uint64()
+        got = self._call(self._lib.sc_mixer_tap_take, int(tap), out.ctypes.data, out.size, ctypes.byref(index),
+                         ctypes.byref(dropped))
+        _check(min(got, 0))
+        return (index.value, out, dropped.value) if got == 1 else None
+
+    def tick(self, count: int = 1) -> None:
+        _check(self._call(self._lib.sc_mixer_tick, int(count)))
+
+    def wait(self, after: int, timeout_ms: int) -> int:
+        """Blocks mixed so far, once more than `after` (or the timeout passed). Python's lock is let go meanwhile."""
+        now = ctypes.c_int64()
+        _check(min(0, self._call(self._lib.sc_mixer_wait, ctypes.c_int64(after), int(timeout_ms), ctypes.byref(now))))
+        return now.value
+
+    def levels(self, source: int) -> tuple[float, float, float, int]:
+        """(peak dB since last asked, last block's RMS dB, level, underruns); MIXER_MASTER: the stream track,
+        with level = the ducking gain."""
+        with self._lock:
+            _check(self._call(self._lib.sc_mixer_levels, int(source), ctypes.byref(self._level)))
+            lv = self._level
+            return lv.peak_db, lv.rms_db, lv.level, int(lv.underruns)
+
+    def close(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_mixer_destroy(handle)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (never from a destructor)
             pass

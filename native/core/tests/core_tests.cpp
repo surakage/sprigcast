@@ -71,6 +71,31 @@ int main() {
     CHECK(sc_adapter_info_get(9999, &info) == SC_ERR_ARGUMENT);
     CHECK(std::string(sc_last_error()).size() > 0);
 
+    {  // The sound mixer: two sounds into the stream track, one at half volume.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(0, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0}, half = one;
+        half.gain = 0.5f;
+        int a = 0, b = 0, tap = 0, track = SC_TRACK_STREAM;
+        CHECK(sc_mixer_source_add(mixer, &one, &a) == SC_OK && sc_mixer_source_add(mixer, &half, &b) == SC_OK);
+        CHECK(sc_mixer_tap_add(mixer, &track, 1, &tap) == SC_OK);
+        std::vector<float> block(SC_MIXER_BLOCK * 2, 0.25f), out(SC_MIXER_BLOCK * 2);
+        CHECK(sc_mixer_source_push(mixer, a, block.data(), SC_MIXER_BLOCK) == SC_OK);
+        CHECK(sc_mixer_source_push(mixer, b, block.data(), SC_MIXER_BLOCK) == SC_OK);
+        CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+        int64_t index = -1;
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+        CHECK(index == 0 && std::abs(out[0] - 0.375f) < 1e-5f && std::abs(out.back() - 0.375f) < 1e-5f);
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 0);
+        CHECK(sc_mixer_source_push(mixer, 999, block.data(), SC_MIXER_BLOCK) == SC_ERR_ARGUMENT);
+        sc_mixer_destroy(mixer);
+        sc_mixer *clocked = nullptr;  // its own thread mixes, and stops cleanly
+        CHECK(sc_mixer_create(1, &clocked) == SC_OK);
+        int64_t now = 0;
+        CHECK(sc_mixer_wait(clocked, 2, 1000, &now) == 1 && now > 2);
+        sc_mixer_destroy(clocked);
+    }
+
     sc_device *dev = nullptr;
     CHECK(sc_device_create(-1, SC_DEVICE_WARP, &dev) == SC_OK);
     if (!dev) return 1;
