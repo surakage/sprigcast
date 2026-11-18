@@ -122,6 +122,7 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         pop = w.findChildren(type(pop))[-1]
         garden = pop.garden
         assert garden.stack.currentIndex() == 0  # now: tiles, stream health and checks
+        app.processEvents()  # (filled a tick after it opens)
         assert garden.values["cpu"].text() == "4.6%" and garden.values["ram"].text() == "209 MB"
         assert garden.values["recording"].text() == "Off" and garden.values["upload"].text() == "Not live"
         labels = [garden.checks.itemAt(i).widget().text() for i in range(garden.checks.count())]
