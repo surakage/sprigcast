@@ -16,6 +16,19 @@ Files whose name starts with `_` are skipped. A plugin that fails to load is ski
 
 The first start puts `countdown_example.py` in the folder: a small working plugin to copy from.
 
+## Start here: Hello sprig
+
+[hello_sprig.py](plugins/hello_sprig.py) is the smallest plugin that shows every basic part, with a comment on each
+line that matters. Copy it into your plugins folder, restart, and add it with **+ → Plugins → Hello sprig**. It has:
+
+1. **A source**: `@register("example_hello_sprig")` puts a card under + → Plugins.
+2. **Settings**: `defaults` gives it a name, a colour and a wave count. Double-click the card to change them.
+3. **Drawing**: `video_frame()` draws the card with Pillow, only when a setting changed.
+4. **An action**: `hello_sprig.wave`, for Streamer.bot, Stream Deck or a web link.
+5. **A hotkey**: Hello sprig: Wave, in Tools → Hotkeys → Plugins.
+
+Rename `KIND`, `label` and the action and hotkey names, and it's yours.
+
 ## Your first plugin
 
 A text source that shouts:
@@ -36,7 +49,9 @@ class ShoutSource(TextSource):
 
 Save it as `shout.py`, restart, then add it with **+ → Plugins → Shout**. Double-click it to change the text.
 
-The id you give `@register` is saved with the user's blooms, so never change it once people use your plugin.
+The id you give `@register` is saved with the user's blooms, so never change it once people use your plugin. Make it
+unique too: a plugin that uses the same id as a built-in source or a Plugin store plugin takes its place. Start it
+with your own name, like `ana_shout`.
 
 ## What a plugin can add
 
