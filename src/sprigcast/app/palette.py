@@ -95,10 +95,7 @@ QLineEdit#paletteSearch {{ background: {theme.CHROME}; border: 1px solid {theme.
 QLineEdit#paletteSearch:focus {{ border: 1px solid {theme.ACCENT}; }}
 QListWidget#paletteList {{ background: transparent; border: none; outline: none; }}
 QLabel#paletteHint {{ color: {theme.MUTED}; font-size: 8pt; }}
-QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
-QScrollBar::handle:vertical {{ background: {theme.EDGE_STRONG}; border-radius: 3px; min-height: 30px; }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+{theme.SCROLL_BARS}
 """
 
 
