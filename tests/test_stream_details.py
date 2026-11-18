@@ -193,6 +193,26 @@ def test_youtube_edits_the_stream_live_now_else_the_soonest_waiting(monkeypatch)
     assert sd.load("youtube").broadcast_id == "live1"
 
 
+def test_youtube_with_nothing_scheduled_starts_from_the_last_stream(monkeypatch):
+    """A reusable key and nothing scheduled (found on the PC, 2026-11-18): the fields were empty."""
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    web.on("GET", LIVE, {"items": []})
+    web.on("GET", WAITING, {"items": []})
+    old = _broadcast("old", "2026-11-10T01:00:00Z", "Old one")
+    old["snippet"]["actualEndTime"] = "2026-11-10T03:00:00Z"
+    last = _broadcast("last", "2026-11-16T01:00:00Z", "Cozy sloth stream")
+    last["snippet"]["actualEndTime"] = "2026-11-16T03:00:00Z"
+    web.on("GET", sd.YOUTUBE_API + "/liveBroadcasts?part=id,snippet,status&broadcastStatus=completed",
+           {"items": [old, last]})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=last",
+           {"items": [{"snippet": {"categoryId": "20", "tags": ["Cozy"]}}]})
+    got = sd.load("youtube")
+    assert (got.title, got.description, got.video_category, got.tags, got.from_last) == \
+        ("Cozy sloth stream", "d", "20", ["Cozy"], True)
+    assert got.broadcast_id == "" and got.starts == ""  # Save sets up the next stream, never edits the old one
+
+
 def test_youtube_saves_title_description_and_privacy_keeping_the_start(monkeypatch):
     _signed_in("youtube")
     web = Web(monkeypatch)
@@ -415,6 +435,7 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
     assert not dialog.save_button.isEnabled()
     assert _wait(dialog, lambda: pane.loaded)
     assert pane.title.text() == "Hi" and pane.category.text() == "Art"
+    assert pane.title.cursorPosition() == 0  # a long title opens at its start
     pane.category.setText("Unknown game")
     dialog._save()
     assert "Pick a category" in dialog.note.text() and not calls

@@ -82,6 +82,7 @@ class Details:
     broadcast_id: str = ""  # YouTube: the stream being edited, "" = none waiting (Save makes one)
     starts: str = ""  # YouTube: its scheduled start, which an update has to send back
     thumbnail: str = ""  # YouTube: the current thumbnail's web address, to show it
+    from_last: bool = False  # YouTube: nothing scheduled, so these came from your last stream
     vertical_key_name: str = ""  # YouTube Dual stream: what the vertical key is called in YouTube Studio
     video_category: str = ""  # YouTube: the category id (YOUTUBE_CATEGORIES); "" = leave it as it is
     note: str = ""  # after a save: what didn't go through although the rest did (the thumbnail)
@@ -426,6 +427,18 @@ def _youtube_broadcast(token: str, stream_id: str | None = None) -> dict | None:
     return waiting[0] if waiting else None
 
 
+def _youtube_last(token: str) -> dict | None:
+    """Your most recent finished stream, or None."""
+    try:
+        done = _yt(token, "GET", "liveBroadcasts?part=id,snippet,status&broadcastStatus=completed"
+                                 "&broadcastType=all&maxResults=10").get("items") or []
+    except DetailsError:
+        return None
+    done.sort(key=lambda b: (b.get("snippet") or {}).get("actualEndTime")
+              or (b.get("snippet") or {}).get("scheduledStartTime") or "", reverse=True)
+    return done[0] if done else None
+
+
 def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None) -> Details:
     def call(token):
         main, vertical = _youtube_streams_for_keys(token, stream_key, vertical_key)
@@ -433,6 +446,12 @@ def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None
         if vertical_key and not vertical_name:
             vertical_name = "your vertical key"
         found = _youtube_broadcast(token, (main or {}).get("id"))
+        from_last = False
+        if found is None:
+            # A reusable key with nothing scheduled: YouTube makes the stream when you go live and the API can't
+            # read its settings ahead. Start from your last stream's details; Save sets up the next one with them.
+            found = _youtube_last(token)
+            from_last = True
         if found is None:
             return Details(privacy="public", vertical_key_name=vertical_name)
         snippet, status = found.get("snippet") or {}, found.get("status") or {}
@@ -443,8 +462,10 @@ def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None
         thumbs = snippet.get("thumbnails") or {}
         thumb = next((thumbs[k].get("url", "") for k in ("medium", "high", "default") if k in thumbs), "")
         return Details(title=snippet.get("title", ""), description=snippet.get("description", ""),
-                       privacy=status.get("privacyStatus", "public"), broadcast_id=found.get("id", ""),
-                       starts=snippet.get("scheduledStartTime", ""), thumbnail=thumb,
+                       privacy=status.get("privacyStatus", "public"),
+                       broadcast_id="" if from_last else found.get("id", ""),
+                       starts="" if from_last else snippet.get("scheduledStartTime", ""),
+                       thumbnail="" if from_last else thumb, from_last=from_last,
                        video_category=str((video.get("snippet") or {}).get("categoryId") or ""),
                        tags=list((video.get("snippet") or {}).get("tags") or []),
                        old_tags=list((video.get("snippet") or {}).get("tags") or []),
