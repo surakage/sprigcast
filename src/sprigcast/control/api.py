@@ -109,6 +109,8 @@ class Host(Protocol):
         what: "program", "items", "sound", "states" or "transition" (which screens need a refresh)."""
 
 
+    # Optional: commit_settings(sources) when only those sources' settings changed (see commit_settings below).
+
     def stream_status(self) -> dict[str, Any] | None: ...  # None when offline
     def record_status(self) -> dict[str, Any] | None: ...
     def clips_ready(self) -> bool: ...
@@ -1505,3 +1507,4 @@ def _obs_align(align: str) -> int:
 
 def _from_obs_align(bits: int) -> str:
     return next((name for name, b in _ALIGN_BITS.items() if b == bits), "center")
+

@@ -159,6 +159,10 @@ class WindowHost:
     def collection(self):
         return self.w.collection
 
+    def commit_settings(self, sources) -> None:
+        """Only these sources' settings changed (a plugin's own state): see MainWindow._settings_changed."""
+        self.w._settings_changed(sources)
+
     def commit(self, what: str) -> None:
         w = self.w
         w._changed()

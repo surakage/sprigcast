@@ -17,6 +17,14 @@ class ReplaceCollection:
 
 
 @dataclass
+class UpdateSourceSettings:
+    """New settings for a few sources, nothing else changed (a plugin's hotkey: a stream timer started, a death
+    counted). A whole collection for that cost the window 544 ms on the PC (2026-11-18) and the stream ~440 frames."""
+
+    settings: dict[str, dict]  # source id -> its settings now
+
+
+@dataclass
 class Shutdown:
     pass
 
