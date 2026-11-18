@@ -33,14 +33,14 @@ ComPtr<IDXGIAdapter1> adapter_with(uint32_t low, int32_t high) {
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return nullptr;
     ComPtr<IDXGIAdapter1> adapter;
     for (UINT i = 0; SUCCEEDED(factory->EnumAdapters1(i, &adapter)); ++i) {
-        DXGI_ADAPTER_DESC1 desc;
+        DXGI_ADAPTER_DESC1 desc = {};
         if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.AdapterLuid.LowPart == low && desc.AdapterLuid.HighPart == high)
             return adapter;
         adapter.Reset();
     }
     ComPtr<IDXGIFactory4> four;
     if (SUCCEEDED(factory.As(&four)) && SUCCEEDED(four->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) {
-        DXGI_ADAPTER_DESC1 desc;
+        DXGI_ADAPTER_DESC1 desc = {};
         if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.AdapterLuid.LowPart == low && desc.AdapterLuid.HighPart == high)
             return adapter;
     }
@@ -68,7 +68,7 @@ int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstri
         }
         page.name = name;
     }
-    D3D11_TEXTURE2D_DESC desc;
+    D3D11_TEXTURE2D_DESC desc = {};
     page.texture->GetDesc(&desc);
     if (width < 1 || height < 1 || static_cast<UINT>(width) > desc.Width || static_cast<UINT>(height) > desc.Height)
         return fail(SC_ERR_ARGUMENT, "a browser page's picture is bigger than its texture");
@@ -117,7 +117,7 @@ SC_API int sc_d3d_device_luid(void *device, uint32_t *low, int32_t *high) {
         if (!device || !low || !high) return sc::fail(SC_ERR_ARGUMENT, "sc_d3d_device_luid: nothing given");
         ComPtr<IDXGIDevice> dxgi;
         ComPtr<IDXGIAdapter> adapter;
-        DXGI_ADAPTER_DESC desc;
+        DXGI_ADAPTER_DESC desc = {};
         HRESULT hr = static_cast<ID3D11Device *>(device)->QueryInterface(IID_PPV_ARGS(&dxgi));
         if (SUCCEEDED(hr)) hr = dxgi->GetAdapter(&adapter);
         if (SUCCEEDED(hr)) hr = adapter->GetDesc(&desc);
