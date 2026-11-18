@@ -154,6 +154,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Settings → General remembers the process priority instead of reading it again each time (93 ms), the Last streams
+  drop-down shares its page's style (95 ms), and a plugin hotkey no longer imports anything when pressed.
 - Bloom tiles draw themselves once per look and then only copy that picture: a pop-up opening, or the screen
   waking, repainted every tile (496 ms during a monitor wake). While a pop-up is being made the preview waits
   for the next frame and the Live places list for the next second. The Sound gear's rows come half a row a tick,
