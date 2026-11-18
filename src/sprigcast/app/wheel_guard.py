@@ -40,6 +40,7 @@ _guard: WheelGuard | None = None
 _pending: list[QWidget] = []
 _BOXES = (QComboBox, QAbstractSpinBox)
 _STRONG = Qt.FocusPolicy.StrongFocus
+_WHEEL = Qt.FocusPolicy.WheelFocus
 _LEFT_ROOM: tuple[int, int, int, int] | None = None
 
 
@@ -53,6 +54,8 @@ def _left_room() -> tuple[int, int, int, int]:
     return _LEFT_ROOM
 
 
+SETTLE_STEP = 24  # boxes settled a tick
+SETTLE_GAP_MS = 15
 SETTLE_MS = 250  # the filter goes on once a pop-up's widgets are made and shown
 
 
@@ -69,7 +72,7 @@ def guard(widget: QWidget) -> None:
     The filter itself goes on a moment later, for all the boxes made meanwhile at once: on from the start, it
     ran Python for each of the ~900 events of Settings → Stream's boxes being made and shown, each waiting for
     Python's lock while the render thread ran (PC 2026-11-18). Nobody scrolls a pop-up in its first 250 ms."""
-    if not isinstance(widget, _BOXES) or widget.property(GUARDED):
+    if not isinstance(widget, _BOXES) or getattr(widget, "_guard_due", False) or widget.property(GUARDED):
         return
     _fresh(widget)
 
@@ -83,8 +86,10 @@ def guard_new(widget: QWidget) -> None:
 
 
 def _fresh(widget: QWidget) -> None:
-    widget.setProperty(GUARDED, True)
-    widget.setFocusPolicy(_STRONG)  # from WheelFocus (and again once settled, should its maker set it back)
+    """As few calls into Qt as can be: while live each one may wait its turn for Python's lock (the Sound gear's
+    rows, three boxes each, were 107-136 ms of it on the PC, 2026-11-18). The focus and the filter go on with
+    the rest a moment later (settle); only a number box's text room is now, so its number doesn't jump."""
+    widget._guard_due = True  # Python's own note: no call into Qt
     if isinstance(widget, QAbstractSpinBox):
         edit = widget.lineEdit()
         if edit is not None:
@@ -96,21 +101,27 @@ def _fresh(widget: QWidget) -> None:
         QTimer.singleShot(SETTLE_MS, settle)
 
 
-def settle() -> None:
-    """Put the filter on every box made since the last time (and keep the wheel from focusing them)."""
+def settle(step: int | None = SETTLE_STEP) -> None:
+    """Put the filter on the boxes made since the last time (and keep the wheel from focusing them), `step` of
+    them now and the rest a tick later; None: all of them now."""
     import shiboken6
 
-    boxes = _pending[:]
-    _pending.clear()
+    boxes = _pending[:step]
+    del _pending[:step]
+    if _pending:  # a big page's boxes a few at a time, the window answering in between
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(SETTLE_GAP_MS, settle)
     the_guard = _the_guard()
     for widget in boxes:
         if not shiboken6.isValid(widget):
             continue  # a pop-up closed meanwhile
-        if widget.focusPolicy() == Qt.FocusPolicy.WheelFocus:
+        if widget.focusPolicy() == _WHEEL:
             # Qt gives a WheelFocus widget the focus before any filter sees the wheel, so a scroll could still
             # change a stream's Resolution (PC test, 2026-11-17).
-            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            widget.setFocusPolicy(_STRONG)
         widget.installEventFilter(the_guard)
+        widget.setProperty(GUARDED, True)
 
 
 def install(app: QApplication) -> WheelGuard:

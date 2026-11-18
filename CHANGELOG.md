@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Pop-ups over Build mode no longer repaint the Library and Inside lists (101-156 ms each time). The Sound gear's
+  drop-downs and number boxes are set up with almost no work as they're made, the rest a moment later (243 ms),
+  and its sound rows come one a tick. Settings → General no longer reads the registry for "Start SprigCast when
+  Windows starts", the Garden check's one-line labels measure themselves once, and the Stream page's last few
+  style sheets joined its page style.
 - The first half-minute after start has fewer hitches: the Stream settings page shares one style sheet instead
   of 30-odd (245 ms of its warm-up), its Quality tab is made and put in place a tick apart, handing unused memory
   back to Windows runs off the window's thread (60-66 ms), and start-up's objects are set aside without a full

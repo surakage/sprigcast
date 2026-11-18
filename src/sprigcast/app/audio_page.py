@@ -64,6 +64,9 @@ def has_sound(source: SourceConfig) -> bool:
     return False
 
 
+_CENTRE = Qt.AlignmentFlag.AlignCenter  # looked up once: each look-up of a Qt enum is Python work
+
+
 def on_track(source: SourceConfig, number: int) -> bool:
     return AUDIO_TRACKS[number - 1] in source_tracks(source)
 
@@ -301,8 +304,8 @@ class AudioPage(QWidget):
         box.addWidget(_hint(f"Tracks: {legend}"))
         return group
 
-    ROWS_NOW = 4  # sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK)
-    ROWS_PER_TICK = 3
+    ROWS_NOW = 2  # sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK)
+    ROWS_PER_TICK = 1  # three were 136 ms a tick on the PC while live (2026-11-18): each row is ~50 calls into Qt
     ROW_GAP_MS = 15
 
     def _more_rows(self) -> None:
@@ -331,7 +334,7 @@ class AudioPage(QWidget):
         grid.addWidget(volume, row, 1)
         mono = QCheckBox()
         mono.setChecked(bool(st.get("mono", False)))
-        grid.addWidget(mono, row, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(mono, row, 2, alignment=_CENTRE)
         balance = QSlider(Qt.Orientation.Horizontal)
         balance.setRange(-100, 100)
         balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
@@ -363,7 +366,7 @@ class AudioPage(QWidget):
             tick = QCheckBox()
             tick.setChecked(AUDIO_TRACKS[n - 1] in have)
             tick.setToolTip(f"{source.name} on {names[n - 1]} (track {n})")
-            grid.addWidget(tick, row, 5 + n, alignment=Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(tick, row, 5 + n, alignment=_CENTRE)
             ticks.append(tick)
         self.track_ticks[source.id] = ticks
         self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,

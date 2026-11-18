@@ -39,17 +39,27 @@ def command() -> str:
     return f'"{exe}" -m sprigcast.app.main {MINIMIZED_FLAG}'
 
 
-def enabled() -> bool:
+_known: bool | None = None  # what the registry said last (read at start-up, kept up to date by set_enabled)
+
+
+def enabled(fresh: bool = False) -> bool:
+    """Whether Windows starts SprigCast. Read once (at start-up, off the window's thread: see refresh) and then
+    remembered: read again when Settings → General was made, it was 141 ms of the warm-up while live on the PC
+    (2026-11-18). fresh: read the registry again."""
+    global _known
     if not supported():
         return False
+    if _known is not None and not fresh:
+        return _known
     import winreg
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             winreg.QueryValueEx(key, VALUE)
-        return True
+        _known = True
     except OSError:
-        return False
+        _known = False
+    return _known
 
 
 def set_enabled(on: bool) -> None:
@@ -58,6 +68,8 @@ def set_enabled(on: bool) -> None:
         return
     import winreg
 
+    global _known
+    _known = None  # read again next time, should this fail part way
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if on:
             winreg.SetValueEx(key, VALUE, 0, winreg.REG_SZ, command())
@@ -66,6 +78,7 @@ def set_enabled(on: bool) -> None:
                 winreg.DeleteValue(key, VALUE)
             except FileNotFoundError:
                 pass
+    _known = bool(on)
 
 
 def refresh() -> None:

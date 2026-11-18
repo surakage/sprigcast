@@ -400,6 +400,10 @@ class InsideList(QListWidget):
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setSpacing(1)
 
+    def event(self, event) -> bool:  # noqa: D102
+        handled = theme.view_activation(self, event)  # no repaint when a pop-up takes the focus
+        return super().event(event) if handled is None else handled
+
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if event.mimeData().hasFormat(SPRIG_MIME):
             event.acceptProposedAction()
