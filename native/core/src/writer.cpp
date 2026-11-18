@@ -49,6 +49,21 @@ struct FrameFree {
 };
 using FramePtr = std::unique_ptr<AVFrame, FrameFree>;
 
+// An environment variable's text ("" when unset); _dupenv_s on Windows, where getenv is refused as unsafe.
+std::string env_text(const char *name) {
+#if defined(_MSC_VER)
+    char *value = nullptr;
+    size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || !value) return {};
+    std::string text(value);
+    std::free(value);
+    return text;
+#else
+    const char *value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+#endif
+}
+
 struct Error : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
@@ -720,8 +735,9 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
         core->tracks = cfg->audio_tracks;
         core->audio_kbps = std::max(32, cfg->audio_kbps);
         core->queue_limit = static_cast<size_t>(std::clamp(cfg->queue_frames, 2, 120));
-        if (const char *fault = std::getenv("SPRIGCAST_WRITER_FAULT")) {  // tests: the encoder fails at these
-            for (const char *at = fault; *at;) {
+        const std::string fault = env_text("SPRIGCAST_WRITER_FAULT");  // tests: the encoder fails at these
+        if (!fault.empty()) {
+            for (const char *at = fault.c_str(); *at;) {
                 char *end = nullptr;
                 const long long n = std::strtoll(at, &end, 10);
                 if (end == at) break;
