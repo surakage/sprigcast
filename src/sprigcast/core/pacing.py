@@ -383,6 +383,21 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
 
 
+DUMP_AFTER_MIN_S = 0.2  # (the watch re-arms it every half of this, see _StallDump.arm)
+
+
+def dump_after_s(environ=None) -> float:
+    """How long Python's lock is held before the stacks are printed: DUMP_AFTER_S, or SPRIGCAST_STALL_DUMP_MS
+    (from 200 ms) for chasing shorter stalls, such as a 235 ms one that held a media source (PC, 2026-11-18)."""
+    import os
+
+    text = (environ if environ is not None else os.environ).get("SPRIGCAST_STALL_DUMP_MS", "")
+    try:
+        return max(DUMP_AFTER_MIN_S, float(text) / 1000) if text else DUMP_AFTER_S
+    except ValueError:
+        return DUMP_AFTER_S
+
+
 def stall_dumps_on(environ=None) -> bool:
     """Whether the stall watch has faulthandler print every stack during long stalls: only when asked for
     (SPRIGCAST_STALL_DUMPS=1). It reads the stacks of threads that are still running, the one holding the lock
@@ -401,6 +416,7 @@ class _StallDump:
         import tempfile
 
         self.armed_at = float("-inf")
+        self.after_s = dump_after_s()
         if not (stall_dumps_on() if on is None else on):
             self.file = None
             return
@@ -414,14 +430,14 @@ class _StallDump:
         import faulthandler
 
         now = time.monotonic()
-        if self.file is None or now - self.armed_at < DUMP_REARM_S:
+        if self.file is None or now - self.armed_at < min(DUMP_REARM_S, self.after_s / 2):
             return
         self.armed_at = now
         with _dump_lock:
             if _closing["at"] is not None:
                 return  # faulthandler's one timer is the exit guard's now (exit_guard)
             try:
-                faulthandler.dump_traceback_later(DUMP_AFTER_S, repeat=False, file=self.file)
+                faulthandler.dump_traceback_later(self.after_s, repeat=False, file=self.file)
             except (RuntimeError, ValueError, OSError):
                 self.file = None
 

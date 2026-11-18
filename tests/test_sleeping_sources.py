@@ -239,6 +239,22 @@ class caplog_at:
         self.logger.setLevel(self.level)
 
 
+def test_one_long_frame_never_makes_a_source_drawn_less_often(monkeypatch):
+    """PC 2026-11-18: one 237 ms media frame (Python's lock held elsewhere) had it drawn every 4th frame for 0.8 s.
+    One frame counts at most CHARGE_CAP_MS."""
+    from sprigcast.render import engine as module
+
+    engine, _col = _engine()
+    source = engine._sources["game"]
+    for _ in range(30):
+        engine._charge("game", source, 0.001)
+    engine._charge("game", source, 0.237)
+    assert engine._source_every.get("game", 1) == 1
+    for _ in range(60):  # steadily slow: still drawn less often
+        engine._charge("game", source, 0.03)
+    assert engine._source_every["game"] == module.math.ceil(module.CHARGE_CAP_MS / module.SOURCE_BUDGET_MS)
+
+
 def test_a_slow_source_is_drawn_less_often(monkeypatch):
     """A plugin that takes ~20 ms a frame is asked every 4th tick, so the canvas stays on time."""
     from sprigcast.render import engine as module
