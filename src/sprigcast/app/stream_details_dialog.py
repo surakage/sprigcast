@@ -179,7 +179,7 @@ class Pane(QWidget):
             self._search_timer.setInterval(SEARCH_WAIT_MS)
             self._search_timer.timeout.connect(self._search)
             form.addLayout(_row("Category", self.category))
-        if service == "twitch":
+        if service != "youtube":  # YouTube's go under its description
             self.tags = self._edit("Cozy, English")
             form.addLayout(_row("Tags", self.tags))
         if service == "youtube":
@@ -187,6 +187,8 @@ class Pane(QWidget):
             self.description.setStyleSheet(BOX_STYLE)
             self.description.setFixedHeight(96)
             form.addLayout(_row("Description", self.description))
+            self.tags = self._edit("Cozy, Sloth facts")
+            form.addLayout(_row("Tags", self.tags))
             self.privacy = QComboBox()
             for key, name in PRIVACY_NAMES.items():
                 self.privacy.addItem(name, key)
@@ -366,8 +368,12 @@ class Pane(QWidget):
                     return "Pick a category from the list."
                 details.category, details.category_id = match, self.found[match]
         if self.tags is not None:
-            details.tags = sd.clean_tags(self.tags.text())
-            problem = sd.tag_problem(details.tags)
+            if self.service == "twitch":
+                details.tags = sd.clean_tags(self.tags.text())
+                problem = sd.tag_problem(details.tags)
+            else:
+                details.tags = sd.split_tags(self.tags.text())
+                problem = sd.youtube_tag_problem(details.tags) if self.service == "youtube" else None
             if problem:
                 return problem
         if self.description is not None:

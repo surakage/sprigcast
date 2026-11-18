@@ -14,6 +14,7 @@ Sign-ins:
 
 What each platform takes:
 - Twitch: title, category, tags (PATCH helix/channels).
+- Tags on YouTube sit on the stream's video, like its category; Kick's are custom_tags on the channel.
 - YouTube: title, description, privacy and thumbnail of the stream that's live now, else the next one waiting.
   With none waiting, Save makes one that starts by itself when you go live, on your SprigCast stream key.
 - Kick: title and category (PATCH public/v1/channels).
@@ -74,7 +75,8 @@ class Details:
     title: str = ""
     category: str = ""  # its name (Twitch, Kick)
     category_id: str = ""
-    tags: list[str] = field(default_factory=list)  # Twitch
+    tags: list[str] = field(default_factory=list)  # Twitch and Kick: the channel's; YouTube: the stream's video
+    old_tags: list[str] = field(default_factory=list)  # as read, so tags nobody touched are never sent
     description: str = ""  # YouTube
     privacy: str = "public"  # YouTube
     broadcast_id: str = ""  # YouTube: the stream being edited, "" = none waiting (Save makes one)
@@ -323,6 +325,25 @@ def clean_tags(text: str | list[str]) -> list[str]:
     return tags
 
 
+YOUTUBE_TAGS_MAX = 500  # letters for all tags together, as YouTube counts them
+
+
+def split_tags(text: str | list[str]) -> list[str]:
+    """YouTube's and Kick's tags from what was typed: split on commas (a tag may have spaces), no #, no doubles."""
+    parts = text if isinstance(text, list) else text.split(",")
+    tags: list[str] = []
+    for part in parts:
+        tag = " ".join(str(part).replace("#", " ").split())
+        if tag and tag.lower() not in (t.lower() for t in tags):
+            tags.append(tag)
+    return tags
+
+
+def youtube_tag_problem(tags: list[str]) -> str | None:
+    size = sum(len(t) + (2 if " " in t else 0) for t in tags) + max(0, len(tags) - 1)
+    return f"YouTube takes {YOUTUBE_TAGS_MAX} letters of tags at most." if size > YOUTUBE_TAGS_MAX else None
+
+
 def tag_problem(tags: list[str]) -> str | None:
     if len(tags) > TWITCH_TAGS_MAX:
         return f"Twitch takes at most {TWITCH_TAGS_MAX} tags."
@@ -403,7 +424,9 @@ def _youtube_load() -> Details:
         return Details(title=snippet.get("title", ""), description=snippet.get("description", ""),
                        privacy=status.get("privacyStatus", "public"), broadcast_id=found.get("id", ""),
                        starts=snippet.get("scheduledStartTime", ""), thumbnail=thumb,
-                       video_category=str((video.get("snippet") or {}).get("categoryId") or ""))
+                       video_category=str((video.get("snippet") or {}).get("categoryId") or ""),
+                       tags=list((video.get("snippet") or {}).get("tags") or []),
+                       old_tags=list((video.get("snippet") or {}).get("tags") or []))
 
     return _with_token("youtube", call)
 
@@ -453,21 +476,26 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
 
     _with_token("youtube", call)
     missed = []
-    if details.video_category in YOUTUBE_CATEGORIES:
-        def category(token):
+    tags = split_tags(details.tags)
+    if details.video_category in YOUTUBE_CATEGORIES or tags or details.old_tags:
+        def video_part(token):
             video = (_yt(token, "GET", f"videos?part=snippet&id={details.broadcast_id}").get("items") or [{}])[0]
             old = video.get("snippet") or {}
-            if str(old.get("categoryId") or "") == details.video_category:
+            category = details.video_category if details.video_category in YOUTUBE_CATEGORIES \
+                else str(old.get("categoryId") or "20")
+            if str(old.get("categoryId") or "") == category and list(old.get("tags") or []) == tags:
                 return  # already there: no call spent
-            keep = {k: old[k] for k in ("tags", "defaultLanguage", "defaultAudioLanguage") if old.get(k)}
+            keep = {k: old[k] for k in ("defaultLanguage", "defaultAudioLanguage") if old.get(k)}
             _yt(token, "PUT", "videos?part=snippet", {"id": details.broadcast_id, "snippet": {
-                **keep, "title": title, "description": snippet["description"], "categoryId": details.video_category}})
+                **keep, "title": title, "description": snippet["description"], "categoryId": category,
+                "tags": tags}})
 
         try:
-            _with_token("youtube", category)
+            _with_token("youtube", video_part)
+            details.tags = details.old_tags = tags
         except DetailsError as exc:
-            log.info("stream details: youtube category not saved: %s", exc)
-            missed.append(("category", ""))
+            log.info("stream details: youtube category and tags not saved: %s", exc)
+            missed.append(("category or tags", ""))
     if thumbnail:
         def upload(token):
             _call("POST", f"{YOUTUBE_UPLOAD}/thumbnails/set?videoId={details.broadcast_id}", token, data=thumbnail,
@@ -511,8 +539,10 @@ def _kick_load() -> Details:
     def call(token):
         channel = (_call("GET", f"{KICK_API}/channels", token, who="Kick").get("data") or [{}])[0]
         category = channel.get("category") or {}
+        tags = channel.get("custom_tags") or (channel.get("stream") or {}).get("custom_tags") or []
+        tags = [str(t) for t in tags if t] if isinstance(tags, list) else []
         return Details(title=channel.get("stream_title", "") or "", category=category.get("name", "") or "",
-                       category_id=str(category.get("id") or ""))
+                       category_id=str(category.get("id") or ""), tags=tags, old_tags=list(tags))
 
     return _with_token("kick", call)
 
@@ -521,11 +551,15 @@ def _kick_save(details: Details) -> None:
     body: dict = {"stream_title": details.title.strip()[:TITLE_MAX["kick"]]}
     if details.category_id:
         body["category_id"] = int(details.category_id)
+    tags = split_tags(details.tags)
+    if tags or details.old_tags:  # never sent when there were none and none were typed
+        body["custom_tags"] = tags
 
     def call(token):
         _call("PATCH", f"{KICK_API}/channels", token, body, who="Kick")
 
     _with_token("kick", call)
+    details.tags = details.old_tags = tags
 
 
 def _kick_search(text: str) -> list[tuple[str, str]]:
