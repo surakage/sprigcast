@@ -374,3 +374,62 @@ def test_a_source_near_its_budget_settles_instead_of_flapping(monkeypatch):
     for i in range(300):
         engine._tick(fake, 40.0 + i / 60)
     assert engine._source_every.get("game", 1) == 1
+
+
+def test_a_bloom_coming_back_spreads_its_first_pictures_over_a_few_ticks(caplog):
+    """PC 2026-11-18: switching back to a bloom of ~17 sources copied every first picture (GIFs, videos, cards) to the
+    card in one tick, 130-220 ms. At most FIRST_UPLOAD_BYTES of first pictures go each tick, the rest the next; the
+    switch waits for them (they had a picture when they went to sleep), and a log line names the slow ones."""
+    import logging
+
+    from sprigcast.render.engine import FIRST_UPLOAD_BYTES
+
+    class Big(Sleeper):
+        def video_frame(self):
+            return np.zeros((1600, 1600, 4), dtype=np.uint8)  # ~10 MB, like a 1080p picture
+
+    ids = ["g1", "g2", "g3", "g4"]
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=64, height=36)],
+        sources=[SourceConfig(id=i, kind="color", name=i) for i in ids + ["other"]],
+        scenes=[Scene(id="heavy", name="Heavy", canvas="h", items=[SceneItem(source=i) for i in ids]),
+                Scene(id="calm", name="Calm", canvas="h", items=[SceneItem(source="other")])],
+        active_scenes={"h": "heavy"},
+    )
+    engine = Engine(col)
+    engine.previews = frozenset()
+    engine._sources = {i: Big(i) for i in ids} | {"other": Sleeper("other")}
+    col = engine._collection
+
+    class Comp(FakeCompositor):
+        def __init__(self):
+            super().__init__()
+            self.textures = {}
+
+        def upload(self, source_id, *a):
+            super().upload(source_id)
+            self.textures[source_id] = object()
+
+        def forget(self, source_id):
+            super().forget(source_id)
+            self.textures.pop(source_id, None)
+
+    fake = Comp()
+    engine._tick(fake, 1.0)
+    assert set(ids) <= set(fake.uploaded)  # starting up: everything at once, as before
+    col.active_scenes["h"] = "calm"
+    engine._tick(fake, 2.0)
+    assert all(engine._sources[i].asleep for i in ids) and engine._had_picture >= set(ids)
+    back = col.model_copy(deep=True)
+    back.active_scenes["h"] = "heavy"
+    engine._wait_for_waking("h", col.scenes[1], back, "heavy")
+    assert engine._waking["h"][2] == set(ids)  # the switch waits for their pictures
+    engine._collection = back
+    fake.uploaded.clear()
+    with caplog.at_level(logging.INFO, logger="sprigcast.render.engine"):
+        engine._tick(fake, 3.0)
+    first = [i for i in fake.uploaded if i in ids]
+    assert 0 < len(first) < len(ids) and len(first) * 1600 * 1600 * 4 <= FIRST_UPLOAD_BYTES + 1600 * 1600 * 4
+    engine._tick(fake, 3.02)
+    assert set(ids) <= set(fake.uploaded)  # the rest a tick later
+    assert engine._still_waking(fake, "h", 3.03) is None  # all there: the switch lands

@@ -51,6 +51,8 @@ CAMERA_SLEEP_MAX = 300.0
 CAMERA_BACK_SOON_S = 600.0
 GRAPHICS_LOST_TICKS = 30  # frames failing this many ticks in a row: the graphics driver reset, start graphics again
 GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again this often
+FIRST_UPLOAD_BYTES = 24 * 1024 * 1024  # first pictures after a wake copied to the card per tick, at most (+1)
+WAKE_LOG_S = 0.003  # a source this slow on a frame that woke some is named in the "waking frame" log line
 SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thread is (the late-frame line says)
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
@@ -136,6 +138,10 @@ class Engine:
         self._filtered: frozenset[str] = frozenset()  # sources with video filters, see _sync_filters
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
         self._waking: dict[str, tuple] = {}
+        # Sources that had a picture when they went to sleep (their texture let go): a switch back to their bloom
+        # waits for their first picture, as for a camera, so the first uploads can be spread over a few ticks.
+        self._had_picture: set[str] = set()
+        self._woke = 0  # sources woken this tick (the waking-frame log line)
         self._source_ms: dict[str, float] = {}  # source id -> average ms per frame it was asked for
         self._source_every: dict[str, int] = {}  # source id -> asked every Nth tick (over its budget)
         self._budget_logged: set[str] = set()
@@ -752,7 +758,7 @@ class Engine:
                     seen.add(inner.id)
                     stack.append(inner)
         asleep = {sid for sid in ids if (src := self._sources.get(sid)) is not None and src.asleep
-                  and (src.kind == "camera" or getattr(src, "slow_wake", False))}
+                  and (src.kind == "camera" or getattr(src, "slow_wake", False) or sid in self._had_picture)}
         if asleep:
             self._waking[canvas_id] = (outgoing, time.perf_counter() + WAKE_WAIT_S, asleep)
 
@@ -1160,6 +1166,7 @@ class Engine:
         visible = self._visible = self._visible_sources()
         self._visible_fresh = True
         slowest = ("", "", 0.0)  # (source, wake or sleep, seconds): named in the late-frame line
+        self._woke = 0
         for source_id, source in self._sources.items():
             began = time.perf_counter()
             if source_id in visible or not self._may_sleep(source):
@@ -1170,6 +1177,7 @@ class Engine:
                         self._camera_back(source_id, now)
                     self._failing.pop(source_id, None)  # asked for a picture straight away
                     self._safely(source_id, source, "wake", source.wake)
+                    self._woke += 1
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
                     self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera"
                     else SLEEP_AFTER if source_id in shown else 0.0):
@@ -1178,6 +1186,10 @@ class Engine:
                     self._slept_at[source_id] = now
                 self._safely(source_id, source, "sleep", source.sleep)
                 if not getattr(source, "keeps_picture", False):
+                    if source_id in getattr(compositor, "textures", {}):
+                        self._had_picture.add(source_id)
+                    else:
+                        self._had_picture.discard(source_id)
                     compositor.forget(source_id)
             else:
                 continue
@@ -1834,6 +1846,8 @@ class Engine:
         self._ticks = getattr(self, "_ticks", 0) + 1
         frozen = self._freezes(compositor)
         textures = getattr(compositor, "textures", {})
+        woke = bool(self._woke or self._waking)  # a bloom is coming back: first pictures are spread out
+        first_bytes, waking = 0, []
         native = self._native if self._native is not None and not self._native.failed else None
         for source_id, source in self._sources.items():
             freeze = frozen.get(source_id) if frozen else None
@@ -1871,6 +1885,15 @@ class Engine:
                 self._caught[source_id] = freeze  # this frame (or the one it has, if none came) is the frozen one
             if frame is None and missed is not None:
                 frame = missed
+            if frame is not None and woke and source_id not in textures:
+                # A first picture after a wake: at most FIRST_UPLOAD_BYTES of them a tick, the rest the next tick
+                # (the switch waits for them, see _wait_for_waking). All at once they held the PC's switch frame
+                # 130-220 ms (2026-11-18): every GIF, video and card of the bloom copied to the card in one tick.
+                if first_bytes >= FIRST_UPLOAD_BYTES:
+                    self._missed[source_id] = frame
+                    frame = None
+                else:
+                    first_bytes += getattr(frame, "nbytes", 0)
             if frame is not None:
                 layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
                 if native is not None and not self._python_drew and not self._waking and freeze is None:
@@ -1887,7 +1910,11 @@ class Engine:
             self._charge(source_id, source, spent)
             if spent > slowest[1]:
                 slowest = (source_id, spent)
+            if self._woke and spent >= WAKE_LOG_S:
+                waking.append(f"{source_id} {1000 * spent:.1f}{'' if frame is not None else ' (no picture)'}")
         self._slowest_source = slowest
+        if waking:  # every slow source of a frame that woke some: "(no picture)" means it waited, not drew
+            log.info("waking frame: %s", ", ".join(waking))
         self._mark("sources")
         with self._taps_lock:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
