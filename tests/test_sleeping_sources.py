@@ -433,3 +433,33 @@ def test_a_bloom_coming_back_spreads_its_first_pictures_over_a_few_ticks(caplog)
     engine._tick(fake, 3.02)
     assert set(ids) <= set(fake.uploaded)  # the rest a tick later
     assert engine._still_waking(fake, "h", 3.03) is None  # all there: the switch lands
+
+
+def test_a_plugins_settings_reach_the_engine_without_a_whole_garden(monkeypatch):
+    """PC 2026-11-18: a stream timer hotkey copied and checked the whole garden on the window's thread (544 ms) and
+    the stream skipped ~440 frames. Only the changed settings travel now, applied on top of any garden sent before."""
+    from types import SimpleNamespace
+
+    from sprigcast.control.native import commit_settings
+    from sprigcast.core.events import ReplaceCollection, UpdateSourceSettings
+
+    engine, col = _engine()
+    updated = []
+    engine._sources["game"].update = lambda settings: updated.append(dict(settings))
+    engine.send(UpdateSourceSettings({"game": {"seconds": 5}}))
+    assert engine._drain_commands(FakeCompositor())
+    assert next(s for s in engine._collection.sources if s.id == "game").settings == {"seconds": 5}
+    assert updated == [{"seconds": 5}]
+    # A whole garden queued before newer settings: the settings still win.
+    older = engine._collection.model_copy(deep=True)
+    next(s for s in older.sources if s.id == "game").settings = {"seconds": 1}
+    monkeypatch.setattr(engine, "_sync_sources", lambda comp: None)
+    engine.send(ReplaceCollection(older))
+    engine.send(UpdateSourceSettings({"game": {"seconds": 9}}))
+    engine._drain_commands(FakeCompositor())
+    assert next(s for s in engine._collection.sources if s.id == "game").settings == {"seconds": 9}
+
+    light, full = [], []
+    commit_settings(SimpleNamespace(commit_settings=light.append, commit=full.append), [1])
+    commit_settings(SimpleNamespace(commit=full.append), [1], "timer")
+    assert light == [[1]] and full == ["timer"]  # hosts without it (apps' test hosts) get the whole commit

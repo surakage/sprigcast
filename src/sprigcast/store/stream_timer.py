@@ -40,7 +40,7 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.control.native import ApiError, register_action, send_event
+from sprigcast.control.native import ApiError, commit_settings, register_action, send_event
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import output_since, register_hotkeys, register_item_menu
@@ -480,7 +480,7 @@ def change(api, sources, how) -> dict:
     now = time.time()
     for source in sources:
         source.settings = how(dict(source.settings), now)
-    api.host.commit("timer")
+    commit_settings(api.host, sources, "timer")
     try:
         send_event(api, "timer.changed", _answer(sources[0]))
     except Exception:

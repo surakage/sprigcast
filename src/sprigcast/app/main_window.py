@@ -2983,6 +2983,19 @@ class MainWindow(QMainWindow):
         if control is not None:
             control.soon()  # apps connected to the control server hear what changed
 
+    def _settings_changed(self, sources) -> None:
+        """Only these sources' settings changed, as a plugin keeps its own state (a stream timer started from a
+        hotkey, a death counted): the engine gets just those settings, the garden is saved soon, apps hear of it.
+        No whole copy of the garden for the engine and none for undo (it isn't an edit): on the PC (2026-11-18)
+        that froze the window 544 ms on a timer hotkey and the stream skipped ~440 frames."""
+        from sprigcast.core.events import UpdateSourceSettings
+
+        self.engine.send(UpdateSourceSettings({s.id: dict(s.settings) for s in sources}))
+        self._save_soon()
+        control = getattr(self, "control", None)
+        if control is not None:
+            control.soon()
+
     SAVE_AFTER_MS = 2000  # the garden file is written this long after the last change
 
     def _save_soon(self) -> None:

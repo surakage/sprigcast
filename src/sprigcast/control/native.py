@@ -1665,3 +1665,13 @@ def answer(api: NativeApi, message: dict[str, Any]) -> dict[str, Any]:
     if result is not None:
         out["result"] = result
     return out
+
+
+def commit_settings(host, sources, what: str = "sources") -> None:
+    """Save and send these sources' new settings, nothing else changed (a plugin's own state, from a hotkey or an
+    app): the light way when the host has it, else the whole commit."""
+    light = getattr(host, "commit_settings", None)
+    if light is not None:
+        light(list(sources))
+    else:
+        host.commit(what)

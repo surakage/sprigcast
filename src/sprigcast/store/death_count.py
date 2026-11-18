@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.control.native import ApiError, register_action, send_event
+from sprigcast.control.native import ApiError, commit_settings, register_action, send_event
 from sprigcast.core import painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
@@ -490,7 +490,7 @@ def change(api, sources, how) -> dict:
         instance = api.host.source_instance(source.id)
         if instance is not None and hasattr(instance, "show"):
             instance.show(old, count)
-    api.host.commit("sources")  # kept with your blooms: there after a restart
+    commit_settings(api.host, sources)  # kept with your blooms: there after a restart
     try:
         send_event(api, "deaths.changed", {"count": count})
     except Exception:

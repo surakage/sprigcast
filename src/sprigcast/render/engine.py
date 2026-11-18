@@ -26,6 +26,7 @@ from sprigcast.core.events import (
     Shutdown,
     SourceInfo,
     Stats,
+    UpdateSourceSettings,
 )
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
 from sprigcast.core import pacing, retire
@@ -661,9 +662,13 @@ class Engine:
                 return True
             if isinstance(command, Shutdown):
                 return False
+            if isinstance(command, UpdateSourceSettings):
+                self._update_settings(command.settings)
+                continue
             if isinstance(command, ReplaceCollection):
                 # A drag sends a new collection on every mouse move: only the newest one matters, so
                 # skip straight to it instead of rebuilding sources for each (that backlog was the lag).
+                settings_after: list = []  # settings sent after the collection taken: applied on top of it
                 while True:
                     try:
                         newer = self.commands.get_nowait()
@@ -672,7 +677,9 @@ class Engine:
                     if isinstance(newer, Shutdown):
                         return False
                     if isinstance(newer, ReplaceCollection):
-                        command = newer
+                        command, settings_after = newer, []
+                    elif isinstance(newer, UpdateSourceSettings):
+                        settings_after.append(newer.settings)
                 went_on_air = self._went_on_air(self._collection, command.collection)
                 self._start_transitions(self._collection, command.collection)
                 self._start_state_fades(self._collection, command.collection)
@@ -681,6 +688,21 @@ class Engine:
                     self.frames.setdefault(canvas.id, Mailbox())
                 self._sync_sources(compositor)
                 self._reload_on_air(went_on_air)
+                for settings in settings_after:
+                    self._update_settings(settings)
+
+    def _update_settings(self, settings: dict[str, dict]) -> None:
+        """UpdateSourceSettings: these sources' settings in the engine's copy of the collection, and to the sources."""
+        configs = {s.id: s for s in self._collection.sources}
+        for source_id, new in settings.items():
+            config = configs.get(source_id)
+            if config is None:
+                continue
+            config.settings = dict(new)
+            source = self._sources.get(source_id)
+            if source is not None and source.settings != config.settings:
+                self._safely(source_id, source, "update", source.update, config.settings)
+        self._plan = None  # a placement's hidden items are settings too (see _sprig_plan)
 
     @staticmethod
     def _on_air_sources(collection: SceneCollection) -> set[str]:
