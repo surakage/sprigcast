@@ -105,3 +105,112 @@ def test_only_files_on_the_native_engine_use_it(native, monkeypatch, tmp_path):
     from sprigcast.output.stream import Streamer
 
     assert not ReplayBuffer.allow_writer and not Streamer.allow_writer and recorder_module.Recorder.allow_writer
+
+
+class _LinkEngine:
+    """Stands in for sprigcore.Engine with outputs that can be linked to a writer: feed() is the frame thread."""
+
+    def __init__(self, **_):
+        self.links, self.unlinks = {}, []
+
+    def stats(self):
+        return {"rebuilds": 0, "faulted": 0, "hung": 0}
+
+    def set_output(self, index, slot, width, height, scale="bilinear", share=False):
+        if not width:
+            self.links.pop((index, slot), None)
+
+    def take_output(self, index, slot, width, height):
+        return None
+
+    def link_output(self, index, slot, writer, start, fps, last_pts=-1, keep=False, fill_seconds=0.0):
+        self.links[(index, slot)] = (writer, start, fps, last_pts, keep)
+
+    def unlink_output(self, index, slot):
+        self.unlinks.append((index, slot))
+        link = self.links.pop((index, slot), None)
+        return (link[0].stats().last_pts, True) if link else (-1, False)
+
+    def feed(self, picture, pts):
+        for writer, *_ in self.links.values():
+            while writer.stats().queued >= 4:  # the test feeds faster than real time
+                time.sleep(0.002)
+            writer.video(picture, pts)
+
+    def close(self):
+        pass
+
+
+def test_a_linked_recording_takes_the_engines_frames_and_python_goes_on_after_them(native, tmp_path, monkeypatch):
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+
+    monkeypatch.setattr(sprigcore, "Engine", _LinkEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    key = ((W, H), False)
+    bridge.set_outputs("h", [key])
+    start = 1000.0
+    rec = Recorder(tmp_path / "linked.mkv", W, H, FPS, 800, "libx264", start, "mkv")
+    rec.start()
+    assert rec.wait_open()
+
+    def push(i):
+        rec.push_frame(Frame("h", W, H, _nv12(i), start + i / FPS, fmt="nv12"))
+
+    for i in range(10):
+        push(i)
+    deadline = time.monotonic() + 10
+    while not rec._video.empty() and time.monotonic() < deadline:
+        assert bridge.link_taps("h", [(rec.push_frame, key)]) == set()  # Python's frames first
+        time.sleep(0.01)
+    time.sleep(0.1)  # the last one taken off the queue is written
+    assert bridge.link_taps("h", [(rec.push_frame, key)]) == {id(rec)} and rec.linked
+    _writer, link_start, fps, last, keep = bridge.engine.links[(0, 0)]
+    assert (link_start, fps, last, keep) == (start, FPS, 9, False)
+    for i in range(10, 20):
+        bridge.engine.feed(_nv12(i), i)
+        push(i)  # a stray frame from Python meanwhile: not taken
+    assert rec._video.empty()
+    bridge.link_taps("h", [(rec.push_frame, key)])  # nothing changed: not linked again
+    assert bridge.engine.unlinks == []
+    bridge.set_outputs("h", ())  # a stinger: Python's compositor draws the canvas again
+    assert bridge.engine.unlinks == [(0, 0)] and not rec.linked and rec._last_queued == 19
+    for i in range(20, 30):
+        push(i)
+    rec.stop()
+    assert rec.error is None and rec.frames == 30 and rec.dropped == 0
+    with av.open(str(tmp_path / "linked.mkv")) as f:
+        lumas = [int(fr.to_ndarray()[:H].mean()) for fr in f.decode(video=0)]
+    assert len(lumas) == 30 and all(abs(v - (16 + 4 * i)) <= 4 for i, v in enumerate(lumas))
+
+
+def test_a_paused_or_stopping_recording_is_unlinked(native, tmp_path, monkeypatch):
+    from test_native_bridge import _collection
+
+    from sprigcast.render import native_bridge
+
+    monkeypatch.setattr(sprigcore, "Engine", _LinkEngine)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    key = ((W, H), False)
+    bridge.set_outputs("h", [key])
+    rec = Recorder(tmp_path / "p.mkv", W, H, FPS, 800, "libx264", 0.0, "mkv")
+    other = Recorder(tmp_path / "pyav.mkv", W, H, FPS, 800, "libx264", 0.0, "mkv")  # no writer open: Python's
+    rec.start()
+    assert rec.wait_open()
+    taps = [(rec.push_frame, key), (other.push_frame, key)]
+    assert bridge.link_taps("h", taps) == {id(rec)}
+    assert bridge.engine.links[(0, 0)][4] is True  # the other recording still takes the frames
+    rec.pause()
+    assert bridge.link_taps("h", taps) == set() and not rec.linked
+    rec.resume()
+    assert bridge.link_taps("h", taps) == {id(rec)}
+    monkeypatch.setenv("SPRIGCAST_NO_LINK", "1")
+    assert bridge.link_taps("h", taps) == set()
+    monkeypatch.delenv("SPRIGCAST_NO_LINK")
+    rec.stop()
+    assert bridge.link_taps("h", taps) == set() and not rec.linked and len(bridge.engine.unlinks) == 2
+    bridge.fail("test")  # nothing linked is left behind
+    assert rec.error is None

@@ -117,3 +117,28 @@ def test_track_titles_muxer_options_and_b_frames(player_lib, tmp_path):  # noqa:
         assert len(frames) == 30 and sorted(int(fr.pts) for fr in frames) == [int(fr.pts) for fr in frames]
     data = (tmp_path / "fragments.mp4").read_bytes()
     assert data[4:8] == b"ftyp" and b"moof" in data  # in fragments
+
+
+def test_a_hole_is_filled_with_one_picture_and_frames_never_go_back(player_lib, tmp_path):  # noqa: F811
+    path = tmp_path / "span.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        assert writer.stats().last_pts == -1
+        assert writer.video(nv12(20), 0) == sprigcore.SC_OK
+        assert writer.video_span(nv12(200), 1, 9) == sprigcore.SC_OK  # one queue place for nine frames
+        assert writer.video(nv12(60), 5) == sprigcore.WRITER_LATE  # two feeds met: never back in time
+        assert writer.video_span(nv12(90), 8, 12) == sprigcore.SC_OK  # overlaps: only 10 .. 12 are new
+        stats = writer.stats()
+        assert stats.last_pts == 12 and stats.frames_late == 1 and stats.frames_dropped == 0
+        stats = finished(writer)
+        assert stats.state_name == "finished", stats.error_text
+        assert stats.frames_written == 13 and stats.frames_repeated == 8 + 2
+    finally:
+        writer.close()
+    with av.open(str(path)) as f:
+        frames = list(f.decode(video=0))
+    assert len(frames) == 13
+    lumas = [int(frame.to_ndarray()[:H].mean()) for frame in frames]
+    assert abs(lumas[0] - 20) <= 4 and all(abs(v - 200) <= 4 for v in lumas[1:10])
+    assert all(abs(v - 90) <= 4 for v in lumas[10:])

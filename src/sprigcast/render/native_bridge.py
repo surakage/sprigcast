@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 import time
+import weakref
 
 from sprigcast import sprigcore
 from sprigcast.core.scene import Scene, SceneCollection
@@ -196,6 +197,10 @@ class NativeCanvases:
         self._output_scale: dict[int, str] = {}
         self._last_out: dict[tuple[str, tuple[int, int]], float] = {}  # newest frame time handed on, per output
         self._dropped: dict[tuple[int, int], int] = {}  # (canvas slot, output slot) -> frames the engine dropped
+        # (canvas slot, output slot) -> (recording, its writer, (start, fps, keep)): outputs the engine hands to a
+        # writer itself (link_taps)
+        self._links: dict[tuple[int, int], tuple] = {}
+        self._link_refused = weakref.WeakSet()  # recordings whose writer an output wouldn't link to
         self.output_drops = 0
         self.lost = 0  # frames of the output take_outputs last looked at that the engine let go of
         self._wipe_maps: set[str] = set()
@@ -250,6 +255,7 @@ class NativeCanvases:
         if not self.failed:
             self.failed = True
             log.error("native engine: %s; the Python compositor draws the previews again", why)
+            self._unlink_all()
 
     def upload(self, source_id: str, frame, channel_order: str, size) -> None:
         """A source's new picture. The first picture after a quiet spell is kept by the engine (a still picture
@@ -443,6 +449,7 @@ class NativeCanvases:
             self._output_scale[slot] = scale
         for key in [k for k in current if k not in want]:
             out = current.pop(key)
+            self._unlink(slot, out)
             self._dropped.pop((slot, out), None)
             if not any(k[0] == key[0] for k in current):
                 self._last_out.pop((canvas_id, key[0]), None)
@@ -519,6 +526,91 @@ class NativeCanvases:
         self.lost = self.output_drops - before  # what the engine let go of since the last call, for the outputs' counts
         return frames
 
+    # ---- outputs the engine hands to a writer itself ----------------------------------------------------------------
+
+    def link_taps(self, canvas_id: str, taps) -> set[int]:
+        """Link each plain output of this canvas to a recording that can take its frames straight from the engine
+        (Recorder.link_writer: the engine's own writer), so they never pass through Python. taps: (callback,
+        output_key) pairs. Returns id() of each recording linked now: its frames aren't handed to it here. Others
+        sharing a linked output still take its frames (the link keeps them queued)."""
+        slot = self._slots.get(canvas_id)
+        if slot is None or self.failed or os.environ.get("SPRIGCAST_NO_LINK"):
+            return set()
+        current = self._outputs.get(slot, {})
+        owners_of: dict[tuple, list] = {}
+        for callback, key in taps:
+            owners_of.setdefault(key, []).append(getattr(callback, "__self__", None))
+        linked: set[int] = set()
+        for key, owners in owners_of.items():
+            out = current.get(key)
+            if out is None or key[1]:
+                continue  # frames on the card go to SprigCast's own NVENC
+            entry = self._links.get((slot, out))
+            wanting = [(o, w) for o in owners if o is not None and not self._refused(o)
+                       for w in [getattr(o, "link_writer", lambda: None)()] if w is not None]
+            chosen = next(((o, w) for o, w in wanting if entry is not None and o is entry[0]), None) or \
+                next(iter(wanting), None)
+            if entry is not None and (chosen is None or chosen[0] is not entry[0] or chosen[1] is not entry[1]):
+                self._unlink(slot, out)
+                entry = None
+            if chosen is None:
+                continue
+            owner, writer = chosen
+            start, fps, last, fill = owner.link_numbers()
+            settings = (start, fps, len(owners) > 1)
+            if entry is None or entry[2] != settings:
+                try:
+                    self.engine.link_output(slot, out, writer, start, fps, last_pts=last, keep=settings[2],
+                                            fill_seconds=fill)
+                except Exception as exc:  # noqa: BLE001 - this recording takes its frames through Python
+                    self._refuse(owner)
+                    log.warning("native engine: %s can't take frames from the engine itself (%s); they go through "
+                                "Python", getattr(getattr(owner, "path", None), "stem", "a recording"), exc)
+                    continue
+                if entry is None:
+                    log.info("native engine: %s %dx%d frames go straight to %s's writer", canvas_id, key[0][0],
+                             key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"))
+                owner.linked = True
+                self._links[(slot, out)] = (owner, writer, settings)
+            linked.add(id(owner))
+        return linked
+
+    def _refused(self, owner) -> bool:
+        try:
+            return owner in self._link_refused
+        except TypeError:  # can't be weakly referenced: never linked
+            return True
+
+    def _refuse(self, owner) -> None:
+        try:
+            self._link_refused.add(owner)
+        except TypeError:
+            pass
+
+    def _unlink(self, slot: int, out: int) -> None:
+        """End an output's link; the recording goes on with Python's frames after the last one its writer took."""
+        entry = self._links.pop((slot, out), None)
+        if entry is None:
+            return
+        owner, writer, _settings = entry
+        last = -1
+        try:
+            last, _linked = self.engine.unlink_output(slot, out)
+        except Exception:  # the writer still knows
+            log.exception("native engine: unlinking an output failed")
+        try:
+            last = max(last, int(writer.stats().last_pts))
+        except Exception as exc:  # noqa: BLE001 - closed: nothing more is written to it anyway
+            log.debug("native engine: the unlinked writer's numbers are gone (%s)", exc)
+        try:
+            owner.unlinked(last)
+        except Exception:
+            log.exception("native engine: a recording's unlink failed")
+
+    def _unlink_all(self) -> None:
+        for slot, out in list(self._links):
+            self._unlink(slot, out)
+
     def _count_drops(self, slot: int, out: int, dropped: int) -> None:
         gone = dropped - self._dropped.get((slot, out), 0)
         if gone > 0:
@@ -583,6 +675,7 @@ class NativeCanvases:
             log.warning("native engine: a frame is stuck")
 
     def close(self) -> None:
+        self._unlink_all()
         try:
             self.engine.close()
         except Exception:

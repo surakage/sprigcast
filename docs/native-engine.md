@@ -209,8 +209,19 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   writer queue makes the recorder's own queue wait, so easing off and drops work as before. If the writer can't
   start, the recording goes through PyAV as before. Streams and replay buffers still go through PyAV.
   `SPRIGCAST_NO_WRITER=1` turns it off.
-- Next: the engine hands its output frames to a writer itself (no Python per frame), pictures on the card
-  straight into hardware encoders, streams with reconnects, and Instant replay's buffer.
+- **Outputs linked to a writer (step 3, `sc_engine_output_link`, interface 18).** Once such a recording's writer
+  is open and Python's own frames for it are written, the render thread links the canvas's output to the writer
+  (`render/native_bridge.py` `link_taps`): from then on the engine's frame thread hands every finished frame to
+  the writer itself, numbered by when it was drawn exactly as the recorder numbers them (a draw a little late
+  still gets the next number, spare draws of a faster canvas are skipped, a hole up to 5 s is filled with the
+  next picture as one queue entry, `sc_writer_video_span`). No frame passes through Python and the recorder's
+  thread only hands sound over. The writer never goes back in time (`SC_WRITER_LATE`), so Python and the engine
+  can take turns: a stinger or move transition, a pause, the end of the recording or a fault unlinks it, and
+  Python's frames go on after the last frame number the writer took. The engine holds a share of the writer, so
+  a writer closed while linked just refuses frames and the link ends by itself. Other outputs of the same size
+  still take the frames (the link keeps them queued). `SPRIGCAST_NO_LINK=1` turns linking off.
+- Next: pictures on the card straight into hardware encoders through the writer, streams with reconnects, and
+  Instant replay's buffer.
 
 ## Phases
 

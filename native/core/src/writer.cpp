@@ -6,6 +6,7 @@
 // (tests/test_native_writer.py).
 #include "base.h"
 #include "ffmpeg.h"
+#include "writer.h"
 
 #include <algorithm>
 #include <chrono>
@@ -59,14 +60,19 @@ struct Core {
 
     std::mutex lock;
     std::condition_variable wake, done_cv;
-    std::deque<std::pair<int64_t, FramePtr>> pictures;          // (pts in frames, NV12 picture)
+    struct Picture {
+        int64_t pts = 0, count = 1;  // written as frames pts .. pts + count - 1 (more than one: a hole filled)
+        FramePtr frame;
+    };
+    std::deque<Picture> pictures;
     std::vector<std::deque<std::vector<float>>> sounds;          // per track, blocks not yet taken
     std::vector<FramePtr> spare;                                 // NV12 frames to fill again
     bool finishing = false, done = false;
     std::atomic<bool> abort{false};
     int state = SC_WRITER_OPENING;
     std::string error;
-    uint64_t frames_in = 0, frames_written = 0, frames_dropped = 0, bytes = 0;
+    uint64_t frames_in = 0, frames_written = 0, frames_dropped = 0, bytes = 0, frames_late = 0, frames_repeated = 0;
+    int64_t last_pts = -1;  // the newest frame number taken: pictures never go back in time
     double write_seconds = 0, longest_write = 0;
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
     FramePtr i420;
@@ -275,7 +281,7 @@ void Core::run() {
             if (state == SC_WRITER_OPENING) state = SC_WRITER_RUNNING;
         }
         for (;;) {
-            std::pair<int64_t, FramePtr> picture{0, nullptr};
+            Picture picture;
             std::vector<std::vector<float>> sound(static_cast<size_t>(tracks));
             bool last;
             {
@@ -293,18 +299,21 @@ void Core::run() {
                     picture = std::move(pictures.front());
                     pictures.pop_front();
                 }
-                last = finishing && pictures.empty() && !picture.second;
+                last = finishing && pictures.empty() && !picture.frame;
             }
             for (size_t i = 0; i < audio.size(); ++i) {
                 audio[i].waiting.insert(audio[i].waiting.end(), sound[i].begin(), sound[i].end());
                 encode_sound(audio[i], false);
             }
-            if (picture.second) {
-                picture.second->pts = picture.first;
-                encode_video(picture.second.get());
+            if (picture.frame) {
+                for (int64_t k = 0; k < picture.count && !abort.load(); ++k) {  // the encoder keeps its own reference
+                    picture.frame->pts = picture.pts + k;
+                    encode_video(picture.frame.get());
+                    std::lock_guard<std::mutex> hold(lock);
+                    ++frames_written;
+                }
                 std::lock_guard<std::mutex> hold(lock);
-                ++frames_written;
-                if (spare.size() < 4) spare.push_back(std::move(picture.second));
+                if (spare.size() < 4) spare.push_back(std::move(picture.frame));
             }
             if (last) break;
         }
@@ -331,6 +340,61 @@ void Core::run() {
     for (auto &q : sounds) q.clear();
     done = true;
     done_cv.notify_all();
+}
+
+// One picture for frames first .. last (one frame, or a hole filled with it). Never waits on the writer thread.
+int feed(Core &c, const uint8_t *nv12, int stride, int64_t first, int64_t last) {
+    FramePtr f;
+    {
+        std::lock_guard<std::mutex> hold(c.lock);
+        ++c.frames_in;
+        if (c.state == SC_WRITER_FAILED || c.state == SC_WRITER_FINISHED || c.finishing) return SC_WRITER_REFUSED;
+        if (last <= c.last_pts) {  // already written past it (two feeds met): never back in time
+            ++c.frames_late;
+            return SC_WRITER_LATE;
+        }
+        if (c.pictures.size() >= c.queue_limit) {
+            ++c.frames_dropped;
+            return SC_WRITER_DROPPED;
+        }
+        if (!c.spare.empty()) {
+            f = std::move(c.spare.back());
+            c.spare.pop_back();
+        }
+    }
+    const int width = c.width, height = c.height;
+    if (!f) {
+        f.reset(ff.av_frame_alloc());
+        if (!f) throw std::bad_alloc();
+        f->format = AV_PIX_FMT_NV12;
+        f->width = width;
+        f->height = height;
+        if (ff.av_frame_get_buffer(f.get(), 0) < 0) throw std::bad_alloc();
+    } else if (ff.av_frame_make_writable(f.get()) < 0) {
+        throw std::bad_alloc();
+    }
+    for (int y = 0; y < height; ++y)
+        std::memcpy(f->data[0] + static_cast<ptrdiff_t>(y) * f->linesize[0], nv12 + static_cast<ptrdiff_t>(y) * stride,
+                    static_cast<size_t>(width));
+    const uint8_t *uv = nv12 + static_cast<ptrdiff_t>(height) * stride;
+    for (int y = 0; y < height / 2; ++y)
+        std::memcpy(f->data[1] + static_cast<ptrdiff_t>(y) * f->linesize[1], uv + static_cast<ptrdiff_t>(y) * stride,
+                    static_cast<size_t>(width));
+    f->color_range = AVCOL_RANGE_MPEG;
+    f->colorspace = AVCOL_SPC_BT709;
+    {
+        std::lock_guard<std::mutex> hold(c.lock);
+        if (last <= c.last_pts) {  // another feed got in while this one copied
+            ++c.frames_late;
+            return SC_WRITER_LATE;
+        }
+        first = std::max(first, c.last_pts + 1);
+        c.last_pts = last;
+        c.frames_repeated += static_cast<uint64_t>(last - first);
+        c.pictures.push_back(Core::Picture{first, last - first + 1, std::move(f)});
+    }
+    c.wake.notify_one();
+    return SC_OK;
 }
 
 }  // namespace
@@ -390,47 +454,15 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
 SC_API int sc_writer_video(sc_writer *w, const uint8_t *nv12, int stride, int64_t pts) {
     return sc::guarded("sc_writer_video", [&]() -> int {
         if (!w || !nv12 || stride < w->core->width) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_video: no picture");
-        Core &c = *w->core;
-        FramePtr f;
-        {
-            std::lock_guard<std::mutex> hold(c.lock);
-            ++c.frames_in;
-            if (c.state == SC_WRITER_FAILED || c.state == SC_WRITER_FINISHED || c.finishing) return SC_WRITER_REFUSED;
-            if (c.pictures.size() >= c.queue_limit) {
-                ++c.frames_dropped;
-                return SC_WRITER_DROPPED;
-            }
-            if (!c.spare.empty()) {
-                f = std::move(c.spare.back());
-                c.spare.pop_back();
-            }
-        }
-        const int width = c.width, height = c.height;
-        if (!f) {
-            f.reset(ff.av_frame_alloc());
-            if (!f) throw std::bad_alloc();
-            f->format = AV_PIX_FMT_NV12;
-            f->width = width;
-            f->height = height;
-            if (ff.av_frame_get_buffer(f.get(), 0) < 0) throw std::bad_alloc();
-        } else if (ff.av_frame_make_writable(f.get()) < 0) {
-            throw std::bad_alloc();
-        }
-        for (int y = 0; y < height; ++y)
-            std::memcpy(f->data[0] + static_cast<ptrdiff_t>(y) * f->linesize[0],
-                        nv12 + static_cast<ptrdiff_t>(y) * stride, static_cast<size_t>(width));
-        const uint8_t *uv = nv12 + static_cast<ptrdiff_t>(height) * stride;
-        for (int y = 0; y < height / 2; ++y)
-            std::memcpy(f->data[1] + static_cast<ptrdiff_t>(y) * f->linesize[1], uv + static_cast<ptrdiff_t>(y) * stride,
-                        static_cast<size_t>(width));
-        f->color_range = AVCOL_RANGE_MPEG;
-        f->colorspace = AVCOL_SPC_BT709;
-        {
-            std::lock_guard<std::mutex> hold(c.lock);
-            c.pictures.emplace_back(pts, std::move(f));
-        }
-        c.wake.notify_one();
-        return SC_OK;
+        return feed(*w->core, nv12, stride, pts, pts);
+    });
+}
+
+SC_API int sc_writer_video_span(sc_writer *w, const uint8_t *nv12, int stride, int64_t first, int64_t last) {
+    return sc::guarded("sc_writer_video_span", [&]() -> int {
+        if (!w || !nv12 || stride < w->core->width || last < first || first < 0)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_writer_video_span: no picture or no frames");
+        return feed(*w->core, nv12, stride, first, last);
     });
 }
 
@@ -486,6 +518,9 @@ SC_API int sc_writer_stats_get(sc_writer *w, sc_writer_stats *out) {
         out->queued = static_cast<int>(c.pictures.size());
         out->write_seconds = c.write_seconds;
         out->longest_write = c.longest_write;
+        out->last_pts = c.last_pts;
+        out->frames_late = c.frames_late;
+        out->frames_repeated = c.frames_repeated;
         std::snprintf(out->error, sizeof out->error, "%s", c.error.c_str());
         return SC_OK;
     });
@@ -519,3 +554,31 @@ SC_API void sc_writer_destroy(sc_writer *w) {
 }
 
 }  // extern "C"
+
+namespace sc {
+
+std::shared_ptr<void> writer_share(sc_writer *w) { return w ? std::static_pointer_cast<void>(w->core) : nullptr; }
+
+int writer_feed(const std::shared_ptr<void> &shared, const uint8_t *nv12, int width, int height, int64_t first,
+                int64_t last) {
+    auto *c = static_cast<Core *>(shared.get());
+    if (!c || width != c->width || height != c->height || last < first || first < 0) return SC_ERR_ARGUMENT;
+    return feed(*c, nv12, width, first, last);
+}
+
+int64_t writer_last(const std::shared_ptr<void> &shared) {
+    auto *c = static_cast<Core *>(shared.get());
+    if (!c) return -1;
+    std::lock_guard<std::mutex> hold(c->lock);
+    return c->last_pts;
+}
+
+bool writer_size(const std::shared_ptr<void> &shared, int *width, int *height) {
+    auto *c = static_cast<Core *>(shared.get());
+    if (!c) return false;
+    *width = c->width;
+    *height = c->height;
+    return true;
+}
+
+}  // namespace sc
