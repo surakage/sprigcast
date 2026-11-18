@@ -122,6 +122,8 @@ def _encoder_probe(variant: str, settings: dict | None = None, extra: dict | Non
         return
 
     class Probe(Recorder):
+        allow_writer = False  # measures PyAV's encoder
+
         def _video_options(self):
             return {**super()._video_options(), **(extra or {})}
 

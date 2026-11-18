@@ -90,3 +90,30 @@ def test_closing_without_finishing_gives_up_at_once(player_lib, tmp_path):  # no
     assert time.monotonic() - began < 6
     with pytest.raises(sprigcore.NativeError):
         writer.video(nv12(50), 6)
+
+
+def test_track_titles_muxer_options_and_b_frames(player_lib, tmp_path):  # noqa: F811
+    """What recordings ask of it: each sound track named, an MP4 in fragments (it survives a crash), B-frames."""
+    tone = np.zeros((1600, 2), np.float32)
+    for name, options in (("titled.mkv", None),
+                          ("fragments.mp4", {"movflags": "+frag_keyframe+empty_moov+default_base_moof"})):
+        path = tmp_path / name
+        writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                                  audio_tracks=2, queue_frames=120, b_frames=2, track_titles=["Stream", "Mic only"],
+                                  container_options=options)
+        try:
+            for n in range(30):
+                assert writer.video(nv12(40 + n), n) == sprigcore.SC_OK
+                for track in (0, 1):
+                    writer.audio(tone, track)
+            stats = finished(writer)
+            assert stats.state_name == "finished", stats.error_text
+        finally:
+            writer.close()
+        with av.open(str(path)) as f:
+            if name.endswith(".mkv"):
+                assert [s.metadata.get("title") for s in f.streams.audio] == ["Stream", "Mic only"]
+            frames = list(f.decode(video=0))
+        assert len(frames) == 30 and sorted(int(fr.pts) for fr in frames) == [int(fr.pts) for fr in frames]
+    data = (tmp_path / "fragments.mp4").read_bytes()
+    assert data[4:8] == b"ftyp" and b"moof" in data  # in fragments

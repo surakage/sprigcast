@@ -50,7 +50,9 @@ struct Track {
 
 struct Core {
     // Set once, before the thread starts.
-    std::string target, format, video_codec, video_options;
+    std::string target, format, video_codec, video_options, format_options;
+    std::vector<std::string> titles;  // each sound track's title (more than one track)
+    int b_frames = 0;
     int width = 0, height = 0, fps_num = 30, fps_den = 1, video_kbps = 6000, gop = 60, audio_kbps = 160;
     int tracks = 1;
     size_t queue_limit = 8;
@@ -109,14 +111,14 @@ void Core::open() {
         venc->framerate = AVRational{fps_num, fps_den};
         venc->bit_rate = static_cast<int64_t>(video_kbps) * 1000;
         venc->gop_size = gop;
-        venc->max_b_frames = 0;
+        venc->max_b_frames = b_frames;
         venc->color_range = AVCOL_RANGE_MPEG;
         venc->colorspace = AVCOL_SPC_BT709;
         venc->color_primaries = AVCOL_PRI_BT709;
         venc->color_trc = AVCOL_TRC_BT709;
         if (global) venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
         AVDictionary *opts = nullptr;
-        if (!video_options.empty()) ff.av_dict_parse_string(&opts, video_options.c_str(), "=", ":", 0);
+        if (!video_options.empty()) ff.av_dict_parse_string(&opts, video_options.c_str(), "=", "\n", 0);
         const int r = ff.avcodec_open2(venc, codec, &opts);
         ff.av_dict_free(&opts);
         if (r >= 0) {
@@ -134,7 +136,8 @@ void Core::open() {
     const AVCodec *aac = ff.avcodec_find_encoder(AV_CODEC_ID_AAC);
     if (tracks > 0 && !aac) throw Error("no AAC encoder");
     audio.resize(static_cast<size_t>(tracks));
-    for (Track &t : audio) {
+    for (size_t i = 0; i < audio.size(); ++i) {
+        Track &t = audio[i];
         t.enc = ff.avcodec_alloc_context3(aac);
         if (!t.enc) throw std::bad_alloc();
         t.enc->sample_fmt = AV_SAMPLE_FMT_FLTP;
@@ -148,12 +151,18 @@ void Core::open() {
         if (!t.stream) throw std::bad_alloc();
         t.stream->time_base = t.enc->time_base;
         must(ff.avcodec_parameters_from_context(t.stream->codecpar, t.enc), "the sound stream");
+        if (tracks > 1 && i < titles.size() && !titles[i].empty())
+            ff.av_dict_set(&t.stream->metadata, "title", titles[i].c_str(), 0);
     }
     if (!(out->oformat->flags & AVFMT_NOFILE)) {
         AVIOInterruptCB stop{interrupted, this};
         must(ff.avio_open2(&out->pb, target.c_str(), AVIO_FLAG_WRITE, &stop, nullptr), "opening it");
     }
-    must(ff.avformat_write_header(out, nullptr), "the header");
+    AVDictionary *muxing = nullptr;
+    if (!format_options.empty()) ff.av_dict_parse_string(&muxing, format_options.c_str(), "=", "\n", 0);
+    const int header = ff.avformat_write_header(out, &muxing);
+    ff.av_dict_free(&muxing);
+    must(header, "the header");
     pkt = ff.av_packet_alloc();
     if (!pkt) throw std::bad_alloc();
 }
@@ -348,6 +357,18 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
         core->format = cfg->format ? cfg->format : "";
         core->video_codec = cfg->video_codec;
         core->video_options = cfg->video_options ? cfg->video_options : "";
+        core->format_options = cfg->format_options ? cfg->format_options : "";
+        if (cfg->track_titles) {
+            std::string all = cfg->track_titles;
+            size_t at = 0;
+            for (;;) {
+                const size_t end = all.find('\n', at);
+                core->titles.push_back(all.substr(at, end == std::string::npos ? std::string::npos : end - at));
+                if (end == std::string::npos) break;
+                at = end + 1;
+            }
+        }
+        core->b_frames = std::clamp(cfg->b_frames, 0, 4);
         core->width = cfg->width;
         core->height = cfg->height;
         core->fps_num = cfg->fps_num;

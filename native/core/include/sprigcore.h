@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 16
+#define SC_INTERFACE_VERSION 17
 
 enum {
     SC_OK = 0,
@@ -514,11 +514,14 @@ typedef struct sc_writer_config {
     const char *target;         /* file path or stream URL, UTF-8 */
     const char *format;         /* muxer ("mp4", "matroska", "mov", "flv"), or NULL to go by the target's name */
     const char *video_codec;    /* an FFmpeg encoder: "libx264", "h264_nvenc", "hevc_amf", ... */
-    const char *video_options;  /* encoder options, "key=value:key=value" */
+    const char *video_options;  /* encoder options, "key=value" lines (separated by \n) */
     int width, height, fps_num, fps_den;
     int video_kbps, keyframe_frames;
     int audio_tracks, audio_kbps; /* AAC tracks (0-6) */
     int queue_frames;             /* pictures that may wait (2-120) */
+    const char *format_options;   /* muxer options, "key=value" lines ("movflags=..."), or NULL */
+    const char *track_titles;     /* each sound track's title, separated by \n (left out when one track), or NULL */
+    int b_frames;                 /* 0-4 */
 } sc_writer_config;
 enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
 enum { SC_WRITER_DROPPED = 1, SC_WRITER_REFUSED = 2 }; /* sc_writer_video / sc_writer_audio results besides SC_OK */

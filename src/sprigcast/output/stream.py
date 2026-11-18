@@ -100,6 +100,7 @@ class StreamTarget:
 
 class Streamer(Recorder):
     eases = False  # a stream steers its bitrate instead (auto-pilot, backlog)
+    allow_writer = False  # reconnects, bitrate steering and the backlog are its own (Recorder.uses_writer)
 
     def __init__(
         self,

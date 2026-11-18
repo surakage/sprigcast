@@ -126,6 +126,8 @@ def replay_path(folder: Path, canvas_id: str, when: datetime, container: str) ->
 class ReplayBuffer(Recorder):
     """A Recorder whose packets go to a rolling in-memory buffer of `seconds` instead of a file."""
 
+    allow_writer = False  # its packets go to memory here, not to a file (Recorder.uses_writer)
+
     def __init__(self, canvas_id: str, width: int, height: int, fps: int, bitrate_kbps: int, codec: str,
                  start_time: float, seconds: float, container: str = "mkv", encoder=None,
                  out_size: tuple[int, int] | None = None, tracks: tuple[str, ...] = ("clips",)):
