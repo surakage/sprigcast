@@ -164,6 +164,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
   Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
   transition, then goes back to the engine's same textures.
+- A late frame of about 100 ms every few minutes with Move transitions (PC soak 2026-11-18): Python's minute
+  cleanup freed 55-68 thousand objects each time, 65-72 ms holding everything else. It now runs every 10 seconds,
+  each a sixth as long and inside a frame's idle time. SPRIGCAST_GC_TYPES=1 logs what each slow one freed.
 - New engine: display, window and game capture happen inside the engine. Windows hands each picture over on
   the engine's own graphics device and it's copied there, so no screen picture is copied into memory, through
   Python, and back (about 500 MB a second for a 1080p60 game). If the engine can't capture on a PC, the old

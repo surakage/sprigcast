@@ -117,9 +117,13 @@ def tame_gc() -> None:
              1000 * (time.perf_counter() - began))
 
 
-# Each tidy walks what was made since the last one. Every 5 minutes that was 15-73 ms on the user's PC
-# (2026-11-15), long enough to make a frame late now and then; every minute it is a fifth of that.
-TIDY_EVERY_MS = 60_000
+# Each tidy walks what was made since the last one, and frees what of it is garbage. Every 5 minutes that was 15-73
+# ms on the user's PC (2026-11-15); every minute, a fifth of that, until Move transitions: each left garbage that
+# lived past the young collections, and the minute's tidy freed 55-68 thousand objects in 65-72 ms, holding the
+# render thread 100-113 ms (PC Move soak, 2026-11-18). Every 10 seconds it is a sixth of that, inside a frame's
+# idle time. SPRIGCAST_GC_TYPES=1 logs what kinds of objects each slow tidy freed, to find where they come from.
+TIDY_EVERY_MS = 10_000
+MINUTE_MS = 60_000  # the rest of the housekeeping (threads, memory, CPU)
 
 
 def tidy() -> tuple[int, float]:
@@ -131,12 +135,28 @@ def tidy() -> tuple[int, float]:
     those objects are skipped by every later collection. Freezing only skips the cycle finder: objects
     that die later are still freed as usual, unless they are in a reference cycle, and settle() takes
     care of those when the show ends."""
+    import os
+
+    kinds = os.environ.get("SPRIGCAST_GC_TYPES")
+    if kinds:
+        before = gc.get_debug()
+        gc.set_debug(before | gc.DEBUG_SAVEALL)
     began = time.perf_counter()
     gc.collect()
-    gc.freeze()
     ms = 1000 * (time.perf_counter() - began)
+    freed = ""
+    if kinds:
+        gc.set_debug(before)
+        from collections import Counter
+
+        counts = Counter(type(o).__qualname__ for o in gc.garbage)
+        gc.garbage.clear()
+        gc.collect()  # saved, not freed: now freed for real (never frozen)
+        if ms >= SLOW_GC_MS:
+            freed = "; freed " + ", ".join(f"{n} {kind}" for kind, n in counts.most_common(12))
+    gc.freeze()
     if ms >= SLOW_GC_MS:
-        log.info("python tidy took %.0f ms (%d objects kept aside)", ms, gc.get_freeze_count())
+        log.info("python tidy took %.0f ms (%d objects kept aside)%s", ms, gc.get_freeze_count(), freed)
     return gc.get_freeze_count(), ms
 
 
