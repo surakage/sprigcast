@@ -12,8 +12,10 @@ next song.
 Settings: Style (Canopy card, Cover glow, Slim band, Sprig ring), Show art (the cover), Show album, Show
 time (a time bar with how far in the song is and how long it is, when the app tells Windows), Sound bars
 (and the Sound they move with), Slide speed (a title too long for the card slides by, 1 slow to 5 fast),
-Only from (app names, e.g. "Spotify, Chrome": leave it empty for any app), Accent colour, Text colour and
-Card colour (a colour ending in 00 is see-through: no card).
+Only from (app names, e.g. "Spotify, Chrome": leave it empty for any app).
+
+Style tab (core/style.py, the same on every styled plugin): Accent, Text and Card colour (a colour ending in
+00 is see-through: no card), Font, Corners (Round, Leaf, Square), Show dot, and Custom look.
 
 It's light: it listens for Windows saying the song changed instead of asking over and over, and only while
 the card is on screen. The card is drawn once per song; each frame only adds what moves, on a worker,
@@ -37,19 +39,20 @@ import numpy as np
 
 from sprigcast.audio import listen
 from sprigcast.control.native import ApiError, register_action, send_event
-from sprigcast.core import painted, workers
+from sprigcast.core import painted, style, workers
 from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 4, "adds": "Source",
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 5, "adds": "Source",
           "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover, a time bar and "
                    "sound bars. No keys needed.",
-          "new": "Four styles, a time bar, sound bars, and a long title slides by so it all shows."}
+          "new": "A Style tab: your own colours, font and corners, and a custom look box."}
 
 KIND = "now_playing"
 W, H = 1100, 200  # the card's box (the card hugs the words, from the left); scale it on the canvas like anything else
 ACCENT = "#4fd88f"
+LOOK_BASE = {"text_color": "#f2f7f3", "card_color": "#151c19e0", "accent_color": ACCENT}
 HIDE_AFTER = 2.0  # seconds paused before the card goes (skipping songs doesn't flicker it)
 FADE = 0.3  # seconds to fade in or out
 SETTLE = 0.15  # Windows sends a few changes at once when a song starts: read once they've landed
@@ -341,18 +344,6 @@ class MediaWatcher:
 # and the times. Frames are made on a shared worker, never on the render thread (see the source).
 
 
-def _colour(text: str, fallback: str):
-    from PySide6.QtGui import QColor
-
-    text = str(text or "").strip()
-    if text.startswith("#") and len(text) == 9:  # #rrggbbaa
-        c = QColor(text[:7])
-        c.setAlpha(int(text[7:], 16))
-        return c if c.isValid() else QColor(fallback)
-    c = QColor(text)
-    return c if c.isValid() else QColor(fallback)
-
-
 def lines(track: Track, settings: dict[str, Any]) -> tuple[str, str]:
     """(the title, the line under it: artist, and the album with Show album)."""
     under = [track.artist] if track.artist else []
@@ -420,11 +411,21 @@ def _text_w(text: str, px: int, bold: bool = True) -> float:
     return QFontMetricsF(_font(px, bold)).horizontalAdvance(text) if text else 0.0
 
 
+_FAMILIES = threading.local()  # the font the card being drawn uses (its look's), set by look() and still()
+
+
+def _look_of(settings: dict[str, Any]) -> style.Style:
+    """The card's look (colours, font, corners, custom look), and its font for the drawing on this thread."""
+    st = style.resolve(settings, LOOK_BASE)
+    _FAMILIES.families = st.families()
+    return st
+
+
 def _font(px: int, bold: bool = True):
     from PySide6.QtGui import QFont
 
     font = QFont()
-    font.setFamilies(["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"])
+    font.setFamilies(getattr(_FAMILIES, "families", None) or style.OWN_FONT)
     font.setPixelSize(max(1, int(px)))
     font.setWeight(QFont.Weight.Bold if bold else QFont.Weight.DemiBold)
     return font
@@ -433,6 +434,7 @@ def _font(px: int, bold: bool = True):
 def look(track: Track, settings: dict[str, Any], has_cover: bool, timed: bool) -> Look:
     """Lay the card out for this song. The card hugs the words up to the box's width; past that the words
     slide. timed: the app said how long the song is (and Show time is on), so the time bar shows."""
+    _look_of(settings)
     style = style_of(settings)
     title, under = lines(track, settings)
     bars_on = bool(settings.get("sound_bars", True))
@@ -530,17 +532,14 @@ def still(track: Track, settings: dict[str, Any], detail: float, timed: bool):
 
     cover = _cover_image(track, settings)
     lay = look(track, settings, cover is not None, timed)
+    st = _look_of(settings)
     image, p = painted.canvas(W, H, detail)
-    card = _colour(settings.get("card_color"), "#151c19e0")
-    accent = _colour(settings.get("accent_color"), ACCENT)
-    text_c = _colour(settings.get("text_color"), "#f2f7f3")
+    card = style.qcolor(st.card)
+    accent = style.qcolor(st.accent)
+    text_c = style.qcolor(st.text)
     box = _rect(lay.card)
-    if card.alpha():
-        shape = QPainterPath()
-        shape.addRoundedRect(box, lay.radius, lay.radius)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(card)
-        p.drawPath(shape)
+    if card.alpha() or st.border_width:
+        shape = style.draw_card(p, box, lay.radius, st, card)
         if lay.style == "glow":  # the accent glowing from behind the cover
             glow = QRadialGradient(QPointF(98, 98), 340)
             tint = QColor(accent)
@@ -552,10 +551,11 @@ def still(track: Track, settings: dict[str, Any], detail: float, timed: bool):
             p.setClipPath(shape)
             p.fillRect(box, glow)
             p.restore()
-        edge = QColor(255, 255, 255, int(22 * card.alphaF()))  # the hairline edge the app's cards have
-        p.setPen(QPen(edge, 2))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(shape)
+        if not st.border_width:
+            edge = QColor(255, 255, 255, int(22 * card.alphaF()))  # the hairline edge the app's cards have
+            p.setPen(QPen(edge, 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(shape)
     if lay.style == "ring" and lay.time_bar is not None:
         track_c = QColor(text_c)
         track_c.setAlpha(46)
@@ -574,16 +574,16 @@ def still(track: Track, settings: dict[str, Any], detail: float, timed: bool):
         p.setClipPath(clip)
         p.drawImage(spot, cover, source)
         p.restore()
-    elif card.alpha() and lay.style != "ring":  # no cover: the little sprig dot, like the clock's
+    elif card.alpha() and lay.style != "ring" and st.shows("dot", settings):  # no cover: the sprig dot
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(accent)
         cy = lay.card[1] + lay.card[3] / 2
         p.drawEllipse(QRectF(lay.title[0] - 38, cy - 9, 18, 18))
-    elif card.alpha():
+    elif card.alpha() and st.shows("dot", settings):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(accent)
         p.drawEllipse(QRectF(100 - 12, 100 - 12, 24, 24))
-    if lay.style == "glow":
+    if lay.style == "glow" and st.shows("label", settings):
         p.setFont(_font(18))
         p.setPen(accent)
         p.drawText(QRectF(lay.title[0], 12, 300, 28), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
@@ -622,7 +622,7 @@ def _words(track: Track, settings: dict[str, Any], lay: Look, detail: float) -> 
     from PySide6.QtCore import QRectF, Qt
     from PySide6.QtGui import QColor
 
-    text_c = _colour(settings.get("text_color"), "#f2f7f3")
+    text_c = style.qcolor(_look_of(settings).text)
     muted = QColor(text_c)
     muted.setAlphaF(muted.alphaF() * 0.62)
     title, under = lines(track, settings)
@@ -687,8 +687,9 @@ def frame(base, lay: Look, words: tuple, settings: dict[str, Any], detail: float
         q.fillRect(QRectF(0, 0, room.width(), room.height()), fade)
         q.end()
         p.drawImage(QRectF(room.x(), room.y(), room.width(), room.height()), strip)
-    accent = _colour(settings.get("accent_color"), ACCENT)
-    text_c = _colour(settings.get("text_color"), "#f2f7f3")
+    st = _look_of(settings)
+    accent = style.qcolor(st.accent)
+    text_c = style.qcolor(st.text)
     if lay.bars is not None:
         _bars(p, _rect(lay.bars), lay.bar_count, bands, accent)
     if lay.time_bar is not None and position is not None and length > 0:
@@ -702,8 +703,7 @@ def frame(base, lay: Look, words: tuple, settings: dict[str, Any], detail: float
             if share > 0.002:
                 p.drawArc(r.adjusted(4.5, 4.5, -4.5, -4.5), 90 * 16, int(-360 * 16 * share))
         elif lay.style == "band":
-            clip = QPainterPath()
-            clip.addRoundedRect(_rect(lay.card), lay.radius, lay.radius)
+            clip = style.card_path(_rect(lay.card), lay.radius, st)
             p.save()
             p.setClipPath(clip)
             under_c = QColor(text_c)
@@ -852,7 +852,8 @@ class NowPlayingSource(Source):
     label = "Now playing"
     defaults = {"style": "canopy", "show_art": True, "show_album": False, "show_time": True, "sound_bars": True,
                 "sound": listen.MIX, "slide_speed": 2, "only_from": "", "accent_color": ACCENT,
-                "text_color": "#f2f7f3", "card_color": "#151c19e0"}
+                "text_color": "#f2f7f3", "card_color": "#151c19e0", "font": "", "corners": "round",
+                "show_dot": True, "custom_look": ""}
     choices = {"style": STYLES, "sound": _sounds, "slide_speed": SPEEDS}
     sleeps = True  # off screen it stops listening to Windows altogether
     sharp = True  # drawn at the size it's shown

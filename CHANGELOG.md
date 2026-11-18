@@ -247,6 +247,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 
 ### Sources and effects
 
+- A Style tab for plugins: colours, font, text size, corners (round, leaf or square), parts to show or hide, and a
+  Custom look box that takes CSS-like lines (`text: pink`, `corners: leaf`, `border: 2 white`, `hide: dot`). It only
+  changes the look, is never run, and a line it doesn't understand is named under the box and left at the plugin's
+  own look. Now playing and the Chat box have it; plugin makers get it from `sprigcast.core.style`.
 - Transitions: slide, swipe, wipe, leaf, bloom and stinger clips (#145), a transition for particular bloom switches (#151),
   and a Transitions card with a pop-up for the details (#149, #162, #164, #166).
 - Move transition: what both blooms show (matched by source, then by name, even inside sprigs) glides to its new

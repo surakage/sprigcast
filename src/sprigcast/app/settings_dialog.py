@@ -32,10 +32,13 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
 
 from sprigcast.app import theme
+from sprigcast.core import style
 
 
 PICTURE_FILES = "Pictures (*.png *.gif *.webp *.apng)"
@@ -81,6 +84,17 @@ LABELS = {
     "corner_size": "Corner size (%)",
     "replay_sound": "Replay sound",
     "sound_level": "Sound level (%)",
+    "accent_color": "Accent colour",
+    "font": "Font",
+    "text_scale": "Text size",
+    "corners": "Corners",
+    "custom_look": "Custom look",
+    "show_dot": "Show dot",
+    "show_date": "Show date",
+    "show_label": "Show label",
+    "show_art": "Show cover",
+    "show_album": "Show album",
+    "show_time": "Show time",
 }
 
 
@@ -102,15 +116,41 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(460)
         self.defaults = defaults
         self.fields: dict[str, Any] = {}
-        form = QFormLayout(self)
+        self.look_note: QLabel | None = None
+        styled = [k for k in style.style_keys(defaults) if k not in self.secrets]
+        if len(styled) < 2 or len(styled) == len(defaults):  # a colour or two alone stays on one page
+            styled = []
+        outer = QVBoxLayout(self)
+        if styled:
+            tabs = QTabWidget()
+            page, style_page = QWidget(), QWidget()
+            form, style_form = QFormLayout(page), QFormLayout(style_page)
+            tabs.addTab(page, "Settings")
+            tabs.addTab(style_page, "Style")
+            outer.addWidget(tabs)
+        else:
+            form = QFormLayout()
+            style_form = form
+            outer.addLayout(form)
         for key, default in defaults.items():
             value = settings.get(key, default)
             widget = self._field(key, default, value)
-            form.addRow(_label(key), widget)
+            (style_form if key in styled else form).addRow(_label(key), widget)
+            if key == "custom_look":
+                self.look_note = QLabel()
+                self.look_note.setWordWrap(True)
+                self.look_note.setStyleSheet(f"color: {theme.MUTED}")
+                style_form.addRow("", self.look_note)
+                widget.textChanged.connect(self._check_look)
+                self._check_look()
             if key == secrets_after:
                 self._add_secrets(form)
         if secrets_after not in defaults:
             self._add_secrets(form)
+        if styled:
+            reset = QPushButton("Reset style")
+            reset.clicked.connect(lambda: self._reset_style(styled))
+            style_form.addRow("", reset)
         if "text" in defaults:
             tip = QLabel("{time}, {time12} and {date} show a live clock. A file's text replaces Text when set.")
             tip.setWordWrap(True)
@@ -132,7 +172,37 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        outer.addWidget(buttons)
+
+    def _check_look(self) -> None:
+        """Name the custom look lines that are skipped (they fall back to the plugin's own look)."""
+        edit = self.fields.get("custom_look")
+        if self.look_note is None or edit is None:
+            return
+        problems = style.look_problems(edit.toPlainText())
+        self.look_note.setText("Skipped: " + "; ".join(problems) if problems else "")
+        self.look_note.setVisible(bool(problems))
+
+    def _reset_style(self, keys: list[str]) -> None:
+        for key in keys:
+            self._set(key, self.defaults[key])
+
+    def _set(self, key: str, value: Any) -> None:
+        widget = self.fields[key]
+        if isinstance(widget, QComboBox):
+            index = widget.findData(value)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+            elif widget.isEditable():
+                widget.setEditText(str(value))
+        elif isinstance(widget, QCheckBox):
+            widget.setChecked(bool(value))
+        elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            widget.setValue(value)
+        elif isinstance(widget, QPlainTextEdit):
+            widget.setPlainText(str(value))
+        else:
+            widget.setText(str(value))
 
     def _add_secrets(self, form: QFormLayout) -> None:
         for key in self.secrets:
@@ -142,6 +212,29 @@ class SettingsDialog(QDialog):
             form.addRow(_label(key), edit)
 
     def _field(self, key: str, default: Any, value: Any) -> QWidget:
+        if key == "corners" and key not in self.choices:
+            self.choices[key] = style.CORNERS
+        if key == "font" and isinstance(default, str) and not default.lower().endswith((".ttf", ".otf")):
+            box = QComboBox()  # a short list, typed names work too (a full font list is slow to open)
+            box.setEditable(True)
+            box.addItem("SprigCast's own", "")
+            for family in style.FONTS[1:]:
+                box.addItem(family, family)
+            index = box.findData(value)
+            if index >= 0:
+                box.setCurrentIndex(index)
+            else:
+                box.setEditText(str(value))
+            self.fields[key] = box
+            return box
+        if key == "text_scale":
+            box = QSpinBox()
+            box.setRange(50, 200)
+            box.setSingleStep(10)
+            box.setSuffix(" %")
+            box.setValue(min(200, max(50, int(value or 100))))
+            self.fields[key] = box
+            return box
         if key in self.choices:
             options = self.choices[key]
             try:
@@ -176,9 +269,11 @@ class SettingsDialog(QDialog):
             box.setValue(float(value))
             self.fields[key] = box
             return box
-        if key in ("text", "css"):
+        if key in ("text", "css", "custom_look"):
             edit = QPlainTextEdit(str(value))
-            edit.setFixedHeight(80)
+            edit.setFixedHeight(110 if key == "custom_look" else 80)
+            if key == "custom_look":
+                edit.setPlaceholderText("text: #fff8e7\ncard: #10201880\ncorners: leaf\nhide: date")
             self.fields[key] = edit
             return edit
         edit = QLineEdit(str(value))
@@ -232,7 +327,11 @@ class SettingsDialog(QDialog):
     def values(self) -> dict[str, Any]:
         out = {}
         for key, widget in self.fields.items():
-            if isinstance(widget, QComboBox):
+            if isinstance(widget, QComboBox) and widget.isEditable():
+                typed = widget.currentText().strip()
+                index = widget.findText(typed)
+                out[key] = widget.itemData(index) if index >= 0 else typed
+            elif isinstance(widget, QComboBox):
                 out[key] = widget.currentData()
             elif isinstance(widget, QCheckBox):
                 out[key] = widget.isChecked()
