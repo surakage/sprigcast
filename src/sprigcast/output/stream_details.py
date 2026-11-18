@@ -66,6 +66,10 @@ class DetailsError(Exception):
     """Something went wrong, worded for the person."""
 
 
+class StartLocked(DetailsError):
+    """YouTube won't let this broadcast's scheduled start change (it's live, or the start has passed)."""
+
+
 class NeedsSignIn(DetailsError):
     """Not signed in (or the sign-in ran out): the pop-up shows Sign in."""
 
@@ -261,6 +265,8 @@ def _worded(who: str, code: int, reason: str) -> DetailsError:
         return DetailsError("YouTube only takes custom thumbnails from verified channels (youtube.com/verify).")
     if "livestreamingnotenabled" in low or "not enabled for live streaming" in low:
         return DetailsError("Live streaming isn't on for this YouTube channel yet (youtube.com/features).")
+    if "scheduledstarttime" in low:
+        return StartLocked("YouTube wouldn't take the stream's start time.")
     if "quotaexceeded" in low.replace(" ", ""):
         return DetailsError("YouTube's daily limit for SprigCast is used up. Try again tomorrow.")
     if code == 403:
@@ -506,8 +512,19 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
     def call(token):
         broadcast_id = details.broadcast_id
         if broadcast_id:
-            _yt(token, "PUT", "liveBroadcasts?part=snippet,status",
-                {"id": broadcast_id, "snippet": snippet, "status": {"privacyStatus": privacy}})
+            # The start goes back exactly as YouTube sent it (an update has to carry it). Once a broadcast is
+            # live, or its start has passed, YouTube refuses any start at all: then send none.
+            sent = dict(snippet) if details.starts else {k: v for k, v in snippet.items() if k != "scheduledStartTime"}
+            try:
+                _yt(token, "PUT", "liveBroadcasts?part=snippet,status",
+                    {"id": broadcast_id, "snippet": sent, "status": {"privacyStatus": privacy}})
+            except StartLocked:
+                if "scheduledStartTime" not in sent:
+                    raise
+                log.info("stream details: youtube keeps this stream's start, saving without it")
+                sent = {k: v for k, v in sent.items() if k != "scheduledStartTime"}
+                _yt(token, "PUT", "liveBroadcasts?part=snippet,status",
+                    {"id": broadcast_id, "snippet": sent, "status": {"privacyStatus": privacy}})
         else:
             stream_id = _youtube_stream_id(token, stream_key)
             made = _yt(token, "POST", "liveBroadcasts?part=snippet,status,contentDetails",
