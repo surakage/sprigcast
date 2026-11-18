@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -273,6 +272,9 @@ class GettingStartedDialog(QDialog):
     """Two steps: the questions, then your gear. `answers()` and `gear()` after exec();
     `twitch` holds (account, stream key) if Twitch was signed in."""
 
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self._card)
+
     def __init__(self, parent: QWidget | None = None,
                  twitch_account: Callable[[], str | None] | None = None,
                  connect_twitch: Callable[[QWidget], tuple[str, str | None] | None] | None = None,
@@ -298,11 +300,7 @@ class GettingStartedDialog(QDialog):
         card.setObjectName("guideCard")
         card.setStyleSheet(f"#guideCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
                            " border-radius: 24px; }")
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 190))
-        card.setGraphicsEffect(shadow)
+        self._card = card  # its shadow: drawn once per size, under it (paintEvent, theme.paint_card_shadow)
         outer.addWidget(card)
         root = QVBoxLayout(card)
         root.setContentsMargins(30, 26, 30, 24)

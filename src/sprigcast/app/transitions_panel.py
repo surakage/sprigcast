@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QFileDialog,
     QFormLayout,
-    QGraphicsDropShadowEffect,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -1039,6 +1038,9 @@ TAB_STYLE = CHOICE_STYLE.replace("padding: 6px 8px", "padding: 7px 16px")
 class PopUp(QDialog):
     """A rounded, raised pop-up card with pill tabs along the top. Drag it by any empty spot."""
 
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self._card)
+
     def __init__(self, title: str, parent: QWidget | None = None, bare: bool = False):
         """bare: no title row and no Done button (the page brings its own)."""
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -1050,11 +1052,7 @@ class PopUp(QDialog):
         card.setObjectName("popCard")
         card.setStyleSheet(f"#popCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
                            " border-radius: 24px; }")
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 190))
-        card.setGraphicsEffect(shadow)
+        self._card = card  # its shadow: drawn once per size, under it (paintEvent, theme.paint_card_shadow)
         outer.addWidget(card)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 16, 20, 18)

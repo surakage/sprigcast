@@ -746,3 +746,59 @@ def nature_rules(folder: str | None = None) -> str:
     rules.append("QListWidget::item, QTreeWidget::item { padding: 5px 8px; min-height: 22px; }")
     rules.append("QListWidget::indicator, QTreeWidget::indicator { margin-right: 6px; }")
     return "\n".join(rules) + "\n"
+
+
+# A pop-up card's soft shadow, drawn once per size and then copied. A QGraphicsDropShadowEffect on the card drew the
+# whole card into a picture and blurred it on every repaint of anything in it (a Garden check's numbers each second,
+# a busy bar, hover): part of every pop-up's open on the PC while live (2026-11-18).
+CARD_SHADOW = (36, 10, 190)  # blur, drop and darkness, as the effect had them
+CARD_RADIUS = 24
+_shadow_pictures: dict[tuple, tuple] = {}
+
+
+def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
+    """(picture, left, top): the shadow of a w x h rounded card, and where its top left sits from the card's."""
+    from PySide6.QtGui import QBrush, QImage, QPixmap
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsPathItem, QGraphicsScene
+
+    key = (w, h, ratio, colour)
+    found = _shadow_pictures.get(key)
+    if found is not None:
+        return found
+    blur, drop, dark = CARD_SHADOW
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, w, h), CARD_RADIUS, CARD_RADIUS)
+    scene = QGraphicsScene()
+    item = QGraphicsPathItem(path)
+    item.setPen(QPen(Qt.PenStyle.NoPen))
+    item.setBrush(QBrush(QColor(colour)))
+    effect = QGraphicsDropShadowEffect()
+    effect.setBlurRadius(blur)
+    effect.setOffset(0, drop)
+    effect.setColor(QColor(0, 0, 0, dark))
+    item.setGraphicsEffect(effect)
+    scene.addItem(item)
+    area = effect.boundingRectFor(QRectF(0, 0, w, h)).toAlignedRect()
+    image = QImage(round(area.width() * ratio), round(area.height() * ratio), QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    scene.render(painter, QRectF(0, 0, image.width(), image.height()), QRectF(area))
+    painter.end()
+    picture = QPixmap.fromImage(image)
+    picture.setDevicePixelRatio(ratio)
+    if len(_shadow_pictures) > 8:  # a few sizes at most (pop-ups that grow): the oldest go
+        _shadow_pictures.pop(next(iter(_shadow_pictures)))
+    found = _shadow_pictures[key] = (picture, area.left(), area.top())
+    return found
+
+
+def paint_card_shadow(window, card) -> None:
+    """From a pop-up's paintEvent: the soft shadow under its card (see CARD_SHADOW)."""
+    rect = card.geometry()
+    if rect.width() <= 0 or rect.height() <= 0:
+        return
+    picture, left, top = _shadow_picture(rect.width(), rect.height(), window.devicePixelRatioF(), PANEL)
+    painter = QPainter(window)
+    painter.drawPixmap(rect.left() + left, rect.top() + top, picture)
+    painter.end()

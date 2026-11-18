@@ -57,7 +57,8 @@ def _tile(value: str, label: str, level: str = "") -> QWidget:
 
 class HealthPage(QWidget):
     def __init__(self, records: list[HealthRecord], open_logs: Callable[[], None] | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, fill_later: bool = False):
+        """fill_later: the verdict, tiles and places a tick after the page is made (and shown)."""
         super().__init__(parent)
         self.records = records
         self.setStyleSheet(_page_style())
@@ -94,7 +95,14 @@ class HealthPage(QWidget):
             more.clicked.connect(open_logs)
             box.addWidget(more, 0, Qt.AlignmentFlag.AlignLeft)
         self.pick.currentIndexChanged.connect(self.show_record)
-        self.show_record(0)
+        if fill_later:
+            # The page shows (its drop-down and the stack's switch to it), then its tiles and lines next tick:
+            # both in one go were 81-90 ms of opening Last stream on the PC while live (2026-11-18).
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(0, self, lambda: self.show_record(self.pick.currentIndex()))
+        else:
+            self.show_record(0)
 
     def show_record(self, index: int) -> None:
         r = self.records[index]

@@ -217,7 +217,7 @@ class GardenCheckPage(QWidget):
         if self._health is None:
             from sprigcast.app.health_page import HealthPage
 
-            self._health = HealthPage(self._records, self._open_logs)
+            self._health = HealthPage(self._records, self._open_logs, fill_later=True)
             self.stack.addWidget(self._health)
         return self._health
 

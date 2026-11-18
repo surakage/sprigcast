@@ -255,6 +255,17 @@ class _ReportSaved(QObject):
 
 
 
+class _ResizeSplitter(QSplitter):
+    """A splitter that calls on_resize() when its size changes (and on nothing else)."""
+
+    on_resize = None
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().resizeEvent(event)
+        if self.on_resize is not None:
+            self.on_resize()
+
+
 class GearWatch(QObject):
     """Logs mouse presses that reach the Settings gear: the PC once saw clicks on it do nothing, with nothing
     in the log to say whether they got there. One button, so it costs nothing."""
@@ -323,7 +334,7 @@ class MainWindow(QMainWindow):
         self.previews: dict[str, Preview] = {}
         self.projectors: list = []  # full-screen canvases (app/projector.py)
         self.canvas_columns: dict[str, QSplitter] = {}
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = _ResizeSplitter(Qt.Orientation.Horizontal)
         for canvas in collection.canvases:
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
             preview.output_size = lambda c=canvas.id: self.collection.canvas(c).output_size()
@@ -392,7 +403,7 @@ class MainWindow(QMainWindow):
         part_layout.addWidget(self.part_uses_note)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
-        splitter.installEventFilter(self)  # Live re-shares the stage when it changes size
+        splitter.on_resize = self._splitter_resized  # Live re-shares the stage when it changes size
         # Build's shape tabs: one shape at a time, each with its own blooms (they sit at the top of the library).
         self.canvas_tabs = QTabBar()
         self.canvas_tabs.setObjectName("shapeTabs")
@@ -1987,7 +1998,6 @@ class MainWindow(QMainWindow):
         self.live_tiles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.live_tiles.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         self.live_tiles.setWidget(self.live_panel)
-        self.live_tiles.viewport().installEventFilter(self)  # re-fits the tiles' height when the width changes
         self.live_stage.tiles_slot.addWidget(self.live_tiles, 1)
         self.live_panel.transition_chip.hide()  # the Transitions card beside the blooms shows it now
         self._build_live_transitions()
@@ -1996,12 +2006,11 @@ class MainWindow(QMainWindow):
         self._thumb_seen: dict[str, str | None] = {}  # Build: the bloom each preview showed at the last look
         self.live_side.set_clip(False, self.collection.recording.replay_seconds)
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt naming)
-        if event.type() == QEvent.Type.Resize and watched is self.live_tiles.viewport():
-            QTimer.singleShot(0, self._fit_tiles)
-        if event.type() == QEvent.Type.Resize and watched is getattr(self, "splitter", None) and self.mode == "live":
+    def _splitter_resized(self) -> None:
+        # (A resizeEvent, not an event filter on the window: the filter saw every event of the splitter and the
+        # tiles' viewport through Python, 69 ms of a Garden check's open on the PC while live, 2026-11-18.)
+        if self.mode == "live":
             QTimer.singleShot(0, self, self._share_stage)
-        return super().eventFilter(watched, event)
 
     def _fit_tiles(self) -> None:
         """Nothing to fit any more (kept for older callers)."""
@@ -7187,14 +7196,27 @@ class MainWindow(QMainWindow):
         watch = getattr(self, "_encoder_watch", None)
         if watch is None:
             watch = self._encoder_watch = EncoderWatch()
-        try:
-            streamers = self.streaming.streamers if self.streaming is not None else None
-            watch.tick(streamers, self.recording, self.replay)
-        except Exception:
-            log.exception("encoder watch")
-            return
+        streamers = self.streaming.streamers if self.streaming is not None else None
+        # Sampled and judged on a worker, read here a tick later: on the UI thread, while recording, it was 62 ms
+        # of a meter tick on the PC (2026-11-18). One at a time; a tick that finds the last still going skips.
+        job = getattr(self, "_encoder_job", None)
+        if job is None or job.done():
+            from sprigcast.core import workers
+
+            recording, replay = self.recording, self.replay
+
+            def judge() -> list[str]:
+                watch.tick(streamers, recording, replay)
+                return watch.overloaded()
+
+            self._encoder_job = workers.run(judge, name="encoder-watch")
         self._watch_flow(streamers)
-        busy = watch.overloaded()
+        busy = getattr(self, "_encoder_busy", [])
+        if job is not None and job.done():
+            try:
+                busy = self._encoder_busy = job.result()
+            except Exception:
+                log.exception("encoder watch")
         if busy and busy != getattr(self, "_overload_logged", None):
             log.warning("encoder can't keep up: %s (codec %s)", " and ".join(busy),
                         ", ".join(watch.codecs.get(k, "?") for k in busy))
