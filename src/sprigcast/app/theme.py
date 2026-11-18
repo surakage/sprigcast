@@ -664,15 +664,23 @@ def nature_pictures(folder: str | None = None) -> dict[str, str]:
 
     base = Path(folder or QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
                 or tempfile.gettempdir()) / "theme"
+    files = {name: f"{name}-{hashlib.sha1(make().encode()).hexdigest()[:8]}.svg"  # new colours, new file
+             for name, make in NATURE_PICTURES.items()}
+    key = (str(base), tuple(files.values()))
+    if key in _NATURE_WRITTEN:  # written already this run: no disk work (a mkdir on every Last streams open
+        return dict(_NATURE_WRITTEN[key])  # held the window 137 ms on the PC while live, 2026-11-18)
     base.mkdir(parents=True, exist_ok=True)
     out = {}
-    for name, make in NATURE_PICTURES.items():
-        svg = make()
-        path = base / f"{name}-{hashlib.sha1(svg.encode()).hexdigest()[:8]}.svg"  # new colours, new file
+    for name, file in files.items():
+        path = base / file
         if not path.exists():
-            path.write_text(svg, encoding="utf-8")
+            path.write_text(NATURE_PICTURES[name](), encoding="utf-8")
         out[name] = path.as_posix()
+    _NATURE_WRITTEN[key] = dict(out)
     return out
+
+
+_NATURE_WRITTEN: dict[tuple, dict[str, str]] = {}  # nature_pictures' answers, by folder and picture files
 
 
 def nature_rules(folder: str | None = None) -> str:

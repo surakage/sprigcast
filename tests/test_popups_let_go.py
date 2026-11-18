@@ -91,12 +91,27 @@ def test_the_settings_warm_up_leaves_nothing_behind(tmp_path, monkeypatch):
 
     from sprigcast.app.settings_window import SettingsWindow
 
+    import time
+
     col, w = _window(tmp_path, monkeypatch)
+    app = QApplication.instance()
+
+    def settle():
+        end = time.monotonic() + 2
+        while time.monotonic() < end:
+            app.processEvents()
+            if not any(isinstance(x, SettingsWindow) and x.isVisible() for x in QApplication.topLevelWidgets()):
+                app.processEvents()  # its deleteLater
+                break
+
+    monkeypatch.setattr(type(w), "WARM_SETTINGS_MS", 300)
     try:
         w.show()
-        w.warm_settings()
+        w.warm_settings()  # made in parts, like a real open, then let go
+        settle()
         before = _count(w)
         w.warm_settings()
+        settle()
         assert _count(w) == before
         assert not any(isinstance(x, SettingsWindow) and x.isVisible() for x in QApplication.topLevelWidgets())
         w.streaming = object()

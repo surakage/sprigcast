@@ -250,24 +250,33 @@ class PluginStorePage(QWidget):
 
 
 class PluginStoreWindow(QDialog):
-    """Tools → Plugin store: the store in a window of its own (it used to be a Settings page)."""
+    """Tools → Plugin store: the store in a window of its own (it used to be a Settings page).
+
+    fill_after_show: the window shows at once and the store is made just after its first paint (made first, it
+    held the window 94 ms on the PC while live, 2026-11-18). `changed` passes on the store's own."""
+
+    changed = Signal()
 
     def __init__(self, plugins_dir: Path | None, report: PluginReport | None, open_plugins_folder=None,
-                 collection=None, on_air: bool = False, parent: QWidget | None = None):
+                 collection=None, on_air: bool = False, parent: QWidget | None = None,
+                 fill_after_show: bool = False):
         from sprigcast.app.settings_window import window_style
-        from sprigcast.app.output_page import _scrolled
 
         super().__init__(parent)
         self.setWindowTitle("Plugin store")
         self.setObjectName("settingsWindow")
         self.setStyleSheet(window_style())
         self.resize(820, 680)
-        self.store = PluginStorePage(plugins_dir, report, open_plugins_folder, collection, on_air=on_air)
+        self._args = (plugins_dir, report, open_plugins_folder, collection, on_air)
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 20)
         root.setSpacing(16)
         root.addWidget(heading("Plugin store", 20))
-        root.addWidget(_scrolled(self.store), 1)
+        self._slot = QVBoxLayout()
+        root.addLayout(self._slot, 1)
+        self._waiting = fill_after_show
+        if not fill_after_show:
+            self._fill()
         row = QHBoxLayout()
         row.addStretch(1)
         close = QPushButton("Close")
@@ -277,3 +286,21 @@ class PluginStoreWindow(QDialog):
         close.clicked.connect(self.accept)
         row.addWidget(close)
         root.addLayout(row)
+
+    def _fill(self) -> None:
+        if "store" in self.__dict__:
+            return
+        from sprigcast.app.output_page import _scrolled
+
+        plugins_dir, report, open_plugins_folder, collection, on_air = self._args
+        self._waiting = False
+        self.store = PluginStorePage(plugins_dir, report, open_plugins_folder, collection, on_air=on_air)
+        self.store.changed.connect(self.changed)
+        self._slot.addWidget(_scrolled(self.store), 1)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(30, self, self._fill)  # after the window's first paint

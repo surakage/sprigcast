@@ -196,7 +196,13 @@ class Elided(QLabel):
         self.setToolTip(self._full if shown != self._full else "")
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
+        # Asked many times per layout pass (each from C++, through Python): worked out once per text and font.
+        # Measured each time, a Garden check's rows held the window 78 ms on the PC while live (2026-11-18).
+        key = (self._full, self.font().key())
+        if getattr(self, "_hint_key", None) != key:
+            self._hint_key = key
+            self._hint = QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
+        return self._hint
 
 
 class GardenCheck(QPushButton):

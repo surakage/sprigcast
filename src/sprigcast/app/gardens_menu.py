@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QStandardPaths, Qt
+from PySide6.QtCore import QObject, QStandardPaths, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -171,11 +171,26 @@ class GardenControl:
         w.hotkeys.apply(w.collection.hotkeys)
         w._chat_sources_changed()
         self._changed()
-        problems = missing_files(w.collection)
-        if problems:
-            w.statusBar().showMessage(f"{len(problems)} missing file(s) in {entry.name}: {cap(COLLECTIONS)} → "
-                                      "Missing files…", 15000)
+        self._say_missing(entry.name)
         return None
+
+    def _say_missing(self, name: str) -> None:
+        """After a switch: say if files are missing. Looked for on a worker (a slow drive takes its time)."""
+        from sprigcast.core import workers
+        from sprigcast.core.gardens import absent, wanted_files
+
+        w = self.w
+        found = _Found()
+
+        def say(problems: list) -> None:
+            from shiboken6 import isValid
+
+            if problems and isValid(w):  # the window may have closed meanwhile
+                w.statusBar().showMessage(f"{len(problems)} missing file(s) in {name}: {cap(COLLECTIONS)} → "
+                                          "Missing files…", 15000)
+        found.done.connect(say, Qt.ConnectionType.QueuedConnection)
+        self._found = found  # kept until the next switch: the connection lives with it
+        workers.run(lambda paths=wanted_files(w.collection): found.done.emit(absent(paths)), name="missing files")
 
     def _new(self, kind: str, name: str, copy=None):
         if kind == "garden":
@@ -505,6 +520,12 @@ class GardenControl:
         modal(MissingFiles(self.w))
 
 
+class _Found(QObject):
+    """Carries the missing files from the worker back to the window."""
+
+    done = Signal(list)
+
+
 class MissingFiles(QDialog):
     """Files the garden can't find, each with Find… to point it at where the file is now."""
 
@@ -533,11 +554,23 @@ class MissingFiles(QDialog):
         self.fill()
 
     def fill(self) -> None:
+        """Look for the files on a worker (a slow or sleeping drive answers in its own time), then list them.
+        Looked for on the window's thread, opening this held the window 110 ms on the PC while live."""
+        from sprigcast.core import workers
+        from sprigcast.core.gardens import absent, wanted_files
+
+        if not self.rows_box.count():
+            self.rows_box.addWidget(QLabel("Looking for the files…"))
+        found = _Found()  # no parent: the worker may finish after this window closed
+        found.done.connect(self._show_missing, Qt.ConnectionType.QueuedConnection)
+        self.looked = workers.run(lambda paths=wanted_files(self.w.collection): found.done.emit(absent(paths)),
+                                  name="missing files")
+
+    def _show_missing(self, missing: list) -> None:
         while self.rows_box.count():
             item = self.rows_box.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        missing = missing_files(self.w.collection)
         if hasattr(self, "look"):
             self.look.setVisible(bool(missing))
         if not missing:
