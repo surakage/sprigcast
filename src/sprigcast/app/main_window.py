@@ -3080,6 +3080,7 @@ class MainWindow(QMainWindow):
         from sprigcast.core import pacing
 
         pacing.ui_rest()  # a hidden window isn't one that doesn't answer
+        pacing.exit_guard()  # whatever gets stuck from here on, SprigCast ends (after saving, below)
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()

@@ -381,6 +381,43 @@ def test_pictures_go_only_to_the_engine_while_python_draws_nothing():
     assert fake.uploaded.count("cam") == 3  # while it draws, every picture goes to both
 
 
+def test_a_held_back_picture_that_fails_to_copy_is_let_go_and_the_frame_goes_on():
+    """Native simple run (2026-11-18): a held-back Local time picture failed to copy on every tick, the graphics
+    restarted once a minute for 5 minutes, and the stream got 0 frames: the same picture was copied again each
+    time. Now it's let go; the tick (and the outputs after it) go on, and a sleeping source's picture isn't kept."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    camera = engine._sources["cam"] = EngineVideo()
+    camera.engine_player = None
+    engine._collection.scenes[0].items.append(SceneItem(source="cam"))
+    _run(engine, fake, seconds=0.2)
+    assert "cam" in engine._held_back
+    resting = engine._rest_sources
+    engine._rest_sources = lambda compositor, now: None  # it stays asleep for this tick (its bloom went off air)
+    camera.asleep = True
+    engine._tick(fake, 20.0)
+    assert "cam" not in engine._held_back  # asleep: nothing kept for it
+    engine._rest_sources = resting
+    camera.asleep = False
+    _run(engine, fake, seconds=0.1)
+    assert "cam" in engine._held_back
+
+    failures = []
+
+    def broken(source_id, *a):  # the held-back picture is broken; the camera's next ones are fine
+        if source_id == "cam" and not failures:
+            failures.append(source_id)
+            raise OSError("exception: access violation reading 0x000002662D259040")
+
+    fake.upload = broken
+    got = []
+    engine.add_frame_tap("h", got.append)  # Python draws again: the held-back picture is copied, and fails
+    engine._tick(fake, 30.0)
+    assert failures and engine._held_back == {} and got  # let go, and the frame still reached its tap
+    engine._tick(fake, 30.1)
+    assert len(got) == 2
+
+
 def test_an_output_that_gets_no_frames_is_made_again():
     engine, fake = _engine(), FakeCompositor()
     got = []
