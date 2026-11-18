@@ -44,10 +44,22 @@ def test_example_plugin_loads(tmp_path):
     assert report.loaded == ["countdown_example.py"] and not report.failed
     assert "countdown" in known_kinds()
     cls = source_class("countdown")
-    assert cls.label == "Countdown" and "minutes" in cls.defaults
+    assert cls.label == "Example countdown" and "minutes" in cls.defaults  # the store's Countdown is "Countdown"
     src = create_source("countdown", "c1", {**cls.defaults, "minutes": 2, "label": "Back in "})
     assert src._current_text() in ("Back in 2:00", "Back in 1:59")
     assert src.video_frame() is not None
+
+
+def test_an_untouched_old_example_is_brought_up_to_date(tmp_path):
+    from sprigcast.plugins import OLD_EXAMPLE
+
+    old = tmp_path / "countdown_example.py"
+    old.write_text(OLD_EXAMPLE, encoding="utf-8")
+    ensure_example(tmp_path)
+    assert old.read_text(encoding="utf-8") == EXAMPLE
+    old.write_text(OLD_EXAMPLE + "# mine now\n", encoding="utf-8")
+    ensure_example(tmp_path)
+    assert old.read_text(encoding="utf-8").endswith("# mine now\n")  # changed by you: left alone
 
 
 def test_example_not_rewritten_when_folder_has_plugins(tmp_path):

@@ -1261,6 +1261,12 @@ class Recorder:
         self.peak_queue = max(self.peak_queue, int(stats.queued) + self._video.qsize())
         if stats.state_name == "failed":
             raise RuntimeError(stats.error_text or "the engine's writer failed")
+        if getattr(writer, "on_card", False) and not getattr(stats, "on_card", 1):
+            # Its encoder on the card failed (a driver reset) and goes on from memory: frames come from memory.
+            self.card_lost("its encoder on the graphics card failed and went on from memory")
+        if getattr(stats, "recoveries", 0) and not getattr(self, "_recovery_said", False):
+            self._recovery_said = True
+            log.warning("%s: the video encoder failed once and started again; the file goes on", self.path.stem)
         return stats
 
     def _fill(self, container, video, audio, frame, slots: range) -> None:

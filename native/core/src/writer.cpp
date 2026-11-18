@@ -24,6 +24,7 @@ extern "C" {
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -48,8 +49,25 @@ struct FrameFree {
 };
 using FramePtr = std::unique_ptr<AVFrame, FrameFree>;
 
+// An environment variable's text ("" when unset). On Windows the process's own block: Python sets variables there
+// (os.environ), which a C runtime's copy (getenv, _dupenv_s) may not see.
+std::string env_text(const char *name) {
+#if defined(_WIN32)
+    char value[256];
+    const DWORD n = GetEnvironmentVariableA(name, value, sizeof value);
+    return n > 0 && n < sizeof value ? std::string(value, n) : std::string();
+#else
+    const char *value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+#endif
+}
+
 struct Error : std::runtime_error {
     using std::runtime_error::runtime_error;
+};
+// The file or connection refused what was written (disk full, drive gone): not the encoder's doing.
+struct WriteError : Error {
+    using Error::Error;
 };
 
 void must(int code, const char *what) {
@@ -77,6 +95,8 @@ struct Core {
     AVBufferRef *hw_device = nullptr, *hw_frames = nullptr;
     std::vector<void *> seen;        // every texture handed over, a reference held until the encoder is closed:
                                      // NVENC remembers registered textures by pointer and holds none itself
+    std::atomic<bool> on_card{false};  // takes textures now: false once the encoder moved to memory (to_memory)
+    int recoveries = 0;              // times the encoder on the card failed and went on from memory
     std::mutex lock;
     std::condition_variable wake, done_cv;
     struct Picture {
@@ -94,6 +114,8 @@ struct Core {
     int64_t last_pts = -1;  // the newest frame number taken: pictures never go back in time
     double write_seconds = 0, longest_write = 0;
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
+    std::deque<int64_t> faults;  // SPRIGCAST_WRITER_FAULT (tests): pictures whose encoding fails ("10" or "10,20")
+    int64_t encoded = 0;
     FramePtr i420;
 
     AVFormatContext *out = nullptr;
@@ -104,7 +126,9 @@ struct Core {
 
     void run();
     void open();
+    void open_video(const AVCodec *codec, bool global);
     void open_card();
+    void to_memory(const std::string &why);
     void upload(FramePtr &picture);
     void write_packets(AVCodecContext *enc, AVStream *stream);
     void encode_video(AVFrame *frame);
@@ -135,40 +159,7 @@ void Core::open() {
     const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
     if (!codec) throw Error("no video encoder named " + video_codec);
     if (device) open_card();
-    for (int attempt = 0; attempt < 2; ++attempt) {  // NV12 first, then I420 for an encoder without it
-        venc = ff.avcodec_alloc_context3(codec);
-        if (!venc) throw std::bad_alloc();
-        venc->width = width;
-        venc->height = height;
-        venc->pix_fmt = attempt == 0 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
-        if (hw_frames) {  // frames on the card: one way only
-            venc->pix_fmt = AV_PIX_FMT_D3D11;
-            venc->sw_pix_fmt = AV_PIX_FMT_NV12;
-            venc->hw_frames_ctx = ff.av_buffer_ref(hw_frames);
-            if (!venc->hw_frames_ctx) throw std::bad_alloc();
-        }
-        venc->time_base = AVRational{fps_den, fps_num};
-        venc->framerate = AVRational{fps_num, fps_den};
-        venc->bit_rate = static_cast<int64_t>(video_kbps) * 1000;
-        venc->gop_size = gop;
-        venc->max_b_frames = b_frames;
-        venc->color_range = AVCOL_RANGE_MPEG;
-        venc->colorspace = AVCOL_SPC_BT709;
-        venc->color_primaries = AVCOL_PRI_BT709;
-        venc->color_trc = AVCOL_TRC_BT709;
-        if (global) venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        AVDictionary *opts = nullptr;
-        if (!video_options.empty()) ff.av_dict_parse_string(&opts, video_options.c_str(), "=", "\n", 0);
-        const int r = ff.avcodec_open2(venc, codec, &opts);
-        ff.av_dict_free(&opts);
-        if (r >= 0) {
-            yuv420 = attempt == 1;
-            break;
-        }
-        ff.avcodec_free_context(&venc);
-        if (attempt == 1 || hw_frames)
-            must(r, ("the video encoder " + video_codec + (hw_frames ? " (frames on the card)" : "")).c_str());
-    }
+    open_video(codec, global);
     vstream = ff.avformat_new_stream(out, nullptr);
     if (!vstream) throw std::bad_alloc();
     vstream->time_base = venc->time_base;
@@ -206,6 +197,44 @@ void Core::open() {
     must(header, "the header");
     pkt = ff.av_packet_alloc();
     if (!pkt) throw std::bad_alloc();
+}
+
+// The video encoder: on the card (hw_frames) or taking pictures from memory, NV12 or else I420.
+void Core::open_video(const AVCodec *codec, bool global) {
+    for (int attempt = 0; attempt < 2; ++attempt) {  // NV12 first, then I420 for an encoder without it
+        venc = ff.avcodec_alloc_context3(codec);
+        if (!venc) throw std::bad_alloc();
+        venc->width = width;
+        venc->height = height;
+        venc->pix_fmt = attempt == 0 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+        if (hw_frames) {  // frames on the card: one way only
+            venc->pix_fmt = AV_PIX_FMT_D3D11;
+            venc->sw_pix_fmt = AV_PIX_FMT_NV12;
+            venc->hw_frames_ctx = ff.av_buffer_ref(hw_frames);
+            if (!venc->hw_frames_ctx) throw std::bad_alloc();
+        }
+        venc->time_base = AVRational{fps_den, fps_num};
+        venc->framerate = AVRational{fps_num, fps_den};
+        venc->bit_rate = static_cast<int64_t>(video_kbps) * 1000;
+        venc->gop_size = gop;
+        venc->max_b_frames = b_frames;
+        venc->color_range = AVCOL_RANGE_MPEG;
+        venc->colorspace = AVCOL_SPC_BT709;
+        venc->color_primaries = AVCOL_PRI_BT709;
+        venc->color_trc = AVCOL_TRC_BT709;
+        if (global) venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        AVDictionary *opts = nullptr;
+        if (!video_options.empty()) ff.av_dict_parse_string(&opts, video_options.c_str(), "=", "\n", 0);
+        const int r = ff.avcodec_open2(venc, codec, &opts);
+        ff.av_dict_free(&opts);
+        if (r >= 0) {
+            yuv420 = attempt == 1;
+            break;
+        }
+        ff.avcodec_free_context(&venc);
+        if (attempt == 1 || hw_frames)
+            must(r, ("the video encoder " + video_codec + (hw_frames ? " (frames on the card)" : "")).c_str());
+    }
 }
 
 void Core::open_card() {
@@ -254,7 +283,7 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream) {
         const double began = now_s();
         const int w = ff.av_interleaved_write_frame(out, pkt);  // takes the packet's data, leaves it blank
         const double spent = now_s() - began;
-        must(w, "writing");
+        if (w < 0) throw WriteError("writing: " + av_text(w));
         std::lock_guard<std::mutex> hold(lock);
         bytes += static_cast<uint64_t>(size);
         write_seconds += spent;
@@ -290,8 +319,49 @@ void Core::encode_video(AVFrame *frame) {
         i420->colorspace = frame->colorspace;
         frame = i420.get();
     }
+    if (frame && !faults.empty() && encoded++ == faults.front()) {  // SPRIGCAST_WRITER_FAULT: fails here
+        faults.pop_front();
+        throw Error("encoding a picture: a deliberate fault (SPRIGCAST_WRITER_FAULT)");
+    }
     must(ff.avcodec_send_frame(venc, frame), "encoding a picture");
     write_packets(venc, vstream);
+}
+
+// The video encoder failed (a graphics driver reset, a lost card): the old one is closed and let go of entirely,
+// with its frames on the card and their textures, and a new one goes on from memory into the same file. Once a
+// recording: a second failure ends it cleanly (run's catch), never a loop.
+void Core::to_memory(const std::string &why) {
+    sc::log_line(SC_LOG_WARNING, "writer: " + target + ": the video encoder failed (" + why +
+                                     "); it starts again from memory and the file goes on");
+    if (venc) {
+        try {  // what it had already made goes in the file
+            ff.avcodec_send_frame(venc, nullptr);
+            write_packets(venc, vstream);
+        } catch (const WriteError &) {
+            throw;
+        } catch (...) {  // a broken encoder may not finish: its last frames are lost
+        }
+        ff.avcodec_free_context(&venc);
+    }
+    AVBufferRef *frames_ctx = nullptr, *device_ctx = nullptr;
+    std::vector<void *> gone;
+    {
+        std::lock_guard<std::mutex> hold(lock);  // feed_texture takes hw_frames under it
+        std::swap(frames_ctx, hw_frames);
+        std::swap(device_ctx, hw_device);
+        gone.swap(seen);
+        on_card = false;
+        ++recoveries;
+    }
+    if (frames_ctx) ff.av_buffer_unref(&frames_ctx);
+    if (device_ctx) ff.av_buffer_unref(&device_ctx);
+#if defined(_WIN32)
+    for (void *t : gone) static_cast<IUnknown *>(t)->Release();
+#endif
+    i420.reset();
+    const AVCodec *codec = ff.avcodec_find_encoder_by_name(video_codec.c_str());
+    if (!codec) throw Error("no video encoder named " + video_codec);
+    open_video(codec, (out->oformat->flags & AVFMT_GLOBALHEADER) != 0);
 }
 
 void Core::encode_sound(Track &t, bool flush) {
@@ -388,25 +458,51 @@ void Core::run() {
                 audio[i].waiting.insert(audio[i].waiting.end(), sound[i].begin(), sound[i].end());
                 encode_sound(audio[i], false);
             }
+            if (picture.frame && picture.frame->format == AV_PIX_FMT_D3D11 && !hw_frames) {
+                std::lock_guard<std::mutex> hold(lock);  // a texture queued before the encoder left the card
+                frames_dropped += static_cast<uint64_t>(picture.count);
+                picture.frame.reset();  // its texture goes back to the engine
+            }
             if (picture.frame) {
                 const bool mine = picture.frame->format == AV_PIX_FMT_NV12;  // an NV12 buffer to fill again
                 FramePtr own;
-                if (hw_frames && mine) {  // from memory, for frames on the card: copied up first
-                    own = std::move(picture.frame);
-                    picture.frame.reset(ff.av_frame_clone(own.get()));
-                    if (!picture.frame) throw std::bad_alloc();
-                    upload(picture.frame);
-                }
-                for (int64_t k = 0; k < picture.count && !abort.load(); ++k) {  // the encoder keeps its own reference
-                    picture.frame->pts = picture.pts + k;
-                    encode_video(picture.frame.get());
-                    std::lock_guard<std::mutex> hold(lock);
-                    ++frames_written;
+                int64_t k = 0;
+                try {
+                    if (hw_frames && mine) {  // from memory, for frames on the card: copied up first
+                        own = std::move(picture.frame);
+                        picture.frame.reset(ff.av_frame_clone(own.get()));
+                        if (!picture.frame) throw std::bad_alloc();
+                        upload(picture.frame);
+                    }
+                    for (; k < picture.count && !abort.load(); ++k) {  // the encoder keeps its own reference
+                        picture.frame->pts = picture.pts + k;
+                        encode_video(picture.frame.get());
+                        std::lock_guard<std::mutex> hold(lock);
+                        ++frames_written;
+                    }
+                } catch (const WriteError &) {
+                    throw;
+                } catch (const Error &e) {
+                    if (recoveries > 0 || abort.load()) throw;
+                    to_memory(e.what());
+                    if (own) picture.frame = std::move(own);  // the same picture again, from memory
+                    if (picture.frame && picture.frame->format != AV_PIX_FMT_D3D11) {
+                        for (; k < picture.count && !abort.load(); ++k) {
+                            picture.frame->pts = picture.pts + k;
+                            encode_video(picture.frame.get());
+                            std::lock_guard<std::mutex> hold(lock);
+                            ++frames_written;
+                        }
+                    } else {
+                        std::lock_guard<std::mutex> hold(lock);  // a texture: lost with the encoder on the card
+                        frames_dropped += static_cast<uint64_t>(picture.count - k);
+                        picture.frame.reset();
+                    }
                 }
                 std::lock_guard<std::mutex> hold(lock);
                 if (own) {
                     if (spare.size() < 4) spare.push_back(std::move(own));
-                } else if (mine && spare.size() < 4) {
+                } else if (mine && picture.frame && spare.size() < 4) {
                     spare.push_back(std::move(picture.frame));
                 }  // a texture's frame: let go here, its texture goes back to the engine when the encoder is done
             }
@@ -529,10 +625,11 @@ int feed_texture(Core &c, void *texture, int64_t first, int64_t last, std::funct
         std::lock_guard<std::mutex> hold(c.lock);
         ++c.frames_in;
         if (c.state == SC_WRITER_FAILED || c.state == SC_WRITER_FINISHED || c.finishing) return SC_WRITER_REFUSED;
-        if (c.state != SC_WRITER_RUNNING || !c.hw_frames) {
+        if (c.state != SC_WRITER_RUNNING) {
             ++c.frames_dropped;
             return SC_WRITER_DROPPED;  // still opening: the encoder isn't there to take it yet
         }
+        if (!c.hw_frames) return SC_ERR_ARGUMENT;  // its encoder left the card (to_memory): the link ends
         if (last <= c.last_pts) {
             ++c.frames_late;
             return SC_WRITER_LATE;
@@ -636,10 +733,21 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
         core->tracks = cfg->audio_tracks;
         core->audio_kbps = std::max(32, cfg->audio_kbps);
         core->queue_limit = static_cast<size_t>(std::clamp(cfg->queue_frames, 2, 120));
+        const std::string fault = env_text("SPRIGCAST_WRITER_FAULT");  // tests: the encoder fails at these
+        if (!fault.empty()) {
+            for (const char *at = fault.c_str(); *at;) {
+                char *end = nullptr;
+                const long long n = std::strtoll(at, &end, 10);
+                if (end == at) break;
+                if (n >= 0 && (core->faults.empty() || n > core->faults.back())) core->faults.push_back(n);
+                at = *end == ',' ? end + 1 : end;
+            }
+        }
         if (cfg->d3d11_device) {
 #if defined(_WIN32)
             static_cast<IUnknown *>(cfg->d3d11_device)->AddRef();
             core->device = cfg->d3d11_device;
+            core->on_card = true;
 #else
             return sc::fail(SC_ERR_ARGUMENT, "sc_writer_open: frames on the card need Windows");
 #endif
@@ -723,6 +831,8 @@ SC_API int sc_writer_stats_get(sc_writer *w, sc_writer_stats *out) {
         out->last_pts = c.last_pts;
         out->frames_late = c.frames_late;
         out->frames_repeated = c.frames_repeated;
+        out->on_card = c.on_card.load() ? 1 : 0;
+        out->recoveries = c.recoveries;
         std::snprintf(out->error, sizeof out->error, "%s", c.error.c_str());
         return SC_OK;
     });
@@ -777,7 +887,7 @@ int writer_feed_texture(const std::shared_ptr<void> &shared, void *texture, int6
 
 bool writer_on_card(const std::shared_ptr<void> &shared) {
     auto *c = static_cast<Core *>(shared.get());
-    return c && c->device != nullptr;
+    return c && c->on_card.load();
 }
 
 int64_t writer_last(const std::shared_ptr<void> &shared) {

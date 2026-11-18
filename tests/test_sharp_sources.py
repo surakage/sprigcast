@@ -80,7 +80,8 @@ def test_pictures_and_cameras_are_not_sharp():
     assert create_source("text", "t", {}).sharp
 
 
-CARDS = {"local_time": (640, 220), "stream_timer": (640, 220), "now_playing": (1100, 200)}
+CARDS = {"local_time": (603, 220), "stream_timer": (416, 220), "countdown": (396, 220), "now_playing": (1100, 200)}
+KINDS = {"countdown": "countdown_timer"}  # a store id whose source kind is named differently
 
 
 @pytest.fixture
@@ -99,12 +100,14 @@ def test_cards_draw_at_their_detail_and_keep_their_box(kind, qt, tmp_path):
         import sys
 
         module = sys.modules[f"sprigcast_plugin_{kind}"]
-        source = create_source(kind, "s", {})
-        assert source.sharp and source.size == CARDS[kind]
+        source = create_source(KINDS.get(kind, kind), "s", {})
+        assert source.sharp and source.size == CARDS[kind]  # the box is the card (clock cards: core/cards.py)
         if kind == "now_playing":
             image = module.paint(module.Track(title="Song", artist="Someone", playing=True), {}, 2.0)
         elif kind == "local_time":
             image = module.paint("8:03 PM", "Sat, Nov 14", {}, 2.0)
+        elif kind == "countdown":
+            image = module.paint("4:59", "Starting in", {}, True, 0.9, 2.0)
         else:
             image = module.paint("1:23", "", {}, True, 2.0)
         assert (image.width(), image.height()) == (CARDS[kind][0] * 2, CARDS[kind][1] * 2)
@@ -112,7 +115,7 @@ def test_cards_draw_at_their_detail_and_keep_their_box(kind, qt, tmp_path):
         assert rows.any()  # something drawn
     finally:
         plugin_store.remove(tmp_path / "plugins", kind)
-    assert kind not in known_kinds()
+    assert KINDS.get(kind, kind) not in known_kinds()
 
 
 def test_clock_card_is_drawn_again_when_its_detail_steps(qt, tmp_path):
@@ -120,11 +123,12 @@ def test_clock_card_is_drawn_again_when_its_detail_steps(qt, tmp_path):
     assert plugin_store.install(tmp_path / "plugins", plugin) is None
     try:
         source = create_source("local_time", "s", {})
-        assert source.video_frame().shape[:2] == (220, 640)
+        assert source.video_frame().shape[:2] == (220, source.size[0])
         assert source.video_frame() is None  # same minute: nothing drawn
         source.set_detail(2.0)
-        assert source.video_frame().shape[:2] == (440, 1280)
-        assert source.size == (640, 220)
+        w = source.size[0]
+        assert source.video_frame().shape[:2] == (440, 2 * w)
+        assert source.size == (w, 220)  # the box stays; only the picture has more pixels
     finally:
         plugin_store.remove(tmp_path / "plugins", "local_time")
 
@@ -163,7 +167,7 @@ def test_the_engine_tells_sharp_sources_their_detail_only_when_it_steps():
 
 
 STARTS = {  # kind: (box, corner, height share, band share), as the plugins say
-    "stream_timer": ((640, 220), "top_left", 0.14, None), "local_time": ((640, 220), "top_right", 0.14, None),
+    "stream_timer": ((416, 220), "top_left", 0.14, None), "local_time": ((603, 220), "top_right", 0.14, None),
     "now_playing": ((1100, 200), "bottom_left", 0.14, None),
     "audio_visualizer": ((1280, 400), "bottom_center", None, 0.5), "pngtuber": ((640, 640), "bottom_right", None, None),
     "snap": ((800, 1000), None, None, None), "death_count": ((800, 1000), None, None, None), "instant_replay": ((1920, 1080), None, None, None)}
