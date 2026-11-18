@@ -44,18 +44,17 @@ class HotkeyRow(QWidget):
         row.addWidget(name, 1)
         self.edit = QKeySequenceEdit(QKeySequence(combo))
         self.edit.setMaximumSequenceLength(1)
-        self.edit.setFixedWidth(KEY_W)
-        self.edit.setStyleSheet(_key_style())
+        self.edit.setFixedWidth(KEY_W)  # styled by the page (one style sheet for every row, see HotkeysPage)
         line = self.edit.findChild(QLineEdit)
         if line is not None:
             line.setPlaceholderText("Press keys…")
             line.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row.addWidget(self.edit)
         self.clear = QPushButton("×")
+        self.clear.setObjectName("hotkeyClear")
         self.clear.setToolTip("Clear this hotkey")
         self.clear.setFixedSize(34, 34)
         self.clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.clear.setStyleSheet(theme.button_style(16, "0", extra="font-size: 16px;"))
         self.clear.clicked.connect(self.edit.clear)
         row.addWidget(self.clear)
         self.edit.keySequenceChanged.connect(self._mark)
@@ -66,8 +65,17 @@ class HotkeyRow(QWidget):
 
 
 class HotkeysPage(QWidget):
-    def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
+    """Every hotkey, a card per section. cards_later: the cards are made one per tick (cards_made fires once
+    they all are), so the window keeps drawing; made all at once, with a style sheet on each row's key box
+    and × button, they held the window 427 ms on the PC (2026-11-18 pop-up sweep, live)."""
+
+    CARD_GAP_MS = 15
+
+    def __init__(self, collection: SceneCollection, parent: QWidget | None = None, cards_later: bool = False):
         super().__init__(parent)
+        self.setStyleSheet(_key_style() + theme.button_style(16, "0", selector="QPushButton#hotkeyClear",
+                                                             extra="font-size: 16px;")
+                           + f"#hotkeyCard {{ background: {theme.CARD}; border-radius: 20px; }}")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
@@ -91,25 +99,51 @@ class HotkeysPage(QWidget):
         self.edits: dict[str, QKeySequenceEdit] = {}
         self.rows: list[HotkeyRow] = []
         self.cards: list[tuple[QFrame, list[HotkeyRow]]] = []
-        for title, items in sections(collection):
-            card = QFrame()
-            card.setObjectName("hotkeyCard")
-            card.setStyleSheet(f"#hotkeyCard {{ background: {theme.CARD}; border-radius: 20px; }}")
-            box = QVBoxLayout(card)
-            box.setContentsMargins(24, 18, 16, 18)
-            box.setSpacing(6)
-            box.addWidget(heading(title, 14))
-            rows = []
-            for action, label in items:
-                row = HotkeyRow(action, label, collection.hotkeys.get(action, ""))
-                row.edit.keySequenceChanged.connect(self._update_count)
-                box.addWidget(row)
-                rows.append(row)
-                self.edits[action] = row.edit
-            self.rows += rows
-            self.cards.append((card, rows))
-            layout.addWidget(card)
+        self._layout, self._hotkeys = layout, dict(collection.hotkeys)
+        self._waiting = list(sections(collection))
         layout.addStretch(1)
+        self.on_done = None  # called once every card is made
+        if cards_later:
+            self._next_card()
+        else:
+            self.finish()
+
+    def _add_card(self, title: str, items) -> None:
+        card = QFrame()
+        card.setObjectName("hotkeyCard")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(24, 18, 16, 18)
+        box.setSpacing(6)
+        box.addWidget(heading(title, 14))
+        rows = []
+        for action, label in items:
+            row = HotkeyRow(action, label, self._hotkeys.get(action, ""))
+            row.edit.keySequenceChanged.connect(self._update_count)
+            box.addWidget(row)
+            rows.append(row)
+            self.edits[action] = row.edit
+        self.rows += rows
+        self.cards.append((card, rows))
+        self._layout.insertWidget(self._layout.count() - 1, card)  # above the stretch
+        if self.search.text():
+            self._filter(self.search.text())
+
+    def _next_card(self) -> None:
+        if not self._waiting:
+            return
+        self._add_card(*self._waiting.pop(0))
+        self._update_count()
+        if self._waiting:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(self.CARD_GAP_MS, self, self._next_card)  # not after the page is gone
+        elif self.on_done is not None:
+            self.on_done()
+
+    def finish(self) -> None:
+        """Make every card still waiting, now (before reading or saving the keys)."""
+        while self._waiting:
+            self._add_card(*self._waiting.pop(0))
         self._update_count()
 
     def _filter(self, text: str) -> None:
@@ -127,6 +161,7 @@ class HotkeysPage(QWidget):
         self.count.setText("No keys set" if n == 0 else "1 key set" if n == 1 else f"{n} keys set")
 
     def result_hotkeys(self) -> dict[str, str]:
+        self.finish()
         out = {}
         for action, edit in self.edits.items():
             combo = edit.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
@@ -192,8 +227,8 @@ class HotkeysWindow(QDialog):
             return
         from sprigcast.app.output_page import _scrolled
 
+        self.page = HotkeysPage(self.collection, cards_later=self._waiting)
         self._waiting = False
-        self.page = HotkeysPage(self.collection)
         self._slot.addWidget(_scrolled(self.page), 1)
 
     def showEvent(self, event) -> None:  # noqa: N802

@@ -527,3 +527,33 @@ def test_a_window_closed_before_its_page_fills_makes_nothing(app):
     w.reject()
     w._fill()
     assert not w._built
+
+
+def test_hotkey_cards_are_made_a_tick_apart_and_saving_early_keeps_them_all(app):
+    """Made all at once (each row with a style sheet of its own) the list held the window 427 ms on the PC."""
+    import time
+
+    from PySide6.QtGui import QKeySequence
+
+    from sprigcast.app.hotkeys import sections
+    from sprigcast.app.hotkeys_dialog import HotkeysPage, HotkeysWindow
+
+    col = _collection()
+    total = len(sections(col))
+    assert total > 2
+    page = HotkeysPage(col, cards_later=True)
+    assert len(page.cards) == 1 and page.styleSheet() and not page.rows[0].edit.styleSheet()
+    done = []
+    page.on_done = lambda: done.append(len(page.cards))
+    end = time.monotonic() + 5
+    while not done and time.monotonic() < end:
+        app.processEvents()
+    assert done == [total]
+
+    w = HotkeysWindow(col, fill_after_show=True)
+    w._fill()
+    assert len(w.page.cards) == 1
+    first = next(iter(w.page.edits))
+    w.page.edits[first].setKeySequence(QKeySequence("Ctrl+Alt+9"))
+    w.save_button.click()  # before the other cards are made: they're made then, and nothing is lost
+    assert len(w.page.cards) == total and w.result() and col.hotkeys == {first: "Ctrl+Alt+9"}

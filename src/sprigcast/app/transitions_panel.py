@@ -903,23 +903,29 @@ class TransitionsPanel(QWidget):
         table. Built fresh each time, so bloom names are current.
         """
         dialog = PopUp("Transitions", self)
+        # Each tab is made when it's first shown: the Transition tab, made for an Edit that opens on the table,
+        # was 190 ms of the PC's 260 ms open while live (2026-11-18 pop-up sweep).
         if self.compact:
             def edited() -> None:
                 self.load(self.transition)
                 self.changed()
 
-            panel = TransitionsPanel(self.transition, edited, self.probe, wide=True)
-            panel.layout().setContentsMargins(0, 0, 0, 0)
-            dialog.add_tab("transition", "Transition", scrolled(panel))
-            dialog.panel = panel
+            def make_panel() -> QWidget:
+                panel = dialog.panel = TransitionsPanel(self.transition, edited, self.probe, wide=True)
+                panel.layout().setContentsMargins(0, 0, 0, 0)
+                return scrolled(panel)
+
+            dialog.add_tab_later("transition", "Transition", make_panel)
         if self.collection is not None:
             def rules_edited() -> None:
                 self.show_rule_count()
                 self.changed()
 
-            table = RulesTable(self.collection, rules_edited, self.probe)
-            dialog.add_tab("rules", "Between blooms", scrolled(table))
-            dialog.table = table
+            def make_table() -> QWidget:
+                table = dialog.table = RulesTable(self.collection, rules_edited, self.probe)
+                return scrolled(table)
+
+            dialog.add_tab_later("rules", "Between blooms", make_table)
         dialog.show_tab(tab)
         dialog.resize(480, 640)
         return dialog
@@ -1070,6 +1076,7 @@ class PopUp(QDialog):
         else:
             done.hide()
         self.tabs: dict[str, QPushButton] = {}
+        self._later: dict[str, Callable[[], None]] = {}  # add_tab_later: makes the page if it isn't yet
         self._group = QButtonGroup(self)
         self._drag = None
 
@@ -1086,8 +1093,24 @@ class PopUp(QDialog):
         for b in self.tabs.values():  # one page needs no tabs
             b.setVisible(len(self.tabs) > 1)
 
+    def add_tab_later(self, key: str, label: str, make: Callable[[], QWidget]) -> None:
+        """A tab whose page is made by make() the first time it's shown."""
+        holder = QWidget()
+        box = QVBoxLayout(holder)
+        box.setContentsMargins(0, 0, 0, 0)
+        self.add_tab(key, label, holder)
+
+        def made() -> None:
+            if box.count() == 0:
+                box.addWidget(make())
+        self.tabs[key].clicked.connect(made)
+        self._later[key] = made
+
     def show_tab(self, key: str) -> None:
-        button = self.tabs.get(key) or next(iter(self.tabs.values()))
+        key = key if key in self.tabs else next(iter(self.tabs))
+        if key in self._later:
+            self._later[key]()
+        button = self.tabs[key]
         button.setChecked(True)
         button.click()
 

@@ -417,9 +417,14 @@ def run() -> None:
     tidy.start(pacing.TIDY_EVERY_MS)
     from sprigcast.core import warm, workers
 
+    def _warm_art():  # the sloth pictures pop-ups show (app/empty.py)
+        from sprigcast.app.empty import warm_art
+
+        warm_art()
+
     def warm_up():  # see core/warm.py
         encoders = (window.collection.recording.encoder.model_copy(), window.collection.stream_encoder.model_copy())
-        workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders)), name="warm-up")
+        workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders), _warm_art()), name="warm-up")
 
     QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
     QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time

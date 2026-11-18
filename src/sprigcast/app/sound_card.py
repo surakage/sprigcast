@@ -479,17 +479,24 @@ class SoundCard(QWidget):
         a quiet group is dimmed. Its sounds show only when you open it (or press Edit)."""
         now = time.monotonic() if now is None else now
         playing = playing or {}
+        # Called with every meter update (20 a second): which rows show is worked out in Python and Qt is asked
+        # only when it changes. Asking each row's visibility every time held the window up while live (100 ms
+        # under load on the PC, 2026-11-18).
+        shows = getattr(self, "_row_shows", None)
+        if shows is None or shows[0] is not self.rows:
+            shows = self._row_shows = (self.rows, {})
         for group, part in self.parts.items():
             opened = self.is_open(group)
-            any_row = False
-            for sid, s in self.sounds.items():
-                if s.group == group and sid in self.rows:
-                    show = opened or s.pinned  # "Always show" keeps a sound listed when its group is shut
-                    any_row |= show
+            wanted = {sid: opened or s.pinned  # "Always show" keeps a sound listed when its group is shut
+                      for sid, s in self.sounds.items() if s.group == group and sid in self.rows}
+            if shows[1].get(group) != wanted:
+                shows[1][group] = wanted
+                for sid, show in wanted.items():
                     if self.rows[sid].isVisibleTo(self) != show:
                         self.rows[sid].setVisible(show)
-            if part["inner"].isVisibleTo(self) != any_row:
-                part["inner"].setVisible(any_row)
+                any_row = any(wanted.values())
+                if part["inner"].isVisibleTo(self) != any_row:
+                    part["inner"].setVisible(any_row)
             heard = [sid for sid, s in self.sounds.items()
                      if s.group == group and not s.muted and now - self.heard.get(sid, -1e9) < LINGER_S]
             lit = bool(heard)

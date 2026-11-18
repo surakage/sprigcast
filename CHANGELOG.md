@@ -154,6 +154,12 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Pop-ups from the PC's sweep while live open without holding the window: the modules they load are loaded by the
+  warm-up (the Audio page was 256 ms, the plugin store 138 ms); device-name patterns are made at start (186 ms);
+  Hotkeys uses one style sheet and makes its cards a tick apart (427 ms); the Transitions pop-up makes each tab when
+  it's first shown (190 ms) and the Garden check makes Last streams only when shown (148 ms); sloth pictures are read
+  once at 640 px on a worker and shrunk once for every pop-up (About); the Sound card asks Qt about its rows only
+  when they change.
 - The card after a crash (and Help → Report a problem) no longer holds the window: it opened with .exec() and froze
   it 404 and 660 ms. The report is built and sent on a thread of its own, and "See what's sent" builds it on a worker.
 - Help → Export report makes the report on a worker and saves it straight to the desktop, shown in its folder

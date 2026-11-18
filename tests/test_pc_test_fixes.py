@@ -362,3 +362,17 @@ def test_the_style_has_no_python_in_it_and_menus_are_still_rounded(qapp):
     other = QMenu()
     theme.rounded_menus(other)
     assert other.windowFlags() & Qt.WindowType.FramelessWindowHint
+
+
+def test_sloth_pictures_are_read_once_small_and_shrunk_once_for_every_pop_up():
+    """About read and shrank its 1024 px sloth each time it opened (64 ms on the PC while live)."""
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import empty
+
+    empty.warm_art(("welcome",))
+    assert empty._images["welcome"].width() <= empty.ART_MAX
+    a, b = empty.ArtPicture("welcome", 120), empty.ArtPicture("welcome", 120)
+    size = empty._image("welcome").size().scaled(a.size(), empty.Qt.AspectRatioMode.KeepAspectRatio)
+    assert a._shrunk(None, size) is b._shrunk(None, size)  # shrunk once, shared
