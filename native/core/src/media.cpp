@@ -32,6 +32,10 @@ extern "C" {
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <d3d11.h>
+extern "C" {
+#  include <libavutil/hwcontext_d3d11va.h>
+}
 #else
 #  include <dlfcn.h>
 #endif
@@ -60,6 +64,7 @@ namespace {
     X(0, avutil_version) X(0, av_frame_alloc) X(0, av_frame_free) X(0, av_frame_unref) X(0, av_strerror)           \
     X(0, av_channel_layout_default) X(0, av_channel_layout_compare)                                                \
     X(0, av_hwdevice_ctx_create) X(0, av_hwdevice_find_type_by_name) X(0, av_hwframe_transfer_data)                \
+    X(0, av_hwdevice_ctx_alloc) X(0, av_hwdevice_ctx_init) X(0, av_frame_clone)                \
     X(0, av_buffer_ref) X(0, av_buffer_unref) X(0, av_pix_fmt_desc_get) X(1, avcodec_get_hw_config)                \
     X(1, avcodec_version) X(1, avcodec_find_decoder) X(1, avcodec_find_decoder_by_name)                            \
     X(1, avcodec_alloc_context3) X(1, avcodec_free_context) X(1, avcodec_parameters_to_context)                    \
@@ -119,8 +124,51 @@ AVBufferRef *hw_device = nullptr;
 AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
 bool hw_tried = false;
 
+// The engine's own Direct3D device (sc::media_card): videos decoded on it hand their pictures to the compositor
+// on the card, with no copy to memory and back. Its serial changes with the device (a rebuild).
+void *card_device = nullptr;  // ID3D11Device, with a reference of ours
+#ifdef _WIN32
+AVBufferRef *card_ref = nullptr;
+#endif
+uint64_t card_serial = 0;
+bool card_failed = false;  // FFmpeg wouldn't decode on it: FFmpeg's own device, as before
+std::atomic<void *> card_now{nullptr};
+std::atomic<bool> card_refused{false};  // the engine couldn't take a picture on the card: memory it is
+
+#ifdef _WIN32
+// Called with hw_lock held.
+AVBufferRef *card_device_ref() {
+    if (!card_device || card_failed) return nullptr;
+    if (!card_ref) {
+        AVBufferRef *made = ff.av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+        if (!made) return nullptr;
+        auto *hw = reinterpret_cast<AVHWDeviceContext *>(made->data);
+        auto *d3d = static_cast<AVD3D11VADeviceContext *>(hw->hwctx);
+        d3d->device = static_cast<ID3D11Device *>(card_device);
+        d3d->device->AddRef();  // FFmpeg lets go of it when the last decoder and picture do
+        const int r = ff.av_hwdevice_ctx_init(made);
+        if (r < 0) {
+            ff.av_buffer_unref(&made);
+            card_failed = true;
+            sc::log_line(SC_LOG_INFO, std::string("media: videos can't decode on the engine's graphics device (") +
+                                          av_text(r) + "); they decode on their own and are copied");
+            return nullptr;
+        }
+        card_ref = made;
+        sc::log_line(SC_LOG_INFO, "media: videos decode on the engine's graphics device: pictures stay on the card");
+    }
+    return ff.av_buffer_ref(card_ref);
+}
+#endif
+
 AVBufferRef *hw_device_ref(AVHWDeviceType &type) {
     std::lock_guard<std::mutex> hold(hw_lock);
+#ifdef _WIN32
+    if (AVBufferRef *engine = card_device_ref()) {
+        type = AV_HWDEVICE_TYPE_D3D11VA;
+        return engine;
+    }
+#endif
     if (!hw_tried) {
         hw_tried = true;
 #ifdef _WIN32
@@ -189,6 +237,9 @@ struct Picture {
     int format = SC_FMT_RGBA;
     int width = 0, height = 0, stride = 0;
     int matrix = 601, full = 0;
+    // Left on the graphics card (the engine's own device): the decoder's picture, `width` x `height` NV12 in one
+    // slice of its texture, with nothing in `data`. Only the engine can take it (media_due).
+    std::shared_ptr<AVFrame> card;
 };
 using PicturePtr = std::shared_ptr<const Picture>;
 
@@ -293,6 +344,12 @@ struct Core : std::enable_shared_from_this<Core> {
     std::atomic<bool> grow{false};
     std::atomic<bool> hardware{false};             // sc_media_set_decode: decode on the graphics card when it can
     bool on_card = false;                          // the pictures now are decoded there
+    std::atomic<double> engine_took{-1e9};         // when the engine last asked for a picture (media_due)
+    std::atomic<double> python_took{-1e9};         // when Python last did (sc_media_video_frame)
+
+    // A picture decoded on the engine's own device, kept there for the engine (Picture::card), when only the
+    // engine is taking this file's pictures. Null: copy it to memory as before.
+    PicturePtr card_picture(const AVFrame *f) const;
     std::atomic<int> max_w{MAX_W}, max_h{MAX_H};
     std::atomic<int> fault{0};
 
@@ -712,6 +769,9 @@ void Core::open(Held &held, const std::string &file) {
                     ctx->opaque = reinterpret_cast<void *>(static_cast<intptr_t>(hw_format));
                     ctx->get_format = pick_format;
                     ctx->thread_count = 1;  // the card decodes; FFmpeg's frame threads would only add copies
+                    // Pictures left on the card hold their surface until shown and taken: room for those
+                    // decoded ahead, the one on screen and the one being taken.
+                    ctx->extra_hw_frames = static_cast<int>(AHEAD_FRAMES) + 3;
                     held.hardware = true;
                 } else if (device) {
                     ff.av_buffer_unref(&device);
@@ -835,6 +895,74 @@ void scale(Held &held, const AVFrame *f, int ow, int oh, AVPixelFormat to, bool 
 // side, then the alpha rows. Anything else becomes RGBA.
 // as: 1 RGBA, 2 BGRA whatever the file holds (straight alpha), for whoever can't draw planar pictures; 0 as the
 // file has them.
+// How the compositor reads a picture's colours: untagged video is BT.601 TV range, as FFmpeg's own conversion.
+void colours_of(const AVFrame *f, Picture &pic) {
+    switch (f->colorspace) {
+    case AVCOL_SPC_BT709: pic.matrix = 709; break;
+    case AVCOL_SPC_BT2020_NCL:
+    case AVCOL_SPC_BT2020_CL: pic.matrix = 2020; break;
+    default: pic.matrix = 601; break;
+    }
+    pic.full = f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P;
+}
+
+PicturePtr Core::card_picture(const AVFrame *f) const {
+#ifdef _WIN32
+    constexpr double TAKER_S = 1.0;  // a taker that asked this recently is still taking
+    if (f->format != AV_PIX_FMT_D3D11 || !f->hw_frames_ctx || card_refused.load()) return nullptr;
+    const double now = now_s();
+    if (now - engine_took.load() > TAKER_S || now - python_took.load() < TAKER_S) return nullptr;
+    if (f->width < 2 || f->height < 2 || f->width % 2 || f->height % 2) return nullptr;
+    auto *texture = reinterpret_cast<ID3D11Texture2D *>(f->data[0]);
+    if (!texture) return nullptr;
+    ID3D11Device *on = nullptr;
+    texture->GetDevice(&on);
+    if (on) on->Release();
+    if (!on || on != card_now.load()) return nullptr;  // decoded on a device the engine no longer has
+    AVFrame *held_frame = ff.av_frame_clone(f);
+    if (!held_frame) return nullptr;
+    auto pic = std::make_shared<Picture>();
+    pic->card = std::shared_ptr<AVFrame>(held_frame, [](AVFrame *g) { ff.av_frame_free(&g); });
+    pic->format = SC_FMT_NV12;
+    pic->width = pic->stride = f->width;
+    pic->height = f->height;
+    colours_of(f, *pic);
+    return pic;
+#else
+    (void)f;
+    return nullptr;
+#endif
+}
+
+// A picture left on the card, copied to memory in the I420 layout make_picture gives NV12 (for Python's reads).
+// Null if the card won't give it.
+PicturePtr card_to_memory(const Picture &on_card) {
+    AVFrame *cpu = ff.av_frame_alloc();
+    if (!cpu) return nullptr;
+    std::shared_ptr<AVFrame> hold_cpu(cpu, [](AVFrame *g) { ff.av_frame_free(&g); });
+    if (ff.av_hwframe_transfer_data(cpu, on_card.card.get(), 0) < 0 || cpu->format != AV_PIX_FMT_NV12) return nullptr;
+    const int w = on_card.width, h = on_card.height, cw = w / 2, ch = h / 2;
+    auto pic = std::make_shared<Picture>();
+    pic->format = SC_FMT_I420;
+    pic->width = pic->stride = w;
+    pic->height = h + ch;
+    pic->matrix = on_card.matrix;
+    pic->full = on_card.full;
+    pic->data.resize(static_cast<size_t>(w) * pic->height);
+    uint8_t *y = pic->data.data();
+    uint8_t *uv = y + static_cast<size_t>(w) * h;
+    copy_rows(y, w, cpu->data[0], cpu->linesize[0], w, h);
+    for (int row = 0; row < ch; ++row) {
+        const uint8_t *from = cpu->data[1] + row * cpu->linesize[1];
+        uint8_t *to_row = uv + static_cast<size_t>(row) * w;
+        for (int x = 0; x < cw; ++x) {
+            to_row[x] = from[2 * x];
+            to_row[cw + x] = from[2 * x + 1];
+        }
+    }
+    return pic;
+}
+
 PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller, int as) {
     auto pic = std::make_shared<Picture>();
     int kind = 0;
@@ -890,14 +1018,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
         copy_rows(uv + cw, ow, held.planes[2].data(), strides[2], cw, ch);
         if (kind == 2) copy_rows(a, ow, held.planes[3].data(), strides[3], ow, oh);
     }
-    // Untagged video is read as BT.601 TV range, as FFmpeg's own conversion does.
-    switch (f->colorspace) {
-    case AVCOL_SPC_BT709: pic->matrix = 709; break;
-    case AVCOL_SPC_BT2020_NCL:
-    case AVCOL_SPC_BT2020_CL: pic->matrix = 2020; break;
-    default: pic->matrix = 601; break;
-    }
-    pic->full = f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P;
+    colours_of(f, *pic);
     return pic;
 }
 
@@ -939,7 +1060,11 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
         const std::u8string text(reinterpret_cast<const char8_t *>(file.data()), file.size());
         if (!std::filesystem::exists(std::filesystem::path(text), ec)) throw Error("file not found");
     }
-    const std::string key = file + (hardware.load() ? "\n(on the graphics card)" : "");  // asked anew: reopened
+    std::string key = file;  // asked anew, or the engine's device changed: reopened
+    if (hardware.load()) {
+        std::lock_guard<std::mutex> hold(hw_lock);
+        key += "\n(on the graphics card " + std::to_string(card_serial) + ")";
+    }
     if (held.key != key) held.release();
     held.key = key;
     double offset = 0;  // added to each pass's times when looping, so the timeline keeps running
@@ -1047,6 +1172,21 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 AVFrame *f = held.frame;
                 int64_t pts = f->pts != AV_NOPTS_VALUE ? f->pts : f->best_effort_timestamp;
                 if (pts == AV_NOPTS_VALUE && pkt) pts = pkt->pts;
+                if (PicturePtr on_card_picture = card_picture(f)) {  // left on the engine's card, as it is
+                    const double at_card =
+                        (pts != AV_NOPTS_VALUE ? static_cast<double>(pts) * av_q2d(video->time_base) : 0.0) - origin;
+                    ff.av_frame_unref(f);
+                    if (at_card < skip_to - 0.001) continue;
+                    {
+                        std::lock_guard<std::mutex> hold(lock);
+                        on_card = true;
+                        ++decoded;
+                    }
+                    keeping = false;  // a loop of these is decoded each pass: they belong to the decoder
+                    kept.clear();
+                    if (!push_frame(offset + at_card, std::move(on_card_picture), gen, serial)) return false;
+                    continue;
+                }
                 if (f->hw_frames_ctx) {  // decoded on the graphics card: copied to memory (as NV12) to be packed
                     if (!held.cpu) held.cpu = ff.av_frame_alloc();
                     if (!held.cpu) throw std::bad_alloc();
@@ -1186,10 +1326,41 @@ namespace sc {
 
 std::shared_ptr<void> media_hold(sc_media *media) { return media ? media->core : nullptr; }
 
+void media_card(void *device) {
+    std::lock_guard<std::mutex> hold(hw_lock);
+    if (device == card_device) return;
+#ifdef _WIN32
+    if (card_ref) ff.av_buffer_unref(&card_ref);  // decoders and pictures on it keep it until they end
+    if (card_device) static_cast<ID3D11Device *>(card_device)->Release();
+    if (device) static_cast<ID3D11Device *>(device)->AddRef();
+#endif
+    card_device = device;
+    card_now.store(device);
+    card_failed = false;
+    card_refused.store(false);
+    ++card_serial;
+}
+
+void media_card_gone(void *device) {
+    {
+        std::lock_guard<std::mutex> hold(hw_lock);
+        if (device != card_device) return;
+    }
+    media_card(nullptr);
+}
+
+void media_card_refused() {
+    if (!card_refused.exchange(true))
+        log_line(SC_LOG_WARNING, "media: the engine can't take videos' pictures on the card; they come in memory");
+}
+
 void media_due(const std::shared_ptr<void> &player, uint64_t *seen, MediaDue *out) {
     out->what = SC_MEDIA_NO_PICTURE;
     out->keep.reset();
+    out->texture = nullptr;
+    out->slice = 0;
     Core &c = *static_cast<Core *>(player.get());
+    c.engine_took.store(now_s());
     std::lock_guard<std::mutex> hold(c.lock);
     c.advance();
     if (*seen == c.screen_serial) return;
@@ -1209,6 +1380,12 @@ void media_due(const std::shared_ptr<void> &player, uint64_t *seen, MediaDue *ou
     out->how.stride = pic.stride;
     out->how.layout_width = c.width;
     out->how.layout_height = c.height;
+    if (pic.card) {  // NV12 in one slice of the decoder's texture: rows of Y, then half as many of UV
+        out->texture = pic.card->data[0];
+        out->slice = static_cast<unsigned>(reinterpret_cast<intptr_t>(pic.card->data[1]));
+        out->how.height = pic.height * 3 / 2;
+        out->data = nullptr;
+    }
     // render/compositor.py YUV_MATRICES: Kr, Kb, then 1 for full range.
     out->how.yuv[0] = pic.matrix == 709 ? 0.2126f : pic.matrix == 2020 ? 0.2627f : 0.299f;
     out->how.yuv[1] = pic.matrix == 709 ? 0.0722f : pic.matrix == 2020 ? 0.0593f : 0.114f;
@@ -1381,10 +1558,27 @@ SC_API int sc_media_video_frame(sc_media *media, uint64_t *seen, sc_media_pictur
         Core &c = *media->core;
         PicturePtr found;
         double at = 0;
+        PicturePtr on_card;
+        {
+            std::lock_guard<std::mutex> hold(c.lock);
+            c.python_took.store(now_s());  // from now on the decoder copies its pictures to memory again
+            c.advance();
+            if (*seen == c.screen_serial) return SC_MEDIA_NO_PICTURE;
+            if (c.on_screen && c.on_screen->card) on_card = c.on_screen;
+        }
+        if (on_card) {  // the one on screen was left on the card for the engine: copied here, once, for Python
+            PicturePtr copied = card_to_memory(*on_card);
+            std::lock_guard<std::mutex> hold(c.lock);
+            if (c.on_screen == on_card) {
+                if (!copied) return SC_MEDIA_NO_PICTURE;  // the next one comes in memory
+                c.on_screen = copied;
+            }
+        }
         {
             std::lock_guard<std::mutex> hold(c.lock);
             c.advance();
             if (*seen == c.screen_serial) return SC_MEDIA_NO_PICTURE;
+            if (c.on_screen && c.on_screen->card) return SC_MEDIA_NO_PICTURE;
             if (c.on_screen_blank || !c.on_screen) {
                 *seen = c.screen_serial;
                 return c.on_screen_blank ? SC_MEDIA_BLANK : SC_MEDIA_NO_PICTURE;

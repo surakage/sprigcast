@@ -154,12 +154,19 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   its decoder decodes on the card through one Direct3D 11 device shared by every such player, and each picture
   is copied to memory as NV12 and packed as usual. A see-through WebM (libvpx), a codec the card lacks, or a PC
   without it decodes on the CPU, and the log says so once. Turning it on or off reopens the file with the other
-  decoder. Next: the decoded picture handed to the compositor on the card itself, with no copy through memory.
+  decoder.
+- **Pictures stay on the card (zero-copy step 2).** The engine gives its own Direct3D device to the players
+  (`sc::media_card`, made with video support where the card has it), so a `hw_decode` video decodes on it and,
+  while only the engine takes its pictures, each one stays in the decoder's texture: `media_due` hands the
+  texture slice to `sc::source_nv12`, which copies it on the card. No picture crosses memory. The decoder keeps
+  `AHEAD_FRAMES + 3` spare surfaces for pictures waiting to be shown. Memory again, picture by picture, when
+  Python asks for the same video (a projector) within a second (the one on screen is copied for it once), after a device rebuild until the file reopens
+  on the new device, for odd sizes, and for good if the engine can't take a picture on the card (logged once).
 - **NV12 sources (`SC_FMT_NV12`, `native/core/src/nv12_source.cpp`).** The compositor takes NV12 pictures:
   copied onto the card as NV12 and repacked there by a small shader into its I420 layout, line for line what an
   I420 upload of the same picture gives. A card that can't read NV12 textures in shaders gets them repacked in
   memory instead (logged once). `sc::source_nv12` takes a texture already on the card (a slice of a decoder's
-  texture array), which is how the card's decoder will hand pictures over without the copy through memory.
+  texture array): how the card's decoder hands pictures over.
 - **Checks:** `tests/test_native_media.py` plays real files made with PyAV: a video with sound, a GIF looping
   from memory, a see-through WebM, a sound file, seeking, pausing, speed, shrink, sleep and wake, broken and
   missing files, the crash gate, and (with the DLL) a video shown on an engine canvas with no picture sent by Python. The player needs no graphics card, so on Linux the test builds it alone
