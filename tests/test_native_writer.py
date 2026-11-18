@@ -198,6 +198,62 @@ def test_an_output_linked_to_a_writer_is_written_without_python(player_lib, tmp_
 
 
 @pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_an_output_linked_to_the_virtual_camera_is_written_into_its_block():
+    """Phase 4: the frame thread writes the camera's frames into its shared block itself, in the middle of the
+    camera's frame (black around), with the count even when done; once unlinked it writes nothing more."""
+    import ctypes
+    import sys
+
+    from sprigcast.output.virtualcam import BLOCK_SIZE, HEADER, MAGIC, SharedBlock
+
+    if sys.platform != "win32":
+        pytest.skip("Windows' shared memory")
+    k32 = ctypes.windll.kernel32
+    k32.CreateFileMappingW.restype = ctypes.c_void_p
+    k32.CreateFileMappingW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                       ctypes.c_uint32, ctypes.c_wchar_p]
+    k32.MapViewOfFile.restype = ctypes.c_void_p
+    k32.MapViewOfFile.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_size_t]
+    k32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    name = f"Local\\SprigCastCameraTest{time.monotonic_ns()}"
+    handle = k32.CreateFileMappingW(ctypes.c_void_p(-1), None, 0x04, 0, BLOCK_SIZE, name)  # PAGE_READWRITE
+    assert handle
+    view = k32.MapViewOfFile(handle, 0x0002 | 0x0004, 0, 0, 0)
+    assert view
+    block = SharedBlock(view, BLOCK_SIZE, name=name)
+    ctypes.c_uint32.from_address(view).value = MAGIC
+    try:
+        with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+            eng.set_canvas(0, 64, 36)
+            eng.set_output(0, 0, 64, 36)
+            with pytest.raises(sprigcore.NativeError):
+                eng.link_camera(0, 0, name, 32, 18)  # smaller than the output
+            with pytest.raises(sprigcore.NativeError):
+                eng.link_camera(0, 0, "Local\\NoSuchSprigCastCamera", 64, 64)
+            eng.link_camera(0, 0, name, 64, 64)
+            end = time.monotonic() + 5
+            while eng.camera_frames(0, 0) < 5 and time.monotonic() < end:
+                time.sleep(0.02)
+            assert eng.camera_frames(0, 0) >= 5
+            assert eng.take_output(0, 0, 64, 36) is None  # the camera had them all
+            _last, linked = eng.unlink_output(0, 0)
+            assert linked and eng.camera_frames(0, 0) == 0
+            count = block._u64(24).value
+            assert count % 2 == 0 and count >= 10 and block._u32(16).value == 64 and block._u32(20).value == 64
+            time.sleep(0.3)
+            assert block._u64(24).value == count  # nothing written once unlinked
+            picture = ctypes.string_at(view + HEADER, 64 * 64 * 3 // 2)
+            assert picture[0] == 16 and picture[64 * 13] == 16  # the black bar above the picture (rows 0-13)
+            assert picture[64 * 64] == 128  # its colour
+            assert not eng.stats()["faulted"]
+    finally:
+        block.closed = True
+        k32.UnmapViewOfFile(view)
+        k32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
 def test_frames_on_the_card_go_only_to_a_writer_on_the_engines_device(player_lib, tmp_path):  # noqa: F811
     """Phase 4 step 4: an output whose frames stay on the card links only to a writer whose encoder is on the
     engine's device; one whose encoder can't take them there fails to open cleanly (the recording then goes

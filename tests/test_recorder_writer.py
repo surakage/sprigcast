@@ -339,3 +339,43 @@ def test_own_nvenc_opens_the_writer_on_the_engines_device(native, tmp_path, monk
     rec = Recorder(tmp_path / "x.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv")
     assert rec._writer_session() is False  # PyAV records it with SprigCast's own NVENC instead
     assert opened == [0x1234] and released == [0x1234]
+
+
+class _CameraEngine(_LinkEngine):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.cameras = []
+
+    def link_camera(self, index, slot, name, width, height, keep=False):
+        self.cameras.append((index, slot, name, width, height, keep))
+        self.links[(index, slot)] = ("camera", name)
+
+
+def test_the_virtual_camera_is_fed_by_the_engine_itself(monkeypatch):
+    """Phase 4: the engine writes the camera's frames into its shared block itself (sc_engine_output_link_camera);
+    a recording sharing the output keeps it, and the camera goes back to Python's frames when it stops."""
+    from test_native_bridge import _collection
+
+    from sprigcast.output.virtualcam import SharedBlock, VirtualCamera
+    from sprigcast.render import native_bridge
+
+    monkeypatch.setattr(sprigcore, "Engine", _CameraEngine)
+    monkeypatch.delenv("SPRIGCAST_NO_LINK", raising=False)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    key = ((W, H), False)
+    bridge.set_outputs("h", [key])
+    cam = VirtualCamera(None, list)
+    assert bridge.link_taps("h", [(cam._on_frame, key)]) == set()  # no app watching yet
+    cam.block = SharedBlock(0, name="Local\\SprigCastCamera")
+    cam.tap = ("h", (W, H), (W + 16, H))
+    assert bridge.link_taps("h", [(cam._on_frame, key)]) == {id(cam)} and cam.linked
+    assert bridge.engine.cameras == [(0, 0, "Local\\SprigCastCamera", W + 16, H, False)]
+    bridge.link_taps("h", [(cam._on_frame, key)])  # nothing changed: not linked again
+    assert len(bridge.engine.cameras) == 1
+    cam.tap = ("h", (W, H), (W, H + 16))  # the app asked for another size
+    bridge.link_taps("h", [(cam._on_frame, key)])
+    assert bridge.engine.unlinks == [(0, 0)] and bridge.engine.cameras[-1][3:5] == (W, H + 16) and cam.linked
+    cam.block.closed = True  # the app closed the camera
+    assert bridge.link_taps("h", [(cam._on_frame, key)]) == set()
+    assert bridge.engine.unlinks == [(0, 0), (0, 0)] and not cam.linked

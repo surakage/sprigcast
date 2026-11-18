@@ -221,6 +221,65 @@ struct SharedFrame {  // a frame kept on the card: one of its pool's textures, w
     ID3D11Texture2D *texture = nullptr;
 };
 
+// The virtual camera's shared block (sc_engine_output_link_camera), mapped by the engine itself: whatever Python
+// does with its own view of it, the frame thread writes only into this one, unmapped once the link has ended.
+// Layout (output/virtualcam.py SharedBlock): magic u32 @0, frame width/height u32 @16/@20, a count u64 @24 that is
+// odd while a frame is written, NV12 from byte 64.
+struct CameraBlock {
+    static constexpr uint32_t MAGIC = 0x43565053;
+    static constexpr size_t HEADER = 64;
+    HANDLE mapping = nullptr;
+    uint8_t *view = nullptr;
+    size_t size = 0;
+    int width = 0, height = 0;  // the frame the camera shows: pictures of another shape go in the middle
+    uint64_t written = 0;
+
+    CameraBlock() = default;
+    CameraBlock(const CameraBlock &) = delete;
+    CameraBlock &operator=(const CameraBlock &) = delete;
+    ~CameraBlock() {
+        if (view) UnmapViewOfFile(view);
+        if (mapping) CloseHandle(mapping);
+    }
+    bool open(const wchar_t *name) {
+        mapping = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, name);
+        if (mapping) view = static_cast<uint8_t *>(MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0));
+        MEMORY_BASIC_INFORMATION about{};
+        if (view && VirtualQuery(view, &about, sizeof about)) size = about.RegionSize;
+        return view && size > HEADER;
+    }
+    // One NV12 picture (w x h), in the middle of the camera's frame with black around it when it is smaller.
+    bool write(const uint8_t *nv12, int w, int h) {
+        const size_t bytes = static_cast<size_t>(width) * height * 3 / 2;
+        if (!view || w > width || h > height || HEADER + bytes > size) return false;
+        uint32_t magic = 0;
+        std::memcpy(&magic, view, sizeof magic);
+        if (magic != MAGIC) return false;  // the camera let go of it
+        auto *count = reinterpret_cast<volatile uint64_t *>(view + 24);
+        *count = *count + 1;  // odd: being written
+        std::atomic_thread_fence(std::memory_order_release);
+        const uint32_t size_wh[2] = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+        std::memcpy(view + 16, size_wh, sizeof size_wh);
+        uint8_t *y = view + HEADER, *uv = y + static_cast<size_t>(width) * height;
+        if (w == width && h == height) {
+            std::memcpy(y, nv12, bytes);
+        } else {
+            std::memset(y, 16, static_cast<size_t>(width) * height);  // black, limited range
+            std::memset(uv, 128, static_cast<size_t>(width) * height / 2);
+            const int x0 = ((width - w) / 2) & ~1, y0 = ((height - h) / 2) & ~1;
+            for (int r = 0; r < h; ++r)
+                std::memcpy(y + static_cast<size_t>(y0 + r) * width + x0, nv12 + static_cast<size_t>(r) * w, w);
+            const uint8_t *src_uv = nv12 + static_cast<size_t>(w) * h;
+            for (int r = 0; r < h / 2; ++r)
+                std::memcpy(uv + static_cast<size_t>(y0 / 2 + r) * width + x0, src_uv + static_cast<size_t>(r) * w, w);
+        }
+        std::atomic_thread_fence(std::memory_order_release);
+        *count = *count + 1;  // even: done
+        ++written;
+        return true;
+    }
+};
+
 // An output linked to a writer (sc_engine_output_link): the frame thread hands it each finished frame itself.
 struct Link {
     std::mutex use;                // held while a frame is handed over (and to change the fields below)
@@ -230,6 +289,7 @@ struct Link {
     int64_t last = -1;  // the last frame number handed over
     bool keep = false;  // still queue frames for sc_engine_output_take
     std::atomic<bool> ended{false};
+    std::unique_ptr<CameraBlock> camera;  // instead of a writer: the virtual camera's block
 };
 
 struct Output {  // shared: an output Python asked for and its finished frames
@@ -292,6 +352,13 @@ void link_result(Link &l, int r, int64_t pts) {
 
 bool hand_over(Link &l, const OutFrame &f, int w, int h) {
     std::lock_guard<std::mutex> hold(l.use);
+    if (l.camera) {
+        try {
+            l.camera->write(f.data.data(), w, h);
+        } catch (...) {
+        }
+        return l.keep;
+    }
     if (!l.writer) return true;
     try {
         int64_t first = 0, pts = 0;
@@ -1800,6 +1867,7 @@ SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const s
             }
         }
         std::lock_guard<std::mutex> hold(l->use);
+        l->camera.reset();
         if (l->writer.get() != share.get()) {  // another writer: this one starts afresh
             l->writer = share;
             l->last = -1;
@@ -1830,7 +1898,56 @@ SC_API int sc_engine_output_unlink(sc_engine *engine, int index, int slot, int64
         if (linked) *linked = l->ended.load() ? 0 : 1;
         if (last_pts) *last_pts = l->writer ? std::max(l->last, sc::writer_last(l->writer)) : l->last;
         l->writer.reset();
+        l->camera.reset();  // unmapped: nothing is written there once this returns
         l->ended = true;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_link_camera(sc_engine *engine, int index, int slot, const wchar_t *name, int width,
+                                        int height, int keep) {
+    return engine_call(engine, "sc_engine_output_link_camera", [&]() -> int {
+        if (!name || !*name || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS ||
+            width < 2 || height < 2 || width > 16384 || height > 16384 || (width & 1) || (height & 1))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_link_camera: bad slot, name or size");
+        auto block = std::make_unique<CameraBlock>();
+        if (!block->open(name))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_link_camera: the camera's block can't be opened (error " +
+                                             std::to_string(GetLastError()) + ")");
+        block->width = width;
+        block->height = height;
+        if (CameraBlock::HEADER + static_cast<size_t>(width) * height * 3 / 2 > block->size)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_link_camera: the camera's block is too small");
+        std::shared_ptr<Link> l;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            Output &out = engine->outputs[index][slot];
+            if (out.share || out.width > width || out.height > height)
+                return fail(SC_ERR_ARGUMENT, "sc_engine_output_link_camera: the output doesn't fit the camera");
+            l = out.link;
+            if (!l || l->ended.load()) l = out.link = std::make_shared<Link>();
+        }
+        std::lock_guard<std::mutex> hold(l->use);
+        l->writer.reset();
+        l->camera = std::move(block);
+        l->keep = keep != 0;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_output_camera_frames(sc_engine *engine, int index, int slot, uint64_t *frames) {
+    return guarded("sc_engine_output_camera_frames", [&]() -> int {
+        if (frames) *frames = 0;
+        if (!engine || !frames || index < 0 || index >= SC_ENGINE_CANVASES || slot < 0 || slot >= SC_ENGINE_OUTPUTS)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_output_camera_frames: bad slot");
+        std::shared_ptr<Link> l;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            l = engine->outputs[index][slot].link;
+        }
+        if (!l) return SC_OK;
+        std::lock_guard<std::mutex> hold(l->use);
+        if (l->camera) *frames = l->camera->written;
         return SC_OK;
     });
 }
