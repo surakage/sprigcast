@@ -51,7 +51,8 @@ ComPtr<IDXGIAdapter1> adapter_with(uint32_t low, int32_t high) {
 
 namespace sc {
 
-int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height) {
+int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height,
+                bool copy) {
     std::lock_guard<std::mutex> lock(dev.lock);
     if (page.name != name || !page.texture) {
         page = PageTexture();
@@ -77,6 +78,10 @@ int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstri
     if (FAILED(hr) || hr == static_cast<HRESULT>(WAIT_ABANDONED)) {
         page = PageTexture();
         return fail_hr(SC_ERR_DEVICE, "AcquireSync (browser page)", hr);
+    }
+    if (!copy) {
+        page.mutex->ReleaseSync(0);  // the helper may draw the next one; the source keeps its picture
+        return SC_OK;
     }
     Source &s = dev.comp.sources[id];
     if (!s.texture || s.data_w != width || s.data_h != height || s.planar) {

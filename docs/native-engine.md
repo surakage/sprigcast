@@ -174,6 +174,9 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   `engine_tick` only notes the first paint and the sound status). A picture overwritten while it was copied is
   taken again the next frame; a device rebuild takes the newest again. Pages drawn in SprigCast's own process
   (`SPRIGCAST_BROWSER_IN_PROCESS`) go through Python as before.
+  A frozen page (Snap's freeze) keeps its block, held (`sc_engine_source_shared_hold`, interface 29): the frame
+  thread still takes each picture so the helper never waits on it, but the source keeps its frozen one. Letting
+  the block go instead left a page on the card waiting, and it made its texture again every 3 s (PC, 2026-11-18).
 - **Browser pages on the card (`native/core/src/page_texture.cpp`, `app/browser_quick.py`).** With the native
   engine, SprigCast starts the helper with the engine's card (`SPRIGCAST_BROWSER_CARD`, its LUID from
   `sc_d3d_device_luid`; `NativeCanvases` tells `sources/browser.use_card`, and a helper already running starts

@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 28  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 29  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -257,6 +257,7 @@ def _lib():
         "sc_engine_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
+        "sc_engine_source_shared_hold": (c_int, [vp, ctypes.c_uint64, c_int]),
         "sc_engine_source_visual": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_d3d_device_luid": (c_int, [vp, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_int32)]),
         "sc_page_target_create": (c_int, [ctypes.c_uint32, ctypes.c_int32, vp, c_int, c_int, ctypes.c_wchar_p, out]),
@@ -672,6 +673,11 @@ class Engine:
         by app/browser_helper.py FrameSlot): the frame thread copies each new one onto the card itself. None goes
         back to :meth:`upload` (the source keeps the picture it has)."""
         _check(_need().sc_engine_source_shared(self.handle, key(source_id), name or None))
+
+    def hold_shared(self, source_id: str, held: bool) -> None:
+        """Hold a shared source's picture still (a freeze) while the engine keeps taking the page's pictures, so the
+        page never waits for it; False shows them again."""
+        _check(_need().sc_engine_source_shared_hold(self.handle, key(source_id), int(bool(held))))
 
     def set_look(self, name: str, table) -> None:
         import numpy as np

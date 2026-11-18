@@ -124,7 +124,7 @@ class FakeNative:
     def upload(self, source_id, frame, order, size):
         self.uploads.append(source_id)
 
-    def attach_media(self, source_id, player):
+    def attach_media(self, source_id, player, held=False):
         if player is not None:
             self.attached[source_id] = player
         else:
@@ -543,6 +543,37 @@ def test_a_browser_page_is_attached_by_its_shared_block_and_let_go_the_right_way
     assert not bridge.attach_media("page", None)
     assert calls[1:] == [("shared", "page", "sprigcast-2-1"), ("shared", "page", None), ("media", "page", player),
                          ("media", "page", None), ("shared", "page", "sprigcast-2-1"), ("shared", "page", None)]
+
+
+def test_a_frozen_page_is_held_not_let_go(monkeypatch):
+    """Snap's freeze (PC, 2026-11-18): letting go of a page's block left the page waiting for the engine, and it
+    made its texture again every 3 s. Frozen, the block stays and is held; thawed, it shows again."""
+    calls = []
+
+    class Holding(FakeEngine):
+        def attach_shared(self, source_id, name):
+            calls.append(("shared", source_id, name))
+
+        def hold_shared(self, source_id, held):
+            calls.append(("hold", source_id, held))
+
+        def forget(self, source_id):
+            calls.append(("forget", source_id))
+
+    monkeypatch.setattr(sprigcore, "Engine", Holding)
+    bridge = native_bridge.NativeCanvases(_collection())
+    assert bridge.attach_media("page", "sprigcast-1-1")
+    assert bridge.attach_media("page", "sprigcast-1-1", held=True) and bridge.attach_media("page", "sprigcast-1-1",
+                                                                                           held=True)
+    assert bridge.attach_media("page", "sprigcast-1-1")
+    assert calls == [("shared", "page", "sprigcast-1-1"), ("hold", "page", True), ("hold", "page", False)]
+    calls.clear()
+    assert bridge.attach_media("page", "sprigcast-1-1", held=True)
+    bridge.forget_gone([])
+    assert "page" not in bridge._held
+    calls.clear()
+    assert not bridge.attach_media("clip", None, held=True)  # nothing to hold: a player is simply let go
+    assert calls == []
 
 
 def test_a_failed_native_engine_hands_the_previews_back_to_python():

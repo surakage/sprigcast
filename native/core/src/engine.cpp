@@ -455,6 +455,7 @@ struct sc_engine {
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, std::shared_ptr<void>> medias;  // sources shown straight from a media player
     std::unordered_map<uint64_t, std::wstring> shareds;          // sources shown from another process's memory
+    std::set<uint64_t> shared_held;  // shareds held still (a freeze): their pictures taken, not shown
     std::unordered_map<uint64_t, std::shared_ptr<void>> visuals; // sources an audio visualizer draws (visual.cpp)
     std::unordered_map<uint64_t, DrawList> draws;                // the newest list per source, not yet sent
     std::unordered_map<uint64_t, LookData> looks;
@@ -1097,12 +1098,14 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> medias;
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> visuals;
     std::vector<std::pair<uint64_t, std::wstring>> shareds;
+    std::set<uint64_t> shared_held;
     uint64_t detach_seen;
     {
         std::lock_guard<std::mutex> lock(e.state);
         medias.assign(e.medias.begin(), e.medias.end());
         visuals.assign(e.visuals.begin(), e.visuals.end());
         shareds.assign(e.shareds.begin(), e.shareds.end());
+        shared_held = e.shared_held;
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
         std::copy(std::begin(e.transitions), std::end(e.transitions), transitions);
         for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
@@ -1193,9 +1196,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         std::wstring texture;
         const uint64_t seq = block.newest(&data, &how, &texture);
         if (!seq) continue;
-        e.kept_sources.erase(id);
+        const bool held = shared_held.count(id) != 0;  // frozen: taken so the page goes on, the picture kept
+        if (!held) e.kept_sources.erase(id);
         if (!data) {  // drawn on the card by the helper: copied there, never through memory
-            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height);
+            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height, !held);
             if (code == SC_NOT_YET) continue;
             if (code != SC_OK) {
                 if (!block.page_said) {
@@ -1207,6 +1211,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
                 continue;
             }
             block.page_said = false;
+            block.seen = seq;
+            continue;
+        }
+        if (held) {
             block.seen = seq;
             continue;
         }
@@ -1638,6 +1646,7 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->visuals.erase(id);
         engine->draws.erase(id);
         engine->shareds.erase(id);
+        engine->shared_held.erase(id);
         engine->forgets.insert(id);
         return SC_OK;
     });
@@ -1706,7 +1715,20 @@ SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t
             engine->forgets.erase(id);
         } else {
             engine->shareds.erase(id);
+            engine->shared_held.erase(id);
         }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_shared_hold(sc_engine *engine, uint64_t id, int held) {
+    return engine_call(engine, "sc_engine_source_shared_hold", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_shared_hold: no id");
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (held)
+            engine->shared_held.insert(id);
+        else
+            engine->shared_held.erase(id);
         return SC_OK;
     });
 }
