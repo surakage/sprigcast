@@ -1914,6 +1914,8 @@ class Engine:
                 self._pruned = prune(0.0) if prune is not None else 0
                 log.warning("outputs made again: %d of Python's output copies let go", self._pruned)
             self._mark("making outputs again")
+        if getattr(compositor, "_to_free", None):  # spares past their time: a few each frame (Compositor.free_some)
+            compositor.free_some()
         if now - self._pruned_at > 1.0:  # a recording or source record that ended leaves its targets idle
             self._pruned_at = now
             prune = getattr(compositor, "prune", None)  # test stand-ins may not have it

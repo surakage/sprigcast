@@ -396,3 +396,34 @@ def test_a_sleeping_sources_texture_waits_for_it_to_wake(compositor):
     assert compositor.textures["other"] is not tex
     compositor.prune(now=time.monotonic() + compositor.SPARE_KEEP_S + 1)  # not wanted for a minute: freed
     assert compositor._take_spare_texture((8, 6), 4) is None
+
+
+def test_spares_past_their_time_are_freed_a_few_each_frame():
+    """PC 2026-11-18: 50-70 s after a Stop or a switch, every spare freed in one go held the graphics card 300+ ms.
+    They go a little each frame now."""
+    import time
+
+    from sprigcast.render.compositor import Compositor
+
+    freed = []
+
+    class Thing:
+        def __init__(self, size):
+            self.size = size
+
+        def release(self):
+            freed.append(self)
+
+    comp = Compositor.__new__(Compositor)
+    comp._used, comp._spare, comp._spare_textures, comp._to_free = {}, [], [], []
+    comp._previewed, comp._previewed_full = set(), set()
+    comp.targets, comp.nv12_targets, comp.scaled_targets, comp.full_pbos = {}, {}, {}, {}
+    now = time.monotonic()
+    comp._spare = [(Thing((1920, 1080)), now) for _ in range(10)]  # 8 MB each
+    comp.prune(now=now + comp.SPARE_KEEP_S + 1)
+    assert 1 <= len(freed) <= 2 and len(comp._to_free) == 10 - len(freed)
+    while comp._to_free:
+        before = len(freed)
+        comp.free_some()
+        assert 1 <= len(freed) - before <= 2
+    assert len(freed) == 10
