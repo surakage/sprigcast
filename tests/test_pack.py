@@ -109,3 +109,24 @@ def test_shelf_packs_and_unpacks_into_a_new_folder(tmp_path):
     assert (first.name, second.name) == ("Gaming", "Gaming 2")
     assert (media / "Gaming").is_dir() and (media / "Gaming 2").is_dir()
     assert str(media / "Gaming 2") in shelf.load_garden(second).sources[0].settings["path"]
+
+
+def test_a_pngtuber_comes_along_with_its_expressions_and_picked_pictures(tmp_path):
+    from sprigcast.core.pack import export_pack, read_pack
+
+    model = tmp_path / "Tuber"
+    for rel in ("idle.png", "talk.png", "happy/idle.png", "happy/talk.png"):
+        (model / rel).parent.mkdir(parents=True, exist_ok=True)
+        (model / rel).write_bytes(b"x")
+    cozy = tmp_path / "Cozy.png"
+    cozy.write_bytes(b"y")
+    garden = _starter()
+    garden.sources[0].kind = "pngtuber"
+    garden.sources[0].settings = {"folder": str(model), "idle_picture": str(cozy)}
+    for source in garden.sources[1:]:
+        source.settings = {}
+    assert export_pack(garden, tmp_path / "g.sprigpack") == []
+    back = read_pack(tmp_path / "g.sprigpack", tmp_path / "media")
+    settings = back.sources[0].settings
+    assert (Path(settings["folder"]) / "happy" / "talk.png").is_file()
+    assert Path(settings["idle_picture"]).read_bytes() == b"y"

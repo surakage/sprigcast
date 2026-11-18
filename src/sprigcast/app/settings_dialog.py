@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 
 
+PICTURE_FILES = "Pictures (*.png *.gif *.webp *.apng)"
+
 LABELS = {
     "url": "URL",
     "file": "Local file",
@@ -66,6 +68,8 @@ LABELS = {
     "talk_at": "Talks above (dB)",
     "yell_at": "Yells above (dB)",
     "hold": "Hold (seconds)",
+    "idle_picture": "Idle picture",
+    "talk_picture": "Talk picture",
     "look": "Style",
     "text_size": "Size",
     "all_caps": "All caps",
@@ -182,6 +186,8 @@ class SettingsDialog(QDialog):
             return self._with_button(edit, "Pick…", lambda: self._pick_color(edit))
         if key in ("file", "path"):
             return self._with_button(edit, "Browse…", lambda: self._pick_file(edit))
+        if key.endswith("_picture"):
+            return self._with_button(edit, "Browse…", lambda: self._pick_file(edit, PICTURE_FILES))
         if key == "folder":
             return self._with_button(edit, "Browse…", lambda: self._pick_folder(edit))
         return edit
@@ -203,8 +209,8 @@ class SettingsDialog(QDialog):
         if color.isValid():
             edit.setText("#{:02x}{:02x}{:02x}{:02x}".format(color.red(), color.green(), color.blue(), color.alpha()))
 
-    def _pick_file(self, edit: QLineEdit) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose file", edit.text())
+    def _pick_file(self, edit: QLineEdit, types: str = "") -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Choose file", edit.text(), types)
         if path:
             edit.setText(path)
 
