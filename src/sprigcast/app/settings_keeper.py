@@ -43,6 +43,7 @@ def keep(config: Path, settings=None) -> int:
         from PySide6.QtCore import QSettings
 
         live = settings if settings is not None else QSettings()
+        live.setFallbacksEnabled(False)  # only SprigCast's own settings, never Qt's fallback places (HKLM, ...)
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         live.setValue(MARKER, stamp)
         live.sync()
@@ -50,6 +51,7 @@ def keep(config: Path, settings=None) -> int:
         copy = _copy_of(config)
         copy.clear()
         keys = live.allKeys()
+        keys = [key for key in keys if not _never_kept(key)]
         for key in keys:
             copy.setValue(key, live.value(key))
         copy.sync()
@@ -62,13 +64,20 @@ def keep(config: Path, settings=None) -> int:
 # Removed on purpose by SprigCast itself, so never put back: canvas changes waiting for a restart (applied
 # once), the upload a clean stream proved (forgotten after trouble) and settings of features taken out.
 NEVER_BACK = ("video/pending", "upload/proven_kbps")
+# Paired devices are never copied or put back: a list from an older copy brings back devices you removed and
+# drops ones paired since (PC test 2026-11-18: the pre-wipe list replaced the current harness pairing).
+NEVER_KEPT = ("control/devices",)
+
+
+def _never_kept(key: str) -> bool:
+    return any(key == name or key.startswith(name + "_") for name in NEVER_KEPT)
 
 
 def _never_back(key: str) -> bool:
     from sprigcast.app import leftovers
 
-    return (key in NEVER_BACK or key == MARKER or key.endswith("_unreadable") or key in leftovers.KEYS
-            or key.startswith(tuple(f"{group}/" for group in leftovers.GROUPS)))
+    return (key in NEVER_BACK or _never_kept(key) or key == MARKER or key.endswith("_unreadable")
+            or key in leftovers.KEYS or key.startswith(tuple(f"{group}/" for group in leftovers.GROUPS)))
 
 
 def restore(config: Path, settings=None) -> list[str]:
@@ -81,6 +90,7 @@ def restore(config: Path, settings=None) -> list[str]:
         if stopped or not path(config).is_file():
             return []
         live = settings if settings is not None else QSettings()
+        live.setFallbacksEnabled(False)  # missing means missing here, whatever a fallback place holds
         copy = _copy_of(config)
         back = [key for key in copy.allKeys() if not live.contains(key) and not _never_back(key)]
         if LOCAL_KEY in back and live.contains(PASSWORD):

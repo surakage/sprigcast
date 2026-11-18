@@ -55,10 +55,18 @@ FULL_EVERY = 6  # every this many watches (3 s) the settings are written out and
 WATCH_MS = 500  # how often stream and record states are compared while an app is connected
 
 
+def _own_settings() -> QSettings:
+    """SprigCast's settings without Qt's fallback places (HKLM, Slothbloom's OrganizationDefaults): a secret or a
+    device list missing here must read as missing, never as an old copy left somewhere else."""
+    q = QSettings()
+    q.setFallbacksEnabled(False)
+    return q
+
+
 def _secret(key: str, make=None) -> str:
     """A secret saved encrypted for this Windows user (secret_store). A plain one from before is
     encrypted now; a missing or unreadable one is made anew when `make` is given."""
-    q = QSettings()
+    q = _own_settings()
     saved = str(q.value(key, "") or "")
     value = secret_store.unprotect(saved)
     if value and not secret_store.is_protected(saved) and secret_store.available():
@@ -80,7 +88,7 @@ def save_secret(key: str, value: str) -> bool:
     q = QSettings()
     q.setValue(key, secret_store.protect(value))
     q.sync()
-    back = secret_store.unprotect(str(QSettings().value(key, "") or ""))
+    back = secret_store.unprotect(str(_own_settings().value(key, "") or ""))
     if q.status() != QSettings.Status.NoError or back != value:
         log.warning("control: %s didn't save (settings status %s, read back %s)", key, q.status().name,
                     "nothing" if not back else "something else")
@@ -93,7 +101,7 @@ def load_devices() -> list:
     rather than written over by the next pairing, and logged, so it can still be recovered."""
     from sprigcast.control.pairing import Pairing
 
-    q = QSettings()
+    q = _own_settings()
     saved = str(q.value(DEVICES, "") or "")
     text = _secret(DEVICES)
     devices = Pairing.devices_from_json(text)
@@ -410,13 +418,13 @@ class ControlServer(QObject):
         self.connection_path: Path | None = None  # %APPDATA%\SprigCast\connection.json: port and doors, no secrets
         self.on_clients_changed = lambda count: None
         self.pairing = Pairing(load_devices(), on_change=self._devices_changed)
-        self._devices_raw = str(QSettings().value(DEVICES, "") or "")  # the saved value this copy last matched
+        self._devices_raw = str(_own_settings().value(DEVICES, "") or "")  # the saved value this copy last matched
         self._devices_seen = {d.id for d in self.pairing.devices}
         self.local_key = ""  # set by start() while a password is in use
 
     def _stored_devices(self) -> tuple[str, list | None]:
         """The saved value as it is now, and its devices (None if it can't be read here)."""
-        raw = str(QSettings().value(DEVICES, "") or "")
+        raw = str(_own_settings().value(DEVICES, "") or "")
         if not raw:
             return raw, []
         text = secret_store.unprotect(raw)
