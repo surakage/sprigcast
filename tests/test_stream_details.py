@@ -329,6 +329,66 @@ def test_kick_reads_and_saves_title_and_category(monkeypatch):
     assert web.calls[-1]["body"]["custom_tags"] == []  # cleared on purpose
 
 
+def test_kick_reads_tags_from_the_stream_part(monkeypatch):
+    _signed_in("kick")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels", {"data": [{"stream_title": "Hi", "category": None, "slug": "sloth",
+                                                        "stream": {"custom_tags": ["Cozy"], "key": "secret"}}]})
+    assert sd.load("kick").tags == ["Cozy"]
+
+
+def test_kick_asks_by_channel_name_when_it_sends_nothing(monkeypatch):
+    _signed_in("kick")
+    monkeypatch.setattr(sd, "account", lambda service: "sloth")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels?slug=sloth", {"data": [{"stream_title": "Found", "slug": "sloth"}]})
+    web.on("GET", sd.KICK_API + "/channels", {"data": []})
+    assert sd.load("kick").title == "Found"
+
+
+def test_kick_shows_the_last_save_when_it_sends_empty_details(monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.KICK_LAST_SETTING)
+    _signed_in("kick")
+    monkeypatch.setattr(sd, "account", lambda service: "sloth")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels", {"data": [{"stream_title": "", "category": None, "slug": "sloth"}]})
+    web.on("PATCH", sd.KICK_API + "/channels", {})
+    assert sd.load("kick").from_last is False  # nothing saved here yet: empty, as Kick sent it
+    sd.save("kick", sd.Details(title="Sloth time", category="Art", category_id="15", tags=["Cozy"]))
+    details = sd.load("kick")
+    assert (details.title, details.category, details.category_id, details.tags) == ("Sloth time", "Art", "15",
+                                                                                   ["Cozy"])
+    assert details.from_last and details.note
+    monkeypatch.setattr(sd, "account", lambda service: "someone else")
+    assert sd.load("kick").title == ""  # another account never sees it
+    QSettings().remove(sd.KICK_LAST_SETTING)
+
+
+def test_kick_tags_can_be_cleared_when_kick_sends_nothing(monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.KICK_LAST_SETTING)
+    _signed_in("kick")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels", {"data": [{"stream_title": "", "category": None}]})
+    web.on("PATCH", sd.KICK_API + "/channels", {})
+    details = sd.load("kick")
+    assert details.unread
+    details.title = "Hi"
+    sd.save("kick", details)
+    assert web.calls[-1]["body"]["custom_tags"] == []  # the box is all there is: an empty one clears them
+    QSettings().remove(sd.KICK_LAST_SETTING)
+
+
+def test_category_names_best_match_first():
+    from sprigcast.app.stream_details_dialog import best_first
+
+    assert best_first(["Just Sleeping", "Chess", "Just Chatting", "Just Chatting Live"], "just chatting") == [
+        "Just Chatting", "Just Chatting Live", "Just Sleeping", "Chess"]
+
+
 def test_kick_category_search_falls_back_to_the_newer_one(monkeypatch):
     _signed_in("kick")
     web = Web(monkeypatch)

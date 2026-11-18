@@ -82,10 +82,11 @@ class Details:
     broadcast_id: str = ""  # YouTube: the stream being edited, "" = none waiting (Save makes one)
     starts: str = ""  # YouTube: its scheduled start, which an update has to send back
     thumbnail: str = ""  # YouTube: the current thumbnail's web address, to show it
-    from_last: bool = False  # YouTube: nothing scheduled, so these came from your last stream
+    from_last: bool = False  # YouTube: nothing scheduled, so from your last stream; Kick: from your last save
     vertical_key_name: str = ""  # YouTube Dual stream: what the vertical key is called in YouTube Studio
     video_category: str = ""  # YouTube: the category id (YOUTUBE_CATEGORIES); "" = leave it as it is
-    note: str = ""  # after a save: what didn't go through although the rest did (the thumbnail)
+    unread: bool = False  # Kick sent nothing back, so what's typed is all there is (tags are always sent)
+    note: str = ""  # what didn't go through although the rest did (the thumbnail), or where these came from
 
 
 # Who's signed in, without opening the credential store --------------------------------------------------
@@ -578,14 +579,74 @@ def thumbnail_bytes(path: str) -> bytes:
 # Kick --------------------------------------------------------------------------------------------------
 
 
+KICK_LAST_SETTING = "kick/details_last"  # QSettings: what SprigCast last saved to Kick (title etc.). Not secret.
+
+
+def _kick_channel(token: str) -> dict:
+    """The signed-in channel. Kick answers for "you" with no query; the channel name (slug) is the fallback."""
+    channels = _call("GET", f"{KICK_API}/channels", token, who="Kick").get("data") or []
+    if not channels and account("kick"):
+        slug = urllib.parse.quote(account("kick"))
+        channels = _call("GET", f"{KICK_API}/channels?slug={slug}", token, who="Kick").get("data") or []
+    channel = channels[0] if channels and isinstance(channels[0], dict) else {}
+    slug = channel.get("slug")
+    if slug and not (channel.get("stream_title") or channel.get("category")):  # asked by name, Kick may say more
+        named = _call("GET", f"{KICK_API}/channels?slug={urllib.parse.quote(str(slug))}", token,
+                      who="Kick").get("data") or []
+        if named and isinstance(named[0], dict) and (named[0].get("stream_title") or named[0].get("category")):
+            channel = named[0]
+    stream = channel.get("stream") if isinstance(channel.get("stream"), dict) else {}
+    # What came back, never the values (the stream part carries the stream key).
+    log.info("stream details: kick sent %d channel(s), fields %s, stream fields %s; title %s, category %s, "
+             "tags %d, live %s", len(channels), sorted(channel), sorted(stream),
+             "set" if channel.get("stream_title") else "empty", "set" if channel.get("category") else "empty",
+             len(stream.get("custom_tags") or channel.get("custom_tags") or []), bool(stream.get("is_live")))
+    return channel
+
+
+def _kick_last() -> Details | None:
+    try:
+        from PySide6.QtCore import QSettings
+
+        raw = QSettings().value(KICK_LAST_SETTING, "") or ""
+        last = json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(last, dict) or last.get("account") != account("kick"):
+        return None
+    tags = [str(t) for t in last.get("tags") or [] if t]
+    return Details(title=str(last.get("title") or ""), category=str(last.get("category") or ""),
+                   category_id=str(last.get("category_id") or ""), tags=tags, old_tags=list(tags), from_last=True,
+                   note="Kick didn't send your details, so these are what you last saved here.")
+
+
+def _kick_keep(details: Details) -> None:
+    try:
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue(KICK_LAST_SETTING, json.dumps({
+            "account": account("kick"), "title": details.title.strip(), "category": details.category,
+            "category_id": details.category_id, "tags": list(details.tags)}))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _kick_load() -> Details:
     def call(token):
-        channel = (_call("GET", f"{KICK_API}/channels", token, who="Kick").get("data") or [{}])[0]
-        category = channel.get("category") or {}
-        tags = channel.get("custom_tags") or (channel.get("stream") or {}).get("custom_tags") or []
+        channel = _kick_channel(token)
+        category = channel.get("category") if isinstance(channel.get("category"), dict) else {}
+        stream = channel.get("stream") if isinstance(channel.get("stream"), dict) else {}
+        tags = stream.get("custom_tags") or channel.get("custom_tags") or []
         tags = [str(t) for t in tags if t] if isinstance(tags, list) else []
-        return Details(title=channel.get("stream_title", "") or "", category=category.get("name", "") or "",
-                       category_id=str(category.get("id") or ""), tags=tags, old_tags=list(tags))
+        details = Details(title=channel.get("stream_title", "") or "", category=category.get("name", "") or "",
+                          category_id=str(category.get("id") or ""), tags=tags, old_tags=list(tags))
+        if not (details.title or details.category or details.tags):
+            details.unread = True
+            last = _kick_last()
+            if last:
+                last.unread = True
+            return last or details
+        return details
 
     return _with_token("kick", call)
 
@@ -595,7 +656,7 @@ def _kick_save(details: Details) -> None:
     if details.category_id:
         body["category_id"] = int(details.category_id)
     tags = split_tags(details.tags)
-    if tags or details.old_tags:  # never sent when there were none and none were typed
+    if tags or details.old_tags or details.unread:  # never sent when there were none and none were typed
         body["custom_tags"] = tags
 
     def call(token):
@@ -603,6 +664,8 @@ def _kick_save(details: Details) -> None:
 
     _with_token("kick", call)
     details.tags = details.old_tags = tags
+    details.note = ""
+    _kick_keep(details)
 
 
 def _kick_search(text: str) -> list[tuple[str, str]]:
