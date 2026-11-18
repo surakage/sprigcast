@@ -375,7 +375,7 @@ def test_a_load_that_ends_after_going_back_to_sleep_is_not_kept(tuber, monkeypat
     source, clock, level = _ready(tuber, monkeypatch, _model(tmp_path / "m"))
     source.asleep = True
     source.sleep()
-    source._load(tmp_path / "m")
+    source._load((tmp_path / "m", None, None))
     assert source._model is None
 
 
@@ -547,8 +547,8 @@ def test_a_model_folder_filled_later_is_found_without_a_restart(tuber, monkeypat
     clock = Clock()
     monkeypatch.setattr(tuber.time, "monotonic", clock)
     source = create_source("pngtuber", "t", {"folder": str(folder)})
-    source._load(folder)
-    assert source.status == "Pick a folder with idle and talk pictures" and source._model is None
+    source._load((folder, None, None))
+    assert source.status == "No pictures in later" and source._model is None
     _model(folder)
     source._get_model()
     assert source._loading is None  # looked a moment ago: not again yet
@@ -558,3 +558,63 @@ def test_a_model_folder_filled_later_is_found_without_a_restart(tuber, monkeypat
         "T", (), {"start": lambda self: target(*args)})())
     source._get_model()
     assert source._model is not None and source.status == "ok"
+
+
+def test_a_folder_of_other_pictures_says_exactly_what_is_missing(tuber, tmp_path):
+    emotes = tmp_path / "resized-images"
+    for name in ("Angry", "Cozy", "Pog"):
+        _picture(emotes / f"{name}.png", (200, 150, 100, 255))
+    for folder, said in ((emotes, "No Idle or Talk picture in resized-images"),
+                         (tmp_path / "gone", "Can't find the folder gone")):
+        with pytest.raises(tuber.ModelError, match=said):
+            tuber.load_model(folder)
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(tuber.ModelError, match="No pictures in empty"):
+        tuber.load_model(tmp_path / "empty")
+    with pytest.raises(tuber.ModelError, match="Can't find Lost.png"):
+        tuber.load_model(emotes, picked={"idle": emotes / "Cozy.png", "talk": emotes / "Lost.png"})
+
+
+def test_idle_and_talk_pictures_can_be_picked_from_anywhere(tuber, monkeypatch, tmp_path):
+    emotes = tmp_path / "emotes"
+    quiet = _picture(emotes / "Cozy.png", (200, 150, 100, 255))
+    loud = _picture(emotes / "Pog.png", (200, 150, 100, 255), mouth=(60, 20, 20, 255))
+    _picture(emotes / "Angry.png", (90, 10, 10, 255))
+    settings = {"idle_picture": str(quiet), "talk_picture": str(loud)}
+    assert tuber.model_folder(settings) is None  # not the sample sloth's blinks under your pictures
+    assert tuber.expressions_in(settings) == ["default"]
+    model = tuber.load_model(None, picked=tuber.picked_pictures(settings))
+    assert set(model.pictures["default"]) == {"idle", "talk"}
+    # with a model folder too: they're its default, its expressions stay
+    happy = _model(tmp_path / "m" / "happy")
+    _picture(happy.parent / "blink.png", (1, 2, 3, 255))
+    found = tuber.scan(happy.parent, {"idle": quiet, "talk": loud})
+    assert found["default"] == {"idle": quiet, "talk": loud} and "happy" in found
+    # just one picked: it's both (it bounces when you talk)
+    assert tuber.scan(None, {"idle": quiet})["default"] == {"idle": quiet, "talk": quiet}
+    # the source loads them, and loads again when one is changed
+    clock = Clock()
+    monkeypatch.setattr(tuber.time, "monotonic", clock)
+    monkeypatch.setattr(tuber.threading, "Thread", lambda target, args, **kw: type(
+        "T", (), {"start": lambda self: target(*args)})())
+    source = create_source("pngtuber", "t", settings)
+    source._get_model()
+    assert source._model is not None and source.status == "ok"
+    source.update({**settings, "talk_picture": str(emotes / "Lost.png")})
+    assert source._model is None and source.status == "Can't find Lost.png"
+
+
+def test_one_picture_named_anything_just_bounces(tuber, tmp_path):
+    only = _picture(tmp_path / "solo" / "Me.png", (200, 150, 100, 255))
+    assert tuber.scan(tmp_path / "solo") == {"default": {"idle": only}}
+    model = tuber.load_model(tmp_path / "solo")
+    assert model.picture("default", "talk") is model.picture("default", "idle")
+
+
+def test_the_settings_form_has_pickers_for_the_two_pictures(tuber):
+    from sprigcast.app.settings_dialog import SettingsDialog
+
+    defaults = tuber.PngtuberSource.defaults
+    dialog = SettingsDialog("PNGtuber", defaults, dict(defaults))
+    assert {"idle_picture", "talk_picture"} <= set(dialog.fields)
+    assert list(defaults)[:3] == ["folder", "idle_picture", "talk_picture"]

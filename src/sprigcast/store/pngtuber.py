@@ -15,6 +15,8 @@ An expression is a folder inside it with its own set (happy/idle.png, happy/talk
 named with it in front (happy_idle.png, happy_talk.png). The pictures at the top are "default".
 Anything missing borrows the nearest picture (no blink: it doesn't blink; no yell: it talks).
 Draw every picture the same size, so nothing jumps when it changes.
+Pictures named anything else (Cozy.png, Pog.png...): pick them as Idle picture and Talk picture
+instead (one picture for both just bounces). Picked pictures replace the folder's own idle and talk.
 
 It listens to a sound you already have in SprigCast (Auto: your mic), so it costs nothing extra and
 goes quiet when you mute. It can also listen to a mic straight from Windows. Settings: Talks above
@@ -52,9 +54,9 @@ from sprigcast.control.native import ApiError, register_action, send_event
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 2, "adds": "Source",
+PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 3, "adds": "Source",
           "about": "Your avatar pictures talk when you do: blinks, a little bounce and expressions.",
-          "new": "Starts in the bottom right corner, clear of Now playing."}
+          "new": "Pick an Idle and Talk picture from anywhere; problems say what's missing."}
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +121,13 @@ def read_name(stem: str) -> tuple[str | None, str] | None:
     return None
 
 
+def _subfolders(folder: Path) -> list[Path]:
+    try:
+        return sorted((p for p in folder.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+
+
 def _pictures(folder: Path) -> list[Path]:
     try:
         return sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in PICTURES),
@@ -127,9 +136,19 @@ def _pictures(folder: Path) -> list[Path]:
         return []
 
 
-def scan(folder: Path) -> dict[str, dict[str, Path]]:
+def scan(folder: Path | None, picked: dict[str, Path] | None = None) -> dict[str, dict[str, Path]]:
     """Expression -> state -> picture, from a model folder. Only expressions with idle or talk are kept.
-    Doesn't open any picture, so it's quick enough to ask whenever the hotkey list is made."""
+    picked: idle and talk pictures chosen one by one; they're the default expression (the folder's own
+    default is left out, its blinks wouldn't match them). Doesn't open any picture, so it's quick enough
+    to ask whenever the hotkey list is made."""
+    found = _scan_folder(folder) if folder is not None else {}
+    picked = {k: v for k, v in (picked or {}).items() if v.is_file()}
+    if picked:
+        found[DEFAULT] = {"idle": picked.get("idle") or picked["talk"], "talk": picked.get("talk") or picked["idle"]}
+    return found
+
+
+def _scan_folder(folder: Path) -> dict[str, dict[str, Path]]:
     found: dict[str, dict[str, Path]] = {}
     loose = []
     for path in _pictures(folder):
@@ -139,13 +158,11 @@ def scan(folder: Path) -> dict[str, dict[str, Path]]:
             continue
         expression, state = name
         found.setdefault(expression or DEFAULT, {}).setdefault(state, path)
-    if DEFAULT not in found and len(loose) == 2 and not found:
+    if not found and len(loose) == 2:
         found[DEFAULT] = {"idle": loose[0], "talk": loose[1]}  # two pictures named anything: quiet, then talking
-    try:
-        subfolders = sorted((p for p in folder.iterdir() if p.is_dir()), key=lambda p: p.name.lower())
-    except OSError:
-        subfolders = []
-    for sub in subfolders:
+    elif not found and len(loose) == 1:
+        found[DEFAULT] = {"idle": loose[0]}  # just one: it bounces when you talk
+    for sub in _subfolders(folder):
         states: dict[str, Path] = {}
         for path in _pictures(sub):
             name = read_name(path.stem)
@@ -177,9 +194,51 @@ def expression_order(names) -> list[str]:
     return sorted(names, key=lambda n: (n != DEFAULT, n.lower()))
 
 
-def model_folder(settings: dict[str, Any]) -> Path:
-    text = str(settings.get("folder", "") or "").strip().strip('"')
-    return Path(text) if text else _sample()
+def _path(settings: dict[str, Any], key: str) -> Path | None:
+    text = str(settings.get(key, "") or "").strip().strip('"')
+    return Path(text) if text else None
+
+
+def picked_pictures(settings: dict[str, Any]) -> dict[str, Path]:
+    """The Idle picture and Talk picture chosen one by one (state -> file), as set (found or not)."""
+    out = {}
+    for state in ("idle", "talk"):
+        path = _path(settings, f"{state}_picture")
+        if path is not None:
+            out[state] = path
+    return out
+
+
+def model_folder(settings: dict[str, Any]) -> Path | None:
+    """The model's folder: the sample sloth when nothing is picked; None for picked pictures alone."""
+    folder = _path(settings, "folder")
+    if folder is not None:
+        return folder
+    return None if picked_pictures(settings) else _sample()
+
+
+def model_key(settings: dict[str, Any]) -> tuple:
+    """What the model is made from: a new one is loaded when this changes."""
+    picked = picked_pictures(settings)
+    return model_folder(settings), picked.get("idle"), picked.get("talk")
+
+
+def _name(path: Path) -> str:
+    return path.name or str(path)
+
+
+def what_is_missing(folder: Path | None, picked: dict[str, Path]) -> str:
+    """Why there's no model, exactly: the file or folder that can't be found, or what the folder lacks."""
+    for path in picked.values():
+        if not path.is_file():
+            return f"Can't find {_name(path)}"
+    if folder is None:
+        return "Pick an Idle picture"
+    if not folder.is_dir():
+        return f"Can't find the folder {_name(folder)}"
+    if not _pictures(folder) and not any(_pictures(sub) for sub in _subfolders(folder)):
+        return f"No pictures in {_name(folder)}"
+    return f"No Idle or Talk picture in {_name(folder)}"
 
 
 def _sample() -> Path:
@@ -190,17 +249,17 @@ def _sample() -> Path:
     return plugin_store.STORE_DIR / "assets" / "pngtuber" / "sloth"
 
 
-_SCANS: dict[Path, tuple[float, dict]] = {}
+_SCANS: dict[tuple, tuple[float, dict]] = {}
 
 
 def expressions_in(settings: dict[str, Any]) -> list[str]:
     """The expressions of a source's model (scanned at most every few seconds)."""
-    folder = model_folder(settings)
+    key = model_key(settings)
     now = time.monotonic()
-    cached = _SCANS.get(folder)
+    cached = _SCANS.get(key)
     if cached is None or now - cached[0] > 5:
-        cached = (now, scan(folder))
-        _SCANS[folder] = cached
+        cached = (now, scan(key[0], picked_pictures(settings)))
+        _SCANS[key] = cached
     return expression_order(cached[1])
 
 
@@ -237,7 +296,7 @@ def diff_box(a: np.ndarray, b: np.ndarray) -> tuple[int, int, int, int] | None:
 
 @dataclass
 class Model:
-    folder: Path
+    folder: Path | None
     pictures: dict[str, dict[str, Picture]]  # expression -> state -> picture
     # Where pairs of still pictures differ, worked out while loading so a fade only blends that part.
     diffs: dict[tuple, tuple[int, int, int, int] | None] = field(default_factory=dict)
@@ -304,11 +363,12 @@ def _fit(frame, scale: float, box: tuple[int, int, int]) -> tuple[np.ndarray, in
     return bgra, x0 + int(left), y0 + int(top)
 
 
-def load_model(folder: Path, box: tuple[int, int] = (W, H)) -> Model:
-    """Open and fit every picture of the model (on a worker thread: Pillow lets other threads run)."""
-    found = scan(folder)
-    if not found:
-        raise ModelError("Pick a folder with idle and talk pictures")
+def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[str, Path] | None = None) -> Model:
+    """Open and fit every picture of the model (on a worker thread: Pillow lets other threads run).
+    picked: idle and talk pictures chosen one by one (see scan)."""
+    found = scan(folder, picked)
+    if not found or any(not p.is_file() for p in (picked or {}).values()):
+        raise ModelError(what_is_missing(folder, picked or {}))
     sizes: dict[tuple[str, str], tuple[int, int, int]] = {}
     for expression, states in found.items():
         for state, path in states.items():
@@ -317,7 +377,7 @@ def load_model(folder: Path, box: tuple[int, int] = (W, H)) -> Model:
             except Exception as exc:
                 log.warning("pngtuber: couldn't open %s: %s", path.name, exc)
     if not any(state in ("idle", "talk") for _e, state in sizes):
-        raise ModelError("Couldn't open the pictures in that folder")
+        raise ModelError("Couldn't open the pictures")
     w, h = box
     widest = max(1, max(sw for sw, _sh, _n in sizes.values()))
     tallest = max(1, max(sh for _sw, sh, _n in sizes.values()))
@@ -341,7 +401,7 @@ def load_model(folder: Path, box: tuple[int, int] = (W, H)) -> Model:
             pictures.setdefault(expression, {})[state] = Picture(fitted, list(np.cumsum(durations)))
     pictures = {e: st for e, st in pictures.items() if "idle" in st or "talk" in st}
     if not pictures:
-        raise ModelError("Couldn't open the pictures in that folder")
+        raise ModelError("Couldn't open the pictures")
     model = Model(folder, pictures)
     stills = [p for states in pictures.values() for p in states.values() if len(p.frames) == 1]
     for i, a in enumerate(stills):
@@ -491,7 +551,7 @@ def _quit_later(mic) -> None:
 @register(KIND)
 class PngtuberSource(Source):
     label = "PNGtuber"
-    defaults = {"folder": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.08,
+    defaults = {"folder": "", "idle_picture": "", "talk_picture": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.08,
                 "bounce": True, "blink": True}
     choices = {"listen_to": _listen_choices}
     sleeps = True  # off air it stops listening and lets the pictures go
@@ -504,8 +564,9 @@ class PngtuberSource(Source):
         super().__init__(source_id, settings)
         self._lock = threading.Lock()
         self._model: Model | None = None
-        self._loading: Path | None = None
-        self._failed: Path | None = None
+        self._model_key: tuple | None = None
+        self._loading: tuple | None = None  # model_key being loaded
+        self._failed: tuple | None = None
         self._failed_at = 0.0
         self._buf = np.zeros((H + HOP, W, 4), np.uint8)
         self._shown: tuple | None = None  # (picture key, fade step, hop) last sent
@@ -558,12 +619,12 @@ class PngtuberSource(Source):
         self._model = None
 
     def update(self, settings: dict[str, Any]) -> None:
-        old_folder, old_listen = model_folder(self.settings), self.settings.get("listen_to")
+        old_key, old_listen = model_key(self.settings), self.settings.get("listen_to")
         super().update(settings)
         wanted = str(self.settings.get("expression") or DEFAULT).lower()
         if wanted != self.expression and self._revert is None:
             self.set_expression(wanted)
-        if model_folder(self.settings) != old_folder:
+        if model_key(self.settings) != old_key:
             self._failed = None
             self._model = None
             self._get_model()
@@ -579,39 +640,44 @@ class PngtuberSource(Source):
                 self._key = self._from = None
 
     def _get_model(self) -> None:
-        folder = model_folder(self.settings)
+        key = model_key(self.settings)
         model = self._model
-        if model is not None and model.folder == folder:
+        if model is not None and self._model_key == key:
             return
         with self._lock:
-            if self._loading == folder:
+            if self._loading == key:
                 return
-            if self._failed == folder and time.monotonic() - self._failed_at < 10:
+            if self._failed == key and time.monotonic() - self._failed_at < 10:
                 return  # looked a moment ago; pictures added to the folder are found on a later try
-            self._loading = folder
-        threading.Thread(target=self._load, args=(folder,), name=f"pngtuber-{self.id}", daemon=True).start()
+            self._loading = key
+        threading.Thread(target=self._load, args=(key,), name=f"pngtuber-{self.id}", daemon=True).start()
 
-    def _load(self, folder: Path) -> None:
+    def _load(self, key: tuple) -> None:
+        folder, idle, talk = key
+        picked = {s: p for s, p in (("idle", idle), ("talk", talk)) if p is not None}
         try:
-            model = load_model(folder)
+            model = load_model(folder, picked=picked)
         except ModelError as exc:
             self.status = str(exc)
-            self._failed, self._failed_at = folder, time.monotonic()
+            self._failed, self._failed_at = key, time.monotonic()
+            log.info("pngtuber: no model: %s", exc)
             model = None
         except Exception as exc:
             log.warning("pngtuber: couldn't load %s: %s", folder, exc)
-            self.status = "Couldn't open that model"
-            self._failed, self._failed_at = folder, time.monotonic()
+            self.status = "Couldn't open the pictures"
+            self._failed, self._failed_at = key, time.monotonic()
             model = None
         with self._lock:
             self._loading = None
-            if model is not None and model_folder(self.settings) == folder and not self.asleep:
+            if model is not None and model_key(self.settings) == key and not self.asleep:
+                self._model_key = key
                 self._model = model
                 self._diffs.clear()
                 self._key = self._from = None
                 self._shown = None
                 self.status = "ok"
-                log.info("pngtuber: model %s, expressions %s", folder.name, ", ".join(model.expressions))
+                log.info("pngtuber: model %s, expressions %s", _name(folder or idle or talk),
+                         ", ".join(model.expressions))
 
     # Listening ----------------------------------------------------------------------------------
 

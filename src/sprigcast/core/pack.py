@@ -29,8 +29,10 @@ PAGE_FOLDER_BYTES = 200 * 1024 ** 2  # a page's folder comes along whole when it
 PAGE_FOLDER_FILES = 2_000
 STORED = {".mp4", ".mkv", ".mov", ".webm", ".mp3", ".ogg", ".m4a", ".aac", ".flac", ".png", ".jpg", ".jpeg",
           ".webp", ".gif", ".avif", ".zip", ".woff", ".woff2"}  # already squeezed: zipping again only costs time
-FILE_KEYS = {"image": ("path",), "media": ("path",), "text": ("file",), "browser": ("file",)}
+FILE_KEYS = {"image": ("path",), "media": ("path",), "text": ("file",), "browser": ("file",),
+             "pngtuber": ("idle_picture", "talk_picture")}
 FOLDER_KEYS = {"slide_show": ("folder",)}
+MODEL_KEYS = {"pngtuber": ("folder",)}  # a folder whose subfolders come too (a PNGtuber's expressions)
 
 Progress = Callable[[int, int], None]
 
@@ -45,13 +47,15 @@ def _usable(value: str) -> bool:
 
 
 def _slots(collection: SceneCollection) -> list[tuple[object, str, str]]:
-    """Every file or folder setting as (holder, key, "file"|"page"|"folder"); holder is a dict or an object."""
+    """Every file or folder setting as (holder, key, "file"|"page"|"folder"|"model"); holder is a dict or an object."""
     out: list[tuple[object, str, str]] = []
     for source in collection.sources:
         for key in FILE_KEYS.get(source.kind, ()):
             out.append((source.settings, key, "page" if source.kind == "browser" else "file"))
         for key in FOLDER_KEYS.get(source.kind, ()):
             out.append((source.settings, key, "folder"))
+        for key in MODEL_KEYS.get(source.kind, ()):
+            out.append((source.settings, key, "model"))
         for flt in source.filters:
             if flt.kind == "lut" and flt.settings.get("look") == FROM_FILE:
                 out.append((flt.settings, "file", "file"))
@@ -102,11 +106,18 @@ def _page_files(page: Path) -> tuple[Path, list[Path]]:
     return folder, [page]
 
 
-def _folder_files(folder: Path) -> list[Path]:
+def _folder_files(folder: Path, subfolders: bool = False) -> list[Path]:
+    """The folder's files (and, asked, those of the folders right inside it)."""
     try:
-        return sorted((p for p in folder.iterdir() if p.is_file()), key=lambda p: p.name.casefold())
+        entries = sorted(folder.iterdir(), key=lambda p: p.name.casefold())
     except OSError:
         return []
+    files = [p for p in entries if p.is_file()]
+    if subfolders:
+        for sub in entries:
+            if sub.is_dir() and not sub.name.startswith("."):
+                files += _folder_files(sub)
+    return files
 
 
 def export_pack(collection: SceneCollection, target: Path, progress: Progress | None = None) -> list[str]:
@@ -124,13 +135,15 @@ def export_pack(collection: SceneCollection, target: Path, progress: Progress | 
             continue
         n = len(done) + 1
         path = Path(value)
-        if kind == "folder":
-            files = _folder_files(path) if path.is_dir() else []
+        if kind in ("folder", "model"):
+            files = _folder_files(path, kind == "model") if path.is_dir() else []
             if not files:
                 missing.append(value)
                 continue
-            new = f"{PACK_PREFIX}{n}/{_safe_name(path.name or 'folder')}"
-            plan += [(f"files/{n}/{_safe_name(path.name or 'folder')}/{_safe_name(f.name)}", f) for f in files]
+            top = _safe_name(path.name or 'folder')
+            new = f"{PACK_PREFIX}{n}/{top}"
+            plan += [(f"files/{n}/{top}/" + "/".join(_safe_name(p) for p in f.relative_to(path).parts), f)
+                     for f in files]
         elif not path.is_file():
             missing.append(value)
             continue

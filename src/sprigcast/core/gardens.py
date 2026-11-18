@@ -506,7 +506,8 @@ class Shelf:
 
 # Missing files ------------------------------------------------------------------------------------
 
-FILE_KEYS = {"image": ("path",), "media": ("path",), "text": ("file",), "browser": ("file",)}
+FILE_KEYS = {"image": ("path",), "media": ("path",), "text": ("file",), "browser": ("file",),
+             "pngtuber": ("idle_picture", "talk_picture")}
 
 
 def _usable(value: str) -> bool:
