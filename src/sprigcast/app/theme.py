@@ -322,7 +322,7 @@ def fit_widgets() -> None:
 
         def init(self, *args, _made=made, **kwargs):
             _made(self, *args, **kwargs)
-            wheel_guard.guard(self)
+            wheel_guard.guard_new(self)
         cls.__init__ = init
     aligned = QAbstractSpinBox.setAlignment
 

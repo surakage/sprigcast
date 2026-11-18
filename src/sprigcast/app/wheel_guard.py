@@ -38,6 +38,21 @@ def number_room(box: QAbstractSpinBox) -> None:
 
 _guard: WheelGuard | None = None
 _pending: list[QWidget] = []
+_BOXES = (QComboBox, QAbstractSpinBox)
+_STRONG = Qt.FocusPolicy.StrongFocus
+_LEFT_ROOM: tuple[int, int, int, int] | None = None
+
+
+def _left_room() -> tuple[int, int, int, int]:
+    """number_room's margins for a left-aligned box, worked out once."""
+    global _LEFT_ROOM
+    if _LEFT_ROOM is None:
+        from sprigcast.app.theme import NUMBER_PAD
+
+        _LEFT_ROOM = (NUMBER_PAD, 0, 4, 0)
+    return _LEFT_ROOM
+
+
 SETTLE_MS = 250  # the filter goes on once a pop-up's widgets are made and shown
 
 
@@ -54,13 +69,26 @@ def guard(widget: QWidget) -> None:
     The filter itself goes on a moment later, for all the boxes made meanwhile at once: on from the start, it
     ran Python for each of the ~900 events of Settings → Stream's boxes being made and shown, each waiting for
     Python's lock while the render thread ran (PC 2026-11-18). Nobody scrolls a pop-up in its first 250 ms."""
-    if not isinstance(widget, (QComboBox, QAbstractSpinBox)) or widget.property(GUARDED):
+    if not isinstance(widget, _BOXES) or widget.property(GUARDED):
         return
+    _fresh(widget)
+
+
+def guard_new(widget: QWidget) -> None:
+    """guard() for a box just made (theme.fit_widgets hooks __init__): nothing is asked of it first. Its focus
+    is Qt's WheelFocus and its text left-aligned, so both are set straight away: asking each new box (and
+    turning Qt's answers into Python enums) was 170 ms of opening the Sound gear while live on the PC (2026-11-18,
+    three boxes a sound)."""
+    _fresh(widget)
+
+
+def _fresh(widget: QWidget) -> None:
     widget.setProperty(GUARDED, True)
-    if widget.focusPolicy() == Qt.FocusPolicy.WheelFocus:
-        widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # (and again once settled: set later by its maker)
+    widget.setFocusPolicy(_STRONG)  # from WheelFocus (and again once settled, should its maker set it back)
     if isinstance(widget, QAbstractSpinBox):
-        number_room(widget)
+        edit = widget.lineEdit()
+        if edit is not None:
+            edit.setTextMargins(*_left_room())  # number_room for a left-aligned box (setAlignment calls it again)
     _pending.append(widget)
     if len(_pending) == 1:
         from PySide6.QtCore import QTimer

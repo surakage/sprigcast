@@ -357,10 +357,12 @@ class AudioPage(QWidget):
         hear.setFixedWidth(118)
         grid.addWidget(hear, row, 5)
         ticks = []
+        have = source_tracks(source)  # once a row, not once a tick (on_track asks for all of them each time)
+        names = self._track_names(tracks)
         for n in range(1, tracks + 1):
             tick = QCheckBox()
-            tick.setChecked(on_track(source, n))
-            tick.setToolTip(f"{source.name} on {self.collection.audio.track_name(n)} (track {n})")
+            tick.setChecked(AUDIO_TRACKS[n - 1] in have)
+            tick.setToolTip(f"{source.name} on {names[n - 1]} (track {n})")
             grid.addWidget(tick, row, 5 + n, alignment=Qt.AlignmentFlag.AlignCenter)
             ticks.append(tick)
         self.track_ticks[source.id] = ticks
@@ -368,7 +370,19 @@ class AudioPage(QWidget):
                                       "hear": hear}
         ticks[0].toggled.connect(lambda _on, sid=source.id: self._row_ticks(sid))
         hear.currentIndexChanged.connect(lambda _i, sid=source.id: self._row_ticks(sid))
-        self._row_ticks(source.id)
+        only_me = current == "only"  # as _row_ticks would find it, without asking Qt back
+        first = ticks[0].isChecked() if ticks else False
+        for n, tick in enumerate(ticks, 1):
+            if only_me or (n == 2 and not first):
+                tick.setEnabled(False)
+
+    def _track_names(self, tracks: int) -> list[str]:
+        """The tracks' names, worked out once a build of the page (each row's ticks asked again)."""
+        key = (tracks, tuple(getattr(self.collection.audio, "track_names", None) or ()))
+        if getattr(self, "_names_for", None) != key:
+            self._names_for = key
+            self._names = [self.collection.audio.track_name(n) for n in range(1, tracks + 1)]
+        return self._names
 
     def _row_ticks(self, source_id: str) -> None:
         """Just me: on no track. VOD-safe is a part of track 1, so it needs track 1."""

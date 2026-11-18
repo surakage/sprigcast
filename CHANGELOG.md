@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Pop-ups no longer pause while an app is connected to the Control API: it works out which blooms belong
+  together in one pass instead of once per bloom (409 ms on the PC while live). The Sound gear's rows set up
+  their drop-downs and track ticks without asking Qt back for each one (300 ms). Garden check and Last streams
+  change their rows in place while live instead of making them again every second (110-160 ms). A PNGtuber's
+  picture keeps its spot on the graphics card while it sleeps, so its bloom comes back without a 187 ms hitch.
 - Bloom tiles measure their name and key once, not on every paint: a pop-up opening over the window repaints them all
   (309 ms under the Settings gear while live). Hotkeys are made four rows at a time (a card was 60-80 ms), and the
   Garden check's rows and chips share one style sheet (140 ms).
