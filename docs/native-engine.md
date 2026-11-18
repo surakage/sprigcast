@@ -329,6 +329,10 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   rounded-bar picture each; only the time bar and times are painted, into a picture of their own size, when they
   change (a second's clock, half a pixel of bar). While it fades in or out it's painted as before
   (`tests/test_native_now_playing.py`).
+- **PNGtuber** (`store/pngtuber.PngtuberSource._listed`): each frame of its pictures is art sent once; the bounce
+  is only where it's drawn. A fade between pictures of the same shape (mouth, eyes) sends just the box where they
+  differ, blended, with the rest of the picture drawn as four crops of the art around it; a fade between
+  different shapes sends the blended box they cover together (`tests/test_native_pngtuber.py`).
 
 ## Phases
 
@@ -341,7 +345,7 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
 | 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
-| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine; Snap's and Death count's animations are drawn by the engine from lists of pictures |
+| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine; Snap's, Death count's, Now playing's and PNGtuber's animations are drawn by the engine from lists of pictures |
 | 7 | Capture and camera inside the engine | |
 | 8 | Old Python engine and its packages removed | |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |

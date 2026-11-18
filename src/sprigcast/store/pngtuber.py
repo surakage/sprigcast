@@ -52,12 +52,13 @@ from typing import Any
 import numpy as np
 
 from sprigcast.control.native import ApiError, register_action, send_event
+from sprigcast.core import drawn
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 3, "adds": "Source",
+PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 4, "adds": "Source",
           "about": "Your avatar pictures talk when you do: blinks, a little bounce and expressions.",
-          "new": "Pick an Idle and Talk picture from anywhere; problems say what's missing."}
+          "new": "Lighter: its pictures are drawn by SprigCast's engine."}
 
 log = logging.getLogger(__name__)
 
@@ -331,6 +332,8 @@ class Model:
     pictures: dict[str, dict[str, Picture]]  # expression -> state -> picture
     # Where pairs of still pictures differ, worked out while loading so a fade only blends that part.
     diffs: dict[tuple, tuple[int, int, int, int] | None] = field(default_factory=dict)
+    # For the engine (frame_listed): each frame as a QImage, made the first time it shows, uploaded to the card once.
+    arts: dict[tuple[int, int], object] = field(default_factory=dict)
 
     @property
     def expressions(self) -> list[str]:
@@ -837,10 +840,64 @@ class PngtuberSource(Source):
         shown = (key, self._from, step, hop)
         if shown == self._shown:
             return None  # nothing moved: nothing drawn, nothing uploaded
+        if drawn.wanted():
+            self._shown = shown
+            return self._listed(model, key, self._from, step, hop)
         if self._shown is None or self._shown[:3] != shown[:3]:
             self._compose(model, key, self._from, step)
         self._shown = shown
         return self._buf[hop:hop + H]
+
+    def _listed(self, model: Model, key: tuple, old: tuple | None, step: int, hop: int) -> drawn.Drawn:
+        """What _compose puts in the buffer, as a list for the engine (core/drawn.py): the picture showing is art
+        sent to the card once, so a bounce or a held mouth sends nothing; a fade sends only the part that blends
+        (the mouth, the eyes), and the rest of the picture around it as crops of the art."""
+        d = drawn.Drawn(W, H)
+        new = self._frame_of(model, key)
+        if new is None:
+            return d
+        pixels, x, y = new
+        h, w = pixels.shape[:2]
+        y -= hop
+        art_key, art = f"pic:{key[1]}:{key[2]}", self._art(model, key, pixels)
+        before = self._frame_of(model, old) if old is not None and step < 256 else None
+        if before is None:
+            d.image(art_key, art, x, y, w, h)
+            return d
+        b_pixels, bx, by = before
+        by -= hop
+        if (bx, by) == (x, y) and b_pixels.shape == pixels.shape:
+            box = self._diff(model, old, key, b_pixels, pixels)
+            if box is None:
+                d.image(art_key, art, x, y, w, h)
+                return d
+            t, l, b, r = box
+            for px, py, pw, ph in ((0, 0, w, t), (0, b, w, h - b), (0, t, l, b - t), (r, t, w - r, b - t)):
+                if pw > 0 and ph > 0:  # the picture around the part that fades
+                    d.image(art_key, art, x + px, y + py, pw, ph, (px, py, pw, ph))
+            a16 = pixels[t:b, l:r].astype(np.uint16)
+            b16 = b_pixels[t:b, l:r].astype(np.uint16)
+            d.image("fade", _qimage(((a16 * step + b16 * (256 - step)) >> 8).astype(np.uint8), True),
+                    x + l, y + t, r - l, b - t)
+            return d
+        # Different shapes: both faded, over the box they cover together (nothing else is drawn).
+        top, left = min(y, by), min(x, bx)
+        bottom, right = max(y + h, by + b_pixels.shape[0]), max(x + w, bx + b_pixels.shape[1])
+        area = np.zeros((bottom - top, right - left, 4), np.uint16)
+        area[y - top:y - top + h, x - left:x - left + w] = pixels.astype(np.uint16) * step
+        area[by - top:by - top + b_pixels.shape[0], bx - left:bx - left + b_pixels.shape[1]] += \
+            b_pixels.astype(np.uint16) * (256 - step)
+        d.image("fade", _qimage((area >> 8).astype(np.uint8), True), left, top, right - left, bottom - top)
+        return d
+
+    @staticmethod
+    def _art(model: Model, key: tuple, pixels: np.ndarray):
+        found = model.arts.get(key[1:])
+        if found is None:
+            if len(model.arts) > 2 * MOST_FRAMES:  # a long animation: its frames are sent again, not all kept
+                model.arts.clear()
+            found = model.arts[key[1:]] = _qimage(pixels, False)
+        return found
 
     def _frame_of(self, model: Model, key: tuple):
         for states in model.pictures.values():
@@ -893,6 +950,19 @@ class PngtuberSource(Source):
             if len(self._diffs) > 256:
                 self._diffs.pop(next(iter(self._diffs)))
         return self._diffs[pair]
+
+
+def _qimage(pixels: np.ndarray, copy: bool):
+    """A premultiplied BGRA frame as a QImage (copy: its own pixels; else it keeps the frame alive and shares them)."""
+    from PySide6.QtGui import QImage
+
+    pixels = np.ascontiguousarray(pixels)
+    h, w = pixels.shape[:2]
+    image = QImage(pixels.data, w, h, w * 4, QImage.Format.Format_ARGB32_Premultiplied)
+    if copy:
+        return image.copy()
+    image._pixels = pixels  # the QImage reads them: they live as long as it does
+    return image
 
 
 def _num(value, default: float) -> float:
