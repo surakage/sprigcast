@@ -71,10 +71,12 @@ class HealthPage(QWidget):
             box.addWidget(empty)
             return
         self.pick = QComboBox()
-        for r in records:
-            self.pick.addItem(f"{r.started}  ·  {duration(r.seconds)}")
-        self.pick.setVisible(len(records) > 1)  # (its look is in the page's style: one of its own was 95 ms)
+        self.pick.addItems([f"{r.started}  ·  {duration(r.seconds)}" for r in records])
         box.addWidget(self.pick)
+        # Hidden or shown only once it's in the page: shown with no parent yet, it opened as a window of its own
+        # (made, styled, then taken in again), 90-133 ms of Last streams on the PC while live (2026-11-18).
+        # (Its look is in the page's style too: one of its own was 95 ms.)
+        self.pick.setVisible(len(records) > 1)
         self.verdict = QLabel()
         self.verdict.setObjectName("healthVerdict")
         box.addWidget(self.verdict)

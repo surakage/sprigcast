@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Last streams no longer opens its drop-down as a window of its own for a moment (90-133 ms). The Garden check
+  fills its rows a tick after it opens (75-101 ms), a Settings page is put in its place a tick after it's made and
+  General's lower cards come a tick later still (62-131 ms), the + Add menu is made ready ahead (67 ms), and labels
+  that already fit skip measuring when a window resizes (Hotkeys, 52 ms).
 - Settings → General remembers the process priority instead of reading it again each time (93 ms), the Last streams
   drop-down shares its page's style (95 ms), and a plugin hotkey no longer imports anything when pressed.
 - Bloom tiles draw themselves once per look and then only copy that picture: a pop-up opening, or the screen
