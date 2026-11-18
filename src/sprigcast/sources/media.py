@@ -655,6 +655,16 @@ class MediaSource(Source):
 
     # Mixer thread -------------------------------------------------------------------------------------
 
+    def native_sound(self):
+        """The engine's player, for the engine's sound mixer to read straight from (audio/native_mixer.py)."""
+        return self._native
+
+    def sound_kept(self) -> None:
+        """Once a block while the engine's mixer reads the player itself: what read_block would keep current."""
+        self._blocks = (getattr(self, "_blocks", 0) + 1) % 25
+        if not self._blocks:  # a sound file has no picture to ask for: keep its state and status current
+            self._sync()
+
     def read_block(self, count: int) -> np.ndarray:
         if self._native is not None:
             self._blocks = (getattr(self, "_blocks", 0) + 1) % 25
