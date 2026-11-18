@@ -42,24 +42,48 @@ def test_example_plugin_loads(tmp_path):
     assert (tmp_path / "countdown_example.py").read_text(encoding="utf-8") == EXAMPLE
     report = load_plugins(tmp_path)
     assert report.loaded == ["countdown_example.py"] and not report.failed
-    assert "countdown" in known_kinds()
-    cls = source_class("countdown")
+    assert "example_countdown" in known_kinds()  # "countdown" is the Countdown store plugin's
+    cls = source_class("example_countdown")
     assert cls.label == "Example countdown" and "minutes" in cls.defaults  # the store's Countdown is "Countdown"
-    src = create_source("countdown", "c1", {**cls.defaults, "minutes": 2, "label": "Back in "})
+    src = create_source("example_countdown", "c1", {**cls.defaults, "minutes": 2, "label": "Back in "})
     assert src._current_text() in ("Back in 2:00", "Back in 1:59")
     assert src.video_frame() is not None
 
 
-def test_an_untouched_old_example_is_brought_up_to_date(tmp_path):
-    from sprigcast.plugins import OLD_EXAMPLE
+@pytest.mark.parametrize("which", [0, 1])
+def test_an_untouched_old_example_is_brought_up_to_date(tmp_path, which):
+    """The old example took kind "countdown", the Countdown store plugin's (PC, build eac4928: source.new made the
+    example's plain text and countdown.start said "Add a Countdown first"). Updated, its countdowns get the card."""
+    from sprigcast.plugins import OLD_EXAMPLES
 
     old = tmp_path / "countdown_example.py"
-    old.write_text(OLD_EXAMPLE, encoding="utf-8")
+    old.write_text(OLD_EXAMPLES[which], encoding="utf-8")
     ensure_example(tmp_path)
-    assert old.read_text(encoding="utf-8") == EXAMPLE
-    old.write_text(OLD_EXAMPLE + "# mine now\n", encoding="utf-8")
+    assert old.read_text(encoding="utf-8") == EXAMPLE and '@register("countdown")' not in EXAMPLE
+    assert (tmp_path / "countdown.py").exists()  # the store Countdown, added for the countdowns made from it
+    old.write_text(OLD_EXAMPLES[0] + "# mine now\n", encoding="utf-8")
     ensure_example(tmp_path)
     assert old.read_text(encoding="utf-8").endswith("# mine now\n")  # changed by you: left alone
+
+
+def test_the_store_countdown_wins_its_kind_over_an_edited_old_example(tmp_path):
+    from sprigcast import plugin_store
+    from sprigcast.plugins import OLD_EXAMPLES
+    from sprigcast.core.source import unregister_module
+
+    pytest.importorskip("PySide6.QtWidgets")
+    (tmp_path / "countdown_example.py").write_text(OLD_EXAMPLES[0] + "# mine now\n", encoding="utf-8")
+    plugin = next(p for p in plugin_store.catalog() if p.id == "countdown")
+    import shutil
+
+    shutil.copyfile(plugin.file, tmp_path / "countdown.py")
+    try:
+        report = load_plugins(tmp_path)
+        assert report.loaded == ["countdown_example.py", "countdown.py"]  # the store's last
+        assert source_class("countdown").__module__ == "sprigcast_plugin_countdown"
+    finally:
+        plugin_store.remove(tmp_path, "countdown")
+        unregister_module("sprigcast_plugin_countdown_example")
 
 
 def test_example_not_rewritten_when_folder_has_plugins(tmp_path):

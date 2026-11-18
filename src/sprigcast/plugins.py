@@ -41,7 +41,7 @@ def load_plugins(folder: Path | None) -> PluginReport:
 
     report = PluginReport()
     if folder is not None and folder.is_dir():
-        for path in sorted(folder.glob("*.py")):
+        for path in _store_last(sorted(folder.glob("*.py"))):
             if path.name.startswith("_"):
                 continue
             error = load_plugin_file(path)
@@ -88,7 +88,7 @@ from sprigcast.core.source import register
 from sprigcast.sources.text import TextSource
 
 
-@register("countdown")
+@register("example_countdown")
 class CountdownSource(TextSource):
     label = "Example countdown"
     defaults = {**TextSource.defaults, "text": "", "minutes": 5, "label": "Starting in "}
@@ -112,20 +112,46 @@ _NEW_DOC = 'Add it with Sources → + → Plugins → Example countdown. Double-
 _OLD_DOC = 'Add it with Sources → + → Plugins → Countdown. Double-click it to change the minutes and label.'
 _NEW_LAB = '    label = "Example countdown"\n    defaults = {**TextSource.defaults, "text": "", "minutes": 5, "label": "Starting in "}'
 _OLD_LAB = '    label = "Countdown"\n    defaults = {**TextSource.defaults, "text": "", "minutes": 5, "label": "Starting in "}'
-# The example as it was before the Countdown store plugin: listed as "Countdown" too, so an untouched copy is
-# brought up to date (it keeps its kind, so a countdown made from it carries on).
-OLD_EXAMPLE = EXAMPLE.replace(_NEW_DOC, _OLD_DOC).replace(_NEW_LAB, _OLD_LAB)
+_NEW_KIND, _OLD_KIND = '@register("example_countdown")', '@register("countdown")'
+# The example as earlier SprigCasts wrote it: kind "countdown", which the Countdown store plugin owns now. An untouched
+# copy is brought up to date (see ensure_example), so it no longer takes the store plugin's kind.
+OLD_EXAMPLE = EXAMPLE.replace(_NEW_DOC, _OLD_DOC).replace(_NEW_LAB, _OLD_LAB).replace(_NEW_KIND, _OLD_KIND)
+OLD_EXAMPLES = (OLD_EXAMPLE, EXAMPLE.replace(_NEW_KIND, _OLD_KIND))  # before #532, and #532 itself
 
 
 def ensure_example(folder: Path) -> None:
-    """Create the plugins folder with an example the first time (and bring an untouched old one up to date)."""
+    """Create the plugins folder with an example the first time, and bring an untouched old one up to date.
+
+    The old example was kind "countdown": a countdown made from it is drawn by the Countdown store plugin now, so
+    that plugin is added for you (its card, with the same minutes) when an old example is updated."""
     folder.mkdir(parents=True, exist_ok=True)
     example = folder / "countdown_example.py"
     if not any(folder.glob("*.py")) and not example.exists():
         example.write_text(EXAMPLE, encoding="utf-8")
     elif example.exists():
         try:
-            if example.read_text(encoding="utf-8") == OLD_EXAMPLE:
-                example.write_text(EXAMPLE, encoding="utf-8")
+            if example.read_text(encoding="utf-8") not in OLD_EXAMPLES:
+                return
+            example.write_text(EXAMPLE, encoding="utf-8")
+            store = Path(__file__).parent / "store" / "countdown.py"
+            target = folder / "countdown.py"
+            if store.exists() and not target.exists():
+                import shutil
+
+                shutil.copyfile(store, target)
+                log.info("plugins: the old countdown example is the Countdown store plugin's card now")
         except (OSError, ValueError):
-            pass
+            log.warning("could not update the countdown example", exc_info=True)
+
+
+def _store_last(paths: list[Path]) -> list[Path]:
+    """Plugin files with the store's after your own, so a store plugin's kinds win over a file that also
+    registers them (an edited old countdown example, kind "countdown")."""
+    try:
+        from sprigcast.plugin_store import catalog, read_header
+
+        ids = {p.id for p in catalog()}
+        store = {path for path in paths if (read_header(path) or {}).get("id") in ids}
+    except Exception:  # noqa: BLE001 (the order is only a tie-break; loading goes on)
+        return paths
+    return sorted(paths, key=lambda p: (p in store, p.name))

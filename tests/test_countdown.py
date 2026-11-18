@@ -24,13 +24,13 @@ def countdown(added):
 
 def _api(settings, name="Countdown"):
     col = _collection()
-    col.sources.append(SourceConfig(id="cd-1", kind="countdown_timer", name=name, settings=settings))
+    col.sources.append(SourceConfig(id="cd-1", kind="countdown", name=name, settings=settings))
     host = Host(col)
     return col, host, NativeApi(host)
 
 
 def test_its_only_there_once_added():
-    assert "countdown_timer" not in known_kinds()
+    assert "countdown" not in known_kinds()
     assert "countdown.start" not in NativeApi(Host(_collection())).all_actions()
 
 
@@ -63,7 +63,7 @@ def test_its_box_is_the_card_and_stays_put_while_it_counts(countdown, monkeypatc
     now = [1000.0]
     monkeypatch.setattr(countdown.time, "time", lambda: now[0])
     cls = countdown.CountdownSource
-    source = create_source("countdown_timer", "cd", countdown.started({**cls.defaults, "minutes": 10.0}, 1000.0))
+    source = create_source("countdown", "cd", countdown.started({**cls.defaults, "minutes": 10.0}, 1000.0))
     first = source.video_frame()
     w, h = source.size
     assert h == 220 and first.shape == (220, w, 4)
@@ -75,7 +75,7 @@ def test_its_box_is_the_card_and_stays_put_while_it_counts(countdown, monkeypatc
         now[0] = t
         assert source.video_frame() is not None
         assert source.size == (w, h)
-    five = create_source("countdown_timer", "cd5", {**cls.defaults, "minutes": 5.0})
+    five = create_source("countdown", "cd5", {**cls.defaults, "minutes": 5.0})
     five.video_frame()
     assert five.size[0] < w  # a shorter countdown, a narrower card
 
@@ -116,7 +116,7 @@ def test_it_starts_over_when_it_comes_on_screen_and_says_when_it_ends(countdown,
     asked, done = [], []
     signal = lambda out: type("S", (), {"emit": lambda self, i: out.append(i)})()  # noqa: E731
     monkeypatch.setattr(countdown, "_UI", type("Ui", (), {"restart": signal(asked), "finished": signal(done)})())
-    source = create_source("countdown_timer", "cd", {"minutes": 1.0})
+    source = create_source("countdown", "cd", {"minutes": 1.0})
     source.start()
     assert asked == ["cd"] and source.video_frame() is None  # waits for the fresh start
     source.update({**source.settings, "run_since": time.time() - 61})
@@ -169,7 +169,7 @@ def test_a_card_from_before_keeps_its_place_on_the_canvas():
 
 def test_adding_one_notes_the_width_it_was_laid_out_for(countdown):
     col = _collection()
-    col.sources.append(SourceConfig(id="c", kind="countdown_timer", name="Countdown"))
+    col.sources.append(SourceConfig(id="c", kind="countdown", name="Countdown"))
     col.own_sprig(col.scene("chat-h"), "c", countdown.CountdownSource.own_sprig, "Countdown", "top_left")
     assert col.source("c").settings[CARD_W] == countdown.W
 
@@ -179,8 +179,23 @@ def test_the_cards_start_as_wide_as_they_draw(countdown, added):
     added("local_time")
     added("stream_timer")
     lt, st = sys.modules["sprigcast_plugin_local_time"], sys.modules["sprigcast_plugin_stream_timer"]
-    for kind, cls in (("countdown_timer", countdown.CountdownSource), ("local_time", lt.LocalTimeSource),
+    for kind, cls in (("countdown", countdown.CountdownSource), ("local_time", lt.LocalTimeSource),
                       ("stream_timer", st.StreamTimerSource)):
         source = create_source(kind, "x", dict(cls.defaults))
         source.video_frame()
         assert abs(source.size[0] - cls.own_sprig[0]) <= 2, kind
+
+
+def test_countdowns_made_before_are_the_card_too(countdown):
+    """Version 1's kind (countdown_timer) and the old example's (countdown, with its text settings) both draw the card."""
+    from sprigcast.core.source import source_class
+
+    assert source_class("countdown").label == "Countdown" and source_class("countdown_timer").label == ""  # not listed twice
+    old_example = {"text": "", "minutes": 5, "label": "Starting in ", "font": "segoeui.ttf", "size": 72, "outline": True}
+    for kind, settings in (("countdown", old_example), ("countdown_timer", {"minutes": 5.0})):
+        source = create_source(kind, "x", settings)
+        frame = source.video_frame()
+        assert frame is not None and frame.shape[:2] == (220, source.size[0]), kind
+    col, host, api = _api({"minutes": 5.0})
+    col.source("cd-1").kind = "countdown_timer"
+    assert api.run("countdown.get", {})["text"] == "5:00"
