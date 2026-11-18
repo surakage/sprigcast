@@ -296,7 +296,19 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   dry the device gets silence until 20 ms is waiting again. It finds its device again every 2 s and follows the
   Windows default. If the engine can't open it, Python's `Monitor` plays it. `sprigcast-test-sink` plays nowhere,
   for checks (`tests/test_native_playback.py`, `core_tests.cpp`). `SPRIGCAST_NO_NATIVE_MONITOR=1` plays from Python.
-- Next: the sound filters in C++ (so filtered sounds stay in the engine too) and the monitor output.
+
+## Phase 6: plugins drawn in the engine (`native/core/src/visual.cpp`)
+
+- **Audio visualizer** (`sc_visual_*`): the store plugin's Analyser and Painter (`store/audio_visualizer.py`) in
+  C++. A thread of its own hears one of the mixer's sounds through a tap (the stream track for "Everything", or one
+  sound after its volume), runs the 2048-sample FFT and draws the 1280 x 400 picture at most 30 times a second; once
+  silence has been drawn it draws nothing until there is sound again. The engine's frame thread takes the newest
+  drawing itself (`sc_engine_source_visual`, through `Engine.attach_media`), so neither the sound nor the pictures
+  pass through Python, and a sound a visualizer hears keeps its filters in the engine. The numbers follow NumPy's
+  float32 and float64 steps: bands and wave match Python's within 1e-5, and bars, wave and line match pixel for
+  pixel (`tests/test_native_visualizer.py`). `NativeMixer.visual` makes one and points it at its sound on every
+  block (again when the sound comes back); it closes before the mixer. If its thread faults, or the engine can't
+  make one, Python hears and draws it again. `SPRIGCAST_NO_NATIVE_VISUALIZER=1` draws it in Python.
 
 ## Phases
 
@@ -308,8 +320,8 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
 | 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
-| 5 | Sound: devices, mixer, filters, sync | Built behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC test next |
-| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
+| 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
+| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine |
 | 7 | Capture and camera inside the engine | |
 | 8 | Old Python engine and its packages removed | |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |

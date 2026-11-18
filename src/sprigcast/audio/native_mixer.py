@@ -13,11 +13,12 @@ capture.
 
 Built-in filters (gain, noise gate, compressor, limiter, invert polarity, ducking) run in the mix too; a chain with
 any other filter stays in Python. Monitoring and "Sound out" to a device are played by the engine
-(sprigcore.SoundPlayback, WASAPI on its own thread) straight from the mix: EngineMonitor.
+(sprigcore.SoundPlayback, WASAPI on its own thread) straight from the mix: EngineMonitor. Audio visualizers hear
+and draw in the engine too (sprigcore.SoundVisual, NativeMixer.visual): their sound never passes through Python.
 
 SPRIGCAST_NO_NATIVE_MIXER=1 keeps Python's mixer; SPRIGCAST_NO_NATIVE_CAPTURE=1 keeps Python's capture;
 SPRIGCAST_NO_NATIVE_FILTERS=1 runs every filter chain in Python; SPRIGCAST_NO_NATIVE_MONITOR=1 plays monitoring
-from Python.
+from Python; SPRIGCAST_NO_NATIVE_VISUALIZER=1 draws audio visualizers in Python.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import logging
 import os
 import threading
 import time
+import weakref
 from collections.abc import Callable
 
 import numpy as np
@@ -149,6 +151,14 @@ class EngineMonitor:
         return f"error: {st['error'] or st['state']}"
 
 
+_CURRENT: Callable[[], NativeMixer | None] = lambda: None
+
+
+def current() -> NativeMixer | None:
+    """The engine's mixer running now, if sound is mixed by the engine."""
+    return _CURRENT()
+
+
 def make_mixer(report: Callable[[dict[str, tuple[float, float]]], None]):
     """The mixer render/engine.py uses: the engine's when it can, else Python's."""
     from sprigcast.audio.mixer import Mixer
@@ -262,7 +272,10 @@ class NativeMixer:
         self._meters: dict[str, tuple[float, float]] = {}
         self._fed = -1  # the last block number pushed for
         self._sounds: list = []  # (source, _Sound) as last fed
+        self._visuals: dict = {}  # SoundVisual -> the sound it hears (a source id or listen.MIX); swapped whole
         self.ticks = 0
+        global _CURRENT
+        _CURRENT = weakref.ref(self)
 
     # Same calls as Mixer ------------------------------------------------------------------------------
 
@@ -285,6 +298,24 @@ class NativeMixer:
     def remove_extra(self, player) -> None:
         with self._lock:
             self._extras = [p for p in self._extras if p is not player]
+
+    def visual(self, sound: str):
+        """An audio visualizer drawn by the engine, hearing `sound` (a source id or listen.MIX). It starts hearing
+        on the mixer's next block (the feeder points it at the sound, and again whenever that sound comes back)."""
+        made = self._engine.visual(-1)
+        with self._lock:
+            self._visuals = {**self._visuals, made: str(sound)}
+        return made
+
+    def visual_hears(self, visual, sound: str) -> None:
+        with self._lock:
+            if visual in self._visuals:
+                self._visuals = {**self._visuals, visual: str(sound)}
+
+    def drop_visual(self, visual) -> None:
+        with self._lock:
+            self._visuals = {v: s for v, s in self._visuals.items() if v is not visual}
+        visual.close()
 
     def same_mix(self, a: str, b: str) -> bool:
         with self._lock:
@@ -327,6 +358,9 @@ class NativeMixer:
         self._thread.start()
 
     def stop(self) -> None:
+        global _CURRENT
+        if _CURRENT() is self:
+            _CURRENT = lambda: None
         self._stop.set()
         if self._thread.ident is not None:  # never started when ticked by hand (checks)
             self._thread.join(timeout=2)
@@ -629,6 +663,16 @@ class NativeMixer:
         for key, what in wanted.items():
             if key not in self._native_taps:
                 self._native_taps[key] = (self._engine.add_tap(what), len(what))
+        visuals = self._visuals
+        if visuals:
+            ids = self._engine_ids()
+            for visual, sound in visuals.items():
+                what = 0 if sound == listen.MIX else (sprigcore.MIXER_SOURCE_TAP + ids[sound] if sound in ids else -1)
+                try:
+                    visual.listen(what)
+                except Exception as exc:  # noqa: BLE001 - closed meanwhile, or the engine refused: it hears nothing
+                    if not visual.closed:
+                        self._problem("audio visualizer", exc)
         mix_heard = bool(listen.LISTENERS.get(listen.MIX))
         tap = self._listen_taps.get(listen.MIX)
         if mix_heard and tap is None:
@@ -692,4 +736,4 @@ def _unlink(engine, sound_id: int) -> None:
         pass
 
 
-__all__ = ["FLOOR_DB", "NativeMixer", "make_mixer", "wanted"]
+__all__ = ["FLOOR_DB", "NativeMixer", "current", "make_mixer", "wanted"]

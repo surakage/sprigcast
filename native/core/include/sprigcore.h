@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 26
+#define SC_INTERFACE_VERSION 27
 
 enum {
     SC_OK = 0,
@@ -333,6 +333,12 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, struct sc_medi
  * pictures never pass through Python. name = NULL (or empty) goes back to sc_engine_source_upload (the source keeps
  * the picture it has); sc_engine_source_forget detaches it too. */
 SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t *name);
+/* Source `id` shows what audio visualizer `visual` draws (sc_visual_open): every frame the engine takes its newest
+ * drawing itself, so neither the sound nor the pictures pass through Python. visual = NULL goes back to
+ * sc_engine_source_upload (the source keeps the picture it has); sc_engine_source_media and
+ * sc_engine_source_forget detach it too. The engine keeps the drawings alive as long as it is attached. */
+struct sc_visual;
+SC_API int sc_engine_source_visual(sc_engine *engine, uint64_t id, struct sc_visual *visual);
 /* A browser page drawn on the card by the browser helper (page_texture.cpp): the helper makes a device on the
  * engine's card (its LUID, from sc_d3d_device_luid) and a texture shared as "<block>-tex<n>" with a keyed mutex
  * (key 0: the helper may draw, between sc_page_target_begin and _end; key 1: a picture waits for the engine). In the
@@ -744,6 +750,43 @@ typedef struct sc_playback_stats {
 SC_API int sc_playback_open(sc_mixer *mixer, int what, const wchar_t *device, sc_playback **out);
 SC_API int sc_playback_stats_get(sc_playback *playback, sc_playback_stats *out);
 SC_API void sc_playback_close(sc_playback *playback);
+
+/* Audio visualizer (visual.cpp, the store plugin store/audio_visualizer.py drawn in the engine): bars, a wave, a
+ * circle or a line that move with one of a mixer's sounds. A thread of its own takes the sound from a mixer tap,
+ * runs a 2048-sample FFT and draws a SC_VISUAL_WIDTH x SC_VISUAL_HEIGHT premultiplied BGRA picture (SC_FMT_PBGRA)
+ * at most 30 times a second; once silence has been drawn nothing more is drawn until there is sound again. The
+ * same numbers and pixels as audio_visualizer.py's Analyser and Painter. Close it before the mixer.
+ * mixer: where it hears (NULL: only sc_visual_push). what: a track (SC_TRACK_*), or SC_MIXER_SOURCE_TAP + a sound
+ * (that sound after its volume); < 0 hears nothing. clocked = 0: no thread, only sc_visual_step draws (checks). */
+typedef struct sc_visual sc_visual;
+#define SC_VISUAL_WIDTH 1280
+#define SC_VISUAL_HEIGHT 400
+enum { SC_VISUAL_BARS = 0, SC_VISUAL_WAVE, SC_VISUAL_CIRCLE, SC_VISUAL_LINE };
+typedef struct sc_visual_look {
+    int style;            /* SC_VISUAL_* */
+    int bars;             /* 8..128 */
+    double smoothing;     /* 0..0.95 */
+    double sensitivity;   /* 0.05..10 */
+    int mirror;           /* bass in the middle, the same both ways */
+    double color[4];      /* r, g, b, a from 0 to 1 */
+    double peak[4];       /* the colour the tips light up toward */
+} sc_visual_look;
+SC_API int sc_visual_open(sc_mixer *mixer, int what, int clocked, sc_visual **out);
+SC_API int sc_visual_listen(sc_visual *visual, int what);
+SC_API int sc_visual_set_look(sc_visual *visual, const sc_visual_look *look);
+/* A block of `frames` stereo samples it hears (with no mixer, or for checks). */
+SC_API int sc_visual_push(sc_visual *visual, const float *stereo, int frames);
+/* Checks: one step of dt seconds, and its drawing: 1 drawn, 0 silence already drawn (nothing drawn). */
+SC_API int sc_visual_step(sc_visual *visual, double dt);
+/* Checks: the band heights (0..1) and the wave (-1..1, 256 values) now. Returns how many bands. */
+SC_API int sc_visual_values(sc_visual *visual, float *bands, int bands_room, float *wave, int wave_room);
+/* Checks: draws these values (already mirrored, if wanted) with the look now into out (SC_VISUAL_WIDTH * 4 a row). */
+SC_API int sc_visual_draw(sc_visual *visual, const float *bands, int count, const float *wave, int wave_count,
+                          uint8_t *out);
+/* The newest drawing if it isn't the one *seen names (then *seen is its number): 1 copied into out
+ * (SC_VISUAL_WIDTH * 4 a row), 0 nothing new; SC_ERR_INTERNAL once its thread has faulted. */
+SC_API int sc_visual_frame(sc_visual *visual, uint64_t *seen, uint8_t *out);
+SC_API void sc_visual_close(sc_visual *visual);
 
 #ifdef __cplusplus
 }

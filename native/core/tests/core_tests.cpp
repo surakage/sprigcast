@@ -115,6 +115,34 @@ int main() {
         CHECK(std::abs(out[0] + 0.125f) < 1e-5f && std::abs(out.back() + 0.125f) < 1e-5f);
         sc_mixer_destroy(mixer);
     }
+    {  // Audio visualizer: its thread hears a clocked mixer's stream track and draws; it closes before the mixer.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(1, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0};
+        int sound = 0;
+        CHECK(sc_mixer_source_add(mixer, &one, &sound) == SC_OK);
+        sc_visual *visual = nullptr;
+        CHECK(sc_visual_open(mixer, SC_TRACK_STREAM, 1, &visual) == SC_OK && visual);
+        sc_visual_look look{SC_VISUAL_CIRCLE, 64, 0.5, 1.0, 1, {0.3, 0.8, 0.5, 1.0}, {0.9, 0.9, 0.8, 1.0}};
+        CHECK(sc_visual_set_look(visual, &look) == SC_OK);
+        std::vector<float> tone(SC_MIXER_BLOCK * 2);
+        for (int i = 0; i < SC_MIXER_BLOCK; ++i) tone[2 * i] = tone[2 * i + 1] = 0.4f * std::sin(i * 0.07f);
+        std::vector<uint8_t> picture(SC_VISUAL_WIDTH * SC_VISUAL_HEIGHT * 4);
+        uint64_t seen = 0;
+        bool drawn = false;
+        for (int i = 0; i < 150 && !drawn; ++i) {
+            CHECK(sc_mixer_source_push(mixer, sound, tone.data(), SC_MIXER_BLOCK) == SC_OK);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            drawn = sc_visual_frame(visual, &seen, picture.data()) == 1 && seen > 2;
+        }
+        CHECK(drawn);
+        CHECK(sc_visual_listen(visual, SC_MIXER_SOURCE_TAP + sound) == SC_OK);
+        CHECK(sc_visual_listen(visual, -1) == SC_OK);
+        look.style = 99;
+        CHECK(sc_visual_set_look(visual, &look) == SC_ERR_ARGUMENT);
+        sc_visual_close(visual);
+        sc_mixer_destroy(mixer);
+    }
     {  // Sound playback: the monitor mix plays on the test sink in real time, and closes before the mixer.
         sc_mixer *mixer = nullptr;
         CHECK(sc_mixer_create(1, &mixer) == SC_OK);
