@@ -8,6 +8,7 @@
 // stops trying and says so (faulted), and Python switches to its own engine.
 #include "internal.h"
 #include "media.h"
+#include "visual.h"
 #include "writer.h"
 
 #include <mmsystem.h>
@@ -449,6 +450,7 @@ struct sc_engine {
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, std::shared_ptr<void>> medias;  // sources shown straight from a media player
     std::unordered_map<uint64_t, std::wstring> shareds;          // sources shown from another process's memory
+    std::unordered_map<uint64_t, std::shared_ptr<void>> visuals; // sources an audio visualizer draws (visual.cpp)
     std::unordered_map<uint64_t, LookData> looks;
     std::unordered_map<uint64_t, MaskData> masks;
     std::shared_ptr<const SnapData> snapshot;
@@ -1082,11 +1084,13 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::shared_ptr<const SnapData> snapshot;
     std::vector<PreviewCfg> previews;
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> medias;
+    std::vector<std::pair<uint64_t, std::shared_ptr<void>>> visuals;
     std::vector<std::pair<uint64_t, std::wstring>> shareds;
     uint64_t detach_seen;
     {
         std::lock_guard<std::mutex> lock(e.state);
         medias.assign(e.medias.begin(), e.medias.end());
+        visuals.assign(e.visuals.begin(), e.visuals.end());
         shareds.assign(e.shareds.begin(), e.shareds.end());
         std::copy(std::begin(e.canvases), std::end(e.canvases), canvases);
         std::copy(std::begin(e.transitions), std::end(e.transitions), transitions);
@@ -1115,8 +1119,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
     // Videos, GIFs and sound files the engine plays: the picture due now, straight from the player.
     for (auto found = e.media_seen.begin(); found != e.media_seen.end();) {
-        const bool here = std::any_of(medias.begin(), medias.end(),
-                                      [&](const auto &m) { return m.first == found->first; });
+        auto same = [&](const auto &m) { return m.first == found->first; };
+        const bool here = std::any_of(medias.begin(), medias.end(), same) ||
+                          std::any_of(visuals.begin(), visuals.end(), same);
         found = here ? std::next(found) : e.media_seen.erase(found);
     }
     for (auto &[id, player] : medias) {
@@ -1148,6 +1153,17 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             how.stride = 8;
             e.kept_sources.erase(id);
             check(sc_source_upload(e.dev, id, nothing, &how));
+        }
+    }
+    // Audio visualizers: the newest drawing, straight from the visualizer's thread.
+    for (auto &[id, drawings] : visuals) {
+        auto &seen = e.media_seen[id];
+        if (seen.first != drawings.get()) seen = {drawings.get(), 0};
+        MediaDue due;
+        visual_due(drawings, &seen.second, &due);
+        if (due.what == SC_MEDIA_PICTURE) {
+            e.kept_sources.erase(id);
+            check(sc_source_upload(e.dev, id, due.data, &due.how));
         }
     }
     // Browser pages (another process's shared memory): the newest picture, copied onto the card from there.
@@ -1594,6 +1610,7 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->uploads.erase(id);
         engine->spare.erase(id);
         engine->medias.erase(id);
+        engine->visuals.erase(id);
         engine->shareds.erase(id);
         engine->forgets.insert(id);
         return SC_OK;
@@ -1605,12 +1622,30 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, sc_media *medi
         if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_media: no id");
         std::shared_ptr<void> player = media_hold(media);
         std::lock_guard<std::mutex> lock(engine->state);
+        engine->visuals.erase(id);
         if (player) {
             engine->medias[id] = std::move(player);
             engine->uploads.erase(id);  // a picture Python sent before isn't drawn over the player's
             engine->forgets.erase(id);
         } else {
             engine->medias.erase(id);
+        }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_visual(sc_engine *engine, uint64_t id, sc_visual *visual) {
+    return engine_call(engine, "sc_engine_source_visual", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_visual: no id");
+        std::shared_ptr<void> drawings = visual_hold(visual);
+        std::lock_guard<std::mutex> lock(engine->state);
+        engine->medias.erase(id);
+        if (drawings) {
+            engine->visuals[id] = std::move(drawings);
+            engine->uploads.erase(id);  // a picture Python sent before isn't drawn over the visualizer's
+            engine->forgets.erase(id);
+        } else {
+            engine->visuals.erase(id);
         }
         return SC_OK;
     });

@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 26  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 27  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -231,6 +231,7 @@ def _lib():
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
+        "sc_engine_source_visual": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_d3d_device_luid": (c_int, [vp, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_int32)]),
         "sc_page_target_create": (c_int, [ctypes.c_uint32, ctypes.c_int32, vp, c_int, c_int, ctypes.c_wchar_p, out]),
         "sc_page_target_handles": (c_int, [vp, out, out, out]),
@@ -620,6 +621,13 @@ class Engine:
         lib = _need()
         if player is None:
             _check(lib.sc_engine_source_media(self.handle, key(source_id), None))
+        elif isinstance(player, SoundVisual):  # an audio visualizer: the engine takes its drawings the same way
+            try:
+                _check(player._call(lambda visual: lib.sc_engine_source_visual(self.handle, key(source_id), visual)))
+            except NativeError:
+                if not player.closed:
+                    raise
+                _check(lib.sc_engine_source_media(self.handle, key(source_id), None))  # closed with its mixer
         else:
             _check(player._call(lambda media: lib.sc_engine_source_media(self.handle, key(source_id), media)))
 
@@ -928,6 +936,16 @@ class CaptureStats(ctypes.Structure):
                 ("error", ctypes.c_char * 256)]
 
 
+class VisualLook(ctypes.Structure):
+    _fields_ = [("style", ctypes.c_int), ("bars", ctypes.c_int), ("smoothing", ctypes.c_double),
+                ("sensitivity", ctypes.c_double), ("mirror", ctypes.c_int), ("color", ctypes.c_double * 4),
+                ("peak", ctypes.c_double * 4)]
+
+
+VISUAL_SIZE = (1280, 400)  # include/sprigcore.h SC_VISUAL_WIDTH, SC_VISUAL_HEIGHT
+VISUAL_STYLES = ("bars", "wave", "circle", "line")  # SC_VISUAL_* in order
+
+
 class PlaybackStats(ctypes.Structure):
     _fields_ = [("state", ctypes.c_int), ("channels", ctypes.c_int), ("rate", ctypes.c_int),
                 ("frames", ctypes.c_uint64), ("underruns", ctypes.c_uint64), ("dropped", ctypes.c_uint64),
@@ -989,6 +1007,15 @@ def _media_sigs() -> dict:
         "sc_playback_open": (c_int, [vp, c_int, ctypes.c_wchar_p, ctypes.POINTER(vp)]),
         "sc_playback_stats_get": (c_int, [vp, ctypes.POINTER(PlaybackStats)]),
         "sc_playback_close": (None, [vp]),
+        "sc_visual_open": (c_int, [vp, c_int, c_int, ctypes.POINTER(vp)]),
+        "sc_visual_listen": (c_int, [vp, c_int]),
+        "sc_visual_set_look": (c_int, [vp, ctypes.POINTER(VisualLook)]),
+        "sc_visual_push": (c_int, [vp, vp, c_int]),
+        "sc_visual_step": (c_int, [vp, ctypes.c_double]),
+        "sc_visual_values": (c_int, [vp, vp, c_int, vp, c_int]),
+        "sc_visual_draw": (c_int, [vp, vp, c_int, vp, c_int, vp]),
+        "sc_visual_frame": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), vp]),
+        "sc_visual_close": (None, [vp]),
     }
 
 
@@ -1395,6 +1422,101 @@ class SoundPlayback(SoundCapture):
         self._lib.sc_playback_close(handle)  # joins its thread and removes its tap
 
 
+class SoundVisual:
+    """An audio visualizer drawn by the engine (include/sprigcore.h sc_visual, store/audio_visualizer.py's look):
+    a thread of its own hears one of a mixer's sounds and draws it at most 30 times a second, and the engine's frame
+    thread takes the drawings itself (Engine.attach_media). Made by SoundMixer.visual (closed before the mixer), or
+    with no mixer for checks (then it hears only :meth:`push`, and draws only on :meth:`step` unless clocked)."""
+
+    def __init__(self, mixer: SoundMixer | None = None, what: int = -1, clocked: bool = True, lib=None):
+        lib = lib or (mixer._lib if mixer is not None else _media_lib())
+        if lib is None:
+            raise NativeError(-5, "the native engine isn't available")
+        self._lib, self._mixer = lib, mixer
+        self._lock = __import__("threading").Lock()
+        handle = ctypes.c_void_p()
+        _check(lib.sc_visual_open(mixer._handle if mixer is not None else None, int(what), int(bool(clocked)),
+                                  ctypes.byref(handle)))
+        self._handle = handle
+        self._seen = ctypes.c_uint64(0)
+        self.what = int(what)
+
+    def _call(self, fn) -> int:
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the visualizer is closed")
+            return fn(self._handle)
+
+    def listen(self, what: int) -> None:
+        """Hear another of the mixer's sounds (a track, or MIXER_SOURCE_TAP + a sound; < 0: nothing)."""
+        if what != self.what:
+            _check(self._call(lambda h: self._lib.sc_visual_listen(h, int(what))))
+            self.what = int(what)
+
+    def set_look(self, style: str, bars: int, smoothing: float, sensitivity: float, mirror: bool,
+                 color: tuple, peak: tuple) -> None:
+        look = VisualLook(VISUAL_STYLES.index(style) if style in VISUAL_STYLES else 0, int(bars), float(smoothing),
+                          float(sensitivity), int(bool(mirror)), (ctypes.c_double * 4)(*color),
+                          (ctypes.c_double * 4)(*peak))
+        _check(self._call(lambda h: self._lib.sc_visual_set_look(h, ctypes.byref(look))))
+
+    def push(self, block) -> None:
+        import numpy as np
+
+        data = np.ascontiguousarray(block, dtype=np.float32)
+        _check(self._call(lambda h: self._lib.sc_visual_push(h, data.ctypes.data, int(data.shape[0]))))
+
+    def step(self, dt: float) -> bool:
+        got = self._call(lambda h: self._lib.sc_visual_step(h, float(dt)))
+        _check(min(got, 0))
+        return got == 1
+
+    def values(self):
+        import numpy as np
+
+        bands, wave = np.zeros(128, np.float32), np.zeros(256, np.float32)
+        got = self._call(lambda h: self._lib.sc_visual_values(h, bands.ctypes.data, 128, wave.ctypes.data, 256))
+        _check(min(got, 0))
+        return bands[:got].copy(), wave
+
+    def draw(self, bands, wave):
+        import numpy as np
+
+        b = np.ascontiguousarray(bands, dtype=np.float32)
+        w = np.ascontiguousarray(wave, dtype=np.float32)
+        out = np.empty((VISUAL_SIZE[1], VISUAL_SIZE[0], 4), np.uint8)
+        _check(self._call(lambda h: self._lib.sc_visual_draw(h, b.ctypes.data, len(b), w.ctypes.data, len(w),
+                                                               out.ctypes.data)))
+        return out
+
+    def frame(self, out) -> bool:
+        """Copies its newest drawing into out ((400, 1280, 4) uint8, pBGRA) if there is a new one."""
+        got = self._call(lambda h: self._lib.sc_visual_frame(h, ctypes.byref(self._seen), out.ctypes.data))
+        _check(min(got, 0))
+        return got == 1
+
+    @property
+    def closed(self) -> bool:
+        return not self._handle
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_visual_close(handle)  # joins its thread and removes its tap
+        mixer = self._mixer
+        if mixer is not None:
+            captures = mixer.__dict__.get("_captures", [])
+            if self in captures:
+                captures.remove(self)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (never from a destructor)
+            pass
+
+
 class SoundMixer:
     """The engine's sound mixer (include/sprigcore.h sc_mixer): one 48 kHz stereo mix of every sound, mixed on a
     thread of the engine's own (clocked) so it never waits on Python. audio/native_mixer.py drives it like
@@ -1529,6 +1651,15 @@ class SoundMixer:
             out = ctypes.c_void_p()
             _check(self._lib.sc_playback_open(handle, int(what), device or "", ctypes.byref(out)))
             made = SoundPlayback(self._lib, out, self)
+            self.__dict__.setdefault("_captures", []).append(made)  # closed before the mixer, as captures are
+            return made
+
+    def visual(self, what: int) -> SoundVisual:
+        """An audio visualizer hearing `what` (a track's index, or MIXER_SOURCE_TAP + a sound; < 0: nothing)."""
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the mixer is closed")
+            made = SoundVisual(self, what)
             self.__dict__.setdefault("_captures", []).append(made)  # closed before the mixer, as captures are
             return made
 
