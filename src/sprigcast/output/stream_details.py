@@ -181,7 +181,7 @@ def _tokens(service: str) -> dict:
 
 def _refresh(service: str, old: dict) -> dict:
     from sprigcast.output import service_signin
-    from sprigcast.output.oauth_loopback import SignInError, post_form
+    from sprigcast.output.oauth_loopback import HELPER_TIMEOUT, SignInError, post_form
 
     with _refresh_lock:
         latest = _tokens(service)
@@ -190,7 +190,7 @@ def _refresh(service: str, old: dict) -> dict:
         try:
             reply = post_form(service_signin.helper_url(), {"service": service, "grant_type": "refresh_token",
                                                              "refresh_token": latest.get("refresh_token", "")},
-                              "SprigCast's sign-in helper")
+                              "SprigCast's sign-in helper", timeout=HELPER_TIMEOUT, tries=2)
         except SignInError as exc:
             raise DetailsError(str(exc)) from exc
         if "error" in reply or not reply.get("access_token"):
