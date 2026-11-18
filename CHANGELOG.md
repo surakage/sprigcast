@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Now playing (v6) with the new engine: the card is handed over as a list of pictures (cover card, words,
+  sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
+  times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to
+  make too.
 - Death count (v7) makes its stone, numbers and mound ahead, off the render thread, and starts a trip's clock with
   its first picture: the first death's stone came 3.5 s late on the PC, rise and flip unseen. Quick deaths each
   flip in turn (0, 1, 2 instead of 0 then 2); a flood waits for at most three flips.
