@@ -647,7 +647,8 @@ class StreamSession:
                 return False
             enc.holders.discard("stream")
             enc.on_last_let_go = retire
-        log.info("stream ended; its encoder keeps going for the recording (Same as stream)")
+        log.info("stream ended; its encoder keeps going for the %s (Same as stream)",
+                 " and ".join({"replay": "clips"}.get(h, h) for h in sorted(enc.holders)) or "recording")
         return True
 
     def encoders_by_canvas(self) -> dict:

@@ -145,9 +145,10 @@ class ReplayBuffer(Recorder):
 
     # Called from other threads ------------------------------------------------------
 
-    def save(self, path: Path, timeout: float = 20.0) -> Path:
-        """Write the buffered seconds to `path`. Blocks until written; raises if it couldn't be."""
-        self._ask(lambda: self._write_clip(path), timeout)
+    def save(self, path: Path, timeout: float = 20.0, container: str | None = None) -> Path:
+        """Write the buffered seconds to `path` (as `container`, else this encoder's). Blocks until written; raises
+        if it couldn't be."""
+        self._ask(lambda: self.write_clip(path, self._clip_packets(), container), timeout)
         return path
 
     def clip_snapshot(self, timeout: float = 20.0):
@@ -157,11 +158,12 @@ class ReplayBuffer(Recorder):
         1.3 s on the PC (2026-11-17), and the encoder encoded nothing meanwhile."""
         return self._ask(self._clip_packets, timeout)
 
-    def write_clip(self, path: Path, snapshot) -> Path:
-        """Write a clip_snapshot() to `path`. The packets' bytes are still in the buffer (it is overwritten only
-        after as many seconds again); if it has been by now, or the buffer was closed, this raises."""
+    def write_clip(self, path: Path, snapshot, container: str | None = None) -> Path:
+        """Write a clip_snapshot() to `path`, as `container` (else this encoder's: a stream's is FLV, its clips
+        aren't). The packets' bytes are still in the buffer (it is overwritten only after as many seconds again);
+        if it has been by now, or the buffer was closed, this raises."""
         packets, templates, kinds, zero = snapshot
-        out = PacketFile(path, self.container_kind, templates, zero, kinds)
+        out = PacketFile(path, container or self.container_kind, templates, zero, kinds)
         try:
             for p in packets:
                 out.write(p)

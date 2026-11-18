@@ -243,3 +243,16 @@ def test_named_tracks_each_get_the_sources_that_go_to_them():
     assert rec[0, 0] == pytest.approx(0.75) and voice[0, 0] == pytest.approx(0.25)
     assert clips is rec  # same sources: mixed once
     assert mixer._meters["master"][1] == pytest.approx(levels(np.full((BLOCK, 2), 0.375, dtype=np.float32))[1])
+
+
+def test_same_mix_says_when_two_tracks_hear_the_same_sounds():
+    mixer = Mixer(report=lambda levels: None)
+
+    def sound(sid, **settings):
+        return types.SimpleNamespace(id=sid, gain=1.0, settings=settings, read_block=lambda n: np.zeros((n, 2)))
+
+    mixer.set_sources([sound("mic"), sound("game")])
+    assert mixer.same_mix("stream", "clips")  # by default everything goes to stream, recording and clips
+    mixer.set_sources([sound("mic"), sound("music", tracks=["stream", "recording"])])
+    assert not mixer.same_mix("stream", "clips")  # music kept out of clips: clips need their own sound
+    assert mixer.same_mix("stream", "recording")

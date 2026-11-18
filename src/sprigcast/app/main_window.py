@@ -560,6 +560,9 @@ class MainWindow(QMainWindow):
         self._clips_timer = QTimer(self)
         self._clips_timer.timeout.connect(self._check_clips_idle)
         self._clips_timer.start(10_000)
+        self._clips_follow = QTimer(self)
+        self._clips_follow.timeout.connect(self._follow_stream_with_clips)
+        self._clips_follow.start(1000)
 
     # Building the UI ------------------------------------------------------
 
@@ -5583,7 +5586,7 @@ class MainWindow(QMainWindow):
                 self.replay = SharedReplay.start(  # clips go in Clips/<day> (output/replay.py replay_path)
                     self.encoders, canvases, self._recordings_folder() / "Clips", settings.replay_seconds,
                     settings.bitrate_kbps, settings.container, encoder=settings.encoder,
-                    short_side=settings.short_side,
+                    short_side=settings.short_side, stream_encoders=self._clip_stream_encoders(),
                 )
             except Exception as exc:
                 QMessageBox.critical(self, "SprigCast", f"Could not get clips ready:\n{exc}")
@@ -5595,6 +5598,34 @@ class MainWindow(QMainWindow):
             self.replay = None
             self._rest_soon()
         self.live_side.set_clip(self.replay is not None, self.collection.recording.replay_seconds)
+
+    def _clip_stream_encoders(self) -> dict:
+        """Canvas id -> the live stream's encoder clips may keep their seconds in ("Same as stream" on, and the
+        clips track hearing exactly what the stream hears); empty when they keep their own encoder."""
+        if not self.collection.recording.same_as_stream or os.environ.get("SPRIGCAST_OWN_CLIP_ENCODER"):
+            return {}
+        streaming = self.streaming
+        if streaming is None or not hasattr(streaming, "encoders_by_canvas"):
+            return {}
+        mixer = getattr(self.engine, "mixer", None)
+        same = getattr(mixer, "same_mix", None)
+        if same is None or not same("stream", "clips"):
+            return {}
+        try:
+            return streaming.encoders_by_canvas()
+        except Exception:  # clips keep their own encoder
+            log.exception("clips: asking the stream for its encoders failed")
+            return {}
+
+    def _follow_stream_with_clips(self) -> None:
+        """About once a second: clips move to the stream's encoder while live and back after (SharedReplay.follow)."""
+        replay = self.replay
+        if replay is None or not hasattr(replay, "follow"):
+            return
+        try:
+            replay.follow(self._clip_stream_encoders())
+        except Exception:  # clips stay where they are
+            log.exception("clips: moving between encoders failed")
 
     def _check_clips_idle(self) -> None:
         """Clips kept ready with nothing live or recording pause after a while without a clip saved; they

@@ -224,6 +224,17 @@ class Mixer:
         with self._lock:
             self._extras = [p for p in self._extras if p is not player]
 
+    def same_mix(self, a: str, b: str) -> bool:
+        """Whether tracks a and b hear exactly the same sounds now (every source goes to both or neither): then
+        one encoder's sound serves both (clips kept in the stream's encoder, output/shared.py SharedReplay)."""
+        with self._lock:
+            sources = self._sources + self._extras
+        for source in sources:
+            tracks = source_tracks(source)
+            if (a in tracks) != (b in tracks):
+                return False
+        return True
+
     def add_tap(self, callback: Callable, tracks: tuple[str, ...] = ("stream",)) -> None:
         """Hand every mixed block, float32 (BLOCK, 2), to callback on the mixer thread. It must not block.
 

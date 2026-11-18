@@ -46,7 +46,7 @@ def share_key(target) -> tuple | None:
 
 
 class SharedStreamEncoder(FileTap, ReplayBuffer):
-    """Encodes a canvas once for several StreamLinks. Keeps no replay (seconds=0).
+    """Encodes a canvas once for several StreamLinks. Keeps no replay (seconds=0) unless clips borrow it.
 
     A recording set to "Same as stream" writes these packets to its file too (FileTap). Whoever uses the
     encoder holds it ("stream", "recording"): when the stream ends while the recording goes on, the encoder
@@ -95,7 +95,8 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         return result
 
     def _keep(self, p: _Packet) -> None:
-        pass  # no replay to keep: packets only pass through to the links
+        if self.seconds > 0:  # clips kept here while live ("Same as stream", output/shared.py SharedReplay)
+            super()._keep(p)
 
     def hold(self, who: str) -> None:
         with self._hold_lock:
@@ -112,8 +113,16 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         return last
 
     def _on_packet(self, p: _Packet) -> None:
-        for link in self.links:
-            link.offer(p)
+        if self.seconds > 0 and self.links:
+            # Clips kept here move this packet's bytes to their ring file right after; the links get their own
+            # packet holding the same bytes (no copy), so a link behind by more than the clip length never reads
+            # bytes the ring has written over, and sending never waits on the disk.
+            sent = _Packet(p.kind, p.data, p.pts, p.dts, p.time_base, p.keyframe)
+            for link in self.links:
+                link.offer(sent)
+        else:
+            for link in self.links:
+                link.offer(p)
         if self.file_path is not None:
             self._to_file(p)
 
