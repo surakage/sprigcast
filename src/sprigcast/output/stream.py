@@ -457,6 +457,21 @@ def engine_encodes_streams() -> bool:
         return False
 
 
+def is_youtube(target: StreamTarget) -> bool:
+    return "youtube.com" in (target.server or "").lower()
+
+
+def is_vertical(target: StreamTarget) -> bool:
+    w, h = target.size or (getattr(target.canvas, "width", 0), getattr(target.canvas, "height", 0))
+    return h > w
+
+
+def dual_stream_order(targets: list[StreamTarget]) -> list[StreamTarget]:
+    """YouTube's Dual stream: the horizontal feed connects before the vertical one, so YouTube has the stream
+    the vertical one joins. Everything else keeps its order."""
+    return sorted(targets, key=lambda t: is_youtube(t) and is_vertical(t))
+
+
 class StreamSession:
     """Every live output at once. Each output encodes its own canvas; all share the mixed audio."""
 
@@ -474,6 +489,7 @@ class StreamSession:
 
         start_time = time.perf_counter()
         share_all = share_all or engine_encodes_streams()
+        targets = dual_stream_order(targets)
         streamers, taps, shared = [], [], []
         owned: dict[int, list[tuple]] = {}  # id(streamer or shared encoder) -> its frame taps (drop() takes them off)
         for t in targets:  # no size of its own: the canvas's output (scaled) size

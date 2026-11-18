@@ -82,6 +82,7 @@ class Details:
     broadcast_id: str = ""  # YouTube: the stream being edited, "" = none waiting (Save makes one)
     starts: str = ""  # YouTube: its scheduled start, which an update has to send back
     thumbnail: str = ""  # YouTube: the current thumbnail's web address, to show it
+    vertical_key_name: str = ""  # YouTube Dual stream: what the vertical key is called in YouTube Studio
     video_category: str = ""  # YouTube: the category id (YOUTUBE_CATEGORIES); "" = leave it as it is
     note: str = ""  # after a save: what didn't go through although the rest did (the thumbnail)
 
@@ -396,13 +397,13 @@ def _yt(token: str, method: str, path: str, body: dict | None = None) -> dict:
     return _call(method, f"{YOUTUBE_API}/{path}", token, body, who="YouTube")
 
 
-def _youtube_stream_for_key(token: str, stream_key: str | None) -> str | None:
-    """The id of the YouTube stream that this key belongs to, or None (no key, or not one of the channel's)."""
-    if not stream_key:
-        return None
-    streams = _yt(token, "GET", "liveStreams?part=id,cdn&mine=true&maxResults=50").get("items") or []
-    return next((s["id"] for s in streams
-                 if ((s.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") == stream_key), None)
+def _youtube_streams_for_keys(token: str, *keys: str | None) -> list[dict | None]:
+    """The channel's YouTube stream (id, snippet.title) for each key, None where a key isn't one of the channel's."""
+    if not any(keys):
+        return [None for _ in keys]
+    streams = _yt(token, "GET", "liveStreams?part=id,cdn,snippet&mine=true&maxResults=50").get("items") or []
+    return [next((s for s in streams if key and
+                  ((s.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") == key), None) for key in keys]
 
 
 def _youtube_broadcast(token: str, stream_id: str | None = None) -> dict | None:
@@ -425,11 +426,15 @@ def _youtube_broadcast(token: str, stream_id: str | None = None) -> dict | None:
     return waiting[0] if waiting else None
 
 
-def _youtube_load(stream_key: str | None = None) -> Details:
+def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None) -> Details:
     def call(token):
-        found = _youtube_broadcast(token, _youtube_stream_for_key(token, stream_key))
+        main, vertical = _youtube_streams_for_keys(token, stream_key, vertical_key)
+        vertical_name = ((vertical or {}).get("snippet") or {}).get("title", "") if vertical_key else ""
+        if vertical_key and not vertical_name:
+            vertical_name = "your vertical key"
+        found = _youtube_broadcast(token, (main or {}).get("id"))
         if found is None:
-            return Details(privacy="public")
+            return Details(privacy="public", vertical_key_name=vertical_name)
         snippet, status = found.get("snippet") or {}, found.get("status") or {}
         try:  # the category sits on the stream's video
             video = (_yt(token, "GET", f"videos?part=snippet&id={found.get('id', '')}").get("items") or [{}])[0]
@@ -442,7 +447,8 @@ def _youtube_load(stream_key: str | None = None) -> Details:
                        starts=snippet.get("scheduledStartTime", ""), thumbnail=thumb,
                        video_category=str((video.get("snippet") or {}).get("categoryId") or ""),
                        tags=list((video.get("snippet") or {}).get("tags") or []),
-                       old_tags=list((video.get("snippet") or {}).get("tags") or []))
+                       old_tags=list((video.get("snippet") or {}).get("tags") or []),
+                       vertical_key_name=vertical_name)
 
     return _with_token("youtube", call)
 
@@ -597,11 +603,13 @@ def _kick_search(text: str) -> list[tuple[str, str]]:
 # What the pop-up calls (on a worker) -------------------------------------------------------------------
 
 
-def load(service: str, stream_key_ref: str | None = None) -> Details:
-    """stream_key_ref (YouTube): the destination's key, so each of your YouTube destinations edits its own stream."""
+def load(service: str, stream_key_ref: str | None = None, vertical_key_ref: str | None = None) -> Details:
+    """YouTube: stream_key_ref is the horizontal destination's key (the stream it goes to is the one edited);
+    vertical_key_ref the vertical destination's, which joins that stream through YouTube's Dual stream."""
     log.info("stream details: reading %s", service)
     if service == "youtube":
-        return _youtube_load(get_key(stream_key_ref) if stream_key_ref else None)
+        return _youtube_load(get_key(stream_key_ref) if stream_key_ref else None,
+                             get_key(vertical_key_ref) if vertical_key_ref else None)
     return {"twitch": _twitch_load, "kick": _kick_load}[service]()
 
 

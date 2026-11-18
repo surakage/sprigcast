@@ -42,7 +42,8 @@ from sprigcast.output import stream_details as sd
 log = logging.getLogger(__name__)
 
 LABEL_W = 92
-CHIP_W = 104  # every platform chip the same width
+CHIP_W = 104
+DUAL_SETUP_URL = "https://www.youtube.com/live_dashboard"  # opens YouTube Studio's Live Control Room  # every platform chip the same width
 SEARCH_WAIT_MS = 350  # look a category up once typing pauses
 PRIVACY_NAMES = {"public": "Public", "unlisted": "Unlisted", "private": "Private"}
 BOX_STYLE = (f"QPlainTextEdit {{ background: {theme.CARD}; border: 1px solid {theme.EDGE_STRONG}; border-radius: 14px;"
@@ -123,9 +124,11 @@ def _quiet(text: str = "") -> QLabel:
 class Pane(QWidget):
     """One platform's fields, with its sign-in state."""
 
-    def __init__(self, service: str, dialog: StreamDetailsDialog, key_ref: str | None = None):
+    def __init__(self, service: str, dialog: StreamDetailsDialog, key_ref: str | None = None,
+                 vertical_key_ref: str | None = None):
         super().__init__()
         self.service, self.dialog = service, dialog
+        self.vertical_key_ref = vertical_key_ref  # YouTube Dual stream: the vertical destination's key
         self.key_ref = key_ref  # YouTube: this destination's stream key, so it edits the stream that key goes to
         self.details = sd.Details()
         self.loaded = False
@@ -223,6 +226,13 @@ class Pane(QWidget):
             self.waiting_note = _quiet("Nothing is waiting on YouTube. Save sets up your next stream.")
             self.waiting_note.setVisible(False)
             form.addWidget(self.waiting_note)
+            # Dual stream: YouTube's API can't join the vertical key to the stream, so say where it's done once.
+            self.dual_note = QLabel("")
+            self.dual_note.setWordWrap(True)
+            self.dual_note.setOpenExternalLinks(True)
+            self.dual_note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            self.dual_note.setVisible(False)
+            form.addWidget(self.dual_note)
         self.form.setVisible(False)
         box.addWidget(self.form)
 
@@ -250,7 +260,7 @@ class Pane(QWidget):
         self.form.setVisible(True)
         self.form.setEnabled(False)
         self.dialog.say(f"Reading from {label}…")
-        self.dialog.jobs.run(sd.load, self.service, self.key_ref, done=self._loaded)
+        self.dialog.jobs.run(sd.load, self.service, self.key_ref, self.vertical_key_ref, done=self._loaded)
 
     def show_signed_out(self, why: str) -> None:
         self.loaded = False
@@ -290,8 +300,21 @@ class Pane(QWidget):
             found = self.video_category.findData(details.video_category or "20")  # a new stream: Gaming
             self.video_category.setCurrentIndex(max(0, found))
             self.waiting_note.setVisible(not details.broadcast_id)
+            self.show_dual_note(details.vertical_key_name)
         self.dialog.say("")
         self.dialog.refresh_save()
+
+    def show_dual_note(self, key_name: str) -> None:
+        if not key_name:
+            self.dual_note.setVisible(False)
+            return
+        import html
+
+        self.dual_note.setText(
+            f'Vertical joins this stream: in <a href="{DUAL_SETUP_URL}" style="color: {theme.ACCENT};">'
+            f"Live Control Room</a>, turn on Dual stream, set Vertical to Encoder and pick "
+            f"<b>{html.escape(key_name)}</b>.")
+        self.dual_note.setVisible(True)
 
     # Category look-up -----------------------------------------------------------------------------------
 
@@ -397,23 +420,21 @@ class Pane(QWidget):
 
 
 def places_for(outputs) -> list[Place]:
-    """The chips for your Destinations: one each for Twitch and Kick (one channel, whatever the canvas), and one
-    per YouTube destination, since horizontal and vertical go to YouTube as two streams on two keys."""
+    """The chips for your Destinations: one per platform. Horizontal and vertical YouTube are one live stream
+    (YouTube's Dual stream: one watch page, one chat, one set of details), so they share one chip, which edits
+    the stream on the horizontal key and never makes a separate one for the vertical key."""
     places: list[Place] = []
     youtube = [o for o in outputs if o.service == "youtube"]
+    main = next((o for o in youtube if o.canvas == "horizontal" and o.key_ref), None) or \
+        next((o for o in youtube if o.key_ref), None)
+    vertical = next((o for o in youtube if o.canvas == "vertical" and o.key_ref and o is not main), None)
     for output in outputs:
-        if output.service not in sd.SERVICES:
-            continue
-        if output.service != "youtube":
-            if all(p.service != output.service for p in places):
+        if output.service in sd.SERVICES and all(p.service != output.service for p in places):
+            if output.service == "youtube":
+                places.append(Place("youtube", "youtube", "YouTube", main.key_ref if main else None,
+                                    vertical.key_ref if vertical else None))
+            else:
                 places.append(Place(output.service, output.service, sd.LABELS[output.service]))
-            continue
-        label = "YouTube"
-        if len(youtube) > 1:
-            label = f"YouTube {str(output.canvas or '').capitalize()}".strip()
-            if sum(o.canvas == output.canvas for o in youtube) > 1:
-                label = f"YouTube {youtube.index(output) + 1}"
-        places.append(Place(f"youtube:{output.id}", "youtube", label, output.key_ref))
     return places
 
 
@@ -425,6 +446,7 @@ class Place:
     service: str
     label: str
     key_ref: str | None = None
+    vertical_key_ref: str | None = None  # YouTube: the vertical destination that joins through Dual stream
 
 
 class StreamDetailsDialog(CardDialog):
@@ -499,7 +521,7 @@ class StreamDetailsDialog(CardDialog):
         self.say("")
         if pane is None:
             place = self.places[pid]
-            pane = self.panes[pid] = Pane(place.service, self, place.key_ref)
+            pane = self.panes[pid] = Pane(place.service, self, place.key_ref, place.vertical_key_ref)
             self.pane_box.addWidget(pane)
             pane.load()
         pane.setVisible(True)

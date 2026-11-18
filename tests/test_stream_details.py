@@ -128,39 +128,55 @@ def _broadcast(bid, start, title="Stream", stream="s1"):
             "status": {"privacyStatus": "unlisted"}, "contentDetails": {"boundStreamId": stream}}
 
 
-def test_horizontal_and_vertical_youtube_each_edit_the_stream_on_their_own_key(monkeypatch):
+def test_youtube_edits_the_stream_its_key_goes_to_and_names_the_vertical_key(monkeypatch):
     _signed_in("youtube")
     set_key("out-h", "key-h")
     set_key("out-v", "key-v")
     web = Web(monkeypatch)
     web.on("GET", sd.YOUTUBE_API + "/liveStreams", {"items": [
         {"id": "sh", "cdn": {"ingestionInfo": {"streamName": "key-h"}}},
-        {"id": "sv", "cdn": {"ingestionInfo": {"streamName": "key-v"}}}]})
+        {"id": "sv", "cdn": {"ingestionInfo": {"streamName": "key-v"}}, "snippet": {"title": "SprigCast vertical"}}]})
     web.on("GET", LIVE, {"items": []})
     web.on("GET", WAITING, {"items": [_broadcast("wide", "2026-11-19T01:00:00Z", "Wide", "sh"),
                                       _broadcast("tall", "2026-11-19T01:00:00Z", "Tall", "sv")]})
     web.on("GET", sd.YOUTUBE_API + "/videos", {"items": []})
-    assert sd.load("youtube", "out-h").broadcast_id == "wide"
+    both = sd.load("youtube", "out-h", "out-v")
+    assert both.broadcast_id == "wide" and both.vertical_key_name == "SprigCast vertical"
+    assert sd.load("youtube", "out-h").vertical_key_name == ""
     assert sd.load("youtube", "out-v").broadcast_id == "tall"
     set_key("out-x", "key-elsewhere")  # a key that isn't one of the channel's: any stream, as before
     assert sd.load("youtube", "out-x").broadcast_id in ("wide", "tall")
 
 
-def test_one_chip_per_youtube_destination_and_one_each_for_twitch_and_kick():
+def test_horizontal_and_vertical_youtube_share_one_chip_on_the_horizontal_key():
     from types import SimpleNamespace as O
 
     from sprigcast.app.stream_details_dialog import places_for
 
     outs = [O(id="t1", service="twitch", canvas="horizontal", key_ref=None),
             O(id="t2", service="twitch", canvas="vertical", key_ref=None),
-            O(id="y1", service="youtube", canvas="horizontal", key_ref="out-h"),
             O(id="y2", service="youtube", canvas="vertical", key_ref="out-v"),
+            O(id="y1", service="youtube", canvas="horizontal", key_ref="out-h"),
             O(id="c", service="custom", canvas="horizontal", key_ref=None)]
     places = places_for(outs)
-    assert [(p.id, p.label, p.key_ref) for p in places] == [
-        ("twitch", "Twitch", None), ("youtube:y1", "YouTube Horizontal", "out-h"),
-        ("youtube:y2", "YouTube Vertical", "out-v")]
-    assert [p.label for p in places_for(outs[2:3])] == ["YouTube"]
+    assert [(p.id, p.label, p.key_ref, p.vertical_key_ref) for p in places] == [
+        ("twitch", "Twitch", None, None), ("youtube", "YouTube", "out-h", "out-v")]
+    assert places_for(outs[2:3])[0].key_ref == "out-v"  # only vertical: its own key
+
+
+def test_going_live_connects_horizontal_youtube_before_vertical():
+    from types import SimpleNamespace as O
+
+    from sprigcast.output.stream import StreamTarget, dual_stream_order
+
+    wide, tall = O(width=1920, height=1080), O(width=1080, height=1920)
+    yt = "rtmp://a.rtmp.youtube.com/live2"
+    targets = [StreamTarget("YouTube (vertical)", tall, yt, "v", 6000),
+               StreamTarget("Twitch", wide, "rtmp://live.twitch.tv/app", "t", 6000),
+               StreamTarget("YouTube (horizontal)", wide, yt, "h", 6000),
+               StreamTarget("TikTok", tall, "rtmp://push.tiktok", "k", 6000)]
+    assert [t.name for t in dual_stream_order(targets)] == ["Twitch", "YouTube (horizontal)", "TikTok",
+                                                            "YouTube (vertical)"]
 
 
 def test_youtube_edits_the_stream_live_now_else_the_soonest_waiting(monkeypatch):
@@ -388,7 +404,7 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
         return loaded
 
     monkeypatch.setattr(sd, "account", lambda service: "sloth" if service == "kick" else "")
-    monkeypatch.setattr(sd, "load", lambda service, key=None: slow_load(service))
+    monkeypatch.setattr(sd, "load", lambda service, key=None, vertical=None: slow_load(service))
     monkeypatch.setattr(sd, "save", lambda service, details, thumb, key: calls.append((service, details)) or details)
     started = time.time()
     dialog = sdd.StreamDetailsDialog(None, ["kick", "twitch"])
@@ -418,7 +434,7 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
 def test_no_streaming_places_means_no_chips(monkeypatch):
     from sprigcast.app import stream_details_dialog as sdd
 
-    monkeypatch.setattr(sd, "load", lambda service, key=None: pytest.fail("nothing to read"))
+    monkeypatch.setattr(sd, "load", lambda service, key=None, vertical=None: pytest.fail("nothing to read"))
     dialog = sdd.StreamDetailsDialog(None, ["custom"])
     assert dialog.chips == {} and not dialog.save_button.isEnabled()
     dialog._save()
@@ -430,7 +446,7 @@ def test_a_failed_save_is_a_quiet_note(monkeypatch):
     from sprigcast.app import stream_details_dialog as sdd
 
     monkeypatch.setattr(sd, "account", lambda service: "sloth")
-    monkeypatch.setattr(sd, "load", lambda service, key=None: sd.Details(title="Hi"))
+    monkeypatch.setattr(sd, "load", lambda service, key=None, vertical=None: sd.Details(title="Hi"))
 
     def fail(*_a):
         raise sd.DetailsError("Couldn't reach Twitch. Check your internet and try again.")
