@@ -670,13 +670,11 @@ class MainWindow(QMainWindow):
 
     def open_stream_details(self) -> None:
         """Stream details: title, category and the rest, saved straight to Twitch, YouTube and Kick."""
-        from sprigcast.app.stream_details_dialog import StreamDetailsDialog
+        from sprigcast.app.stream_details_dialog import StreamDetailsDialog, places_for
         from sprigcast.app.twitch_connect import TwitchConnectDialog
 
-        streams = [o for o in self.collection.outputs if o.type == "stream"]
-        services = list(dict.fromkeys(o.service for o in sorted(streams, key=lambda o: not o.enabled) if o.service))
-        youtube = next((o for o in streams if o.service == "youtube" and o.key_ref), None)
-        modal(StreamDetailsDialog(self, services, youtube.key_ref if youtube else None,
+        streams = sorted((o for o in self.collection.outputs if o.type == "stream"), key=lambda o: not o.enabled)
+        modal(StreamDetailsDialog(self, places_for(streams),
                                   connect_twitch=lambda parent: modal(TwitchConnectDialog(parent))))
 
     def _build_transitions_dock(self) -> None:

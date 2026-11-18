@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import QStringListModel, Qt, QTimer
 from PySide6.QtWidgets import (
@@ -122,9 +123,10 @@ def _quiet(text: str = "") -> QLabel:
 class Pane(QWidget):
     """One platform's fields, with its sign-in state."""
 
-    def __init__(self, service: str, dialog: StreamDetailsDialog):
+    def __init__(self, service: str, dialog: StreamDetailsDialog, key_ref: str | None = None):
         super().__init__()
         self.service, self.dialog = service, dialog
+        self.key_ref = key_ref  # YouTube: this destination's stream key, so it edits the stream that key goes to
         self.details = sd.Details()
         self.loaded = False
         self.found: dict[str, str] = {}  # category name -> id, from the last look-up
@@ -248,7 +250,7 @@ class Pane(QWidget):
         self.form.setVisible(True)
         self.form.setEnabled(False)
         self.dialog.say(f"Reading from {label}…")
-        self.dialog.jobs.run(sd.load, self.service, done=self._loaded)
+        self.dialog.jobs.run(sd.load, self.service, self.key_ref, done=self._loaded)
 
     def show_signed_out(self, why: str) -> None:
         self.loaded = False
@@ -343,13 +345,15 @@ class Pane(QWidget):
             return
         dialog = SignInDialog(self.service, self.dialog, begin=lambda s: service_signin.begin(s, keep=True), hint="")
         if modal(dialog) and dialog.fetched is not None:
-            self.load()
+            self.dialog.reload(self.service)  # horizontal and vertical YouTube share the sign-in
         elif dialog.error:
             self.dialog.say(dialog.error, warn=True)
 
     def _sign_out(self) -> None:
         self.dialog.jobs.run(sd.sign_out, self.service, done=lambda _v, _e: None)
-        self.show_signed_out(f"Sign in to {sd.LABELS[self.service]} to change your stream details.")
+        for pane in self.dialog.panes.values():
+            if pane.service == self.service:
+                pane.show_signed_out(f"Sign in to {sd.LABELS[self.service]} to change your stream details.")
 
     # Save -----------------------------------------------------------------------------------------------
 
@@ -392,28 +396,68 @@ class Pane(QWidget):
             self._set_thumb("")
 
 
-class StreamDetailsDialog(CardDialog):
-    """modal(StreamDetailsDialog(...)). services: the platforms in your Destinations, first one shown first.
-    Only those get a chip; with none, the card says to add one."""
+def places_for(outputs) -> list[Place]:
+    """The chips for your Destinations: one each for Twitch and Kick (one channel, whatever the canvas), and one
+    per YouTube destination, since horizontal and vertical go to YouTube as two streams on two keys."""
+    places: list[Place] = []
+    youtube = [o for o in outputs if o.service == "youtube"]
+    for output in outputs:
+        if output.service not in sd.SERVICES:
+            continue
+        if output.service != "youtube":
+            if all(p.service != output.service for p in places):
+                places.append(Place(output.service, output.service, sd.LABELS[output.service]))
+            continue
+        label = "YouTube"
+        if len(youtube) > 1:
+            label = f"YouTube {str(output.canvas or '').capitalize()}".strip()
+            if sum(o.canvas == output.canvas for o in youtube) > 1:
+                label = f"YouTube {youtube.index(output) + 1}"
+        places.append(Place(f"youtube:{output.id}", "youtube", label, output.key_ref))
+    return places
 
-    def __init__(self, parent: QWidget | None = None, services: list[str] | None = None,
+
+@dataclass
+class Place:
+    """One chip: a platform, or one YouTube destination."""
+
+    id: str
+    service: str
+    label: str
+    key_ref: str | None = None
+
+
+class StreamDetailsDialog(CardDialog):
+    """modal(StreamDetailsDialog(...)). places: the chips (places_for), first one shown first; plain service names
+    work too. Only your platforms get a chip; with none, the card says to add one."""
+
+    def __init__(self, parent: QWidget | None = None, places: list | None = None,
                  youtube_key_ref: str | None = None, connect_twitch: Callable[[QWidget], object] | None = None):
-        super().__init__("Stream details", parent, width=560)
+        long = sum(1 for p in places or [] if not isinstance(p, str) and len(p.label) > 8)  # "YouTube Vertical"
+        super().__init__("Stream details", parent, width=740 if len(places or []) > 3 and long else 560)
         self.jobs = Jobs(self)
-        self.youtube_key_ref = youtube_key_ref
         self.connect_twitch = connect_twitch or (lambda _parent: None)
-        order = list(dict.fromkeys(s for s in (services or []) if s in sd.SERVICES))  # only where you stream
+        self.places: dict[str, Place] = {}
+        for place in places or []:
+            if isinstance(place, str):
+                place = Place(place, place, sd.LABELS.get(place, place), youtube_key_ref if place == "youtube" else None)
+            if place.service in sd.SERVICES and place.id not in self.places:
+                self.places[place.id] = place
+        order = list(self.places)
 
         chips = QHBoxLayout()
         chips.setSpacing(8)
         self.chips: dict[str, QPushButton] = {}
-        for service in order:
-            chip = QPushButton(sd.LABELS[service])
-            chip.setFixedWidth(CHIP_W)  # all the same size
+        for pid in order:
+            chip = QPushButton(self.places[pid].label)
+            chip.setStyleSheet(theme.PILL_STYLE)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
-            chip.clicked.connect(lambda _=False, s=service: self.show_service(s))
+            chip.clicked.connect(lambda _=False, p=pid: self.show_service(p))
             chips.addWidget(chip)
-            self.chips[service] = chip
+            self.chips[pid] = chip
+        width = max([CHIP_W, *(c.sizeHint().width() + 8 for c in self.chips.values())])
+        for chip in self.chips.values():
+            chip.setFixedWidth(width)  # all the same size
         chips.addStretch(1)
         self.body.addLayout(chips)
 
@@ -444,21 +488,28 @@ class StreamDetailsDialog(CardDialog):
             self.pane_box.addWidget(_quiet("Add Twitch, YouTube or Kick under Destinations first."))
             self.refresh_save()
 
-    def show_service(self, service: str) -> None:
-        """Show one platform's pane; it reads its details the first time it's shown."""
+    def show_service(self, pid: str) -> None:
+        """Show one chip's pane; it reads its details the first time it's shown."""
         for key, chip in self.chips.items():
-            chip.setStyleSheet(theme.PILL_SELECTED_STYLE if key == service else theme.PILL_STYLE)
+            chip.setStyleSheet(theme.PILL_SELECTED_STYLE if key == pid else theme.PILL_STYLE)
         for pane in self.panes.values():
             pane.setVisible(False)
-        self.current = service
-        pane = self.panes.get(service)
+        self.current = pid
+        pane = self.panes.get(pid)
         self.say("")
         if pane is None:
-            pane = self.panes[service] = Pane(service, self)
+            place = self.places[pid]
+            pane = self.panes[pid] = Pane(place.service, self, place.key_ref)
             self.pane_box.addWidget(pane)
             pane.load()
         pane.setVisible(True)
         self.refresh_save()
+
+    def reload(self, service: str) -> None:
+        """After signing in: every pane of that platform reads again."""
+        for pane in self.panes.values():
+            if pane.service == service:
+                pane.load()
 
     def say(self, text: str, warn: bool = False, good: bool = False) -> None:
         colour = theme.WARN if warn else theme.ACCENT if good else theme.MUTED
@@ -481,7 +532,7 @@ class StreamDetailsDialog(CardDialog):
         self._saving = True
         self.refresh_save()
         self.say(f"Saving to {sd.LABELS[service]}…")
-        self.jobs.run(sd.save, service, details, pane.thumb_path, self.youtube_key_ref,
+        self.jobs.run(sd.save, service, details, pane.thumb_path, pane.key_ref,
                       done=lambda saved, error, p=pane: self._saved(p, saved, error))
 
     def _saved(self, pane: Pane, saved, error) -> None:
@@ -489,7 +540,7 @@ class StreamDetailsDialog(CardDialog):
         label = sd.LABELS[pane.service]
         if error is None:
             pane.saved(saved)
-            if pane.service == self.current:
+            if self.panes.get(self.current) is pane:
                 if saved.note:
                     self.say(saved.note, warn=True)
                 else:
