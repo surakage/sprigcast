@@ -160,6 +160,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   make too.
 - PNGtuber (v4) with the new engine: each of its pictures goes to the graphics card once, then a bounce or a held
   mouth only says where it goes; a mouth or blink fade sends just the part that changes.
+- A media source copies each new picture before taking the lock the canvas reads it under, and one long frame
+  (a stall elsewhere) no longer has a source drawn every 4th frame for most of a second afterwards (237 ms on the
+  PC). SPRIGCAST_STALL_DUMP_MS (from 200 ms) prints every thread's stack for shorter stalls when chasing one.
 - Chat's ⋯ menu is kept and made ready ahead instead of made in the click (151 ms). Drop-downs and number boxes
   keep the wheel rule in their own wheel handling instead of an event filter each, and the Live lists fit their
   height from their layout instead of a filter, so opening a pop-up no longer sends every one of them through

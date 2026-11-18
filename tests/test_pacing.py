@@ -214,3 +214,14 @@ def test_warm_up_keeps_its_imports_aside():
         assert gc.get_freeze_count() >= 100
     finally:
         gc.unfreeze()
+
+
+def test_stall_dumps_can_be_asked_for_shorter_stalls():
+    """A 235 ms stall held a media source on the PC (2026-11-18), under the usual 350 ms dump: a test run can ask
+    for dumps from 200 ms (never shorter: the watch re-arms the dump every half of it)."""
+    from sprigcast.core.pacing import DUMP_AFTER_MIN_S, DUMP_AFTER_S, dump_after_s
+
+    assert dump_after_s({}) == DUMP_AFTER_S
+    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "220"}) == 0.22
+    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "50"}) == DUMP_AFTER_MIN_S
+    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "soon"}) == DUMP_AFTER_S

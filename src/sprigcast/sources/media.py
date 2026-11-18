@@ -939,11 +939,14 @@ class MediaSource(Source):
 
     def _push_frame(self, t: float, picture: tuple[np.ndarray, str], generation: int) -> bool:
         pixels, order = picture
+        # Made one piece before the lock, not while holding it: the canvas asks for its picture under the same
+        # lock, and a big picture's copy made it wait (a 237 ms media frame on the PC while live, 2026-11-18).
+        pixels = np.ascontiguousarray(pixels)
         with self._wake:
             self._wake.wait_for(lambda: not self._current(generation) or len(self._frames) < AHEAD_FRAMES)
             if not self._current(generation):
                 return False
-            self._frames.append((t, np.ascontiguousarray(pixels), order))
+            self._frames.append((t, pixels, order))
         return True
 
     def _push_audio(self, t: float, samples: np.ndarray, generation: int) -> bool:

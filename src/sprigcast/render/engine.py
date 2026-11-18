@@ -64,6 +64,7 @@ SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thre
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
+CHARGE_CAP_MS = 4 * SOURCE_BUDGET_MS  # the most one frame adds to a source's average (_charge)
 BUDGET_MARGIN = 0.8  # ...and drawn more often again only under this share of the lower step's budget
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
@@ -1883,7 +1884,11 @@ class Engine:
         """Keep each source's average time per frame. One averaging over SOURCE_BUDGET_MS (a plugin that
         paints every frame: Death count took 15-24 ms while animating) is drawn every 2nd-4th tick, so the
         canvas, the encoders and the sound stay on time; its animation just moves in bigger steps."""
-        avg = self._source_ms.get(source_id, 0.0) * 0.9 + 1000 * spent * 0.1
+        # One frame counts at most CHARGE_CAP_MS: a single long one is a stall it waited out (Python's lock held
+        # elsewhere, "everything waited"), not what the source costs. Charged in full, one 237 ms media frame on
+        # the PC (2026-11-18) had it drawn every 4th frame for 0.8 s afterwards. A source steadily slow still
+        # averages up to the cap and is drawn less often.
+        avg = self._source_ms.get(source_id, 0.0) * 0.9 + min(1000 * spent, CHARGE_CAP_MS) * 0.1
         self._source_ms[source_id] = avg
         before = self._source_every.get(source_id, 1)
         every = min(4, max(1, math.ceil(avg / SOURCE_BUDGET_MS))) if avg > SOURCE_BUDGET_MS else 1
