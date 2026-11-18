@@ -8,6 +8,7 @@ Garden check can say which one it is and offer the right fix.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 
@@ -48,10 +49,15 @@ def _queue_fill(enc) -> float:
 
 
 class EncoderWatch:
-    """Call tick() every second or two; overloaded() says which kinds of encoder can't keep up."""
+    """Call tick() every second or two; overloaded() says which kinds of encoder can't keep up.
+
+    tick() runs on a worker and overloaded() on the window's thread: both hold the lock, and overloaded() judges a
+    copy, so a sample added meanwhile can't change what it's reading ("deque mutated during iteration" in the
+    status bar on the PC, 2026-11-18)."""
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
+        self._lock = threading.Lock()
         self._samples: dict[int, deque] = {}  # id(encoder) -> (time, frames, encode s, eased, queue fill)
         self._kinds: dict[int, str] = {}
         self.codecs: dict[str, str] = {}  # kind -> the codec its encoder runs (what make_lighter() changes)
@@ -59,26 +65,34 @@ class EncoderWatch:
     def tick(self, streamers=None, recording=None, replay=None) -> None:
         now = self.clock()
         live = _encoders(streamers, recording, replay)
+        samples = [(kind, enc, (now, int(getattr(enc, "frames", 0)), float(getattr(enc, "encode_seconds", 0.0)),
+                                int(getattr(enc, "eased", 0)), _queue_fill(enc), int(getattr(enc, "fps", 30) or 30)))
+                   for kind, enc in live]
+        with self._lock:
+            self._add(now, live, samples)
+
+    def _add(self, now: float, live, samples) -> None:
         keep = {id(enc) for _, enc in live}
         if not live:
             self.codecs.clear()
         for gone in [k for k in self._samples if k not in keep]:
             self._samples.pop(gone)
             self._kinds.pop(gone, None)
-        for kind, enc in live:
+        for kind, enc, sample in samples:
             line = self._samples.setdefault(id(enc), deque())
             self._kinds[id(enc)] = kind
             self.codecs.setdefault(kind, str(getattr(enc, "codec", "") or ""))
-            line.append((now, int(getattr(enc, "frames", 0)), float(getattr(enc, "encode_seconds", 0.0)),
-                         int(getattr(enc, "eased", 0)), _queue_fill(enc), int(getattr(enc, "fps", 30) or 30)))
+            line.append(sample)
             while line and now - line[0][0] > WINDOW_S:
                 line.popleft()
 
     def overloaded(self) -> list[str]:
         """The kinds ("stream", "recording", "replay buffer") whose encoder couldn't keep up lately, stream
         first."""
+        with self._lock:
+            lines = [(self._kinds.get(key, "recording"), list(line)) for key, line in self._samples.items()]
         kinds = set()
-        for key, line in self._samples.items():
+        for kind, line in lines:
             if len(line) < 3 or line[-1][0] - line[0][0] < WINDOW_S / 2:
                 continue  # not long enough to judge
             first, last = line[0], line[-1]
@@ -88,7 +102,7 @@ class EncoderWatch:
             eased = last[3] > first[3]
             full = sum(1 for s in line if s[4] > FULL_QUEUE) >= FULL_SAMPLES
             if busy or eased or full:
-                kinds.add(self._kinds.get(key, "recording"))
+                kinds.add(kind)
         return [k for k in ("stream", "recording", "replay buffer") if k in kinds]
 
 

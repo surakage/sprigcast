@@ -157,3 +157,33 @@ def test_the_replay_buffer_and_recording_get_one_step_lighter_together():
     c.recording.encoder.preset = "p6"
     assert make_lighter(c, ["recording", "replay buffer"]) == ["recording"]
     assert c.recording.encoder.preset == "p4"  # one step, not two
+
+
+def test_reading_while_a_worker_adds_samples_never_fails():
+    """tick() on a worker, overloaded() on the window's thread: "deque mutated during iteration" on the PC."""
+    import threading
+
+    clock = _Clock()
+    slow = _Enc()
+    w = _watch(clock, 12, each=lambda s: slow.run(s, 15.5), recording=_Recording(slow))
+    stop, errors = threading.Event(), []
+
+    def worker():
+        while not stop.is_set():
+            slow.run(0.001, 15.5)
+            clock.now += 0.001
+            w.tick(recording=_Recording(slow))
+
+    t = threading.Thread(target=worker)
+    t.start()
+    try:
+        for _ in range(3000):
+            try:
+                assert w.overloaded() == ["recording"]
+            except RuntimeError as exc:  # pragma: no cover (what the lock prevents)
+                errors.append(exc)
+                break
+    finally:
+        stop.set()
+        t.join()
+    assert errors == []
