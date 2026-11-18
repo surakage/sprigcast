@@ -9,6 +9,9 @@ The card fills its box exactly (card_width): the box is as wide as the widest wo
 its settings (every digit counted as a 0), so a selection in Build hugs the card, and the box only changes
 when the settings do, never as the seconds tick. The words sit in the middle of the room they have.
 
+Its Style tab (core/style.py) changes the colours, font, text size, corners (leaf by default), border and
+shadow, and hides the badge, the small words or the vine (show_badge, or "hide: badge" in a custom look).
+
 Only painted when the words on it change (Aside, on the pictures lane), so it costs nothing between those.
 """
 
@@ -17,6 +20,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
+
+from sprigcast.core import style
 
 H = 220  # every card's box is this tall (box units); scale it on the canvas like anything else
 EDGE = 4  # room around the card for its rim's soft edge
@@ -40,6 +46,26 @@ SUN = "#f2cf63"
 MOON = "#dfeee6"
 
 FAMILIES = ["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"]
+LOOK_BASE = {"text_color": TEXT, "card_color": CARD, "accent_color": ACCENT, "corners": "leaf"}
+PLAIN = style.resolve({}, LOOK_BASE)
+SMALL_PARTS = ("label", "date", "line")  # what "hide:" calls the small words
+
+
+def look_of(settings: dict[str, Any]) -> style.Style:
+    """The card's look from a plugin's settings (cached: free to ask every frame)."""
+    return style.resolve(settings, LOOK_BASE)
+
+
+def _badge_shown(look: style.Style) -> bool:
+    return look.shows("badge", default=look.shows("dot"))
+
+
+def _small_shown(look: style.Style) -> bool:
+    return not any(part in look.hidden for part in SMALL_PARTS)
+
+
+def _words_left(look: style.Style) -> float:
+    return WORDS_LEFT if _badge_shown(look) else EDGE + RIGHT
 BIG_ALONE, BIG_WITH_LINE, SMALL = 100, 86, 34
 
 
@@ -79,21 +105,23 @@ class Words:
     shrink: float = 1.0  # card_width: the big words may be drawn this much smaller to fit (a Done text)
 
 
-def _fonts():
+def _fonts(look: style.Style = PLAIN):
     from PySide6.QtGui import QFont
 
     big = QFont()
-    big.setFamilies(FAMILIES)
+    big.setFamilies(look.families())
     big.setWeight(QFont.Weight.ExtraBold)
     small = QFont(big)
     small.setWeight(QFont.Weight.Bold)
-    small.setPixelSize(SMALL)
+    small.setPixelSize(look.px(SMALL))
     small.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
     return big, small
 
 
-def _big_size(words: Words) -> int:
-    return BIG_WITH_LINE if (words.small or words.vine is not None) else BIG_ALONE
+def _big_size(words: Words, look: style.Style = PLAIN) -> int:
+    """The time's size: smaller with a line or vine beside it, and never taller than the card has room for."""
+    size = look.px(BIG_WITH_LINE if (words.small or words.vine is not None) else BIG_ALONE)
+    return min(size, 130 if (words.small or words.vine is not None) else 150)
 
 
 def even(text: str) -> str:
@@ -101,20 +129,30 @@ def even(text: str) -> str:
     return re.sub(r"\d", "0", text)
 
 
-def card_width(widest: list[Words]) -> int:
+def card_width(widest: list[Words], look: style.Style | None = None) -> int:
     """The box's width: enough for the widest of these (the longest each line can be, digits as 0)."""
     from sprigcast.core import painted
     from PySide6.QtGui import QFontMetricsF
 
+    look = look or PLAIN
     painted.brand_fonts()
-    big, small = _fonts()
+    big, small = _fonts(look)
     need = 0.0
     for words in widest:
-        big.setPixelSize(max(1, round(_big_size(words) * words.shrink)))
+        big.setPixelSize(max(1, round(_big_size(words, look) * words.shrink)))
         need = max(need, QFontMetricsF(big).horizontalAdvance(even(words.big)))
-        if words.small:
+        if words.small and _small_shown(look):
             need = max(need, QFontMetricsF(small).horizontalAdvance(words.small) + 2)
-    return int(max(LEAST_W, min(MOST_W, round(WORDS_LEFT + need + RIGHT + EDGE))))
+    return int(max(LEAST_W, min(MOST_W, round(_words_left(look) + need + RIGHT + EDGE))))
+
+
+def card_path(x: float, y: float, w: float, h: float, look: style.Style):
+    """The card's outline in its look: leaf-cut (its own), round, square, or a custom look's corner size."""
+    from PySide6.QtCore import QRectF
+
+    if look.corners == "leaf" and look.radius is None:
+        return leaf_card_path(x, y, w, h)
+    return style.card_path(QRectF(x, y, w, h), h * 0.3, look)
 
 
 def leaf_card_path(x: float, y: float, w: float, h: float):
@@ -152,7 +190,7 @@ def _leaf(base, tip, bulge: float):
     return path
 
 
-def _badge(p, cx: float, cy: float, kind: str) -> None:
+def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT) -> None:
     """The round badge: a sprig (SprigCast's mark), or a sun by day and a moon by night for the clock."""
     import math
 
@@ -182,7 +220,7 @@ def _badge(p, cx: float, cy: float, kind: str) -> None:
         p.drawPath(moon.subtracted(bite))
         p.drawEllipse(QPointF(cx + r * 0.42, cy + r * 0.3), r * 0.05, r * 0.05)  # a star
         return
-    colour = QColor(QUIET if quiet else ACCENT)
+    colour = QColor(QUIET) if quiet else style.qcolor(accent)
     k = r * 1.5 / 24  # the sprig is drawn on a 24 grid, like the app's icon
     ox, oy = cx - 12 * k, cy - 12.6 * k
 
@@ -220,8 +258,9 @@ def colour(text, fallback: str):
 
 
 def paint(width: int, words: Words, text_colour: str | None = None, card_colour: str | None = None,
-          detail: float = 1.0):
-    """The card as a premultiplied QImage, width x H box units drawn `detail` pixels per unit."""
+          detail: float = 1.0, look: style.Style | None = None):
+    """The card as a premultiplied QImage, width x H box units drawn `detail` pixels per unit. With a look
+    (look_of(settings)), its colours, font, size, corners and parts win over text_colour and card_colour."""
     from PySide6.QtCore import QPointF, QRectF, Qt
     from PySide6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPen
 
@@ -229,9 +268,18 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
 
     image, p = painted.canvas(width, H, detail)
     x, y, w, h = EDGE, EDGE, width - 2 * EDGE, H - 2 * EDGE
-    card = colour(card_colour, CARD)
-    ink = colour(text_colour, TEXT)
-    shape = leaf_card_path(x, y, w, h)
+    if look is None:
+        look = PLAIN
+        card, ink = colour(card_colour, CARD), colour(text_colour, TEXT)
+    else:
+        card, ink = style.qcolor(look.card), style.qcolor(look.text)
+    accent = look.accent
+    shape = card_path(x, y, w, h, look)
+    if look.shadow and card.alpha():
+        for dy, a in ((3, 40), (1.5, 50)):  # a soft shadow in the card's own room (its box hugs it)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, int(a * card.alphaF())))
+            p.drawPath(shape.translated(0, dy))
     if card.alpha():
         top = QColor(card).lighter(122)
         top.setAlpha(card.alpha())
@@ -241,16 +289,27 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(fill)
         p.drawPath(shape)
-        rim = QColor(ACCENT)
+    if look.border_width:
+        p.setPen(QPen(style.qcolor(look.border_color), look.border_width))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(shape)
+    elif card.alpha():
+        rim = style.qcolor(accent)
         rim.setAlphaF(0.34 * card.alphaF())
         p.setPen(QPen(rim, 2.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(shape)
-        _badge(p, x + BADGE_LEFT + BADGE / 2, y + h / 2, words.badge)
+    if card.alpha() and _badge_shown(look):
+        _badge(p, x + BADGE_LEFT + BADGE / 2, y + h / 2, words.badge, accent)
+    if not _small_shown(look):
+        words = Words(words.big, "", words.small_on_top, words.badge, words.vine, words.shrink)
+    if not look.shows("vine"):
+        words = Words(words.big, words.small, words.small_on_top, words.badge, None, words.shrink)
 
-    big, small = _fonts()
-    big.setPixelSize(_big_size(words))
-    room = max(10.0, width - WORDS_LEFT - RIGHT - EDGE)
+    big, small = _fonts(look)
+    big.setPixelSize(_big_size(words, look))
+    words_left = _words_left(look)
+    room = max(10.0, width - words_left - RIGHT - EDGE)
     big_m = QFontMetricsF(big)
     text = words.big
     if big_m.horizontalAdvance(text) > room:  # a long Done text: smaller, then cut with "…"
@@ -260,16 +319,16 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
     small_m = QFontMetricsF(small)
     line = small_m.elidedText(words.small, Qt.TextElideMode.ElideRight, room) if words.small else ""
     big_w = big_m.horizontalAdvance(even(text)) if any(c.isdigit() for c in text) else big_m.horizontalAdvance(text)
-    left = WORDS_LEFT + max(0.0, (room - max(big_w, small_m.horizontalAdvance(line) if line else 0.0)) / 2)
+    left = words_left + max(0.0, (room - max(big_w, small_m.horizontalAdvance(line) if line else 0.0)) / 2)
 
     # Lines from the top: [small] big [vine] or big [small], centred as a block in the card.
     cap = big_m.capHeight()
     small_h = small_m.capHeight() if line else 0.0
     vine_h = 12.0 if words.vine is not None else 0.0
-    gap = 26.0
+    gap = 26.0 * min(1.0, look.scale)
     block = cap + (small_h + gap if line else 0.0) + (vine_h + gap if vine_h else 0.0)
     top = y + (h - block) / 2
-    soft = QColor(SOFT)
+    soft = QColor(SOFT) if look.text == PLAIN.text else QColor(ink)  # their own text colour: the line in it too
     soft.setAlphaF(0.82 * ink.alphaF())
     if line and words.small_on_top:
         p.setFont(small)
@@ -286,12 +345,12 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
         p.drawText(QPointF(left + 2, top + small_h), line)
         top += small_h + gap
     if words.vine is not None:
-        _vine(p, QRectF(WORDS_LEFT + 2, top, room - 2, vine_h), words.vine, ink)
+        _vine(p, QRectF(words_left + 2, top, room - 2, vine_h), words.vine, ink, accent)
     p.end()
     return image
 
 
-def _vine(p, rect, share: float, ink) -> None:
+def _vine(p, rect, share: float, ink, accent: str = ACCENT) -> None:
     """A countdown's vine: a faint track, the green part as long as the time left, a leaf at its tip."""
     from PySide6.QtCore import QPointF, QRectF, Qt
     from PySide6.QtGui import QColor
@@ -306,7 +365,7 @@ def _vine(p, rect, share: float, ink) -> None:
     if share <= 0:
         return
     grown = QRectF(rect.x(), rect.y(), max(rect.height(), rect.width() * share), rect.height())
-    p.setBrush(QColor(ACCENT))
+    p.setBrush(style.qcolor(accent))
     p.drawRoundedRect(grown, r, r)
     tip = QPointF(grown.right() - r * 0.4, grown.center().y())
     p.drawPath(_leaf(tip, QPointF(tip.x() + r * 2.6, tip.y() - r * 2.6), 0.42))
