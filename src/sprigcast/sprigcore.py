@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 24  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 25  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -911,6 +911,13 @@ class MixerLevel(ctypes.Structure):
                 ("underruns", ctypes.c_uint64)]
 
 
+FILTER_GAIN, FILTER_NOISE_GATE, FILTER_COMPRESSOR, FILTER_LIMITER, FILTER_INVERT, FILTER_DUCKING = range(1, 7)
+
+
+class MixerFilter(ctypes.Structure):
+    _fields_ = [("kind", ctypes.c_int), ("follow", ctypes.c_int), ("p", ctypes.c_float * 6)]
+
+
 CAPTURE_STATES = ("starting", "capturing", "not found", "lost", "failed")  # SC_CAPTURE_*
 CAPTURE_TEST_TONE = "sprigcast-test-tone"
 
@@ -966,6 +973,7 @@ def _media_sigs() -> dict:
         "sc_mixer_tick": (c_int, [vp, c_int]),
         "sc_mixer_wait": (c_int, [vp, ctypes.c_int64, c_int, ctypes.POINTER(ctypes.c_int64)]),
         "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
+        "sc_mixer_source_filters": (c_int, [vp, c_int, ctypes.POINTER(MixerFilter), c_int]),
         "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
         "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
         "sc_capture_close": (None, [vp]),
@@ -1395,6 +1403,15 @@ class SoundMixer:
 
         data = np.ascontiguousarray(block, dtype=np.float32)
         _check(self._call(self._lib.sc_mixer_source_push, int(source), data.ctypes.data, int(data.shape[0])))
+
+    def set_filters(self, source: int, filters: list[tuple[int, int, tuple[float, ...]]]) -> None:
+        """A sound's built-in filters in order: (FILTER_*, the sound it follows or 0, its numbers)."""
+        array = (MixerFilter * max(1, len(filters)))()
+        for i, (kind, follow, numbers) in enumerate(filters):
+            array[i].kind, array[i].follow = int(kind), int(follow)
+            for k, value in enumerate(list(numbers)[:6]):
+                array[i].p[k] = float(value)
+        _check(self._call(self._lib.sc_mixer_source_filters, int(source), array, len(filters)))
 
     def link_media(self, source: int, player: MediaPlayer | None, asleep: bool = False) -> None:
         """The sound reads straight from an engine player (None: pushed again)."""

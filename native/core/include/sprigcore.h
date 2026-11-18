@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 24
+#define SC_INTERFACE_VERSION 25
 
 enum {
     SC_OK = 0,
@@ -679,6 +679,16 @@ SC_API int sc_mixer_source_push(sc_mixer *mixer, int id, const float *stereo, in
 /* The sound reads straight from an engine player (NULL: pushed again). Once this returns the mixer no longer
  * reads the old player: unlink before sc_media_destroy. asleep: as sc_media_read_audio. */
 SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int asleep);
+/* A sound's built-in filters (core/filters.py), run in order on its samples before mono, balance and delay. The same
+ * filters again with new numbers keep their state. */
+enum { SC_FILTER_GAIN = 1, SC_FILTER_NOISE_GATE, SC_FILTER_COMPRESSOR, SC_FILTER_LIMITER, SC_FILTER_INVERT,
+       SC_FILTER_DUCKING };
+typedef struct sc_mixer_filter {
+    int kind;     /* SC_FILTER_* */
+    int follow;   /* ducking: the sound it ducks under (0: none) */
+    float p[6];   /* its settings in filters.py's field order (see mixer.cpp Filter) */
+} sc_mixer_filter;
+SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filter *filters, int count);
 SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking);
 /* An output's queue of finished blocks: each holds `count` entries (SC_TRACK_*, SC_MIXER_MONITOR or
  * SC_MIXER_SOURCE_TAP + id) one after another, SC_MIXER_BLOCK * 2 floats each. At most 64 wait; then the oldest

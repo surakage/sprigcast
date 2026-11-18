@@ -52,6 +52,123 @@ void measure(const float *b, float gain, float &peak_db, float &rms_db) {
     rms_db = to_db(static_cast<float>(std::sqrt(sum / (BLOCK * 2))) * gain);
 }
 
+// A sound's built-in filters (core/filters.py, the same numbers): gain, noise gate, compressor, limiter, invert
+// polarity and ducking under another sound. Each keeps its state between blocks; new settings of the same filters
+// keep it (as AudioChain.update does).
+// The numbers are worked in double, as Python does, and each gain is rounded to float only when applied.
+double db_gain(double db) { return std::pow(10.0, db / 20.0); }
+
+double smoothing(double ms) { return std::exp(-1.0 / std::max(1.0, ms / 1000.0 * RATE)); }  // filters.py _coeff
+
+double chunk_peak(const float *b, int from, int count) {
+    float peak = 0.0f;
+    for (int i = from * 2; i < (from + count) * 2; ++i) peak = std::max(peak, std::fabs(b[i]));
+    return peak;
+}
+
+void scale(float *b, int from, int count, double gain) {
+    const float g = static_cast<float>(gain);
+    for (int i = from * 2; i < (from + count) * 2; ++i) b[i] *= g;
+}
+
+void ramp(float *b, int from, int count, double start, double end) {  // numpy linspace(start, end, count)
+    for (int i = 0; i < count; ++i) {
+        const double step = count > 1 ? (end - start) / (count - 1) : 0.0;
+        const float g = static_cast<float>(i == count - 1 && count > 1 ? end : start + step * i);
+        b[2 * (from + i)] *= g;
+        b[2 * (from + i) + 1] *= g;
+    }
+}
+
+struct Filter {
+    sc_mixer_filter settings{};
+    bool open = false;
+    double held = 0.0, level = 0.0, env = 0.0, gain = 1.0;
+
+    // other_level: the followed sound's last peak (ducking)
+    void process(float *b, double other_level) {
+        double p[6];
+        for (int i = 0; i < 6; ++i) p[i] = settings.p[i];
+        constexpr int STEP = 32;
+        switch (settings.kind) {
+        case SC_FILTER_GAIN:
+            scale(b, 0, BLOCK, db_gain(p[0]));
+            break;
+        case SC_FILTER_NOISE_GATE: {  // p: close_db, open_db, attack_ms, hold_ms, release_ms
+            const double open_at = db_gain(p[1]), close_at = db_gain(p[0]);
+            const double step_s = static_cast<double>(STEP) / RATE;
+            const double attack = step_s / std::max(0.001, p[2] / 1000.0);
+            const double release = step_s / std::max(0.001, p[4] / 1000.0);
+            const double hold = p[3] / 1000.0;
+            for (int i = 0; i < BLOCK; i += STEP) {
+                const int count = std::min(STEP, BLOCK - i);
+                const double peak = chunk_peak(b, i, count);
+                if (peak >= open_at) {
+                    open = true;
+                    held = hold;
+                } else if (open && peak < close_at) {
+                    held -= step_s;
+                    if (held <= 0.0) open = false;
+                }
+                const double start = level;
+                level = open ? std::min(1.0, level + attack) : std::max(0.0, level - release);
+                ramp(b, i, count, start, level);
+            }
+            break;
+        }
+        case SC_FILTER_COMPRESSOR:  // p: ratio, threshold_db, attack_ms, release_ms, output_db
+        case SC_FILTER_LIMITER: {   // p: threshold_db, release_ms
+            const bool limiter = settings.kind == SC_FILTER_LIMITER;
+            const double ratio = limiter ? 1000.0 : std::max(1.0, p[0]);
+            const double threshold = limiter ? p[0] : p[1];
+            const double attack = smoothing((limiter ? 0.0 : p[2]) / STEP);
+            const double release = smoothing((limiter ? p[1] : p[3]) / STEP);
+            const double makeup = db_gain(limiter ? 0.0 : p[4]);
+            for (int i = 0; i < BLOCK; i += STEP) {
+                const int count = std::min(STEP, BLOCK - i);
+                const double x = chunk_peak(b, i, count);
+                const double c = x > env ? attack : release;
+                env = c * env + (1.0 - c) * x;
+                // Python works the gain out in float32 (numpy, from _envelope's float32 out array)
+                const float env_db = 20.0f * std::log10(std::max(static_cast<float>(env), 1e-6f));
+                const float over = std::max(0.0f, env_db - static_cast<float>(threshold));
+                const float g = std::pow(10.0f, -over * static_cast<float>(1.0 - 1.0 / ratio) / 20.0f) *
+                                static_cast<float>(makeup);
+                scale(b, i, count, g);
+            }
+            if (limiter) {
+                const float ceiling = static_cast<float>(db_gain(threshold));
+                for (int i = 0; i < BLOCK * 2; ++i) b[i] = std::clamp(b[i], -ceiling, ceiling);
+            }
+            break;
+        }
+        case SC_FILTER_INVERT:
+            for (int i = 0; i < BLOCK * 2; ++i) b[i] = -b[i];
+            break;
+        case SC_FILTER_DUCKING: {  // follow: the sound; p: amount_db, threshold_db, attack_ms, hold_ms, release_ms
+            const double block_s = static_cast<double>(BLOCK) / RATE;
+            if (settings.follow > 0 && other_level > db_gain(p[1]))
+                held = p[3] / 1000.0;
+            else
+                held = std::max(0.0, held - block_s);
+            const double target = held > 0.0 ? db_gain(p[0]) : 1.0;
+            const double start = gain;
+            if (std::fabs(target - start) < 1e-4) {
+                gain = target;
+                if (target != 1.0) scale(b, 0, BLOCK, target);
+                break;
+            }
+            const double tau = (target < start ? p[2] : p[4]) / 1000.0;
+            gain = start + (target - start) * (1.0 - std::exp(-block_s / std::max(tau, 1e-3)));
+            ramp(b, 0, BLOCK, start, gain);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+};
+
 struct Source {
     sc_mixer_source_settings settings{};
     std::deque<float> queued;  // pushed samples, interleaved
@@ -64,6 +181,7 @@ struct Source {
     bool measured = false;
     uint64_t underruns = 0;
     Block block = Block(BLOCK * 2);  // this tick's, after shaping, the fade and ducking (volume not applied)
+    std::vector<Filter> filters;     // its built-in filters, in order (before mono, balance and delay)
 };
 
 struct Tap {
@@ -122,6 +240,14 @@ struct sc_mixer {
                     ++s.underruns;
                 }
             }
+        }
+        for (Filter &f : s.filters) {
+            double other = 0.0;
+            if (f.settings.kind == SC_FILTER_DUCKING) {
+                auto found = sources.find(f.settings.follow);
+                if (found != sources.end()) other = found->second.level;
+            }
+            f.process(b, other);
         }
         const sc_mixer_source_settings &o = s.settings;
         if (o.mono) {
@@ -376,6 +502,24 @@ SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int a
         found->second.media = media;
         found->second.media_asleep = asleep;
         if (media) found->second.queued.clear();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filter *filters, int count) {
+    return sc::guarded("sc_mixer_source_filters", [&]() -> int {
+        if (!mixer || count < 0 || (count && !filters) || count > 32)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_filters: nothing given");
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        auto found = mixer->sources.find(id);
+        if (found == mixer->sources.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_filters: no such sound");
+        std::vector<Filter> &have = found->second.filters;
+        bool same = static_cast<int>(have.size()) == count;
+        for (int i = 0; same && i < count; ++i) same = have[static_cast<size_t>(i)].settings.kind == filters[i].kind;
+        if (!same) {  // other filters: they start fresh
+            have.assign(static_cast<size_t>(count), Filter{});
+        }
+        for (int i = 0; i < count; ++i) have[static_cast<size_t>(i)].settings = filters[i];  // state kept
         return SC_OK;
     });
 }

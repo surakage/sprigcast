@@ -71,10 +71,52 @@ def make_mixer(report: Callable[[dict[str, tuple[float, float]]], None]):
     return Mixer(report)
 
 
+def _number(settings: dict, key: str) -> float:
+    return float(settings[key])
+
+
+def engine_filters(chain, engine_ids: dict) -> tuple | None:
+    """A chain's filters as the engine runs them (sprigcore.SoundMixer.set_filters), or None if any of them is one
+    only Python has. Settings are read each time: AudioChain.update() swaps them in place."""
+    from sprigcast.core import filters as f
+
+    processors = getattr(chain, "processors", None)
+    if processors is None:
+        return None
+    out = []
+    for proc in processors:
+        s, kind = proc.settings, type(proc)
+        if kind is f.GainFilter:
+            out.append((sprigcore.FILTER_GAIN, 0, (_number(s, "db"),)))
+        elif kind is f.NoiseGate:
+            out.append((sprigcore.FILTER_NOISE_GATE, 0, tuple(_number(s, k) for k in (
+                "close_db", "open_db", "attack_ms", "hold_ms", "release_ms"))))
+        elif kind is f.Limiter:  # before Compressor: a Limiter is one
+            out.append((sprigcore.FILTER_LIMITER, 0, (_number(s, "threshold_db"), _number(s, "release_ms"))))
+        elif kind is f.Compressor:
+            out.append((sprigcore.FILTER_COMPRESSOR, 0, tuple(_number(s, k) for k in (
+                "ratio", "threshold_db", "attack_ms", "release_ms", "output_db"))))
+        elif kind is f.InvertPolarity:
+            out.append((sprigcore.FILTER_INVERT, 0, ()))
+        elif kind is f.Ducking:
+            follow = engine_ids.get(str(s["sound_id"]), 0) if s["sound_id"] else 0
+            out.append((sprigcore.FILTER_DUCKING, follow, tuple(_number(s, k) for k in (
+                "amount_db", "threshold_db", "attack_ms", "hold_ms", "release_ms"))))
+        else:
+            return None
+    return tuple(out)
+
+
+def _python_chain(source, sound) -> object | None:
+    """The filters Python runs on this sound: none when the engine runs them."""
+    return None if sound.filters is not None else getattr(source, "audio_chain", None)
+
+
 class _Sound:
     """One sound as the engine knows it."""
 
-    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "id", "media", "obj", "refused", "settings")
+    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "filters", "id", "media", "obj", "refused",
+                 "settings")
 
     def __init__(self, obj, native_id: int):
         self.obj = obj
@@ -86,6 +128,7 @@ class _Sound:
         self.capture_key: tuple | None = None  # (device, loopback) it captures
         self.capture_since = 0.0
         self.refused: tuple | None = None  # a (device, loopback) the engine couldn't find: Python captures it
+        self.filters: tuple | None = None  # the built-in filters the engine runs on it (None: Python runs its chain)
 
 
 class NativeMixer:
@@ -256,6 +299,7 @@ class NativeMixer:
             elif sound.settings != tuple(settings.items()):
                 self._engine.set_source(sound.id, **settings)
                 sound.settings = tuple(settings.items())
+            self._filters(source, sound, heard)
             self._link(source, sound, heard)
             self._capture(source, sound, heard)
             out.append((source, sound))
@@ -284,12 +328,44 @@ class NativeMixer:
                 "monitor": is_monitored(source) or is_monitor_only(source), "voice": is_voice(source),
                 "bloom_out": getattr(source, "id", None) in self.bloom_out}
 
+    def _filters(self, source, sound: _Sound, heard: dict) -> None:
+        """Built-in filters the engine has (gain, noise gate, compressor, limiter, invert, ducking) run there; a chain
+        with any other filter, or a sound a plugin listens to (it hears the filtered sound), stays in Python."""
+        chain = getattr(source, "audio_chain", None)
+        wanted = None
+        if chain is not None and not os.environ.get("SPRIGCAST_NO_NATIVE_FILTERS") \
+                and getattr(source, "id", None) not in heard:
+            try:
+                wanted = engine_filters(chain, self._engine_ids())
+            except Exception as exc:  # noqa: BLE001 (Python runs them)
+                self._problem(f"source {getattr(source, 'id', '?')} filter settings", exc)
+        if wanted == sound.filters:
+            return
+        try:
+            self._engine.set_filters(sound.id, list(wanted or ()))
+        except Exception as exc:  # noqa: BLE001 (Python runs them)
+            self._problem(f"source {getattr(source, 'id', '?')} filters", exc)
+            wanted = None
+            try:
+                self._engine.set_filters(sound.id, [])
+            except Exception:  # noqa: BLE001
+                pass
+        sound.filters = wanted
+
+    def _engine_ids(self) -> dict:
+        """Source id -> its sound in the engine (a ducking filter follows it there)."""
+        ids = {}
+        for sound in self._known.values():
+            sid = getattr(sound.obj, "id", None)
+            if sid is not None:
+                ids[str(sid)] = sound.id
+        return ids
+
     def _link(self, source, sound: _Sound, heard: dict) -> None:
         """A sound the engine plays itself, with no filters and no plugin listening: straight from its player."""
         player = None
         get = getattr(source, "native_sound", None)
-        if get is not None and getattr(source, "audio_chain", None) is None \
-                and getattr(source, "id", None) not in heard:
+        if get is not None and _python_chain(source, sound) is None and getattr(source, "id", None) not in heard:
             try:
                 player = get()
             except Exception as exc:  # noqa: BLE001 (pushed from Python instead)
@@ -312,7 +388,7 @@ class NativeMixer:
         get = getattr(source, "native_capture", None)
         key = None
         if get is not None and not os.environ.get("SPRIGCAST_NO_NATIVE_CAPTURE") \
-                and getattr(source, "audio_chain", None) is None and getattr(source, "id", None) not in heard:
+                and _python_chain(source, sound) is None and getattr(source, "id", None) not in heard:
             try:
                 key = tuple(get())
             except Exception as exc:  # noqa: BLE001 (Python captures it)
@@ -381,7 +457,7 @@ class NativeMixer:
         except Exception as exc:  # noqa: BLE001 (silent this block)
             self._problem(f"source {getattr(source, 'id', '?')}", exc)
             block = np.zeros((BLOCK, 2), np.float32)
-        chain = getattr(source, "audio_chain", None)
+        chain = _python_chain(source, sound)
         if chain is not None:
             try:
                 block = chain.process(block)
