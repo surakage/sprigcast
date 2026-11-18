@@ -307,6 +307,19 @@ def test_youtube_needs_a_title_and_sign_in():
         sd.save("youtube", sd.Details(title="  "))
 
 
+def test_a_live_youtube_stream_saves_without_touching_its_start(monkeypatch):
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    locked = sd._worded("YouTube", 403, "Modification of scheduledStartTime is not allowed for this broadcast.")
+    assert isinstance(locked, sd.StartLocked)
+    web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", [locked, {}])
+    details = sd.Details(title="Live now", broadcast_id="b1", starts="2026-11-18T20:30:00Z", privacy="public")
+    sd.save("youtube", details)
+    puts = [c for c in web.calls if c["method"] == "PUT"]
+    assert puts[0]["body"]["snippet"]["scheduledStartTime"] == "2026-11-18T20:30:00Z"  # sent back as it was
+    assert "scheduledStartTime" not in puts[1]["body"]["snippet"] and puts[1]["body"]["snippet"]["title"] == "Live now"
+
+
 # Kick ---------------------------------------------------------------------------------------------------
 
 
