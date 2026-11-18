@@ -751,10 +751,20 @@ class SettingsWindow(QDialog):
         self.stream_tabs.addTab(places, "Places")
         self.stream_tabs.addTab(QWidget(), "Quality")  # made a tick later (_slice), or now if it's the one asked
 
-        def quality():
+        def quality(now: bool = False):
             self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming)
             if hasattr(self.stream_quality, "set_expert"):
                 self.stream_quality.set_expert(self._expert)
+            if now:
+                put_in()
+            else:  # made, then put in its tab (laid out and styled) a tick later: both at once were 150 ms
+                self._slice(put_in)
+
+        def put_in():
+            import shiboken6
+
+            if not shiboken6.isValid(self.stream_tabs):
+                return
             tabs = self.stream_tabs
             current = tabs.currentIndex()
             stand_in = tabs.widget(1)
@@ -764,7 +774,7 @@ class SettingsWindow(QDialog):
             stand_in.deleteLater()
             self._tab_changed(self.stack.currentIndex())
         if self._subs.get("Stream") == "Quality":
-            quality()
+            quality(now=True)
         else:
             self._slice(quality)
         return self.stream_tabs

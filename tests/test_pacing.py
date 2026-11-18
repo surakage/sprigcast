@@ -187,3 +187,30 @@ def test_only_the_main_thread_frees_what_the_cycle_collector_finds():
     gc.collect()
     gc.collect()
     assert alive() == 0 and pacing.deferred_count() == 0
+
+
+def test_trimming_memory_runs_off_the_window_thread(monkeypatch):
+    """Windows walking the app's pages took 60-66 ms on the PC just after start: never on the window's thread."""
+    import threading
+
+    from sprigcast.core import pacing
+
+    seen, done = [], threading.Event()
+    monkeypatch.setattr(pacing, "trim_working_set", lambda: seen.append(threading.current_thread()) or True)
+    pacing.trim_working_set_later(lambda trimmed: (seen.append(trimmed), done.set()))
+    assert done.wait(5)
+    assert seen[0] is not threading.main_thread() and seen[1] is True
+
+
+def test_warm_up_keeps_its_imports_aside():
+    import gc
+
+    from sprigcast.core import warm
+
+    gc.unfreeze()
+    try:
+        _keep = [{} for _ in range(100)]
+        warm.keep_aside()
+        assert gc.get_freeze_count() >= 100
+    finally:
+        gc.unfreeze()

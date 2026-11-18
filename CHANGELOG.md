@@ -154,6 +154,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- The first half-minute after start has fewer hitches: the Stream settings page shares one style sheet instead
+  of 30-odd (245 ms of its warm-up), its Quality tab is made and put in place a tick apart, handing unused memory
+  back to Windows runs off the window's thread (60-66 ms), and start-up's objects are set aside without a full
+  look through all of them (44-63 ms).
 - Opening or closing a pop-up no longer repaints the whole window behind it: its colours stay the same when it
   loses the focus (Windows' own palette changed them, and every bloom tile and panel painted again: 76-214 ms of
   opening Settings, the Plugin store, Web panels or Paths > New while live). The Plugin store's rows share one style
