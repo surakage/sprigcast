@@ -303,6 +303,20 @@ def test_snap_freezes_the_bloom_but_not_itself(added, tmp_path):
     instance.clear()
 
 
+def test_snap_freeze_leaves_death_count_moving(added, tmp_path):
+    added("snap")
+    added("death_count")
+    col = _snap_world()
+    col.sources.append(SourceConfig(id="deaths", kind="death_count", name="Death count"))
+    col.own_sprig(col.scene("chat-h"), "deaths", (800, 1000), "Death count")
+    host = HoldHost(col, tmp_path)
+    host.instances["snap-1"] = create_source("snap", "snap-1", {"seconds": 1.0})
+    afters = plugin_hooks.screenshot_starting(NativeApi(host), ["horizontal"])
+    ids = host.holds[0][0]
+    assert set(ids) == {"cam", "frame-h", "alert"}  # not Death count's sprig: a death rises at once
+    plugin_hooks.screenshot_done(afters, [])
+
+
 def test_snap_freeze_can_be_turned_off_and_a_failed_screenshot_lets_go(added, tmp_path):
     added("snap")
     col = _snap_world()
