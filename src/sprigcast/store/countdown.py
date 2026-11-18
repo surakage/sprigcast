@@ -46,9 +46,9 @@ from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "countdown", "name": "Countdown", "version": 1, "adds": "Source",
+PLUGIN = {"id": "countdown", "name": "Countdown", "version": 2, "adds": "Source",
           "about": "A countdown on a SprigCast card, for a Starting soon bloom or a break.",
-          "new": "A countdown of its own, with a vine that shrinks as the time runs out."}
+          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
 
 KIND = "countdown_timer"  # "countdown" is the plugins folder's example
 H = cards.H
@@ -180,7 +180,7 @@ def card_words(text: str, label: str, counting: bool, vine: float | None) -> car
     return cards.Words(text, label, small_on_top=True, badge="sprig" if counting else "sprig_quiet", vine=vine)
 
 
-def card_width(longest_text: str, text: str, label: str, vine: bool) -> int:
+def card_width(longest_text: str, text: str, label: str, vine: bool, look=None) -> int:
     """The box: the longest time it shows, or what it shows now if that's longer (a Done text may shrink to
     60% to fit)."""
     v = 1.0 if vine else None
@@ -189,14 +189,13 @@ def card_width(longest_text: str, text: str, label: str, vine: bool) -> int:
         shown.append(cards.Words(cards.even(text), label, vine=v))
     else:
         shown.append(cards.Words(text, label, vine=v, shrink=0.6))
-    return cards.card_width(shown)
+    return cards.card_width(shown, look)
 
 
 def paint(text: str, label: str, settings: dict[str, Any], counting: bool, vine: float | None,
           detail: float = 1.0, width: int = W):
     """The card as a QImage (premultiplied), width x H: the label above the time, the vine under it."""
-    return cards.paint(width, card_words(text, label, counting, vine), settings.get("text_color"),
-                       settings.get("card_color"), detail)
+    return cards.paint(width, card_words(text, label, counting, vine), detail=detail, look=cards.look_of(settings))
 
 
 # Telling the app (the source runs on the render thread; these run on the UI thread) ---------------
@@ -276,7 +275,8 @@ class CountdownSource(Source):
     label = "Countdown"
     defaults = {"minutes": 5.0, "until": "", "label": "Starting in", "done_text": "Starting now",
                 "restart_on_show": True, "vine": True, "hide_when_stopped": False,
-                "text_color": "#f2f7f3", "card_color": "#151c19e8"}
+                "text_color": "#f2f7f3", "card_color": "#151c19e8", "accent_color": "#4fd88f", "font": "", "text_scale": 100,
+                "corners": "leaf", "show_badge": True, "custom_look": ""}
     placeholders = {"until": "8:30 PM"}
     sleeps = True  # off screen it does nothing; back on screen it draws the time as it is then
     keeps_picture = True  # (only if the time changed meanwhile: its texture stays while it sleeps)
@@ -325,9 +325,10 @@ class CountdownSource(Source):
 
     def _width_for(self, text: str, label: str, vine: bool) -> int:
         """card_width, worked out again only when the digits or words change (not every second)."""
-        what = (longest(self.settings), cards.even(text), label, vine)
+        look = cards.look_of(self.settings)
+        what = (longest(self.settings), cards.even(text), label, vine, look.key)
         if self._widths is None or self._widths[0] != what:
-            self._widths = (what, card_width(*what))
+            self._widths = (what, card_width(*what[:4], look))
         return self._widths[1]
 
     def video_frame(self) -> np.ndarray | None:
@@ -346,8 +347,7 @@ class CountdownSource(Source):
         vine = read["vine"] if settings.get("vine", True) and not read["done"] else None
         gone = hidden(settings, read)
         width = self._width_for(read["text"], label, read["vine"] is not None and bool(settings.get("vine", True)))
-        key = (width, gone, read["text"], label, read["counting"], vine, settings.get("text_color"),
-               settings.get("card_color"), self.detail)
+        key = (width, gone, read["text"], label, read["counting"], vine, cards.look_of(settings).key, self.detail)
         if gone:
             if key == self._shown:
                 return None  # nothing changed: nothing drawn, nothing uploaded

@@ -53,9 +53,9 @@ from sprigcast.plugin_hooks import output_since, register_hotkeys, register_item
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 3, "adds": "Source",
+PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 4, "adds": "Source",
           "about": "How long you've been live, a countdown or a stopwatch, in a small card on stream.",
-          "new": "A new SprigCast look, and its box hugs the card."}
+          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
 
 KIND = "stream_timer"
 H = cards.H
@@ -225,7 +225,7 @@ def longest(settings: dict[str, Any]) -> str:
     return "00:00"
 
 
-def timer_width(longest_text: str, text: str, label: str) -> int:
+def timer_width(longest_text: str, text: str, label: str, look=None) -> int:
     """The box for the card: the longest time it will show, or what it shows now if that's longer (a Done
     text is allowed to shrink to fit, down to 60%)."""
     shown = [cards.Words(longest_text, label)]
@@ -233,14 +233,13 @@ def timer_width(longest_text: str, text: str, label: str) -> int:
         shown.append(cards.Words(cards.even(text), label))
     else:
         shown.append(cards.Words(text, label, shrink=0.6))
-    return cards.card_width(shown)
+    return cards.card_width(shown, look)
 
 
 def paint(text: str, label: str, settings: dict[str, Any], counting: bool = True, detail: float = 1.0,
           width: int = W):
     """The card as a QImage (premultiplied), width x H: the label small above the time."""
-    return cards.paint(width, card_words(text, label, counting), settings.get("text_color"),
-                       settings.get("card_color"), detail)
+    return cards.paint(width, card_words(text, label, counting), detail=detail, look=cards.look_of(settings))
 
 
 # Telling the app (the source runs on the render thread; these run on the UI thread) ---------------
@@ -320,7 +319,8 @@ class StreamTimerSource(Source):
     label = "Stream timer"
     defaults = {"mode": "uptime", "count_from": "stream", "minutes": 5.0, "until": "", "label": "",
                 "done_text": "", "restart_on_show": True, "hide_when_stopped": False,
-                "text_color": "#f2f7f3", "card_color": "#151c19e0"}
+                "text_color": "#f2f7f3", "card_color": "#151c19e0", "accent_color": "#4fd88f", "font": "", "text_scale": 100,
+                "corners": "leaf", "show_badge": True, "custom_look": ""}
     choices = {"mode": MODES, "count_from": COUNT_FROM}
     sleeps = True  # off screen it does nothing; back on screen it draws the time as it is then
     keeps_picture = True  # (only if the time changed meanwhile: its texture stays while it sleeps)
@@ -348,9 +348,10 @@ class StreamTimerSource(Source):
 
     def _width_for(self, text: str, label: str) -> int:
         """timer_width, worked out again only when the digits or words change (not every second)."""
-        what = (longest(self.settings), cards.even(text), label)
+        look = cards.look_of(self.settings)
+        what = (longest(self.settings), cards.even(text), label, look.key)
         if self._widths is None or self._widths[0] != what:
-            self._widths = (what, timer_width(what[0], text, label))
+            self._widths = (what, timer_width(what[0], text, label, look))
         return self._widths[1]
 
     def start(self) -> None:
@@ -391,8 +392,7 @@ class StreamTimerSource(Source):
             label = ""  # the Done text says it all ("Starting in" over "Starting now" read twice)
         gone = hidden(settings, read)
         width = self._width_for(read["text"], label)
-        key = (width, gone, read["text"], label, read["counting"], settings.get("text_color"),
-               settings.get("card_color"), self.detail)
+        key = (width, gone, read["text"], label, read["counting"], cards.look_of(settings).key, self.detail)
         if gone:
             if key == self._shown:
                 return None  # nothing changed: nothing drawn, nothing uploaded

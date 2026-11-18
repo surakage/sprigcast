@@ -27,9 +27,9 @@ import numpy as np
 from sprigcast.core import cards, painted
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "local_time", "name": "Local time", "version": 3, "adds": "Source",
+PLUGIN = {"id": "local_time", "name": "Local time", "version": 4, "adds": "Source",
           "about": "Your local time, and the date if you like, in a small card on stream.",
-          "new": "A new SprigCast look, with a sun by day and a moon by night, and its box hugs the card."}
+          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
 
 KIND = "local_time"
 H = cards.H
@@ -92,15 +92,15 @@ def widest(settings: dict[str, Any]) -> list[cards.Words]:
 def paint(clock: str, under: str, settings: dict[str, Any], detail: float = 1.0, width: int = W,
           day: bool = False):
     """The card as a QImage (premultiplied), width x H: the time with the date (and zone) under it."""
-    return cards.paint(width, card_words(clock, under, day), settings.get("text_color"), settings.get("card_color"),
-                       detail)
+    return cards.paint(width, card_words(clock, under, day), detail=detail, look=cards.look_of(settings))
 
 
 @register(KIND)
 class LocalTimeSource(Source):
     label = "Local time"
     defaults = {"show_date": True, "hour_24": False, "seconds": False, "time_zone": False,
-                "text_color": "#f2f7f3", "card_color": "#151c19e0"}
+                "text_color": "#f2f7f3", "card_color": "#151c19e0", "accent_color": "#4fd88f", "font": "", "text_scale": 100,
+                "corners": "leaf", "show_badge": True, "custom_look": ""}
     sleeps = True  # hidden, it does nothing; shown again, it draws the time as it is then
     keeps_picture = True  # (only if the time on the card changed meanwhile: its texture stays while it sleeps)
     sharp = True  # drawn at the size it's shown
@@ -114,7 +114,7 @@ class LocalTimeSource(Source):
         super().__init__(source_id, settings)
         self._frame = painted.Frame()
         self._card = painted.Aside(self._frame)  # painted on the pictures lane, not the render thread
-        self._want = self._w = cards.card_width(widest(self.settings))
+        self._want = self._w = cards.card_width(widest(self.settings), cards.look_of(self.settings))
         self.status = "ok"
 
     @property
@@ -123,7 +123,7 @@ class LocalTimeSource(Source):
 
     def update(self, settings: dict[str, Any]) -> None:
         super().update(settings)
-        self._want = cards.card_width(widest(self.settings))  # only when the settings change, never per frame
+        self._want = cards.card_width(widest(self.settings), cards.look_of(self.settings))  # only when the settings change, never per frame
         self._card.forget()  # draw it again with the new look
 
     def wake(self) -> None:
@@ -136,8 +136,7 @@ class LocalTimeSource(Source):
         now = datetime.now()
         clock, under = words(now, self.settings)
         day = daytime(now)
-        key = (self._want, clock, under, day, self.settings.get("text_color"), self.settings.get("card_color"),
-               self.detail)
+        key = (self._want, clock, under, day, cards.look_of(self.settings).key, self.detail)
         # nothing changed: nothing drawn, nothing uploaded
         frame = self._card.picture(key, paint, clock, under, dict(self.settings), self.detail, self._want, day)
         if frame is not None:
