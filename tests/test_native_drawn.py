@@ -56,7 +56,7 @@ def snap(added, tmp_path):  # noqa: F811
     plugin_hooks.screenshot_taken(NativeApi(host), _shot(tmp_path))
     import time
 
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 10  # the card is made on a worker: a cold Windows runner's first font load took >3 s
     while source._job is None or source._job.card is None:
         source.video_frame()
         assert time.monotonic() < deadline
