@@ -27,7 +27,6 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
@@ -177,11 +176,11 @@ class ReportCard(CardDialog):
         return "crash" if self.crash is not None else "problem"
 
     def build(self, target: Path) -> Path:
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            return make(target, self.note.toPlainText(), self.include.isChecked(), self.crash, self.parent())
-        finally:
-            QApplication.restoreOverrideCursor()
+        """The report as it would be sent, made on a worker while the window keeps answering."""
+        from sprigcast.core import workers
+
+        return workers.wait_answering(make, target, self.note.toPlainText(), self.include.isChecked(),
+                                      self.crash, self.parent())
 
     def _show_contents(self) -> None:
         folder = Path(tempfile.mkdtemp(prefix="sprigcast-report-"))
@@ -300,24 +299,47 @@ def _reveal(path: Path) -> None:
     open_folder(path.parent)
 
 
-def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threading.Thread | None:
-    """Show the card; on Send report, build the zip and upload it in the background, then say how it went.
-    Returns the upload thread (tests join it), or None when the card was closed."""
+def _pop(card: CardDialog) -> CardDialog:
+    """Show a card without holding the window (no .exec()): the canvases, the stream and clicks elsewhere go
+    on. It's deleted once closed."""
+    card.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    card.show()
+    return card
+
+
+def ask(window, crash=None, *, sender=send, show_result: bool = True) -> ReportCard:
+    """Show the card, without holding the window: the crash card after a crash froze it 404 and 660 ms on
+    the PC while it was run with .exec() (2026-11-18), and read as a new crash. On Send report the zip is built
+    and uploaded on a thread of its own (card.upload, which tests join), then a card says how it went."""
     card = ReportCard(window, crash)
-    if not modal(card):
-        log.info("report: %s card closed without sending", card.kind())
-        return None
-    folder = Path(tempfile.mkdtemp(prefix="sprigcast-report-"))
-    try:
-        path = card.build(folder / tester_report.default_name())
-    except OSError as exc:
-        log.warning("report: couldn't make it: %s", exc)
-        return None
-    kind, cause = card.kind(), crash.summary() if crash is not None else ""
+    card.upload = None
+
+    def answered(result: int) -> None:
+        if not result:
+            log.info("report: %s card closed without sending", card.kind())
+            return
+        card.upload = send_report(window, card.note.toPlainText(), card.include.isChecked(), crash,
+                                  sender=sender, show_result=show_result)
+
+    card.finished.connect(answered)
+    return _pop(card)
+
+
+def send_report(window, note: str, include: bool, crash=None, *, sender=send,
+                show_result: bool = True) -> threading.Thread:
+    """Build the report and send it, both on a thread of its own; then say how it went."""
+    from types import SimpleNamespace
+
+    kind, cause = ("crash" if crash is not None else "problem"), crash.summary() if crash is not None else ""
+    # The thread reads a copy: the window may change the garden meanwhile.
+    collection = getattr(window, "collection", None)
+    source = SimpleNamespace(collection=collection.model_copy(deep=True) if collection is not None else None,
+                             plugins_dir=getattr(window, "plugins_dir", None))
     status = getattr(window, "statusBar", None)
     if status is not None:
         status().showMessage("Sending report…")
     carrier = _Sent(window)
+    made: dict = {}
 
     def finished(report_id: str, why: str) -> None:
         carrier.deleteLater()
@@ -326,8 +348,11 @@ def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threadi
         if report_id:
             log.info("report: %s report sent as %s", kind, report_id)
             if show_result:
-                modal(sent_card(window, report_id))
+                _pop(sent_card(window, report_id))
             return
+        path = made.get("path")
+        if path is None:
+            return  # couldn't even be made (logged)
         log.warning("report: couldn't send (%s); saving it to the Desktop", why)
         saved = tester_report.default_folder() / path.name
         try:
@@ -339,11 +364,18 @@ def ask(window, crash=None, *, sender=send, show_result: bool = True) -> threadi
             log.warning("report: couldn't save it either: %s", exc)
             saved = path
         if show_result:
-            modal(saved_card(window, saved, _reveal))
+            _pop(saved_card(window, saved, _reveal))
 
     carrier.done.connect(finished, Qt.ConnectionType.QueuedConnection)
 
     def upload() -> None:
+        folder = Path(tempfile.mkdtemp(prefix="sprigcast-report-"))
+        try:
+            path = made["path"] = make(folder / tester_report.default_name(), note, include, crash, source)
+        except OSError as exc:
+            log.warning("report: couldn't make it: %s", exc)
+            carrier.done.emit("", str(exc))
+            return
         try:
             report_id, why = sender(path, kind, cause), ""
         except OSError as exc:
