@@ -632,7 +632,7 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         assert texts(6) == ["Keyboard shortcuts", "Report a problem…", "Export report", "Open logs folder",
                             "About SprigCast", "Support SprigCast"]
         palette = {c.title for c in w._palette_commands()}
-        assert {"Optimize for this PC", "Starter kit", "Check for updates", "Stats", "Main"} <= palette
+        assert {"Optimize for this PC", "Starter kit", "Check for updates", "Stats", "Main", "Stream details"} <= palette
         shown = []
         monkeypatch.setattr("sprigcast.app.transitions_panel.PopUp.exec", lambda self: shown.append(self))
         help_menu = w.menuBar().actions()[6].menu()

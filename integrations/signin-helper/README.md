@@ -8,6 +8,10 @@ on your PC with a one-time code. SprigCast sends that code (plus its PKCE verifi
 adds the secret, asks Google or Kick for a token, and hands back only the access token. SprigCast reads
 your stream key with it and throws it away.
 
+Stream details (title, category, thumbnail) stays signed in: its sign-in sends `keep=1`, so the refresh token
+comes back too, and later it posts `grant_type=refresh_token` with that token to get a new access token. The
+Worker still keeps nothing; the tokens live in Windows Credential Manager on the streamer's PC.
+
 It refuses anything that isn't SprigCast's own sign-in: only `youtube` or `kick`, and only with the
 redirect back to the PC (`http://127.0.0.1:<port>/callback` for YouTube, exactly
 `http://localhost:51587/callback` for Kick). It stores nothing and logs no codes or tokens. It reads the IP

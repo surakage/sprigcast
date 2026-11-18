@@ -1,7 +1,9 @@
 // SprigCast sign-in helper: finishes a YouTube or Kick sign-in for the app, adding the client secret,
-// so the secret never ships inside SprigCast. It does one thing: swap a sign-in code (plus the app's
-// PKCE verifier) for a token, and only for SprigCast's own redirect back to the PC (127.0.0.1 / localhost).
-// It keeps nothing: no logs of codes or tokens, no storage. The IP is read only for the rate limit.
+// so the secret never ships inside SprigCast. It swaps a sign-in code (plus the app's PKCE verifier) for a
+// token, only for SprigCast's own redirect back to the PC (127.0.0.1 / localhost). With keep=1 (Stream
+// details stays signed in) it also hands back the refresh token, and grant_type=refresh_token swaps one of
+// those for a new access token. It keeps nothing: no logs of codes or tokens, no storage. The IP is read
+// only for the rate limit.
 
 const SERVICES = {
   youtube: {
@@ -54,31 +56,29 @@ export default {
       return json({ error: "invalid_request" }, 400);
     }
     const service = SERVICES[fields.service];
-    const { code, code_verifier: verifier, redirect_uri: redirect } = fields;
     if (!service) return json({ error: "invalid_request", error_description: "Unknown service." }, 400);
-    for (const value of [code, verifier, redirect]) {
+    const refresh = fields.grant_type === "refresh_token";
+    const { code, code_verifier: verifier, redirect_uri: redirect, refresh_token: refreshToken } = fields;
+    for (const value of refresh ? [refreshToken] : [code, verifier, redirect]) {
       if (typeof value !== "string" || !value || value.length > MAX_FIELD) {
         return json({ error: "invalid_request" }, 400);
       }
     }
-    if (!service.redirect.test(redirect)) {
+    if (!refresh && !service.redirect.test(redirect)) {
       return json({ error: "invalid_request", error_description: "Only SprigCast's own sign-in." }, 400);
     }
     const id = service.id(env);
     const secret = service.secret(env);
     if (!id || !secret) return json({ error: "not_set_up", error_description: "Sign-in isn't set up yet." }, 503);
 
+    const ask = refresh
+      ? { grant_type: "refresh_token", client_id: id, client_secret: secret, refresh_token: refreshToken }
+      : { grant_type: "authorization_code", client_id: id, client_secret: secret, code, code_verifier: verifier,
+          redirect_uri: redirect };
     const reply = await fetch(service.token, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        client_id: id,
-        client_secret: secret,
-        code,
-        code_verifier: verifier,
-        redirect_uri: redirect,
-      }),
+      body: new URLSearchParams(ask),
     });
     let body;
     try {
@@ -90,6 +90,8 @@ export default {
     const out = reply.ok
       ? { access_token: body.access_token, token_type: body.token_type, expires_in: body.expires_in, scope: body.scope }
       : { error: body.error || "sign_in_failed", error_description: body.error_description || "" };
+    // Only a sign-in that asked to stay signed in (or a refresh, when the service hands out a new one) gets it.
+    if (reply.ok && body.refresh_token && (refresh || fields.keep === "1")) out.refresh_token = body.refresh_token;
     return json(out, reply.ok ? 200 : reply.status);
   },
 };

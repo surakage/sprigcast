@@ -5,8 +5,9 @@ hub fills, and are drawn with Pillow into a box you size and place like any othe
 a bloom on both canvases and set its size per shape (tall and narrow for vertical, say). It only
 redraws when chat changes, and sleeps with the rest when nothing on screen shows it.
 
-Settings: width, height, font, size, text_color, bubble_color, background_color, hide_after
-(seconds, 0 = never), platform_marks.
+Settings: width, height, size, hide_after (seconds, 0 = never), platform_marks. Style tab (core/style.py):
+font, text_color, bubble_color, background_color, corners (the bubbles') and custom_look (text, card = the
+bubbles, font, size, corners, border; hide: marks).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import numpy as np
 
 from sprigcast.chat import PLATFORMS, ChatMessage, readable_colour
 from sprigcast.chat.feed import FEED, Line
+from sprigcast.core import style
 from sprigcast.core.source import Source, register
 from sprigcast.sources.color import parse_color
 
@@ -37,6 +39,8 @@ DEFAULTS = {
     "background_color": "#00000000",  # the whole box ("#00000000" = see-through)
     "hide_after": 0,  # seconds before a message fades away; 0 keeps them
     "platform_marks": True,  # a small bar in the platform's colour (Twitch purple, YouTube red)
+    "corners": "round",  # the bubbles'
+    "custom_look": "",
 }
 TWITCH_EMOTE = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0"
 CHECK_EVERY = 0.2  # seconds between looks at the feed
@@ -139,16 +143,57 @@ class ChatBox:
         get = lambda key: settings.get(key, DEFAULTS[key])  # noqa: E731
         self.width = max(120, int(get("width")))
         self.height = max(80, int(get("height")))
-        self.size = max(10, int(get("size")))
-        self.font = load_font(str(get("font")), self.size)
-        bold_name = str(get("font")).replace(".ttf", "b.ttf") if str(get("font")).endswith(".ttf") else ""
+        look = style.resolve({"text_color": get("text_color"), "card_color": get("bubble_color"),
+                              "corners": get("corners"), "custom_look": get("custom_look")},
+                             {"text_color": DEFAULTS["text_color"], "card_color": DEFAULTS["bubble_color"]})
+        self.size = max(10, round(int(get("size")) * look.scale))
+        font_file = str(get("font"))
+        if look.font:  # a custom look's font: its Windows file, when it's one SprigCast knows
+            font_file = style.FONT_FILES.get(look.font.lower(), font_file) or font_file
+        self.font = load_font(font_file, self.size)
+        bold_name = font_file.replace(".ttf", "b.ttf") if font_file.endswith(".ttf") else ""
         self.bold = load_font(bold_name, self.size) if bold_name else self.font
-        self.colour = self._colour(get("text_color"), (255, 255, 255, 255))
-        self.bubble = self._colour(get("bubble_color"), (14, 19, 17, 200))
+        self.colour = parse_color(look.text)
+        self.bubble = parse_color(look.card)
         self.background = self._colour(get("background_color"), (0, 0, 0, 0))
-        self.marks = bool(get("platform_marks"))
+        self.marks = bool(get("platform_marks")) and look.shows("marks")
+        self.radius = 14.0 if look.corners != "square" else 3.0
+        if look.radius is not None:
+            self.radius = look.radius
+        self.leaf = look.corners == "leaf"
+        self.border = (round(look.border_width), parse_color(look.border_color)) if look.border_width else None
         self.line_h = round(self.size * 1.32)
         self.space = self.font.getlength(" ")
+
+    def _bubble(self, image, draw, box, h: float, fill) -> None:
+        """One message's bubble: round, square or leaf (big top-left and bottom-right corners)."""
+        r = max(0, min(round(self.radius), int(h // 2)))
+        width, colour = self.border if self.border else (0, None)
+        if not self.leaf or r < 2:
+            draw.rounded_rectangle(box, radius=r, fill=fill if fill[3] else None, outline=colour, width=width)
+            return
+        from PIL import Image, ImageDraw, ImageFilter
+
+        x0, y0, x1, y1 = (round(v) for v in box)
+        w, hh = max(1, x1 - x0 + 1), max(1, y1 - y0 + 1)
+        from PIL import ImageChops
+
+        # One shape with two corner sizes (where both shapes are), so a see-through fill stays even.
+        big, small = Image.new("L", (w, hh), 0), Image.new("L", (w, hh), 0)
+        ImageDraw.Draw(big).rounded_rectangle((0, 0, w - 1, hh - 1), radius=min(r * 3 // 2, hh // 2), fill=255,
+                                              corners=(True, False, True, False))
+        ImageDraw.Draw(small).rounded_rectangle((0, 0, w - 1, hh - 1), radius=max(2, r // 4), fill=255,
+                                                corners=(False, True, False, True))
+        mask = ImageChops.darker(big, small)
+        if fill[3]:
+            image.alpha_composite(_layer(fill, mask), (x0, y0))
+        if width:
+            from PIL import ImageOps
+
+            pad = width + 1  # (the edges of the picture count as outside, so the straight sides get a border too)
+            inner = ImageOps.expand(mask, border=pad, fill=0).filter(ImageFilter.MinFilter(2 * width + 1))
+            ring = ImageChops.subtract(mask, inner.crop((pad, pad, pad + w, pad + hh)))
+            image.alpha_composite(_layer(colour, ring), (x0, y0))
 
     @staticmethod
     def _colour(value, fallback):
@@ -207,8 +252,8 @@ class ChatBox:
             widest = max(sum(r[3] for r in ln) + self.space * max(0, len(ln) - 1) * 1.1 for ln in wrapped)
             right = min(self.width - self.PAD, x0 + widest + 2 * self.PX)
             bubble = NOTICE_BUBBLE if message.notice else self.bubble
-            if bubble[3]:
-                draw.rounded_rectangle((x0, top, right, y), radius=min(14, h // 2), fill=bubble)
+            if bubble[3] or self.border:
+                self._bubble(image, draw, (x0, top, right, y), h, bubble)
             if self.marks and message.platform in PLATFORMS:
                 mark = parse_color(PLATFORMS[message.platform][1] + "ff")
                 draw.rounded_rectangle((self.PAD, top + 3, self.PAD + 3, y - 3), radius=2, fill=mark)
@@ -234,6 +279,16 @@ class ChatBox:
                 ty += self.line_h
             y = top - self.GAP
         return np.asarray(image, dtype=np.uint8).copy()
+
+
+def _layer(colour, mask):
+    """A picture of one colour in the mask's shape, at the colour's own see-through-ness."""
+    from PIL import Image
+
+    layer = Image.new("RGBA", mask.size, colour[:3] + (0,))
+    alpha = colour[3]
+    layer.putalpha(mask if alpha >= 255 else mask.point(lambda v: v * alpha // 255))
+    return layer
 
 
 @register("chat")

@@ -229,3 +229,38 @@ def test_frames_on_the_card_go_only_to_a_writer_on_the_engines_device(player_lib
         card.close()
         assert not eng.stats()["faulted"]
     plain.close()
+
+
+def test_a_video_encoder_that_fails_once_starts_again_and_the_file_goes_on(player_lib, tmp_path, monkeypatch):  # noqa: F811
+    """A graphics driver reset breaks the encoder mid-recording: the old one is let go of entirely and a new one
+    carries on from memory into the same file, nothing lost. Once only: a second failure ends the file cleanly."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "20")
+    path = tmp_path / "goes_on.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=1, queue_frames=120)
+    try:
+        for n in range(60):
+            assert writer.video(nv12(16 + 3 * n), n) == sprigcore.SC_OK
+            writer.audio(np.zeros((1600, 2), np.float32))
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == 1 and stats.on_card == 0 and stats.frames_written == 60
+    with av.open(str(path)) as f:
+        lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+    assert len(lumas) >= 59 and abs(lumas[-1] - (16 + 3 * 59)) <= 4  # the pictures after the failure are there
+
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "10,30")
+    path = tmp_path / "twice.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=120)
+    try:
+        for n in range(60):
+            writer.video(nv12(100), n)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "failed" and "deliberate fault" in stats.error_text and stats.recoveries == 1
+    with av.open(str(path)) as f:  # ended cleanly: what was written before plays
+        assert 25 <= sum(1 for _ in f.decode(video=0)) <= 31

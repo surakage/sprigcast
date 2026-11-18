@@ -85,7 +85,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | Switch garden (a whole set of blooms) | `http://127.0.0.1:4455/api/garden.switch?garden=Gaming&password=…` |
 | Switch path before going live (Twitch only, Multistream…) | `http://127.0.0.1:4455/api/path.switch?path=Twitch%20only&password=…` |
 
-Store plugins (Audio visualizer, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Now playing, PNGtuber) must be added first in Tools → Plugin store.
+Store plugins (Audio visualizer, Hide it, Barrel Roll, Freeze, Snap, Death count, Stream timer, Countdown, Now playing, PNGtuber) must be added first in Tools → Plugin store.
 
 `!song` answers `{"ok": true, "result": {"playing": true, "title": "…", "artist": "…", …}}`: save `title` and `artist` to variables and post them in chat. To switch blooms when the countdown ends, listen for the `timer.done` event (below).
 

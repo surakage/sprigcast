@@ -68,3 +68,26 @@ test("no secret set yet, too many tries, and provider errors are passed on plain
   assert.equal(failed.status, 400);
   assert.deepEqual(await failed.json(), { error: "invalid_grant", error_description: "Bad code" });
 });
+
+test("keep=1 hands back the refresh token so Stream details stays signed in", async () => {
+  fakeProvider({ access_token: "tok", refresh_token: "rt", expires_in: 3599 });
+  const body = await (await worker.fetch(post({ ...good, keep: "1" }), env())).json();
+  assert.equal(body.refresh_token, "rt");
+});
+
+test("swaps a refresh token for a new access token, adding the secret, with no redirect needed", async () => {
+  const calls = fakeProvider({ access_token: "new", refresh_token: "rt2", expires_in: 3599 });
+  const response = await worker.fetch(post({ service: "kick", grant_type: "refresh_token", refresh_token: "rt" }), env());
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.access_token, "new");
+  assert.equal(body.refresh_token, "rt2");
+  assert.equal(calls[0].url, "https://id.kick.com/oauth/token");
+  assert.deepEqual(calls[0].body, { grant_type: "refresh_token", client_id: "k-id", client_secret: "k-secret",
+                                    refresh_token: "rt" });
+  for (const bad of ["", "x".repeat(5000)]) {
+    const refused = await worker.fetch(post({ service: "youtube", grant_type: "refresh_token", refresh_token: bad }), env());
+    assert.equal(refused.status, 400);
+  }
+  assert.equal(calls.length, 1);
+});

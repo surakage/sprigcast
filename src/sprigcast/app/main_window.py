@@ -668,6 +668,17 @@ class MainWindow(QMainWindow):
 
         modal(TwitchConnectDialog(self))  # the Chat panel hears about the new account itself
 
+    def open_stream_details(self) -> None:
+        """Stream details: title, category and the rest, saved straight to Twitch, YouTube and Kick."""
+        from sprigcast.app.stream_details_dialog import StreamDetailsDialog
+        from sprigcast.app.twitch_connect import TwitchConnectDialog
+
+        streams = [o for o in self.collection.outputs if o.type == "stream"]
+        services = list(dict.fromkeys(o.service for o in sorted(streams, key=lambda o: not o.enabled) if o.service))
+        youtube = next((o for o in streams if o.service == "youtube" and o.key_ref), None)
+        modal(StreamDetailsDialog(self, services, youtube.key_ref if youtube else None,
+                                  connect_twitch=lambda parent: modal(TwitchConnectDialog(parent))))
+
     def _build_transitions_dock(self) -> None:
         from sprigcast.app.transitions_panel import TransitionsPanel
         from sprigcast.render.stinger import probe
@@ -1892,6 +1903,9 @@ class MainWindow(QMainWindow):
 
     def _edit_destination(self, output_id: str | None) -> None:
         """Open Settings → Stream on a destination. "new:<service>" (Live's + Add menu) adds one first."""
+        if output_id == "details":  # Live's Destinations card: title, category and the rest
+            self.open_stream_details()
+            return
         if output_id and output_id.startswith("new:"):
             output_id = self._new_destination(output_id.split(":", 1)[1])
             if output_id is None:
@@ -2956,6 +2970,11 @@ class MainWindow(QMainWindow):
                     plugin_hooks.levels_heard(self.api, event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
+                moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
+                if moved:
+                    self._changed()  # its places moved so the card stays put
+                elif touched:
+                    self._settings_changed(touched)  # only the width it's laid out for: the light way
                 for preview in [*self.previews.values(), self.part_preview]:
                     preview.sizes, preview.statuses = self.source_sizes, self.source_statuses
                 self._refresh_source_labels()
@@ -6826,6 +6845,7 @@ class MainWindow(QMainWindow):
             ]
         commands += [
             Command("Stream doctor", "Action", self._open_doctor, "Ctrl+Shift+D"),
+            Command("Stream details", "Action", lambda: self.open_stream_details()),
             Command("Optimize for this PC", "Action", lambda: self.open_optimizer()),
             Command("Starter kit", "Action", lambda: self.open_starter()),
             Command("Check for updates", "Action", lambda: self.updater.check(manual=True)),

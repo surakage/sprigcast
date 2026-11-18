@@ -118,6 +118,25 @@ PORT is the port in Settings → Connections.
 
 **To react to your events**, connect a WebSocket to `ws://127.0.0.1:PORT/sprigcast` and ask for the `plugin` group. Each event arrives as one JSON object, for example `{"event": "shoutout.shown", "name": "Ana"}`. See [Events](control-api.md#events).
 
+## Give it a Style tab
+
+Put the shared look keys in your `defaults` and your Settings gets a Style tab, the same one Now playing, Chat
+and the clocks have: `text_color`, `card_color`, `accent_color`, `font`, `text_scale`, `corners`, any `show_...`
+part, and `custom_look` (the box where people type their own look, like CSS). Then read the look once when
+you draw:
+
+```python
+from sprigcast.core import style
+
+look = style.resolve(self.settings, {"text_color": "#f2f7f3", "card_color": "#151c19e0"})  # your own colours
+p.setFont(style.qfont(look, 48))                  # their font, at their text size
+style.draw_card(p, rect, 36, look)                # round, leaf or square, with their border and shadow
+if look.shows("date", self.settings): ...         # show_date, or "hide: date" in a custom look
+```
+
+`resolve()` never raises and is cached, so call it whenever you draw. Anything someone types that isn't
+right falls back to your own look. Put `look.key` in what decides when you draw again.
+
 ## Keep it light
 
 SprigCast draws every frame on one thread. A slow plugin makes the stream stutter.
