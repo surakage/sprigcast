@@ -428,7 +428,7 @@ class ChatPanel(QWidget):
         from sprigcast.chat.hub import ChatHub
 
         super().__init__()
-        self.connect_twitch = connect_twitch  # opens Connect Twitch; the panel hears the result itself
+        self.connect_twitch = connect_twitch  # opens Accounts (the one place to sign in); the panel hears the result
         # The readers live in the hub, shared with chat sources on your stream (sources/chat.py).
         self.hub = ChatHub(self.reading, self)
         self._was_live: set[tuple[str, str]] = set()  # (platform, channel) chats that have read since starting
@@ -512,8 +512,8 @@ class ChatPanel(QWidget):
             return
         mine = self._account()
         if not mine:
-            self.say.setPlaceholderText("Connect Twitch to chat back")
-            self.say_button.setText("Connect")
+            self.say.setPlaceholderText("Sign in to Twitch to chat back")
+            self.say_button.setText("Sign in")
         else:
             self.say.setPlaceholderText("Chat on Twitch…")
             self.say.setToolTip(f"Sends to {channel}'s Twitch chat as you")
@@ -526,7 +526,7 @@ class ChatPanel(QWidget):
         if channel is None or self._sending:
             return
         if not self._account() or not twitch_auth.can_send_chat():
-            self.say.setToolTip("SprigCast needs your OK once to send chat: connect Twitch again.")
+            self.say.setToolTip("SprigCast needs your OK once to send chat: sign in to Twitch again.")
             self._connect()
             return
         text = self.say.text().strip()
@@ -926,7 +926,7 @@ class ChatPanel(QWidget):
         menu.addAction("Channels…").triggered.connect(self.ask_names)
         menu.addAction("Change link…" if saved else "Paste a link…").triggered.connect(self.ask_link)
         if not self._account():
-            menu.addAction("Connect Twitch…").triggered.connect(self._connect)
+            menu.addAction("Sign in…").triggered.connect(self._connect)
         menu.addSeparator()
         if kind == "chat":
             menu.addAction("Clear").triggered.connect(self.view.clear_chat)

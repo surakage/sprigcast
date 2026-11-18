@@ -146,17 +146,13 @@ class Pane(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(12)
 
-        # Signed in as ... / Sign out
+        # Signed in as ... (signing in and out is in Accounts, the one place for it)
         who = QHBoxLayout()
         self.who = _quiet()
         who.addWidget(self.who, 1)
-        self.sign_out = _link("Sign out")
-        self.sign_out.clicked.connect(self._sign_out)
-        self.sign_out.setVisible(False)
-        who.addWidget(self.sign_out)
         box.addLayout(who)
 
-        # Not signed in: a line and a button
+        # Not signed in: a line and a button that opens Accounts
         self.signed_out = QWidget()
         out = QHBoxLayout(self.signed_out)
         out.setContentsMargins(0, 0, 0, 0)
@@ -259,12 +255,10 @@ class Pane(QWidget):
         label = sd.LABELS[self.service]
         name = sd.account(self.service)
         if not name:
-            self.show_signed_out("Connect Twitch to change your stream details." if self.service == "twitch"
-                                 else f"Sign in to {label} to change your stream details.")
+            self.show_signed_out(f"Sign in to {label} to change your stream details.")
             return
         self.who.setText(f"Signed in as {name}")
         self.who.setVisible(True)
-        self.sign_out.setVisible(self.service != "twitch")
         self.signed_out.setVisible(False)
         self.form.setVisible(True)
         self.form.setEnabled(False)
@@ -275,12 +269,9 @@ class Pane(QWidget):
         self.loaded = False
         self.who.setText("")
         self.who.setVisible(False)
-        self.sign_out.setVisible(False)
         self.form.setVisible(False)
         self.why.setText(why)
-        reconnect = self.service == "twitch" and why.startswith("Reconnect")
-        self.sign_in.setText("Reconnect Twitch" if reconnect else "Connect Twitch" if self.service == "twitch"
-                             else "Sign in")
+        self.sign_in.setText("Sign in")
         self.signed_out.setVisible(True)
         self.dialog.say("")
         self.dialog.refresh_save()
@@ -367,28 +358,9 @@ class Pane(QWidget):
     # Sign in and out ------------------------------------------------------------------------------------
 
     def _sign_in(self) -> None:
-        if self.service == "twitch":
-            self.dialog.connect_twitch(self.dialog)
-            self.load()
-            return
-        from sprigcast.app.modal import modal
-        from sprigcast.app.signin_dialog import SignInDialog
-        from sprigcast.output import service_signin
-
-        if not service_signin.available(self.service):
-            self.dialog.say(f"{sd.LABELS[self.service]} sign-in isn't set up in this copy of SprigCast.", warn=True)
-            return
-        dialog = SignInDialog(self.service, self.dialog, begin=lambda s: service_signin.begin(s, keep=True), hint="")
-        if modal(dialog) and dialog.fetched is not None:
-            self.dialog.reload(self.service)  # horizontal and vertical YouTube share the sign-in
-        elif dialog.error:
-            self.dialog.say(dialog.error, warn=True)
-
-    def _sign_out(self) -> None:
-        self.dialog.jobs.run(sd.sign_out, self.service, done=lambda _v, _e: None)
-        for pane in self.dialog.panes.values():
-            if pane.service == self.service:
-                pane.show_signed_out(f"Sign in to {sd.LABELS[self.service]} to change your stream details.")
+        """Accounts opens over the card; whoever is signed in there afterwards is read again."""
+        self.dialog.open_accounts(self.dialog)
+        self.dialog.reload(self.service)  # horizontal and vertical YouTube share the sign-in
 
     # Save -----------------------------------------------------------------------------------------------
 
@@ -466,11 +438,15 @@ class StreamDetailsDialog(CardDialog):
     work too. Only your platforms get a chip; with none, the card says to add one."""
 
     def __init__(self, parent: QWidget | None = None, places: list | None = None,
-                 youtube_key_ref: str | None = None, connect_twitch: Callable[[QWidget], object] | None = None):
+                 youtube_key_ref: str | None = None, connect_twitch: Callable[[QWidget], object] | None = None,
+                 open_accounts: Callable[[QWidget], object] | None = None):
         long = sum(1 for p in places or [] if not isinstance(p, str) and len(p.label) > 8)  # "YouTube Vertical"
         super().__init__("Stream details", parent, width=740 if len(places or []) > 3 and long else 560)
         self.jobs = Jobs(self)
-        self.connect_twitch = connect_twitch or (lambda _parent: None)
+        self.connect_twitch = connect_twitch or (lambda _parent: None)  # older callers; Accounts does it now
+        if open_accounts is None:
+            from sprigcast.app.accounts_page import open_accounts
+        self.open_accounts = open_accounts
         self.places: dict[str, Place] = {}
         for place in places or []:
             if isinstance(place, str):

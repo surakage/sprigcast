@@ -54,13 +54,14 @@ from sprigcast.core.scene import SceneCollection
 
 log = logging.getLogger(__name__)
 
-TABS = ["General", "Stream", "Recording", "Audio", "Video", "Connections"]
+TABS = ["General", "Stream", "Accounts", "Recording", "Audio", "Video", "Connections"]
 # Older names, and the windows that left Settings, land somewhere sensible ("Tab/Sub": a page's own tab).
 TAB_ALIASES = {"Output": "Stream/Quality", "Clips": "Recording/Clips", "Replay": "Recording/Clips",
                "Advanced": "General", "Camera": "Video/Virtual camera", "Hotkeys": "General", "Plugins": "General"}
 ABOUT = {  # one line under each page's title
     "General": "How SprigCast behaves, and how much this PC carries.",
     "Stream": "Where you go live, and how good it looks.",
+    "Accounts": "Sign in once to each platform for its stream key, details and chat.",
     "Recording": "Where recordings and clips go, and how good they look.",
     "Audio": "Devices, sound tracks and which sounds go on each.",
     "Video": "Your canvases and the virtual camera.",
@@ -102,6 +103,8 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Canvas size", "Video/Canvases", False), ("Canvas frame rate", "Video/Canvases", False),
     ("Vertical canvas", "Video/Canvases", False), ("Output (scaled) size", "Video/Canvases", True),
     ("Downscale filter", "Video/Canvases", True), ("Virtual camera", "Video/Virtual camera", False),
+    ("Accounts", "Accounts", False), ("Sign in", "Accounts", False), ("Sign out", "Accounts", False),
+    ("Twitch account", "Accounts", False), ("YouTube account", "Accounts", False), ("Kick account", "Accounts", False),
     ("Control API", "Connections", False), ("Password (API)", "Connections", False),
     ("Pair a device", "Connections", False), ("Streamer.bot", "Connections", False),
     ("OBS-style connection", "Connections", False), ("Port", "Connections", False),
@@ -297,6 +300,7 @@ class SettingsWindow(QDialog):
         self._makers = {
             "General": self._general_page,
             "Stream": lambda: self._stream_page(encoder),
+            "Accounts": self._accounts_page,
             "Recording": lambda: self._recording_page(encoder),
             "Audio": lambda: self._audio_page(lambda: _devices(audio_devices)),
             "Video": self._video_page,
@@ -453,7 +457,7 @@ class SettingsWindow(QDialog):
     _PAGE_OF = {"stream_page": "Stream", "stream_quality": "Stream", "stream_tabs": "Stream",
                 "recording_tabs": "Recording", "recording_page": "Recording", "audio_page": "Audio",
                 "video_tabs": "Video", "camera_tab": "Video", "video_fields": "Video", "video_output": "Video",
-                "connections_page": "Connections"}
+                "connections_page": "Connections", "accounts_page": "Accounts"}
 
     def __getattr__(self, name: str):
         """A page's widgets asked for before the page was made: make that page (not knowing which: up to the one)."""
@@ -964,6 +968,12 @@ class SettingsWindow(QDialog):
             show = self._expert or out.currentData() is not None
             form.setRowVisible(out, show)
             form.setRowVisible(downscale, show)
+
+    def _accounts_page(self) -> QWidget:
+        from sprigcast.app.accounts_page import AccountsPage
+
+        self.accounts_page = AccountsPage()
+        return _page(self.accounts_page)
 
     def _connections_page(self, control) -> QWidget:
         from sprigcast.app.connections_page import ConnectionsPage

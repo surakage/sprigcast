@@ -140,7 +140,7 @@ def test_panel_switches_between_link_twitch_and_account(app, monkeypatch):
     twitch_auth._announce("")  # disconnecting with no names left falls back to the link
     assert panel.source()[0] == "link"
     texts = [a.text() for a in panel.build_menu().actions() if a.text()]
-    assert "Connect Twitch…" in texts and "Channels…" in texts
+    assert "Sign in…" in texts and "Channels…" in texts
 
 
 def test_mixed_lines_carry_a_platform_mark_and_mods_clear_per_platform(app):

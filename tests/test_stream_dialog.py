@@ -162,18 +162,24 @@ def test_switching_service_clears_the_old_server(fake_keyring):
     assert d.outputs[0].server == ""
 
 
-def test_a_signed_in_place_says_who_and_signs_out(fake_keyring, monkeypatch):
-    app = QApplication.instance() or QApplication([])  # noqa: F841
+def test_a_place_signs_in_once_then_gets_its_key_from_the_account(fake_keyring, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    import time
+
     from sprigcast.app import signin_dialog
     from sprigcast.app.stream_dialog import StreamPage
-    from sprigcast.output import service_signin
+    from sprigcast.output import service_signin, stream_details
 
     monkeypatch.setattr(service_signin, "available", lambda s: s in ("youtube", "kick"))
     outcome = {"fetched": service_signin.Fetched(account="Sloth Bloom", key="yt-key"), "error": None}
+    signed_in = {"youtube": ""}
+    monkeypatch.setattr(stream_details, "account", lambda s: signed_in.get(s, ""))
 
     class FakeDialog:
-        def __init__(self, service, parent):
+        def __init__(self, service, parent, **kw):
             self.fetched, self.error = outcome["fetched"], outcome["error"]
+            if self.fetched is not None:
+                signed_in[service] = self.fetched.account  # the one sign-in signs Accounts in too
 
         def exec(self):
             return self.fetched is not None
@@ -189,10 +195,18 @@ def test_a_signed_in_place_says_who_and_signs_out(fake_keyring, monkeypatch):
     d = StreamPage(col)
     assert d.signin_state.text() == "Not signed in" and d.sign_in_button.text() == "Sign in"
     d._sign_in_clicked()
-    assert d.signin_state.text() == "Signed in as Sloth Bloom" and d.sign_in_button.text() == "Sign out"
+    assert d.signin_state.text() == "Signed in as Sloth Bloom" and d.sign_in_button.text() == "Get key"  # no Sign out
     assert d.key.text() == "yt-key" and d.apply_to(col) and col.outputs[0].account == "Sloth Bloom"
-    d._sign_in_clicked()  # sign out
-    assert d.signin_state.text() == "Not signed in" and d.key.text() == ""
+    d.key.setText("")
+    monkeypatch.setattr(service_signin, "key_from_account",
+                        lambda s, vertical=False: service_signin.Fetched(account="Sloth Bloom", key="yt-key-2"))
+    d._sign_in_clicked()  # Get key: straight from the account, on a worker
+    deadline = time.time() + 3
+    while d.key.text() != "yt-key-2" and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert d.key.text() == "yt-key-2"
+    signed_in["youtube"] = ""
     outcome.update(fetched=None, error="YouTube said 403: Live streaming isn't on for this YouTube channel yet.")
     d._sign_in_clicked()
     assert d.signin_error.isVisibleTo(d) and "isn't on" in d.signin_error.text()

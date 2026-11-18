@@ -93,11 +93,11 @@ def test_twitch_reads_and_saves_title_category_and_tags(monkeypatch):
 def test_twitch_without_the_new_permission_asks_to_reconnect(monkeypatch):
     Web(monkeypatch)
     _twitch_signed_in(scope=("channel:read:stream_key", "user:write:chat"))
-    with pytest.raises(sd.NeedsSignIn, match="Reconnect Twitch once"):
+    with pytest.raises(sd.NeedsSignIn, match="Sign in to Twitch again once"):
         sd.load("twitch")
     assert not sd.twitch_can_edit()
     set_key(twitch_auth.TOKEN_REF, "")
-    with pytest.raises(sd.NeedsSignIn, match="Connect Twitch"):
+    with pytest.raises(sd.NeedsSignIn, match="Sign in to Twitch"):
         sd.load("twitch")
 
 
@@ -538,7 +538,7 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
     assert calls[0][1].title == "New" and calls[0][1].category_id == "15"
     dialog.show_service("twitch")  # nobody signed in: a button, no web call
     assert dialog.panes["twitch"].signed_out.isVisibleTo(dialog)
-    assert dialog.panes["twitch"].sign_in.text() == "Connect Twitch"
+    assert dialog.panes["twitch"].sign_in.text() == "Sign in"
     assert not dialog.save_button.isEnabled()
     dialog.done(0)
     dialog.deleteLater()
