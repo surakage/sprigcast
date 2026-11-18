@@ -14,17 +14,20 @@
 #include <stdlib.h>
 
 /* The crash guard (sprigcast_crash_guard, called from app/crash_dump.py): when SprigCast crashes in native code,
- * a small minidump goes beside crash.log and the process always ends.
+ * a small minidump goes beside crash.log, and a dump that can't be written never hangs the app.
  *
  * It used to be a Python (ctypes) callback that wrote the dump itself, from the crashing thread: on 2026-11-18 a
  * crash on a worker thread left the window "Not Responding" for 25 minutes with the half-written .dmp locked.
  * Python can't be trusted while it's crashing, and MiniDumpWriteDump from the crashing thread can wait forever
  * on a lock that thread or a suspended one holds. Here the filter is plain C: it wakes a thread made at start,
- * which writes the dump, and waits for it at most CRASH_WAIT_MS. Written in time, Windows' own error reporting
- * goes on as before (its Event Viewer record names the faulting DLL); not, or if anything after it stalls, the
- * process is ended. */
+ * which writes the dump, and waits for it at most CRASH_WAIT_MS. Written in time, the filter answers as before
+ * (Windows' error reporting goes on and names the faulting DLL); not, the process is ended.
+ *
+ * Windows also asks this filter about some exceptions it then survives (one in a window's paint, inside the
+ * system's own message callback, is swallowed there): so nothing here ends a run that got its dump, and only the
+ * first exception is dumped. Ending it 30 s after any dump turned the CI start-up check's survived paint fault on
+ * Mesa into a crash (build 44376095639). */
 #define CRASH_WAIT_MS 15000
-#define CRASH_END_AFTER_MS 30000
 #define DUMP_TYPE (MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules)
 
 typedef BOOL(WINAPI *dump_fn)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
@@ -49,18 +52,15 @@ static DWORD WINAPI crash_writer(LPVOID unused) {
         CloseHandle(file);
     }
     SetEvent(crash_written);
-    Sleep(CRASH_END_AFTER_MS);  /* Windows' error reporting ends the process long before this; if it didn't: */
-    TerminateProcess(GetCurrentProcess(), 0xC0000005u);
-    return 0;
+    return 0;  /* one dump per run: this thread's work is done */
 }
 
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
     UINT code = pointers && pointers->ExceptionRecord ? (UINT)pointers->ExceptionRecord->ExceptionCode : 1u;
     if (InterlockedExchange(&crash_seen, 1) != 0) {
-        /* another thread crashed meanwhile: the first one's dump is being written; this one waits to be ended */
-        Sleep(CRASH_WAIT_MS + CRASH_END_AFTER_MS);
-        TerminateProcess(GetCurrentProcess(), code);
-        return EXCEPTION_EXECUTE_HANDLER;
+        /* dumped already (or being dumped for another thread): wait for that one, then answer as Windows would */
+        WaitForSingleObject(crash_written, CRASH_WAIT_MS);
+        return EXCEPTION_CONTINUE_SEARCH;
     }
     crash_thread_id = GetCurrentThreadId();
     crash_pointers = pointers;
@@ -69,7 +69,7 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *pointers) {
         TerminateProcess(GetCurrentProcess(), code);  /* the dump never finished: end now, never hang */
         return EXCEPTION_EXECUTE_HANDLER;
     }
-    return EXCEPTION_CONTINUE_SEARCH;  /* Windows Error Reporting records it and ends the process */
+    return EXCEPTION_CONTINUE_SEARCH;  /* as before: Windows Error Reporting records it and ends the process */
 }
 
 __declspec(dllexport) int sprigcast_crash_guard(const wchar_t *dump_path) {
