@@ -214,6 +214,7 @@ class NativeCanvases:
         # (canvas slot, output slot) -> (recording, its writer, (start, fps, keep)): outputs the engine hands to a
         # writer itself (link_taps)
         self._links: dict[tuple[int, int], tuple] = {}
+        self._paused: dict[tuple[int, int], tuple] = {}  # (owner, writer) unlinked for a transition Python draws
         self._link_refused = weakref.WeakSet()  # recordings whose writer an output wouldn't link to
         self.output_drops = 0
         self.lost = 0  # frames of the output take_outputs last looked at that the engine let go of
@@ -552,7 +553,9 @@ class NativeCanvases:
         if slot is None or self.failed:
             return
         for out in list(self._outputs.get(slot, {}).values()):
-            if (slot, out) in self._links:
+            entry = self._links.get((slot, out))
+            if entry is not None:
+                self._paused[(slot, out)] = entry[:2]
                 self._unlink(slot, out)
         for key in list(self._outputs.get(slot, {})):
             self.take_outputs(canvas_id, key)  # let go of (CardFrames give their textures back when dropped)
@@ -697,10 +700,12 @@ class NativeCanvases:
                     log.warning("native engine: %s can't take frames from the engine itself (%s); they go through "
                                 "Python", getattr(getattr(owner, "path", None), "stem", "a recording"), exc)
                     continue
+                again = self._paused.pop((slot, out), None) == (owner, writer)  # back after a transition
                 if entry is None:
-                    log.info("native engine: %s %dx%d frames go straight to %s's writer%s", canvas_id, key[0][0],
-                             key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"),
-                             " on the card" if on_card else "")
+                    log.log(logging.DEBUG if again else logging.INFO,
+                            "native engine: %s %dx%d frames go straight to %s's writer%s", canvas_id, key[0][0],
+                            key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"),
+                            " on the card" if on_card else "")
                 owner.linked = True
                 self._links[(slot, out)] = (owner, writer, settings)
             linked.add(id(owner))
@@ -735,9 +740,11 @@ class NativeCanvases:
             log.warning("native engine: the virtual camera can't take frames from the engine itself (%s); they go "
                         "through Python", exc)
             return False
+        again = self._paused.pop((slot, out), None) == (owner, where)  # back after a transition
         if entry is None:
-            log.info("native engine: %s frames go straight to the virtual camera (%dx%d)", canvas_id, where[1],
-                     where[2])
+            log.log(logging.DEBUG if again else logging.INFO,
+                    "native engine: %s frames go straight to the virtual camera (%dx%d)", canvas_id, where[1],
+                    where[2])
         owner.linked = True
         self._links[(slot, out)] = (owner, where, settings)
         return True

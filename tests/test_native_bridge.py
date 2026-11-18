@@ -740,6 +740,7 @@ def test_a_python_drawn_transition_keeps_the_outputs_and_their_textures(monkeypa
     bridge.pause_outputs("h", [card])
     assert bridge.engine.set == [(0, 0, 64, 36, "card")]  # never stopped and made again: the same textures
     assert unlinked == [41] and (0, 0) not in bridge._links  # the recording takes Python's frames meanwhile
+    assert bridge._paused[(0, 0)][0] is owner  # linked again afterwards without saying so again in the log
     assert sorted(bridge.engine.back) == [(0, 0, 7, 2), (0, 0, 7, 3)] and bridge.lost == 0  # let go
     bridge.set_outputs("h", [card])  # the engine draws it again: nothing changes
     assert bridge.engine.set == [(0, 0, 64, 36, "card")]
