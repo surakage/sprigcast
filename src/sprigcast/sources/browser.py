@@ -198,10 +198,28 @@ class BrowserSource(Source):
         block = _host.read_audio(self.id, n) if _host is not None and self._open else None
         return block if block is not None else np.zeros((n, 2), dtype=np.float32)
 
-    def video_frame(self) -> np.ndarray | None:
+    @property
+    def engine_player(self) -> str | None:
+        """The shared memory block the page's pictures are in, when the page runs in the browser helper: the
+        native engine copies them onto the card from there itself (render/engine.py), and the render thread only
+        calls :meth:`engine_tick`."""
+        name = getattr(_host, "shared_name", None) if _host is not None and self._open else None
+        return name(self.id) if name is not None else None
+
+    def engine_tick(self) -> None:
+        """Render thread, on a tick the engine took the page's picture itself: keep status and first paint."""
+        self._note_sound()
+        if getattr(_host, "painted", lambda _id: False)(self.id):
+            self._blank = False
+            self.first_picture = True
+
+    def _note_sound(self) -> None:
         note = getattr(_host, "sound_note", lambda _id: "")(self.id) if _host is not None else ""
         if self.status in ("ok", "Sound plays on desktop audio"):
             self.status = "Sound plays on desktop audio" if note else "ok"
+
+    def video_frame(self) -> np.ndarray | None:
+        self._note_sound()
         frame = _host.take(self.id) if _host is not None else None
         if frame is not None:
             self._blank = False

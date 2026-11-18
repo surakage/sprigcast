@@ -67,6 +67,7 @@ class FrameSlot:
         self.buf = shm.buf
         self.capacity = (len(self.buf) - HEADER) // 2
         self.seen = 0
+        self.peeked = 0
 
     @classmethod
     def create(cls, name: str, pixels: int) -> "FrameSlot":
@@ -88,6 +89,12 @@ class FrameSlot:
         struct.pack_into("<IIII", self.buf, 8, w, h, slot, 0)
         struct.pack_into("<Q", self.buf, 0, seq)
         return True
+
+    def painted(self) -> bool:
+        """A picture newer than the last time this was asked (taken or not)."""
+        seq = struct.unpack_from("<Q", self.buf, 0)[0]
+        new, self.peeked = seq != self.peeked and seq != 0, seq
+        return new
 
     def read(self) -> np.ndarray | None:
         """The newest picture if there's one SprigCast hasn't taken, else None."""
@@ -346,6 +353,19 @@ class RemoteHost:
     def pause(self, source_id: str, paused: bool) -> None:
         self._paused[source_id] = bool(paused)
         self._send({"op": "pause", "id": source_id, "paused": bool(paused)})
+
+    def shared_name(self, source_id: str) -> str | None:
+        """The shared memory block a page's pictures are in (the native engine reads them there itself)."""
+        slot = self._frames.get(source_id)
+        return slot.shm.name if slot is not None and slot.buf is not None else None
+
+    def painted(self, source_id: str) -> bool:
+        """The page drew a picture since this was last asked (without taking it)."""
+        slot = self._frames.get(source_id)
+        try:
+            return slot is not None and slot.painted()
+        except (TypeError, ValueError):  # closed just now
+            return False
 
     def take(self, source_id: str) -> np.ndarray | None:
         slot = self._frames.get(source_id)

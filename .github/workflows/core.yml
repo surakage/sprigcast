@@ -9,12 +9,14 @@ on:
     paths: ["native/core/**", ".github/workflows/core.yml", "src/sprigcast/sprigcore.py", "src/sprigcast/render/**",
             "src/sprigcast/core/filters.py", "src/sprigcast/core/scene.py", "tests/test_sprigcore.py",
             "tests/test_native_compositor.py", "tests/test_native_bridge.py", "tests/native_cases.py", "tests/native_golden/**",
-            "native/third_party/**", "src/sprigcast/sources/media.py", "tests/test_native_media.py"]
+            "native/third_party/**", "src/sprigcast/sources/media.py", "tests/test_native_media.py",
+            "src/sprigcast/app/browser_helper.py", "tests/test_native_shared.py"]
   pull_request:
     paths: ["native/core/**", ".github/workflows/core.yml", "src/sprigcast/sprigcore.py", "src/sprigcast/render/**",
             "src/sprigcast/core/filters.py", "src/sprigcast/core/scene.py", "tests/test_sprigcore.py",
             "tests/test_native_compositor.py", "tests/test_native_bridge.py", "tests/native_cases.py", "tests/native_golden/**",
-            "native/third_party/**", "src/sprigcast/sources/media.py", "tests/test_native_media.py"]
+            "native/third_party/**", "src/sprigcast/sources/media.py", "tests/test_native_media.py",
+            "src/sprigcast/app/browser_helper.py", "tests/test_native_shared.py"]
 
 jobs:
   build:
@@ -51,7 +53,7 @@ jobs:
           $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
           $env:PYTHONPATH = "src"
           uv run --frozen python -c "from sprigcast import sprigcore; assert sprigcore.available(), 'not loaded'; print(sprigcore.adapters())"
-          uv run --frozen pytest -q tests/test_sprigcore.py tests/test_native_compositor.py tests/test_native_bridge.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
+          uv run --frozen pytest -q tests/test_sprigcore.py tests/test_native_compositor.py tests/test_native_bridge.py tests/test_native_shared.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
           if ($LASTEXITCODE -ne 0) { throw "pixel checks failed" }
           if (Select-String -Path pytest.txt -Pattern "isn't built here" -Quiet) { throw "engine checks were skipped though the DLL is built" }
       - name: Video, GIF and sound files played by the engine

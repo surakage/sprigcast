@@ -485,6 +485,29 @@ def test_the_bridge_tells_the_engine_once_which_player_a_source_shows(monkeypatc
     assert not bridge.attach_media("clip", player)
 
 
+def test_a_browser_page_is_attached_by_its_shared_block_and_let_go_the_right_way(monkeypatch):
+    calls = []
+
+    class Attaching(FakeEngine):
+        def attach_media(self, source_id, player):
+            calls.append(("media", source_id, player))
+
+        def attach_shared(self, source_id, name):
+            calls.append(("shared", source_id, name))
+
+    monkeypatch.setattr(sprigcore, "Engine", Attaching)
+    bridge = native_bridge.NativeCanvases(_collection())
+    assert bridge.attach_media("page", "sprigcast-1-1") and bridge.attach_media("page", "sprigcast-1-1")
+    assert calls == [("shared", "page", "sprigcast-1-1")]  # an equal name is the same block: told once
+    assert bridge.attach_media("page", "sprigcast-2-1")  # the helper restarted: its new block
+    player = object()
+    assert bridge.attach_media("page", player)  # from a block to a player: the block is let go first
+    assert bridge.attach_media("page", "sprigcast-2-1")  # and back: the player is let go first
+    assert not bridge.attach_media("page", None)
+    assert calls[1:] == [("shared", "page", "sprigcast-2-1"), ("shared", "page", None), ("media", "page", player),
+                         ("media", "page", None), ("shared", "page", "sprigcast-2-1"), ("shared", "page", None)]
+
+
 def test_a_failed_native_engine_hands_the_previews_back_to_python():
     engine, fake = _engine(), FakeCompositor()
     engine.previews = frozenset({"h"})
