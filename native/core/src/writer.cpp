@@ -49,15 +49,13 @@ struct FrameFree {
 };
 using FramePtr = std::unique_ptr<AVFrame, FrameFree>;
 
-// An environment variable's text ("" when unset); _dupenv_s on Windows, where getenv is refused as unsafe.
+// An environment variable's text ("" when unset). On Windows the process's own block: Python sets variables there
+// (os.environ), which a C runtime's copy (getenv, _dupenv_s) may not see.
 std::string env_text(const char *name) {
-#if defined(_MSC_VER)
-    char *value = nullptr;
-    size_t size = 0;
-    if (_dupenv_s(&value, &size, name) != 0 || !value) return {};
-    std::string text(value);
-    std::free(value);
-    return text;
+#if defined(_WIN32)
+    char value[256];
+    const DWORD n = GetEnvironmentVariableA(name, value, sizeof value);
+    return n > 0 && n < sizeof value ? std::string(value, n) : std::string();
 #else
     const char *value = std::getenv(name);
     return value ? std::string(value) : std::string();
