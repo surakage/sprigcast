@@ -24,7 +24,7 @@ import html
 import json
 import logging
 import re
-from collections import deque
+from collections import OrderedDict, deque
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QTextDocument
@@ -53,7 +53,9 @@ HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick"
 KEEP = 300  # messages kept on screen
 FLUSH_MS = 100  # new lines are drawn together this often
 MENU_READY_MS = 5000  # after the panel is made: its ⋯ menu made ready (ChatPanel._ready_menu)
-EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
+EMOTE_CACHE = 600  # distinct emote pictures handed to the page before it starts over (long streams stay flat)
+EMOTE_KEEP = 400  # pictures kept in memory across a start-over, newest used first, so it fetches nothing again
+EMOTE_FETCHES = 4  # pictures downloading at once; the rest wait their turn (one request each is UI-thread work)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
 
@@ -146,10 +148,14 @@ class ChatView(QTextBrowser):
         self.names: frozenset[str] = frozenset()  # your channel names, lowercase, for mention highlights
         self._urls: dict[str, str] = {}  # emote id -> picture, for platforms that send their own
         self._net = None
-        self._asked: set[str] = set()
+        self._asked: set[str] = set()  # emote ids waiting, downloading, or that failed
+        self._pictures: OrderedDict[str, object] = OrderedDict()  # emote id -> QImage, newest used last
+        self._given = 0  # pictures handed to the page since it last started over
+        self._queue: deque[QUrl] = deque()
+        self._loading = 0
         self._relayout = QTimer(self)  # pictures arriving together cost one re-layout, not one each
         self._relayout.setSingleShot(True)
-        self._relayout.setInterval(120)
+        self._relayout.setInterval(250)
         self._relayout.timeout.connect(self._pictures_arrived)
         # A busy chat (xqc's: dozens of lines a second) is drawn in batches: one document edit, one layout and
         # one scroll per FLUSH_MS, not one each (a line at a time froze the window for 400 ms on 2026-11-18).
@@ -216,7 +222,7 @@ class ChatView(QTextBrowser):
         if not pending:
             return
         stay = self.at_bottom()
-        if len(self._asked) > EMOTE_CACHE:
+        if self._given > EMOTE_CACHE:
             self._fresh_cache()  # redraws every kept line, the waiting ones included
         else:
             document = self.document()
@@ -256,8 +262,10 @@ class ChatView(QTextBrowser):
             self._place_notice()
 
     def _fresh_cache(self) -> None:
-        """Forget emote pictures (the document keeps every one it was given), then redraw what's on screen."""
-        self._asked.clear()
+        """Start the page over (the document keeps every picture it was given), then redraw what's on screen.
+        The pictures still in use come straight from memory, so nothing is downloaded again: before this,
+        a start-over re-requested every emote on the UI thread and froze the window for 2 s (2026-11-18)."""
+        self._given = 0
         self._urls = {k: v for m in self.messages for k, v in m.images.items()}
         self.document().clear()  # also drops the pictures it holds
         self.redraw()
@@ -336,6 +344,11 @@ class ChatView(QTextBrowser):
 
     def loadResource(self, kind, url: QUrl):  # noqa: N802 (Qt override)
         if url.scheme() == "emote" and kind == QTextDocument.ResourceType.ImageResource:
+            picture = self._pictures.get(url.path())
+            if picture is not None:
+                self._pictures.move_to_end(url.path())
+                self._given += 1
+                return picture
             self._fetch(url)
             return None  # drawn as a blank box until the picture arrives
         return super().loadResource(kind, url)
@@ -345,24 +358,41 @@ class ChatView(QTextBrowser):
         if emote_id in self._asked or not re.fullmatch(r"[\w-]{1,64}", emote_id):
             return
         self._asked.add(emote_id)
+        self._queue.append(url)
+        self._next_fetch()
+
+    def _next_fetch(self) -> None:
         from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
-        if self._net is None:
-            self._net = QNetworkAccessManager(self)
-        address = self._urls.get(emote_id) or EMOTE_URL.format(id=emote_id)
-        if not address.startswith("https://"):
-            return
-        reply = self._net.get(QNetworkRequest(QUrl(address)))
-        reply.finished.connect(lambda: self._fetched(reply, url))
+        while self._queue and self._loading < EMOTE_FETCHES:
+            url = self._queue.popleft()
+            address = self._urls.get(url.path()) or EMOTE_URL.format(id=url.path())
+            if not address.startswith("https://"):
+                continue
+            if self._net is None:
+                self._net = QNetworkAccessManager(self)
+            self._loading += 1
+            reply = self._net.get(QNetworkRequest(QUrl(address)))
+            reply.finished.connect(lambda reply=reply, url=url: self._fetched(reply, url))
 
     def _fetched(self, reply, url: QUrl) -> None:
         from PySide6.QtGui import QImage
 
+        self._loading -= 1
         image = QImage()
         if image.loadFromData(reply.readAll().data()):
+            if max(image.width(), image.height()) > 4 * EMOTE_SIZE:  # big source pictures: kept at a size we draw
+                image = image.scaled(2 * EMOTE_SIZE, 2 * EMOTE_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+            self._asked.discard(url.path())
+            self._pictures[url.path()] = image
+            while len(self._pictures) > EMOTE_KEEP:
+                self._pictures.popitem(last=False)
+            self._given += 1
             self.document().addResource(QTextDocument.ResourceType.ImageResource, url, image)
             self._relayout.start()
         reply.deleteLater()
+        self._next_fetch()
 
     def _pictures_arrived(self) -> None:
         stay = self.at_bottom()
