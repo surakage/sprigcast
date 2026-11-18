@@ -318,31 +318,31 @@ void Core::upload(FramePtr &picture) {
 }
 
 void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
-    AVPacket *pkt = use ? use : this->pkt;
+    AVPacket *p = use ? use : pkt;  // the helper finishing an old encoder brings its own
     for (;;) {
-        const int r = ff.avcodec_receive_packet(enc, pkt);
+        const int r = ff.avcodec_receive_packet(enc, p);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return;
         must(r, "encoding");
         if (packets) {  // for the caller to take: copied out, in the encoder's own time base
             Out o;
             o.track = stream->index;
-            o.key = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-            o.pts = pkt->pts;
-            o.dts = pkt->dts;
+            o.key = (p->flags & AV_PKT_FLAG_KEY) != 0;
+            o.pts = p->pts;
+            o.dts = p->dts;
             o.tb = enc->time_base;
-            o.data.assign(pkt->data, pkt->data + pkt->size);
-            ff.av_packet_unref(pkt);
+            o.data.assign(p->data, p->data + p->size);
+            ff.av_packet_unref(p);
             std::lock_guard<std::mutex> hold(lock);
             if (outs.size() >= 4096) throw WriteError("the encoded packets weren't taken for a minute");
             bytes += o.data.size();
             outs.push_back(std::move(o));
             continue;
         }
-        ff.av_packet_rescale_ts(pkt, enc->time_base, stream->time_base);
-        pkt->stream_index = stream->index;
-        const int size = pkt->size;
+        ff.av_packet_rescale_ts(p, enc->time_base, stream->time_base);
+        p->stream_index = stream->index;
+        const int size = p->size;
         const double began = now_s();
-        const int w = ff.av_interleaved_write_frame(out, pkt);  // takes the packet's data, leaves it blank
+        const int w = ff.av_interleaved_write_frame(out, p);  // takes the packet's data, leaves it blank
         const double spent = now_s() - began;
         if (w < 0) throw WriteError("writing: " + av_text(w));
         std::lock_guard<std::mutex> hold(lock);
