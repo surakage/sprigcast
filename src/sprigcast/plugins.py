@@ -78,7 +78,8 @@ def load_plugin_file(path: Path) -> str | None:
 
 EXAMPLE = '''"""Example SprigCast plugin: a countdown timer source. Edit or copy it to make your own.
 
-Add it with Sources → + → Plugins → Countdown. Double-click it to change the minutes and label.
+Add it with Sources → + → Plugins → Example countdown. Double-click it to change the minutes and label.
+(For a countdown on stream, add Countdown from Tools → Plugin store: this one shows how a plugin is made.)
 """
 
 import time
@@ -89,7 +90,7 @@ from sprigcast.sources.text import TextSource
 
 @register("countdown")
 class CountdownSource(TextSource):
-    label = "Countdown"
+    label = "Example countdown"
     defaults = {**TextSource.defaults, "text": "", "minutes": 5, "label": "Starting in "}
 
     def __init__(self, source_id, settings):
@@ -107,9 +108,24 @@ class CountdownSource(TextSource):
 '''
 
 
+_NEW_DOC = 'Add it with Sources → + → Plugins → Example countdown. Double-click it to change the minutes and label.\n(For a countdown on stream, add Countdown from Tools → Plugin store: this one shows how a plugin is made.)'
+_OLD_DOC = 'Add it with Sources → + → Plugins → Countdown. Double-click it to change the minutes and label.'
+_NEW_LAB = '    label = "Example countdown"\n    defaults = {**TextSource.defaults, "text": "", "minutes": 5, "label": "Starting in "}'
+_OLD_LAB = '    label = "Countdown"\n    defaults = {**TextSource.defaults, "text": "", "minutes": 5, "label": "Starting in "}'
+# The example as it was before the Countdown store plugin: listed as "Countdown" too, so an untouched copy is
+# brought up to date (it keeps its kind, so a countdown made from it carries on).
+OLD_EXAMPLE = EXAMPLE.replace(_NEW_DOC, _OLD_DOC).replace(_NEW_LAB, _OLD_LAB)
+
+
 def ensure_example(folder: Path) -> None:
-    """Create the plugins folder with an example the first time."""
+    """Create the plugins folder with an example the first time (and bring an untouched old one up to date)."""
     folder.mkdir(parents=True, exist_ok=True)
     example = folder / "countdown_example.py"
     if not any(folder.glob("*.py")) and not example.exists():
         example.write_text(EXAMPLE, encoding="utf-8")
+    elif example.exists():
+        try:
+            if example.read_text(encoding="utf-8") == OLD_EXAMPLE:
+                example.write_text(EXAMPLE, encoding="utf-8")
+        except (OSError, ValueError):
+            pass
