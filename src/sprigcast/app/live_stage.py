@@ -369,6 +369,8 @@ class Destination:
     service: str = ""  # twitch, youtube, kick, tiktok, x or custom: picks the little tile
 
 
+PLACE_MIME = "application/x-sprigcast-place"  # a destination being dragged to a new spot in the list
+
 # Each place's tile: two letters on the platform's own colour.
 PLATFORM_TILES = {
     "twitch": ("Tw", "#9146ff", "#ffffff"), "youtube": ("Yt", "#ff2d48", "#ffffff"),
@@ -492,7 +494,8 @@ class LiveSide(QWidget):
                  on_camera: Callable[[], None] | None = None,
                  on_camera_settings: Callable[[], None] | None = None):
         """on_destination(id): open Settings on a place (None: the first, "new:<service>": add one).
-        on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"."""
+        on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"; and the order: "up",
+        "down", or "to:N" (dragged to position N)."""
         super().__init__()
         self.on_destination = on_destination
         self.on_toggle = on_toggle or (lambda _id, _on: None)
@@ -609,6 +612,15 @@ class LiveSide(QWidget):
         top.addWidget(self.manage)
         where.addLayout(top)
         places_box = QWidget()
+        # Drag a place up or down the list to set its order (Edit mode has Move up and Move down too).
+        places_box.setAcceptDrops(True)
+        places_box.installEventFilter(self)
+        self.places_box = places_box
+        self.drop_line = QFrame(places_box)  # where a dragged place lands
+        self.drop_line.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 1px;")
+        self.drop_line.setFixedHeight(2)
+        self.drop_line.hide()
+        self._drag: tuple[str, object] | None = None  # (place id, where the press was)
         self.places = QVBoxLayout(places_box)
         self.places.setContentsMargins(0, 0, 0, 0)
         self.places.setSpacing(8)
@@ -868,6 +880,8 @@ class LiveSide(QWidget):
         if not self.editing:
             box.setFixedHeight(44)  # a QPushButton sizes to its text, not its layout: give it the row's height
         self.place_rows[place.id] = (tile, name, note, switch)
+        box.setProperty("place_id", place.id)
+        box.installEventFilter(self)  # a press and a pull starts dragging it
         if self.editing:
             tools_row = QHBoxLayout()
             tools_row.setContentsMargins(0, 2, 0, 4)
@@ -889,6 +903,15 @@ class LiveSide(QWidget):
                 test = chip("test", "Test", "Bandwidth test: send to Twitch without going live")
                 test.setCheckable(True)
                 test.toggled.connect(lambda _on, pid=place.id: self.on_place(pid, "test"))
+            order = [p.id for p in self._places]
+            at = order.index(place.id) if place.id in order else 0
+            for key, icon, tip, step in (("up", "chevron-up", "Move up", -1), ("down", "chevron-down", "Move down", 1)):
+                move = chip(key, "", tip, CHIP_STYLE + "QPushButton:disabled { background: transparent; }")
+                arrow = QIcon(icons.icon(icon, theme.TEXT, 14))
+                arrow.addPixmap(icons.pixmap(icon, theme.EDGE_STRONG, 14), QIcon.Mode.Disabled)  # at the end: faint
+                move.setIcon(arrow)
+                move.setEnabled(0 <= at + step < len(order))
+                move.clicked.connect(lambda _=False, pid=place.id, k=key: self.on_place(pid, k))
             gear = chip("settings", "", "Key, bitrate and everything else")
             gear.setIcon(icons.icon("gear", size=14))
             gear.clicked.connect(
@@ -899,6 +922,81 @@ class LiveSide(QWidget):
             outer.addLayout(tools_row)
             self.place_tools[place.id] = tools
         return box
+
+    # Dragging places into order ---------------------------------------------------------------
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        kind = event.type()
+        if watched is getattr(self, "places_box", None):
+            if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove) and event.mimeData().hasFormat(PLACE_MIME):
+                event.acceptProposedAction()
+                self._show_drop(self.drop_index(event.position().y()))
+                return True
+            if kind == QEvent.Type.DragLeave:
+                self.drop_line.hide()
+                return True
+            if kind == QEvent.Type.Drop and event.mimeData().hasFormat(PLACE_MIME):
+                self.drop_line.hide()
+                place_id = bytes(event.mimeData().data(PLACE_MIME)).decode()
+                self.move_place(place_id, self.drop_index(event.position().y()))
+                event.acceptProposedAction()
+                return True
+            return False
+        place_id = watched.property("place_id") if isinstance(watched, QWidget) else None
+        if place_id and len(self._places) > 1:
+            if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._drag = (place_id, event.position().toPoint())
+            elif kind == QEvent.Type.MouseMove and self._drag and event.buttons() & Qt.MouseButton.LeftButton:
+                from PySide6.QtWidgets import QApplication
+
+                if (event.position().toPoint() - self._drag[1]).manhattanLength() >= QApplication.startDragDistance():
+                    self._start_drag(watched, self._drag[0])
+                    return True
+            elif kind == QEvent.Type.MouseButtonRelease:
+                self._drag = None
+        return super().eventFilter(watched, event)
+
+    def _start_drag(self, row: QWidget, place_id: str) -> None:
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtGui import QDrag
+
+        self._drag = None
+        data = QMimeData()
+        data.setData(PLACE_MIME, place_id.encode())
+        drag = QDrag(row)
+        drag.setMimeData(data)
+        drag.setPixmap(row.grab())
+        drag.setHotSpot(row.mapFromGlobal(row.cursor().pos()))
+        drag.exec(Qt.DropAction.MoveAction)
+        if isinstance(row, QPushButton):
+            row.setDown(False)  # the press went to the drag: no click, and the row isn't left pressed
+
+    def drop_index(self, y: float) -> int:
+        """Where a place dropped at height y goes: 0 is the top of the list."""
+        rows = [self.places.itemAt(i).widget() for i in range(self.places.count())]
+        rows = [r for r in rows if r is not None and r.property("place_id")]
+        return sum(1 for r in rows if y > r.geometry().center().y())
+
+    def _show_drop(self, index: int) -> None:
+        rows = [self.places.itemAt(i).widget() for i in range(self.places.count())]
+        rows = [r for r in rows if r is not None and r.property("place_id")]
+        if not rows:
+            return
+        gap = self.places.spacing() // 2 + 1
+        y = rows[index].geometry().top() - gap if index < len(rows) else rows[-1].geometry().bottom() + gap
+        self.drop_line.setGeometry(0, max(0, y), self.places_box.width(), 2)
+        self.drop_line.show()
+        self.drop_line.raise_()
+
+    def move_place(self, place_id: str, index: int) -> None:
+        """Put a place at `index` in the list (counted before it's taken out)."""
+        order = [p.id for p in self._places]
+        if place_id not in order:
+            return
+        at = order.index(place_id)
+        to = index - 1 if index > at else index
+        if to != at:
+            self.on_place(place_id, f"to:{to}")
 
     def _remove_clicked(self, place_id: str, button: QPushButton) -> None:
         """First click asks ("Sure?"), the second removes."""
