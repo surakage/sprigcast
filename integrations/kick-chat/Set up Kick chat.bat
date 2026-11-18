@@ -33,11 +33,22 @@ if errorlevel 1 (
 
 echo.
 echo  2/3  Putting the Kick chat relay online...
+rem The very first deploy can fail right after the upload with "This Worker does not exist on your account
+rem [code: 10007]": Cloudflare hasn't finished creating the new Worker yet. A second try a moment later works.
+set tries=0
+:deploy
+set /a tries+=1
 call npx --yes wrangler deploy
-if errorlevel 1 (
-  echo  [!] Deploying didn't work. The message above says why.
+if not errorlevel 1 goto deployed
+if %tries% geq 3 (
+  echo  [!] Deploying didn't work after 3 tries. The message above says why.
   goto failed
 )
+echo.
+echo       Cloudflare is still setting up the new Worker. Trying again in 15 seconds...
+timeout /t 15 /nobreak >nul
+goto deploy
+:deployed
 
 echo.
 echo  3/3  Kick client secret
