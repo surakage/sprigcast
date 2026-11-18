@@ -112,6 +112,7 @@ class GardenCheckPage(QWidget):
         self.snapshot = snapshot
         self.make_lighter = make_lighter  # the one tap: returns what it did, in words
         self.setMinimumWidth(620)
+        self.setStyleSheet(ROW_STYLE)  # the stream health rows' look, once for all of them
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(16)
@@ -273,7 +274,8 @@ class GardenCheckPage(QWidget):
         for i, (label, ok, tip) in enumerate(s.checks):
             chip = QLabel(("✓  " if ok else "!  " if ok is False else "–  ") + label)
             chip.setFixedHeight(26)
-            chip.setStyleSheet(CHIP_OK if ok else CHIP_WARN if ok is False else CHIP_QUIET)
+            chip.setObjectName("checkChip")  # styled by the page (ROW_STYLE), not a style sheet of its own
+            chip.setProperty("state", "ok" if ok else "warn" if ok is False else "quiet")
             chip.setToolTip(tip)
             self.checks.addWidget(chip, i // 4, i % 4)
             chip.show()
@@ -319,34 +321,51 @@ class GardenCheckPage(QWidget):
 
     @staticmethod
     def _row(name: str, detail: str, level: str, word: str, first: bool) -> QWidget:
+        """One place's line. Styled by the page's ROW_STYLE (object names and a "level" property): five style
+        sheets of its own per row made the first open 140 ms on the PC while live (2026-11-18)."""
+        from sprigcast.app.live_stage import Elided
+
+        level = level if level in LEVEL_COLOURS else "idle"
         row = QFrame()
         row.setObjectName("healthRow")
-        row.setStyleSheet("#healthRow { background: transparent; border: none;"
-                          + ("" if first else f" border-top: 1px solid {theme.EDGE};") + " }")
+        row.setProperty("ruled", not first)  # a line above every row but the first
         line = QHBoxLayout(row)
         line.setContentsMargins(2, 8, 2, 8)
         line.setSpacing(12)
-        colour = LEVEL_COLOURS.get(level, theme.MUTED)
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {colour}; background: transparent; font-size: 10px;")
-        from sprigcast.app.live_stage import Elided
-
+        dot.setObjectName("healthDot")
+        dot.setProperty("level", level)
         title = Elided(name)
+        title.setObjectName("healthTitle")
         title.setFixedWidth(110)
         # Fixed, not Elided's usual Ignored: a layout gives an Ignored label no room at all, which drew the
         # name over its detail.
         title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
         info = Elided(detail)  # one line: a long one (reconnects, auto-pilot) ends in "…", the whole of it on hover
+        info.setObjectName("healthInfo")
         info.setMinimumWidth(0)
-        info.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         state = QLabel(word)
-        state.setStyleSheet(f"color: {colour}; font-weight: 600; background: transparent;")
+        state.setObjectName("healthState")
+        state.setProperty("level", level)
         line.addWidget(dot)
         line.addWidget(title)
         line.addWidget(info, 1)
         line.addWidget(state)
         return row
+
+
+ROW_STYLE = (
+    "#healthRow { background: transparent; border: none; }"
+    f'#healthRow[ruled="true"] {{ border-top: 1px solid {theme.EDGE}; }}'
+    "#healthDot { background: transparent; font-size: 10px; }"
+    f"#healthTitle {{ color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent; }}"
+    f"#healthInfo {{ color: {theme.MUTED}; background: transparent; }}"
+    "#healthState { font-weight: 600; background: transparent; }"
+    + "".join(f'#healthDot[level="{lv}"], #healthState[level="{lv}"] {{ color: {colour}; }}'
+              for lv, colour in LEVEL_COLOURS.items())
+    + "".join(f'#checkChip[state="{state}"] {{ {style} }}'
+              for state, style in (("ok", CHIP_OK), ("warn", CHIP_WARN), ("quiet", CHIP_QUIET)))
+)
 
 
 def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, parent: QWidget | None = None,
