@@ -2057,7 +2057,7 @@ class Engine:
             native.forget_gone(self._sources)
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
                         {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
-                        views=self._engine_views)
+                        views=self._engine_views, held={cid: w[0] for cid, w in self._waking.items()})
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")
@@ -2096,7 +2096,11 @@ class Engine:
                     outputs = (*outputs, *shots)  # the canvas as it is: shares its copy
             preview = self._preview_due(canvas.id, now)
             if native is not None:
-                native_shows = held is None and (not extra or native.handles(extra)) and native.draws(canvas.id)
+                # While a switch waits for a camera the engine draws the bloom held (sync's held), so its outputs
+                # go on: dropping them each switch made new texture pools every time, and the writer on the card
+                # keeps every texture it was ever handed (NVENC knows them by pointer): ~10 MB of graphics memory a
+                # minute with a switch every 15 s (PC soak 2026-11-18).
+                native_shows = (not extra or native.handles(extra)) and native.draws(canvas.id)
                 wanted = self.previews is None or canvas.id in self.previews
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height)) or (canvas.width, canvas.height)
                 native.watch(canvas.id, size if native_shows and wanted else None, self.preview_fps)

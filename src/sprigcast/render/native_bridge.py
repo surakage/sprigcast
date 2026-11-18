@@ -82,14 +82,16 @@ def native_transition(running) -> bool:
 
 
 def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None,
-                   views: dict | None = None) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
+                   views: dict | None = None, held: dict[str, Scene] | None = None
+                   ) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
     """What the native engine draws: each enabled canvas's bloom on air and every sprig layout (the engine draws
     only those something on air places). state_view(collection, layout) gives a sprig as its Live state shows
     it: (layout, fades). Returns the scenes, the sprig placements ((source id, scene key) -> sprig key) and
     canvas id -> the scene key it shows (None: nothing on air). outgoing: canvas id -> the bloom a transition there
     changes from (drawn as from_key(canvas id)). views: name -> (canvas, scene) for each view something taps (the
     virtual camera showing a bloom, Instant replay keeping a camera): drawn as view_key(name), shown in
-    shows[view_key(name)]."""
+    shows[view_key(name)]. held: canvas id -> the bloom it keeps showing while a switch waits for a camera
+    (render/engine.py _still_waking), drawn in place of the one on air."""
     sources = {s.id: s for s in collection.sources}
     draws: list[SceneDraw] = []
     parts: dict[tuple[str, str], str] = {}
@@ -106,7 +108,7 @@ def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, 
     for canvas in collection.canvases:
         if not canvas.enabled:
             continue
-        scene = collection.active_scene(canvas.id)
+        scene = (held or {}).get(canvas.id) or collection.active_scene(canvas.id)
         if scene is None:
             shows[canvas.id] = None
             continue
@@ -369,10 +371,12 @@ class NativeCanvases:
             self._guard("forget", self.engine.forget, gone)
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
-             transitions: dict | None = None, wipe_picture=None, views: dict | None = None) -> None:
+             transitions: dict | None = None, wipe_picture=None, views: dict | None = None,
+             held: dict | None = None) -> None:
         """Hand over a new snapshot when what's on air, the filters, a sprig's state or a transition changed
         (every frame while a sprig's state fades). transitions: canvas id -> render/engine.py Running;
-        wipe_picture(path) gives a wipe image as a grey RGB array."""
+        wipe_picture(path) gives a wipe image as a grey RGB array. held: canvas id -> the bloom it keeps showing
+        while a switch waits (see snapshot_draws): the engine keeps drawing it, so its outputs go on."""
         if self.failed:
             return
         running = {cid: r for cid, r in (transitions or {}).items() if native_transition(r)}
@@ -392,12 +396,13 @@ class NativeCanvases:
                                   for name, (canvas, scene) in views.items())),
                      tuple((c.id, c.enabled, c.width, c.height, collection.active_scenes.get(c.id))
                            for c in collection.canvases),
-                     tuple(sorted((cid, id(r)) for cid, r in running.items())))
+                     tuple(sorted((cid, id(r)) for cid, r in running.items())),
+                     tuple(sorted((cid, id(scene)) for cid, scene in (held or {}).items())))
         if signature == self._signature and not fading:
             return
         self._signature = signature
         draws, parts, shows = snapshot_draws(collection, state_view,
-                                             {cid: r.outgoing for cid, r in running.items()}, views)
+                                             {cid: r.outgoing for cid, r in running.items()}, views, held)
         built = native_snapshot.build(draws, effects, parts)
         self._guard("snapshot", native_snapshot.hand_over, self.engine, built, self.resources)
         for canvas in collection.canvases:

@@ -134,10 +134,12 @@ class FakeNative:
     def forget_gone(self, ids):
         pass
 
-    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None):
+    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None,
+             held=None):
         self.synced += 1
         self.transitions = dict(transitions or {})
         self.views = dict(views or {})
+        self.held = dict(held or {})
 
     def handles(self, extra):
         return native_bridge.NativeCanvases.handles(self, extra)
@@ -273,6 +275,37 @@ def test_an_encoder_on_the_card_gets_the_native_engines_textures():
     card.frames.clear()
     _run(engine, fake, seconds=0.1)
     assert card.frames and all(f.fmt == "nv12" for f in card.frames)
+
+
+def test_a_switch_waiting_for_a_camera_keeps_the_engines_outputs(monkeypatch):
+    """While a switch waits for a camera the engine draws the bloom held and its outputs go on. Dropped and made
+    again each switch, every switch made new texture pools, and the writer on the card keeps each texture it was
+    handed: graphics memory grew ~10 MB a minute with a switch every 15 s (PC soak 2026-11-18)."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.add_frame_tap("h", lambda f: None, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.1)
+    kept = engine._native.outputs["h"]
+    assert kept[0]
+    old = engine._collection.scenes[0]
+    engine._waking["h"] = (old, 1e9, set())
+    monkeypatch.setattr(engine, "_switch_waits", lambda compositor, canvas_id, now: True)
+    seen = []
+    for i in range(30):
+        engine._tick(fake, 20.0 + i / 60)
+        seen.append(engine._native.outputs["h"])
+    assert all(o == kept for o in seen)  # never dropped while it waits
+    assert engine._native.held == {"h": old}  # the engine draws the bloom held
+    monkeypatch.setattr(engine, "_switch_waits", lambda compositor, canvas_id, now: False)
+    _run(engine, fake, seconds=0.1)
+    assert engine._native.outputs["h"] == kept and engine._native.held == {}
+
+
+def test_the_bloom_held_is_drawn_in_place_of_the_one_on_air():
+    col = SceneCollection(canvases=[Canvas(id="h", width=64, height=36)],
+                          scenes=[Scene(id="a", name="A", canvas="h"), Scene(id="b", name="B", canvas="h")],
+                          active_scenes={"h": "b"})
+    draws, _parts, shows = native_bridge.snapshot_draws(col, _plain_state, held={"h": col.scenes[0]})
+    assert [d.scene.id for d in draws] == ["a"] and shows["h"] == native_bridge.canvas_key("h")
 
 
 def test_outputs_go_back_to_python_while_it_draws_the_canvas():
