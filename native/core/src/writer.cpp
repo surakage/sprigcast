@@ -23,6 +23,7 @@ extern "C" {
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -120,11 +121,15 @@ struct Core {
     // While the encoder opens again (to_memory), pictures from memory queue past queue_limit, up to REOPEN_BYTES of
     // them, so the file keeps moving pictures instead of a still (PC 2026-11-18: up to 0.4 s still).
     bool reopening = false;
+    // After it opens, the pictures that waited are written while new ones keep coming: the extra room stays until
+    // the queue is back to queue_limit (PC 2026-11-18: 25 frames dropped right after a reopen without it).
+    bool catching_up = false;
     int64_t hole_from = -1;    // frames of textures lost with the encoder on the card start here (writer thread)
     double write_seconds = 0, longest_write = 0;
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
     std::deque<int64_t> faults;  // SPRIGCAST_WRITER_FAULT (tests): pictures whose encoding fails ("10" or "10,20")
     int reopen_ms = 0;  // SPRIGCAST_WRITER_REOPEN_MS (tests): opening the encoder again takes this long
+    int slow_ms = 0;    // SPRIGCAST_WRITER_SLOW_MS (tests): each picture after a reopen takes this long to encode
     int64_t encoded = 0;
     // Packets mode: a keyframe starts every `gop` frames of the stream's own clock (the first picture at or past
     // each multiple), so writers fed the same frames at their own rates key at the same instants (Enhanced
@@ -353,6 +358,8 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
 }
 
 void Core::encode_video(AVFrame *frame, bool key) {
+    if (slow_ms > 0 && frame && recoveries > 0)  // tests: an encoder that only just keeps up
+        std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
     if (frame && yuv420) {  // an encoder without NV12: the planes apart, U then V
         if (!i420) {
             i420.reset(ff.av_frame_alloc());
@@ -475,6 +482,7 @@ void Core::to_memory(const std::string &why, bool failed) {
     {
         std::lock_guard<std::mutex> hold(lock);
         reopening = false;
+        catching_up = pictures.size() > queue_limit;
     }
     if (old_failed) std::rethrow_exception(old_failed);
     if (open_failed) std::rethrow_exception(open_failed);
@@ -579,6 +587,7 @@ void Core::run() {
                 if (!pictures.empty()) {
                     picture = std::move(pictures.front());
                     pictures.pop_front();
+                    if (catching_up && pictures.size() <= queue_limit / 2) catching_up = false;  // room again
                     taken_at = std::chrono::steady_clock::now();
                 }
                 moving = leave.exchange(false) && hw_frames != nullptr;
@@ -687,8 +696,9 @@ void Core::run() {
 constexpr auto STALLED = std::chrono::milliseconds(150);
 // Returns 1 when held, 2 when this picture should still be queued past the limit (the newest queued is a texture
 // from before the reset, which can't stand for later frames: this one will), 0 to drop it as before.
-int hold_newest(Core &c, int64_t last) {
-    if (c.pictures.empty() || std::chrono::steady_clock::now() - c.taken_at < STALLED || last <= c.last_pts) return 0;
+int hold_newest(Core &c, int64_t last, bool busy) {
+    if (c.pictures.empty() || last <= c.last_pts) return 0;
+    if (!busy && std::chrono::steady_clock::now() - c.taken_at < STALLED) return 0;
     Core::Picture &newest = c.pictures.back();
     if (!newest.frame || newest.frame->format != AV_PIX_FMT_NV12) return c.pictures.size() <= c.queue_limit ? 2 : 0;
     const int64_t more = last - c.last_pts;
@@ -699,16 +709,18 @@ int hold_newest(Core &c, int64_t last) {
     return 1;
 }
 
-// While the encoder opens again, more pictures from memory may wait than queue_limit: up to REOPEN_BYTES of them
-// (about half a second at 1080p60, more when smaller), so the file goes on moving rather than holding a still. Back
-// to queue_limit as soon as it's open; the extra frames are freed as they're written. `c.lock` held.
-constexpr size_t REOPEN_BYTES = size_t{96} << 20;
-constexpr size_t REOPEN_MOST = 90;
-bool reopen_room(const Core &c) {
-    if (!c.reopening) return false;
+// While the encoder opens again, and until the pictures that waited meanwhile are written, more pictures from memory
+// may wait than queue_limit: up to a second of them, at most REOPEN_BYTES (about 1 s at 1080p60, 0.6 s at 1440p60),
+// so the file goes on moving rather than holding a still. Opening NVENC again took up to 0.9 s on the PC (writers
+// open one after another: FFmpeg opens that encoder under its global lock). The extra frames are freed as they're
+// written. `c.lock` held.
+constexpr size_t REOPEN_BYTES = size_t{192} << 20;
+constexpr size_t REOPEN_MOST = 120;
+size_t reopen_room(const Core &c) {
     const size_t frame = static_cast<size_t>(c.width) * static_cast<size_t>(c.height) * 3 / 2;
-    const size_t room = std::clamp(frame ? REOPEN_BYTES / frame : c.queue_limit, c.queue_limit, REOPEN_MOST);
-    return c.pictures.size() < room;
+    const size_t second = static_cast<size_t>(std::ceil(static_cast<double>(c.fps_num) / std::max(1, c.fps_den)));
+    const size_t most = std::min(REOPEN_MOST, std::max<size_t>(second, 1));
+    return std::clamp(frame ? REOPEN_BYTES / frame : c.queue_limit, c.queue_limit, std::max(c.queue_limit, most));
 }
 
 // One picture for frames first .. last (one frame, or a hole filled with it). Never waits on the writer thread.
@@ -722,8 +734,9 @@ int feed(Core &c, const uint8_t *nv12, int stride, int64_t first, int64_t last) 
             ++c.frames_late;
             return SC_WRITER_LATE;
         }
-        if (c.pictures.size() >= c.queue_limit && !reopen_room(c)) {
-            const int held = hold_newest(c, last);
+        const bool busy = c.reopening || c.catching_up;  // the encoder opening again, or writing what waited
+        if (c.pictures.size() >= (busy ? reopen_room(c) : c.queue_limit)) {
+            const int held = hold_newest(c, last, busy);
             if (held == 1) return SC_OK;
             if (held == 0) {
                 ++c.frames_dropped;
@@ -951,6 +964,7 @@ SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
         core->queue_limit = static_cast<size_t>(std::clamp(cfg->queue_frames, 2, 120));
         core->packets = cfg->packets != 0;
         core->reopen_ms = std::clamp(std::atoi(env_text("SPRIGCAST_WRITER_REOPEN_MS").c_str()), 0, 5000);
+        core->slow_ms = std::clamp(std::atoi(env_text("SPRIGCAST_WRITER_SLOW_MS").c_str()), 0, 1000);
         const std::string fault = env_text("SPRIGCAST_WRITER_FAULT");  // tests: the encoder fails at these
         if (!fault.empty()) {
             for (const char *at = fault.c_str(); *at;) {
