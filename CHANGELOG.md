@@ -159,6 +159,21 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   flip in turn (0, 1, 2 instead of 0 then 2); a flood waits for at most three flips.
 - A browser page in a bloom Snap freezes no longer remakes its texture every 3 s: with the new engine, a frozen
   page's pictures are still taken (the page never waits) but its frozen picture stays on screen.
+- Pop-up cards (Garden check, Last stream, Get started, Starter kit and the rest) draw their soft shadow once per
+  size instead of blurring the whole card on every repaint, and the Stream doctor lost its two blurred shadows
+  (96 ms). The encoder overload check runs on a worker instead of the window's thread every meter tick (62 ms),
+  Last stream fills its tiles a tick after it shows (81-90 ms), and the main window no longer watches every event
+  of the stage splitter and an empty tiles area (69 ms).
+- Last streams no longer opens its drop-down as a window of its own for a moment (90-133 ms). The Garden check
+  fills its rows a tick after it opens (75-101 ms), a Settings page is put in its place a tick after it's made and
+  General's lower cards come a tick later still (62-131 ms), the + Add menu is made ready ahead (67 ms), and labels
+  that already fit skip measuring when a window resizes (Hotkeys, 52 ms).
+- Settings → General remembers the process priority instead of reading it again each time (93 ms), the Last streams
+  drop-down shares its page's style (95 ms), and a plugin hotkey no longer imports anything when pressed.
+- Bloom tiles draw themselves once per look and then only copy that picture: a pop-up opening, or the screen
+  waking, repainted every tile (496 ms during a monitor wake). While a pop-up is being made the preview waits
+  for the next frame and the Live places list for the next second. The Sound gear's rows come half a row a tick,
+  the Plugin store's cards a few a tick, and one-line labels fit their text only when it or their width changes.
 - The Plugin store reads its list and what's installed on a worker before making its cards (113-167 ms). Last streams
   shares one style sheet and, opened on its own, doesn't fill the Garden check's "now" view too (150-253 ms).
   One-line labels no longer run Python on every style or font change, the Garden check's chips are lighter, and

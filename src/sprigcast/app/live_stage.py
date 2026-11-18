@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -169,6 +169,7 @@ class BarGroup(QFrame):
 
 
 _POLISHED = Qt.WidgetAttribute.WA_WState_Polished
+ADD_MENU_READY_MS = 4000  # after the Live screen is made: the + Add menu made ready (Destinations._ready_add_menu)
 
 
 class Elided(QLabel):
@@ -179,6 +180,9 @@ class Elided(QLabel):
         self._full = ""
         self._hint = self._draft = None
         self._hint_look = 0
+        self._fitted = None  # (text, width) last fitted
+        self._shown = None  # the words on screen (the whole text, or cut short with "…")
+        self._polished = False  # (once styled, always)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(30)
         self.setText(text)
@@ -193,13 +197,30 @@ class Elided(QLabel):
         return self._full
 
     def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._fit()
+        # (QLabel has no resizeEvent of its own: QWidget's does nothing, so it isn't called.)
+        self._fit(event.size().width())
 
-    def _fit(self) -> None:
-        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(10, self.width()))
-        super().setText(shown)
-        self.setToolTip(self._full if shown != self._full else "")
+    def _fit(self, width: int | None = None) -> None:
+        """What fits in its width. Only when the text or width changed: a pop-up opening lays its labels out a few
+        times over, and fitting each every time was 93 ms of the Garden check's open on the PC (2026-11-18). A
+        text known to fit (its measured width) is shown whole with no call into Qt: the Hotkeys page's rows,
+        each fitted on every resize, were 52 ms of its open while live (2026-11-18)."""
+        width = max(10, self.width() if width is None else width)
+        if not self._polished:
+            self._polished = self.testAttribute(_POLISHED)
+        key = (self._full, width, self._polished, theme.looks_applied)  # (styled: its font is set)
+        if self._fitted == key:
+            return
+        self._fitted = key
+        hint = self._hint if self._hint is not None and self._hint_look == theme.looks_applied else None
+        if hint is not None and width >= hint.width() - 4:
+            shown = self._full
+        else:
+            shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, width)
+        if shown != self._shown:
+            self._shown = shown
+            super().setText(shown)
+            self.setToolTip(self._full if shown != self._full else "")
 
     def sizeHint(self) -> QSize:  # noqa: N802
         # Asked many times per layout pass (each from C++, through Python): worked out once per text, once the
@@ -546,6 +567,7 @@ class LiveSide(QWidget):
         for key, label in SERVICE_CHOICES:
             self.add_menu.addAction(label).triggered.connect(lambda _=False, k=key: on_destination(f"new:{k}"))
         self.add_place.clicked.connect(self._show_add_menu)
+        QTimer.singleShot(ADD_MENU_READY_MS, self, self._ready_add_menu)  # (once the window has settled)
         top.addWidget(self.add_place)
         self.details = QPushButton("Details")
         self.details.setStyleSheet(theme.LINK_STYLE)
@@ -690,7 +712,21 @@ class LiveSide(QWidget):
     # Destinations ---------------------------------------------------------------------------
 
     def _show_add_menu(self) -> None:
-        self.add_menu.exec(self.add_place.mapToGlobal(self.add_place.rect().bottomLeft()))
+        # popup, not exec: no second event loop inside the click. Made ready ahead (_ready_add_menu) too: its first
+        # open made, styled and measured it then and there, 67 ms on the PC while live (2026-11-18).
+        self._ready_add_menu()
+        self.add_menu.popup(self.add_place.mapToGlobal(self.add_place.rect().bottomLeft()))
+
+    def _ready_add_menu(self) -> None:
+        """The + Add menu styled, measured and given its window, once, before it's first wanted."""
+        import shiboken6
+
+        if getattr(self, "_add_menu_ready", False) or not shiboken6.isValid(self.add_menu):
+            return
+        self._add_menu_ready = True
+        self.add_menu.ensurePolished()
+        self.add_menu.adjustSize()
+        self.add_menu.winId()
 
     def set_editing(self, on: bool) -> None:
         """Edit mode: each place gets Remove, its shape and (Twitch) test mode, without leaving Live."""

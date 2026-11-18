@@ -507,3 +507,33 @@ def test_start_with_windows_is_read_once(monkeypatch):
     monkeypatch.setattr(autostart, "supported", lambda: True)
     monkeypatch.setattr(autostart, "_known", True)
     assert autostart.enabled() is True  # remembered: the registry isn't read again for Settings
+
+
+def test_bloom_tiles_draw_once_per_look(qapp):
+    """A pop-up opening, or the screen waking, repaints every tile: copied, not drawn again."""
+    from sprigcast.app.live_panel import BloomTile
+
+    tile = BloomTile("Just chatting")
+    tile.resize(180, BloomTile.HEIGHT)
+    first = tile.grab()
+    picture = tile._picture
+    tile.grab()
+    assert tile._picture is picture and not first.isNull()
+    tile.setChecked(True) if tile.isCheckable() else tile.set_key("F1")
+    tile.grab()
+    assert tile._picture is not picture  # a new look: drawn again
+
+
+def test_pop_up_being_made_holds_the_preview_and_meters(qapp, monkeypatch):
+    from sprigcast.app import theme
+    from sprigcast.app.preview import Preview
+
+    view = Preview("horizontal", "Horizontal", (16, 9))
+    calls = []
+    monkeypatch.setattr(view, "update", lambda *a: calls.append(1))
+    monkeypatch.setattr(theme, "bursting", lambda: True)
+    view.set_frame(bytes(4 * 4 * 4), 4, 4)
+    assert not calls and view._image is not None  # kept: the next frame paints it
+    monkeypatch.setattr(theme, "bursting", lambda: False)
+    view.set_frame(bytes(4 * 4 * 4), 4, 4)
+    assert calls == [1]

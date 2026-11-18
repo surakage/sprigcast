@@ -491,14 +491,28 @@ class SettingsWindow(QDialog):
             page.set_expert(self._expert)
         if name not in ("Stream", "Recording", "Video"):  # those scroll each of their own tabs
             page = _scrolled(page)
-        index = TABS.index(name)
-        current = self.stack.currentIndex()
-        placeholder = self.stack.widget(index)
-        self.stack.insertWidget(index, self._titled(name, page))
-        self.stack.removeWidget(placeholder)
-        placeholder.deleteLater()
-        self.stack.setCurrentIndex(current)
-        self._show_sub(name)
+
+        def put_in() -> None:
+            import shiboken6
+
+            if not shiboken6.isValid(self.stack):
+                return
+            index = TABS.index(name)
+            current = self.stack.currentIndex()
+            placeholder = self.stack.widget(index)
+            self.stack.insertWidget(index, self._titled(name, page))
+            self.stack.removeWidget(placeholder)
+            placeholder.deleteLater()
+            self.stack.setCurrentIndex(current)
+            self._show_sub(name)
+            self._tab_changed(current)
+
+        if self.isVisible():
+            # Made now, put in its place (titled, styled, laid out) first thing next tick: both at once were the
+            # General page's 106-131 ms and the Sound gear's 62-122 ms on the PC while live (2026-11-18).
+            self._slice_first(put_in)
+        else:
+            put_in()
         took = 1000 * (time.perf_counter() - began)
         if took >= 100:
             log.info("settings: the %s page took %.0f ms to make", name, took)
@@ -527,6 +541,13 @@ class SettingsWindow(QDialog):
         self._slices.append(call)
         if len(self._slices) == 1:
             QTimer.singleShot(SLICE_GAP_MS, self._next_slice)
+
+    def _slice_first(self, call) -> None:
+        """Like _slice, but ahead of every part already waiting."""
+        if self._slices:
+            self._slices.insert(0, call)
+        else:
+            self._slice(call)
 
     def _next_slice(self) -> None:
         if not self._slices:
@@ -603,60 +624,77 @@ class SettingsWindow(QDialog):
         self.start_minimized.setChecked(q.value(autostart.START_MINIMIZED, False, type=bool))
         start_box.addWidget(self.start_minimized)
 
-        from sprigcast import __version__
-        from sprigcast.app.updates import auto_check_enabled
+        page = _page(look, self._this_pc_card(), startup)
 
-        updates = QGroupBox("Updates")
-        up_box = QVBoxLayout(updates)
-        self.auto_updates = QCheckBox("Check for updates automatically")
-        self.auto_updates.setChecked(auto_check_enabled())
-        self.auto_updates.setToolTip("Updates never install while you're live or recording")
-        up_box.addWidget(self.auto_updates)
-        up_row = QHBoxLayout()
-        up_row.setSpacing(12)
-        self.check_updates_button = QPushButton("Check now")
-        self.check_updates_button.setStyleSheet(theme.SMALL_PILL_STYLE)
-        self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.check_updates_button.setAutoDefault(False)
-        self.check_updates_button.setEnabled(self.check_updates is not None)
-        self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
-        up_row.addWidget(self.check_updates_button)
-        up_row.addWidget(_hint(f"Version {__version__}"), 1)
-        up_box.addLayout(up_row)
+        def rest() -> None:
+            """Features, Updates, Confirmations, Logs and Your data: a tick after the page (Save, or asking for one
+            of their boxes, makes them first)."""
+            import shiboken6
 
-        safety = QGroupBox("Confirmations")
-        box = QVBoxLayout(safety)
-        self.confirm_stream = QCheckBox("Ask before ending a stream")
-        self.confirm_stream.setChecked(confirm_enabled(CONFIRM_STREAM))
-        box.addWidget(self.confirm_stream)
-        self.confirm_recording = QCheckBox("Ask before stopping a recording")
-        self.confirm_recording.setChecked(confirm_enabled(CONFIRM_RECORDING))
-        box.addWidget(self.confirm_recording)
+            if not shiboken6.isValid(page):
+                return
+            from sprigcast import __version__
+            from sprigcast.app.updates import auto_check_enabled
 
-        from sprigcast.app import logbook
+            updates = QGroupBox("Updates")
+            up_box = QVBoxLayout(updates)
+            self.auto_updates = QCheckBox("Check for updates automatically")
+            self.auto_updates.setChecked(auto_check_enabled())
+            self.auto_updates.setToolTip("Updates never install while you're live or recording")
+            up_box.addWidget(self.auto_updates)
+            up_row = QHBoxLayout()
+            up_row.setSpacing(12)
+            self.check_updates_button = QPushButton("Check now")
+            self.check_updates_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+            self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.check_updates_button.setAutoDefault(False)
+            self.check_updates_button.setEnabled(self.check_updates is not None)
+            self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
+            up_row.addWidget(self.check_updates_button)
+            up_row.addWidget(_hint(f"Version {__version__}"), 1)
+            up_box.addLayout(up_row)
 
-        logs = QGroupBox("Logs")
-        lform = QFormLayout(logs)
-        self.keep_logs = QComboBox()
-        for days in logbook.KEEP_CHOICES:
-            self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
-        self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
-        lform.addRow("Keep logs for", self.keep_logs)
+            safety = QGroupBox("Confirmations")
+            box = QVBoxLayout(safety)
+            self.confirm_stream = QCheckBox("Ask before ending a stream")
+            self.confirm_stream.setChecked(confirm_enabled(CONFIRM_STREAM))
+            box.addWidget(self.confirm_stream)
+            self.confirm_recording = QCheckBox("Ask before stopping a recording")
+            self.confirm_recording.setChecked(confirm_enabled(CONFIRM_RECORDING))
+            box.addWidget(self.confirm_recording)
 
-        from sprigcast.app import features
+            from sprigcast.app import logbook
 
-        used = QGroupBox("Features")
-        used_box = QVBoxLayout(used)
-        off = features.off()
-        self.feature_ticks: dict[str, QCheckBox] = {}
-        for name, label in sorted(features.FEATURES.items(), key=lambda kv: kv[1]):
-            tick = QCheckBox(label)
-            tick.setChecked(name not in off)
-            tick.setToolTip("Off: hidden from Live and nothing of it is loaded")
-            used_box.addWidget(tick)
-            self.feature_ticks[name] = tick
+            logs = QGroupBox("Logs")
+            lform = QFormLayout(logs)
+            self.keep_logs = QComboBox()
+            for days in logbook.KEEP_CHOICES:
+                self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
+            self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
+            lform.addRow("Keep logs for", self.keep_logs)
 
-        return _page(look, self._this_pc_card(), startup, used, updates, safety, logs, self._clear_data_card())
+            from sprigcast.app import features
+
+            used = QGroupBox("Features")
+            used_box = QVBoxLayout(used)
+            off = features.off()
+            self.feature_ticks: dict[str, QCheckBox] = {}
+            for name, label in sorted(features.FEATURES.items(), key=lambda kv: kv[1]):
+                tick = QCheckBox(label)
+                tick.setChecked(name not in off)
+                tick.setToolTip("Off: hidden from Live and nothing of it is loaded")
+                used_box.addWidget(tick)
+                self.feature_ticks[name] = tick
+
+            layout = page.layout()
+            for card in (used, updates, safety, logs, self._clear_data_card()):
+                layout.insertWidget(layout.count() - 1, card)  # above the stretch
+
+        if self.isVisible():
+            self._slice(rest)
+        else:
+            rest()
+        return page
 
     def _clear_data_card(self) -> QGroupBox:
         """Clear all my data: keys, sign-ins, settings and files go, then SprigCast closes (app/clear_data.py)."""
@@ -959,7 +997,7 @@ class SettingsWindow(QDialog):
         settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())
         level = self.priority.currentData()
         if level != priority.chosen():
-            settings.setValue(priority.SETTING, level)
+            priority.remember(level, settings)
             priority.set_cpu_priority(level)
 
     def _apply_video(self) -> None:

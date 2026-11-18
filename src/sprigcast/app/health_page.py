@@ -25,6 +25,19 @@ PAGE_STYLE = (
 )
 
 
+_STYLE: str | None = None
+
+
+def _page_style() -> str:
+    """PAGE_STYLE and the rounded drop-down's look, put together once."""
+    global _STYLE
+    if _STYLE is None:
+        from sprigcast.app.starter import combo_style
+
+        _STYLE = PAGE_STYLE + combo_style()
+    return _STYLE
+
+
 def _tile(value: str, label: str, level: str = "") -> QWidget:
     tile = QWidget()
     tile.setObjectName("healthTile")  # styled by the page (PAGE_STYLE)
@@ -44,10 +57,11 @@ def _tile(value: str, label: str, level: str = "") -> QWidget:
 
 class HealthPage(QWidget):
     def __init__(self, records: list[HealthRecord], open_logs: Callable[[], None] | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, fill_later: bool = False):
+        """fill_later: the verdict, tiles and places a tick after the page is made (and shown)."""
         super().__init__(parent)
         self.records = records
-        self.setStyleSheet(PAGE_STYLE)
+        self.setStyleSheet(_page_style())
         self.setMinimumWidth(580)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
@@ -58,13 +72,12 @@ class HealthPage(QWidget):
             box.addWidget(empty)
             return
         self.pick = QComboBox()
-        for r in records:
-            self.pick.addItem(f"{r.started}  ·  {duration(r.seconds)}")
-        self.pick.setVisible(len(records) > 1)
-        from sprigcast.app.starter import combo_style
-
-        self.pick.setStyleSheet(combo_style())
+        self.pick.addItems([f"{r.started}  ·  {duration(r.seconds)}" for r in records])
         box.addWidget(self.pick)
+        # Hidden or shown only once it's in the page: shown with no parent yet, it opened as a window of its own
+        # (made, styled, then taken in again), 90-133 ms of Last streams on the PC while live (2026-11-18).
+        # (Its look is in the page's style too: one of its own was 95 ms.)
+        self.pick.setVisible(len(records) > 1)
         self.verdict = QLabel()
         self.verdict.setObjectName("healthVerdict")
         box.addWidget(self.verdict)
@@ -82,7 +95,14 @@ class HealthPage(QWidget):
             more.clicked.connect(open_logs)
             box.addWidget(more, 0, Qt.AlignmentFlag.AlignLeft)
         self.pick.currentIndexChanged.connect(self.show_record)
-        self.show_record(0)
+        if fill_later:
+            # The page shows (its drop-down and the stack's switch to it), then its tiles and lines next tick:
+            # both in one go were 81-90 ms of opening Last stream on the PC while live (2026-11-18).
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(0, self, lambda: self.show_record(self.pick.currentIndex()))
+        else:
+            self.show_record(0)
 
     def show_record(self, index: int) -> None:
         r = self.records[index]

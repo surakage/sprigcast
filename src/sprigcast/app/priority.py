@@ -24,11 +24,28 @@ DEFAULT = "above_normal"
 _GPU_REALTIME, _GPU_HIGH, _GPU_NORMAL = 5, 4, 2
 
 
+_known: str | None = None  # the level chosen, read once (at start-up, by apply) and kept by remember()
+
+
 def chosen() -> str:
+    """The CPU priority picked in Settings. Read from the saved settings once, then remembered: read each time
+    Settings → General was made, it was 93 ms of the open on the PC while live (2026-11-18)."""
+    global _known
+    if _known is None:
+        from PySide6.QtCore import QSettings
+
+        level = str(QSettings().value(SETTING, DEFAULT))
+        _known = level if level in LEVELS else DEFAULT
+    return _known
+
+
+def remember(level: str, settings=None) -> None:
+    """Save a newly picked level (and remember it)."""
+    global _known
     from PySide6.QtCore import QSettings
 
-    level = str(QSettings().value(SETTING, DEFAULT))
-    return level if level in LEVELS else DEFAULT
+    (settings or QSettings()).setValue(SETTING, level)
+    _known = level if level in LEVELS else DEFAULT
 
 
 def set_cpu_priority(level: str) -> bool:

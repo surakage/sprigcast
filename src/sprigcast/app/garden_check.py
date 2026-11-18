@@ -217,14 +217,14 @@ class GardenCheckPage(QWidget):
         if self._health is None:
             from sprigcast.app.health_page import HealthPage
 
-            self._health = HealthPage(self._records, self._open_logs)
+            self._health = HealthPage(self._records, self._open_logs, fill_later=True)
             self.stack.addWidget(self._health)
         return self._health
 
-    def show_view(self, view: str) -> None:
-        """"now" or "health" (the last streams)."""
+    def show_view(self, view: str, fill: bool = True) -> None:
+        """"now" or "health" (the last streams). `fill`: False leaves an unfilled "now" for the caller to fill."""
         self.stack.setCurrentWidget(self.page if view == "health" else self.stack.widget(0))
-        if view != "health" and not self._filled:
+        if view != "health" and not self._filled and fill:
             self.refresh()
         self.history.setText("Back to now" if view == "health" else "Last streams")
 
@@ -436,12 +436,16 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
     from sprigcast.app.transitions_panel import PopUp
 
     pop = PopUp("Garden check", parent, bare=True)  # the page has its own title (with the sloth) and buttons
-    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter, fill=view != "health")
+    # Filled a tick after it's put in the pop-up: its rows made in the same go as the pop-up were 75-101 ms of the
+    # open on the PC while live (2026-11-18), and the pop-up's style reached every row as it was put in.
+    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter, fill=False)
     pop.add_tab("garden", "Garden check", pop.garden)
     pop.show_tab("garden")
     pop.garden.done.clicked.connect(pop.accept)
     pop.garden.close_button.clicked.connect(pop.accept)
-    pop.garden.show_view(view)
+    pop.garden.show_view(view, fill=False)
+    if view != "health":
+        QTimer.singleShot(0, pop.garden, lambda: None if pop.garden._filled else pop.garden.refresh())
     pop.timer = QTimer(pop)
     pop.timer.timeout.connect(lambda: pop.garden.refresh() if pop.garden.stack.currentIndex() == 0 else None)
     pop.timer.start(1000)
