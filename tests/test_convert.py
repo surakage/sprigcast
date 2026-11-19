@@ -385,3 +385,21 @@ def test_streamlabs_overlay(tmp_path):
     assert col.transition.kind == "stinger" and col.transition.stinger.path.endswith("51.webm")
     assert any("Alertbox" in n and "dashboard" in n for n in notes)
     assert any("Icon" in n and "pictures" in n for n in notes)
+
+
+def test_obs_sprigs_no_bloom_uses_go_in_unused_scenes():
+    """OBS scenes nothing shows (a widget kit, 27 in a real garden, PC 2026-11-19) are kept but set aside in
+    Unused Scenes with one note; sprigs reached only through other sprigs, and vertical twins, stay put."""
+    from sprigcast.core import convert as convert_mod
+
+    col, notes = from_obs(obs_file(), _like())
+    folders = {f.id: f.name for f in col.folders}
+    parts = {s.name: s for s in col.scenes if s.kind == "part"}
+    assert folders[parts["Spare overlay"].folder] == convert_mod.UNUSED_FOLDER
+    assert folders.get(parts["Overlay"].folder) != convert_mod.UNUSED_FOLDER
+    assert [p.name for p in convert_mod.unused_parts(col)] == ["Spare overlay"]
+    assert "1 unused sprig is in Unused Scenes." in notes
+    data = obs_file()
+    data["sources"] = [s for s in data["sources"] if s.get("uuid") != "o2"]
+    _, notes = from_obs(data, _like())
+    assert not any("unused sprig" in n for n in notes)
