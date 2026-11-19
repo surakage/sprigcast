@@ -64,6 +64,9 @@ from sprigcast.app.main import config_dir, load_collection
 from sprigcast.core.gardens import Shelf
 from sprigcast.core.scene import SourceConfig
 QSettings().setValue(getting_started.DONE, True)  # its window would ask to replace the blooms
+from sprigcast.app import crash_report
+# A run this check ended before (it's ended by force) would make this one ask about safe mode and wait.
+(config_dir() / crash_report.MARK).unlink(missing_ok=True)
 path = Shelf(config_dir()).garden_file()
 path.parent.mkdir(parents=True, exist_ok=True)
 garden = load_collection(path)
