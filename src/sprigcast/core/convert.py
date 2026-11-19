@@ -43,6 +43,8 @@ from sprigcast.core.scene import (
 )
 
 MAX_BYTES = 64 * 1024 * 1024  # a scene collection bigger than this isn't one
+PAGES_SLEEP_NOTE = ("Web pages: each sleeps while not on screen (OBS kept them all running). A page that must keep "
+                    "running has a switch for it in its settings.")
 VERTICAL_SUFFIX = re.compile(r"\s*[\(\[]\s*vertical\s*[\)\]]\s*$", re.IGNORECASE)
 _ALIGN = {5: "top_left", 4: "top", 6: "top_right", 1: "left", 0: "center", 2: "right", 9: "bottom_left",
           8: "bottom", 10: "bottom_right"}
@@ -218,9 +220,14 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
         settings: dict[str, Any] = {"url": "https://" if local else str(s.get("url", "https://")),
                                     "file": str(s.get("local_file", "")) if local else "",
                                     "width": int(_num(s.get("width"), 800)), "height": int(_num(s.get("height"), 600)),
-                                    "keep_running": not bool(s.get("shutdown", False)),
+                                    # Never kept running: OBS runs every page all the time unless told otherwise
+                                    # (its default), and carried over that kept all 61 pages of a garden awake
+                                    # (PC, 2026-11-19). The page's own switch turns it back on for one that needs it.
+                                    "keep_running": False,
                                     "reload_on_air": bool(s.get("restart_when_active", False)),
                                     "audio_to_mixer": bool(s.get("reroute_audio", False))}
+        if not s.get("shutdown", False) and PAGES_SLEEP_NOTE not in notes:
+            notes.append(PAGES_SLEEP_NOTE)
         if "css" in s:
             settings["css"] = str(s.get("css", ""))
         if s.get("fps_custom"):

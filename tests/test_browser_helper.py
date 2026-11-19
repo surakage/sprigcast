@@ -11,6 +11,33 @@ from sprigcast.app import browser_helper
 from sprigcast.app.browser_helper import FrameSlot, RemoteHost
 
 
+def test_both_slots_are_found_when_the_reader_sees_a_bigger_block():
+    """Windows hands whoever opens a block its size rounded up to whole pages; the maker has the size it asked
+    for. The second slot starts where the maker's header says, not at half of what each side sees."""
+    import struct
+
+    class Block:
+        name = "block"
+
+        def __init__(self, buf):
+            self.buf = buf
+
+        def close(self):
+            pass
+
+    pixels, exact = 8 * 4, browser_helper.HEADER + 2 * 8 * 4 * 4
+    memory = memoryview(bytearray(4096))  # what the reader sees: a whole page
+    struct.pack_into("<Q", memory, browser_helper.SLOT_BYTES_AT, pixels * 4)
+    writer, reader = FrameSlot(Block(memory[:exact]), owner=False), FrameSlot(Block(memory), owner=False)
+    assert writer.capacity == reader.capacity == pixels * 4
+    for n in range(4):  # both slots, twice
+        pic = (np.arange(4 * 8 * 4, dtype=np.uint8) + n).reshape(4, 8, 4)
+        assert writer.write(pic)
+        assert (reader.read() == pic).all()
+    struct.pack_into("<Q", memory, browser_helper.SLOT_BYTES_AT, 0)  # a block with no size in it: as before
+    assert FrameSlot(Block(memory), owner=False).capacity == (4096 - browser_helper.HEADER) // 2
+
+
 def test_pictures_pass_through_shared_memory_whole():
     owner = FrameSlot.create(f"sprigcast-test-{os.getpid()}", 8 * 4)
     reader = FrameSlot(browser_helper._attach(owner.shm.name), owner=False)

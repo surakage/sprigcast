@@ -277,8 +277,10 @@ class LibraryTree(QTreeWidget):
         handled = theme.view_activation(self, event)  # no repaint when a pop-up takes the focus
         return super().event(event) if handled is None else handled
 
-    def _toggle_folder(self, item: QTreeWidgetItem, _column: int) -> None:
+    def _toggle_folder(self, item: QTreeWidgetItem | None, _column: int) -> None:
         """One click opens or folds a folder (there's no arrow to aim for)."""
+        if item is None:  # the row went while it was clicked (the list was made again): PC, 2026-11-19 16:47
+            return
         if item.data(0, ROLE_ROW) == "folder":
             item.setExpanded(not item.isExpanded())
 

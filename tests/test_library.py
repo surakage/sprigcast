@@ -210,3 +210,13 @@ def test_bloom_pictures_survive_a_restart(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_a_click_on_a_row_that_just_went_does_nothing(tmp_path, monkeypatch):
+    """The list is made again while the garden changes; a click landing on a row as it goes hands over no row
+    at all (AttributeError: 'NoneType' object has no attribute 'data', PC 2026-11-19)."""
+    _col, w = _window(tmp_path, monkeypatch, "LibraryGoneRow")
+    try:
+        w.scene_tree._toggle_folder(None, 0)
+    finally:
+        w.close()

@@ -155,6 +155,71 @@ struct Renderer {
     double time;
     ID3D11DeviceContext *c;
     bool in_drawn = false;  // drawing a list: its pictures are plain sources, never another list
+    std::vector<uint64_t> through;  // the sprigs being drawn straight onto the target right now (see laid_over)
+
+    // The sprig this item shows, when it only lays that sprig over the whole target as it is: the same size, at
+    // 0, 0, nothing cut, turned, faded or filtered. Its items are then drawn straight onto the target, which
+    // gives the same picture as drawing them to the sprig's own picture and that over the target (both are
+    // "over" on premultiplied colour), without a clear and a whole-canvas draw per sprig per frame. A garden
+    // brought in from OBS is full of these (nested scenes): 16-23 layers a bloom kept the PC's card at 71%
+    // (2026-11-19).
+    const sc_scene *laid_over(const sc_item &it, int width, int height) const {
+        if (!it.part || in_drawn || it.effects >= 0 || it.fade < 1.0f || it.rotation != 0.0f) return nullptr;
+        auto found = snap.by_id.find(it.part);
+        if (found == snap.by_id.end()) return nullptr;
+        const sc_scene &part = snap.scenes[found->second];
+        if (part.width != width || part.height != height || width < 1 || height < 1) return nullptr;
+        if (through.size() >= 16 || std::find(through.begin(), through.end(), it.part) != through.end())
+            return nullptr;  // a loop: left to the sprig's own picture, which stops it
+        return fills(it, part.width, part.height, width, height) ? &part : nullptr;
+    }
+
+    // True when the item puts the whole of its picture (pic_w x pic_h) exactly over a width x height target.
+    static bool fills(const sc_item &it, int pic_w, int pic_h, int width, int height) {
+        if (pic_w != width || pic_h != height) return false;
+        Corner q[4];
+        if (!item_quad(it, pic_w, pic_h, q)) return false;
+        const double want[4][4] = {{0, 0, 0, 0}, {double(width), 0, 1, 0}, {0, double(height), 0, 1},
+                                   {double(width), double(height), 1, 1}};
+        for (int i = 0; i < 4; ++i) {
+            if (std::abs(q[i].x - want[i][0]) > 1e-3 || std::abs(q[i].y - want[i][1]) > 1e-3 ||
+                std::abs(q[i].u - want[i][2]) > 1e-6 || std::abs(q[i].v - want[i][3]) > 1e-6)
+                return false;
+        }
+        return true;
+    }
+
+    // The item whose picture a sprig's placement really shows: a sprig holding one thing that fills it untouched
+    // (a source of the sprig's size, or another such sprig) looks exactly like that thing, so the placement is
+    // drawn from it with its own place, cut, turn and filters, and the sprig needs no picture of its own. OBS
+    // gardens wrap each browser page in a nested scene like this: ~27 whole-canvas pictures a canvas a frame on
+    // the PC (2026-11-19). `it` itself when its sprig is more than that (or it shows a source).
+    const sc_item &shown_by(const sc_item &it) {
+        const sc_item *at = &it;
+        for (int depth = 0; depth < 16 && at->part && !in_drawn; ++depth) {
+            auto found = snap.by_id.find(at->part);
+            if (found == snap.by_id.end()) break;
+            const sc_scene &part = snap.scenes[found->second];
+            if (part.item_count != 1) break;
+            const sc_item &only = snap.items[static_cast<size_t>(part.first_item)];
+            if (only.effects >= 0 || only.fade < 1.0f || only.rotation != 0.0f || only.part == at->part) break;
+            int pic_w, pic_h;
+            if (only.part) {
+                auto inner = snap.by_id.find(only.part);
+                if (inner == snap.by_id.end()) break;
+                pic_w = snap.scenes[inner->second].width;
+                pic_h = snap.scenes[inner->second].height;
+            } else {
+                Piece p;
+                if (!piece_for(only, p) || !p.view) break;  // no picture yet: its size isn't known
+                pic_w = p.size_w;
+                pic_h = p.size_h;
+            }
+            if (!fills(only, pic_w, pic_h, part.width, part.height)) break;
+            at = &only;
+        }
+        return *at;
+    }
 
     bool piece_for(const sc_item &it, Piece &p) {
         auto &comp = dev.comp;
@@ -213,8 +278,15 @@ struct Renderer {
     }
 
     void draw_item(const sc_item &it, int canvas_w, int canvas_h) {
+        if (const sc_scene *inner = laid_over(it, canvas_w, canvas_h)) {
+            through.push_back(it.part);
+            for (int i = 0; i < inner->item_count; ++i)
+                draw_item(snap.items[static_cast<size_t>(inner->first_item + i)], canvas_w, canvas_h);
+            through.pop_back();
+            return;
+        }
         Piece p;
-        if (!piece_for(it, p) || !p.view) return;
+        if (!piece_for(shown_by(it), p) || !p.view) return;
         Corner q[4];
         if (!item_quad(it, p.size_w, p.size_h, q)) return;
         const sc_effects &fx = (it.effects >= 0 && static_cast<size_t>(it.effects) < snap.effects.size())
@@ -369,12 +441,21 @@ struct Renderer {
         return SC_OK;
     }
 
-    // Draws every sprig `scene` shows, inner ones first, each once.
-    int draw_parts(const sc_scene &scene, std::set<uint64_t> &done, std::set<uint64_t> &open, int depth) {
+    // Draws every sprig `scene` shows on a target of this size, inner ones first, each once. A sprig only laid
+    // over the whole target (laid_over) gets no picture of its own: the sprigs it shows do.
+    int draw_parts(const sc_scene &scene, int width, int height, std::set<uint64_t> &done, std::set<uint64_t> &open,
+                   int depth) {
         if (depth > 16) return SC_OK;  // sprigs inside sprigs this deep: a loop, stop
         for (int i = 0; i < scene.item_count; ++i) {
             const sc_item &it = snap.items[static_cast<size_t>(scene.first_item + i)];
-            const int code = draw_part(it.part, done, open, depth);
+            int code;
+            if (const sc_scene *inner = laid_over(it, width, height)) {
+                through.push_back(it.part);
+                code = draw_parts(*inner, width, height, done, open, depth + 1);
+                through.pop_back();
+            } else {
+                code = draw_part(shown_by(it).part, done, open, depth);  // 0 (nothing to draw) for a source
+            }
             if (code != SC_OK) return code;
         }
         return SC_OK;
@@ -388,7 +469,7 @@ struct Renderer {
         const sc_scene &part = snap.scenes[found->second];
         if (part.width < 1 || part.height < 1) return SC_OK;
         open.insert(id);
-        int code = draw_parts(part, done, open, depth + 1);
+        int code = draw_parts(part, part.width, part.height, done, open, depth + 1);
         open.erase(id);
         if (code != SC_OK) return code;
         Target &t = dev.comp.parts[id];
@@ -571,7 +652,7 @@ int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, 
     std::set<uint64_t> done, open{scene_id};
     int code = r.draw_lists();
     if (code != SC_OK) return code;
-    code = r.draw_parts(scene, done, open, 0);
+    code = r.draw_parts(scene, width, height, done, open, 0);
     if (code != SC_OK) return code;
     r.draw_scene(scene, target, width, height);
     return SC_OK;

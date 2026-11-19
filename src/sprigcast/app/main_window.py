@@ -842,7 +842,8 @@ class MainWindow(QMainWindow):
         folders = {f.id: f for f in self.collection.part_folders()}
         scene = self._scene()
         canvas_id = scene.canvas if scene is not None else self.build_canvas
-        others = [p for p in parts if not self.collection.part_on(p, canvas_id)]  # made for the other shape
+        on = self.collection.parts_on(canvas_id)
+        others = [p for p in parts if self.collection.main_part(p).id not in on]  # made for the other shape
         parts = [p for p in parts if p not in others]
         for part in parts:
             if part.folder not in folders:
@@ -3417,10 +3418,11 @@ class MainWindow(QMainWindow):
         self.scene_tree.addTopLevelItem(sprigs)
         selected = self._scene()
         selected_part = self.collection.main_part(selected) if selected is not None and selected.kind == "part" else None
+        users = self.collection.part_users()
         for folder, parts in self.collection.grouped_parts_on(canvas_id):  # this shape's sprigs only
             holder = sprigs if folder is None else folder_row(sprigs, folder, len(parts))
             for part in parts:
-                uses = len(self.collection.part_uses(part.id))
+                uses = len(users.get(part.id, ()))
                 shapes = " + ".join(s.canvas for s in self.collection.shapes(part))
                 child = QTreeWidgetItem([f"{part.name}   ({shapes} · used in {uses})"])
                 child.setIcon(0, icons.icon("sprig", theme.ACCENT))

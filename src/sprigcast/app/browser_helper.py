@@ -39,6 +39,7 @@ RESTART_AFTER_S = 2.0  # a helper that stopped is started again this long after,
 CARD_ENV = "SPRIGCAST_BROWSER_CARD"  # "low,high": the native engine's card, pages are drawn on it (browser_quick)
 MEMORY_ASK_S = 0.5  # while SprigCast reads a page drawn on the card itself, it asks for memory pictures this often
 HEADER = 64  # bytes before the two picture slots: seq (u64), width, height, slot, texture number (u32 each)
+SLOT_BYTES_AT = 32  # then, here, the size of one slot (u64): where the second one starts
 ON_CARD = 2  # the slot of a picture drawn on the card (app/browser_quick.py), read by the engine there
 SOUND_MS = 20  # the helper sends each page's sound this often
 
@@ -68,7 +69,13 @@ class FrameSlot:
     def __init__(self, shm, owner: bool):
         self.shm, self.owner = shm, owner
         self.buf = shm.buf
-        self.capacity = (len(self.buf) - HEADER) // 2
+        # The slot size its maker wrote, never worked out from the block's size: Windows gives whoever opens a
+        # block its size rounded up to whole pages, the maker the size asked for. Halving each one's own size put
+        # the second slot 2016 bytes apart for a 1920x1080 page, so every other picture read from memory came out
+        # 504 pixels to the side and wrapped around (the user's recording, 2026-11-19).
+        room = (len(self.buf) - HEADER) // 2
+        said = struct.unpack_from("<Q", self.buf, SLOT_BYTES_AT)[0]
+        self.capacity = said if 0 < said <= room else room
         self.seen = 0
         self.peeked = 0
 
@@ -78,6 +85,7 @@ class FrameSlot:
 
         shm = shared_memory.SharedMemory(name=name, create=True, size=HEADER + 2 * pixels * 4)
         shm.buf[:HEADER] = bytes(HEADER)
+        struct.pack_into("<Q", shm.buf, SLOT_BYTES_AT, pixels * 4)
         return cls(shm, owner=True)
 
     def write(self, frame: np.ndarray) -> bool:

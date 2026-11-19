@@ -184,6 +184,7 @@ def main() -> int:
 
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     stage(f"running SprigCast for {seconds:.0f} s")
+    began = time.time()
     # The app writes to a file, not this step's console: a helper that outlives taskkill (stuck in the
     # graphics driver, say) would otherwise hold the console open and the CI step waits on it for ever.
     output = work / "app output.txt"
@@ -233,6 +234,9 @@ def main() -> int:
             failed.append("crash.log has a crash")
         elif "Windows fatal exception" in crash:
             print("NOTE: crash.log has native exceptions that were handled (SprigCast kept running); not a crash")
+    dumps = sorted(p.name for p in logs.glob("*.dmp") if p.stat().st_mtime >= began)
+    if dumps:
+        print(f"crash dumps written during this run (kept with the logs when the check fails): {', '.join(dumps)}")
     for line in failed:
         print(f"FAILED: {line}")
     if not failed:

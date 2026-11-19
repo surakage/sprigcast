@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import operator
 import threading
 from pathlib import Path
 from typing import Any, Literal
@@ -477,6 +478,12 @@ class TransitionRule(BaseModel):
     transition: Transition = Field(default_factory=lambda: Transition(kind="stinger"))
 
 
+# SceneCollection._by_id's answers, by id(collection): (the sources and scenes they were made from, sources by id,
+# scenes by id). Kept here, not on the model: a field or private attribute would count when two collections are
+# compared.
+_BY_ID: dict[int, tuple] = {}
+
+
 class SceneCollection(BaseModel):
     version: int = FORMAT_VERSION
     canvases: list[Canvas]
@@ -644,22 +651,34 @@ class SceneCollection(BaseModel):
         groups += [(f, [p for p in parts if p.folder == f.id]) for f in self.part_folders()]
         return groups
 
-    def part_on(self, part: Scene, canvas_id: str, _seen: frozenset = frozenset()) -> bool:
+    def parts_on(self, canvas_id: str) -> set[str]:
+        """The ids of the (main) parts that belong with this canvas: each has a layout made for it, or a bloom
+        on it (or a part that does) places it. One walk for all of them: asking part by part walked every scene
+        again for every part and every part above it."""
+        on: set[str] = set()
+        inside: dict[str, list[str]] = {}  # a part -> the parts it places
+        fresh: list[str] = []
+        for scene in self.scenes:
+            main = self.main_part(scene)
+            placed = [p.id for p in self.parts_inside(scene)]
+            if scene.kind == "part":
+                inside.setdefault(main.id, []).extend(placed)
+                if scene.canvas == canvas_id:
+                    fresh.append(main.id)
+            elif scene.kind == "show" and scene.canvas == canvas_id:
+                fresh.extend(placed)
+        while fresh:
+            part_id = fresh.pop()
+            if part_id not in on:
+                on.add(part_id)
+                fresh.extend(inside.get(part_id, ()))
+        return on
+
+    def part_on(self, part: Scene, canvas_id: str) -> bool:
         """True if a part belongs with this canvas: it has a layout made for it, or a bloom on it (or a part
         that does) places it. Build lists only these, so each canvas stays organised on its own; a part
-        shared by both canvases shows on both."""
-        part = self.main_part(part)
-        if any(shape.canvas == canvas_id for shape in self.shapes(part)):
-            return True
-        if part.id in _seen:
-            return False
-        seen = _seen | {part.id}
-        for user in self.part_uses(part.id):
-            if user.kind == "show" and user.canvas == canvas_id:
-                return True
-            if user.kind == "part" and self.part_on(user, canvas_id, seen):
-                return True
-        return False
+        shared by both canvases shows on both. (For many parts ask parts_on once.)"""
+        return self.main_part(part).id in self.parts_on(canvas_id)
 
     def sprig_kind(self, part: Scene, canvas_id: str | None = None, _seen: frozenset = frozenset(),
                    look=None) -> str:
@@ -704,8 +723,9 @@ class SceneCollection(BaseModel):
         """grouped_parts() for one canvas: its parts only. A folder whose parts are all on the other canvas
         is left out; an empty folder (just made) stays, so things can be put in it."""
         out = []
+        on = self.parts_on(canvas_id)
         for folder, parts in self.grouped_parts():
-            here = [p for p in parts if self.part_on(p, canvas_id)]
+            here = [p for p in parts if p.id in on]
             if folder is None or here or not parts:
                 out.append((folder, here))
         return out
@@ -726,7 +746,7 @@ class SceneCollection(BaseModel):
         """The part a shape belongs to (a main part or a show is returned as is)."""
         if scene.shape_of is None:
             return scene
-        return next((s for s in self.scenes if s.id == scene.shape_of), scene)
+        return self._by_id()[1].get(scene.shape_of, scene)
 
     def shapes(self, part: Scene) -> list[Scene]:
         """A part's layouts: the main one first, then one per other canvas."""
@@ -742,8 +762,8 @@ class SceneCollection(BaseModel):
         """The (main) part a nested-part source shows, or None."""
         if source.kind != PART_KIND:
             return None
-        part_id = source.settings.get("scene")
-        return next((s for s in self.scenes if s.id == part_id and s.kind == "part" and s.shape_of is None), None)
+        part = self._by_id()[1].get(source.settings.get("scene"))
+        return part if part is not None and part.kind == "part" and part.shape_of is None else None
 
     @staticmethod
     def hidden_here(source: SourceConfig) -> set[str]:
@@ -779,14 +799,37 @@ class SceneCollection(BaseModel):
             raise ValueError(f"{main.name!r} has no state {name!r}")
         main.state = name
 
+    def _by_id(self) -> tuple[dict[str, SourceConfig], dict[str, Scene]]:
+        """(sources by id, scenes by id), the first of each id as a search from the front finds it.
+
+        Made again only when a source or scene was added, removed or replaced: the look-ups below run for every
+        sprig every frame and for every row of Build's list, and searching the lists each time took 0.8-1.1 s on
+        the window's thread with a garden of 88 scenes and 149 sources (PC, 2026-11-19).
+        """
+        sources, scenes = self.sources, self.scenes
+        kept = _BY_ID.get(id(self))
+        if kept is not None:
+            (old_sources, old_scenes), by_source, by_scene = kept
+            if (len(old_sources) == len(sources) and len(old_scenes) == len(scenes)
+                    and all(map(operator.is_, old_sources, sources)) and all(map(operator.is_, old_scenes, scenes))):
+                return by_source, by_scene
+        by_source = {s.id: s for s in reversed(sources)}
+        by_scene = {s.id: s for s in reversed(scenes)}
+        if len(_BY_ID) > 16:  # collections come and go (undo steps, copies for a save): no need to keep theirs
+            _BY_ID.clear()
+        _BY_ID[id(self)] = ((list(sources), list(scenes)), by_source, by_scene)
+        return by_source, by_scene
+
     def parts_inside(self, scene: Scene) -> list[Scene]:
         """Parts placed directly in a scene (as main parts)."""
         out = []
-        sources = {s.id: s for s in self.sources}
+        sources, scenes = self._by_id()
         for item in scene.items:
             source = sources.get(item.source)  # an item can outlive its source for a moment while it is removed
-            part = self.part_of(source) if source is not None else None
-            if part is not None and part not in out:
+            if source is None or source.kind != PART_KIND:
+                continue
+            part = scenes.get(source.settings.get("scene"))
+            if part is not None and part.kind == "part" and part.shape_of is None and part not in out:
                 out.append(part)
         return out
 
@@ -794,15 +837,23 @@ class SceneCollection(BaseModel):
         """The part layouts a scene draws: each placed part in the shape for the scene's canvas."""
         return [self.shape_for(p, scene.canvas) for p in self.parts_inside(scene)]
 
+    def part_users(self) -> dict[str, list[Scene]]:
+        """Every placed part's id -> the shows and parts that place it (a part counts once, whichever of its
+        shapes places it). One walk for all parts: Build's list asks for each sprig's count."""
+        users: dict[str, list[Scene]] = {}
+        for s in self.scenes:
+            placed = self.parts_inside(s)
+            if placed:
+                user = self.main_part(s)
+                for p in placed:
+                    by = users.setdefault(p.id, [])
+                    if not any(u is user for u in by):
+                        by.append(user)
+        return users
+
     def part_uses(self, part_id: str) -> list[Scene]:
         """Shows and parts that place this part (a part counts once, whichever of its shapes places it)."""
-        out: list[Scene] = []
-        for s in self.scenes:
-            if any(p.id == part_id for p in self.parts_inside(s)):
-                user = self.main_part(s)
-                if user not in out:
-                    out.append(user)
-        return out
+        return self.part_users().get(part_id, [])
 
     def contains(self, scene: Scene, part_id: str, _seen: frozenset = frozenset()) -> bool:
         """True if `scene` is the part or places it, at any depth and in any shape.
