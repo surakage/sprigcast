@@ -1,7 +1,7 @@
 """The Settings window: one place for every option, a page for each topic picked from the side.
 
-Six pages, each answering one question: General (how the app behaves, and This PC), Stream (where you go
-live and how good), Audio, Video (canvases and the virtual camera), Recording (where recordings and clips
+Seven pages, each answering one question: General (how the app behaves, and This PC), Appearance (theme, text
+size and colors), Stream (where you go live and how good), Audio, Video (canvases and the virtual camera), Recording (where recordings and clips
 go, and how good) and Connections. Hotkeys and the plugin store have windows of their own (Tools menu).
 
 Rows most people never need (encoder internals, output scaling, ports...) show only with Expert settings
@@ -55,13 +55,14 @@ from sprigcast.core.scene import SceneCollection
 
 log = logging.getLogger(__name__)
 
-TABS = ["General", "Stream", "Audio", "Video", "Recording", "Connections"]
+TABS = ["General", "Appearance", "Stream", "Audio", "Video", "Recording", "Connections"]
 # Older names, and the windows that left Settings, land somewhere sensible ("Tab/Sub": a page's own tab).
 TAB_ALIASES = {"Output": "Stream/Quality", "Clips": "Recording/Clips", "Replay": "Recording/Clips",
                "Advanced": "General", "Camera": "Video/Virtual camera", "Hotkeys": "General", "Plugins": "General",
                "Accounts": "Stream/Places"}  # sign-in is on each place now (user, 2026-11-19)
 ABOUT = {  # one line under each page's title
     "General": "How SprigCast behaves, and how much this PC carries.",
+    "Appearance": "How SprigCast looks: theme, text size and colors.",
     "Stream": "Where you go live, and how good it looks.",
     "Recording": "Where recordings and clips go, and how good they look.",
     "Audio": "Devices, sound tracks and which sounds go on each.",
@@ -75,7 +76,8 @@ PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
 SEARCH: list[tuple[str, str, bool]] = [
-    ("Theme", "General", False), ("Start with Windows", "General", False), ("Start minimized", "General", False),
+    ("Theme", "Appearance", False), ("Text size", "Appearance", False), ("Colors", "Appearance", False),
+    ("Color-blind friendly", "Appearance", False), ("High contrast", "Appearance", False), ("Start with Windows", "General", False), ("Start minimized", "General", False),
     ("Updates", "General", False), ("Ask before ending the stream", "General", False),
     ("Ask before going live", "General", False), ("Keep recording when the stream ends", "General", False),
     ("Start Instant replay when I go live", "General", False), ("Snapping", "General", False),
@@ -186,6 +188,12 @@ CONFIRM_RECORDING = "general/confirm_stop_recording"
 PENDING_VIDEO = "video/pending"  # canvas changes saved here, applied at the next start
 
 
+def appearance_waiting() -> bool:
+    """Text size or colors saved that this run isn't drawn with yet (they're read when SprigCast starts)."""
+    size = theme.text_size_in_use
+    return theme.chosen_colors() != theme.colors_in_use or (size is not None and theme.chosen_text_size() != size)
+
+
 def confirm_enabled(key: str) -> bool:
     return QSettings().value(key, True, type=bool)
 
@@ -256,6 +264,37 @@ def _devices(devices) -> dict[str, list[str]]:
             log.warning("settings: couldn't list sound devices: %s", exc)
             return {}
     return devices
+
+
+class ColorPreview(QWidget):
+    """A level bar in a color preset's good, warning and bad colors (Appearance → Colors → Preview)."""
+
+    def __init__(self, preset: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedHeight(10)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(520)
+        self.colors = theme.preset_colors(preset)
+
+    def show_preset(self, preset: str) -> None:
+        self.colors = theme.preset_colors(preset)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        from PySide6.QtGui import QColor, QPainter, QPainterPath
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        clip = QPainterPath()
+        clip.addRoundedRect(0, 0, w, h, h / 2, h / 2)
+        p.setClipPath(clip)
+        p.fillRect(0, 0, w, h, QColor(theme.TRACK))
+        x = 0.0
+        for name, share in (("ACCENT", 0.46), ("WARN", 0.20), ("BAD", 0.10)):
+            p.fillRect(int(x), 0, int(w * share) + 1, h, QColor(self.colors[name]))
+            x += w * share
+        p.end()
 
 
 LINED_UP = "settingsLinedUp"  # a form label already set level with its box
@@ -351,6 +390,7 @@ class SettingsWindow(QDialog):
         # of them before showing anything kept the window from answering 2.4 s on the PC (2026-11-16).
         self._makers = {
             "General": self._general_page,
+            "Appearance": self._appearance_page,
             "Stream": lambda: self._stream_page(encoder),
             "Recording": lambda: self._recording_page(encoder),
             "Audio": lambda: self._audio_page(lambda: _devices(audio_devices)),
@@ -510,7 +550,8 @@ class SettingsWindow(QDialog):
     _PAGE_OF = {"stream_page": "Stream", "stream_quality": "Stream", "stream_tabs": "Stream",
                 "recording_tabs": "Recording", "recording_page": "Recording", "audio_page": "Audio",
                 "video_tabs": "Video", "camera_tab": "Video", "video_fields": "Video", "video_output": "Video",
-                "connections_page": "Connections"}
+                "connections_page": "Connections", "theme": "Appearance", "text_size": "Appearance",
+                "color_preset": "Appearance"}
 
     def __getattr__(self, name: str):
         """A page's widgets asked for before the page was made: make that page (not knowing which: up to the one)."""
@@ -694,14 +735,6 @@ class SettingsWindow(QDialog):
     # Pages -------------------------------------------------------------------------
 
     def _general_page(self) -> QWidget:
-        look = QGroupBox("Appearance")
-        form = QFormLayout(look)
-        self.theme = QComboBox()
-        for key, label in THEMES.items():
-            self.theme.addItem(label, key)
-        self.theme.setCurrentIndex(max(0, self.theme.findData(chosen_theme())))
-        form.addRow("Theme", self.theme)
-
         q = QSettings()
         startup = QGroupBox("Startup")
         start_box = QVBoxLayout(startup)
@@ -714,7 +747,7 @@ class SettingsWindow(QDialog):
         self.start_minimized.setChecked(q.value(autostart.START_MINIMIZED, False, type=bool))
         start_box.addWidget(self.start_minimized)
 
-        page = _page(look, self._this_pc_card(), startup)
+        page = _page(self._this_pc_card(), startup)
 
         def rest() -> None:
             """Features, Updates, Confirmations, Logs and Your data: a tick after the page (Save, or asking for one
@@ -851,6 +884,39 @@ class SettingsWindow(QDialog):
             rest()
         return page
 
+    def _appearance_page(self) -> QWidget:
+        """Appearance: the theme, text size and a color preset. Text size and colors show after a restart: every
+        style in the app is built from them as SprigCast starts (theme.py)."""
+        from sprigcast.app.segmented import Segmented
+
+        look = QGroupBox("Look")
+        form = QFormLayout(look)
+        form.setVerticalSpacing(12)
+        self.theme = QComboBox()
+        for key, label in THEMES.items():
+            self.theme.addItem(label, key)
+        self.theme.setCurrentIndex(max(0, self.theme.findData(chosen_theme())))
+        form.addRow("Theme", self.theme)
+        self.text_size = Segmented([(key, label) for key, (label, _scale) in theme.TEXT_SIZES.items()],
+                                   theme.chosen_text_size())
+        form.addRow("Text size", self.text_size)
+
+        colors = QGroupBox("Colors")
+        cform = QFormLayout(colors)
+        cform.setVerticalSpacing(12)
+        self.color_preset = Segmented(list(theme.COLOR_PRESETS.items()), theme.chosen_colors())
+        cform.addRow("Preset", self.color_preset)
+        self.color_preview = ColorPreview(theme.chosen_colors())
+        self.color_preset.picked.connect(self.color_preview.show_preset)
+        cform.addRow("Preview", self.color_preview)
+        return _page(look, colors)
+
+    def _apply_appearance(self) -> None:
+        settings = QSettings()
+        settings.setValue("general/theme", self.theme.currentData())
+        settings.setValue(theme.TEXT_SIZE_KEY, self.text_size.value() or "normal")
+        settings.setValue(theme.COLORS_KEY, self.color_preset.value() or "default")
+
     def _clear_data_card(self) -> QGroupBox:
         """Clear all my data: keys, sign-ins, settings and files go, then SprigCast closes (app/clear_data.py)."""
         card = QGroupBox("Your data")
@@ -946,7 +1012,11 @@ class SettingsWindow(QDialog):
         self.stream_tabs.currentChanged.connect(self._stream_tab_changed)
 
         def quality(now: bool = False):
-            self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming)
+            # Owned by the page from the start: made a tick before it's put in its tab, it was left behind (with
+            # its drop-downs' lists) when the window went in between (the warm-up one, on a busy PC).
+            self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming,
+                                                parent=self.stream_tabs)
+            self.stream_quality.hide()
             if hasattr(self.stream_quality, "set_expert"):
                 self.stream_quality.set_expert(self._expert)
             self.stream_quality.go_to_places = lambda: self.stream_tabs.setCurrentIndex(0)
@@ -966,6 +1036,7 @@ class SettingsWindow(QDialog):
             current = tabs.currentIndex()
             stand_in = tabs.widget(1)
             tabs.removeTab(1)
+            self.stream_quality.setHidden(False)  # (hidden while it waited to be put in)
             tabs.insertTab(1, _scrolled(self.stream_quality), "Quality")
             tabs.setCurrentIndex(current)
             stand_in.deleteLater()
@@ -1156,7 +1227,6 @@ class SettingsWindow(QDialog):
 
     def _apply_general(self) -> None:
         settings = QSettings()
-        settings.setValue("general/theme", self.theme.currentData())
         settings.setValue(CONFIRM_STREAM, self.confirm_stream.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
         settings.setValue(CONFIRM_GO_LIVE, self.confirm_go_live.isChecked())
@@ -1220,8 +1290,11 @@ class SettingsWindow(QDialog):
             settings.remove(PENDING_VIDEO)
 
     def _show_restart_note(self) -> None:
-        waiting = bool(pending_video())
-        self.restart_note.setText("Canvas changes wait for a restart" if waiting else "")
+        canvas = bool(pending_video())
+        looks = appearance_waiting()
+        waiting = canvas or looks
+        text = "Canvas changes wait for a restart" if canvas else "Text size and colors change after a restart"
+        self.restart_note.setText(text if waiting else "")
         self.restart_note.setVisible(waiting)
         self.restart_button.setVisible(waiting and not (self.streaming or self.recording))
 
@@ -1258,6 +1331,8 @@ class SettingsWindow(QDialog):
             self.audio_page.apply_to(self.collection, recording=self.recording)
         if "General" in built:
             self._apply_general()
+        if "Appearance" in built:
+            self._apply_appearance()
         if "Video" in built and not (self.streaming or self.recording):
             self._apply_video()
         self._show_restart_note()

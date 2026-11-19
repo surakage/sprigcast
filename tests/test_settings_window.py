@@ -226,7 +226,7 @@ def test_clip_length_shapes_and_ready_on_open(app):
 def test_settings_look_titles_pills_and_pages(app):
     from sprigcast.app.settings_window import ABOUT, TABS
 
-    assert TABS == ["General", "Stream", "Audio", "Video", "Recording", "Connections"]  # sign-in is in Stream
+    assert TABS == ["General", "Appearance", "Stream", "Audio", "Video", "Recording", "Connections"]
     w = _window(_collection(), tab="Stream/Quality")
     assert set(ABOUT) == set(TABS) and w.objectName() == "settingsWindow"
     assert [b.text() for b in (w.cancel_button, w.apply_button, w.save_button)] == ["Cancel", "Apply", "Save"]
@@ -827,3 +827,48 @@ def test_privacy_does_nothing_off_windows(app, monkeypatch):
 
     monkeypatch.setattr(sys, "platform", "linux")
     assert not privacy.supported() and not privacy.apply_to(object(), True)
+
+
+def test_appearance_page_saves_text_size_and_colors_and_asks_for_a_restart(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import theme
+    from sprigcast.app.settings_window import appearance_waiting
+
+    w = _window(_collection(), tab="Appearance")
+    w.show()
+    app.processEvents()
+    assert w.current_tab() == "Appearance" and w.text_size.value() == "normal" and w.color_preset.value() == "default"
+    assert not appearance_waiting() and not w.restart_note.isVisible()
+    w.color_preset.buttons["colorblind"].click()
+    assert w.color_preview.colors["ACCENT"] == theme.PRESET_COLORS["colorblind"]["ACCENT"]
+    w.text_size.buttons["large"].click()
+    assert w.apply()
+    q = QSettings()
+    assert q.value(theme.COLORS_KEY) == "colorblind" and q.value(theme.TEXT_SIZE_KEY) == "large"
+    assert theme.chosen_colors() == "colorblind" and theme.colors_in_use == "default"  # drawn after a restart
+    assert w.restart_note.isVisible() and "restart" in w.restart_note.text()
+    w.close()
+
+
+def test_color_presets_only_change_known_theme_names():
+    from sprigcast.app import theme
+
+    for name, changes in theme.PRESET_COLORS.items():
+        assert name in theme.COLOR_PRESETS
+        for key, value in changes.items():
+            assert hasattr(theme, key) and value.startswith("#") and len(value) == 7
+    assert set(theme.preset_colors("contrast")) == {"ACCENT", "WARN", "BAD"}
+
+
+def test_quality_made_but_not_yet_in_its_tab_goes_with_the_window(app):
+    """Full test runs, 2026-11-19: the warm-up Settings went between Quality being made and being put in its tab,
+    and Quality stayed behind as a window of its own."""
+    w = _window(_collection(), tab="Stream")
+    w.show()
+    app.processEvents()
+    while w._slices and "stream_quality" not in w.__dict__:
+        w._slices.pop(0)()  # the part that makes Quality; putting it in its tab still waits
+    quality = w.stream_quality
+    assert quality.parentWidget() is not None and quality.window() is w and not quality.isWindow()
+    w.close()
