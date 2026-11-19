@@ -163,6 +163,7 @@ class Session:
     keys: list[str] = field(default_factory=list)  # paired devices' keys (Pair a device) work like the password
     frame_seconds: float = 1 / 60
     identified: bool = False
+    key: str = ""  # the paired key it identified with ("" for the password)
     subscriptions: int = Sub.ALL
     salt: str = field(default_factory=lambda: base64.b64encode(secrets.token_bytes(32)).decode())
     challenge: str = field(default_factory=lambda: base64.b64encode(secrets.token_bytes(32)).decode())
@@ -231,6 +232,7 @@ class Session:
                 if isinstance(given, str) and secret and secrets.compare_digest(
                         given, auth_string(secret, self.salt, self.challenge)):
                     right = True
+                    self.key = "" if secret == self.password else secret
             if not right:
                 yield Close(CloseCode.AUTHENTICATION_FAILED, "Wrong password.")
                 return

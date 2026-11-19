@@ -423,6 +423,8 @@ class ControlServer(QObject):
         self.pairing = Pairing(load_devices(), on_change=self._devices_changed)
         self._devices_raw = str(_own_settings().value(DEVICES, "") or "")  # the saved value this copy last matched
         self._devices_seen = {d.id for d in self.pairing.devices}
+        self.pairing.on_seen = self.keep_devices  # a paired key signed in or left: last_seen saved (throttled there)
+        self._signed_in: set[int] = set()  # sessions whose sign-in was already marked on their device
         self.local_key = ""  # set by start() while a password is in use
 
     def _stored_devices(self) -> tuple[str, list | None]:
@@ -666,7 +668,27 @@ class ControlServer(QObject):
             self.watch.start()
             self.on_clients_changed(len(self.sessions))
 
+    def _mark_seen(self, session, leaving: bool = False) -> None:
+        """A paired device's key signed in (once per connection) or its connection closed: its last_seen is now."""
+        key = getattr(session, "key", "")
+        if not key:
+            return
+        signed_in = getattr(session, "welcomed", False) or getattr(session, "identified", False)
+        if leaving:
+            self._signed_in.discard(id(session))
+        elif not signed_in or id(session) in self._signed_in:
+            return
+        else:
+            self._signed_in.add(id(session))
+        try:
+            self.pairing.seen(key)
+        except Exception:
+            log.exception("control: couldn't note when a paired device was last seen")
+
     def _gone(self, socket: QWebSocket) -> None:
+        gone = self.sessions.get(socket)
+        if gone is not None:
+            self._mark_seen(gone, leaving=True)
         if self.sessions.pop(socket, None) is not None:
             if _CONNECT_LOG.allow("gone"):
                 log.info("control: an app disconnected%s", _CONNECT_LOG.skipped("gone"))
@@ -682,6 +704,7 @@ class ControlServer(QObject):
         session = self.sessions.get(socket)
         if session is not None:
             self._pump(socket, session.receive(text))
+            self._mark_seen(session)
             if getattr(session, "may_change", True):
                 self.soon()  # a request may have changed something: tell everyone (and the asker) once it settles
 
