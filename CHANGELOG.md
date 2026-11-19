@@ -174,6 +174,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Driver) the old engine draws, as the new one fell 5-47 s behind per frame there; `SPRIGCAST_ENGINE=native` still
   asks for it. Copies back from the card (previews, outputs) wait for an event query, never in Map, and a stuck
   frame's log line names the step it was on. (#625)
+- Your own plugins' sources (a .py you wrote in the plugins folder) are drawn in a helper process: a plugin that
+  raises, hangs or crashes can't freeze or close SprigCast any more. Its pictures go to the engine through shared
+  memory, like a browser page's; a crashed helper starts again by itself with the same sources. Hotkeys, menus
+  and Settings of the plugin work as before. Store plugins stay in SprigCast. SPRIGCAST_PLUGINS_IN_PROCESS=1 runs
+  them all in SprigCast as before.
 - New engine: its shaders are compiled when SprigCast is built and ship inside the engine, so nothing is compiled
   while it runs. Compiling one still held a frame 3.4 s on the CI start-up check, even ahead of time on a
   thread of its own (the frame needing it waited).
