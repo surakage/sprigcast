@@ -23,6 +23,8 @@ def fresh(monkeypatch):
 
 
 def test_the_native_engine_is_the_default_on_windows(fresh):
+    card = {"name": "NVIDIA GeForce", "vendor_id": 0x10DE, "device_id": 0x2684, "software": False}
+    fresh.setattr(sprigcore, "adapters", lambda: [card])  # a real card (CI's Windows has only the software one)
     fresh.setattr(sys, "platform", "linux")
     assert sprigcore.engine_choice() == "python"  # not built here
     fresh.setattr(sys, "platform", "win32")
