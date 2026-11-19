@@ -19,7 +19,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import icons, theme
+from sprigcast.app.card import CardWindow
 from sprigcast.app.destinations import problem
 from sprigcast.core.scene import SceneCollection
 from sprigcast.output.stream import SERVICES
@@ -409,7 +409,6 @@ SUBTITLES = {
     "checking": "Say something into your mic so the doctor can hear it.",
 }
 STYLE = f"""
-QDialog#doctor {{ background: {theme.BG}; }}
 QFrame#doctorHeader {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE}; border-top-color: {theme.HIGHLIGHT};
                       border-radius: 14px; }}
 QFrame#doctorCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE}; border-radius: 12px; }}
@@ -424,18 +423,16 @@ QProgressBar::chunk {{ background: {theme.ACCENT}; border-radius: 2px; }}
 """
 
 
-class DoctorDialog(QDialog):
+class DoctorDialog(CardWindow):
     """Listens for a few seconds, then shows a verdict header and a card per finding."""
 
     def __init__(self, gather: Callable[[], Checkup], parent: QWidget | None = None, listen: float = LISTEN_SECONDS):
-        super().__init__(parent)
-        self.setObjectName("doctor")
-        self.setWindowTitle("Stream doctor")
+        super().__init__("Stream doctor", parent)
         self.setStyleSheet(STYLE)
-        self.setMinimumWidth(560)
+        self.card.setMinimumWidth(560)
         self._gather, self._listen = gather, listen
         self.findings: list[Finding] = []
-        root = QVBoxLayout(self)
+        root = QVBoxLayout(self.card)
         root.setContentsMargins(18, 18, 18, 16)
         root.setSpacing(12)
 

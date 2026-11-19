@@ -10,11 +10,12 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QSettings, Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast import plugin_store
 from sprigcast.app import message as msgbox
 from sprigcast.app import theme
+from sprigcast.app.card import CardWindow
 from sprigcast.app.live_stage import heading
 from sprigcast.plugins import PluginReport
 
@@ -315,7 +316,7 @@ class PluginStorePage(QWidget):
         self.changed.emit()
 
 
-class PluginStoreWindow(QDialog):
+class PluginStoreWindow(CardWindow):
     """Tools → Plugin store: the store in a window of its own (it used to be a Settings page).
 
     fill_after_show: the window shows at once and the store is made just after its first paint (made first, it
@@ -328,13 +329,10 @@ class PluginStoreWindow(QDialog):
                  fill_after_show: bool = False):
         from sprigcast.app.settings_window import window_style
 
-        super().__init__(parent)
-        self.setWindowTitle("Plugin store")
-        self.setObjectName("settingsWindow")
+        super().__init__("Plugin store", parent, (820, 680), name="settingsWindow")
         self.setStyleSheet(window_style())
-        self.resize(820, 680)
         self._args = (plugins_dir, report, open_plugins_folder, collection, on_air)
-        root = QVBoxLayout(self)
+        root = QVBoxLayout(self.card)
         root.setContentsMargins(24, 22, 24, 20)
         root.setSpacing(16)
         root.addWidget(heading("Plugin store", 20))
