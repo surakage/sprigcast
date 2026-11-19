@@ -157,9 +157,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Fixed a crash about a second after a stream or recording started, seen twice on the old engine (and once
   while live on 2026-11-18): the stall watch's every-thread dump (SPRIGCAST_STALL_DUMPS=1, a test switch) read
   the stacks of running threads. The dump is gone for good; the switch does nothing now and the log says so.
-- x264 (encoding on the CPU) uses fewer threads: one per CPU thread on a PC with four or fewer (it took six), at most
-  12 on a bigger one (it took 24 on a 16-thread PC). On the small PC the slower presets look at most 10 frames ahead,
-  which is where their memory goes (720p medium: 184 MB down to 84 MB).
+- x264 (encoding on the CPU) on a PC with four CPU threads or fewer: the slower presets look at most 10 frames
+  ahead, which is where their memory goes (720p medium: 184 MB down to 84 MB). The thread count is x264's own again:
+  setting it left one canvas's recording 15 frames short next to the replay buffer.
 - Fixed a 1.7 s freeze 30 s after start (and on Save in Settings): the copy of the settings is written by a short
   program of its own, so the window and the show no longer wait for the file.
 - Now playing (v6) with the new engine: the card is handed over as a list of pictures (cover card, words,
