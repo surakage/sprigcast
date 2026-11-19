@@ -32,6 +32,7 @@ RELAY = "wss://kickchat.slothbloom.com/v1/chat"
 RELAY_SETTING = "kick/chat_relay"  # another relay (testing); SPRIGCAST_KICK_CHAT_URL overrides both
 EMOTE_URL = "https://files.kick.com/emotes/{id}/fullsize"
 BACKOFF = (5, 15, 30, 60, 120, 300)  # seconds between tries after a drop
+QUICK_RETRY = 1  # the first try back after a working link drops
 NOT_FOUND_RETRY = 300  # a name Kick doesn't know: look again now and then (it may be a typo being fixed)
 PING_EVERY = 4 * 60 * 1000
 QUIET_LIMIT = 9 * 60 * 1000  # nothing at all (not even a pong) for this long: the link is dead
@@ -168,9 +169,18 @@ class KickChat(QObject):
         self._quiet.start()
 
     def _disconnected(self) -> None:
-        # never connected (no network, relay down) or dropped later
-        why = "disconnected" if self._quiet.isActive() else "Kick chat isn't reachable right now"
-        self._failed(why, self._wait_after_close)
+        # never connected (no network, relay down) or dropped later. A drop after reading fine is usually the
+        # relay being moved or updated by Cloudflare (code 1001/1006, overnight soak 2026-11-19): the close code
+        # goes in the log, and the first try back is quick so little chat is missed.
+        was_reading = self._quiet.isActive()
+        why = "Kick chat isn't reachable right now"
+        if was_reading:
+            raw = self.socket.closeCode() if self.socket is not None else 0
+            code = int(getattr(raw, "value", raw) or 0)
+            reason = self.socket.closeReason() if self.socket is not None else ""
+            why = f"disconnected (code {code}{': ' + reason if reason else ''})" if code else "disconnected"
+        wait = self._wait_after_close or (QUICK_RETRY if was_reading and self._tries == 0 else 0)
+        self._failed(why, wait)
 
     def _send_ping(self) -> None:
         if self.socket is not None:
