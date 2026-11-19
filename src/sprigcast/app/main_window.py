@@ -112,6 +112,7 @@ from sprigcast.app.library import (
 from sprigcast.app.card import colour_row
 from sprigcast.app.library import ROLE_NAME as LIB_NAME
 from sprigcast.app.library import ROLE_TAG as LIB_TAG
+from sprigcast.app.library import ROLE_UNUSED
 from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.live_stage import Destination, LiveSide, LiveStage
 from sprigcast.app.palette import Command, CommandPalette
@@ -3316,7 +3317,7 @@ class MainWindow(QMainWindow):
             row.setData(0, ROLE_ROW, "folder")
             row.setData(0, ROLE_FOLDER, folder.id)
             row.setData(0, LIB_NAME, folder.name)
-            row.setData(0, LIB_TAG, "on Live" if folder.live else str(count))
+            row.setData(0, LIB_TAG, "on Live" if folder.live else "")  # no count: open it to see
             row.setData(0, ROLE_COLOUR, folder.colour)
             row.setFlags(FOLDER_FLAGS)
             row.setToolTip(0, "Folder: click to open or fold it, drag things in, right-click to rename, "
@@ -3370,9 +3371,11 @@ class MainWindow(QMainWindow):
                 child.setData(0, ROLE_SOURCE_KIND, kind)  # what it shows: camera, chat, game...
                 child.setData(0, ROLE_COLOUR, self._sprig_colour(part, canvas_id) if kind == "color" else None)
                 child.setData(0, LIB_NAME, part.name)
-                child.setData(0, LIB_TAG, f"in {uses}" if uses else "unused")
+                child.setData(0, LIB_TAG, "")  # no words: an unused sprig is dimmed instead
+                child.setData(0, ROLE_UNUSED, not uses)
                 child.setFlags(BLOOM_FLAGS)
-                child.setToolTip(0, f"{cap(a(PART))} ({shapes}), in {uses} {SHOW if uses == 1 else SHOWS}. Click to "
+                child.setToolTip(0, f"{cap(a(PART))} ({shapes}), " + (f"in {uses} {SHOW if uses == 1 else SHOWS}" if uses
+                                    else f"not in any {SHOW} yet") + ". Click to "
                                     f"edit it: every {SHOW} using it changes too.")
                 holder.addChild(child)
                 if part is selected_part:
@@ -3483,6 +3486,10 @@ class MainWindow(QMainWindow):
         row.setData(ROLE_SWATCH, swatch)
         row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
         detail = "" if status in ("ok", "") else f"\n{status}"
+        if hidden:
+            detail += f"\n{hidden} hidden here"
+        if "filters" in tags:
+            detail += "\nHas filters"
         row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind}){detail}")
 
     def _kind_and_swatch(self, config, canvas_id: str | None) -> tuple[str, str | None]:

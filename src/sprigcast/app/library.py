@@ -44,7 +44,8 @@ ROLE_ID = Qt.ItemDataRole.UserRole  # a bloom's or sprig's scene id
 ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1  # a folder's id; "" on the Blooms heading, PART_ROOT on Sprigs
 ROLE_ROW = Qt.ItemDataRole.UserRole + 30  # "heading", "folder", "bloom" or "sprig"
 ROLE_NAME = Qt.ItemDataRole.UserRole + 31  # the name alone
-ROLE_TAG = Qt.ItemDataRole.UserRole + 32  # quiet text on the right: "on Live", "4", "in 3"
+ROLE_UNUSED = Qt.ItemDataRole.UserRole + 38  # a sprig no bloom uses yet: drawn dimmed
+ROLE_TAG = Qt.ItemDataRole.UserRole + 32  # on the right: "on Live" (an icon), "⇄"
 ROLE_COLOUR = Qt.ItemDataRole.UserRole + 33  # folder dot, or a bloom's swatch before it has a picture
 ROLE_ON_AIR = Qt.ItemDataRole.UserRole + 34  # a bloom on air gets a pink dot
 ROLE_THUMB = Qt.ItemDataRole.UserRole + 35  # a bloom's last on-air picture (QImage)
@@ -166,15 +167,20 @@ class LibraryDelegate(QStyledItemDelegate):
             p.setBrush(QColor(theme.LIVE))
             p.drawEllipse(QRectF(right - 8, mid - 4, 8, 8))
             right -= 16
-        if tag:
+        if tag == "on Live":  # a folder shown on Live: its mark, not words
+            icons.paint_icon(p, QRectF(right - 14, mid - 7, 14, 14), "broadcast", theme.ACCENT, 1.5)
+            right -= 22
+        elif tag:
             small = QFont(option.font)
             small.setPixelSize(11)
             metrics = QFontMetrics(small)
             width = metrics.horizontalAdvance(tag)
             p.setFont(small)
-            p.setPen(QColor(theme.ACCENT if tag == "on Live" else theme.MUTED))
+            p.setPen(QColor(theme.MUTED))
             p.drawText(QRectF(right - width, r.y(), width, r.height()), Qt.AlignmentFlag.AlignVCenter, tag)
             right -= width + 10
+        if index.data(ROLE_UNUSED) and not selected:
+            text_colour = QColor(theme.MUTED)
         p.setFont(font)
         p.setPen(text_colour)
         metrics = QFontMetrics(font)
