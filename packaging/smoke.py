@@ -106,9 +106,9 @@ def main() -> int:
     command = sys.argv[2:]
     work = Path(tempfile.mkdtemp(prefix="sprigcast-smoke-"))
     clip = work / "smoke clip.mp4"
-    subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True)
+    subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True, timeout=120)
     print(f"Made {clip} ({size(clip) // 1024} KB)", flush=True)
-    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip)], check=True,
+    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip)], check=True, timeout=120,
                                       capture_output=True, text=True).stdout.strip().splitlines()[-1])
     print(f"Garden {paths['garden']}: the clip plays on top of {paths['bloom']}", flush=True)
     logs = Path(paths["logs"])
@@ -117,20 +117,30 @@ def main() -> int:
     log_from, crash_from = size(day_log), size(crash_log)
 
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-    proc = subprocess.Popen(command, env=env)
+    # SprigCast's output goes to a file, not this console: a helper it starts that outlives it would otherwise
+    # hold the console pipe open, and the CI step would wait for it forever (2026-11-19).
+    out_file = work / "sprigcast output.txt"
+    with open(out_file, "wb") as out:
+        proc = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
     started = time.monotonic()
     while time.monotonic() - started < seconds and proc.poll() is None:
         time.sleep(0.5)
     alive = proc.poll() is None
     if alive:
         if sys.platform == "win32":  # with the helpers it started
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
         else:
             proc.kill()
-        proc.wait(30)
+        try:
+            proc.wait(30)
+        except subprocess.TimeoutExpired:
+            print("SprigCast was still running 30 s after it was ended", flush=True)
     else:
         print(f"SprigCast closed by itself after {time.monotonic() - started:.0f} s (exit {proc.returncode})")
 
+    printed = out_file.read_bytes().decode("utf-8", "replace").strip() if out_file.is_file() else ""
+    if printed:
+        print(f"----- what SprigCast printed -----\n{printed[-6000:]}\n-----", flush=True)
     text = day_log.read_bytes()[log_from:].decode("utf-8", "replace") if day_log.is_file() else ""
     print(f"----- {day_log.name} (this run) -----\n{text}----- end of log -----", flush=True)
     failed = [] if alive else ["SprigCast didn't stay open"]
