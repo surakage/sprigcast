@@ -1384,12 +1384,18 @@ class Engine:
                             lambda sid: sid not in filtered and sid not in frozen,
                             canvases.get(scene.canvas, (0, 0)), hidden)
 
-    def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
-        """This frame of a Move transition on a canvas, as pieces to draw (see compositor.render)."""
+    def _move_layout(self, running: Running, canvas, hidden: frozenset = frozenset()) -> tuple[list, list]:
+        """A Move's two blooms on a canvas as pieces (render/move.py flatten): the one it leaves, the one it goes
+        to. The native engine takes them once, when the Move starts, and works out every frame itself."""
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
         new = self._collection.active_scene(canvas.id)
         old = self._move_pieces(running.outgoing, sizes, hidden)
         now = self._move_pieces(new, sizes, hidden) if new is not None else []
+        return old, now
+
+    def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
+        """This frame of a Move transition on a canvas, as pieces to draw (see compositor.render)."""
+        old, now = self._move_layout(running, canvas, hidden)
         t = running.settings
         return move.frame(old, now, progress, t.easing, t.unmatched, (canvas.width, canvas.height))
 
@@ -2057,7 +2063,8 @@ class Engine:
             native.forget_gone(self._sources)
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
                         {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
-                        views=self._engine_views, held={cid: w[0] for cid, w in self._waking.items()})
+                        views=self._engine_views, held={cid: w[0] for cid, w in self._waking.items()},
+                        move_pieces=self._move_layout)
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")

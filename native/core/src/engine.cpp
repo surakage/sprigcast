@@ -211,12 +211,14 @@ struct PreviewCfg {
 struct TransitionCfg {  // shared: the transition Python started last on a canvas
     uint64_t from = 0;
     sc_transition how{};
+    std::shared_ptr<const sc::MovePlan> move;  // a Move's pieces (how.mode SC_TRANSITION_MOVE)
     uint64_t serial = 0;
 };
 
 struct RunningTransition {  // the frame thread's
     uint64_t from = 0;
     sc_transition how{};
+    std::shared_ptr<const sc::MovePlan> move;
     double start = 0;
     uint64_t serial = 0;
     bool on = false;
@@ -531,6 +533,18 @@ struct sc_engine {
 };
 
 namespace {
+
+// A frame of a Move on a canvas, under the crash gate: the scene it moves to, once the one it moves from is gone
+// from the snapshot (as sc_canvas_render_transition does).
+int render_move_on(sc_canvas *c, uint64_t from, uint64_t to, const sc::MovePlan &plan, double seconds,
+                   float progress) {
+    return sc::device_call(c->device, "Move", [&]() -> int {
+        std::lock_guard<std::mutex> lock(c->device->lock);
+        if (!sc::has_scene(*c->device, from))
+            return sc::render_scene(*c->device, c->target.Get(), c->width, c->height, to, seconds);
+        return sc::render_move(*c, plan, seconds, progress);
+    });
+}
 
 sc_snapshot view_of(const SnapData &s) {
     sc_snapshot v{};
@@ -1357,12 +1371,18 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             run.serial = transitions[i].serial;
             run.from = transitions[i].from;
             run.how = transitions[i].how;
+            run.move = transitions[i].move;
             run.start = seconds;
             run.on = run.from != 0;
         }
         if (run.on) {
             const double progress = (seconds - run.start) / std::max(0.001, static_cast<double>(run.how.seconds));
-            if (progress < 1.0) {
+            if (progress < 1.0 && run.how.mode == SC_TRANSITION_MOVE) {
+                if (run.move) {
+                    check(render_move_on(c, run.from, cfg.scene, *run.move, seconds, static_cast<float>(progress)));
+                    continue;
+                }
+            } else if (progress < 1.0) {
                 check(sc_canvas_render_transition(c, run.from, cfg.scene, seconds, &run.how,
                                                   static_cast<float>(progress)));
                 continue;
@@ -2043,6 +2063,27 @@ SC_API int sc_engine_canvas_transition(sc_engine *engine, int index, uint64_t fr
         TransitionCfg &t = engine->transitions[index];
         t.from = stop ? 0 : from;
         t.how = stop ? sc_transition{} : *how;
+        t.move.reset();
+        ++t.serial;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_canvas_move(sc_engine *engine, int index, uint64_t from, float seconds, const sc_move *move) {
+    return engine_call(engine, "sc_engine_canvas_move", [&]() -> int {
+        if (index < 0 || index >= SC_ENGINE_CANVASES || !from || !move || !(seconds > 0))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_move: no such slot, no scene or move, or no length");
+        auto plan = std::make_shared<sc::MovePlan>();
+        const char *why = nullptr;
+        if (!sc::move_plan(*move, *plan, why))
+            return fail(SC_ERR_ARGUMENT, std::string("sc_engine_canvas_move: ") + why);
+        std::lock_guard<std::mutex> lock(engine->state);
+        TransitionCfg &t = engine->transitions[index];
+        t.from = from;
+        t.how = sc_transition{};
+        t.how.mode = SC_TRANSITION_MOVE;
+        t.how.seconds = seconds;
+        t.move = std::move(plan);
         ++t.serial;
         return SC_OK;
     });

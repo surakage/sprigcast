@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base.h"
+#include "move.h"
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -178,6 +179,7 @@ struct sc_canvas {
     ComPtr<ID3D11Texture2D> staging;  // made on the first read
     sc::Target outgoing, incoming;    // transitions: the two scenes, let go after a while unused
     double transition_used = 0;
+    std::vector<sc::MoveDraw> move_draws;  // a Move's pieces this frame, kept so frames don't allocate
 };
 
 namespace sc {
@@ -187,6 +189,8 @@ int render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, int 
 // Draws a transition onto the canvas. The device's lock must be held.
 int render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double time, const sc_transition &how,
                       float progress);
+// Draws a frame of a Move onto the canvas (move.h). The device's lock must be held.
+int render_move(sc_canvas &canvas, const MovePlan &plan, double time, float progress);
 // Whether the snapshot has this scene.
 bool has_scene(sc_device &dev, uint64_t scene);
 

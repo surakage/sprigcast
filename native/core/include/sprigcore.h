@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 31
+#define SC_INTERFACE_VERSION 32
 
 enum {
     SC_OK = 0,
@@ -242,6 +242,39 @@ typedef struct sc_transition {
 SC_API int sc_canvas_render_transition(sc_canvas *canvas, uint64_t from, uint64_t to, double time,
                                        const sc_transition *how, float progress);
 
+/* The Move transition (render/move.py): what is in both blooms glides from where it was to where it goes. Python
+ * lays both blooms out as pieces and pairs them once; the engine works out every frame's quads (move.cpp) and draws
+ * them straight onto the canvas. */
+enum { SC_TRANSITION_MOVE = 7 };
+enum { SC_MOVE_SMOOTH = 0, SC_MOVE_EASE_OUT = 1, SC_MOVE_EASE_IN = 2, SC_MOVE_LINEAR = 3, SC_MOVE_SPRING = 4 };
+enum { SC_MOVE_FADE = 0, SC_MOVE_SCALE = 1, SC_MOVE_SLIDE = 2 };  /* what is in only one of the two blooms */
+
+typedef struct sc_move_piece {
+    uint64_t source;       /* the picture, as sc_item.source */
+    uint64_t part;         /* nonzero: a sprig's drawing (a snapshot scene), as sc_item.part */
+    float quad[4][4];      /* x, y (canvas pixels), u, v: top-left, top-right, bottom-left, bottom-right */
+    float opacity;
+    int effects;           /* index into the move's effects, -1 = none */
+    int paired;            /* a piece of the new bloom: the old piece it moves from (each at most once), -1 = none */
+    int reserved;
+} sc_move_piece;
+
+typedef struct sc_move {
+    const sc_move_piece *pieces;  /* the old bloom's pieces, then the new one's, each bottom first */
+    int old_count, new_count;
+    const sc_effects *effects;
+    int effects_count;
+    int easing;            /* SC_MOVE_SMOOTH .. SC_MOVE_SPRING (core/scene.py MOVE_EASINGS order) */
+    int unmatched;         /* SC_MOVE_FADE, _SCALE or _SLIDE */
+} sc_move;
+
+/* Draws a Move onto the canvas at `progress` (0 .. 1). Sprigs drawn whole come from the snapshot. */
+SC_API int sc_canvas_render_move(sc_canvas *canvas, const sc_move *move, double time, float progress);
+/* The pieces a Move draws at `progress` on a canvas width x height, bottom first, as sc_move_pieces (paired -1):
+ * their count, at most old_count + 2 x new_count, or an error when `capacity` is fewer. */
+SC_API int sc_move_frame(const sc_move *move, float progress, int width, int height, sc_move_piece *out,
+                         int capacity);
+
 /* How an output smaller than its canvas is scaled (Settings → Video): render/compositor.py SCALE_MODES. */
 enum {
     SC_SCALE_BILINEAR = 0,
@@ -423,6 +456,9 @@ SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int
  * by the engine from its next frame. from = 0 (or how = NULL) stops one that is running. A transition whose
  * `from` scene is no longer in the snapshot ends at once. */
 SC_API int sc_engine_canvas_transition(sc_engine *engine, int index, uint64_t from, const sc_transition *how);
+/* Starts a Move (sc_move, copied) on canvas `index` from scene `from` to the scene it shows, `seconds` long, timed
+ * as sc_engine_canvas_transition. Stopped by sc_engine_canvas_transition with from = 0. */
+SC_API int sc_engine_canvas_move(sc_engine *engine, int index, uint64_t from, float seconds, const sc_move *move);
 /* Pictures of a canvas for Python's screens: each frame (at most `max_fps` a second, 0 = every frame) the engine
  * draws canvas `index` shrunk to width x height as premultiplied RGBA, the way SprigCast's previews take it, and
  * copies it back without waiting on the graphics card, so it arrives a frame or two later. 0 x 0 stops. */

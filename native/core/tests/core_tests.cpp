@@ -339,6 +339,44 @@ int main() {
     fade.mode = 99;
     CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 0.5f) == SC_ERR_ARGUMENT);
 
+    // Move: the picture glides from the top left to the bottom right; the sprig, only in the old bloom, fades away.
+    // At the start it is the old bloom exactly, and at the end the new one.
+    {
+        auto place = [](sc_move_piece &p, uint64_t source, uint64_t part, float x, float y) {
+            p = sc_move_piece{};
+            p.source = source;
+            p.part = part;
+            const float corners[4][4] = {{x, y, 0, 0}, {x + 8, y, 1, 0}, {x, y + 8, 0, 1}, {x + 8, y + 8, 1, 1}};
+            std::memcpy(p.quad, corners, sizeof corners);
+            p.opacity = 1;
+            p.effects = -1;
+            p.paired = -1;
+        };
+        sc_move_piece pieces[3];
+        place(pieces[0], 11, 0, 0, 0);
+        place(pieces[1], 99, 500, 16, 0);
+        place(pieces[2], 11, 0, 24, 8);
+        pieces[2].paired = 0;
+        sc_move mv = {pieces, 2, 1, nullptr, 0, SC_MOVE_SMOOTH, SC_MOVE_FADE};
+        std::vector<uint8_t> moved(32 * 16 * 4);
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 0.0f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, moved.data(), 32 * 4) == SC_OK);
+        CHECK(moved == out);
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 1.0f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, moved.data(), 32 * 4) == SC_OK);
+        Pixel there = at(moved, 32, 25, 9), left = at(moved, 32, 1, 1), gone = at(moved, 32, 17, 1);
+        CHECK(there.r == 255 && there.g == 0 && there.a == 255);
+        CHECK(left.a == 0 && gone.a == 0);
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 0.5f) == SC_OK);
+        sc_move_piece drawn[4];
+        CHECK(sc_move_frame(&mv, 0.5f, 32, 16, drawn, 4) == 2);  // the sprig half gone, the picture half way
+        CHECK(drawn[0].source == 11 && std::abs(drawn[0].quad[0][0] - 12.0f) < 1e-3f);
+        CHECK(drawn[1].part == 500 && drawn[1].opacity > 0.99f);
+        CHECK(sc_move_frame(&mv, 0.5f, 32, 16, drawn, 1) == SC_ERR_ARGUMENT);  // too little room
+        mv.easing = 42;
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 0.5f) == SC_ERR_ARGUMENT);
+    }
+
     // NV12 for encoders, BT.709 limited range: red is Y 63, Cb 102, Cr 240; white Y 235; see-through is black.
     CHECK(sc_canvas_render(c2, 1, 0.0) == SC_OK);
     std::vector<uint8_t> nv12(32 * 16 * 3 / 2);

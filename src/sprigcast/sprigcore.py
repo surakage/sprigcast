@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 31  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 32  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -155,6 +155,73 @@ class TransitionSpec(ctypes.Structure):
                 ("softness", ctypes.c_float), ("reserved", ctypes.c_int), ("wipe_map", ctypes.c_uint64)]
 
 
+MOVE_EASINGS = ("smooth", "ease_out", "ease_in", "linear", "spring")  # SC_MOVE_*: core/scene.py MOVE_EASINGS
+MOVE_UNMATCHED = ("fade", "scale", "slide")
+
+
+class MovePiece(ctypes.Structure):
+    """include/sprigcore.h sc_move_piece: one thing a Move draws (render/move.py Piece)."""
+
+    _fields_ = [("source", ctypes.c_uint64), ("part", ctypes.c_uint64), ("quad", (ctypes.c_float * 4) * 4),
+                ("opacity", ctypes.c_float), ("effects", ctypes.c_int), ("paired", ctypes.c_int),
+                ("reserved", ctypes.c_int)]
+
+
+class MoveSpec(ctypes.Structure):
+    """include/sprigcore.h sc_move. Keeps the arrays it points into (``keep``) while it lives."""
+
+    _fields_ = [("pieces", ctypes.POINTER(MovePiece)), ("old_count", ctypes.c_int), ("new_count", ctypes.c_int),
+                ("effects", ctypes.POINTER(Effects)), ("effects_count", ctypes.c_int), ("easing", ctypes.c_int),
+                ("unmatched", ctypes.c_int)]
+
+
+def move_spec(old, new, pairs: dict[int, int], easing: str, unmatched: str) -> MoveSpec:
+    """A Move as the engine takes it. old, new: (source id, part key or None, quad, opacity, Effects or None) for
+    each piece of the bloom it leaves and the one it goes to, bottom first; pairs: new index -> old index
+    (render/move.py pair)."""
+    pieces = (MovePiece * max(1, len(old) + len(new)))()
+    effects: list = []
+    index: dict[int, int] = {}  # id(Effects) -> its place: one copy for a source in both blooms
+    for i, (source, part, quad, opacity, fx) in enumerate([*old, *new]):
+        p = pieces[i]
+        p.source = key(source)
+        p.part = key(part) if part else 0
+        for c, corner in enumerate(quad):
+            for n in range(4):
+                p.quad[c][n] = float(corner[n])
+        p.opacity = float(opacity)
+        p.effects = -1
+        if fx is not None:
+            if id(fx) not in index:
+                index[id(fx)] = len(effects)
+                effects.append(fx)
+            p.effects = index[id(fx)]
+        p.paired = -1
+    for j, i in pairs.items():
+        pieces[len(old) + j].paired = int(i)
+    fx_array = (Effects * max(1, len(effects)))(*effects)
+    spec = MoveSpec(pieces, len(old), len(new), fx_array, len(effects),
+                    MOVE_EASINGS.index(easing) if easing in MOVE_EASINGS else 0,
+                    MOVE_UNMATCHED.index(unmatched) if unmatched in MOVE_UNMATCHED else 0)
+    spec.keep = (pieces, fx_array)
+    return spec
+
+
+def move_frame(spec: MoveSpec, progress: float, width: int, height: int) -> list[tuple]:
+    """What the engine draws for a Move at ``progress`` (move.cpp, the same as render/move.py frame): (source key,
+    part key, quad, opacity, effects index) for each piece, bottom first. Tests only."""
+    room = spec.old_count + 2 * spec.new_count
+    out = (MovePiece * max(1, room))()
+    count = _need().sc_move_frame(ctypes.byref(spec), float(progress), int(width), int(height), out, room)
+    _check(min(count, 0))
+    return [(p.source, p.part, [tuple(p.quad[c]) for c in range(4)], p.opacity, p.effects) for p in out[:count]]
+
+
+def use_native_move() -> bool:
+    """True when the engine draws Move transitions itself; SPRIGCAST_NO_NATIVE_MOVE=1 leaves them to Python."""
+    return not os.environ.get("SPRIGCAST_NO_NATIVE_MOVE")
+
+
 def transition_spec(transition, wipe_map: str | None = None) -> TransitionSpec | None:
     """core/scene.py Transition as the engine takes it, or None for a kind it doesn't draw (cut, stinger, move)."""
     mode = TRANSITION_MODES.get(transition.kind)
@@ -250,6 +317,9 @@ def _lib():
         "sc_canvas_render_transition": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_double,
                                                 ctypes.POINTER(TransitionSpec), c_float]),
         "sc_engine_canvas_transition": (c_int, [vp, c_int, ctypes.c_uint64, ctypes.POINTER(TransitionSpec)]),
+        "sc_engine_canvas_move": (c_int, [vp, c_int, ctypes.c_uint64, c_float, ctypes.POINTER(MoveSpec)]),
+        "sc_canvas_render_move": (c_int, [vp, ctypes.POINTER(MoveSpec), ctypes.c_double, c_float]),
+        "sc_move_frame": (c_int, [ctypes.POINTER(MoveSpec), c_float, c_int, c_int, ctypes.POINTER(MovePiece), c_int]),
         "sc_engine_create": (c_int, [c_int, c_int, out]),
         "sc_engine_destroy": (None, [vp]),
         "sc_engine_set_rate": (c_int, [vp, c_int, c_int]),
@@ -842,6 +912,12 @@ class Engine:
             _check(_need().sc_engine_canvas_transition(self.handle, index, 0, None))
         else:
             _check(_need().sc_engine_canvas_transition(self.handle, index, key(previous), ctypes.byref(spec)))
+
+    def move(self, index: int, previous: str, seconds: float, spec: MoveSpec) -> None:
+        """Starts a Move (move_spec) on canvas ``index`` from scene ``previous`` to the one it shows, ``seconds``
+        long, timed as transition(). transition(index, None, None) stops it."""
+        _check(_need().sc_engine_canvas_move(self.handle, index, key(previous), max(0.001, float(seconds)),
+                                             ctypes.byref(spec)))
 
     def watch(self, index: int, width: int, height: int, max_fps: int = 0) -> None:
         """Have the engine copy canvas ``index`` back shrunk to width x height (premultiplied RGBA, as previews

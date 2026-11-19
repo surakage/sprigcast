@@ -164,6 +164,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
   Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
   transition, then goes back to the engine's same textures.
+- New engine: Move transitions are drawn by the engine. Python lays both blooms out once when the Move starts,
+  and the engine works out every frame itself on its own clock (the same arithmetic, checked against Python on
+  thousands of frames), so a Move no longer hands the canvas and its recordings back to Python, and a busy
+  Python can't make it stutter. SPRIGCAST_NO_NATIVE_MOVE=1 draws them in Python as before.
 - New engine: cameras are read by the engine's own player on a thread of its own: decoding, shrinking and
   mirroring happen there and the picture goes straight to the engine, never through Python. An unplugged camera
   comes back by itself as before; SPRIGCAST_NO_NATIVE_CAMERA=1 reads cameras the old way.
