@@ -808,11 +808,16 @@ def test_general_going_live_snapping_popouts_and_privacy_are_saved(app):
     w.snap_to["center"].setChecked(False)
     w.snap_on.setChecked(False)
     assert not w.snap_distance.isEnabled()
+    assert not w.show_overflow.isChecked()  # off until asked for
+    w.show_overflow.setChecked(True)
     w.projector_on_top.setChecked(True)
     w.projector_hide_pointer.setChecked(False)
     w.hide_from_capture.setChecked(True)
     assert w.apply()
     q = QSettings()
+    from sprigcast.app.preview import show_overflow_setting
+
+    assert show_overflow_setting()
     assert q.value(CONFIRM_GO_LIVE, type=bool) and q.value(KEEP_RECORDING, type=bool) and q.value(REPLAY_ON_LIVE, type=bool)
     snap = snap_settings()
     assert not snap["enabled"] and snap["distance"] == 20.0 and not snap["center"] and snap["edges"]
