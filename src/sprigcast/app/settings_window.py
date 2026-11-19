@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import autostart, priority, theme
+from sprigcast.app.badged import BadgedGroup
 from sprigcast.app.segmented import Segmented
 from sprigcast.app.live_stage import heading
 from sprigcast.app.output_page import (  # noqa: F401 (stream_delay and apply_naming are imported from here)
@@ -391,24 +392,6 @@ class CanvasShape(QWidget):
         p.setBrush(QColor(theme.FIELD))
         p.drawRoundedRect(box, 3, 3)
         p.end()
-
-
-class BadgedGroup(QGroupBox):
-    """A section card with a small badge at the right of its title ("Expert")."""
-
-    def __init__(self, title: str, badge: str, parent: QWidget | None = None):
-        super().__init__(title, parent)
-        self.badge = QLabel(badge, self)
-        self.badge.setStyleSheet(f"background: {theme.SELECT_BG}; color: {theme.INFO}; border-radius: 8px;"
-                                 f" padding: 2px 9px; font-size: 11px; font-weight: 600;")
-        self.badge.adjustSize()
-        self.badge.show()
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self.badge.move(self.width() - self.badge.width() - 16, 12)
-
-
 
 
 SECTION_GAP = 14  # between a page's section cards

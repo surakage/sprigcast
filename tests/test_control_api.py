@@ -527,3 +527,57 @@ def test_stream_start_lists_the_places_and_can_insist_on_them():
     assert started == []
     out = api.stream_start({"places": ["yt", "tw"]})
     assert out["on"] and [p["id"] for p in out["places"]] == ["tw", "yt"] and started == [1]
+
+
+def test_connections_names_the_apps_connected_now_and_marks_paired_ones():
+    """Settings redesign (2026-11-19): a Connected now section, and Connected on a paired device's row."""
+    _qt()
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QLabel
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ConnectionsPageTest")
+    from sprigcast.app.connections_page import ConnectionsPage, connected_apps, initials, paired_on
+    from sprigcast.control.pairing import Device, Pairing
+    from sprigcast.control.protocol import Session
+
+    assert [initials(n) for n in ("Stream Deck", "StreamBridge", "phone", "x", "")] == ["SD", "SB", "PH", "X", "?"]
+    assert paired_on("2026-11-18") == "Paired Nov 18" and paired_on("last week") == "Paired last week"
+
+    class Server:
+        listening, error = True, ""
+        on_clients_changed = None
+        sessions: dict = {}
+        pairing = Pairing([Device(id="a", name="StreamBridge", key="k1", added="2026-11-18"),
+                           Device(id="b", name="<b>Deck</b>", key="k2", added="2026-11-12")])
+
+        def drop_key(self, key):
+            pass
+
+    server = Server()
+    assert connected_apps(None) == [] and connected_apps(server) == []
+    page = ConnectionsPage(server)
+
+    def texts(rows):
+        return [label.text() for i in range(rows.count()) if rows.itemAt(i).widget() is not None
+                for label in rows.itemAt(i).widget().findChildren(QLabel)] + [
+            rows.itemAt(i).widget().text() for i in range(rows.count()) if isinstance(rows.itemAt(i).widget(), QLabel)]
+
+    assert texts(page.connected_rows) == ["No apps yet"] and page.status.text() == "On · no apps connected"
+    assert "●  Connected" not in texts(page.device_rows)
+    server.sessions = {1: Session(handler=None), 2: SimpleNamespace(key="k2"), 3: SimpleNamespace(key="")}
+    server.on_clients_changed(3)
+    assert connected_apps(server) == [("<b>Deck</b>", "Paired device"), ("App made for OBS", "OBS-style connection"),
+                                      ("SprigCast app", "On this PC")]
+    shown = texts(page.connected_rows)
+    assert "<b>Deck</b>" in shown and "OBS" in shown and page.status.text() == "On · 3 apps connected"
+    assert texts(page.device_rows).count("●  Connected") == 1  # the Deck's row, not StreamBridge's
+    assert "Paired Nov 18" in texts(page.device_rows)
+    server.sessions = {}
+    server.on_clients_changed(0)
+    assert texts(page.connected_rows) == ["No apps yet"] and "●  Connected" not in texts(page.device_rows)
+    page.enabled.setChecked(False)
+    assert page.status.text() == "Off" and not page.block.isEnabled()
+    QSettings().clear()
