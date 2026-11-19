@@ -422,5 +422,5 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | Done: the audio visualizer is heard and drawn in the engine; Snap's, Death count's, Now playing's and PNGtuber's animations are drawn by the engine from lists of pictures; your own plugins' sources draw in the plugin helper process (`app/plugin_helper.py`) and reach the engine through shared memory |
 | 7 | Capture and camera inside the engine | In progress: display, window and game capture and cameras in the engine (behind the switch); PC test next |
-| 8 | Old Python engine and its packages removed | |
+| 8 | Old Python engine kept only for PCs without a graphics card | Decided by the user 2026-11-19: the old engine stays so older systems (software renderer only) can run SprigCast. On a PC whose graphics card could run the new engine, the window warns when the old one draws (`app/engine_warning.py`: safe mode, `SPRIGCAST_ENGINE=python`, `sprigcore.dll` missing, or the engine stopped) |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |

@@ -443,6 +443,29 @@ def why_python() -> str:
     return "the engine is built for Windows only"
 
 
+_engine_failed = ""  # why the engine stopped drawing during this run (render/native_bridge.py fail)
+
+
+def note_engine_failed(why: str) -> None:
+    global _engine_failed
+    _engine_failed = _engine_failed or str(why) or "it stopped"
+
+
+def old_engine_warning() -> str:
+    """Why the old (Python) engine draws on a PC whose graphics card could run the new one, in a few words for
+    the window's warning; "" when the new engine draws, or when this PC has no graphics card for it (the old
+    engine is kept for those, user 2026-11-19, and nothing is said there)."""
+    if sys.platform != "win32" or software_only():
+        return ""
+    if _python_only:
+        return "Safe mode"
+    if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "python":
+        return "Turned off"
+    if not available():
+        return "Engine file missing"
+    return "Engine stopped" if _engine_failed else ""
+
+
 _software: list[bool] = []  # worked out once: whether Windows has only a software renderer
 
 

@@ -443,6 +443,9 @@ def run() -> None:
     QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time
     workers.run(warm.warm_keyring, name="warm-keyring")  # now: a stream key or chat sign-in may want it soon
     QTimer.singleShot(20_000, pacing.trim_working_set_later)  # start-up's one-time pages (imports, shaders) go back
+    from sprigcast.app import engine_warning
+
+    engine_warning.install(window)  # says when the old engine draws on a PC that could run the new one
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
