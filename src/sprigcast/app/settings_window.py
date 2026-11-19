@@ -84,7 +84,8 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Updates", "General", False), ("Ask before ending the stream", "General", False),
     ("Ask before going live", "General", False), ("Keep recording when the stream ends", "General", False),
     ("Start Instant replay when I go live", "General", False), ("Snapping", "General", False),
-    ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
+    ("Snap distance", "General", False),
+    ("Show what's outside the canvas", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
     ("Always on top", "General", False), ("Reopen pop-outs", "General", False), ("Hide the mouse pointer", "General", False),
     ("Hide from screen capture", "General", False), ("Privacy", "General", False),
     ("System tray", "General", False), ("Import from OBS", "General", False),
@@ -879,6 +880,15 @@ class SettingsWindow(QDialog):
             self.snap_on.toggled.connect(snap_follow)
             snap_follow(self.snap_on.isChecked())
 
+            from sprigcast.app.preview import show_overflow_setting
+
+            canvas = QGroupBox("Preview")
+            cbox = QVBoxLayout(canvas)
+            self.show_overflow = QCheckBox("Show what's outside the canvas")
+            self.show_overflow.setToolTip("In Build, the parts of things hanging off the canvas are drawn hatched")
+            self.show_overflow.setChecked(show_overflow_setting())
+            cbox.addWidget(self.show_overflow)
+
             from sprigcast.app import projector, privacy
 
             popouts = QGroupBox("Pop-out views")
@@ -952,7 +962,7 @@ class SettingsWindow(QDialog):
                 self.feature_ticks[name] = tick
 
             layout = page.layout()
-            for card in (safety, snapping, popouts, in_tray, private, used, updates, logs, self._import_card(),
+            for card in (safety, snapping, canvas, popouts, in_tray, private, used, updates, logs, self._import_card(),
                          self._clear_data_card()):
                 layout.insertWidget(layout.count() - 1, card)  # above the stretch
 
@@ -1442,6 +1452,9 @@ class SettingsWindow(QDialog):
         settings.setValue("editing/snap_distance", self.snap_distance.currentData())
         for key, tick in self.snap_to.items():
             settings.setValue(f"editing/snap_{key}", tick.isChecked())
+        from sprigcast.app.preview import OVERFLOW_KEY
+
+        settings.setValue(OVERFLOW_KEY, self.show_overflow.isChecked())
         from sprigcast.app import projector, privacy
 
         settings.setValue(projector.HIDE_POINTER, self.projector_hide_pointer.isChecked())
