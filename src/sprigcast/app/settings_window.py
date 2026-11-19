@@ -867,6 +867,7 @@ class SettingsWindow(QDialog):
         for i in range(tabs.count()):  # each of its tabs scrolls on its own
             name, widget = tabs.tabText(i), tabs.widget(i)
             tabs.removeTab(i)
+            widget.setHidden(False)  # (taking a tab out hides its page: left hidden, the Recording page was blank)
             tabs.insertTab(i, _scrolled(widget), name)
         tabs.setCurrentIndex(0)
         return self.recording_tabs

@@ -652,3 +652,18 @@ def test_plugin_store_reads_its_files_off_the_window_thread(app, monkeypatch):
     assert "slide_show" in w.store.rows and w.store.rows["slide_show"].button.text() == "Add"
     assert threads and threading.main_thread() not in threads
     w.close()
+
+
+def test_the_recording_page_shows_its_boxes(app):
+    """Its tabs were taken out and put back in scroll areas, and taking a tab out hides its page: the Recording
+    page was blank (found going over Settings, 2026-11-19)."""
+    w = _window(_collection(), tab="Recording")
+    w.resize(1000, 760)
+    w.show()
+    w._flush_slices()
+    app.processEvents()
+    page = w.recording_tabs.tabs.widget(0).widget()  # the scroll area's holder
+    inner = page.layout().itemAt(0).widget()
+    assert not inner.isHidden() and inner.isVisible() and inner.height() > 100
+    assert w.recording_tabs.same_as_stream.isVisible()
+    w.close()
