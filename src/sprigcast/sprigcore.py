@@ -25,7 +25,8 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 33  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 34  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -497,6 +498,15 @@ def use_python_engine() -> None:
 def use_native() -> bool:
     """True when the native engine was asked for and loads. Parts that have moved check this once at start."""
     return engine_choice() == "native" and available()
+
+
+def set_windows_ducking(opt_out: bool) -> bool:
+    """Ask Windows not to turn other apps down when the engine opens a mic (True), or let it (False). Mics opened
+    after this follow it. False when there is no engine to tell."""
+    lib = _lib() or _media_lib()
+    if lib is None:
+        return False
+    return lib.sc_audio_windows_ducking(int(bool(opt_out))) == 0
 
 
 def drain_log() -> int:
@@ -1321,6 +1331,8 @@ def _media_sigs() -> dict:
         "sc_mixer_source_push": (c_int, [vp, c_int, vp, c_int]),
         "sc_mixer_source_media": (c_int, [vp, c_int, vp, c_int]),
         "sc_mixer_set_ducking": (c_int, [vp, ctypes.POINTER(MixerDucking)]),
+        "sc_mixer_push_set": (c_int, [vp, c_int, c_int, c_int]),
+        "sc_mixer_push_key": (c_int, [vp, c_int]),
         "sc_mixer_tap_add": (c_int, [vp, ctypes.POINTER(c_int), c_int, ctypes.POINTER(c_int)]),
         "sc_mixer_tap_remove": (c_int, [vp, c_int]),
         "sc_mixer_tap_take": (c_int, [vp, c_int, vp, c_int, ctypes.POINTER(ctypes.c_int64),
@@ -1330,6 +1342,7 @@ def _media_sigs() -> dict:
         "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
         "sc_mixer_source_filters": (c_int, [vp, c_int, ctypes.POINTER(MixerFilter), c_int]),
         "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
+        "sc_audio_windows_ducking": (c_int, [c_int]),
         "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
         "sc_capture_close": (None, [vp]),
         "sc_playback_open": (c_int, [vp, c_int, ctypes.c_wchar_p, ctypes.POINTER(vp)]),
@@ -1968,6 +1981,13 @@ class SoundMixer:
         d = MixerDucking(int(bool(enabled)), float(amount_db), float(threshold_db), float(attack_ms),
                          float(release_ms), float(hold_ms))
         _check(self._call(self._lib.sc_mixer_set_ducking, ctypes.byref(d)))
+
+    def set_push(self, source: int, mode: int, release_ms: int) -> None:
+        """Push to talk on one sound (PUSH_TALK or PUSH_MUTE; PUSH_OFF or source 0: none)."""
+        _check(self._call(self._lib.sc_mixer_push_set, int(source), int(mode), int(release_ms)))
+
+    def push_key(self, down: bool) -> None:
+        _check(self._call(self._lib.sc_mixer_push_key, int(bool(down))))
 
     def add_tap(self, what: list[int]) -> int:
         entries = (ctypes.c_int * len(what))(*what)

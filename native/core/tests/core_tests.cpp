@@ -88,6 +88,22 @@ int main() {
         CHECK(index == 0 && std::abs(out[0] - 0.375f) < 1e-5f && std::abs(out.back() - 0.375f) < 1e-5f);
         CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 0);
         CHECK(sc_mixer_source_push(mixer, 999, block.data(), SC_MIXER_BLOCK) == SC_ERR_ARGUMENT);
+        // Push to talk on sound a: silent until the key is held, then heard.
+        CHECK(sc_mixer_push_set(mixer, a, SC_PUSH_TALK, 0) == SC_OK);
+        CHECK(sc_mixer_push_set(mixer, a, 7, 0) == SC_ERR_ARGUMENT);
+        auto mixed = [&]() {
+            CHECK(sc_mixer_source_push(mixer, a, block.data(), SC_MIXER_BLOCK) == SC_OK);
+            CHECK(sc_mixer_source_push(mixer, b, block.data(), SC_MIXER_BLOCK) == SC_OK);
+            CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+            CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+            return out.back();
+        };
+        CHECK(std::abs(mixed() - 0.125f) < 1e-5f);
+        CHECK(sc_mixer_push_key(mixer, 1) == SC_OK);
+        CHECK(std::abs(mixed() - 0.375f) < 1e-5f);
+        CHECK(sc_mixer_push_key(mixer, 0) == SC_OK);
+        CHECK(std::abs(mixed() - 0.125f) < 1e-5f);
+        CHECK(sc_audio_windows_ducking(1) == SC_OK);
         sc_mixer_destroy(mixer);
         sc_mixer *clocked = nullptr;  // its own thread mixes, and stops cleanly
         CHECK(sc_mixer_create(1, &clocked) == SC_OK);

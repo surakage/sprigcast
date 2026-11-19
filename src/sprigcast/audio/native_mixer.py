@@ -266,6 +266,8 @@ class NativeMixer:
         self._native_taps: dict[tuple, int] = {}  # (callback, tracks) -> the engine's tap
         self._listen_taps: dict[str, int] = {}  # a sound (or listen.MIX) heard by a plugin -> the engine's tap
         self._ducking_sent: Ducking | None = None
+        self._push_wanted: tuple[str, str, int] = ("", "off", 0)  # push to talk: (source id, mode, release ms)
+        self._push_sent: tuple | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
         self._said: dict[str, tuple[str, float]] = {}
@@ -289,6 +291,13 @@ class NativeMixer:
     def set_sources(self, sources: list) -> None:
         with self._lock:
             self._sources = [s for s in sources if hasattr(s, "read_block")]
+
+    def set_push(self, source_id: str, mode: str, release_ms: int) -> None:
+        """As Mixer.set_push: sent to the engine with the sound's id there on the next block."""
+        self._push_wanted = (source_id or "", mode if mode in ("talk", "mute") else "off", int(release_ms))
+
+    def push_key(self, down: bool) -> None:
+        self._engine.push_key(bool(down))
 
     def add_extra(self, player) -> None:
         with self._lock:
@@ -408,6 +417,7 @@ class NativeMixer:
         heard = listen.LISTENERS
         self._sounds = sounds = self._reconcile(sources, heard)
         self._send_ducking()
+        self._send_push(sounds)
         self._sync_taps()
         for _ in range(blocks):
             for source, sound in sounds:
@@ -645,6 +655,15 @@ class NativeMixer:
             gain = dict(sound.settings or ()).get("gain", 1.0)
             listen.hand(heard[sid], block * np.float32(gain) if gain != 1.0 else block)
         self._engine.push(sound.id, block)
+
+    def _send_push(self, sounds) -> None:
+        source_id, mode, release_ms = self._push_wanted
+        native = next((sound.id for source, sound in sounds if getattr(source, "id", None) == source_id), 0)
+        modes = {"talk": sprigcore.PUSH_TALK, "mute": sprigcore.PUSH_MUTE}
+        wanted = (native, modes.get(mode, sprigcore.PUSH_OFF) if native else sprigcore.PUSH_OFF, release_ms)
+        if wanted != self._push_sent:
+            self._engine.set_push(*wanted)
+            self._push_sent = wanted
 
     def _send_ducking(self) -> None:
         d = self.ducking

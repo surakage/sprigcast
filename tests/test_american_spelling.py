@@ -14,7 +14,7 @@ KEEP = {
     "update.py:140",  # an internal error, never shown
     "output/nvenc_d3d11.py:417",  # a log line
     "output/service_signin.py:131",  # a log line
-    "core/scene.py:1003", "core/scene.py:1004",  # an internal value
+    "core/scene.py:1017", "core/scene.py:1018",  # an internal value
     "core/style.py:60",  # custom looks also accept "colour" when people type it
 }
 
