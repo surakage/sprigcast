@@ -453,20 +453,14 @@ def recording_path(folder: Path, canvas_id: str, when: datetime, container: str)
 X264_PRESETS = {"p1": "ultrafast", "p2": "superfast", "p3": "veryfast", "p4": "veryfast", "p5": "veryfast",
                 "p6": "faster", "p7": "fast"}  # CPU encoding: keep it light, games need the CPU too
 LOOKAHEAD_FRAMES = 16
-# x264 on the CPU keeps pictures in memory for every thread and every frame it looks ahead, and its own choice is
-# 1.5 threads per CPU thread: on the user's 16-thread PC a 1080p stream started 28 threads and took 351 MB (PC,
-# 2026-11-19). A PC with four CPU threads or fewer (the 4 GB all-in-ones) gets one per CPU thread and looks at
-# most X264_LIGHT_LOOKAHEAD frames ahead; a bigger PC gets x264's choice up to X264_THREADS_MOST.
-X264_THREADS_MOST = 12
+# x264 on the CPU keeps pictures in memory for every frame it looks ahead. A PC with four CPU threads or fewer (the
+# 4 GB all-in-ones) looks at most X264_LIGHT_LOOKAHEAD frames ahead (720p medium: 184 -> 84 MB). The thread count
+# stays x264's own: giving it one ("threads") made one canvas's recording come out 15 frames short next to the
+# replay buffer (tests/test_packet_writer.py on a 4-thread machine, 2026-11-19), so it is not set until that is
+# understood.
 X264_LIGHT_CPUS = 4
 X264_LIGHT_LOOKAHEAD = 10  # veryfast's own; the slower presets look 20-60 frames ahead
 X264_NO_LOOKAHEAD = ("ultrafast", "superfast")  # these presets look at none: left alone
-
-
-def x264_threads(cpus: int | None = None) -> int:
-    """The threads x264 gets on a PC with this many CPU threads (this PC's when not given)."""
-    cpus = max(1, cpus or os.cpu_count() or 1)
-    return cpus if cpus <= X264_LIGHT_CPUS else min(cpus * 3 // 2, X264_THREADS_MOST)
 
 
 def x264_light(cpus: int | None = None) -> bool:
@@ -586,7 +580,6 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
             opts["nal-hrd"] = "cbr"
     if not enc.adaptive_quant:
         opts["aq-mode"] = "0"
-    opts["threads"] = str(x264_threads())
     if x264_light() and opts["preset"] not in X264_NO_LOOKAHEAD and opts.get("tune") != "zerolatency":
         opts["rc-lookahead"] = str(X264_LIGHT_LOOKAHEAD)  # (zerolatency looks at none either)
     return opts
