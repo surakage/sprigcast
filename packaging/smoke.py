@@ -90,6 +90,20 @@ BAD = re.compile(r"partially initialized|circular import|ImportError|ModuleNotFo
 LEVEL = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ (ERROR|CRITICAL|WARNING) ")
 
 
+# The capture helper (app/capture_helper.py) is in the installed program and starts: it says "ready" and ends.
+HELPER = """
+import subprocess, sys
+from sprigcast.app import capture_helper
+command = capture_helper.helper_command()
+if command is None:
+    sys.exit("SprigCastCapture.exe isn't next to sprigcore.dll")
+out = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=30)
+if out.returncode != 0 or "ready" not in out.stdout:
+    sys.exit(f"SprigCastCapture.exe --check: exit code {out.returncode}, said {out.stdout!r} {out.stderr!r}")
+print(command[0])
+"""
+
+
 def problems(text: str) -> list[str]:
     """The lines in a run's log that fail the check (an error, or a warning about import or media trouble)."""
     found = []
@@ -148,6 +162,14 @@ def main() -> int:
     stage("making the test video")
     subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True, timeout=120)
     print(f"Made {clip} ({size(clip) // 1024} KB)", flush=True)
+    if sys.platform == "win32":
+        stage("checking the capture helper")
+        checked = subprocess.run([sys.executable, "-I", "-c", HELPER], capture_output=True, text=True, timeout=120,
+                                 check=False)
+        if checked.returncode != 0:
+            print(f"SMOKE TEST FAILED: the capture helper doesn't start: {checked.stderr.strip()}", flush=True)
+            return 1
+        print(f"The capture helper starts ({checked.stdout.strip()})", flush=True)
     stage("setting up the garden")
     light = os.environ.get("SMOKE_LIGHT") == "1"
     paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip), "light" if light else "full"],
