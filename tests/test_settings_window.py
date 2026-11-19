@@ -767,3 +767,20 @@ def test_quality_tab_quick_picks_places_and_delay(app):
     f.set_room(40.0, True, "Encoder 40% busy · room for about 2 more")
     assert f.load_row.isVisibleTo(f) and f.load_bar.value() == 40
     w.close()
+
+
+def test_fine_tuning_is_its_own_card_two_to_a_row_with_expert(app):
+    w = _window(_collection(), tab="Stream/Quality")
+    w.show()
+    app.processEvents()
+    f = w.stream_quality.stream_form
+    assert f.fine.title() == "Fine tuning" and not f.fine.isVisible()
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert f.fine.isVisible() and f.rate_control.parentWidget() is f.fine
+    grid = f._fine_grid
+    columns = {grid.getItemPosition(grid.indexOf(f.rate_control))[1], grid.getItemPosition(grid.indexOf(f.keyint))[1]}
+    assert columns == {1, 3}  # side by side
+    assert not f.audio.isVisible()  # Stream's audio bitrate is in its Sound card
+    assert w.recording_tabs.record_form.fine.title() == "Fine tuning"
+    w.close()

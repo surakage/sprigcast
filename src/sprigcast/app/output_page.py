@@ -40,7 +40,7 @@ PRESETS = {
 }
 TUNINGS = {"hq": "High Quality", "ll": "Low Latency", "ull": "Ultra Low Latency"}
 MULTIPASS = {"disabled": "Single Pass", "qres": "Two Passes (Quarter Resolution)", "fullres": "Two Passes (Full Resolution)"}
-PROFILES = {"high": "high", "main": "main", "baseline": "baseline"}
+PROFILES = {"high": "High", "main": "Main", "baseline": "Baseline"}
 AUDIO_KBPS = [96, 128, 160, 192, 256, 320]
 
 
@@ -175,10 +175,8 @@ class EncoderForm(QGroupBox):
         self.quality.addItem("Custom", "custom")
         self.quality.setToolTip("Lighter leaves more of your PC for games. Better looking costs more of the "
                                 "graphics card (or the CPU with x264).")
-        form.addRow("Quality steps", self.quality)
         self._expert = False
         self.rate_control = _combo(RATE_CONTROLS, settings.rate_control)
-        form.addRow("Rate control", self.rate_control)
         self.cq_level = QSpinBox()
         self.cq_level.setRange(1, 51)
         self.cq_level.setValue(settings.cq_level)
@@ -186,51 +184,41 @@ class EncoderForm(QGroupBox):
         form.addRow("Quality level", self.cq_level)
         self.keyint = QSpinBox()
         self.keyint.setRange(0, 10)
+        self.keyint.setPrefix("Every ")
         self.keyint.setSuffix(" s")
         self.keyint.setSpecialValueText("Auto (2 s)")
         self.keyint.setValue(settings.keyint_sec)
-        form.addRow("Keyframe interval", self.keyint)
         self.preset = _combo(PRESETS, settings.preset)
-        form.addRow("Preset", self.preset)
         self.x264_preset = _combo(X264_PRESETS, settings.x264_preset)
         self.x264_preset.setToolTip("How hard the CPU works on each frame. Slower presets look better but "
                                     "take CPU time away from your game.")
-        form.addRow("CPU usage preset", self.x264_preset)
         self.tuning = _combo(TUNINGS, settings.tuning)
-        form.addRow("Tuning", self.tuning)
         self.x264_tune = _combo(X264_TUNES, settings.x264_tune)
-        form.addRow("Tune", self.x264_tune)
         self.multipass = _combo(MULTIPASS, settings.multipass)
-        form.addRow("Multipass mode", self.multipass)
         self.profile = _combo(PROFILES, settings.profile)
-        form.addRow("Profile", self.profile)
         self.b_frames = QSpinBox()
         self.b_frames.setRange(0, 4)
         self.b_frames.setValue(settings.b_frames)
         self.b_frames.setToolTip("0 keeps SprigCast's lighter NVENC path, which uses less memory.")
-        form.addRow("B-frames", self.b_frames)
-        self.lookahead = QCheckBox("Look-ahead")
+        self.lookahead = QCheckBox("On")
         self.lookahead.setToolTip("Lets the encoder look a few frames ahead to spend bits where motion starts. "
                                   "Uses more GPU time.")
         self.lookahead.setChecked(settings.lookahead)
-        form.addRow("", self.lookahead)
         self.adaptive_quant = QCheckBox("Adaptive quantization")
         self.adaptive_quant.setToolTip("Spends more bits on flat areas (skies, walls) where blockiness shows most.")
         self.adaptive_quant.setChecked(settings.adaptive_quant)
-        form.addRow("", self.adaptive_quant)
         self.audio = QComboBox()
         for kbps in sorted({*AUDIO_KBPS, settings.audio_kbps}):
             self.audio.addItem(f"{kbps} kbps", kbps)
         self.audio.setCurrentIndex(self.audio.findData(settings.audio_kbps))
-        form.addRow("Audio bitrate", self.audio)
         self.reset = QPushButton("Reset to defaults")
-        self.reset.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.reset.setStyleSheet(theme.LINK_STYLE)
         self.reset.setCursor(Qt.CursorShape.PointingHandCursor)
         self.reset.setAutoDefault(False)
         self.reset.clicked.connect(self.reset_to_defaults)
-        form.addRow("", self.reset)
         self.note = _hint("")
         form.addRow("", self.note)
+        self._make_fine()
         self.rate_control.currentIndexChanged.connect(self._update_rows)
         self.encoder.currentIndexChanged.connect(self._update_rows)
         self.encoder.currentIndexChanged.connect(self._show_quality)
@@ -245,6 +233,56 @@ class EncoderForm(QGroupBox):
     def set_expert(self, on: bool) -> None:
         self._expert = on
         self._update_rows()
+
+    # Fine tuning: the encoder's own settings, two to a row, in a card of their own (expert only) ----------------
+
+    FINE_LABELS = (("quality", "Quality steps"), ("rate_control", "Rate control"), ("keyint", "Keyframes"),
+                   ("preset", "Preset"), ("x264_preset", "CPU usage preset"), ("profile", "Profile"),
+                   ("tuning", "Tune"), ("x264_tune", "Tune"), ("multipass", "Multipass"), ("b_frames", "B-frames"),
+                   ("lookahead", "Look-ahead"), ("audio", "Audio bitrate"))
+
+    def _make_fine(self) -> None:
+        from PySide6.QtWidgets import QGridLayout
+
+        self._show_audio = True  # Stream → Quality shows the audio bitrate in its own Sound card
+        self.fine = QGroupBox("Fine tuning", self)  # (the page puts it in its own place, under this card)
+        self.fine.setObjectName("fineTuning")
+        outer = QVBoxLayout(self.fine)
+        outer.setSpacing(12)
+        self._fine_grid = QGridLayout()
+        self._fine_grid.setHorizontalSpacing(14)
+        self._fine_grid.setVerticalSpacing(10)
+        outer.addLayout(self._fine_grid)
+        self._fine_pairs: dict[QWidget, QLabel] = {}
+        for name, text in self.FINE_LABELS:
+            label = QLabel(text, self.fine)  # owned by the card from the start: a row this encoder doesn't use
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            widget = getattr(self, name)
+            widget.setParent(self.fine)  # is never laid out, and a widget with no parent outlives the window
+            widget.hide()
+            label.hide()
+            self._fine_pairs[widget] = label
+        outer.addWidget(self.adaptive_quant)
+        outer.addWidget(self.reset, 0, Qt.AlignmentFlag.AlignLeft)
+        self.fine.setVisible(False)
+
+    def _lay_out_fine(self, shown: list[QWidget]) -> None:
+        """Put the rows this encoder reads two to a row; the rest are taken out (they'd do nothing)."""
+        grid = self._fine_grid
+        for widget, label in self._fine_pairs.items():
+            grid.removeWidget(widget)
+            grid.removeWidget(label)
+            widget.setVisible(False)
+            label.setVisible(False)
+        for i, widget in enumerate(shown):
+            row, col = divmod(i, 2)
+            label = self._fine_pairs[widget]
+            grid.addWidget(label, row, col * 2)
+            grid.addWidget(widget, row, col * 2 + 1)
+            label.setVisible(True)
+            widget.setVisible(True)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
 
     def set_room(self, load_pct: float | None, has_room: bool = True, text: str = "") -> None:
         """The encoder's load right now (from Garden check's reading); None hides the Load row."""
@@ -312,25 +350,28 @@ class EncoderForm(QGroupBox):
         gpu = fam != "x264"
         x = self._expert
         rows = {
-            self.quality: x,
             self.load_row: self._room is not None,
-            self.rate_control: x,
             self.cq_level: self.rate_control.currentData() == "cqp",
-            self.keyint: x,
-            self.preset: x and gpu and fam != "mf",
-            self.tuning: x and fam in ("nvenc", "amf", "qsv"),
-            self.multipass: x and fam == "nvenc",
-            self.profile: x and self.codec() in ("h264_nvenc", "h264_amf", "h264_qsv", "libx264"),
-            self.b_frames: x and fam == "nvenc",
-            self.lookahead: x and fam in ("nvenc", "qsv"),
-            self.adaptive_quant: x and fam in ("nvenc", "amf", "x264"),
-            self.x264_preset: x and not gpu,
-            self.x264_tune: x and not gpu,
-            self.audio: x,
-            self.reset: x,
         }
         for widget, visible in rows.items():
             self._form.setRowVisible(widget, visible)
+        fine = {
+            self.quality: True,
+            self.rate_control: True,
+            self.keyint: True,
+            self.preset: gpu and fam != "mf",
+            self.x264_preset: not gpu,
+            self.tuning: fam in ("nvenc", "amf", "qsv"),
+            self.x264_tune: not gpu,
+            self.multipass: fam == "nvenc",
+            self.profile: self.codec() in ("h264_nvenc", "h264_amf", "h264_qsv", "libx264"),
+            self.b_frames: fam == "nvenc",
+            self.lookahead: fam in ("nvenc", "qsv"),
+            self.audio: self._show_audio,
+        }
+        self._lay_out_fine([w for w, show in fine.items() if show])
+        self.adaptive_quant.setVisible(fam in ("nvenc", "amf", "x264"))
+        self.fine.setVisible(x)
         notes = {
             "x264": "x264 encodes on the CPU. It looks great but competes with your game for CPU time.",
             "mf": "Windows Media Foundation has few options of its own. Use NVENC, AMF or Quick Sync if you have them.",
@@ -538,7 +579,11 @@ class StreamQuality(QWidget):
             box.addWidget(_hint("You're live. End the stream to change these."))
         self.stream_form = EncoderForm("Encoder", collection.stream_encoder, encoder_name, streaming=True)
         self.stream_form.setEnabled(not streaming)
+        self.stream_form._show_audio = False  # in the Sound card below
+        self.stream_form._update_rows()
+        self.stream_form.fine.setEnabled(not streaming)
         box.addWidget(self.stream_form)
+        box.addWidget(self.stream_form.fine)
 
         # What each place gets: read from the place list (its unsaved choices too: show_places)
         self.places_box = QGroupBox("What each place gets")
@@ -595,10 +640,9 @@ class StreamQuality(QWidget):
         self.stream_delay.setSpecialValueText("Off")
         self.stream_delay.setSuffix(" s")
         self.stream_delay.setValue(int(stream_delay()))
-        self.stream_delay.setFixedWidth(130)
+        self.stream_delay.setFixedWidth(110)
         self.stream_delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stream_delay.setStyleSheet("QSpinBox { padding: 7px 14px; }"
-                                        " QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
+        self.stream_delay.setStyleSheet("QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
         self.stream_delay.setToolTip("Viewers see everything this many seconds late, so nobody can use your stream "
                                      "to find you in a game.\nRecordings and clips aren't delayed.")
         self.stream_delay.setEnabled(not streaming)
@@ -813,7 +857,9 @@ class RecordingTabs(QWidget):
             self.record_form = EncoderForm("Encoder", rec.encoder, encoder_name)
             self.record_form.setEnabled(not recording)
             self.record_form.set_expert(self._expert)
+            self.record_form.fine.setEnabled(not recording)
             box.insertWidget(box.count() - 1, self.record_form)
+            box.insertWidget(box.count() - 1, self.record_form.fine)
 
         def sources():
             from sprigcast.app.source_record_box import SourceRecordBox
