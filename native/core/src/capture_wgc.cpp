@@ -146,6 +146,10 @@ private:
 
 thread_local bool Keeper::keeper_thread = false;
 
+// Captures started and not yet closed. Said in the log with each start and close: a capture left open keeps its
+// frame pool on the card (2 pictures; PC soak 2026-11-19: 16 MB more graphics memory per wake of a display capture).
+std::atomic<int> open_captures{0};
+
 }  // namespace
 
 void CaptureRetire::operator()(ScreenCapture *capture) const {
@@ -188,14 +192,28 @@ struct ScreenCapture::Impl {
     std::chrono::steady_clock::duration step{};
     std::chrono::steady_clock::time_point next_due{};
     int width = 0, height = 0;
+    bool counted = false;  // started: one of open_captures
 
     void close() noexcept {
+        const auto began = std::chrono::steady_clock::now();
         try {
             closed.revoke();
         } catch (...) {
         }
         try {
-            if (session) session.Close();
+            if (session) session.Close();  // first: Windows draws no more pictures into the pool
+        } catch (...) {
+        }
+        // Pictures Windows drew that were never taken go back before the pool closes: one still out keeps the
+        // pool's textures on the card.
+        int handed_back = 0;
+        try {
+            while (pool) {
+                wgc::Direct3D11CaptureFrame left = pool.TryGetNextFrame();
+                if (!left) break;
+                left.Close();
+                ++handed_back;
+            }
         } catch (...) {
         }
         try {
@@ -206,6 +224,18 @@ struct ScreenCapture::Impl {
         pool = nullptr;
         item = nullptr;
         d3d = nullptr;
+        if (counted) {
+            counted = false;
+            const int open = --open_captures;
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - began).count();
+            try {
+                log_line(SC_LOG_INFO, "capture: closed in " + std::to_string(ms) + " ms (" +
+                                          std::to_string(handed_back) + " pictures handed back, " +
+                                          std::to_string(open) + " still open)");
+            } catch (...) {
+            }
+        }
     }
 
     // As sources/capture.py did: steady on a grid while pictures keep up, a little slack so 60 on a 60 Hz game
@@ -309,6 +339,9 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
             c.step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::milliseconds(ask.interval_ms));
         c.session.StartCapture();
+        c.counted = true;
+        log_line(SC_LOG_INFO, std::string("capture: started a ") + (ask.window ? "window" : "display") + " (" +
+                                  std::to_string(++open_captures) + " open)");
     } catch (const winrt::hresult_error &x) {
         refusal = x.code() == E_ACCESSDENIED ? CaptureRefusal::NOT_HERE : CaptureRefusal::TARGET_GONE;
         why = hr_text("the capture didn't start", x.code());

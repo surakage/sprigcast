@@ -175,6 +175,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Python drew every sprig and copied every source of every canvas again; now only the sources it waits for are
   copied. Sources waking are spread over ticks (about 4 ms of waking a tick), and the window measures its
   previews four times a second, not on every poll.
+- New engine capture: graphics memory grew about 16 MB each time a display capture woke (PC soak 2026-11-19,
+  5.5 MB a minute over 80 minutes; 16 MB is one capture's pool of 2 pictures). A capture going to sleep now hands
+  every picture Windows drew back before it closes its pool, and the log says each capture's start and close with
+  how many are still open, so a capture left open shows at once. Not confirmed on the PC yet.
 - New engine: switching to a bloom with a display, window or game capture no longer reads the capture back from
   the card and copies it to Python's compositor while the switch waits for its first picture (PC soak 2026-11-19:
   display capture 22 to 130 ms on the switch frame, a 191 ms frame). The engine says when it has shown a picture.
