@@ -544,6 +544,25 @@ def test_a_video_the_engine_plays_never_passes_through_python():
     assert not video.asleep and video.asked == before + 1
 
 
+def test_a_switch_waiting_on_one_source_leaves_the_engines_videos_alone(monkeypatch):
+    """While a switch waited for a picture, every source was copied for Python's compositor again, on every
+    canvas: a vertical-only switch cost the streamed horizontal canvas a read-back of its background video each
+    frame (PC soak 2026-11-19). Only the sources the switch waits for are copied."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    video = engine._sources["clip"] = EngineVideo()
+    awaited = engine._sources["cam"] = EngineVideo()
+    engine._collection.scenes[0].items += [SceneItem(source="clip"), SceneItem(source="cam")]
+    _run(engine, fake, seconds=0.2)
+    engine._waking["h"] = (engine._collection.scenes[0], 1e9, {"cam"})
+    monkeypatch.setattr(engine, "_switch_waits", lambda compositor, canvas_id, now: True)
+    asked, ticked, cam_asked = video.asked, video.ticked, awaited.asked
+    for i in range(10):
+        engine._tick(fake, 20.0 + i / 60)
+    assert video.asked == asked and video.ticked == ticked + 10  # stays with the engine
+    assert awaited.asked == cam_asked + 10  # Python's compositor gets the one it waits for
+
+
 def test_the_bridge_tells_the_engine_once_which_player_a_source_shows(monkeypatch):
     calls = []
 

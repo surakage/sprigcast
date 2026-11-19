@@ -170,6 +170,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: a bloom switch on one canvas no longer makes the other canvas's frames late (PC soak 2026-11-19:
+  about 24 late frames a minute, in bursts on each vertical-only switch). While a switch waited for a picture,
+  Python drew every sprig and copied every source of every canvas again; now only the sources it waits for are
+  copied. Sources waking are spread over ticks (about 4 ms of waking a tick), and the window measures its
+  previews four times a second, not on every poll.
 - New engine: on a PC with no graphics driver (only Windows' software renderer, the Microsoft Basic Render
   Driver) the old engine draws, as the new one fell 5-47 s behind per frame there; `SPRIGCAST_ENGINE=native` still
   asks for it. Copies back from the card (previews, outputs) wait for an event query, never in Map, and a stuck
