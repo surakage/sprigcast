@@ -679,7 +679,7 @@ class MainWindow(QMainWindow):
     def _connect_twitch(self) -> None:
         from sprigcast.app.accounts_page import open_accounts
 
-        open_accounts(self)  # the one place to sign in; the Chat panel hears about the new account itself
+        open_accounts(self, "twitch")  # Settings → Stream, on the Twitch place; the Chat panel hears the new account
 
     def open_stream_details(self) -> None:
         """Stream details: title, category and the rest, saved straight to Twitch, YouTube and Kick."""
