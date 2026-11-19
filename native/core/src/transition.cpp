@@ -139,7 +139,7 @@ struct TransitionConstants {
     int overlay_swizzle;
     float unused2[3];
 };
-static_assert(sizeof(TransitionConstants) == 80, "matches the shader's constant buffer");
+static_assert(sizeof(TransitionConstants) == 96, "matches the shader's constant buffer");
 
 constexpr double LEAF_TURN = 0.785, LEAF_SPIN = 0.5, BLOOM_SPIN = 1.2;
 
