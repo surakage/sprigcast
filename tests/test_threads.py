@@ -1,7 +1,19 @@
 import threading
 import time
 
+import pytest
+
 from sprigcast.core import pacing, workers
+
+
+@pytest.fixture
+def check_window(monkeypatch):
+    """The stall watch's look at the window, for this test alone to call. A stall watch an earlier test started
+    never ends and looks at the window too, with the real time: in a full run it sometimes noted where the window
+    was before the test's own look did (or after the test thought the window had answered)."""
+    look = pacing._check_window
+    monkeypatch.setattr(pacing, "_check_window", lambda now: None)
+    return look
 
 
 def test_thread_census_groups_names_by_kind():
@@ -131,7 +143,7 @@ def test_trimming_memory_keeps_the_pages_used_last():
     assert all(size != (1 << 64) - 1 for size in calls[0][1:3])  # not (SIZE_T)-1, which empties it
 
 
-def test_the_window_not_answering_is_logged_with_where_it_was(caplog):
+def test_the_window_not_answering_is_logged_with_where_it_was(caplog, check_window):
     import logging
     import threading
 
@@ -141,7 +153,7 @@ def test_the_window_not_answering_is_logged_with_where_it_was(caplog):
     pacing._ui.update(beat=None, ident=None, where=None, clock=lambda: clock[0])
     try:
         pacing.ui_beat()  # this thread plays the window's
-        pacing._check_window(10.1)
+        check_window(10.1)
         assert pacing._ui["where"] is None  # 100 ms: fine
         seen, stop = threading.Event(), threading.Event()
 
@@ -150,7 +162,7 @@ def test_the_window_not_answering_is_logged_with_where_it_was(caplog):
                 sum(range(100))
 
         def check():
-            pacing._check_window(11.7)
+            check_window(11.7)
             seen.set()
 
         threading.Thread(target=hog, name="lock-hog").start()
@@ -242,7 +254,7 @@ def test_keep_watching_starts_it_again(monkeypatch):
     assert pacing.keep_watching() and started == [{"interval": 0.05}]
 
 
-def test_window_stall_is_noted_whole_even_if_the_window_answers_meanwhile(monkeypatch):
+def test_window_stall_is_noted_whole_even_if_the_window_answers_meanwhile(monkeypatch, check_window):
     from sprigcast.core import pacing
 
     pacing._ui.update(beat=10.0, ident=threading_ident(), where=None)
@@ -253,7 +265,7 @@ def test_window_stall_is_noted_whole_even_if_the_window_answers_meanwhile(monkey
 
     monkeypatch.setattr(pacing, "busy_stacks", answered)
     try:
-        pacing._check_window(11.0)
+        check_window(11.0)
         assert "meanwhile render at engine.py:1 tick" in pacing._ui["where"]
     finally:
         pacing._ui.update(beat=None, ident=None, where=None)
@@ -310,7 +322,7 @@ def test_a_slow_frame_step_names_where_the_window_was(monkeypatch):
     assert "window at " in engine._where()
 
 
-def test_fine_window_watch_logs_short_stalls_with_where_they_were(caplog):
+def test_fine_window_watch_logs_short_stalls_with_where_they_were(caplog, check_window):
     """SPRIGCAST_UI_STALL_MS=50 (the PC's pop-up sweep): every window stall from 50 ms is logged with the window
     thread's stack, taken half way; shorter ones are dropped; without it the usual 250 ms watch is unchanged."""
     import logging
@@ -328,7 +340,7 @@ def test_fine_window_watch_logs_short_stalls_with_where_they_were(caplog):
         seen = threading.Event()
 
         def check(at):
-            pacing._check_window(at)
+            check_window(at)
             seen.set()
 
         threading.Thread(target=check, args=(10.02,)).start()
