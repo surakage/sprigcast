@@ -631,6 +631,9 @@ class Recorder:
     opening_queue = OPENING_QUEUE  # tests feed frames faster than real time and raise this
 
     def start(self) -> None:
+        from sprigcast.core.memory_map import around_encoder
+
+        around_encoder(self._thread.name.removeprefix("sprigcast-"))
         self._opening = True
         self._thread.start()
 
