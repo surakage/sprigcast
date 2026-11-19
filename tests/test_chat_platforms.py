@@ -192,6 +192,7 @@ def test_kick_reader_over_a_real_socket(monkeypatch):
     assert asked == ["channel=moss"] and [m.text for m in got] == ["hello"] and "live" in states
     clients[0].close()
     wait(lambda: states[-1].startswith("offline"))
-    assert states[-1] == "offline: disconnected" and reader._retry.isActive()
+    assert states[-1].startswith("offline: disconnected") and reader._retry.isActive()
+    assert reader._retry.interval() == kick.QUICK_RETRY * 1000  # a link that was working: back quickly
     reader.stop()
     server.close()
