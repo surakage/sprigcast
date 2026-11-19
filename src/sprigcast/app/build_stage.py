@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -194,18 +195,38 @@ KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_cap
               "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
 
 
+KIND_TINTS = {  # each kind its own colour, so a list reads at a glance (pink stays for Live and Recording)
+    "game_capture": "#b388ff", "display_capture": "#7fb8ff", "window_capture": "#9aa7ff", "camera": "#4cc9f0",
+    "chat": "#ffd23f", "browser": "#5fe0d0", "image": "#a6e36b", "slideshow": "#c8e86b", "media": "#ff9f5a",
+    "text": "#dfe7e2", "audio_input": "#ffb35c", "audio_output": "#f2c46b", "app_audio": "#ffc98a",
+    "scene": theme.ACCENT,
+}
+
+
+def _mix(top: str | QColor, under: str, amount: float) -> QColor:
+    a, b = QColor(top), QColor(under)
+    return QColor(round(a.red() * amount + b.red() * (1 - amount)), round(a.green() * amount + b.green() * (1 - amount)),
+                  round(a.blue() * amount + b.blue() * (1 - amount)))
+
+
 def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False,
                     sprig: bool = False) -> None:
-    """A small drawn icon on a soft chip saying what a source is: screen, window, game, camera, picture...
-    Each kind has its own, so you can tell them apart whatever they're named. sprig: a sprig showing that
-    kind (its icon in green, like the sprig leaf)."""
+    """A small drawn icon on a soft colour chip saying what a source is: screen, window, game, camera,
+    picture... Each kind has its own icon and colour, so you can tell them apart whatever they're named.
+    sprig: a sprig showing that kind (same look, so a webcam sprig reads like a webcam)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(theme.RAISED_HOVER if selected else theme.RAISED))
-    p.drawRoundedRect(r, 7, 7)
-    ink = QColor(theme.ACCENT if kind == "scene" or sprig else theme.SELECT_TEXT if selected else theme.TEXT)
-    pen = QPen(ink, 1.4)
+    tint = QColor(str(colour or "#888888")[:7]) if kind == "color" else QColor(KIND_TINTS.get(kind, "#9fb3a9"))
+    under = theme.SELECT_BG if selected else theme.PANEL
+    chip = _mix(tint, under, 0.17)
+    glow = QLinearGradient(r.topLeft(), r.bottomLeft())
+    glow.setColorAt(0.0, _mix(tint, under, 0.24))
+    glow.setColorAt(1.0, chip)
+    p.setPen(QPen(_mix(tint, under, 0.42), 1))
+    p.setBrush(glow)
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 7, 7)
+    ink = tint
+    pen = QPen(ink, 1.5)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
@@ -222,7 +243,7 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "gamepad", ink, 1.4)
     elif kind == "slideshow":  # pictures in a stack
         p.drawRoundedRect(QRectF(cx - 4.5, cy - 6.5, 11, 8.5), 1.5, 1.5)
-        p.setBrush(QColor(theme.RAISED_HOVER if selected else theme.RAISED))
+        p.setBrush(chip)
         p.drawRoundedRect(QRectF(cx - 6.5, cy - 3.5, 11, 9), 1.5, 1.5)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawLine(QPointF(cx - 4.5, cy + 3.5), QPointF(cx - 2, cy + 0.5))
