@@ -630,6 +630,33 @@ class SceneCollection(BaseModel):
         groups += [(f, [p for p in parts if p.folder == f.id]) for f in self.part_folders()]
         return groups
 
+    def part_on(self, part: Scene, canvas_id: str, _seen: frozenset = frozenset()) -> bool:
+        """True if a part belongs with this canvas: it has a layout made for it, or a bloom on it (or a part
+        that does) places it. Build lists only these, so each canvas stays organised on its own; a part
+        shared by both canvases shows on both."""
+        part = self.main_part(part)
+        if any(shape.canvas == canvas_id for shape in self.shapes(part)):
+            return True
+        if part.id in _seen:
+            return False
+        seen = _seen | {part.id}
+        for user in self.part_uses(part.id):
+            if user.kind == "show" and user.canvas == canvas_id:
+                return True
+            if user.kind == "part" and self.part_on(user, canvas_id, seen):
+                return True
+        return False
+
+    def grouped_parts_on(self, canvas_id: str) -> list[tuple[SceneFolder | None, list[Scene]]]:
+        """grouped_parts() for one canvas: its parts only. A folder whose parts are all on the other canvas
+        is left out; an empty folder (just made) stays, so things can be put in it."""
+        out = []
+        for folder, parts in self.grouped_parts():
+            here = [p for p in parts if self.part_on(p, canvas_id)]
+            if folder is None or here or not parts:
+                out.append((folder, here))
+        return out
+
     def scenes_for(self, canvas_id: str) -> list[Scene]:
         """The shows on a canvas (parts are listed by parts())."""
         return [s for s in self.scenes if s.canvas == canvas_id and s.kind == "show"]
