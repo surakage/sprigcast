@@ -16,6 +16,7 @@ Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78
   from OBS has about 27 of these per canvas, which kept the graphics card at 71% doing nothing.
 - Build's sprig list and "used in" counts walk the garden once, not once per sprig (0.8 to 1.1 s freezes with that
   garden).
+- Build's list: a click on a row at the moment the list is made again no longer raises an error.
 - Pages brought over from OBS sleep while not on screen, like any SprigCast page. OBS keeps every page running
   unless told otherwise, and that was carried over. One note after the import says so.
 
