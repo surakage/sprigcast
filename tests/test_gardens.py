@@ -346,13 +346,15 @@ def test_window_import_while_live_asks_first(window, tmp_path, monkeypatch):
     import json
 
     from PySide6.QtWidgets import QMessageBox
+
+    from sprigcast.app import message as msgbox
     from test_convert import obs_file
 
     w = window
     file = tmp_path / "Streaming.json"
     file.write_text(json.dumps(obs_file()), encoding="utf-8")
     asked = []
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.No)
+    monkeypatch.setattr(msgbox, "question", lambda *a, **k: asked.append(a) or QMessageBox.StandardButton.No)
     w.streaming = object()
     assert w.gardens.import_garden(file, show_notes=False) is None
     assert asked and w.gardens.shelf.garden().name == "Main"  # added, but the show on air stays

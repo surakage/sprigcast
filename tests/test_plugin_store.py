@@ -107,6 +107,8 @@ def test_slide_show_fits_each_picture_and_moves_on(tmp_path, app):
 def test_store_page_adds_and_removes(tmp_path, app, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
+    from sprigcast.app import message as msgbox
+
     from sprigcast.app.plugin_store_page import PluginStorePage
     from sprigcast.core.scene import SceneCollection, SourceConfig
 
@@ -121,10 +123,10 @@ def test_store_page_adds_and_removes(tmp_path, app, monkeypatch):
     assert row.button.text() == "Remove" and "+ → Plugins → Slide show" in row.note.text() and changed
     col.sources.append(SourceConfig(id="s", kind="slideshow", name="Holiday pics"))
     assert page.used_by("slide_show") == ["Holiday pics"]
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
+    monkeypatch.setattr(msgbox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.No))
     row.button.click()
     assert row.button.text() == "Remove"  # kept: something still uses it
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(msgbox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     row.button.click()
     assert row.button.text() == "Add" and "slideshow" not in known_kinds()
 

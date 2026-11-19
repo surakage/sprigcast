@@ -132,19 +132,20 @@ def clear_all(recordings: Path | None = None) -> list[Path]:
 
 def ask(parent) -> tuple[bool, bool]:
     """The confirmation: (go ahead, also the recordings folder). Says plainly what goes and that SprigCast closes."""
-    from PySide6.QtWidgets import QCheckBox, QMessageBox
+    from PySide6.QtWidgets import QCheckBox
 
-    box = QMessageBox(QMessageBox.Icon.Warning, "Clear all my data",
+    from sprigcast.app.message import MessageCard
+
+    box = MessageCard("Clear all my data",
                       "Delete everything SprigCast keeps on this PC?\n\n"
                       "•  Stream keys and sign-ins\n"
                       "•  Paired devices and the Control API password\n"
                       "•  All settings, gardens, paths and plugins\n"
                       "•  Logs, looks and exports in Documents\\SprigCast\n\n"
-                      "SprigCast closes when it's done. This can't be undone.", parent=parent)
+                      "SprigCast closes when it's done. This can't be undone.", parent, "warn", width=480)
     recordings = QCheckBox("Also delete my recordings, clips and screenshots")
-    box.setCheckBox(recordings)
-    go = box.addButton("Delete everything", QMessageBox.ButtonRole.DestructiveRole)
-    cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(cancel)  # Enter never deletes
+    box.add_widget(recordings)
+    go = box.add_button("Delete everything", danger=True)
+    box.add_button("Cancel", default=True)  # Enter never deletes
     box.exec()
-    return box.clickedButton() is go, recordings.isChecked()
+    return box.clicked is go, recordings.isChecked()

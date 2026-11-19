@@ -207,6 +207,8 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
     from PySide6.QtCore import QCoreApplication, QSettings
     from PySide6.QtWidgets import QMessageBox
 
+    from sprigcast.app import message as msgbox
+
     from sprigcast.app.main import load_collection
     from sprigcast.app.main_window import MainWindow
 
@@ -217,7 +219,7 @@ def test_main_window_parts(app, tmp_path, monkeypatch):
     from sprigcast.app.part_dialog import NewPartDialog
 
     monkeypatch.setattr(NewPartDialog, "ask", staticmethod(lambda *a, **k: ("Webcam frame", "horizontal", False)))
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(msgbox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
     col = load_collection(tmp_path / "scenes.json")
     w = MainWindow(col, tmp_path / "scenes.json")
     try:

@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
-    QLabel,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -17,14 +14,17 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import card as popups
 from sprigcast.app import theme
-from sprigcast.app.terms import PART
+from sprigcast.app.card import CardDialog, field_label
 from sprigcast.core.scene import Scene, SceneCollection, SprigState
 
 
-class StatesDialog(QDialog):
+LIST_STYLE = (f"QListWidget {{ background: {theme.CHROME}; border: 1px solid {theme.EDGE_STRONG}; border-radius: 16px;"
+              " padding: 6px; } QListWidget::item { padding: 6px 8px; border-radius: 10px; }")
+
+
+class StatesDialog(CardDialog):
     def __init__(self, collection: SceneCollection, part: Scene, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle(f"Live states · {part.name}")
+        super().__init__(f"Live states · {part.name}", parent, width=620)
         self.states = [s.model_copy(deep=True) for s in part.states]
         # Every item in any layout of the sprig, top-most first.
         self.items: list[tuple[str, str]] = []
@@ -33,10 +33,6 @@ class StatesDialog(QDialog):
                 if all(sid != item.source for sid, _ in self.items):
                     self.items.append((item.source, collection.source(item.source).name))
 
-        intro = QLabel(f"Looks for this {PART} that you switch between in Live, with a quick fade. "
-                       "Tick what each state shows.")
-        intro.setWordWrap(True)
-        intro.setStyleSheet(theme.MUTED_STYLE)
         self.state_list = QListWidget()
         self.state_list.currentRowChanged.connect(self._show_state)
         add = QPushButton("+ State")
@@ -46,29 +42,32 @@ class StatesDialog(QDialog):
         remove = QPushButton("Remove")
         remove.clicked.connect(self._remove)
         left = QVBoxLayout()
-        left.addWidget(QLabel("States"))
+        left.setSpacing(8)
+        left.addWidget(field_label("States"))
         left.addWidget(self.state_list, 1)
         row = QHBoxLayout()
+        row.setSpacing(6)
         for b in (add, rename, remove):
+            b.setStyleSheet(theme.button_style(15, "7px 12px"))
+            b.setAutoDefault(False)
             row.addWidget(b)
         left.addLayout(row)
         self.item_list = QListWidget()
         self.item_list.itemChanged.connect(self._item_ticked)
         right = QVBoxLayout()
-        self.shows_label = QLabel("Shows")
+        right.setSpacing(8)
+        self.shows_label = field_label("Shows")
         right.addWidget(self.shows_label)
         right.addWidget(self.item_list, 1)
         body = QHBoxLayout()
+        body.setSpacing(16)
         body.addLayout(left, 1)
         body.addLayout(right, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root = QVBoxLayout(self)
-        root.addWidget(intro)
-        root.addLayout(body, 1)
-        root.addWidget(buttons)
-        self.resize(560, 380)
+        for box in (self.state_list, self.item_list):
+            box.setStyleSheet(LIST_STYLE)
+        self.state_list.setFixedHeight(220)
+        self.body.addLayout(body, 1)
+        self.ok = self.add_buttons("Save")
         self._fill_states()
 
     def _fill_states(self, select: int = 0) -> None:

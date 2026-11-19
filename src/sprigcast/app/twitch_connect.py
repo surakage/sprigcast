@@ -7,27 +7,23 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QVBoxLayout,
     QWidget,
 )
 
 from sprigcast.app import theme
+from sprigcast.app.card import CardDialog
 from sprigcast.output import twitch_auth
 from sprigcast.output.twitch_auth import Pending, TwitchAuthError
 
 
-class TwitchConnectDialog(QDialog):
+class TwitchConnectDialog(CardDialog):
     """Run exec(); on success `account` is the login name and `stream_key` the fetched key."""
 
     def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Connect Twitch")
-        self.setMinimumWidth(440)
+        super().__init__("Connect Twitch", parent, width=480)
         self.account: str | None = None
         self.stream_key: str | None = None
         self._pool = ThreadPoolExecutor(max_workers=1)
@@ -35,10 +31,10 @@ class TwitchConnectDialog(QDialog):
         self._code: twitch_auth.DeviceCode | None = None
         self._next_poll = 0
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout = self.body
         self.message = QLabel("Asking Twitch for a sign-in code…")
         self.message.setWordWrap(True)
+        self.message.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
         layout.addWidget(self.message)
         self.code = QLabel("")
         font = QFont(self.font())
@@ -48,25 +44,32 @@ class TwitchConnectDialog(QDialog):
         self.code.setFont(font)
         self.code.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.code.setMinimumHeight(QFontMetrics(font).height() + 24)
+        self.code.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; background: {theme.CHROME}; border-radius: 16px;")
         self.code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.code)
         row = QHBoxLayout()
+        row.setSpacing(8)
         self.open_button = QPushButton("Open twitch.tv/activate")
         self.open_button.clicked.connect(self._open_browser)
         self.open_button.setEnabled(False)
         self.copy_button = QPushButton("Copy code")
         self.copy_button.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.code.text()))
         self.copy_button.setEnabled(False)
-        row.addWidget(self.open_button)
-        row.addWidget(self.copy_button)
+        for button in (self.open_button, self.copy_button):
+            button.setStyleSheet(theme.button_style(17, "9px 18px"))
+            button.setAutoDefault(False)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            row.addWidget(button)
         layout.addLayout(row)
         self.status = QLabel("")
         self.status.setWordWrap(True)
-        self.status.setStyleSheet(f"color: {theme.MUTED}")
+        self.status.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         layout.addWidget(self.status)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        cancel = QPushButton("Cancel")
+        cancel.setStyleSheet(theme.button_style(17, "9px 18px"))
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        layout.addWidget(cancel, 0, Qt.AlignmentFlag.AlignRight)
 
         self._job = self._pool.submit(twitch_auth.start_device_flow)
         self.timer = QTimer(self)

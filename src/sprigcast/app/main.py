@@ -10,7 +10,7 @@ from importlib import resources
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QStandardPaths, Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from sprigcast import __version__
 from sprigcast.core.scene import SceneCollection
@@ -342,7 +342,9 @@ def run() -> None:
     try:
         collection = load_collection(scenes_path)
     except Exception as exc:
-        QMessageBox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
+        from sprigcast.app import message as msgbox
+
+        msgbox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
         sys.exit(1)
 
     from sprigcast.app.settings_window import apply_pending_video
@@ -381,7 +383,9 @@ def run() -> None:
         from sprigcast.core import backups
 
         opened = f"so SprigCast opened {backups.when(restored)}" if restored else "so it started fresh"
-        QTimer.singleShot(1500, lambda: QMessageBox.warning(
+        from sprigcast.app import message as msgbox
+
+        QTimer.singleShot(1500, lambda: msgbox.warning(
             window, "SprigCast", f"{shelf.garden().name} couldn't be read, {opened}.\n"
                                  f"The old file is kept as:\n{scenes_path.with_suffix('.broken.json')}"))
     window.plugin_report = plugins
