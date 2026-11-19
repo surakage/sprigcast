@@ -239,6 +239,7 @@ struct Watch {  // shared: what Python asked for and the newest picture
 struct Reader {  // the frame thread's: a small picture and three copies on their way back
     sc::Target target;
     ComPtr<ID3D11Texture2D> staging[3];
+    ComPtr<ID3D11Query> done[3];  // each copy's end: Map is tried only once the card says it's finished
     bool pending[3] = {false, false, false};
     double drawn[3] = {0, 0, 0};
     int next = 0;
@@ -444,6 +445,7 @@ struct PoolEntry {
 struct OutReader {  // the frame thread's: an output's two planes and three copies of them on their way back
     sc::Nv12Planes planes;
     ComPtr<ID3D11Texture2D> ys[3], uvs[3];
+    ComPtr<ID3D11Query> done[3];  // as Reader's
     bool pending[3] = {false, false, false};
     double drawn[3] = {0, 0, 0};
     uint64_t serial[3] = {0, 0, 0};
@@ -796,19 +798,41 @@ void show_preview(sc_engine &e, const PreviewCfg &cfg, PreviewGpu &pg, int64_t n
     ++presented;
 }
 
+// Whether a copy started earlier has finished on the card. Map with DO_NOT_WAIT should never wait, but the
+// software renderer (WARP) can still hold the frame thread there for seconds while it catches up; asking an
+// event query never waits on any driver. No query (it couldn't be made): Map decides, as before.
+bool copy_done(sc_device &dev, ID3D11Query *query) {
+    if (!query) return true;
+    const HRESULT hr = dev.context->GetData(query, nullptr, 0, 0);
+    if (is_lost(hr)) throw Gone("the graphics card was reset or removed (read-back)");
+    return hr != S_FALSE;
+}
+
+// Marks the end of a copy just started, so copy_done can tell when it's finished.
+void mark_copy(sc_device &dev, ComPtr<ID3D11Query> &query) {
+    if (!query) {
+        D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+        if (FAILED(dev.device->CreateQuery(&qd, &query))) query.Reset();
+    }
+    if (query) dev.context->End(query.Get());
+}
+
 // Copies of watched canvases: draw the small picture, start its copy back, and collect copies that are done,
 // never waiting on the card (a copy still on its way is looked at again next frame).
 void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &want, double seconds, int64_t now) {
     Reader &r = e.readers[index];
     sc_device &dev = *e.dev;
+    at(e, "read-back: waiting for the device", static_cast<uint64_t>(index) + 1);
     std::lock_guard<std::mutex> lock(dev.lock);
     if (!canvas || want.width <= 0) {
         r = Reader();
         return;
     }
+    at(e, "read-back: collecting finished copies", static_cast<uint64_t>(index) + 1);
     for (int k = 0; k < 3; ++k) {  // oldest first
         const int s = (r.next + k) % 3;
         if (!r.pending[s]) continue;
+        if (!copy_done(dev, r.done[s].Get())) break;
         D3D11_MAPPED_SUBRESOURCE mapped;
         HRESULT hr = dev.context->Map(r.staging[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
         if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
@@ -860,9 +884,12 @@ void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &wa
     }
     const int s = r.next;
     if (r.pending[s]) return;  // all three still on their way: the card is behind, skip this one
+    at(e, "read-back: drawing the small picture", static_cast<uint64_t>(index) + 1);
     check(draw_view(dev, r.target.target.Get(), want.width, want.height, canvas->view.Get(), 0, 0,
                     static_cast<float>(want.width), static_cast<float>(want.height), 1.0f, false));
+    at(e, "read-back: starting its copy", static_cast<uint64_t>(index) + 1);
     dev.context->CopyResource(r.staging[s].Get(), r.target.texture.Get());
+    mark_copy(dev, r.done[s]);
     r.pending[s] = true;
     r.drawn[s] = seconds;
     r.next = (s + 1) % 3;
@@ -1009,6 +1036,7 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
     for (int k = 0; k < 3; ++k) {  // oldest first
         const int s = (r.next + k) % 3;
         if (!r.pending[s]) continue;
+        if (!copy_done(dev, r.done[s].Get())) break;
         D3D11_MAPPED_SUBRESOURCE my, muv;
         HRESULT hr = dev.context->Map(r.ys[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &my);
         if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
@@ -1090,6 +1118,7 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
                     r.planes.uv.target.Get(), want.width, want.height, want.scale));
     dev.context->CopyResource(r.ys[s].Get(), r.planes.y.texture.Get());
     dev.context->CopyResource(r.uvs[s].Get(), r.planes.uv.texture.Get());
+    mark_copy(dev, r.done[s]);
     r.pending[s] = true;
     r.drawn[s] = drawn;
     r.serial[s] = want.serial;
