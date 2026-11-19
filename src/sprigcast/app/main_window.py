@@ -497,6 +497,7 @@ class MainWindow(QMainWindow):
         self.stats_panel = StatsPanel()
         self._last_stats = None
         self.peak_watch = doctor.PeakWatch()
+        self._last_levels: tuple[float, dict] = (0.0, {})  # (when, {sound id: (peak, rms)}): Settings meters
         self.status = QLabel("Starting renderer…")
         self.meter = ResourceMeter(gpu=not os.environ.get("SPRIGCAST_NO_GPU_METER"))
         self._warned_ram = False
@@ -3017,6 +3018,7 @@ class MainWindow(QMainWindow):
             elif isinstance(event, AudioLevels):
                 heard = self.__dict__.setdefault("_heard_at", {})
                 now = time.monotonic()
+                self._last_levels = (now, event.levels)  # Settings → Audio → Devices shows them
                 for source_id, (_peak, rms) in event.levels.items():
                     if rms > -50:  # above the hiss: something was heard
                         heard[source_id] = now
