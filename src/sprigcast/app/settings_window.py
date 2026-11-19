@@ -869,11 +869,15 @@ class SettingsWindow(QDialog):
         self.stream_tabs = QTabWidget()
         self.stream_tabs.addTab(places, "Places")
         self.stream_tabs.addTab(QWidget(), "Quality")  # made a tick later (_slice), or now if it's the one asked
+        self.stream_tabs.currentChanged.connect(self._stream_tab_changed)
 
         def quality(now: bool = False):
             self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming)
             if hasattr(self.stream_quality, "set_expert"):
                 self.stream_quality.set_expert(self._expert)
+            self.stream_quality.go_to_places = lambda: self.stream_tabs.setCurrentIndex(0)
+            self.stream_quality.show_places(self.stream_page.outputs, self.collection.canvases)
+            self._show_encoder_room()
             if now:
                 put_in()
             else:  # made, then put in its tab (laid out and styled) a tick later: both at once were 150 ms
@@ -897,6 +901,27 @@ class SettingsWindow(QDialog):
         else:
             self._slice(quality)
         return self.stream_tabs
+
+    def _stream_tab_changed(self, index: int) -> None:
+        """Quality shows what each place gets from the place list as it is now, unsaved choices too."""
+        quality = self.__dict__.get("stream_quality")
+        if index == 1 and quality is not None:
+            quality.show_places(self.stream_page.outputs, self.collection.canvases)
+            self._show_encoder_room()
+
+    def _show_encoder_room(self) -> None:
+        """The encoder's load (Garden check's last reading) on Quality's Load row; hidden when there is none."""
+        from sprigcast.app.destinations import encoder_room, room_line
+
+        main = self.parent()
+        load = (getattr(main, "last_resources", None) or {}).get("encoder")
+        sessions = main._encode_sessions() if hasattr(main, "_encode_sessions") else 0
+        line = room_line(load, sessions)
+        form = self.stream_quality.stream_form
+        if line is None or not load:
+            form.set_room(None)
+        else:
+            form.set_room(load, (encoder_room(load, sessions) or 0) > 0, line[1])
 
     def _recording_page(self, encoder: str) -> QWidget:
         self.recording_page = RecordingPage(

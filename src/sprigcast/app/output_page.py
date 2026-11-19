@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.app.segmented import Segmented
 from sprigcast.core.scene import EncoderSettings, SceneCollection
 
 RATE_CONTROLS = {"cbr": "Constant Bitrate (CBR)", "vbr": "Variable Bitrate (VBR)", "cqp": "Constant Quality (CQP)"}
@@ -85,6 +86,17 @@ QUALITY_STEPS = (
 )
 
 
+# The three quick picks on the Quality row; the other steps (and Custom) are under Fine tuning (expert).
+QUICK_QUALITY = (("lighter", "Faster"), ("balanced", "Balanced"), ("better", "Sharper"))
+
+
+def encoder_chip(codec: str) -> str:
+    """Where the encoder runs, in a few words, for the chip beside it."""
+    from sprigcast.output.recorder import family
+
+    return "CPU · uses your processor" if family(codec) == "x264" else "GPU · light on your game"
+
+
 def quality_of(enc: EncoderSettings, codec: str = "") -> str:
     """The Quality step these settings are, or "custom" when expert rows were set some other way."""
     from sprigcast.output.recorder import family
@@ -130,14 +142,40 @@ class EncoderForm(QGroupBox):
             self.encoder.addItem(f"{codec_label(settings.encoder)} (not on this PC: uses the best one)", settings.encoder)
         self.encoder.setCurrentIndex(self.encoder.findData(settings.encoder))
         self._best = best
-        form.addRow("Video encoder", self.encoder)
+        encoder_row = QHBoxLayout()
+        encoder_row.setSpacing(10)
+        encoder_row.addWidget(self.encoder, 1)
+        self.chip = QLabel()
+        self.chip.setObjectName("encoderChip")
+        self.chip.setStyleSheet(f"QLabel#encoderChip {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
+                                " border: none; border-radius: 11px; padding: 4px 12px; font-weight: 600; }")
+        encoder_row.addWidget(self.chip)
+        form.addRow("Video encoder", encoder_row)
+        self.quick = Segmented(list(QUICK_QUALITY))
+        self.quick.picked.connect(self._quick_picked)
+        form.addRow("Quality", self.quick)
+        self.load_row = QWidget()
+        load = QVBoxLayout(self.load_row)
+        load.setContentsMargins(0, 0, 0, 0)
+        load.setSpacing(4)
+        from PySide6.QtWidgets import QProgressBar
+
+        self.load_bar = QProgressBar()
+        self.load_bar.setRange(0, 100)
+        self.load_bar.setTextVisible(False)
+        self.load_bar.setFixedHeight(8)
+        self.load_text = _hint("")
+        load.addWidget(self.load_bar)
+        load.addWidget(self.load_text)
+        form.addRow("Load", self.load_row)
+        self._room: tuple[float, bool, str] | None = None
         self.quality = QComboBox()
         for key, label, _gpu, _x264 in QUALITY_STEPS:
             self.quality.addItem(label, key)
         self.quality.addItem("Custom", "custom")
         self.quality.setToolTip("Lighter leaves more of your PC for games. Better looking costs more of the "
                                 "graphics card (or the CPU with x264).")
-        form.addRow("Quality", self.quality)
+        form.addRow("Quality steps", self.quality)
         self._expert = False
         self.rate_control = _combo(RATE_CONTROLS, settings.rate_control)
         form.addRow("Rate control", self.rate_control)
@@ -208,6 +246,21 @@ class EncoderForm(QGroupBox):
         self._expert = on
         self._update_rows()
 
+    def set_room(self, load_pct: float | None, has_room: bool = True, text: str = "") -> None:
+        """The encoder's load right now (from Garden check's reading); None hides the Load row."""
+        self._room = None if load_pct is None else (load_pct, has_room, text)
+        if self._room is not None:
+            self.load_bar.setValue(int(max(0, min(100, load_pct))))
+            colour = theme.ACCENT if has_room else theme.WARN
+            self.load_bar.setStyleSheet(f"QProgressBar {{ background: {theme.TRACK}; border: none; border-radius: 4px; }}"
+                                        f"QProgressBar::chunk {{ background: {colour}; border-radius: 4px; }}")
+            self.load_text.setText(text)
+        self._update_rows()
+
+    def _quick_picked(self, key: str) -> None:
+        self.quality.setCurrentIndex(max(0, self.quality.findData(key)))
+        self._quality_picked()
+
     def _quality_picked(self, _index: int = 0) -> None:
         key = self.quality.currentData()
         if key == "custom":
@@ -230,6 +283,8 @@ class EncoderForm(QGroupBox):
         self.quality.blockSignals(False)
         # "Custom" is only shown when the expert rows made it so
         self.quality.view().setRowHidden(self.quality.findData("custom"), key != "custom")
+        self.quick.set_value(key)  # none lit for Lightest, Best or Custom (shown under Quality steps)
+        self.chip.setText(encoder_chip(self.codec()))
 
     def reset_to_defaults(self) -> None:
         d = EncoderSettings()
@@ -257,6 +312,8 @@ class EncoderForm(QGroupBox):
         gpu = fam != "x264"
         x = self._expert
         rows = {
+            self.quality: x,
+            self.load_row: self._room is not None,
             self.rate_control: x,
             self.cq_level: self.rate_control.currentData() == "cqp",
             self.keyint: x,
@@ -419,8 +476,51 @@ def _scrolled(inner: QWidget) -> QWidget:
     return scroll
 
 
+AUDIO_PICKS = (128, 160, 192, 320)
+DELAY_PICKS = ((0, "Off"), (10, "10 s"), (30, "30 s"), (60, "60 s"))
+
+
+def upload_about_kbps() -> int | None:
+    """The upload to compare against: Optimize's test, or more when a clean stream carried more (optimize.py)."""
+    import math
+
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import optimize
+
+    q = QSettings()
+    try:
+        measured = int(q.value(optimize.MEASURED, 0) or 0)
+    except (TypeError, ValueError):
+        measured = 0
+    proven = optimize.load_proven(q)
+    best = max(measured, math.ceil(proven / optimize.UPLOAD_SHARE) if proven else 0)
+    return best or None
+
+
+def place_rows(outputs, canvases) -> list[tuple[str, str, str, str, bool]]:
+    """(place, picture, frame rate, bitrate, auto-pilot) for each stream that goes live, in the place list's order."""
+    from sprigcast.output.stream import SERVICES
+
+    rows = []
+    for o in outputs:
+        if o.type != "stream" or not o.enabled or not o.service:
+            continue
+        canvas = next((c for c in canvases if c.id == o.canvas), None)
+        w, h = o.size or ((canvas.width, canvas.height) if canvas else (0, 0))
+        fps = o.fps or (canvas.fps if canvas else 0)
+        name = SERVICES.get(o.service, SERVICES["custom"]).label
+        if o.service == "twitch" and o.enhanced:
+            rows.append((name, "Enhanced (Twitch picks)", "Auto", "Auto", False))
+            continue
+        rows.append((name, f"{o.canvas.capitalize()} {w}×{h}", f"{fps} fps", f"{o.bitrate_kbps:,} kbps",
+                     bool(o.auto_bitrate)))
+    return rows
+
+
 class StreamQuality(QWidget):
-    """Stream → Quality: the stream encoder (one for every place) and the stream delay."""
+    """Stream → Quality: the stream encoder (one for every place) with its quick quality picks and load, what each
+    place gets, the audio bitrate and the stream delay. Fine tuning (the encoder's own rows) shows with expert on."""
 
     def __init__(self, collection: SceneCollection, encoder_name: str, streaming: bool = False,
                  parent: QWidget | None = None):
@@ -439,7 +539,53 @@ class StreamQuality(QWidget):
         self.stream_form = EncoderForm("Encoder", collection.stream_encoder, encoder_name, streaming=True)
         self.stream_form.setEnabled(not streaming)
         box.addWidget(self.stream_form)
-        delay = QGroupBox("Stream delay")
+
+        # What each place gets: read from the place list (its unsaved choices too: show_places)
+        self.places_box = QGroupBox("What each place gets")
+        places = QVBoxLayout(self.places_box)
+        places.setSpacing(10)
+        self.places_grid_holder = QWidget()
+        self.places_grid_holder.setObjectName("placesTable")
+        self.places_grid_holder.setStyleSheet(
+            f"QWidget#placesTable {{ background: {theme.FIELD}; border: 1px solid {theme.SECTION_EDGE};"
+            " border-radius: 12px; }")
+        from PySide6.QtWidgets import QGridLayout
+
+        self.places_grid = QGridLayout(self.places_grid_holder)
+        self.places_grid.setContentsMargins(16, 12, 16, 12)
+        self.places_grid.setHorizontalSpacing(18)
+        self.places_grid.setVerticalSpacing(12)
+        places.addWidget(self.places_grid_holder)
+        self.no_places = _hint("No places go live yet.")
+        places.addWidget(self.no_places)
+        upload = QHBoxLayout()
+        upload.addWidget(QLabel("Upload used"))
+        upload.addStretch(1)
+        self.upload = QLabel()
+        upload.addWidget(self.upload)
+        places.addLayout(upload)
+        self.change_places = QPushButton("Change in Places")
+        self.change_places.setStyleSheet(theme.LINK_STYLE)
+        self.change_places.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.change_places.setAutoDefault(False)
+        self.go_to_places = lambda: None  # set by Settings: switches to the Places tab
+        self.change_places.clicked.connect(lambda: self.go_to_places())
+        places.addWidget(self.change_places, 0, Qt.AlignmentFlag.AlignLeft)
+        box.addWidget(self.places_box)
+
+        # Sound: quick picks for the audio bitrate (the full list is under Fine tuning)
+        sound = QGroupBox("Sound")
+        sform = QFormLayout(sound)
+        self.audio_quick = Segmented([(k, f"{k} kbps" if k == AUDIO_PICKS[-1] else str(k)) for k in AUDIO_PICKS],
+                                     collection.stream_encoder.audio_kbps)
+        self.audio_quick.picked.connect(self._audio_picked)
+        self.audio_quick.setEnabled(not streaming)
+        self.stream_form.audio.currentIndexChanged.connect(
+            lambda _i: self.audio_quick.set_value(self.stream_form.audio.currentData()))
+        sform.addRow("Audio bitrate", self.audio_quick)
+        box.addWidget(sound)
+
+        delay = QGroupBox("Delay")
         form = QFormLayout(delay)
         from sprigcast.output.delay import MAX_DELAY
 
@@ -456,13 +602,69 @@ class StreamQuality(QWidget):
         self.stream_delay.setToolTip("Viewers see everything this many seconds late, so nobody can use your stream "
                                      "to find you in a game.\nRecordings and clips aren't delayed.")
         self.stream_delay.setEnabled(not streaming)
-        form.addRow("Delay", self.stream_delay)
+        self.delay_quick = Segmented(list(DELAY_PICKS), self.stream_delay.value())
+        self.delay_quick.setToolTip(self.stream_delay.toolTip())
+        self.delay_quick.setEnabled(not streaming)
+        self.delay_quick.picked.connect(self.stream_delay.setValue)
+        self.stream_delay.valueChanged.connect(self.delay_quick.set_value)
+        delay_row = QHBoxLayout()
+        delay_row.setSpacing(12)
+        delay_row.addWidget(self.delay_quick)
+        delay_row.addWidget(self.stream_delay)
+        delay_row.addStretch(1)
+        form.addRow("Viewers see it", delay_row)
         box.addWidget(delay)
         box.addStretch(1)
         self.streaming = streaming
+        self._expert = False
+        self.show_places(collection.outputs, collection.canvases)
+        self.set_expert(False)
 
     def set_expert(self, on: bool) -> None:
+        self._expert = on
         self.stream_form.set_expert(on)
+        self.stream_delay.setVisible(on)  # any number of seconds; the quick picks cover most
+
+    def _audio_picked(self, kbps: int) -> None:
+        combo = self.stream_form.audio
+        combo.setCurrentIndex(max(0, combo.findData(kbps)))
+
+    def show_places(self, outputs, canvases) -> None:
+        """Fill in What each place gets (and the upload it takes) from these places."""
+        grid = self.places_grid
+        while grid.count():
+            item = grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        rows = place_rows(outputs, canvases)
+        self.places_grid_holder.setVisible(bool(rows))
+        self.no_places.setVisible(not rows)
+        for col, title in enumerate(("Place", "Picture", "Frame rate", "Bitrate", "Auto-pilot")):
+            head = QLabel(title.upper())
+            head.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 1px;"
+                               " background: transparent; border: none;")
+            grid.addWidget(head, 0, col)
+        for r, (name, picture, fps, kbps, pilot) in enumerate(rows, start=1):
+            cells = [name, picture, fps, kbps, "On" if pilot else "Off"]
+            for col, text in enumerate(cells):
+                label = QLabel(text)
+                style = "background: transparent; border: none;"
+                if col == 0:
+                    style += f" color: {theme.TEXT_BRIGHT}; font-weight: 600;"
+                elif col == 4:
+                    style += f" color: {theme.ACCENT if pilot else theme.MUTED};"
+                label.setStyleSheet(style)
+                grid.addWidget(label, r, col)
+        grid.setColumnStretch(1, 1)
+        audio = self.stream_form.audio.currentData() or 0
+        used = sum(o.bitrate_kbps + audio for o in outputs
+                   if o.type == "stream" and o.enabled and o.service and not (o.service == "twitch" and o.enhanced))
+        about = upload_about_kbps()
+        text = f"<b>{used / 1000:.1f} Mbps</b>"
+        if about:
+            text += f" of about {about / 1000:.0f} Mbps"
+        self.upload.setText(text)
+        self.upload.setStyleSheet(f"color: {theme.WARN};" if about and used > about * 0.75 else "")
 
     def apply_to(self, collection: SceneCollection) -> None:
         from PySide6.QtCore import QSettings

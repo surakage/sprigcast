@@ -51,11 +51,16 @@ def _output_label(output: Output) -> str:
 
 
 PLACE_CARDS_STYLE = (
-    f"#placeCards {{ background: transparent; border: none; outline: none; }}"
-    f"#placeCards::item {{ background: {theme.PANEL}; color: {theme.TEXT}; border-radius: 14px;"
-    f" padding: 10px 14px; margin-bottom: 8px; }}"
+    f"#placeCards {{ background: transparent; border: none; outline: none; padding: 0px; }}"
+    f"#placeCards::item {{ background: {theme.SECTION}; color: {theme.TEXT}; border: 1px solid {theme.SECTION_EDGE};"
+    f" border-radius: 14px; padding: 10px 14px; margin-bottom: 8px; }}"
     f"#placeCards::item:hover {{ background: {theme.RAISED_HOVER}; }}"
-    f"#placeCards::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+    f"#placeCards::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
+    f" border-color: {theme.ACCENT}; }}"
+    f"QPushButton#streamAdd {{ background: transparent; color: {theme.LABEL}; border: 1px dashed {theme.FIELD_EDGE};"
+    f" border-radius: 14px; padding: 10px 14px; font-weight: 600; }}"
+    f"QPushButton#streamAdd:hover {{ color: {theme.TEXT_BRIGHT}; border-color: {theme.ACCENT}; }}"
+    f"#streamListTitle {{ color: {theme.MUTED}; font-size: 12px; font-weight: 600; letter-spacing: 1px; }}"
 )
 
 
@@ -72,18 +77,26 @@ LABEL_W = 104  # every card's labels share one column, so the fields line up dow
 
 
 def _section(title: str) -> tuple[QWidget, QFormLayout]:
-    """A soft rounded card with its title inside (no OBS-style group box frame)."""
+    """A titled section card, like every Settings section: a leaf before the title."""
     card = QFrame()
     card.setObjectName("streamCard")  # styled by the page (PAGE_STYLE)
     outer = QVBoxLayout(card)
-    outer.setContentsMargins(26, 20, 26, 22)
-    outer.setSpacing(14)
-    outer.addWidget(_heading(title, 15))
+    outer.setContentsMargins(0, 0, 0, 22)
+    outer.setSpacing(18)
+    head = QHBoxLayout()
+    head.setContentsMargins(24, 16, 24, 0)
+    head.setSpacing(10)
+    leaf = QLabel()
+    leaf.setObjectName("streamLeaf")
+    leaf.setFixedSize(14, 14)
+    head.addWidget(leaf)
+    head.addWidget(_heading(title, theme.SECTION_TITLE_PX), 1)
+    outer.addLayout(head)
     form = QFormLayout()
-    form.setContentsMargins(0, 0, 0, 0)
+    form.setContentsMargins(26, 0, 26, 0)
     form.setHorizontalSpacing(18)
     form.setVerticalSpacing(12)
-    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     outer.addLayout(form)
     _FORMS.append(form)
@@ -99,13 +112,25 @@ def _line_up_labels(forms: list[QFormLayout]) -> None:
             item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
             if item is not None and item.widget() is not None:
                 item.widget().setFixedWidth(LABEL_W)
-                item.widget().setObjectName("streamMuted")  # styled by the page (PAGE_STYLE)
+                item.widget().setObjectName("streamLabel")  # styled by the page (PAGE_STYLE)
+                if isinstance(item.widget(), QLabel):
+                    item.widget().setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
 
 # The page's look in one style sheet, picked by object names: a style sheet on each card, label and note was
 # 30-odd of them, and the page was 245 ms of Settings' warm-up slices on the PC (2026-11-18, just after start).
+def _leaf_rule() -> str:
+    try:
+        pic = theme.nature_pictures()
+    except OSError:  # can't write the picture: titles without the leaf
+        return ""
+    return f"#streamLeaf {{ image: url({pic['section_leaf']}); background: transparent; }}"
+
+
 PAGE_STYLE = (
-    f"#streamCard {{ background: {theme.CARD}; border-radius: 20px; }}"
+    f"#streamCard {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE}; border-radius: 20px; }}"
+    f"#streamCard QLabel {{ color: {theme.LABEL}; }}"
+    f"#streamLabel {{ color: {theme.LABEL}; }}"
     f"#streamMuted {{ color: {theme.MUTED}; }}"
     "#streamScroll, #streamForm { background: transparent; }"
     f"#streamWarn {{ color: {theme.WARN}; }}"
@@ -113,6 +138,11 @@ PAGE_STYLE = (
     + PLACE_CARDS_STYLE
     + theme.button_style(13, "6px 13px", "QPushButton#streamSmall, QPushButton#streamRemove")
     + f"QPushButton#streamRemove {{ color: {theme.BAD}; }}"
+    + f"#streamCard QLineEdit, #streamCard QComboBox, #streamCard QSpinBox {{ background: {theme.FIELD};"
+    f" border: 1px solid {theme.FIELD_EDGE}; border-radius: 10px; padding: 6px 13px; min-height: 20px; }}"
+    + f"#streamCard QLineEdit:focus, #streamCard QComboBox:focus, #streamCard QSpinBox:focus"
+    f" {{ border-color: {theme.ACCENT}; }}"
+    + _leaf_rule()
 )
 
 
@@ -159,23 +189,30 @@ class StreamPage(QWidget):
         root.setSpacing(0)
         _FORMS.clear()
 
-        # Left: the places you stream to, as cards. "+ Add" sits on top so it never scrolls away.
+        # Left: the places you stream to, as cards, with "+ Add place" right under the last one (the list is as tall
+        # as its cards, so the button never scrolls away; with many places the list scrolls above it).
         left = QVBoxLayout()
         left.setSpacing(10)
-        top = QHBoxLayout()
-        top.addWidget(_heading("Places", 17), 1)
-        self.add_button = QPushButton("+ Add")
-        self.add_button.setObjectName("streamSmall")
-        self.add_button.setToolTip("Add another place to stream")
-        self.add_button.clicked.connect(self._add)
-        top.addWidget(self.add_button)
-        left.addLayout(top)
+        title = QLabel("PLACES")
+        title.setObjectName("streamListTitle")
+        left.addWidget(title)
         self.list = QListWidget()
         self.list.setObjectName("placeCards")
         self.list.setFixedWidth(220)
         self.list.setFrameShape(QListWidget.Shape.NoFrame)
+        self.list.setSizeAdjustPolicy(QListWidget.SizeAdjustPolicy.AdjustToContents)
         self.list.currentRowChanged.connect(self._load)
-        left.addWidget(self.list, 1)
+        self.list.model().rowsInserted.connect(lambda *_: self._fit_list())
+        self.list.model().rowsRemoved.connect(lambda *_: self._fit_list())
+        left.addWidget(self.list)
+        self.add_button = QPushButton("+ Add place")
+        self.add_button.setObjectName("streamAdd")
+        self.add_button.setFixedWidth(220)
+        self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_button.setToolTip("Add another place to stream")
+        self.add_button.clicked.connect(self._add)
+        left.addWidget(self.add_button)
+        left.addStretch(1)
         root.addLayout(left)
         root.addSpacing(22)
         divider = QFrame()
@@ -230,7 +267,6 @@ class StreamPage(QWidget):
         self.server = QLineEdit()
         self.server.setPlaceholderText("rtmp://… or rtmps://…")
         self.server.textEdited.connect(self._edited)
-        form.addRow("Server", self.server)
         # Twitch: connect the account instead of pasting the key.
         self.twitch_row = QWidget()
         twitch = QHBoxLayout(self.twitch_row)
@@ -240,9 +276,11 @@ class StreamPage(QWidget):
         self.twitch_button.clicked.connect(self._twitch_clicked)
         self.twitch_sign_out = QPushButton("Sign out")
         self.twitch_sign_out.clicked.connect(lambda: self._sign_out("twitch"))
+        twitch.setSpacing(12)
         twitch.addWidget(self.twitch_button)
-        twitch.addWidget(self.twitch_label, 1)
+        twitch.addWidget(self.twitch_label)
         twitch.addWidget(self.twitch_sign_out)
+        twitch.addStretch(1)
         self.account_label = QLabel("Account")
         form.addRow(self.account_label, self.twitch_row)
         self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
@@ -270,9 +308,11 @@ class StreamPage(QWidget):
         self.signin_state = QLabel()
         self.sign_out_button = QPushButton("Sign out")
         self.sign_out_button.clicked.connect(lambda: self._sign_out(self._current_service()))
+        signin.setSpacing(12)
         signin.addWidget(self.sign_in_button)
-        signin.addWidget(self.signin_state, 1)
+        signin.addWidget(self.signin_state)
         signin.addWidget(self.sign_out_button)
+        signin.addStretch(1)
         self.signin_label = QLabel("Account")
         form.addRow(self.signin_label, self.signin_row)
         self.signin_error = QLabel()
@@ -280,13 +320,19 @@ class StreamPage(QWidget):
         self.signin_error.setObjectName("streamWarn")
         self.signin_error.hide()
         form.addRow("", self.signin_error)
+        groups.addWidget(destination)
+
+        # Server and key: where the stream goes.
+        self._key_section, form = _section("Server and key")
+        self._key_form = form
+        form.addRow("Server", self.server)
         self.key_label = QLabel("Stream key")
         form.addRow(self.key_label, self.key_row)
         self.help = QLabel()
         self.help.setWordWrap(True)
         self.help.setObjectName("streamMuted")
         form.addRow("", self.help)
-        groups.addWidget(destination)
+        groups.addWidget(self._key_section)
 
         # Picture: what this place gets from its canvas.
         video, form = _section("Picture")
@@ -561,14 +607,19 @@ class StreamPage(QWidget):
             self.twitch_button.setVisible(not account)
             self.twitch_sign_out.setVisible(bool(account))
 
+    def _fit_list(self) -> None:
+        """The place list as tall as its cards (so + Add place sits under the last), scrolling once it can't be."""
+        rows = sum(self.list.sizeHintForRow(i) for i in range(self.list.count()))
+        self.list.setMaximumHeight(max(4, rows + 4))
+
     def _card_text(self, output: Output) -> str:
         return f"{NEW_PLACE}\n{PICK_SERVICE}" if output.id in self._unpicked else place_card_text(output)
 
     def _show_unpicked(self, unpicked: bool) -> None:
         """A new place shows only the service to pick; the rest appears once one is picked."""
-        for widget in (self.server, self.twitch_row, self.use_account, self.signin_row, self.key_row, self.help):
+        for widget in (self.twitch_row, self.use_account, self.signin_row):
             self._account_form.setRowVisible(widget, not unpicked)
-        for widget in (self._picture_section, self.enabled, self.enabled_label):
+        for widget in (self._picture_section, self._key_section, self.enabled, self.enabled_label):
             widget.setVisible(not unpicked)
         extras_on = self.ignore_recommendations.isChecked()
         self._extras_section.setVisible(not unpicked and (self._expert or extras_on))  # never hidden while on

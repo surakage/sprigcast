@@ -165,8 +165,10 @@ def test_one_quality_choice_hides_the_expert_rows(app):
     w.show()
     app.processEvents()
     f = w.stream_quality.stream_form
-    assert not w.expert.isChecked() and f.quality.isVisible() and not f.rate_control.isVisible()
+    assert not w.expert.isChecked() and f.quick.isVisible() and not f.quality.isVisible()
+    assert not f.rate_control.isVisible()
     assert not f.preset.isVisible() and not f.audio.isVisible() and f.quality.currentData() == "balanced"
+    assert f.quick.value() == "balanced" and f.chip.text().startswith(("GPU", "CPU"))
     f.quality.setCurrentIndex(f.quality.findData("lighter"))
     f.quality.activated.emit(f.quality.currentIndex())
     assert f.values().preset == "p3" and f.values().x264_preset == "superfast"
@@ -725,4 +727,43 @@ def test_accounts_is_gone_and_old_links_land_on_stream_places(app):
     app.processEvents()
     assert "Accounts" not in TABS and w.current_tab() == "Stream"
     assert w.stream_tabs.tabText(w.stream_tabs.currentIndex()) == "Places"
+    w.close()
+
+
+def test_quality_tab_quick_picks_places_and_delay(app):
+    from sprigcast.core.scene import Output
+
+    col = _collection()
+    col.outputs = [Output(id="t", type="stream", service="twitch", canvas="horizontal", enabled=True,
+                          bitrate_kbps=6000, auto_bitrate=True),
+                   Output(id="y", type="stream", service="youtube", canvas="vertical", enabled=True, bitrate_kbps=4500,
+                          auto_bitrate=False),
+                   Output(id="k", type="stream", service="kick", canvas="horizontal", enabled=False)]
+    w = _window(col, tab="Stream/Quality")
+    w.show()
+    app.processEvents()
+    q = w.stream_quality
+    f = q.stream_form
+    f.quick.buttons["lighter"].click()  # Faster
+    assert f.quality.currentData() == "lighter" and f.values().preset == "p3"
+    texts = [q.places_grid.itemAt(i).widget().text() for i in range(q.places_grid.count())]
+    assert "Twitch" in texts and "YouTube" in texts and "Kick" not in texts and "6,000 kbps" in texts
+    assert "Vertical 1080×1920" in texts and "On" in texts and "Off" in texts
+    assert "10.8 Mbps" in q.upload.text()  # 6000 + 4500 + 2 × 160 audio
+    q.audio_quick.buttons[192].click()
+    q.delay_quick.buttons[30].click()
+    assert not f.load_row.isVisibleTo(f)  # no reading off air
+    w.stream_page.outputs[1].enabled = False  # an unsaved change on Places shows on Quality
+    w.stream_tabs.setCurrentIndex(0)
+    w.stream_tabs.setCurrentIndex(1)
+    texts = [q.places_grid.itemAt(i).widget().text() for i in range(q.places_grid.count())]
+    assert "YouTube" not in texts
+    q.change_places.click()
+    assert w.stream_tabs.currentIndex() == 0
+    assert w.apply()
+    from sprigcast.app.settings_window import stream_delay
+
+    assert col.stream_encoder.audio_kbps == 192 and stream_delay() == 30
+    f.set_room(40.0, True, "Encoder 40% busy · room for about 2 more")
+    assert f.load_row.isVisibleTo(f) and f.load_bar.value() == 40
     w.close()
