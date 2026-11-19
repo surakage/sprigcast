@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLineEdit,
     QPushButton,
+    QSizeGrip,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -203,6 +204,60 @@ def ask_text(parent: QWidget | None, title: str, label: str, text: str = "", pri
 
     dialog = TextDialog(title, label, text, parent, primary, placeholder=placeholder)
     return (dialog.text(), True) if modal(dialog) else ("", False)
+
+
+class CardWindow(QDialog):
+    """A big window (Hotkeys, Plugin store, Filters…) as a rounded card: no square Windows frame. Lay its content
+    out in self.card. Drag it by any empty spot, resize it by the bottom right corner; Esc closes it.
+
+    name: the card's object name, for a style sheet that styles the window by name (it gets BG and the rounded
+    edge whatever that sheet says). size: the card's starting size.
+    """
+
+    MARGINS = (20, 14, 20, 26)  # room for the shadow
+
+    def __init__(self, title: str, parent: QWidget | None = None, size: tuple[int, int] | None = None,
+                 name: str = "windowCard"):
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowTitle(title)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._drag = None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(*self.MARGINS)
+        self.card = QFrame()
+        self.card.setObjectName(name)
+        self.card.setStyleSheet(f"#{name} {{ background: {theme.BG}; border: 1px solid {theme.EDGE_STRONG};"
+                                " border-radius: 24px; }")
+        outer.addWidget(self.card)
+        self._grip = QSizeGrip(self)
+        self._grip.setFixedSize(18, 18)
+        self._grip.setStyleSheet("background: transparent;")
+        if size is not None:
+            left, top, right, bottom = self.MARGINS
+            self.resize(size[0] + left + right, size[1] + top + bottom)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self.card)  # drawn once per size, not blurred on every paint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        _, _, right, bottom = self.MARGINS
+        self._grip.move(self.width() - right - 24, self.height() - bottom - 24)
+        self._grip.raise_()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = None
+        super().mouseReleaseEvent(event)
 
 
 class ColourRow(QWidget):

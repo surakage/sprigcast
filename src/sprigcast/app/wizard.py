@@ -13,7 +13,6 @@ import threading
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QDialog,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import optimize, theme
+from sprigcast.app.card import CardWindow
 
 log = logging.getLogger(__name__)
 from sprigcast.core.scene import SceneCollection
@@ -211,13 +211,12 @@ def _check_on_worker(check: optimize.Check, profile: optimize.PcProfile, results
     results.put((check, result))
 
 
-class OptimizeWizard(QDialog):
+class OptimizeWizard(CardWindow):
     """Three pages: Start, Checking, Suggestions. ``chosen`` holds the ticked changes after Apply."""
 
     def __init__(self, collection: SceneCollection, waiting_fps: dict[str, int] | None = None,
                  first_run: bool = False, parent: QWidget | None = None, run_in_thread: bool = True):
-        super().__init__(parent)
-        self.setWindowTitle("Optimize for this PC")
+        super().__init__("Optimize for this PC", parent, (680, 620))
         self.setMinimumSize(640, 600)
         self.collection = collection
         self.waiting_fps = waiting_fps or {}
@@ -247,7 +246,7 @@ class OptimizeWizard(QDialog):
         buttons.addStretch(1)
         buttons.addWidget(self.cancel)
         buttons.addWidget(self.go)
-        root = QVBoxLayout(self)
+        root = QVBoxLayout(self.card)
         root.setContentsMargins(22, 20, 22, 18)
         root.setSpacing(14)
         root.addWidget(self.pages, 1)
