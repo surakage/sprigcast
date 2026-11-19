@@ -129,14 +129,17 @@ def list_windows() -> list[WindowInfo]:
     return windows
 
 
-def find_window(title: str, process: str = "") -> WindowInfo | None:
-    """Best match for a saved window: same process and title, then same process, then same title."""
+def find_window(title: str, process: str = "", exact: bool = False) -> WindowInfo | None:
+    """Best match for a saved window: same process and title, then same process, then same title.
+    exact: only the same title (in the same process, when one is saved), never another window of that app."""
     windows = list_windows()
-    for match in (
-        lambda w: w.title == title and (not process or w.process.lower() == process.lower()),
+    same_title = (lambda w: w.title == title and (not process or w.process.lower() == process.lower()))
+    rules = (same_title,) if exact else (
+        same_title,
         lambda w: bool(process) and w.process.lower() == process.lower(),
         lambda w: w.title == title,
-    ):
+    )
+    for match in rules:
         found = next((w for w in windows if match(w)), None)
         if found is not None:
             return found

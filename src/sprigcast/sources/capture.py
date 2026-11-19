@@ -325,7 +325,7 @@ class DisplayCaptureSource(_CaptureSource):
 
 @register("window_capture")
 class WindowCaptureSource(_CaptureSource):
-    """Settings: title, process (exe name), cursor (bool).
+    """Settings: title, process (exe name), cursor (bool), match ("app", the default, or "title").
 
     The window is looked up by its process and title every time capture (re)starts, so a game that is
     restarted, or a browser whose title changes, is found again.
@@ -334,7 +334,11 @@ class WindowCaptureSource(_CaptureSource):
     def _target(self) -> dict[str, Any] | None:
         from sprigcast.sources.win32_enum import find_window
 
-        window = find_window(str(self.settings.get("title", "")), str(self.settings.get("process", "")))
+        title, process = str(self.settings.get("title", "")), str(self.settings.get("process", ""))
+        if self.settings.get("match") == "title":  # Find it again by: Exact title
+            window = find_window(title, process, exact=True)
+        else:  # Same app (the default): a browser whose title changes is still found
+            window = find_window(title, process)
         if window is None:
             return None
         return {"window_hwnd": window.hwnd}

@@ -4852,37 +4852,46 @@ class MainWindow(QMainWindow):
         config.settings = {**config.settings, "loop": on}
         self._changed()
 
-    def _pick_monitor(self, current: int | None = None):
+    def _display_dialog(self, settings: dict) -> dict | None:
+        """Screen capture's card: which screen and the mouse pointer. None when cancelled or not on Windows."""
+        from sprigcast.app.capture_dialog import DisplayCaptureDialog
+
         monitors = list_monitors()
         if not monitors:
             QMessageBox.information(self, "SprigCast", "Display capture is only available on Windows.")
             return None
-        labels = [m.label for m in monitors]
-        start = next((i for i, m in enumerate(monitors) if m.index == current), 0)
-        at = popups.ask_choice(self, "Display capture", "Monitor", labels, start)
-        return None if at is None else monitors[at]
+        dialog = DisplayCaptureDialog(settings, monitors, self)
+        return dialog.values() if modal(dialog) else None
 
-    def _pick_window(self):
+    def _window_dialog(self, settings: dict, has_sound: bool) -> tuple[dict, bool] | None:
+        """Window capture's card: (settings, window sound on), or None when cancelled or not on Windows."""
+        from sprigcast.app.capture_dialog import WindowCaptureDialog
+
         windows = list_windows()
-        if not windows:
+        if not windows and not settings.get("title"):
             QMessageBox.information(self, "SprigCast", "Window capture is only available on Windows.")
             return None
-        at = popups.ask_choice(self, "Window capture", "Window", [w.label for w in windows])
-        return None if at is None else windows[at]
+        dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows)
+        return dialog.values() if modal(dialog) else None
 
     def _add_display(self, monitor=None) -> None:
         scene = self._scene()
         if scene is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        monitor = monitor or self._pick_monitor()
-        if monitor is None:
+        settings = {"monitor": monitor.index, "cursor": True} if monitor is not None else \
+            self._display_dialog({"monitor": 1, "cursor": True})
+        if settings is None:
             return
+        if monitor is None:
+            monitor = next((m for m in list_monitors() if m.index == settings["monitor"]), None)
+            if monitor is None:
+                return
         config = SourceConfig(
             id=self.collection.new_id("display"),
             kind="display_capture",
             name=f"Monitor {monitor.index}",
-            settings={"monitor": monitor.index, "cursor": True},
+            settings=settings,
         )
         self._add_item(config)
         self._fit_item(size=(monitor.width, monitor.height))
@@ -4934,18 +4943,25 @@ class MainWindow(QMainWindow):
         if self._scene() is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        window = window or self._pick_window()
-        if window is None:
-            return
-        name = ask_name(self, window_name(window.title, window.process), window.title)
-        self._add_item(
-            SourceConfig(
-                id=self.collection.new_id("window"),
-                kind="window_capture",
-                name=name,
-                settings={"title": window.title, "process": window.process, "cursor": True},
-            )
-        )
+        sound = False
+        if window is not None:
+            settings = {"title": window.title, "process": window.process, "cursor": True}
+        else:
+            picked = self._window_dialog({"cursor": True}, False)
+            if picked is None:
+                return
+            settings, sound = picked
+        title, process = str(settings["title"]), str(settings["process"])
+        name = ask_name(self, window_name(title, process), title)
+        config = SourceConfig(id=self.collection.new_id("window"), kind="window_capture", name=name,
+                              settings=settings)
+        self._add_item(config)
+        if sound:
+            from sprigcast.core.capture_sound import APP, set_capture_sound
+
+            set_capture_sound(self.collection, config, APP)
+            self._changed()
+            self._refresh_audio()
 
     def _camera_max_fps(self) -> int:
         rates = [int(round(c.fps)) for c in self.collection.canvases if c.enabled]
@@ -5319,11 +5335,12 @@ class MainWindow(QMainWindow):
                 return
             config.settings = {**config.settings, "path": path}
         elif config.kind == "display_capture":
-            monitor = self._pick_monitor(current=int(config.settings.get("monitor", 1)))
-            if monitor is None:
+            changes = self._display_dialog(config.settings)
+            if changes is None:
                 return
-            config.settings = {**config.settings, "monitor": monitor.index}
-            config.name = f"Monitor {monitor.index}"
+            if config.name == f"Monitor {config.settings.get('monitor', 1)}":  # a name you chose stays
+                config.name = f"Monitor {changes['monitor']}"
+            config.settings = {**config.settings, **changes}
         elif config.kind == "camera":
             settings = self._camera_dialog(config.settings, config.id)
             if settings is None:
@@ -5347,17 +5364,22 @@ class MainWindow(QMainWindow):
             follow_capture(self.collection, config)
             self._refresh_audio()
         elif config.kind == "window_capture":
-            window = self._pick_window()
-            if window is None:
+            from sprigcast.core.capture_sound import APP, capture_sound, follow_capture, set_capture_sound
+
+            had_sound = capture_sound(self.collection, config.id) is not None
+            picked = self._window_dialog(config.settings, had_sound)
+            if picked is None:
                 return
+            changes, sound = picked
             old = window_name(str(config.settings.get("title", "")), str(config.settings.get("process", "")))
             old_title = str(config.settings.get("title", ""))
-            config.settings = {**config.settings, "title": window.title, "process": window.process}
+            config.settings = {**config.settings, **changes}
             if config.name in (old, old_title, old_title[:37] + "…"):  # a name you chose stays
-                config.name = window_name(window.title, window.process)
-            from sprigcast.core.capture_sound import follow_capture
-
+                config.name = window_name(str(changes["title"]), str(changes["process"]))
+            if sound != had_sound:
+                set_capture_sound(self.collection, config, APP if sound else None)
             follow_capture(self.collection, config)  # its own app sound follows the new window
+            self._refresh_audio()
         else:
             cls = source_class(config.kind)
             defaults = getattr(cls, "defaults", None) if cls is not None else None
