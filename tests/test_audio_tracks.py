@@ -353,3 +353,47 @@ def test_tracks_name_the_sounds_on_each_as_ticked_in_sounds():
     many = AudioPage(col, {})
     row = many.track_chips[0]
     assert row.itemAt(4).widget().text().endswith("more")  # four named, the rest counted
+
+
+def test_devices_set_listen_through_windows_ducking_and_push_to_talk():
+    """Settings → Audio → Devices: Hearing it yourself and Push to talk (engine side: #660)."""
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    col.audio.monitor_device = "Old Headset"  # unplugged since: still listed, never dropped by a save
+    page = AudioPage(col, {"audio_output": ["Speakers", "Headphones"]})
+    assert page.listen_through.currentData() == "Old Headset" and "not connected" in page.listen_through.currentText()
+    assert page.windows_ducking_off.isChecked() and page.push_mode.value() == "off"
+    assert not page.push_key.isEnabled() and not page.push_release.isEnabled() and page.push_note.text() == ""
+    page.apply_to(col)
+    assert col.audio.monitor_device == "Old Headset" and col.audio.push_mode == "off"
+    assert col.audio.push_release_ms == 250
+
+    page.listen_through.setCurrentIndex(page.listen_through.findData("Headphones"))
+    page.windows_ducking_off.setChecked(False)
+    page.push_mode.buttons["talk"].click()
+    assert page.push_key.isEnabled() and page.push_note.text() == "Pick a key"
+    page.push_key.setKeySequence(QKeySequence("F13"))
+    assert page.push_note.text() == ""
+    page.push_release.buttons[500].click()
+    page.apply_to(col)
+    audio = col.audio
+    assert (audio.monitor_device, audio.windows_ducking_off) == ("Headphones", False)
+    assert (audio.push_mode, audio.push_key, audio.push_release_ms) == ("talk", "F13", 500)
+
+    col.hotkeys = {"toggle_record": "F9"}
+    col.audio.push_release_ms = 180  # set by hand in the file: none of the picks, and a save leaves it
+    again = AudioPage(col, {})
+    assert again.listen_through.currentData() == "Headphones" and again.push_release.value() is None
+    again.push_key.setKeySequence(QKeySequence("F9"))
+    assert again.push_note.text() == "A hotkey uses this key too"
+    again.push_mode.buttons["mute"].click()
+    again.apply_to(col)
+    assert (col.audio.push_mode, col.audio.push_key, col.audio.push_release_ms) == ("mute", "F9", 180)
+
+    col.sources = [s for s in col.sources if s.kind != "audio_input"]
+    assert not AudioPage(col, {}).push_mode.isEnabled()  # no mic to hold
