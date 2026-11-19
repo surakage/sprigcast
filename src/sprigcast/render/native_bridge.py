@@ -291,6 +291,7 @@ class NativeCanvases:
             self.failed = True
             drawn.ENGINE = False
             log.error("native engine: %s; the Python compositor draws the previews again", why)
+            sprigcore.note_engine_failed(why)  # the window says the old engine is in use (app/main.py)
             self._unlink_all()
 
     def upload(self, source_id: str, frame, channel_order: str, size) -> None:
@@ -306,8 +307,8 @@ class NativeCanvases:
 
     def attach_media(self, source_id: str, player, held: bool = False) -> bool:
         """``player`` (a sprigcore.MediaPlayer, the name of a browser page's or a capture helper feed's shared
-        memory block, a sprigcore.CaptureTarget, or None) is where the engine takes this source's pictures from, each frame, by
-        itself. True while it does: the render thread then sends it none. ``held``: a page's block or a capture
+        memory block, a sprigcore.CaptureTarget, or None) is where the engine takes this source's pictures from,
+        each frame, by itself. True while it does: the render thread then sends it none. ``held``: a page's block or a capture
         frozen (Snap's freeze): the engine keeps its picture but still takes the new ones, which would otherwise
         wait for it (and make a page's texture again every few seconds: PC, 2026-11-18; a capture would have to
         start over)."""
