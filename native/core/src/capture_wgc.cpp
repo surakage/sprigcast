@@ -359,7 +359,11 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
     return made;
 }
 
-bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
+bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) { return take_any(&dev, id, copy, nullptr); }
+
+bool ScreenCapture::take_to(const CapturePicture &to) { return take_any(nullptr, 0, true, &to); }
+
+bool ScreenCapture::take_any(sc_device *engine, uint64_t id, bool copy, const CapturePicture *to) {
     Impl &c = *impl;
     if (c.broken || !c.pool) return false;
     if (c.window && !IsWindow(c.window)) {  // Windows says Closed on the item's own time, or not at all (CI)
@@ -400,7 +404,13 @@ bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
             newest.Close();
             return false;
         }
-        {
+        if (to) {  // the capture helper's own copy (capture_feed.cpp)
+            if (!(*to)(picture.Get(), w, h)) {
+                newest.Close();
+                return false;
+            }
+        } else {
+            sc_device &dev = *engine;
             std::lock_guard<std::mutex> lock(dev.lock);
             dev.comp.drawn.erase(id);  // a picture again: no longer drawn from a list
             Source &s = dev.comp.sources[id];

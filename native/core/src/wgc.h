@@ -6,6 +6,7 @@
 #include "internal.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -44,6 +45,8 @@ struct CaptureStart {
 // Asks the capture thread to start a capture of `ask` on `device` (the engine's). Returns at once.
 std::shared_ptr<CaptureStart> start_capture(const ComPtr<ID3D11Device> &device, const CaptureAsk &ask);
 
+using CapturePicture = std::function<bool(ID3D11Texture2D *picture, int width, int height)>;
+
 class ScreenCapture {
 public:
     // A capture of `ask` on `device`: null when it can't start, `refusal` and `why` say why. Called on the capture
@@ -58,6 +61,9 @@ public:
     // its picture: a freeze). True when the source got a new picture. Takes device.lock. Never throws: a capture
     // that broke says so through ended().
     bool take(sc_device &dev, uint64_t id, bool copy);
+    // The newest picture handed to `to` (Windows' own texture, on the capture's device, and its size) while it is
+    // still Windows' to give: true when there was one and `to` took it. The capture helper's way (capture_feed.cpp).
+    bool take_to(const CapturePicture &to);
     bool ended() const;  // the window closed, the display went, or the capture broke
     // Parked (its source asleep, see engine.cpp): at most a picture a second, until slow(false).
     void slow(bool on);
@@ -67,6 +73,7 @@ public:
 
 private:
     ScreenCapture();
+    bool take_any(sc_device *engine, uint64_t id, bool copy, const CapturePicture *to);
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
