@@ -1033,3 +1033,29 @@ def test_thread_times_come_without_psutil_on_windows():
     assert threading.get_native_id() in times and all(t >= 0 for t in times.values())
     whole, threads = CpuWatch().busiest()
     assert whole >= 0 and isinstance(threads, list)
+
+
+def test_a_frame_stuck_for_good_hands_drawing_back_to_python(monkeypatch):
+    """A frame that never ends (a call into Windows that never came back, PC test 2026-11-18): after the engine's
+    own 2 s and 3 s more, Python draws everything again rather than showing nothing."""
+
+    class Stuck(FakeEngine):
+        ticks = 100
+
+        def stats(self):
+            return {"rebuilds": 0, "faulted": 0, "hung": self.hung, "ticks": self.ticks}
+
+    monkeypatch.setattr(sprigcore, "Engine", Stuck)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge.check(10.0)  # running
+    bridge.engine.hung = 1
+    bridge.engine.ticks = 101  # a slow frame that then finished: never given up on
+    for second in range(11, 16):
+        bridge.engine.ticks += 1
+        bridge.check(float(second))
+    assert not bridge.failed
+    for second in range(16, 19):  # no frame finishes any more
+        bridge.check(float(second))
+    assert not bridge.failed
+    bridge.check(19.0)
+    assert bridge.failed

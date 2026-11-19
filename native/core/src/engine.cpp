@@ -39,6 +39,8 @@ constexpr double HANG_S = 2.0;           // one frame this long and the watchdog
 constexpr int REBUILDS_PER_MINUTE = 5;   // more than this and the engine gives up (faulted)
 constexpr int BUILD_TRIES = 10;          // a new device that can't be made after this many tries: faulted
 constexpr int WAIT_MS = 2000;            // how long Python waits for the frame thread before giving up
+constexpr int FRAME_WAIT_MS = 500;       // how long a Python call waits for a frame to let go (a stuck one never does)
+constexpr double CAPTURE_START_S = 5.0;  // a capture Windows hasn't started by then is given up (Python captures)
 
 int64_t qpc() {
     LARGE_INTEGER v;
@@ -83,7 +85,9 @@ struct CaptureShown {
 // The frame thread's capture for a want: made on the device, again after a rebuild; `done` once it ended or
 // couldn't start (Python asks again).
 struct CaptureRun {
-    std::unique_ptr<sc::ScreenCapture> cap;
+    sc::CapturePtr cap;                           // let go: closed on the capture thread (wgc.h)
+    std::shared_ptr<sc::CaptureStart> starting;  // a start under way on the capture thread
+    int64_t asked = 0;                            // when it was asked (qpc)
     uint64_t serial = 0;
     uint64_t frames = 0;
     bool done = false;
@@ -500,7 +504,7 @@ struct sc_engine {
     sc_engine_stats stats{};
 
     // ---- the frame thread's own (canvas reads borrow them under `frame`) ----
-    std::mutex frame;
+    std::timed_mutex frame;  // held by a frame; Python's calls that need it wait 0.5 s at most
     sc_device *dev = nullptr;
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
     std::unordered_map<int, PreviewGpu> shown;
@@ -572,7 +576,10 @@ void check(int code) {
 }
 
 void drop_gpu(sc_engine &e) {
-    for (auto &[id, run] : e.capture_runs) run.cap.reset();  // made again on the new device (same serial)
+    for (auto &[id, run] : e.capture_runs) {  // made again on the new device (same serial)
+        run.cap.reset();
+        run.starting.reset();
+    }
     e.capture_staging.clear();
     e.shown.clear();
     e.media_seen.clear();  // a new device gets each player's picture again
@@ -1288,9 +1295,31 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (run.done) continue;
         if (run.cap && run.cap->device() != e.dev->device.Get()) run.cap.reset();
         if (!run.cap) {
+            if (!run.starting) {
+                run.starting = sc::start_capture(e.dev->device, want.ask);
+                run.asked = qpc();
+            }
             sc::CaptureRefusal refusal = sc::CaptureRefusal::NONE;
             std::string why;
-            run.cap = sc::ScreenCapture::start(*e.dev, want.ask, refusal, why);
+            bool answered = false;
+            {
+                std::lock_guard<std::mutex> hold(run.starting->m);
+                if (run.starting->done) {
+                    answered = true;
+                    run.cap = std::move(run.starting->cap);
+                    refusal = run.starting->refusal;
+                    why = run.starting->why;
+                }
+            }
+            if (!answered) {
+                if (static_cast<double>(qpc() - run.asked) < CAPTURE_START_S * static_cast<double>(qpf()))
+                    continue;  // still starting: asked again next frame
+                refusal = sc::CaptureRefusal::NOT_HERE;  // Windows' capture service isn't answering
+                why = "Windows didn't start it in 5 s";
+            }
+            run.starting.reset();
+            if (run.cap && run.cap->device() != e.dev->device.Get()) run.cap.reset();  // started on an old device
+            if (!run.cap && answered && refusal == sc::CaptureRefusal::NONE) continue;  // started again next frame
             if (!run.cap) {
                 run.done = true;
                 const bool here = refusal != sc::CaptureRefusal::NOT_HERE;
@@ -1422,7 +1451,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
 }
 
 void tick(sc_engine &e) {
-    std::lock_guard<std::mutex> frame(e.frame);
+    std::lock_guard<std::timed_mutex> frame(e.frame);
     const int64_t start = qpc();
     e.tick_started.store(start);
     const double seconds = static_cast<double>(start - e.born) / static_cast<double>(qpf());
@@ -1913,7 +1942,8 @@ SC_API int sc_engine_capture_read(sc_engine *engine, uint64_t id, uint8_t *bgra,
     return engine_call(engine, "sc_engine_capture_read", [&]() -> int {
         if (!width || !height) return fail(SC_ERR_ARGUMENT, "sc_engine_capture_read: nowhere for the size");
         *width = *height = 0;
-        std::lock_guard<std::mutex> frame(engine->frame);
+        std::unique_lock<std::timed_mutex> frame(engine->frame, std::chrono::milliseconds(FRAME_WAIT_MS));
+        if (!frame.owns_lock()) return fail(SC_ERR_TIMEOUT, "sc_engine_capture_read: the engine's frame is stuck");
         if (!engine->dev) return fail(SC_ERR_ARGUMENT, "sc_engine_capture_read: no device yet");
         return sc::read_capture(*engine->dev, id, engine->capture_staging[id], bgra, stride, max_width, max_height,
                                 width, height);
@@ -2044,7 +2074,8 @@ SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int
             if (engine->dead.load()) return fail(SC_ERR_FAULTED, "sc_engine_canvas_read: the engine stopped");
             if (!drawn) return fail(SC_ERR_TIMEOUT, "sc_engine_canvas_read: no frame in 2 s");
         }
-        std::lock_guard<std::mutex> frame(engine->frame);
+        std::unique_lock<std::timed_mutex> frame(engine->frame, std::chrono::milliseconds(FRAME_WAIT_MS));
+        if (!frame.owns_lock()) return fail(SC_ERR_TIMEOUT, "sc_engine_canvas_read: the engine's frame is stuck");
         sc_canvas *canvas = engine->gpu[index];
         if (!canvas || canvas->width != width || canvas->height != height)
             return fail(SC_ERR_TIMEOUT, "sc_engine_canvas_read: the canvas isn't drawn yet");

@@ -656,7 +656,7 @@ int main() {
         if (state == SC_SCREEN_RUNNING) {
             CHECK(w > 0 && h > 0 && frames > 0);
             int rw = 0, rh = 0;
-            CHECK(sc_engine_capture_read(eng, 21, nullptr, 0, 0, 0, &rw, &rh) == SC_ERR_ARGUMENT);
+            CHECK(sc_engine_capture_read(eng, 21, nullptr, 0, 0, 0, &rw, &rh) == SC_OK);  // its size only
             CHECK(rw == w && rh == h);
             std::vector<uint8_t> screen(static_cast<size_t>(rw) * rh * 4);
             CHECK(sc_engine_capture_read(eng, 21, screen.data(), rw * 4, rw, rh, &rw, &rh) == SC_OK);
