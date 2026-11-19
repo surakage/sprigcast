@@ -73,7 +73,7 @@ def test_tabs_and_apply_writes_everything(app):
 
 def test_bad_hotkey_blocks_save_in_the_hotkeys_window(app, monkeypatch):
     from PySide6.QtGui import QKeySequence
-    from PySide6.QtWidgets import QMessageBox
+    from sprigcast.app import message as msgbox
 
     from sprigcast.app.hotkeys_dialog import HotkeysWindow
 
@@ -83,7 +83,7 @@ def test_bad_hotkey_blocks_save_in_the_hotkeys_window(app, monkeypatch):
     edits[0].setKeySequence(QKeySequence("Ctrl+Alt+1"))
     edits[1].setKeySequence(QKeySequence("Ctrl+Alt+1"))
     shown = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: shown.append(a[2])))
+    monkeypatch.setattr(msgbox, "warning", staticmethod(lambda *a, **k: shown.append(a[2])))
     w.save_button.click()
     assert "used twice" in shown[0] and col.hotkeys == {} and not w.result()
     edits[1].setKeySequence(QKeySequence("Ctrl+C"))  # every app copies with it

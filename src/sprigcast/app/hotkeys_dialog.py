@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import message as msgbox
 from sprigcast.app import theme
 from sprigcast.app.hotkeys import sections, taken_by, to_pynput
 from sprigcast.app.live_stage import heading
@@ -256,13 +257,11 @@ class HotkeysWindow(QDialog):
             QTimer.singleShot(30, self._fill)  # after the window's first paint
 
     def _save(self) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
         self._fill()
 
         problem = self.page.problem()
         if problem:
-            QMessageBox.warning(self, "Hotkeys", problem)
+            msgbox.warning(self, "Hotkeys", problem)
             return
         self.collection.hotkeys = self.page.result_hotkeys()
         self.accept()

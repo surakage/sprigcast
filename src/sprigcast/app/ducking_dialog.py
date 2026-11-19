@@ -5,8 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -17,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app.labels import literal
-from sprigcast.app import theme
+from sprigcast.app.card import CardDialog
 from sprigcast.core.scene import AudioSettings, SceneCollection
 
 AUDIO_KINDS = ("audio_input", "audio_output", "app_audio", "media")
@@ -42,16 +40,15 @@ def _slider(low: int, high: int, value: float, fmt: str) -> tuple[QWidget, QSlid
     return row, slider
 
 
-class DuckingDialog(QDialog):
+class DuckingDialog(CardDialog):
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Ducking")
+        super().__init__("Ducking", parent, width=500)
+        from sprigcast.app.game_dialog import _row
+        from sprigcast.app.live_stage import Switch
+
         audio = collection.audio
-        self.enabled = QCheckBox("Lower other sounds while I talk")
+        self.enabled = Switch()
         self.enabled.setChecked(audio.ducking)
-        intro = QLabel("Your voice stays clear; game and music dip, then come back when you stop.")
-        intro.setWordWrap(True)
-        intro.setStyleSheet(theme.MUTED_STYLE)
 
         voices = QGroupBox("Voices (these do the lowering)")
         voice_box = QVBoxLayout(voices)
@@ -67,6 +64,8 @@ class DuckingDialog(QDialog):
 
         sound = QGroupBox("How it sounds")
         form = QFormLayout(sound)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
         row, self.amount = _slider(3, 30, -audio.duck_amount_db, "−{} dB")
         form.addRow("Lower others by", row)
         row, self.threshold = _slider(-60, -10, audio.duck_threshold_db, "{} dB")
@@ -86,16 +85,10 @@ class DuckingDialog(QDialog):
 
         self.enabled.toggled.connect(toggle)
         toggle(audio.ducking)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root = QVBoxLayout(self)
-        root.addWidget(self.enabled)
-        root.addWidget(intro)
-        root.addWidget(voices)
-        root.addWidget(sound)
-        root.addWidget(buttons)
-        self.resize(440, self.sizeHint().height())
+        self.body.addLayout(_row("Lower other sounds while I talk", self.enabled))
+        self.body.addWidget(voices)
+        self.body.addWidget(sound)
+        self.ok = self.add_buttons("Save")
 
     def settings(self) -> AudioSettings:
         return AudioSettings(

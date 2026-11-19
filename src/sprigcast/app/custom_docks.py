@@ -18,10 +18,6 @@ from dataclasses import asdict, dataclass
 
 from PySide6.QtCore import QSettings, QStandardPaths, Qt, QUrl
 from PySide6.QtWidgets import (
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.app.card import CardDialog
 
 log = logging.getLogger(__name__)
 SETTINGS_KEY = "docks/custom"
@@ -153,26 +150,28 @@ class WebDockBody(QWidget):
             self.view.reload()
 
 
-class CustomDocksDialog(QDialog):
+class CustomDocksDialog(CardDialog):
     """Add, rename, re-point and remove web panels."""
 
     def __init__(self, docks: list[CustomDock], parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Web panels")
-        self.setMinimumWidth(560)
+        super().__init__("Web panels", parent, width=700)
+        from sprigcast.app.card import combo
+        from sprigcast.app.settings_dialog import FORM_STYLE, _form, _name
+        from sprigcast.app.states_dialog import LIST_STYLE
+
+        self.setStyleSheet(FORM_STYLE)
         self.docks = [CustomDock(**asdict(d)) for d in docks]
-        root = QVBoxLayout(self)
-        intro = QLabel("Web pages as panels: your activity feed, alerts or any page. Each shows up in the "
-                       "Panels menu; a new one appears on Live, and ↗ pops it out. Chat has its own panel.")
-        intro.setWordWrap(True)
-        root.addWidget(intro)
+        root = self.body
         body = QHBoxLayout()
+        body.setSpacing(16)
         self.list = QListWidget()
+        self.list.setStyleSheet(LIST_STYLE)
+        self.list.setFixedHeight(190)
         self.list.currentRowChanged.connect(self._show)
         body.addWidget(self.list, 1)
         form_box = QWidget()
-        form = QFormLayout(form_box)
-        self.preset = QComboBox()
+        form = _form(form_box)
+        self.preset = combo()
         self.preset.addItems(list(PRESETS))
         self.preset.currentTextChanged.connect(self._preset_changed)
         self.channel = QLineEdit()
@@ -183,25 +182,25 @@ class CustomDocksDialog(QDialog):
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://…")
         self.url.textEdited.connect(self._edited)
-        form.addRow("Page", self.preset)
-        form.addRow("Channel", self.channel)
-        form.addRow("Panel name", self.name)
-        form.addRow("URL", self.url)
+        form.addRow(_name("Page"), self.preset)
+        form.addRow(_name("Channel"), self.channel)
+        form.addRow(_name("Panel name"), self.name)
+        form.addRow(_name("URL"), self.url)
         body.addWidget(form_box, 2)
         root.addLayout(body)
         row = QHBoxLayout()
+        row.setSpacing(8)
         add = QPushButton("+ Add panel")
         add.clicked.connect(self._add)
-        self.remove = QPushButton("− Remove")
+        self.remove = QPushButton("Remove")
         self.remove.clicked.connect(self._remove)
-        row.addWidget(add)
-        row.addWidget(self.remove)
+        for button in (add, self.remove):
+            button.setStyleSheet(theme.button_style(15, "7px 14px"))
+            button.setAutoDefault(False)
+            row.addWidget(button)
         row.addStretch(1)
         root.addLayout(row)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        self.ok = self.add_buttons("Save")
         self._loading = False
         self._refill()
 

@@ -331,12 +331,15 @@ def test_main_window_remote_start_asks_nothing(monkeypatch):
     pytest_mw = __import__("pytest").importorskip("sprigcast.app.main_window")
     from PySide6.QtWidgets import QMessageBox
 
+    from sprigcast.app import message as msgbox
+
     def no_popups(*args, **kwargs):
         raise AssertionError("a pop-up opened")
 
     for name in ("information", "warning", "critical", "question"):
-        monkeypatch.setattr(QMessageBox, name, staticmethod(no_popups))
+        monkeypatch.setattr(msgbox, name, staticmethod(no_popups))
     monkeypatch.setattr(QMessageBox, "exec", no_popups)
+    monkeypatch.setattr(msgbox.MessageCard, "exec", no_popups)
     col = _host().collection
     window = types.SimpleNamespace(collection=col, _stream_target=lambda o, ask=True, quiet=False: (object(), None),
                                    _doctor_warnings=lambda: ["Your PC is busy (CPU 95%)."],

@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -39,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import autostart, priority, theme
+from sprigcast.app import message as msgbox
 from sprigcast.app.live_stage import heading
 from sprigcast.app.output_page import (  # noqa: F401 (stream_delay and apply_naming are imported from here)
     CameraTab,
@@ -1252,7 +1252,7 @@ class SettingsWindow(QDialog):
             try:
                 autostart.set_enabled(self.start_with_windows.isChecked())
             except OSError as exc:
-                QMessageBox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
+                msgbox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
         settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
         settings.setValue(PREVIEW_LIVE, self.preview_live.currentData())
         from sprigcast.app import features

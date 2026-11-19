@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QSettings, Qt, Signal
 from PySide6.QtWidgets import QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast import plugin_store
+from sprigcast.app import message as msgbox
 from sprigcast.app import theme
 from sprigcast.app.live_stage import heading
 from sprigcast.plugins import PluginReport
@@ -299,7 +300,7 @@ class PluginStorePage(QWidget):
             from PySide6.QtWidgets import QMessageBox
 
             names = ", ".join(used[:4]) + ("…" if len(used) > 4 else "")
-            answer = QMessageBox.question(self, "Remove plugin",
+            answer = msgbox.question(self, "Remove plugin",
                                           f"{names} use {plugin.name}. They'll show nothing once it's gone. Remove it?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
