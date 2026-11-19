@@ -4,7 +4,7 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 "Tested" means tried on a real Windows PC. Everything else passed the automated tests but still needs a try.
 
-## 0.2.0 (not released yet)
+## 0.2.0 (2026-11-19)
 
 The first named release since the build guide. SprigCast now looks and works like its own app instead of an OBS copy:
 a Live screen for running the show, a Build screen for making blooms, chat, a control API, and a lot of speed work.
@@ -433,6 +433,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - The first frame is drawn before the frame clock starts, so start-up no longer has a one-second hitch.
 - App sound's once-a-second app check no longer leaves objects behind. Over a night they piled up into millions, so
   Python's clean-up pauses grew from 36 ms to 289 ms (16 missed frames each) and memory crept up.
+- Display, window and game capture run in their own helper, SprigCastCapture.exe, so the memory Windows keeps
+  for each capture can be given back (#645, #647, #657). Tested.
+- x264 uses a short look-ahead on PCs with four CPU threads or fewer (#685, #690).
 
 ### Sources and effects
 
@@ -573,6 +576,8 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Drawn line icons instead of emoji, a rounded About box and a README banner (#205, #207).
 - The new sloths in the starter blooms, Stream doctor and a Nice stream card (#211).
 - Live screen spacing evened out (#213).
+- Four more themes made from Night Canopy: Moonlit Pond, Dusk Orchid, Autumn Leaf and River Stone, picked from
+  tiles in Settings > Appearance with a live preview.
 
 ### Installer
 
@@ -580,6 +585,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Each installer build is scanned by Microsoft Defender and comes with SHA256 fingerprints (#229).
 - An update deletes every file the last version installed and this one doesn't (a dropped library or plugin),
   from a list of files each installer carries, as OBS's updater does.
+- About 24 MB smaller installed and 13 MB smaller to download: libraries' test folders, type hints, Chromium's
+  developer tools and Python's developer-only parts are left out (#693).
+- Uninstalling removes SprigCast's whole program folder, so a reinstall no longer asks "Folder exists" (#694).
 
 ### Tests
 
