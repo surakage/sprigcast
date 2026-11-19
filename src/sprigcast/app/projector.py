@@ -38,6 +38,65 @@ def on_top() -> bool:
     return QSettings().value(ON_TOP, False, type=bool)
 
 
+REOPEN = "projector/reopen"  # Settings → General → Pop-out views → Reopen them next time
+OPEN_LIST = "projector/open"  # the pop-outs that were open when SprigCast closed (JSON), kept only with REOPEN on
+
+
+def reopen() -> bool:
+    from PySide6.QtCore import QSettings
+
+    return QSettings().value(REOPEN, False, type=bool)
+
+
+def describe(projector) -> dict:
+    """What it takes to open this pop-out again: what it shows, and the screen it filled or where its window sat."""
+    kind, ref = getattr(projector, "target", ("canvas", projector.canvas_id))
+    full = projector.isFullScreen()
+    screen = projector.screen()
+    box = projector.geometry()
+    return {"canvas": projector.canvas_id, "kind": kind, "ref": ref,
+            "screen": (screen.name() if screen is not None else "") if full else "",
+            "window": [] if full else [box.x(), box.y(), box.width(), box.height()]}
+
+
+def save_open(projectors) -> None:
+    """SprigCast is closing: keep the open pop-outs for next time (or forget them when the setting is off)."""
+    import json
+
+    from PySide6.QtCore import QSettings
+
+    if reopen():
+        QSettings().setValue(OPEN_LIST, json.dumps([describe(p) for p in projectors]))
+    else:
+        QSettings().remove(OPEN_LIST)
+
+
+def saved() -> list[dict]:
+    """The pop-outs kept by save_open ([] with the setting off, or when what's saved can't be read)."""
+    import json
+
+    from PySide6.QtCore import QSettings
+
+    if not reopen():
+        return []
+    try:
+        found = json.loads(QSettings().value(OPEN_LIST, "[]", type=str) or "[]")
+    except ValueError:
+        return []
+    return [d for d in found if isinstance(d, dict)] if isinstance(found, list) else []
+
+
+def on_a_screen(window: list, screens) -> bool:
+    """Whether a saved window ([x, y, w, h]) would still be reachable: a good part of it on some screen."""
+    from PySide6.QtCore import QRect
+
+    if len(window) != 4:
+        return False
+    box = QRect(*(int(v) for v in window))
+    return any(s.availableGeometry().intersected(box).width() >= 100
+               and s.availableGeometry().intersected(box).height() >= 60 for s in screens)
+
+
 class Projector(QWidget):
     """One canvas on one screen. screen=None opens a normal window instead of full screen."""
 

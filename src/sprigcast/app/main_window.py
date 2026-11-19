@@ -1222,7 +1222,7 @@ class MainWindow(QMainWindow):
             self.engine.add_frame_tap(f"view:{view}", projector.tap)
         projector.target = (kind, ref or canvas_id)
         self.projectors.append(projector)
-        QTimer.singleShot(0, self._pace_poll)  # once it's shown: a projector wants every picture
+        QTimer.singleShot(0, self, self._pace_poll)  # once it's shown: a projector wants every picture
         return projector
 
     def _projector_closed(self, projector) -> None:
@@ -3195,6 +3195,9 @@ class MainWindow(QMainWindow):
         pacing.ui_rest()  # a hidden window isn't one that doesn't answer
         pacing.exit_guard()  # whatever gets stuck from here on, SprigCast ends (after saving, below)
         awake.hold(False)
+        from sprigcast.app import projector as pop_outs
+
+        pop_outs.save_open(self.projectors)  # Reopen them next time (General → Pop-out views)
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()
@@ -6942,6 +6945,42 @@ class MainWindow(QMainWindow):
 
             if privacy.hidden():  # Settings → General → Privacy
                 privacy.apply_to(self, True)
+            QTimer.singleShot(1500, self, self.reopen_projectors)  # once the window is up and drawn
+
+    def reopen_projectors(self) -> list:
+        """Open the pop-outs that were open last time (Settings → General → Pop-out views → Reopen them next
+        time). One whose bloom, source, canvas or screen is gone is left out: nothing opens somewhere else."""
+        from sprigcast.app import projector as pop_outs
+
+        opened = []
+        screens = QGuiApplication.screens()
+        for was in pop_outs.saved():
+            try:
+                canvas_id, kind, ref = str(was.get("canvas", "")), str(was.get("kind", "canvas")), str(was.get("ref", ""))
+                canvas = next((c for c in self.collection.canvases if c.id == canvas_id), None)
+                if canvas is None or not canvas.enabled or kind not in ("canvas", "bloom", "sprig", "source"):
+                    continue
+                if kind == "bloom" and not any(sc.id == ref for sc in self.collection.scenes):
+                    continue
+                if kind in ("sprig", "source") and not any(
+                        c.id == ref for c in [*self.collection.sources, *self.collection.scenes]):
+                    continue
+                name, window = str(was.get("screen", "")), was.get("window") or []
+                screen = next((s for s in screens if s.name() == name), None) if name else None
+                if name and screen is None:
+                    continue  # that monitor isn't plugged in now
+                if any(p.target == (kind, ref or canvas_id) and (p.screen() is screen if name else not p.isFullScreen())
+                       for p in self.projectors):
+                    continue  # already open (asked twice)
+                projector = self.open_projector(canvas_id, screen, kind, "" if kind == "canvas" else ref)
+                if not name and pop_outs.on_a_screen(window, screens):
+                    projector.setGeometry(*(int(v) for v in window))
+                opened.append(projector)
+            except Exception:  # noqa: BLE001  a pop-out that can't come back never stops the others
+                log.warning("pop-outs: couldn't reopen %r", was, exc_info=True)
+        if opened:
+            log.info("pop-outs: reopened %d from last time", len(opened))
+        return opened
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
