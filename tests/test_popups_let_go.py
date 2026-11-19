@@ -122,3 +122,32 @@ def test_the_settings_warm_up_leaves_nothing_behind(tmp_path, monkeypatch):
     finally:
         w.streaming = None
         w.close()
+
+
+def test_the_settings_warm_up_waits_while_the_password_store_is_still_loading(tmp_path, monkeypatch):
+    """Its Stream page reads a place's key: with the store still loading on its worker, the window's thread
+    waited for it (16.6 s on a cold build machine, 2026-11-19). It comes back to it later instead."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.core import warm
+
+    col, w = _window(tmp_path, monkeypatch)
+    app = QApplication.instance()
+    made = []
+    monkeypatch.setattr("sprigcast.app.main_window.SettingsWindow",
+                        type("Never", (), {"__init__": lambda self, *a, **k: made.append(1)}))
+    monkeypatch.setattr(type(w), "WARM_SETTINGS_RETRY_MS", 20)
+    monkeypatch.setattr(type(w), "WARM_SETTINGS_TRIES", 3)
+    try:
+        w.show()
+        warm.keyring_loading.set()
+        w.warm_settings()
+        import time
+
+        end = time.monotonic() + 0.5
+        while time.monotonic() < end:
+            app.processEvents()
+        assert not made and w._warm_waits == 4  # asked again three times, then let be
+    finally:
+        warm.keyring_loading.clear()
+        w.close()

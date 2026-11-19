@@ -714,11 +714,40 @@ class StreamPage(QWidget):
         self._edited()
 
     def _twitch_account(self) -> str | None:
-        """The connected Twitch login: from settings (instant), the password store only on older installs."""
+        """The connected Twitch login, from settings (instant). Never recorded (older installs, a first run): it's
+        looked up in the password store on a worker and the place filled in when that's back. Opening the store
+        on the window's thread held the Stream page 16.6 s on a cold build machine (#672's smoke run, 2026-11-19)."""
         login = twitch_auth.remembered_login()
         if login is None:
-            login = twitch_auth.connected_account() or ""
+            self._find_twitch_account()
+            return None
         return login or None
+
+    def _find_twitch_account(self) -> None:
+        if getattr(self, "_twitch_lookup", None) is not None:
+            return  # already looking (or looked: what it found is in settings now)
+        from PySide6.QtCore import QTimer
+
+        from sprigcast.core import workers
+
+        self._twitch_lookup = workers.run(lambda: twitch_auth.connected_account() or "", name="twitch-account")
+        self._twitch_poll = QTimer(self, interval=50)
+        self._twitch_poll.timeout.connect(self._twitch_found)
+        self._twitch_poll.start()
+
+    def _twitch_found(self) -> None:
+        lookup = self._twitch_lookup
+        if not lookup.done():
+            return
+        self._twitch_poll.stop()
+        try:
+            login = lookup.result() or ""
+        except Exception:  # noqa: BLE001  the store couldn't be read: as if nobody's connected, asked again next time
+            return
+        twitch_auth._announce(login)  # recorded (here, on the window's thread): instant from now on
+        output = self._current()
+        if login and output is not None and (output.service or "") == "twitch":
+            self._show_service(output)
 
     def _key_text(self, output: Output) -> str:
         """This place's stream key, read from the password store the first time it's shown."""

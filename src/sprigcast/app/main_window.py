@@ -6532,6 +6532,7 @@ class MainWindow(QMainWindow):
         modal(window)
 
     WARM_SETTINGS_MS = 2_000  # the off-screen Settings is let go this long after it's shown
+    WARM_SETTINGS_RETRY_MS, WARM_SETTINGS_TRIES = 2_000, 30  # while the password store loads: later, then never
 
     def warm_settings(self) -> None:
         """Once, a little after start (not while live or recording): make Settings' Stream page off screen and let
@@ -6540,6 +6541,13 @@ class MainWindow(QMainWindow):
         if self.streaming is not None or self.recording is not None or not self.isVisible():
             return
         if any(isinstance(w, SettingsWindow) and w.isVisible() for w in QApplication.topLevelWidgets()):
+            return
+        from sprigcast.core import warm
+
+        if warm.keyring_loading.is_set():  # the password store is still loading on its worker: not now
+            self._warm_waits = getattr(self, "_warm_waits", 0) + 1
+            if self._warm_waits <= self.WARM_SETTINGS_TRIES:
+                QTimer.singleShot(self.WARM_SETTINGS_RETRY_MS, self, self.warm_settings)
             return
         try:
             window = SettingsWindow(self.collection, default_recordings_folder=self._default_recordings_folder(),

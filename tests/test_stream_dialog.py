@@ -77,7 +77,7 @@ def test_twitch_account_row(fake_keyring, monkeypatch):
     d = StreamPage(col)
     assert d.twitch_row.isVisibleTo(d) and d.twitch_button.text() == "Connect Account (recommended)"
     assert not d.use_account.isVisibleTo(d)
-    monkeypatch.setattr(twitch_auth, "connected_account", lambda: "surakage")
+    monkeypatch.setattr(twitch_auth, "remembered_login", lambda: "surakage")
     d._show_service(d.outputs[0])
     assert d.twitch_label.text() == "Connected as surakage" and d.use_account.isVisibleTo(d)
     d.use_account.setChecked(True)
@@ -289,3 +289,40 @@ def test_twitch_place_shows_sign_out_once_connected(fake_keyring, monkeypatch):
     assert d.twitch_sign_out.isVisibleTo(d) and not d.twitch_button.isVisibleTo(d)
     d.twitch_sign_out.click()
     assert not d.twitch_sign_out.isVisibleTo(d) and d.twitch_button.isVisibleTo(d)
+
+
+def test_a_login_never_recorded_is_looked_up_off_the_window_thread_and_filled_in(fake_keyring, monkeypatch):
+    """Opening the password store while the Stream page was being made held it 16.6 s on a cold build machine."""
+    import threading
+    import time
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import twitch_auth
+
+    asked_on, recorded, gate = [], [], threading.Event()
+
+    def slow_store():
+        asked_on.append(threading.current_thread() is threading.main_thread())
+        gate.wait(5)
+        return "surakage"
+
+    monkeypatch.setattr(twitch_auth, "remembered_login", lambda: recorded[-1] if recorded else None)
+    monkeypatch.setattr(twitch_auth, "connected_account", slow_store)
+    monkeypatch.setattr(twitch_auth, "_announce", recorded.append)
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal")],
+    )
+    began = time.monotonic()
+    d = StreamPage(col)  # made while the store is still busy
+    d._show_service(d.outputs[0])  # shown again meanwhile: one lookup, not two
+    assert time.monotonic() - began < 2 and not d.use_account.isVisibleTo(d)
+    gate.set()
+    end = time.monotonic() + 5
+    while not recorded and time.monotonic() < end:
+        app.processEvents()
+        time.sleep(0.01)
+    assert asked_on == [False] and recorded == ["surakage"]
+    assert d.twitch_label.text() == "Connected as surakage" and d.use_account.isVisibleTo(d)
+    assert not d._twitch_poll.isActive()
