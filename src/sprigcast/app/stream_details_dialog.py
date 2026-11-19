@@ -134,7 +134,9 @@ class Pane(QWidget):
 
     def __init__(self, service: str, dialog: StreamDetailsDialog, key_ref: str | None = None,
                  vertical_key_ref: str | None = None):
-        super().__init__()
+        # Made inside the card it ends up in: put in afterwards, Qt went through every field again to hand it the
+        # card's look (part of the 61 ms the card took to open on the PC while live, 2026-11-19).
+        super().__init__(getattr(dialog, "_card", None))
         self.service, self.dialog = service, dialog
         self.vertical_key_ref = vertical_key_ref  # YouTube Dual stream: the vertical destination's key
         self.key_ref = key_ref  # YouTube: this destination's stream key, so it edits the stream that key goes to

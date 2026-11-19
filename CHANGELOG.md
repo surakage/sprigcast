@@ -264,6 +264,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   once, as the other pop-ups do, instead of blurring it again on every repaint (61 ms on the PC); the Garden
   check's page is made inside its pop-up from the start (62 ms putting it in afterwards), and Settings' Audio
   page inside its page (51 ms). Message cards (Keyboard shortcuts, 111 ms) get the same shadow.
+- Painting a pop-up's shadow is one call into Qt again (its nine pieces are put together once per size, with no
+  blurring): painted piece by piece it was a dozen calls per paint, each waiting for Python's lock while live
+  (Garden check 52-61 ms on the PC). The Sounds table makes all its rows a tick apart (Sound gear, 61 ms), and
+  Stream details makes its form inside its card (61 ms).
 - A pop-up card's shadow is one small picture whose edges stretch to any size, instead of a blurred picture per card
   size (a card that fits its contents changed size as it filled: Garden check and Stream details, about 55 ms
   each on the PC). Settings' Audio tabs make their cards a tick apart (Sound gear's first open, 63-184 ms), and
