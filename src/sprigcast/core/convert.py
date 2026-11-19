@@ -582,6 +582,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
     _transitions(data, col, by_name, made, notes)
     _hotkeys(raw, made, sources, col)
     col.wrap_blooms()
+    set_aside_unused(col, notes)
     sort_by_content(col)
     plays_in(col)
     if not any(s.kind == "show" for s in col.scenes):
@@ -599,6 +600,49 @@ CONTENT_FOLDERS = (
     ("Nested Scenes", {PART_KIND}),
 )
 MAIN_FOLDER = "Main Scenes"
+UNUSED_FOLDER = "Unused Scenes"
+
+
+def unused_parts(col: SceneCollection) -> list[Scene]:
+    """Sprigs no bloom reaches, directly or through other sprigs (a twin counts as reached with its main)."""
+    by_id = {s.id: s for s in col.scenes}
+    placed = {c.id: c.settings.get("scene") for c in col.sources if c.kind == PART_KIND}
+    twins: dict[str, list[str]] = {}
+    for s in col.scenes:
+        if s.shape_of:
+            twins.setdefault(s.shape_of, []).append(s.id)
+    seen: set[str] = set()
+    todo = [s.id for s in col.scenes if s.kind == "show"]
+    while todo:
+        scene = by_id.get(todo.pop())
+        if scene is None or scene.id in seen:
+            continue
+        seen.add(scene.id)
+        todo += [str(placed[i.source]) for i in scene.items if i.source in placed]
+        if scene.shape_of:
+            todo.append(scene.shape_of)
+        todo += twins.get(scene.id, [])
+    return [s for s in col.scenes if s.kind == "part" and s.id not in seen]
+
+
+def set_aside_unused(col: SceneCollection, notes: list[str]) -> None:
+    """Sprigs no bloom uses go in Unused Scenes (even from a divider's folder), with one note. Kept,
+    not dropped: they're often a kit of widgets the streamer drags in when needed (PC, 2026-11-19: 27 of them)."""
+    unused = unused_parts(col)
+    if not unused:
+        return
+    folder = None
+    was = {s.folder for s in unused} - {None}
+    for scene in unused:
+        if scene.shape_of is None:
+            folder = folder or next((f for f in col.folders if f.name == UNUSED_FOLDER and f.holds == "part"),
+                                    None) or col.add_folder(scene.canvas, UNUSED_FOLDER, holds="part")
+            scene.folder = folder.id
+    for f in [f for f in col.folders if f.id in was and f is not folder]:
+        if not any(s.folder == f.id for s in col.scenes):
+            col.folders.remove(f)  # a divider's folder that only held unused sprigs
+    mains = sum(s.shape_of is None for s in unused)
+    notes.append(f"{mains} unused sprig{'s are' if mains != 1 else ' is'} in {UNUSED_FOLDER}.")
 
 
 def content_folder(kinds: list[str]) -> str | None:
@@ -756,11 +800,16 @@ def _slug_prefix(kind: str) -> str:
 
 
 def _dedupe(notes: list[str]) -> list[str]:
+    """Each note once, what didn't come over at all first: the notes pop-up shows 40, and a garden with many
+    muted sounds and pages pushed "Glow: ... has no match" past them (PC, 2026-11-19)."""
     seen: list[str] = []
     for note in notes:
         if note not in seen:
             seen.append(note)
-    return seen
+    return sorted(seen, key=lambda n: not _LEFT_OUT.search(n))
+
+
+_LEFT_OUT = re.compile(r"has no match|isn't supported")
 
 
 def _size(config: SourceConfig, size_of: SizeOf, canvas: tuple[float, float]) -> tuple[float, float] | None:
@@ -811,6 +860,23 @@ _ALIGN_SHARE = {a: ((i % 3) / 2, (i // 3) / 2) for i, a in enumerate(
     ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right"))}
 
 
+def vertical_twin(path: str) -> str:
+    """The stinger's vertical video beside it ("x-vertical.webm" for "x.webm"), or "". OBS's vertical canvas
+    plugin keeps its own stinger outside the scene collection (PC, 2026-11-19: the vertical canvas got the
+    wide video though hidden-sloth-village-stinger-vertical.webm sat next to it)."""
+    if not path:
+        return ""
+    p = Path(path)
+    for tail in ("-vertical", "_vertical", " vertical", " (Vertical)", "-Vertical", "_Vertical", " Vertical"):
+        twin = p.with_name(p.stem + tail + p.suffix)
+        try:
+            if twin.is_file():
+                return str(twin).replace("\\", "/") if "/" in path else str(twin)
+        except OSError:
+            continue
+    return ""
+
+
 def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> Transition | None:
     if obs is None:
         return None
@@ -831,8 +897,9 @@ def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> 
     if kind == "obs_stinger_transition":
         point = int(_num(s.get("transition_point"), 500))
         matte = "right" if s.get("track_matte_layout", 0) == 0 else "below"
+        path = str(s.get("path", ""))
         return Transition(kind="stinger", duration_ms=max(duration, point),
-                          stinger=Stinger(path=str(s.get("path", "")), cut_ms=point,
+                          stinger=Stinger(path=path, vertical_path=vertical_twin(path), cut_ms=point,
                                           matte=matte if s.get("track_matte_enabled") else "none"))
     notes.append(f"{obs.get('name') or kind}: that transition has no match yet (using fade).")
     return Transition(kind="fade", duration_ms=duration)

@@ -385,3 +385,50 @@ def test_streamlabs_overlay(tmp_path):
     assert col.transition.kind == "stinger" and col.transition.stinger.path.endswith("51.webm")
     assert any("Alertbox" in n and "dashboard" in n for n in notes)
     assert any("Icon" in n and "pictures" in n for n in notes)
+
+
+def test_obs_sprigs_no_bloom_uses_go_in_unused_scenes():
+    """OBS scenes nothing shows (a widget kit, 27 in a real garden, PC 2026-11-19) are kept but set aside in
+    Unused Scenes with one note; sprigs reached only through other sprigs, and vertical twins, stay put."""
+    from sprigcast.core import convert as convert_mod
+
+    col, notes = from_obs(obs_file(), _like())
+    folders = {f.id: f.name for f in col.folders}
+    parts = {s.name: s for s in col.scenes if s.kind == "part"}
+    assert folders[parts["Spare overlay"].folder] == convert_mod.UNUSED_FOLDER
+    assert folders.get(parts["Overlay"].folder) != convert_mod.UNUSED_FOLDER
+    assert [p.name for p in convert_mod.unused_parts(col)] == ["Spare overlay"]
+    assert "1 unused sprig is in Unused Scenes." in notes
+    data = obs_file()
+    data["sources"] = [s for s in data["sources"] if s.get("uuid") != "o2"]
+    _, notes = from_obs(data, _like())
+    assert not any("unused sprig" in n for n in notes)
+
+
+def test_what_did_not_come_over_is_noted_first():
+    """The notes pop-up shows the first 40; a source with no match must not hide behind muted sounds."""
+    data = obs_file()
+    data["sources"] += [{"id": "wasapi_output_capture", "name": f"Out {i}", "uuid": f"w{i}",
+                         "settings": {"device_id": f"gone-{i}"}} for i in range(45)]
+    data["sources"].append({"id": "obs_glow_source", "name": "Glow", "uuid": "glow", "settings": {}})
+    _, notes = from_obs(data, _like())
+    glow = next(i for i, n in enumerate(notes) if n.startswith("Glow:"))
+    assert glow < 5 and all("has no match" in n or "isn't supported" in n for n in notes[:glow + 1])
+
+
+def test_stinger_finds_its_vertical_video_beside_it(tmp_path):
+    """OBS's vertical canvas plugin keeps its own stinger outside the collection; the "-vertical" file beside
+    the main one becomes the vertical canvas's video (PC, 2026-11-19)."""
+    from sprigcast.core.convert import vertical_twin
+
+    main = tmp_path / "stinger.webm"
+    main.write_bytes(b"x")
+    assert vertical_twin(str(main)) == ""
+    (tmp_path / "stinger-vertical.webm").write_bytes(b"x")
+    assert vertical_twin(str(main)) == str(tmp_path / "stinger-vertical.webm")
+    data = obs_file()
+    data["transitions"] = [{"name": "Sting", "id": "obs_stinger_transition",
+                            "settings": {"path": str(main), "transition_point": 900}}]
+    data["current_transition"] = "Sting"
+    col, _ = from_obs(data, _like())
+    assert col.transition.stinger.vertical_path == str(tmp_path / "stinger-vertical.webm")
