@@ -541,6 +541,10 @@ class MainWindow(QMainWindow):
 
         self.push_key = PushKey(self.engine.push_key)  # push to talk: pynput's thread straight to the mixer
         self._sync_push_key()
+        from sprigcast.app.tray import Tray
+
+        self.tray = Tray(self)  # Settings → General → System tray; the icon only while that is on
+        self.tray.sync()
         self.camera = None  # SprigCast Camera (Settings → Video → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
         self._camera_timer.timeout.connect(self._poll_camera)
@@ -3175,9 +3179,16 @@ class MainWindow(QMainWindow):
         self.live_panel.show_scenes(self.collection)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        tray = getattr(self, "tray", None)
+        if event.spontaneous() and tray is not None and tray.closing():
+            event.ignore()  # Close to the tray: hidden, and everything carries on
+            self._pace_poll()
+            return
         if event.spontaneous() and not self._may_close():
             event.ignore()
             return
+        if tray is not None:
+            tray.remove()
         self.hide()  # gone at once; what follows only tidies up
         from sprigcast.core import pacing
 
@@ -6753,6 +6764,7 @@ class MainWindow(QMainWindow):
 
         if privacy.supported():
             privacy.apply_to(self)  # Hide from screen capture, as just set
+        self.tray.sync()  # Show in the tray, as just set
         clips = getattr(self, "_clips_before", None)
         if clips is not None:
             self._restart_clips_if_changed(clips)
@@ -6911,9 +6923,15 @@ class MainWindow(QMainWindow):
                 self.setWindowOpacity(1.0)
                 self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
                 log.info("window opened while still being drawn for a minimized start: made whole")
+            if self.isMinimized() and getattr(self, "tray", None) is not None:
+                QTimer.singleShot(0, self, self._minimized_to_tray)  # (not from inside the state change)
             self._pace_poll()
             if self.isMinimized():
                 QTimer.singleShot(1000, self._sweep_if_due)
+
+    def _minimized_to_tray(self) -> None:
+        if self.isMinimized() and self.tray.minimized():
+            self._pace_poll()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

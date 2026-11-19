@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QTabWidget,
+    QGridLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -86,6 +87,8 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
     ("Always on top", "General", False), ("Hide the mouse pointer", "General", False),
     ("Hide from screen capture", "General", False), ("Privacy", "General", False),
+    ("System tray", "General", False), ("Minimize to the tray", "General", False),
+    ("Close to the tray", "General", False),
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
     ("Process priority", "General", False), ("Sources not on screen", "General", False),
@@ -197,9 +200,11 @@ PENDING_VIDEO = "video/pending"  # canvas changes saved here, applied at the nex
 
 
 def appearance_waiting() -> bool:
-    """Text size or colors saved that this run isn't drawn with yet (they're read when SprigCast starts)."""
+    """A theme, text size or colors saved that this run isn't drawn with yet (they're read when SprigCast starts)."""
     size = theme.text_size_in_use
-    return theme.chosen_colors() != theme.colors_in_use or (size is not None and theme.chosen_text_size() != size)
+    picked = chosen_theme()
+    return (theme.chosen_colors() != theme.colors_in_use or (size is not None and theme.chosen_text_size() != size)
+            or (picked != "system" and picked != theme.theme_in_use))
 
 
 def confirm_enabled(key: str) -> bool:
@@ -272,37 +277,6 @@ def _devices(devices) -> dict[str, list[str]]:
             log.warning("settings: couldn't list sound devices: %s", exc)
             return {}
     return devices
-
-
-class ColorPreview(QWidget):
-    """A level bar in a color preset's good, warning and bad colors (Appearance → Colors → Preview)."""
-
-    def __init__(self, preset: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setFixedHeight(10)
-        self.setMinimumWidth(240)
-        self.setMaximumWidth(520)
-        self.colors = theme.preset_colors(preset)
-
-    def show_preset(self, preset: str) -> None:
-        self.colors = theme.preset_colors(preset)
-        self.update()
-
-    def paintEvent(self, _event) -> None:  # noqa: N802
-        from PySide6.QtGui import QColor, QPainter, QPainterPath
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        clip = QPainterPath()
-        clip.addRoundedRect(0, 0, w, h, h / 2, h / 2)
-        p.setClipPath(clip)
-        p.fillRect(0, 0, w, h, QColor(theme.TRACK))
-        x = 0.0
-        for name, share in (("ACCENT", 0.46), ("WARN", 0.20), ("BAD", 0.10)):
-            p.fillRect(int(x), 0, int(w * share) + 1, h, QColor(self.colors[name]))
-            x += w * share
-        p.end()
 
 
 LINED_UP = "settingsLinedUp"  # a form label already set level with its box
@@ -916,6 +890,29 @@ class SettingsWindow(QDialog):
             self.projector_on_top.setChecked(projector.on_top())
             pbox.addWidget(self.projector_on_top)
 
+            from sprigcast.app import tray
+
+            in_tray = QGroupBox("System tray")
+            tbox = QVBoxLayout(in_tray)
+            self.tray_show = QCheckBox("Show in the tray")
+            self.tray_show.setChecked(tray.wanted())
+            tbox.addWidget(self.tray_show)
+            self.tray_minimize = QCheckBox("Minimize to the tray")
+            self.tray_minimize.setToolTip("With Start minimized, SprigCast starts there")
+            self.tray_minimize.setChecked(q.value(tray.MINIMIZE_TO, False, type=bool))
+            tbox.addWidget(self.tray_minimize)
+            self.tray_close = QCheckBox("Close to the tray")
+            self.tray_close.setToolTip("The window's × hides it and SprigCast keeps running. Quit is on the tray icon.")
+            self.tray_close.setChecked(q.value(tray.CLOSE_TO, False, type=bool))
+            tbox.addWidget(self.tray_close)
+
+            def tray_on(on: bool) -> None:
+                self.tray_minimize.setEnabled(on)
+                self.tray_close.setEnabled(on)
+
+            self.tray_show.toggled.connect(tray_on)
+            tray_on(self.tray_show.isChecked())
+
             private = QGroupBox("Privacy")
             prbox = QVBoxLayout(private)
             self.hide_from_capture = QCheckBox("Hide SprigCast from screen capture")
@@ -949,7 +946,7 @@ class SettingsWindow(QDialog):
                 self.feature_ticks[name] = tick
 
             layout = page.layout()
-            for card in (safety, snapping, popouts, private, used, updates, logs, self._clear_data_card()):
+            for card in (safety, snapping, popouts, in_tray, private, used, updates, logs, self._clear_data_card()):
                 layout.insertWidget(layout.count() - 1, card)  # above the stretch
 
         if self.isVisible():
@@ -962,31 +959,57 @@ class SettingsWindow(QDialog):
         """Appearance: the theme, text size and a color preset. Text size and colors show after a restart: every
         style in the app is built from them as SprigCast starts (theme.py)."""
 
-        look = QGroupBox("Look")
-        form = QFormLayout(look)
-        form.setVerticalSpacing(12)
-        self.theme = QComboBox()
+        from sprigcast.app.look_preview import LookPreview, ThemeTile
+
+        look = QGroupBox("Theme")
+        box = QVBoxLayout(look)
+        box.setSpacing(14)
+        self.theme = QComboBox()  # what is picked; the tiles below are how you pick it
         for key, label in THEMES.items():
             self.theme.addItem(label, key)
         self.theme.setCurrentIndex(max(0, self.theme.findData(chosen_theme())))
-        form.addRow("Theme", self.theme)
+        self.theme.hide()
+        box.addWidget(self.theme)
+        tiles = QGridLayout()
+        tiles.setContentsMargins(0, 0, 0, 0)
+        tiles.setSpacing(10)
+        self.theme_tiles: dict[str, ThemeTile] = {}
+        for i, (key, label) in enumerate(THEMES.items()):
+            tile = ThemeTile(key, label, theme.chosen_colors())
+            tile.setChecked(key == self.theme.currentData())
+            tile.clicked.connect(lambda _=False, k=key: self.theme.setCurrentIndex(self.theme.findData(k)))
+            tiles.addWidget(tile, i // 6, i % 6)
+            self.theme_tiles[key] = tile
+        for column in range(6):
+            tiles.setColumnStretch(column, 1)
+        box.addLayout(tiles)
+        self.color_preview = LookPreview(self.theme.currentData(), theme.chosen_colors(), theme.chosen_text_size())
+        box.addWidget(self.color_preview)
+
+        def theme_picked() -> None:
+            key = self.theme.currentData()
+            for name, tile in self.theme_tiles.items():
+                tile.setChecked(name == key)
+            self.color_preview.show_theme(key)
+
+        self.theme.currentIndexChanged.connect(theme_picked)
+
+        text = QGroupBox("Text and colors")
+        form = QFormLayout(text)
+        form.setVerticalSpacing(12)
         self.text_size = Segmented([(key, label) for key, (label, _scale) in theme.TEXT_SIZES.items()],
                                    theme.chosen_text_size())
+        self.text_size.picked.connect(self.color_preview.show_text_size)
         form.addRow("Text size", self.text_size)
-
-        colors = QGroupBox("Colors")
-        cform = QFormLayout(colors)
-        cform.setVerticalSpacing(12)
         self.color_preset = Segmented(list(theme.COLOR_PRESETS.items()), theme.chosen_colors())
-        cform.addRow("Preset", self.color_preset)
-        self.color_preview = ColorPreview(theme.chosen_colors())
         self.color_preset.picked.connect(self.color_preview.show_preset)
-        cform.addRow("Preview", self.color_preview)
-        return _page(look, colors)
+        self.color_preset.picked.connect(lambda preset: [t.show_preset(preset) for t in self.theme_tiles.values()])
+        form.addRow("Colors", self.color_preset)
+        return _page(look, text)
 
     def _apply_appearance(self) -> None:
         settings = QSettings()
-        settings.setValue("general/theme", self.theme.currentData())
+        settings.setValue(theme.THEME_KEY, self.theme.currentData())
         settings.setValue(theme.TEXT_SIZE_KEY, self.text_size.value() or "normal")
         settings.setValue(theme.COLORS_KEY, self.color_preset.value() or "default")
 
@@ -1401,6 +1424,11 @@ class SettingsWindow(QDialog):
         settings.setValue(projector.HIDE_POINTER, self.projector_hide_pointer.isChecked())
         settings.setValue(projector.ON_TOP, self.projector_on_top.isChecked())
         settings.setValue(privacy.HIDE_FROM_CAPTURE, self.hide_from_capture.isChecked())
+        from sprigcast.app import tray
+
+        settings.setValue(tray.SHOW, self.tray_show.isChecked())
+        settings.setValue(tray.MINIMIZE_TO, self.tray_minimize.isChecked())
+        settings.setValue(tray.CLOSE_TO, self.tray_close.isChecked())
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
         from sprigcast.app.updates import AUTO_CHECK
 
@@ -1455,7 +1483,7 @@ class SettingsWindow(QDialog):
         canvas = bool(pending_video())
         looks = appearance_waiting()
         waiting = canvas or looks
-        text = "Canvas changes wait for a restart" if canvas else "Text size and colors change after a restart"
+        text = "Canvas changes wait for a restart" if canvas else "Theme, text size and colors change after a restart"
         self.restart_note.setText(text if waiting else "")
         self.restart_note.setVisible(waiting)
         self.restart_button.setVisible(waiting and not (self.streaming or self.recording))
