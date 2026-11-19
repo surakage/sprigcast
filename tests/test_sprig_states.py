@@ -96,7 +96,9 @@ def test_live_panel_and_dialog(tmp_path, monkeypatch):
     pytest.importorskip("PySide6.QtWidgets")
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings, Qt
-    from PySide6.QtWidgets import QApplication, QInputDialog
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import card as popups
 
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
@@ -120,7 +122,7 @@ def test_live_panel_and_dialog(tmp_path, monkeypatch):
         # The dialog: add a state starting from the selected one, untick an item, save.
         dialog = StatesDialog(col, col.scene("p-cam"))
         assert [dialog.item_list.item(i).text() for i in range(2)] == ["Alert", "Frame"]
-        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Off", True))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: ("Off", True))
         dialog._add()
         assert dialog.states[-1].name == "Off" and dialog.states[-1].hide == ["alert"]  # copied from Quiet
         dialog.item_list.item(1).setCheckState(Qt.CheckState.Unchecked)  # hide Frame too

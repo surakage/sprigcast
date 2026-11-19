@@ -51,7 +51,9 @@ def test_scenes_list_and_live_panel_show_folders(tmp_path, monkeypatch):
     pytest.importorskip("PySide6.QtWidgets")
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings
-    from PySide6.QtWidgets import QApplication, QInputDialog
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import card as popups
 
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
@@ -64,7 +66,7 @@ def test_scenes_list_and_live_panel_show_folders(tmp_path, monkeypatch):
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         names = iter([("Main Scenes", True), ("Just Chatting", True)])
-        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: next(names))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: next(names))
         w._add_folder()
         folder = col.folders[0]
         assert w.selected_folder_id == folder.id

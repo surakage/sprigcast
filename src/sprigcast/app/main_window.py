@@ -38,7 +38,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -63,6 +62,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app.modal import modal
 from sprigcast.app.open_folder import open_folder
 from sprigcast.app.labels import literal
+from sprigcast.app import card as popups
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import live_line
@@ -1152,7 +1152,7 @@ class MainWindow(QMainWindow):
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
         if scene is None:
             return
-        name, ok = QInputDialog.getText(self, "Rename", f"{cap(SHOW)} name:", text=scene.name)
+        name, ok = popups.ask_text(self, "Rename", f"{cap(SHOW)} name", scene.name, "Rename")
         if ok and name.strip() and name.strip() != scene.name:
             scene.name = name.strip()
             self._changed()
@@ -1440,7 +1440,7 @@ class MainWindow(QMainWindow):
 
     def _rename_sound(self, source_id: str) -> None:
         config = self.collection.source(source_id)
-        name, ok = QInputDialog.getText(self, "Rename sound", "Name:", text=config.name)
+        name, ok = popups.ask_text(self, "Rename sound", "Name", config.name, "Rename")
         if ok and name.strip() and name.strip() != config.name:
             config.name = name.strip()
             self._changed()
@@ -1504,7 +1504,7 @@ class MainWindow(QMainWindow):
     def _add_folder(self, move: str | None = None, holds: str = "show") -> None:
         example = "Browser Scenes" if holds == "part" else f"Main {cap(SHOWS)}"
         title = f"New {PART} folder" if holds == "part" else "New folder"
-        name, ok = QInputDialog.getText(self, title, f"Folder name (e.g. {example}):")
+        name, ok = popups.ask_text(self, title, "Folder name", primary="Add", placeholder=example)
         if not ok or not name.strip():
             return
         folder = self.collection.add_folder(self.build_canvas, name.strip(), holds=holds)
@@ -1519,7 +1519,7 @@ class MainWindow(QMainWindow):
 
     def _rename_folder(self, folder_id: str) -> None:
         folder = self.collection.folder(folder_id)
-        name, ok = QInputDialog.getText(self, "Rename folder", "Folder name:", text=folder.name)
+        name, ok = popups.ask_text(self, "Rename folder", "Folder name", folder.name, "Rename")
         if ok and name.strip():
             folder.name = name.strip()
             self._changed()
@@ -1634,7 +1634,7 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         config = self.collection.source(item.source)
-        name, ok = QInputDialog.getText(self, "Rename source", "Name:", text=config.name)
+        name, ok = popups.ask_text(self, "Rename source", "Name", config.name, "Rename")
         if ok and name.strip():
             config.name = name.strip()
             self._changed()
@@ -3793,10 +3793,8 @@ class MainWindow(QMainWindow):
         labels = ["Default (follows Windows)"] + [sound_label(d.name) for d in devices]
         start = names.index(current) if current in names else 0
         title = "Desktop audio" if kind == "audio_output" else "Microphone"
-        label, ok = QInputDialog.getItem(self, title, "Device:", labels, start, False)
-        if not ok:
-            return None
-        return names[labels.index(label)]
+        at = popups.ask_choice(self, title, "Device", labels, start)
+        return None if at is None else names[at]
 
     def _add_audio(self, kind: str, device: str | None = None) -> None:
         """Add a mic or desktop sound. Sound belongs to no bloom or shape: it plays everywhere, once."""
@@ -3991,7 +3989,7 @@ class MainWindow(QMainWindow):
     def _add_scene(self) -> None:
         canvas_id = self.build_canvas  # the Build tab you're on
         title = f"New {canvas_id} {SHOW}"
-        name, ok = QInputDialog.getText(self, title, "Name:")
+        name, ok = popups.ask_text(self, title, "Name", primary="Add")
         if not ok or not name.strip():
             return
         linked = None
@@ -4000,10 +3998,10 @@ class MainWindow(QMainWindow):
             link_options = ["(not linked)"] + [s.name for s in shows]
             # Suggest the main-canvas bloom with the same name, if there is one.
             guess = next((i + 1 for i, s in enumerate(shows) if s.name.lower() == name.strip().lower()), 0)
-            link, ok = QInputDialog.getItem(self, title, "Switch together with:", link_options, guess, False)
-            if not ok:
+            at = popups.ask_choice(self, title, "Switch together with", link_options, guess, "Add")
+            if at is None:
                 return
-            linked = next((s.id for s in shows if s.name == link), None)
+            linked = shows[at - 1].id if at else None
         folder = self.selected_folder_id
         if folder is not None and all(f.id != folder for f in self.collection.folders_for(canvas_id)):
             folder = None
@@ -4277,9 +4275,8 @@ class MainWindow(QMainWindow):
             return
         indices = [len(scene.items) - 1 - row for row in rows]
         first = self.collection.source(scene.items[indices[0]].source).name
-        name, ok = QInputDialog.getText(
-            self, f"Turn into {a(PART)}", f"Name the new {PART} (you can reuse it in any {SHOW}):",
-            text=first if len(rows) == 1 else "")
+        name, ok = popups.ask_text(
+            self, f"Turn into {a(PART)}", f"{cap(PART)} name", first if len(rows) == 1 else "", "Make")
         if not ok or not name.strip():
             return
         part, placement = self.collection.make_part(scene, indices, name.strip())
@@ -4473,7 +4470,7 @@ class MainWindow(QMainWindow):
         scene = self._scene()
         if scene is None:
             return
-        name, ok = QInputDialog.getText(self, "Rename scene", "Scene name:", text=scene.name)
+        name, ok = popups.ask_text(self, "Rename scene", "Scene name", scene.name, "Rename")
         if ok and name.strip():
             scene.name = name.strip()
             if scene.kind == "part":
@@ -4823,17 +4820,16 @@ class MainWindow(QMainWindow):
             return None
         labels = [m.label for m in monitors]
         start = next((i for i, m in enumerate(monitors) if m.index == current), 0)
-        label, ok = QInputDialog.getItem(self, "Display capture", "Monitor:", labels, start, False)
-        return monitors[labels.index(label)] if ok else None
+        at = popups.ask_choice(self, "Display capture", "Monitor", labels, start)
+        return None if at is None else monitors[at]
 
     def _pick_window(self):
         windows = list_windows()
         if not windows:
             QMessageBox.information(self, "SprigCast", "Window capture is only available on Windows.")
             return None
-        labels = [w.label for w in windows]
-        label, ok = QInputDialog.getItem(self, "Window capture", "Window:", labels, 0, False)
-        return windows[labels.index(label)] if ok else None
+        at = popups.ask_choice(self, "Window capture", "Window", [w.label for w in windows])
+        return None if at is None else windows[at]
 
     def _add_display(self, monitor=None) -> None:
         scene = self._scene()

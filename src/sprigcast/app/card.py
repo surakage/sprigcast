@@ -14,6 +14,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -113,6 +115,93 @@ class CardDialog(QDialog):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         self._drag = None
         super().mouseReleaseEvent(event)
+
+
+BOX_HEIGHT = 36  # a field or drop-down on a card: the pill radius (17) stays under half of it
+
+
+def combo(min_chars: int = 12) -> QComboBox:
+    """A rounded drop-down that fits the card: a long item is cut short with … instead of widening the card
+    (Window capture's drop-down ran past the pop-up's right edge and cut off its green focus ring)."""
+    from sprigcast.app.starter import combo_style
+
+    box = QComboBox()
+    box.setStyleSheet(combo_style())
+    box.setFixedHeight(BOX_HEIGHT)
+    box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    box.setMinimumContentsLength(min_chars)
+    box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    box.setCursor(Qt.CursorShape.PointingHandCursor)
+    box.setMaxVisibleItems(14)
+    box.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)  # keeps the app name and the end of the title
+    return box
+
+
+class ChoiceDialog(CardDialog):
+    """Pick one from a list: a heading, a label, one drop-down, Cancel and OK. choice() is the picked index."""
+
+    def __init__(self, title: str, label: str, items: list, current: int = 0, parent: QWidget | None = None,
+                 primary: str = "OK", width: int = 460):
+        super().__init__(title, parent, width)
+        self.body.addWidget(field_label(label))
+        self.box = combo()
+        room = width - 40 - 48 - 76  # the card, its margins, the box's padding and chevron
+        fit = self.box.fontMetrics()
+        for item in items:  # a name, or (icon, name)
+            icon, name = item if isinstance(item, tuple) else (None, str(item))
+            short = fit.elidedText(name, Qt.TextElideMode.ElideMiddle, room - (24 if icon else 0))
+            if icon is None:
+                self.box.addItem(short)
+            else:
+                self.box.addItem(icon, short)
+            if short != name:  # the whole name on hover
+                self.box.setItemData(self.box.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
+        self.box.setCurrentIndex(max(0, min(current, self.box.count() - 1)))
+        self.body.addWidget(self.box)
+        self.ok = self.add_buttons(primary)
+        self.box.setFocus()
+
+    def choice(self) -> int:
+        return self.box.currentIndex()
+
+
+class TextDialog(CardDialog):
+    """Type a name: a heading, a label, one text field, Cancel and OK. OK waits for some text."""
+
+    def __init__(self, title: str, label: str, text: str = "", parent: QWidget | None = None, primary: str = "OK",
+                 width: int = 420, placeholder: str = ""):
+        super().__init__(title, parent, width)
+        self.body.addWidget(field_label(label))
+        self.edit = self.line_edit(placeholder)
+        self.edit.setMinimumHeight(BOX_HEIGHT)
+        self.edit.setText(text)
+        self.edit.selectAll()
+        self.body.addWidget(self.edit)
+        self.ok = self.add_buttons(primary)
+        self.edit.textChanged.connect(lambda t: self.ok.setEnabled(bool(t.strip())))
+        self.ok.setEnabled(bool(text.strip()))
+        self.edit.setFocus()
+
+    def text(self) -> str:
+        return self.edit.text()
+
+
+def ask_choice(parent: QWidget | None, title: str, label: str, items: list, current: int = 0,
+               primary: str = "OK") -> int | None:
+    """The picked index, or None on Cancel."""
+    from sprigcast.app.modal import modal
+
+    dialog = ChoiceDialog(title, label, items, current, parent, primary)
+    return dialog.choice() if modal(dialog) else None
+
+
+def ask_text(parent: QWidget | None, title: str, label: str, text: str = "", primary: str = "OK",
+             placeholder: str = "") -> tuple[str, bool]:
+    """(text, ok), the same shape as Qt's getText."""
+    from sprigcast.app.modal import modal
+
+    dialog = TextDialog(title, label, text, parent, primary, placeholder=placeholder)
+    return (dialog.text(), True) if modal(dialog) else ("", False)
 
 
 class ColourRow(QWidget):
