@@ -934,3 +934,46 @@ def test_one_scaling_for_every_canvas_only_changes_them_when_it_is_changed(app):
     assert w.apply()
     assert [c.downscale for c in col.canvases[:2]] == ["bilinear", "bilinear"]
     w.close()
+
+
+def test_themes_turn_the_hue_and_keep_everything_as_readable():
+    from sprigcast.app import theme
+
+    canopy = theme.palette("slothbloom")
+    assert canopy["ACCENT"] == "#4fd88f" and canopy["BG"] == "#0e1311"  # Night Canopy is untouched
+    pairs = [("TEXT", "BG"), ("ACCENT_TEXT", "ACCENT"), ("BUTTON_EDGE", "PANEL"), ("LABEL", "SECTION"),
+             ("FIELD_EDGE", "SECTION"), ("SELECT_TEXT", "SELECT_BG"), ("MUTED", "PANEL")]
+    for name in theme.THEME_LOOKS:
+        assert name in theme.THEMES and name in theme.THEME_ABOUT
+        colors = theme.palette(name)
+        assert set(colors) == set(canopy)
+        for kept in ("LIVE", "LIVE_HOVER", "LIVE_EDGE", "WARN", "BAD"):  # pink is for Live; warnings never move
+            assert colors[kept] == canopy[kept], (name, kept)
+        for a, b in pairs:
+            assert abs(theme.contrast(colors[a], colors[b]) - theme.contrast(canopy[a], canopy[b])) < 0.25, (name, a, b)
+    assert theme.palette("moonlit")["ACCENT"] != canopy["ACCENT"] and theme.palette("stone")["ACCENT"] == canopy["ACCENT"]
+    assert theme.palette("moonlit", "colorblind")["ACCENT"] == theme.PRESET_COLORS["colorblind"]["ACCENT"]
+
+
+def test_appearance_picks_a_theme_from_its_tile_and_previews_it(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import theme
+    from sprigcast.app.settings_window import appearance_waiting
+
+    w = _window(_collection(), tab="Appearance")
+    w.show()
+    app.processEvents()
+    assert set(w.theme_tiles) == set(theme.THEMES) and w.theme_tiles["slothbloom"].isChecked()
+    assert not w.theme.isVisibleTo(w)  # the tiles are how you pick
+    w.theme_tiles["orchid"].click()
+    assert w.theme.currentData() == "orchid" and w.color_preview.theme_name == "orchid"
+    assert w.color_preview.colors["ACCENT"] == theme.palette("orchid")["ACCENT"]
+    w.text_size.buttons["large"].click()
+    assert w.color_preview.text_size == "large"
+    w.color_preview.grab()  # paints
+    w.theme_tiles["system"].grab()
+    assert w.apply()
+    assert QSettings().value(theme.THEME_KEY) == "orchid" and theme.theme_in_use == "slothbloom"
+    assert appearance_waiting() and w.restart_note.isVisible() and "Theme" in w.restart_note.text()
+    w.close()
