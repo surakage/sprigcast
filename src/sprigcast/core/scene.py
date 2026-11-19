@@ -647,6 +647,30 @@ class SceneCollection(BaseModel):
                 return True
         return False
 
+    def sprig_kind(self, part: Scene, canvas_id: str | None = None, _seen: frozenset = frozenset()) -> str:
+        """What a sprig shows, as a source kind for its icon: "camera" for a webcam sprig, "chat" for a chat
+        one... A colour behind something else and its sound don't count; nested sprigs count as what they
+        show. "scene" when it mixes kinds (or is empty): the sprig icon."""
+        part = self.main_part(part)
+        if part.id in _seen:
+            return "scene"
+        layout = self.shape_for(part, canvas_id) if canvas_id else part
+        kinds: list[str] = []
+        for item in layout.items:
+            try:
+                source = self.source(item.source)
+            except StopIteration:
+                continue
+            inner = self.part_of(source) if source.kind == PART_KIND else None
+            kinds.append(self.sprig_kind(inner, canvas_id, _seen | {part.id}) if inner is not None else source.kind)
+        found = set(kinds)
+        visual = found - {"audio_input", "audio_output", "app_audio"}
+        if visual:
+            found = visual
+            if len(found) > 1:
+                found.discard("color")  # a backdrop behind the real thing
+        return found.pop() if len(found) == 1 else "scene"
+
     def grouped_parts_on(self, canvas_id: str) -> list[tuple[SceneFolder | None, list[Scene]]]:
         """grouped_parts() for one canvas: its parts only. A folder whose parts are all on the other canvas
         is left out; an empty folder (just made) stays, so things can be put in it."""

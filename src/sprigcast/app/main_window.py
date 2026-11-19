@@ -3366,6 +3366,9 @@ class MainWindow(QMainWindow):
                 child.setIcon(0, icons.icon("sprig", theme.ACCENT))
                 child.setData(0, ROLE_ID, part.id)
                 child.setData(0, ROLE_ROW, "sprig")
+                kind = self.collection.sprig_kind(part, canvas_id)
+                child.setData(0, ROLE_SOURCE_KIND, kind)  # what it shows: camera, chat, game...
+                child.setData(0, ROLE_COLOUR, self._sprig_colour(part, canvas_id) if kind == "color" else None)
                 child.setData(0, LIB_NAME, part.name)
                 child.setData(0, LIB_TAG, f"in {uses}" if uses else "unused")
                 child.setFlags(BLOOM_FLAGS)
@@ -3475,14 +3478,33 @@ class MainWindow(QMainWindow):
         row.setData(ROLE_NAME, config.name)
         row.setData(ROLE_TAG, " · ".join(tags))  # only what needs saying: problems, hidden bits, filters
         row.setData(ROLE_SPRIG, config.kind == PART_KIND)
-        row.setData(ROLE_KIND, config.kind)
-        row.setData(ROLE_SWATCH, config.settings.get("color") if config.kind == "color" else None)
+        kind, swatch = self._kind_and_swatch(config, canvas_id)
+        row.setData(ROLE_KIND, kind)  # a sprig: what it shows (camera, chat...), so it reads at a glance
+        row.setData(ROLE_SWATCH, swatch)
         row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
         detail = "" if status in ("ok", "") else f"\n{status}"
         row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind}){detail}")
 
+    def _kind_and_swatch(self, config, canvas_id: str | None) -> tuple[str, str | None]:
+        """The kind a row's icon shows, and a colour source's colour. A sprig shows what it holds."""
+        kind = config.kind
+        part = self.collection.part_of(config) if kind == PART_KIND else None
+        if part is not None:
+            kind = self.collection.sprig_kind(part, canvas_id)
+            return kind, self._sprig_colour(part, canvas_id) if kind == "color" else None
+        return kind, config.settings.get("color") if kind == "color" else None
+
+    def _sprig_colour(self, part, canvas_id: str | None) -> str | None:
+        layout = self.collection.shape_for(part, canvas_id) if canvas_id else part
+        for item in layout.items:
+            source = next((c for c in self.collection.sources if c.id == item.source), None)
+            if source is not None and source.kind == "color":
+                return source.settings.get("color")
+        return None
+
     def _sprig_children(self, config, canvas_id: str, depth: int = 0, seen: frozenset = frozenset()) -> list:
-        """(depth, name, is sprig) for what's inside a sprig, nested sprigs opened too (a few levels)."""
+        """(depth, name, is sprig, kind, colour) for what's inside a sprig, nested sprigs opened too (a few
+        levels)."""
         part = self.collection.part_of(config) if config.kind == PART_KIND else None
         if part is None or part.id in seen or depth > 2:
             return []
@@ -3490,7 +3512,7 @@ class MainWindow(QMainWindow):
         rows = []
         for inner in reversed(layout.items):
             child = self.collection.source(inner.source)
-            rows.append((depth, child.name, child.kind == PART_KIND))
+            rows.append((depth, child.name, child.kind == PART_KIND, *self._kind_and_swatch(child, canvas_id)))
             rows += self._sprig_children(child, canvas_id, depth + 1, seen | {part.id})
         return rows[:12]
 

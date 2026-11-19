@@ -194,15 +194,17 @@ KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_cap
               "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
 
 
-def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False) -> None:
-    """A small drawn icon on a soft chip saying what a source is: screen, window, camera, picture..."""
-    kind = {"game_capture": "window_capture", "slideshow": "image"}.get(kind, kind)  # drawn like their cousins
+def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None, selected: bool = False,
+                    sprig: bool = False) -> None:
+    """A small drawn icon on a soft chip saying what a source is: screen, window, game, camera, picture...
+    Each kind has its own, so you can tell them apart whatever they're named. sprig: a sprig showing that
+    kind (its icon in green, like the sprig leaf)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(theme.RAISED_HOVER if selected else theme.RAISED))
     p.drawRoundedRect(r, 7, 7)
-    ink = QColor(theme.ACCENT if kind == "scene" else theme.SELECT_TEXT if selected else theme.TEXT)
+    ink = QColor(theme.ACCENT if kind == "scene" or sprig else theme.SELECT_TEXT if selected else theme.TEXT)
     pen = QPen(ink, 1.4)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -216,6 +218,15 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
     elif kind == "window_capture":
         p.drawRoundedRect(QRectF(cx - 6.5, cy - 5.5, 13, 11), 1.5, 1.5)
         p.drawLine(QPointF(cx - 6.5, cy - 2), QPointF(cx + 6.5, cy - 2))
+    elif kind == "game_capture":
+        icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "gamepad", ink, 1.4)
+    elif kind == "slideshow":  # pictures in a stack
+        p.drawRoundedRect(QRectF(cx - 4.5, cy - 6.5, 11, 8.5), 1.5, 1.5)
+        p.setBrush(QColor(theme.RAISED_HOVER if selected else theme.RAISED))
+        p.drawRoundedRect(QRectF(cx - 6.5, cy - 3.5, 11, 9), 1.5, 1.5)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawLine(QPointF(cx - 4.5, cy + 3.5), QPointF(cx - 2, cy + 0.5))
+        p.drawLine(QPointF(cx - 2, cy + 0.5), QPointF(cx + 2.5, cy + 3.5))
     elif kind == "camera":
         p.drawRoundedRect(QRectF(cx - 7, cy - 4.5, 10, 9), 2, 2)
         path = QPainterPath()
@@ -256,7 +267,9 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
             p.drawRoundedRect(QRectF(cx - 2.5, cy - 6.5, 5, 8.5), 2.5, 2.5)
             p.drawArc(QRectF(cx - 5, cy - 3, 10, 7), 180 * 16, 180 * 16)
             p.drawLine(QPointF(cx, cy + 4), QPointF(cx, cy + 6.5))
-        else:  # level bars
+        elif kind == "audio_output":  # a speaker: everything the PC plays
+            icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "speaker", ink, 1.4)
+        else:  # one app's sound: level bars
             for i, h in enumerate((4, 9, 6, 11, 5)):
                 x = cx - 6 + i * 3
                 p.drawLine(QPointF(x, cy + h / 2), QPointF(x, cy - h / 2))
@@ -314,10 +327,10 @@ class InsideDelegate(QStyledItemDelegate):
         font.setWeight(QFont.Weight.DemiBold if sprig or selected else QFont.Weight.Normal)
         p.setFont(font)
         metrics = QFontMetrics(font)
-        kind = "scene" if sprig else (index.data(ROLE_KIND) or "")
+        kind = index.data(ROLE_KIND) or ("scene" if sprig else "")
         if kind:
             paint_kind_icon(p, QRectF(x, top.center().y() - ICON / 2, ICON, ICON), kind, index.data(ROLE_SWATCH),
-                            selected)
+                            selected, sprig=sprig)
             p.setFont(font)
             x += ICON + 10
         locked = bool(index.data(ROLE_LOCKED))
@@ -352,14 +365,17 @@ class InsideDelegate(QStyledItemDelegate):
         children = index.data(ROLE_CHILDREN) or []
         y = top.bottom()
         p.setFont(QFont(option.font))
-        for depth, child, child_sprig in children:
+        for depth, child, child_sprig, *look in children:
             indent = top.x() + 24 + depth * 16
             p.setPen(QPen(QColor(theme.EDGE_STRONG), 2))
             p.drawLine(int(indent), int(y), int(indent), int(y + CHILD_H))
             tx = indent + 12
-            if child_sprig:
-                icons.paint_icon(p, QRectF(tx, y + CHILD_H / 2 - 7, 14, 14), "sprig", theme.ACCENT)
-                tx += 18
+            child_kind = look[0] if look else ("scene" if child_sprig else "")
+            if child_kind:  # what each thing inside is, at a glance
+                paint_kind_icon(p, QRectF(tx, y + CHILD_H / 2 - 9, 18, 18), child_kind, look[1] if len(look) > 1 else None,
+                                selected, sprig=child_sprig)
+                p.setFont(QFont(option.font))
+                tx += 24
             p.setPen(QColor(theme.MUTED if not selected else theme.SELECT_TEXT))
             p.drawText(QRectF(tx, y, top.right() - tx - 6, CHILD_H), Qt.AlignmentFlag.AlignVCenter, child)
             y += CHILD_H
