@@ -75,10 +75,15 @@ def view_key(name: str) -> str:
     return f"view:{name}"
 
 
+def engine_kind(kind: str) -> bool:
+    """Whether the native engine draws transitions of this kind (core/scene.py Transition.kind)."""
+    return kind in sprigcore.TRANSITION_MODES or (kind == "move" and sprigcore.use_native_move())
+
+
 def native_transition(running) -> bool:
     """Whether the native engine draws this running transition (render/engine.py Running)."""
     return running is not None and running.began is not None and running.stinger is None and \
-        running.settings.kind in sprigcore.TRANSITION_MODES
+        engine_kind(running.settings.kind)
 
 
 def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None,
@@ -389,11 +394,12 @@ class NativeCanvases:
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
              transitions: dict | None = None, wipe_picture=None, views: dict | None = None,
-             held: dict | None = None) -> None:
+             held: dict | None = None, move_pieces=None) -> None:
         """Hand over a new snapshot when what's on air, the filters, a sprig's state or a transition changed
         (every frame while a sprig's state fades). transitions: canvas id -> render/engine.py Running;
         wipe_picture(path) gives a wipe image as a grey RGB array. held: canvas id -> the bloom it keeps showing
-        while a switch waits (see snapshot_draws): the engine keeps drawing it, so its outputs go on."""
+        while a switch waits (see snapshot_draws): the engine keeps drawing it, so its outputs go on.
+        move_pieces(running, canvas): a Move's two blooms as render/move.py pieces (old, new), when one starts."""
         if self.failed:
             return
         running = {cid: r for cid, r in (transitions or {}).items() if native_transition(r)}
@@ -434,7 +440,8 @@ class NativeCanvases:
             if self._shown.get(slot, "") != key:
                 self._shown[slot] = key
                 self._guard("show", self.engine.show, slot, key)
-            self._hand_transition(slot, canvas.id, running.get(canvas.id), wipe_picture)
+            self._hand_transition(slot, canvas, running.get(canvas.id), wipe_picture,
+                                  lambda r, c=canvas: self._move_spec(collection, effects, move_pieces, r, c))
         for name, (canvas, _scene) in views.items():
             key = view_key(name)
             slot = self._slots[key]
@@ -446,14 +453,22 @@ class NativeCanvases:
                 self._shown[slot] = key
                 self._guard("show", self.engine.show, slot, key)
 
-    def _hand_transition(self, slot: int, canvas_id: str, running, wipe_picture) -> None:
+    def _hand_transition(self, slot: int, canvas, running, wipe_picture, move_spec=None) -> None:
         """Start (or stop) the canvas's transition in the engine when Python's changed."""
+        canvas_id = canvas.id
         sent = id(running) if running is not None else None
         if self._sent_transitions.get(slot) == sent:
             return
         self._sent_transitions[slot] = sent
         if running is None:
             self._guard("transition", self.engine.transition, slot, None, None)
+            return
+        if running.settings.kind == "move":
+            spec = move_spec(running) if move_spec is not None else None
+            if spec is None:  # nothing to lay out: the engine cuts to the new bloom
+                self._guard("transition", self.engine.transition, slot, None, None)
+                return
+            self._guard("move", self.engine.move, slot, from_key(canvas_id), float(running.duration), spec)
             return
         wipe = running.wipe_map or None
         if wipe and wipe not in self._wipe_maps and wipe_picture is not None:
@@ -478,14 +493,41 @@ class NativeCanvases:
                 slot = self._slots[canvas_id] = free[0]
         return slot
 
+    @staticmethod
+    def _move_spec(collection: SceneCollection, effects: dict, move_pieces, running, canvas):
+        """A Move's pieces as the engine takes them (sprigcore.move_spec): sprigs drawn whole by their sprig's
+        drawing in the snapshot (part_key), every source with its filters. None without a way to lay it out."""
+        if move_pieces is None:
+            return None
+        from sprigcast.render import move
+
+        old, new = move_pieces(running, canvas)
+        sources = {s.id: s for s in collection.sources}
+        made: dict[int, object] = {}
+
+        def piece(p):
+            source = sources.get(p.source)
+            part = collection.part_of(source) if source is not None else None
+            part_id = part_key(collection.shape_for(part, p.canvas).id) if part is not None else None
+            fx = effects.get(p.source)
+            fx_struct = None
+            if fx is not None and fx != native_snapshot.NO_EFFECTS:
+                fx_struct = made.get(id(fx))
+                if fx_struct is None:
+                    fx_struct = made[id(fx)] = native_snapshot.effects_struct(fx)
+            return p.source, part_id, p.quad, p.opacity, fx_struct
+
+        t = running.settings
+        return sprigcore.move_spec([piece(p) for p in old], [piece(p) for p in new], move.pair(old, new),
+                                   t.easing, t.unmatched)
+
     # ---- what comes out ----------------------------------------------------------------------------------------
 
     def handles(self, extra: dict) -> bool:
         """Whether this frame's transition arguments (render/engine.py _transition_step) are ones the native
         engine draws itself."""
         transition = extra.get("transition")
-        return transition is not None and transition.kind in sprigcore.TRANSITION_MODES and \
-            "overlay" not in extra and "move" not in extra
+        return transition is not None and engine_kind(transition.kind) and "overlay" not in extra
 
     def draws(self, canvas_id: str) -> bool:
         """True when this canvas's preview comes from the native engine."""

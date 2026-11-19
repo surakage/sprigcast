@@ -119,7 +119,13 @@ Views something records (the virtual camera, Instant replay keeping a camera) ar
 the bloom on air rides on that canvas's outputs (the same picture, transitions included), any other view is
 drawn in a free canvas slot of its own (`view:<name>`, after the canvases; when none is free, Python draws it).
 
-Python's compositor still draws stinger and move transitions, Build's edited bloom, the Part editor, screenshots,
+Move transitions are the engine's too (`sc_engine_canvas_move`, `move.cpp`): when one starts, Python lays both
+blooms out as pieces (`render/move.py` flatten) and pairs them, and the bridge hands them over once, each with its
+sprig's drawing or its filters. The engine then works out every frame on its own clock with the same arithmetic as
+`move.frame` (`tests/test_native_move.py` checks them against each other) and draws the quads straight onto the
+canvas. `SPRIGCAST_NO_NATIVE_MOVE=1` leaves them to Python.
+
+Python's compositor still draws stinger transitions, Build's edited bloom, the Part editor, screenshots,
 source record, full-size RGBA taps (a projector showing a view) and a canvas's outputs while it draws one of those (a frame older than one already handed on is never sent). If the native engine stops
 (faulted), Python's compositor draws the previews and outputs again by itself.
 

@@ -1,6 +1,7 @@
 // The compositor: sources' pictures, colour looks, shape pictures and a frozen snapshot of the blooms, drawn the
 // way render/compositor.py draws them (same shader, same order, same maths). See docs/native-engine.md.
 #include "internal.h"
+#include "move.h"
 #include "shader_compositor.h"
 
 #include <algorithm>
@@ -218,11 +219,18 @@ struct Renderer {
         if (!item_quad(it, p.size_w, p.size_h, q)) return;
         const sc_effects &fx = (it.effects >= 0 && static_cast<size_t>(it.effects) < snap.effects.size())
                                    ? snap.effects[static_cast<size_t>(it.effects)] : no_effects();
+        draw_piece(it.source, it.fade, p, q, fx, canvas_w, canvas_h);
+    }
+
+    // A picture drawn into the quad `q` (canvas pixels and its u, v) with its filters: a scene's item, or a piece of
+    // a Move.
+    void draw_piece(uint64_t source, double fade, const Piece &p, Corner (&q)[4], const sc_effects &fx,
+                    int canvas_w, int canvas_h) {
         auto &comp = dev.comp;
 
         if (fx.spin_turns != 0.0f) {  // a barrel roll: eases in and out and lands where it began
             if (comp.spins.size() > 64) comp.spins.clear();
-            double start = comp.spins.emplace(std::make_pair(it.source, fx.spin_run), time).first->second;
+            double start = comp.spins.emplace(std::make_pair(source, fx.spin_run), time).first->second;
             double t = fx.spin_seconds > 0 ? std::clamp((time - start) / fx.spin_seconds, 0.0, 1.0) : 1.0;
             double eased = t * t * (3.0 - 2.0 * t);
             double a = 2.0 * PI * fx.spin_turns * eased;
@@ -255,7 +263,7 @@ struct Renderer {
         double quad_w = std::hypot(q[1].x - q[0].x, q[1].y - q[0].y);
         double quad_h = std::hypot(q[2].x - q[0].x, q[2].y - q[0].y);
         set4(k.canvas_quad, canvas_w, canvas_h, quad_w, quad_h);
-        set4(k.p0, it.fade, p.premul ? 1 : 0, p.planar, p.swizzle);
+        set4(k.p0, fade, p.premul ? 1 : 0, p.planar, p.swizzle);
         set4(k.yuv4, p.yuv[0], p.yuv[1], p.yuv[2], 0);
         const bool moving = fx.scroll[0] != 0.0f || fx.scroll[1] != 0.0f;
         const double w = std::max(1, pic_w), h = std::max(1, pic_h);
@@ -366,24 +374,57 @@ struct Renderer {
         if (depth > 16) return SC_OK;  // sprigs inside sprigs this deep: a loop, stop
         for (int i = 0; i < scene.item_count; ++i) {
             const sc_item &it = snap.items[static_cast<size_t>(scene.first_item + i)];
-            if (!it.part || done.count(it.part) || open.count(it.part)) continue;
-            auto found = snap.by_id.find(it.part);
-            if (found == snap.by_id.end()) continue;
-            const sc_scene &part = snap.scenes[found->second];
-            if (part.width < 1 || part.height < 1) continue;
-            open.insert(it.part);
-            int code = draw_parts(part, done, open, depth + 1);
-            open.erase(it.part);
+            const int code = draw_part(it.part, done, open, depth);
             if (code != SC_OK) return code;
-            Target &t = dev.comp.parts[it.part];
-            if (t.width != part.width || t.height != part.height) {
-                code = make_target(dev.device.Get(), part.width, part.height, t);
-                if (code != SC_OK) return code;
-            }
-            draw_scene(part, t.target.Get(), t.width, t.height);
-            done.insert(it.part);
         }
         return SC_OK;
+    }
+
+    // Draws sprig `id` (a snapshot scene) to its own picture, the sprigs it shows first, once.
+    int draw_part(uint64_t id, std::set<uint64_t> &done, std::set<uint64_t> &open, int depth) {
+        if (!id || done.count(id) || open.count(id)) return SC_OK;
+        auto found = snap.by_id.find(id);
+        if (found == snap.by_id.end()) return SC_OK;
+        const sc_scene &part = snap.scenes[found->second];
+        if (part.width < 1 || part.height < 1) return SC_OK;
+        open.insert(id);
+        int code = draw_parts(part, done, open, depth + 1);
+        open.erase(id);
+        if (code != SC_OK) return code;
+        Target &t = dev.comp.parts[id];
+        if (t.width != part.width || t.height != part.height) {
+            code = make_target(dev.device.Get(), part.width, part.height, t);
+            if (code != SC_OK) return code;
+        }
+        draw_scene(part, t.target.Get(), t.width, t.height);
+        done.insert(id);
+        return SC_OK;
+    }
+
+    // One frame of a Move: its pieces straight onto the target, bottom first (render/compositor.py _draw_move).
+    void draw_move(const MovePlan &plan, const std::vector<MoveDraw> &draws, ID3D11RenderTargetView *target,
+                   int width, int height) {
+        const float clear[4] = {0, 0, 0, 0};
+        c->ClearRenderTargetView(target, clear);
+        ID3D11RenderTargetView *targets[] = {target};
+        c->OMSetRenderTargets(1, targets, nullptr);
+        D3D11_VIEWPORT vp = {0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
+        c->RSSetViewports(1, &vp);
+        for (const MoveDraw &d : draws) {
+            sc_item it = {};
+            it.source = d.source;
+            it.part = d.part;
+            Piece p;
+            if (!piece_for(it, p) || !p.view) continue;
+            Corner q[4];
+            for (int i = 0; i < 4; ++i) q[i] = {d.quad[i].x, d.quad[i].y, d.quad[i].u, d.quad[i].v};
+            const sc_effects &fx = (d.effects >= 0 && static_cast<size_t>(d.effects) < plan.effects.size())
+                                       ? plan.effects[static_cast<size_t>(d.effects)] : no_effects();
+            draw_piece(d.source, d.opacity, p, q, fx, width, height);
+        }
+        c->OMSetRenderTargets(0, nullptr, nullptr);
+        ID3D11ShaderResourceView *none[3] = {nullptr, nullptr, nullptr};
+        c->PSSetShaderResources(0, 3, none);
     }
 };
 
@@ -465,17 +506,10 @@ int sc_device::prepare_compositor() {
     return SC_OK;
 }
 
-int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, int height, uint64_t scene_id,
-                     double time) {
-    int ready = dev.prepare_compositor();
-    if (ready != SC_OK) return ready;
-    std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
+namespace {
+
+void set_compositor_state(sc_device &dev) {
     ID3D11DeviceContext *c = dev.context.Get();
-    if (!snap || !snap->by_id.count(scene_id)) {
-        const float clear[4] = {0, 0, 0, 0};
-        c->ClearRenderTargetView(target, clear);
-        return SC_OK;
-    }
     c->OMSetBlendState(dev.over.Get(), nullptr, 0xFFFFFFFF);
     c->RSSetState(dev.raster.Get());
     c->IASetInputLayout(nullptr);
@@ -487,7 +521,45 @@ int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, 
     c->PSSetConstantBuffers(0, 1, buffers);
     ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get(), dev.comp.clamp.Get()};
     c->PSSetSamplers(0, 2, samplers);
+}
 
+}  // namespace
+
+int sc::render_move(sc_canvas &canvas, const MovePlan &plan, double time, float progress) {
+    sc_device &dev = *canvas.device;
+    int ready = dev.prepare_compositor();
+    if (ready != SC_OK) return ready;
+    static const Snapshot empty;
+    std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
+    set_compositor_state(dev);
+    Renderer r{dev, snap ? *snap : empty, time, dev.context.Get()};
+    int code = r.draw_lists();
+    if (code != SC_OK) return code;
+    std::set<uint64_t> done, open;
+    for (const auto *list : {&plan.old_pieces, &plan.new_pieces}) {
+        for (const sc_move_piece &piece : *list) {  // sprigs drawn whole: their pictures first
+            code = r.draw_part(piece.part, done, open, 0);
+            if (code != SC_OK) return code;
+        }
+    }
+    std::vector<MoveDraw> &draws = canvas.move_draws;  // kept: no allocation each frame
+    move_frame(plan, progress, canvas.width, canvas.height, draws);
+    r.draw_move(plan, draws, canvas.target.Get(), canvas.width, canvas.height);
+    return SC_OK;
+}
+
+int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, int height, uint64_t scene_id,
+                     double time) {
+    int ready = dev.prepare_compositor();
+    if (ready != SC_OK) return ready;
+    std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
+    ID3D11DeviceContext *c = dev.context.Get();
+    if (!snap || !snap->by_id.count(scene_id)) {
+        const float clear[4] = {0, 0, 0, 0};
+        c->ClearRenderTargetView(target, clear);
+        return SC_OK;
+    }
+    set_compositor_state(dev);
     Renderer r{dev, *snap, time, c};
     const sc_scene &scene = snap->scenes[snap->by_id.at(scene_id)];
     std::set<uint64_t> done, open{scene_id};
@@ -712,6 +784,49 @@ SC_API int sc_canvas_render(sc_canvas *canvas, uint64_t scene_id, double time) {
             canvas->incoming = Target();
         }
         return render_scene(*canvas->device, canvas->target.Get(), canvas->width, canvas->height, scene_id, time);
+    });
+}
+
+SC_API int sc_canvas_render_move(sc_canvas *canvas, const sc_move *move, double time, float progress) {
+    return device_call(canvas ? canvas->device : nullptr, "sc_canvas_render_move", [&]() -> int {
+        if (!canvas || !move) return fail(SC_ERR_ARGUMENT, "sc_canvas_render_move: no canvas or move");
+        MovePlan plan;
+        const char *why = nullptr;
+        if (!move_plan(*move, plan, why)) return fail(SC_ERR_ARGUMENT, std::string("sc_canvas_render_move: ") + why);
+        std::lock_guard<std::mutex> lock(canvas->device->lock);
+        return render_move(*canvas, plan, time, progress);
+    });
+}
+
+SC_API int sc_move_frame(const sc_move *move, float progress, int width, int height, sc_move_piece *out,
+                         int capacity) {
+    return guarded("sc_move_frame", [&]() -> int {
+        if (!move || (capacity > 0 && !out) || capacity < 0)
+            return fail(SC_ERR_ARGUMENT, "sc_move_frame: no move, or nowhere to put its pieces");
+        MovePlan plan;
+        const char *why = nullptr;
+        if (!move_plan(*move, plan, why)) return fail(SC_ERR_ARGUMENT, std::string("sc_move_frame: ") + why);
+        std::vector<MoveDraw> draws;
+        move_frame(plan, progress, width, height, draws);
+        if (draws.size() > static_cast<size_t>(capacity))
+            return fail(SC_ERR_ARGUMENT, "sc_move_frame: too little room");
+        for (size_t i = 0; i < draws.size(); ++i) {
+            const MoveDraw &d = draws[i];
+            sc_move_piece &p = out[i];
+            p = sc_move_piece{};
+            p.source = d.source;
+            p.part = d.part;
+            for (int k = 0; k < 4; ++k) {
+                p.quad[k][0] = static_cast<float>(d.quad[k].x);
+                p.quad[k][1] = static_cast<float>(d.quad[k].y);
+                p.quad[k][2] = static_cast<float>(d.quad[k].u);
+                p.quad[k][3] = static_cast<float>(d.quad[k].v);
+            }
+            p.opacity = static_cast<float>(d.opacity);
+            p.effects = d.effects;
+            p.paired = -1;
+        }
+        return static_cast<int>(draws.size());
     });
 }
 

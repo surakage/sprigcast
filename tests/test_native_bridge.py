@@ -66,16 +66,17 @@ def test_a_transitions_outgoing_bloom_is_in_the_snapshot():
     assert shows["h"] == "canvas:h"
 
 
-def test_which_transitions_the_native_engine_draws():
+def test_which_transitions_the_native_engine_draws(monkeypatch):
     from sprigcast.core.scene import Transition
     from sprigcast.render.engine import Running
 
     def running(kind, began=1.0, stinger=None):
         return Running(None, began, 0.3, Transition(kind=kind), stinger=stinger)
 
-    for kind in ("fade", "slide", "swipe", "wipe", "leaf", "bloom"):
+    for kind in ("fade", "slide", "swipe", "wipe", "leaf", "bloom", "move"):
         assert native_bridge.native_transition(running(kind))
-    assert not native_bridge.native_transition(running("move"))
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
+    assert not native_bridge.native_transition(running("move"))  # left to Python, as before
     assert not native_bridge.native_transition(running("stinger", stinger=object()))
     assert not native_bridge.native_transition(running("fade", began=None))  # waiting for a camera
     spec = sprigcore.transition_spec(Transition(kind="wipe", direction="up", softness=2.0, duration_ms=500), "w")
@@ -135,8 +136,9 @@ class FakeNative:
         pass
 
     def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None,
-             held=None):
+             held=None, move_pieces=None):
         self.synced += 1
+        self.move_pieces = move_pieces
         self.transitions = dict(transitions or {})
         self.views = dict(views or {})
         self.held = dict(held or {})
@@ -312,7 +314,8 @@ def test_the_bloom_held_is_drawn_in_place_of_the_one_on_air():
     assert [d.scene.id for d in draws] == ["a"] and shows["h"] == native_bridge.canvas_key("h")
 
 
-def test_outputs_go_back_to_python_while_it_draws_the_canvas():
+def test_outputs_go_back_to_python_while_it_draws_the_canvas(monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
     engine, fake = _engine(), FakeCompositor()
     got = []
     engine.add_frame_tap("h", got.append, nv12_size=(64, 36))
@@ -645,7 +648,21 @@ def test_a_fade_stays_in_the_native_engine():
     assert "h" in engine._native.transitions
 
 
-def test_a_move_transition_is_drawn_by_python():
+def test_a_move_transition_is_drawn_by_the_native_engine():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    _switch(engine, "move")
+    engine._transitions["h"].began = 10.0
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered == []  # Python draws nothing: the engine works out every frame itself
+    assert "h" in engine._native.transitions
+    canvas = engine._collection.canvases[0]
+    old, new = engine._native.move_pieces(engine._native.transitions["h"], canvas)
+    assert isinstance(old, list) and isinstance(new, list)
+
+
+def test_a_move_transition_is_drawn_by_python_when_asked(monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
     engine, fake = _engine(), FakeCompositor()
     engine.previews = frozenset({"h"})
     _switch(engine, "move")
@@ -653,6 +670,61 @@ def test_a_move_transition_is_drawn_by_python():
     _run(engine, fake, seconds=0.25)
     assert fake.rendered.count("h") >= 7
     assert engine.frames["h"].take().data == b"x"
+
+
+def test_a_move_hands_the_engine_its_pieces_once(monkeypatch):
+    """The bridge lays a Move out once, when it starts: every piece with its sprig's drawing or its filters, and
+    which old piece each new one moves from (render/move.py pair)."""
+    from sprigcast.core.filters import VideoEffects
+    from sprigcast.core.scene import Transition
+    from sprigcast.render import move
+    from sprigcast.render.engine import Running
+
+    calls = []
+
+    class Moving(FakeEngine):
+        def move(self, index, previous, seconds, spec):
+            calls.append((index, previous, seconds, spec))
+
+        def transition(self, index, previous, spec):
+            calls.append((index, previous, spec))
+
+        def __getattr__(self, name):  # the rest of the engine: nothing to check here
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(sprigcore, "Engine", Moving)
+    monkeypatch.setattr(native_bridge.native_snapshot, "hand_over", lambda *a, **k: None)
+    col = _collection()
+    bridge = native_bridge.NativeCanvases(col)
+    quad = [(0, 0, 0, 0), (8, 0, 1, 0), (0, 8, 0, 1), (8, 8, 1, 1)]
+    old = [move.Piece("cam", "cam frame", "cam", "h", quad), move.Piece("red", "red", "red", "h", quad, 0.5)]
+    new = [move.Piece("red", "red", "red", "h", quad)]
+    running = Running(Scene(id="old", name="Old", canvas="h"), 1.0, 0.4,
+                      Transition(kind="move", easing="spring", unmatched="slide"))
+    asked = []
+
+    def pieces(r, canvas):
+        asked.append((r, canvas.id))
+        return old, new
+
+    red = VideoEffects(brightness=0.25)
+    for _ in range(3):
+        bridge.sync(col, {"red": red}, _plain_state, False, {"h": running}, move_pieces=pieces)
+    assert asked == [(running, "h")]  # laid out once
+    moves = [c for c in calls if len(c) == 4]
+    assert len(moves) == 1
+    _index, previous, seconds, spec = moves[0]
+    assert previous == "from:h" and seconds == 0.4
+    assert (spec.old_count, spec.new_count, spec.effects_count) == (2, 1, 1)
+    assert sprigcore.MOVE_EASINGS[spec.easing] == "spring" and sprigcore.MOVE_UNMATCHED[spec.unmatched] == "slide"
+    cam, red_old, red_new = spec.pieces[0], spec.pieces[1], spec.pieces[2]
+    assert cam.part == sprigcore.key("part:p-cam") and cam.effects == -1  # a sprig drawn whole
+    assert red_old.part == 0 and red_old.source == sprigcore.key("red") and abs(red_old.opacity - 0.5) < 1e-6
+    assert red_old.effects == red_new.effects == 0 and abs(spec.effects[0].brightness - 0.25) < 1e-6
+    assert red_new.paired == 1 and cam.paired == -1
+    assert [tuple(red_new.quad[i]) for i in range(4)] == [tuple(map(float, q)) for q in quad]
+    bridge.sync(col, {"red": red}, _plain_state, False, {}, move_pieces=pieces)
+    assert calls[-1][1:] == (None, None)  # over: stopped
 
 
 def test_preview_pictures_are_the_size_shown():
