@@ -827,6 +827,10 @@ class MainWindow(QMainWindow):
         """+ Add in a bloom: its sprigs, by folder, and New sprig. Sources are added inside a sprig."""
         sprig = icons.icon("sprig", theme.ACCENT)
         folders = {f.id: f for f in self.collection.part_folders()}
+        scene = self._scene()
+        canvas_id = scene.canvas if scene is not None else self.build_canvas
+        others = [p for p in parts if not self.collection.part_on(p, canvas_id)]  # made for the other shape
+        parts = [p for p in parts if p not in others]
         for part in parts:
             if part.folder not in folders:
                 menu.addAction(sprig, literal(part.name)).triggered.connect(
@@ -837,6 +841,12 @@ class MainWindow(QMainWindow):
                 continue
             sub = menu.addMenu(_dot(folder.colour, 12), literal(folder.name))
             for part in inside:
+                sub.addAction(sprig, literal(part.name)).triggered.connect(
+                    lambda _=False, pid=part.id: self._add_part_source(pid))
+        if others:  # still there to share, out of the way
+            other = next((c for c in self.collection.canvases if c.id != canvas_id), None)
+            sub = menu.addMenu(f"From {other.id if other else 'other'} {PARTS}")
+            for part in sorted(others, key=lambda p: p.name.lower()):
                 sub.addAction(sprig, literal(part.name)).triggered.connect(
                     lambda _=False, pid=part.id: self._add_part_source(pid))
         if menu.actions():
@@ -3328,12 +3338,14 @@ class MainWindow(QMainWindow):
                 child.setData(0, ROLE_ID, scene.id)
                 child.setData(0, ROLE_ROW, "bloom")
                 child.setData(0, LIB_NAME, scene.name)
-                child.setData(0, LIB_TAG, self._link_label(scene).strip())
+                child.setData(0, LIB_TAG, "⇄" if self._link_label(scene) else "")  # the other shape's name: tooltip
                 child.setData(0, ROLE_COLOUR, folder.colour if folder is not None else None)
                 child.setData(0, ROLE_ON_AIR, scene.id == active)
                 child.setData(0, ROLE_THUMB, thumbs.get(scene.id))
                 child.setFlags(BLOOM_FLAGS)
-                child.setToolTip(0, f"{scene.name}: click to edit it" + ("  ·  on air" if scene.id == active else ""))
+                child.setToolTip(0, f"{scene.name}: click to edit it" + ("  ·  on air" if scene.id == active else "")
+                                 + (f"  ·  switches with{self._link_label(scene).replace('⇄', '')}"
+                                    if self._link_label(scene) else ""))
                 holder.addChild(child)
                 if scene.id == self.selected_scene_id:
                     child.setSelected(True)
@@ -3345,7 +3357,7 @@ class MainWindow(QMainWindow):
         self.scene_tree.addTopLevelItem(sprigs)
         selected = self._scene()
         selected_part = self.collection.main_part(selected) if selected is not None and selected.kind == "part" else None
-        for folder, parts in self.collection.grouped_parts():
+        for folder, parts in self.collection.grouped_parts_on(canvas_id):  # this shape's sprigs only
             holder = sprigs if folder is None else folder_row(sprigs, folder, len(parts))
             for part in parts:
                 uses = len(self.collection.part_uses(part.id))
