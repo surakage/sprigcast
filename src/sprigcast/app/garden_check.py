@@ -228,15 +228,18 @@ class GardenCheckPage(QWidget):
             self.refresh()
         self.history.setText("Back to now" if view == "health" else "Last streams")
 
-    def refresh(self) -> None:
+    def refresh(self, in_parts: bool = False) -> None:
+        """`in_parts`: the tiles now, the rows a tick later and the chips a tick after that (the pop-up's first
+        fill: every call into Qt waits for the old engine's frame while live, and all of it in one go was 94 ms of
+        the window standing still, PC 2026-11-19)."""
         try:
             snap = self.snapshot()
         except Exception:  # a number that can't be read this second shows next second
             return
-        self.show_snapshot(snap)
+        self.show_snapshot(snap, in_parts=in_parts)
         self._filled = True
 
-    def show_snapshot(self, s: GardenSnapshot) -> None:
+    def show_snapshot(self, s: GardenSnapshot, in_parts: bool = False) -> None:
         level = s.level()
         line, picture = MOODS[level]
         if getattr(self, "_level", None) != level:  # once a second: restyle only when the mood changes
@@ -283,6 +286,17 @@ class GardenCheckPage(QWidget):
                 self._update_row(parts, old_row, new_row)
             return
         self._row_parts: list[tuple[QLabel, QLabel, QLabel, QLabel]] = []
+        if in_parts:
+            QTimer.singleShot(0, self, lambda: (
+                self._make_rows(s), QTimer.singleShot(0, self, lambda: self._make_chips(s))))
+            return
+        self._make_rows(s)
+        self._make_chips(s)
+
+    def _make_rows(self, s: GardenSnapshot) -> None:
+        if (tuple(s.rows), tuple(s.checks)) != self._lists:
+            return  # a later second's lists are in already
+        self._row_parts = []
         while self.rows.count():
             widget = self.rows.takeAt(0).widget()
             if widget is not None:
@@ -297,6 +311,9 @@ class GardenCheckPage(QWidget):
             none.setStyleSheet(f"color: {theme.MUTED}; background: transparent; padding: 6px 0;")
             self.rows.addWidget(none)
 
+    def _make_chips(self, s: GardenSnapshot) -> None:
+        if (tuple(s.rows), tuple(s.checks)) != self._lists:
+            return
         while self.checks.count():
             widget = self.checks.takeAt(0).widget()
             if widget is not None:
@@ -445,7 +462,7 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
     pop.garden.close_button.clicked.connect(pop.accept)
     pop.garden.show_view(view, fill=False)
     if view != "health":
-        QTimer.singleShot(0, pop.garden, lambda: None if pop.garden._filled else pop.garden.refresh())
+        QTimer.singleShot(0, pop.garden, lambda: None if pop.garden._filled else pop.garden.refresh(in_parts=True))
     pop.timer = QTimer(pop)
     pop.timer.timeout.connect(lambda: pop.garden.refresh() if pop.garden.stack.currentIndex() == 0 else None)
     pop.timer.start(1000)

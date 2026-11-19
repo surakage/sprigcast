@@ -123,6 +123,8 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         garden = pop.garden
         assert garden.stack.currentIndex() == 0  # now: tiles, stream health and checks
         app.processEvents()  # (filled a tick after it opens)
+        app.processEvents()  # its rows a tick later
+        app.processEvents()  # and its chips a tick after that
         assert garden.values["cpu"].text() == "4.6%" and garden.values["ram"].text() == "209 MB"
         assert garden.values["recording"].text() == "Off" and garden.values["upload"].text() == "Not live"
         labels = [garden.checks.itemAt(i).widget().text() for i in range(garden.checks.count())]
@@ -198,6 +200,8 @@ def test_stream_health_rows_keep_name_and_detail_apart(app):
     pop.show()
     app.processEvents()  # filled a tick after it opens
     app.processEvents()  # and its rows shown and laid out together on the next
+    app.processEvents()
+    app.processEvents()
     rows = pop.findChildren(QFrame, "healthRow")
     assert len(rows) == 2
     for row in rows:
@@ -218,7 +222,8 @@ def test_garden_check_reuses_rows_and_goes_away_when_closed(app):
     parent = QWidget()
     pop = garden_check_popup(lambda: snap, [], parent)
     pop.show()
-    app.processEvents()
+    for _ in range(3):  # tiles, then rows, then chips: a tick apart
+        app.processEvents()
     row = pop.findChildren(QFrame, "healthRow")[0]
     pop.garden.refresh()
     assert pop.findChildren(QFrame, "healthRow")[0] is row  # same words: the same row
