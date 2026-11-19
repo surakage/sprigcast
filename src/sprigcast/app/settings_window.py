@@ -65,7 +65,7 @@ ABOUT = {  # one line under each page's title
     "Appearance": "How SprigCast looks: theme, text size and colors.",
     "Stream": "Where you go live, and how good it looks.",
     "Recording": "Where recordings and clips go, and how good they look.",
-    "Audio": "Devices, sound tracks and which sounds go on each.",
+    "Audio": "Devices, sounds and the tracks they go on.",
     "Video": "Your canvases and the virtual camera.",
     "Connections": "Let other apps on your PC control SprigCast.",
 }
@@ -106,8 +106,9 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("File names", "Recording", True), ("Audio bitrate (recordings)", "Recording", True),
     ("Clips", "Recording/Clips", False), ("Clip length", "Recording/Clips", False),
     ("Replay buffer", "Recording/Clips", False),
-    ("Sound devices", "Audio/Devices", False), ("Mic", "Audio/Devices", False), ("Desktop audio", "Audio/Devices", False),
+    ("Sound devices", "Audio/Devices", False), ("Mic", "Audio/Devices", False), ("Desktop sound", "Audio/Devices", False),
     ("Tracks", "Audio/Tracks", False), ("Advanced audio", "Audio/Sounds", False), ("Ducking", "Audio/Sounds", False),
+    ("Volume", "Audio/Sounds", False), ("Balance", "Audio/Sounds", False),
     ("Canvas size", "Video/Canvases", False), ("Canvas frame rate", "Video/Canvases", False),
     ("Vertical canvas", "Video/Canvases", False), ("Output (scaled) size", "Video/Canvases", True),
     ("Downscale filter", "Video/Canvases", True), ("Virtual camera", "Video/Virtual camera", False),
@@ -1098,8 +1099,10 @@ class SettingsWindow(QDialog):
 
         # The tab asked for (the Sound card's gear: Sounds) now, the others a tick apart (_slice)
         first = self._subs.get("Audio") or "Devices"
+        main = self.parent()
+        levels = (lambda: main._last_levels) if hasattr(main, "_last_levels") else None  # the Devices meters
         self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording,
-                                    streaming=self.streaming, first=first)
+                                    streaming=self.streaming, first=first, levels=levels)
         for name in list(self.audio_page.later):
             self._slice(lambda name=name: self.audio_page.build_tab(name))
         return _page(self.audio_page)

@@ -169,7 +169,7 @@ def test_audio_page_has_tabs_and_bitrate_lives_with_each_encoder():
     QApplication.instance() or QApplication([])
     col = _collection()
     page = AudioPage(col, {})
-    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["Devices", "Tracks", "Sounds"]
+    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["Devices", "Sounds", "Tracks"]
     col.stream_encoder.audio_kbps = 128
     page.apply_to(col)
     assert col.stream_encoder.audio_kbps == 128  # the Audio page leaves the encoders alone
@@ -249,3 +249,107 @@ def test_many_sound_rows_are_made_a_few_per_tick_and_saving_makes_the_rest():
     again = AudioPage(col, {}, first="Sounds")
     again.apply_to(col)  # before the rest are made: they're made then
     assert set(again.sound_rows) == set(sounds)
+
+
+def test_devices_show_a_level_beside_each_device_only_while_that_tab_is_on_screen():
+    """Settings redesign (2026-11-19): a meter next to Mic and Desktop sound. Nothing ticks when it isn't seen."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage, LevelDots
+
+    app = QApplication.instance() or QApplication([])
+    col = _collection()
+    heard = {"at": time.monotonic(), "levels": {"mic": (-3.0, -12.0), "gone": (0.0, 0.0)}}
+    page = AudioPage(col, {}, levels=lambda: (heard["at"], heard["levels"]))
+    assert set(page.meters) == {"mic", "desktop", "mic-2"} and not page._meter_timer.isActive()  # not shown yet
+    page.show()
+    app.processEvents()
+    assert page._meter_timer.isActive()
+    page._move_meters()
+    assert page.meters["mic"].lit() == round(48 / 60 * LevelDots.DOTS) and page.meters["desktop"].lit() == 0
+    page.show_tab("Sounds")
+    assert not page._meter_timer.isActive()
+    page.show_tab("Devices")
+    assert page._meter_timer.isActive()
+    heard["at"] -= 5  # the mixer stopped: an old level isn't shown as sound
+    for _ in range(40):
+        page._move_meters()
+    assert page.meters["mic"].lit() == 0
+    page.hide()
+    assert not page._meter_timer.isActive()
+    page.close()
+    assert not AudioPage(col, {}).meters  # no levels given (tests, the off-screen warm-up): just the lists
+
+
+def test_volume_keeps_a_tenth_of_a_db_set_elsewhere_and_slides_in_halves():
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import DbSlider
+
+    QApplication.instance() or QApplication([])
+    volume = DbSlider(-7.3)
+    assert volume.value() == -7.3 and volume.text.text() == "-7.3 dB"  # untouched: saved as it was
+    volume.slider.setValue(-9)
+    assert volume.value() == -4.5 and volume.text.text() == "-4.5 dB"
+    volume.setValue(40)
+    assert volume.value() == 12.0 and volume.text.text() == "+12.0 dB"
+
+
+def test_ducking_picks_under_the_sounds_change_only_what_was_picked():
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    page = AudioPage(col, {})
+    assert page.duck_when.currentData() is False and not page.duck_by.isEnabled()
+    assert page.duck_by.value() is None  # -14 dB (set under More…) is none of the three
+    page.apply_to(col)
+    assert not col.audio.ducking and col.audio.duck_amount_db == -14.0  # nothing picked: nothing changed
+    page.duck_when.setCurrentIndex(1)
+    assert page.duck_by.isEnabled()
+    page.duck_by.buttons[-18.0].click()
+    page.apply_to(col)
+    assert col.audio.ducking and col.audio.duck_amount_db == -18.0
+
+    def more(_page):  # the Ducking window saves its own changes straight away
+        col.audio.ducking, col.audio.duck_amount_db = False, -9.0
+
+    page.on_ducking = more
+    page.ducking_button.click()
+    assert page.duck_when.currentData() is False and page.duck_by.value() is None  # shown as it now is
+    page.apply_to(col)
+    assert not col.audio.ducking and col.audio.duck_amount_db == -9.0  # and not put back
+
+
+def test_tracks_name_the_sounds_on_each_as_ticked_in_sounds():
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    col.sources.append(SourceConfig(id="song", kind="media", name="Song", settings={"group": "Music"}))
+    page = AudioPage(col, {})
+    page.finish()
+
+    def chips(n):
+        row = page.track_chips[n - 1]
+        return [row.itemAt(i).widget().text() for i in range(row.count()) if isinstance(row.itemAt(i).widget(), QLabel)]
+
+    assert "Song" in chips(1) and "Song" not in chips(2)  # music stays off VOD-safe
+    assert chips(4) == ["Nothing yet"]
+    page.track_ticks["song"][3].setChecked(True)
+    page.track_ticks["song"][0].setChecked(False)
+    hear = page.sound_rows["mic-2"]["hear"]
+    hear.setCurrentIndex(hear.findData("only"))  # just me: on no track
+    page.show_tab("Tracks")
+    assert chips(4) == ["Song"] and "Song" not in chips(1)
+    assert not any(col.source("mic-2").name in chips(n) for n in range(1, 6))
+    col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(6)]
+    many = AudioPage(col, {})
+    row = many.track_chips[0]
+    assert row.itemAt(4).widget().text().endswith("more")  # four named, the rest counted

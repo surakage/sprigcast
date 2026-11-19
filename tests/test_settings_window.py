@@ -247,7 +247,7 @@ def test_settings_look_titles_pills_and_pages(app):
     assert tabs(w.stream_tabs) == ["Places", "Quality"]
     assert tabs(w.recording_tabs.tabs) == ["Recording", "Clips"]
     assert tabs(w.video_tabs) == ["Canvases", "Virtual camera"]
-    assert tabs(w.audio_page.tabs) == ["Devices", "Tracks", "Sounds"]
+    assert tabs(w.audio_page.tabs) == ["Devices", "Sounds", "Tracks"]
     assert not w.findChildren(type(w.tabs), "settingsColour")
     w.close()
 
