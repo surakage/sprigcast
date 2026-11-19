@@ -1,7 +1,7 @@
 """Build mode's own screen: every bloom and sprig on the left, the canvas in the middle, and what's
 inside the picked one on the right with the inspector under it.
 
-    ┌ Library ──────┐ ┌ Just Chatting ───────────── ▶ Put on air ┐ ┌ Inside ──────┐
+    ┌ Library ──────┐ ┌ Just Chatting ──────────────────── ⇄ Link ┐ ┌ Inside ──────┐
     │ ⌕ Find…       │ │  the shape you edit            [twin]    │ │ ❧ Webcam     │
     │ Blooms     +  │ │                                          │ │ ▣ Game       │
     │  ▾ Main Scenes│ │                                          │ ├──────────────┤
@@ -49,7 +49,7 @@ RIGHT_WIDTH = 320
 
 
 class BuildBar(QWidget):
-    """Above the canvas: what you're editing on the left, tools (Put on air, Link, Safe zones) on the right."""
+    """Above the canvas: what you're editing on the left, tools (Link, Safe zones) on the right."""
 
     def __init__(self):
         super().__init__()

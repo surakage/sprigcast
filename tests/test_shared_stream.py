@@ -346,20 +346,49 @@ def test_clips_move_to_the_streams_encoder_once_it_holds_as_much_and_back_after(
 
 
 def test_close_bitrates_share_one_encoder_within_every_services_limit():
-    """PC 2026-11-18: Twitch 6000, YouTube 9000 and Kick 8000 each had an encoder (the video engine at 90%)."""
+    """PC 2026-11-18: Twitch 6000, YouTube 9000 and Kick 8000 each had an encoder (the video engine at 90%);
+    the 2026-11-19 soak still gave Twitch its own (80% with five encodes)."""
     c = _Canvas()
     tw = _target("tw", c, kbps=6000, max_kbps=6000)
     yt = _target("yt", c, kbps=9000, max_kbps=20000)
     kick = _target("kick", c, kbps=8000, max_kbps=8000)
     groups = bitrate_groups([tw, yt, kick])
     assert [(kbps, [t.name for t in members]) for kbps, _auto, members in groups] == \
-        [(8000, ["yt", "kick"]), (6000, ["tw"])]
+        [(6000, ["yt", "kick", "tw"])]  # one encoder, at Twitch's limit
     same = [_target(n, c, kbps=6000, max_kbps=6000 if n == "tw" else 0) for n in ("tw", "yt", "kick")]
     assert [len(m) for _, _, m in bitrate_groups(same)] == [3]  # the same bitrate: one encoder for all
     far = [_target("a", c, kbps=2500), _target("b", c, kbps=9000)]
     assert len(bitrate_groups(far)) == 2  # too far apart: the lower one would look much worse at the other's
     auto = [_target("a", c, kbps=6000, auto_bitrate=True), _target("b", c, kbps=6000)]
     assert bitrate_groups(auto)[0][1] is False  # auto-pilot steers a shared encoder only if every place asks
+
+
+class _Link:
+    def __init__(self, name, behind):
+        self.name, self.behind = name, behind
+
+    def backlog_seconds(self):
+        return self.behind
+
+
+def test_one_slow_destination_costs_the_others_one_small_step_at_most():
+    """2026-11-19 soak: Kick alone behind (0.41 s, YouTube 0) lowered the shared bitrate for everyone."""
+    enc = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter(), auto_bitrate=True)
+    yt, kick, tw = _Link("yt", 0.0), _Link("kick", 3.0), _Link("tw", 0.05)
+    pilot = enc.autopilot
+    links = [(lk.behind, lk) for lk in (yt, kick, tw)]
+    behind, who = enc.steering_backlog(links)
+    assert who is kick and behind <= 1.5  # one small step for Kick alone, never a big one
+    assert pilot.update(100.0, behind) == 4800
+    behind, who = enc.steering_backlog(links)
+    assert who is tw and pilot.update(110.0, behind) is None  # no further: Kick skips frames on its own
+    yt.behind = 0.9  # YouTube behind too: the PC's own upload, so everyone comes down
+    behind, who = enc.steering_backlog([(lk.behind, lk) for lk in (yt, kick, tw)])
+    assert who is kick and pilot.update(120.0, behind) < 4800
+    lone = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter(), auto_bitrate=True)
+    assert lone.steering_backlog([(3.0, kick)]) == (3.0, kick)  # on its own a link steers its encoder fully
+    enc.links = [StreamLink("YouTube", "rtmp://x/app", "k", enc), StreamLink("Kick", "rtmp://x/app", "k", enc)]
+    assert enc.label == "stream-horizontal (YouTube, Kick)"  # two encoders on one canvas are told apart in the log
 
 
 def test_the_encoder_rests_while_no_destination_is_connected_and_wakes_when_one_is(tmp_path, monkeypatch):
