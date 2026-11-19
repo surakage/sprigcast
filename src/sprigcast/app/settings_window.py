@@ -85,7 +85,7 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Ask before going live", "General", False), ("Keep recording when the stream ends", "General", False),
     ("Start Instant replay when I go live", "General", False), ("Snapping", "General", False),
     ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
-    ("Always on top", "General", False), ("Hide the mouse pointer", "General", False),
+    ("Always on top", "General", False), ("Reopen pop-outs", "General", False), ("Hide the mouse pointer", "General", False),
     ("Hide from screen capture", "General", False), ("Privacy", "General", False),
     ("System tray", "General", False), ("Minimize to the tray", "General", False),
     ("Close to the tray", "General", False),
@@ -889,6 +889,10 @@ class SettingsWindow(QDialog):
             self.projector_on_top.setToolTip("Pop-out windows stay above other windows")
             self.projector_on_top.setChecked(projector.on_top())
             pbox.addWidget(self.projector_on_top)
+            self.projector_reopen = QCheckBox("Reopen them next time")
+            self.projector_reopen.setToolTip("The pop-outs open when you close SprigCast come back when it starts")
+            self.projector_reopen.setChecked(projector.reopen())
+            pbox.addWidget(self.projector_reopen)
 
             from sprigcast.app import tray
 
@@ -1423,6 +1427,7 @@ class SettingsWindow(QDialog):
 
         settings.setValue(projector.HIDE_POINTER, self.projector_hide_pointer.isChecked())
         settings.setValue(projector.ON_TOP, self.projector_on_top.isChecked())
+        settings.setValue(projector.REOPEN, self.projector_reopen.isChecked())
         settings.setValue(privacy.HIDE_FROM_CAPTURE, self.hide_from_capture.isChecked())
         from sprigcast.app import tray
 
