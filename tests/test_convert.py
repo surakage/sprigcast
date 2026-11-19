@@ -403,3 +403,14 @@ def test_obs_sprigs_no_bloom_uses_go_in_unused_scenes():
     data["sources"] = [s for s in data["sources"] if s.get("uuid") != "o2"]
     _, notes = from_obs(data, _like())
     assert not any("unused sprig" in n for n in notes)
+
+
+def test_what_did_not_come_over_is_noted_first():
+    """The notes pop-up shows the first 40; a source with no match must not hide behind muted sounds."""
+    data = obs_file()
+    data["sources"] += [{"id": "wasapi_output_capture", "name": f"Out {i}", "uuid": f"w{i}",
+                         "settings": {"device_id": f"gone-{i}"}} for i in range(45)]
+    data["sources"].append({"id": "obs_glow_source", "name": "Glow", "uuid": "glow", "settings": {}})
+    _, notes = from_obs(data, _like())
+    glow = next(i for i, n in enumerate(notes) if n.startswith("Glow:"))
+    assert glow < 5 and all("has no match" in n or "isn't supported" in n for n in notes[:glow + 1])

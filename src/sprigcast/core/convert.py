@@ -800,11 +800,16 @@ def _slug_prefix(kind: str) -> str:
 
 
 def _dedupe(notes: list[str]) -> list[str]:
+    """Each note once, what didn't come over at all first: the notes pop-up shows 40, and a garden with many
+    muted sounds and pages pushed "Glow: ... has no match" past them (PC, 2026-11-19)."""
     seen: list[str] = []
     for note in notes:
         if note not in seen:
             seen.append(note)
-    return seen
+    return sorted(seen, key=lambda n: not _LEFT_OUT.search(n))
+
+
+_LEFT_OUT = re.compile(r"has no match|isn't supported")
 
 
 def _size(config: SourceConfig, size_of: SizeOf, canvas: tuple[float, float]) -> tuple[float, float] | None:
