@@ -13,6 +13,7 @@ shipped in open-source code; it can also be overridden in QSettings ("twitch/cli
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import urllib.error
@@ -22,10 +23,14 @@ from dataclasses import dataclass
 
 from sprigcast.output.keys import get_key, set_key
 
+log = logging.getLogger(__name__)
+
 DEFAULT_CLIENT_ID = "jsv3nwvolg6ph5e5s9tyzphwzcyvbp"  # SprigCast's public Twitch app (Public client: no secret)
 # Your stream key, sending chat from the Chat panel, and changing your title, category and tags (Stream details)
-SCOPES = "channel:read:stream_key user:write:chat channel:manage:broadcast"
 CHAT_SCOPE = "user:write:chat"
+# Chat moderation from the Chat panel: timeout and ban, delete a message, block an account.
+MOD_SCOPES = ("moderator:manage:banned_users", "moderator:manage:chat_messages", "user:manage:blocked_users")
+SCOPES = "channel:read:stream_key user:write:chat channel:manage:broadcast " + " ".join(MOD_SCOPES)
 TOKEN_REF = "twitch/oauth"  # keyring entry holding {"access_token", "refresh_token", "expires_at", "login", "user_id"}
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -316,3 +321,97 @@ def send_chat(channel: str, text: str, cid: str | None = None) -> None:
     if not sent.get("is_sent", False):
         reason = (sent.get("drop_reason") or {}).get("message") or "Twitch didn't post it"
         raise TwitchAuthError(reason)
+
+
+# Moderating chat ---------------------------------------------------------------------------
+
+
+class NeedsReconnect(TwitchAuthError):
+    """Twitch was connected before SprigCast asked for this: connecting again once allows it."""
+
+
+def _send(method: str, path: str, body: dict | None, token: str, cid: str) -> dict:
+    head = {"Authorization": f"Bearer {token}", "Client-Id": cid}
+    if body is not None:
+        head["Content-Type"] = "application/json"
+    request = urllib.request.Request(f"{HELIX}{path}", data=None if body is None else json.dumps(body).encode(),
+                                     method=method, headers=head)
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            raw = response.read()
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise PermissionError("token rejected") from exc
+        try:
+            message = str(json.loads(exc.read() or b"{}").get("message", ""))
+        except ValueError:
+            message = ""
+        if exc.code == 403:
+            raise TwitchAuthError("You're not a moderator in this chat.") from exc
+        raise TwitchAuthError(_plain(message) or f"Twitch said {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise TwitchAuthError(f"Couldn't reach Twitch: {exc}") from exc
+
+
+def _plain(message: str) -> str:
+    """Twitch's own reason, in short words where SprigCast knows it."""
+    low = message.lower()
+    if "already banned" in low:
+        return "Already banned."
+    if "may not be banned" in low or "cannot be banned" in low:
+        return "Twitch won't ban or time out that account."
+    if "message" in low and ("not found" in low or "too old" in low or "broadcaster" in low or "moderator" in low):
+        return "Twitch won't delete that message (too old, or from a moderator)."
+    return message[:120]
+
+
+MOD_ACTIONS = ("timeout", "ban", "delete", "block")
+
+
+def moderate(channel: str, action: str, *, user_id: str = "", message_id: str = "", seconds: int = 0,
+             cid: str | None = None) -> None:
+    """Time out or ban an account in `channel`'s chat, delete one message there, or block an account, as the
+    connected account. Worker thread. Raises TwitchAuthError worded for the user (NeedsReconnect when the
+    connection is older than this permission)."""
+    if action not in MOD_ACTIONS:
+        raise ValueError(action)
+    cid = cid or client_id()
+    tokens = _load()
+    if not tokens:
+        raise NeedsReconnect("Sign in to Twitch to moderate chat.")
+    needed = MOD_SCOPES[2] if action == "block" else MOD_SCOPES[1] if action == "delete" else MOD_SCOPES[0]
+    if needed not in (tokens.get("scope") or []):
+        raise NeedsReconnect("Sign in to Twitch again once to allow moderation (Settings → Stream).")
+    if time.time() >= float(tokens.get("expires_at", 0)):
+        tokens = _refresh(tokens, cid)
+    channel = channel.lower().lstrip("#")
+    quote = urllib.parse.quote
+
+    def attempt(tok: dict) -> None:
+        if action == "block":
+            _send("PUT", f"/users/blocks?target_user_id={quote(user_id)}", None, tok["access_token"], cid)
+            return
+        broadcaster = tok["user_id"]
+        if channel != str(tok.get("login", "")).lower():
+            users = _get(f"/users?login={quote(channel)}", tok["access_token"], cid).get("data") or []
+            if not users:
+                raise TwitchAuthError(f"No Twitch channel called {channel}.")
+            broadcaster = users[0]["id"]
+        where = f"broadcaster_id={broadcaster}&moderator_id={tok['user_id']}"
+        if action == "delete":
+            _send("DELETE", f"/moderation/chat?{where}&message_id={quote(message_id)}", None, tok["access_token"], cid)
+            return
+        data: dict = {"user_id": user_id}
+        if action == "timeout":
+            data["duration"] = max(1, min(int(seconds), 1_209_600))  # Twitch's longest timeout is two weeks
+        _send("POST", f"/moderation/bans?{where}", {"data": data}, tok["access_token"], cid)
+
+    try:
+        try:
+            attempt(tokens)
+        except PermissionError:
+            attempt(_refresh(tokens, cid))
+    except PermissionError as exc:
+        raise NeedsReconnect("Sign in to Twitch again to allow moderation (Settings → Stream).") from exc
+    log.info("twitch chat: %s done", action)  # in the logbook, no names
