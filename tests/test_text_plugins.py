@@ -154,14 +154,23 @@ def test_a_changed_text_is_drawn_on_a_worker(monkeypatch):
     assert drawn_on and drawn_on[0].startswith("sprigcast-pictures")  # the one pictures lane
 
 
-def test_a_text_keeps_its_picture_while_asleep_and_draws_again_only_if_it_changed():
+def test_a_text_keeps_its_picture_while_asleep_and_draws_again_only_if_it_changed(tmp_path):
     """Heavy run 2026-11-17: texts and clock cards were drawn again on every bloom switch (10-14 ms each). Asleep
     their texture stays (the engine doesn't forget it); woken, nothing is drawn unless the words changed."""
+    from sprigcast import plugin_store
     from sprigcast.sources.text import TextSource
-    from sprigcast.store.local_time import LocalTimeSource
-    from sprigcast.store.stream_timer import StreamTimerSource
 
-    assert TextSource.keeps_picture and LocalTimeSource.keeps_picture and StreamTimerSource.keeps_picture
+    assert TextSource.keeps_picture
+    # Added and removed as the store does: importing sprigcast.store.* here left the kinds, actions and right-click
+    # entries registered for the rest of the run (test_stream_timer failed when it ran after this file).
+    for plugin_id in ("local_time", "stream_timer"):
+        plugin = next(p for p in plugin_store.catalog() if p.id == plugin_id)
+        assert plugin_store.install(tmp_path, plugin) is None
+        try:
+            assert source_class(plugin_id).keeps_picture
+        finally:
+            plugin_store.remove(tmp_path, plugin_id)
+        assert plugin_id not in known_kinds()
     src = TextSource("t", {"text": "Hello", "size": 20})
     assert src.video_frame() is not None
     src.sleep()
