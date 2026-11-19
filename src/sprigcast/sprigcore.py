@@ -8,9 +8,9 @@ This module is the only place Python talks to the DLL. ctypes lets go of the GIL
 the engine never calls back into Python: its log lines wait in a queue that :func:`drain_log` moves into
 SprigCast's own log.
 
-Which engine runs is chosen per start with ``SPRIGCAST_ENGINE`` (``python``, the default, or ``native``). Parts
-that have moved check :func:`use_native`; a missing or older DLL always means the Python engine, so the app keeps
-working whatever happens to the DLL.
+Which engine runs is chosen per start: the native one on Windows, unless ``SPRIGCAST_ENGINE=python`` asks for the
+old one or safe mode starts (:func:`use_python_engine`). Parts that have moved check :func:`use_native`; a missing
+or older DLL always means the Python engine, so the app keeps working whatever happens to the DLL.
 """
 
 from __future__ import annotations
@@ -416,9 +416,25 @@ def available() -> bool:
     return _lib() is not None
 
 
+_python_only = False  # safe mode: the old engine for this start (app/safe_mode.py)
+
+
 def engine_choice() -> str:
-    """"native" or "python", as SPRIGCAST_ENGINE asks (anything else means python)."""
-    return "native" if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "native" else "python"
+    """"native" or "python": as SPRIGCAST_ENGINE asks, else native on Windows (where the engine is built) and
+    python elsewhere. Safe mode always means python."""
+    if _python_only:
+        return "python"
+    asked = os.environ.get("SPRIGCAST_ENGINE", "").strip().lower()
+    if asked in ("native", "python"):
+        return asked
+    return "native" if sys.platform == "win32" else "python"
+
+
+def use_python_engine() -> None:
+    """The old (Python) engine for the rest of this start, whatever SPRIGCAST_ENGINE says: safe mode, before any
+    part has started."""
+    global _python_only
+    _python_only = True
 
 
 def use_native() -> bool:

@@ -237,10 +237,12 @@ def run() -> None:
     crash_dump.install(logbook.log_dir())  # a native crash leaves a small dump beside crash.log (Windows)
     from sprigcast import sprigcore
 
-    if sprigcore.engine_choice() == "native":  # the C++ engine is loaded only when asked for (docs/native-engine.md)
-        logging.info("native engine asked for: %s, cards %s",
+    if sprigcore.engine_choice() == "native":  # the default on Windows (docs/native-engine.md)
+        logging.info("native engine: %s, cards %s",
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
                      [c["name"] for c in sprigcore.adapters()])
+    else:
+        logging.info("Python engine (SPRIGCAST_ENGINE=python)")
     import_av()
     package = inside_package()
     if package:
@@ -291,6 +293,9 @@ def run() -> None:
     from sprigcast.app import autostart, safe_mode
 
     safe = safe_mode.choose(sys.argv, crashed, autostart.start_minimized(sys.argv), safe_mode.ask)
+    if safe and sprigcore.engine_choice() == "native":
+        sprigcore.use_python_engine()  # nothing has started yet: this start draws, captures and mixes the old way
+        logging.warning("safe mode: the Python engine for this start")
 
     from sprigcast.app import priority
     from sprigcast.app.theme import apply_theme

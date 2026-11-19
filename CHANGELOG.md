@@ -170,6 +170,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine on by default: SprigCast now starts with the C++ engine on Windows. The old Python engine still
+  starts when the engine's file is missing or doesn't match, in safe mode (offered after SprigCast didn't close
+  properly), or with SPRIGCAST_ENGINE=python; a faulted or stuck engine still hands drawing back to Python by itself.
 - New engine: stinger transitions are drawn by the engine. The clip's player hands its pictures straight to the
   engine, which draws them over the change and swaps blooms at the cut point (track matte clips too), so a
   stinger no longer hands the canvas and its recordings back to Python. SPRIGCAST_NO_NATIVE_STINGER=1 draws them

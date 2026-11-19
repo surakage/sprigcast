@@ -28,9 +28,11 @@ frame.
   ctypes (which lets go of the GIL for each call). Every function returns `SC_OK` or an error code, with
   `sc_last_error()` saying what went wrong. No C++ exception crosses it. Bump `SC_INTERFACE_VERSION` and
   `sprigcore.INTERFACE_VERSION` together when it changes.
-- **The app always works.** Each part that moves has an old and a new path. `SPRIGCAST_ENGINE=native` picks the
-  engine; anything else, a missing DLL or an older one, means the Python engine. The Python path for a part is
-  deleted only after the native one passes its PC tests.
+- **The app always works.** Each part that moves has an old and a new path. The native engine is the default on
+  Windows; `SPRIGCAST_ENGINE=python`, safe mode (asked for after SprigCast didn't close properly, or
+  `--safe-mode`), a missing DLL or an older one means the Python engine for that start. While it runs, a faulted
+  or stuck engine hands drawing back to Python by itself. The Python path for a part is deleted only after the
+  native one passes its PC tests.
 - **Old PCs first.** Direct3D 11 at feature level 10.0 or better, no runtime to install (static C runtime), and
   every part checked on the AMD E2-7110 and the 2013 all-in-one as well as the main PC.
 - **Safety nets.** Warnings are errors, every check also runs under AddressSanitizer in CI, Release builds keep a
@@ -85,7 +87,7 @@ To try SprigCast.exe's own crash guard, which catches what nothing else does, st
 `SPRIGCAST_CRASH_TEST=30,main` (on the window's thread). Expect a crash.log entry, a .dmp in the Logs folder
 (its thread named `crash-test` for the first), the run ending within 15 s, and "closed unexpectedly" on the next start.
 
-## In the app (`SPRIGCAST_ENGINE=native`)
+## In the app (the native engine)
 
 render/native_bridge.py: the render thread hands every new source picture to the native engine too, and a
 snapshot of what is on air (blooms and every sprig layout, as their Live state shows them) whenever that or the
