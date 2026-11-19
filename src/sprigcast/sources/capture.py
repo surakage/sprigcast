@@ -8,6 +8,11 @@ With the native engine (SPRIGCAST_ENGINE=native, docs/native-engine.md "Capture"
 graphics device and copies each picture on the card: the supervisor only finds the target and watches how it goes,
 and no picture passes through Python. When the engine can't (an older Windows, the engine stopped) it falls back to
 the `windows-capture` package, as without the engine. SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1 always uses the package.
+
+The engine's captures run in the capture helper (app/capture_helper.py, docs/native-engine.md "Capture helper") when
+it is there: Windows keeps about one picture of graphics memory per capture started until the program that started
+it ends, and the helper can be ended. So a source asleep ends its capture there, and the helper ends once nothing
+is captured. When the helper can't, the engine captures itself (SPRIGCAST_CAPTURE_IN_ENGINE=1 always).
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from sprigcast import sprigcore
+from sprigcast.app import capture_helper
 from sprigcast.core.mailbox import FrameRing
 from sprigcast.core.source import Source, register
 
@@ -30,6 +36,7 @@ QUICK_RETRY_SECONDS = 0.25  # just after a target closed: looked for again this 
 QUICK_TRIES = 8  # (a game or window that reopens came back 2.4 s later, waiting the full RETRY_SECONDS: PC 2026-11-19)
 ENGINE_AGAIN_SECONDS = 60.0  # a source the engine refused tries the engine again after this (one slow start)
 LINK_SECONDS = 5.0  # an engine capture nothing took up in this long: the engine isn't drawing, capture in Python
+CARD_SECONDS = 3.0  # a new source waits this long for the engine to say which card it is on (the helper needs it)
 _PACING_OK: bool | None = None  # does this Windows take minimum_update_interval? None until a capture tried
 
 
@@ -68,6 +75,9 @@ class _CaptureSource(Source):
         self._engine_target: sprigcore.CaptureTarget | None = None  # the engine captures it (render thread links it)
         self._engine_refused = False  # the engine couldn't: the package captures it (ENGINE_AGAIN_SECONDS)
         self._engine_refused_at = 0.0
+        self._feed: capture_helper.Feed | None = None  # the capture helper captures it (the engine takes its block)
+        self._helper_refused = False  # the helper couldn't: the engine captures it itself (ENGINE_AGAIN_SECONDS)
+        self._helper_refused_at = 0.0
         self._serial = 0
 
     # Subclasses say what to capture. Return None when the target is not available right now.
@@ -130,16 +140,20 @@ class _CaptureSource(Source):
         return True
 
     def video_frame(self) -> np.ndarray | None:
-        target = self._engine_target
+        target = self._engine_target or self._feed
         if target is not None and target.linked:  # captured by the engine: read back for a frame Python draws
             return target.read()
         return self._frames.take()
 
     @property
-    def engine_player(self) -> sprigcore.CaptureTarget | None:
-        """What the engine captures for this source (render/engine.py hands it over): the render thread then only
-        calls :meth:`engine_tick`."""
-        return self._engine_target
+    def engine_player(self) -> sprigcore.CaptureTarget | capture_helper.Feed | None:
+        """What the engine captures for this source, or the capture helper's feed it takes the pictures from
+        (render/engine.py hands it over): the render thread then only calls :meth:`engine_tick`."""
+        target = self._engine_target
+        if target is not None:
+            return target
+        feed = self._feed
+        return feed if feed is not None and feed.told else None
 
     def engine_tick(self) -> None:
         """Render thread, on a tick the engine showed the picture itself: nothing to do (the supervisor keeps the
@@ -150,7 +164,7 @@ class _CaptureSource(Source):
         """The engine captures it and has shown a picture of it since it (re)started. A bloom switch waiting for
         this source goes by this, so no picture has to be read back from the card for Python's compositor just to
         end the wait (PC soak 2026-11-19: that read-back and copy held a switch frame 22 to 130 ms)."""
-        target = self._engine_target
+        target = self._engine_target or self._feed
         if target is None or not target.linked:
             return False
         state, width, _height, shown = target.state()
@@ -223,8 +237,60 @@ class _CaptureSource(Source):
         finally:
             self._engine_target = None
 
+    def _use_helper(self, began: float) -> bool:
+        """This capture goes to the capture helper. A source just started waits a moment for the engine to say
+        which card it draws on (False meanwhile is never returned: it waits here, on the supervisor's thread)."""
+        helper = capture_helper.HELPER
+        if self._helper_refused and time.monotonic() - self._helper_refused_at >= ENGINE_AGAIN_SECONDS:
+            self._helper_refused = False
+        if self._helper_refused or not helper.wanted():
+            return False
+        while helper.card is None and time.monotonic() - began < CARD_SECONDS and not self._restart.is_set():
+            self._restart.wait(0.05)
+        return helper.usable()
+
+    def _in_helper(self, target: dict[str, Any], stop: threading.Event) -> str:
+        """Capture ``target`` in the capture helper until it ends: "ended" (the window closed, or the helper went:
+        find it again), "refused" (the helper can't: the engine captures), "unlinked" (the engine isn't drawing:
+        the package captures) or "stopped" (stop, restart or a new target)."""
+        window = int(target.get("window_hwnd") or 0)
+        monitor = 0 if window else _monitor_handle(int(target.get("monitor_index", 1)))
+        if not window and not monitor:
+            self.status = "waiting for target"
+            return "ended"
+        feed = capture_helper.HELPER.start(window, monitor, self._engine_flags(), self._engine_interval_ms())
+        if feed is None:
+            return "refused"
+        self._feed = feed
+        began = time.monotonic()
+        try:
+            while not (stop.is_set() or self._restart.is_set() or self._should_retarget()):
+                state, width, height, _frames = feed.state()
+                if state == sprigcore.SCREEN_RUNNING:
+                    if self.status != "capturing" and not self.status.startswith("capturing "):
+                        self.status = "capturing"
+                    if width > 0 and height > 0:
+                        self._size = (width, height)
+                elif state == sprigcore.SCREEN_ENDED:
+                    return "ended"
+                elif state == sprigcore.SCREEN_REFUSED:
+                    log.info("%s: the capture helper can't capture here; the engine does", self.id)
+                    return "refused"
+                if not feed.linked and time.monotonic() - began > LINK_SECONDS:
+                    if state == sprigcore.SCREEN_NONE:
+                        log.info("%s: the capture helper didn't answer; the engine captures it", self.id)
+                        return "refused"
+                    log.info("%s: the engine isn't drawing; windows-capture captures it", self.id)
+                    return "unlinked"
+                self._restart.wait(0.05 if state in (sprigcore.SCREEN_NONE, sprigcore.SCREEN_STARTING) else 0.2)
+            return "stopped"
+        finally:
+            self._feed = None
+            capture_helper.HELPER.stop(feed)
+
     def _supervise(self, stop: threading.Event | None = None) -> None:
         stop = stop or self._stop
+        began = time.monotonic()
         windows_capture_cls = None
         quick = 0  # quick looks left after a target closed
         while not stop.is_set():
@@ -238,8 +304,11 @@ class _CaptureSource(Source):
             if self._engine_refused and time.monotonic() - self._engine_refused_at >= ENGINE_AGAIN_SECONDS:
                 self._engine_refused = False  # one slow start doesn't keep this source off the engine for good
             if not self._engine_refused and sprigcore.use_native_capture():
-                outcome = self._in_engine(target, stop)
-                if outcome == "refused":
+                helped = self._use_helper(began)
+                outcome = self._in_helper(target, stop) if helped else self._in_engine(target, stop)
+                if helped and outcome == "refused":
+                    self._helper_refused, self._helper_refused_at = True, time.monotonic()
+                elif outcome in ("refused", "unlinked"):
                     self._engine_refused, self._engine_refused_at = True, time.monotonic()
                 elif outcome == "ended" and not (stop.is_set() or self._restart.is_set()):
                     if self.status == "capturing" or self.status.startswith("capturing "):

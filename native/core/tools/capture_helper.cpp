@@ -119,7 +119,7 @@ int main(int argc, char **argv) {
             int flags = 0, interval = 0;
             std::string block;
             if (!(in >> id >> low >> high >> window >> monitor >> flags >> interval >> block) || !id) {
-                say("log 3 capture helper: a start line it can't read");
+                say("log 30 a start line it can't read");
                 continue;
             }
             stop(id);  // the same source asked again: its new capture replaces the old
@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
             Running r;
             if (sc_capture_feed_create(low, high, window, monitor, flags, interval, name.c_str(), &r.feed) != SC_OK) {
                 say("state " + std::to_string(id) + " " + std::to_string(SC_SCREEN_REFUSED) + " 0 0 0");
-                say(std::string("log 3 capture helper: ") + sc_last_error());
+                say(std::string("log 30 ") + sc_last_error());
                 continue;
             }
             feeds[id] = r;
