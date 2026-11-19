@@ -58,8 +58,8 @@ New-Item -ItemType Directory -Force $camDir | Out-Null
 Copy-Item (Join-Path $build "camera\Release\sprigcast_camera.dll") $camDir
 Copy-Item (Join-Path $build "camera32\Release\sprigcast_camera32.dll") $camDir
 
-# 2b2. The native engine (native/core, docs/native-engine.md) next to the sprigcast package. Only loaded when
-#      SPRIGCAST_ENGINE=native asks for it while its parts move over from Python.
+# 2b2. The native engine (native/core, docs/native-engine.md) next to the sprigcast package. The default;
+#      SPRIGCAST_ENGINE=python or safe mode starts the old Python engine instead.
 cmake -S (Join-Path $root "native\core") -B (Join-Path $build "core") -A x64
 cmake --build (Join-Path $build "core") --config Release
 & ctest --test-dir (Join-Path $build "core") -C Release --output-on-failure

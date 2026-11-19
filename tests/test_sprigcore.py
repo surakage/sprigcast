@@ -3,6 +3,7 @@ drawn here in NumPy. The pixel checks need sprigcore.dll (Windows; CI builds it,
 and run on Windows' software renderer, so they give the same answer on every PC."""
 
 import ctypes
+import sys
 import time
 
 import numpy as np
@@ -20,12 +21,21 @@ def fresh(monkeypatch):
     sprigcore._lib.cache_clear()
 
 
-def test_python_engine_is_the_default(fresh):
-    assert sprigcore.engine_choice() == "python"
-    fresh.setenv("SPRIGCAST_ENGINE", " Native ")
+def test_the_native_engine_is_the_default_on_windows(fresh):
+    fresh.setattr(sys, "platform", "linux")
+    assert sprigcore.engine_choice() == "python"  # not built here
+    fresh.setattr(sys, "platform", "win32")
     assert sprigcore.engine_choice() == "native"
     fresh.setenv("SPRIGCAST_ENGINE", "rust")
+    assert sprigcore.engine_choice() == "native"  # not a choice: the default
+    fresh.setenv("SPRIGCAST_ENGINE", " Python ")
     assert sprigcore.engine_choice() == "python"
+    fresh.setattr(sys, "platform", "linux")
+    fresh.setenv("SPRIGCAST_ENGINE", "native")
+    assert sprigcore.engine_choice() == "native"
+    fresh.setattr(sprigcore, "_python_only", False)
+    sprigcore.use_python_engine()  # safe mode
+    assert sprigcore.engine_choice() == "python" and not sprigcore.use_native()
 
 
 def test_a_missing_dll_means_the_python_engine(fresh, tmp_path):

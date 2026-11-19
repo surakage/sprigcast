@@ -553,7 +553,7 @@ def test_media_source_plays_through_the_engine(player_lib, files, monkeypatch):
 def test_media_source_keeps_the_python_player_otherwise(player_lib, files, monkeypatch):
     from sprigcast.sources.media import MediaSource
 
-    monkeypatch.delenv("SPRIGCAST_ENGINE", raising=False)
+    monkeypatch.setenv("SPRIGCAST_ENGINE", "python")
     assert MediaSource("m2", {**MediaSource.defaults, "path": files["video"]})._native is None
 
 

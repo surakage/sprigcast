@@ -9,6 +9,9 @@ import pytest
 # Browser pages are drawn in SprigCast itself in tests (the helper process has tests of its own, which start
 # one on purpose): a window test with a browser source doesn't start Chromium in another process.
 os.environ.setdefault("SPRIGCAST_BROWSER_IN_PROCESS", "1")
+# The native engine is the app's default on Windows. Tests use the Python engine unless they ask for the native one
+# (or check the default itself, tests/test_sprigcore.py).
+os.environ.setdefault("SPRIGCAST_ENGINE", "python")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 
