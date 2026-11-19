@@ -154,6 +154,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Fixed a crash about a second after a stream or recording started, seen twice on the old engine (and once
+  while live on 2026-11-18): the stall watch's every-thread dump (SPRIGCAST_STALL_DUMPS=1, a test switch) read
+  the stacks of running threads. The dump is gone for good; the switch does nothing now and the log says so.
+- Fixed a 1.7 s freeze 30 s after start (and on Save in Settings): the copy of the settings is written by a short
+  program of its own, so the window and the show no longer wait for the file.
 - Now playing (v6) with the new engine: the card is handed over as a list of pictures (cover card, words,
   sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
   times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to

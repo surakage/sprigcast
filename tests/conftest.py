@@ -16,6 +16,8 @@ os.environ.setdefault("SPRIGCAST_ENGINE", "python")
 os.environ.setdefault("SPRIGCAST_PLUGINS_IN_PROCESS", "1")
 # The capture helper is another program too: tests capture in the engine, tests/test_capture_helper.py aside.
 os.environ.setdefault("SPRIGCAST_CAPTURE_IN_ENGINE", "1")
+# So is the program that copies the settings while SprigCast runs (tests/test_settings_keeper.py starts it).
+os.environ.setdefault("SPRIGCAST_SETTINGS_COPY_HERE", "1")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 

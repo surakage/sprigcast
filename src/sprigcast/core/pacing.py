@@ -328,11 +328,12 @@ HIGHEST, ABOVE_NORMAL = 2, 1  # Windows' THREAD_PRIORITY_* values
 STALL_MS = 200.0
 STALL_EVERY_S = 10.0
 # "Everything waited" means a thread held Python's lock, but the watch can only look once it has the lock back,
-# when that thread has moved on: the PC's heavy run (2026-11-17) logged 400-1000 ms stalls naming NVENC threads
-# that were only waiting in the driver. Python's fault handler can print every thread's stack from its own C
-# thread while the lock is held: armed here, it fires when the watch hasn't re-armed it for DUMP_AFTER_S.
-DUMP_AFTER_S = 0.35
-DUMP_REARM_S = 0.15
+# when that thread has moved on. It used to have Python's fault handler print every thread's stack from a thread
+# of its own while the lock was held (SPRIGCAST_STALL_DUMPS=1): that reads the stacks of threads that are still
+# running, and it killed SprigCast three times on the PC (2026-11-17 20:57, 2026-11-18 12:21 and twice on
+# 2026-11-19 09:52, each an access violation in python312.dll reading a frame that was going away). It is gone:
+# nothing reads a running thread's stack any more, except the exit guard below when SprigCast is ending anyway.
+STALL_DUMPS_ENV = ("SPRIGCAST_STALL_DUMPS", "SPRIGCAST_STALL_DUMP_MS")  # no longer read: said once at start
 _IDLE_CALLS = {"wait", "sleep", "get", "select", "_wait_for_tstate_lock", "join", "acquire", "run_forever",
                "_run_once", "_poll", "accept", "recv", "read", "readinto", "wait_for", "exec", "_worker"}
 
@@ -371,6 +372,17 @@ def keep_watching() -> bool:
     return True
 
 
+def old_stall_switches(environ=None) -> list[str]:
+    """The stall-dump switches that are set: they do nothing now, and the log says so."""
+    import os
+
+    found = [name for name in STALL_DUMPS_ENV if (environ if environ is not None else os.environ).get(name)]
+    if found:
+        log.warning("%s is set but no longer used: printing every thread's stack during a stall could crash "
+                    "SprigCast", " / ".join(found))
+    return found
+
+
 def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
     """Start the stall watch (once). Logs at most one line every STALL_EVERY_S."""
     import threading
@@ -378,25 +390,22 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
     if any(t.name == "sprigcast-stall-watch" for t in threading.enumerate()):
         return
     _watch_args.update(clock=clock, interval=interval)
+    old_stall_switches()
 
     def run():
         me = {threading.get_ident()}
         logged = float("-inf")
         last = clock()
         failed_at = float("-inf")
-        dump = _StallDump()
         while True:
-            dump.arm()
             time.sleep(interval)
             try:  # nothing here may ever stop the watch
                 now = clock()
                 late = 1000 * (now - last - interval)
                 last = now
-                during = dump.take()
                 if late >= STALL_MS and now - logged >= STALL_EVERY_S:
                     logged = now
-                    log.info("everything waited %.0f ms; busy then: %s%s", late, busy_stacks(me),
-                             f"; during it: {during}" if during else "")
+                    log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
                 _check_window(now)
                 _check_busy(now)
             except Exception:  # noqa: BLE001
@@ -404,82 +413,6 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
                     failed_at = time.monotonic()
                     log.exception("stall watch: a check failed; still watching")
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
-
-
-DUMP_AFTER_MIN_S = 0.2  # (the watch re-arms it every half of this, see _StallDump.arm)
-
-
-def dump_after_s(environ=None) -> float:
-    """How long Python's lock is held before the stacks are printed: DUMP_AFTER_S, or SPRIGCAST_STALL_DUMP_MS
-    (from 200 ms) for chasing shorter stalls, such as a 235 ms one that held a media source (PC, 2026-11-18)."""
-    import os
-
-    text = (environ if environ is not None else os.environ).get("SPRIGCAST_STALL_DUMP_MS", "")
-    try:
-        return max(DUMP_AFTER_MIN_S, float(text) / 1000) if text else DUMP_AFTER_S
-    except ValueError:
-        return DUMP_AFTER_S
-
-
-def stall_dumps_on(environ=None) -> bool:
-    """Whether the stall watch has faulthandler print every stack during long stalls: only when asked for
-    (SPRIGCAST_STALL_DUMPS=1). It reads the stacks of threads that are still running, the one holding the lock
-    among them; reading the render thread's stack while it ran killed SprigCast once (crash note, 2026-11-17
-    20:57), so a show never risks it unless someone is chasing a stall."""
-    import os
-
-    return (environ if environ is not None else os.environ).get("SPRIGCAST_STALL_DUMPS", "") not in ("", "0")
-
-
-class _StallDump:
-    """Every thread's stack printed by faulthandler while Python's lock is held (see DUMP_AFTER_S), when
-    stall_dumps_on(); otherwise it does nothing."""
-
-    def __init__(self, on: bool | None = None) -> None:
-        import tempfile
-
-        self.armed_at = float("-inf")
-        self.after_s = dump_after_s()
-        if not (stall_dumps_on() if on is None else on):
-            self.file = None
-            return
-        try:
-            self.file = tempfile.TemporaryFile()
-        except OSError:
-            self.file = None
-        self.armed_at = float("-inf")
-
-    def arm(self) -> None:
-        import faulthandler
-
-        now = time.monotonic()
-        if self.file is None or now - self.armed_at < min(DUMP_REARM_S, self.after_s / 2):
-            return
-        self.armed_at = now
-        with _dump_lock:
-            if _closing["at"] is not None:
-                return  # faulthandler's one timer is the exit guard's now (exit_guard)
-            try:
-                faulthandler.dump_traceback_later(self.after_s, repeat=False, file=self.file)
-            except (RuntimeError, ValueError, OSError):
-                self.file = None
-
-    def take(self) -> str:
-        """What a dump printed since the last look, shortened, or ""."""
-        if self.file is None:
-            return ""
-        try:
-            if self.file.tell() == 0:
-                return ""
-            self.file.seek(0)
-            text = self.file.read().decode("utf-8", "replace")
-            self.file.seek(0)
-            self.file.truncate()
-        except OSError:
-            return ""
-        import threading
-
-        return shorten_dump(text, {t.ident: t.name for t in threading.enumerate()})
 
 
 # SprigCast closing: if it hasn't ended EXIT_LIMIT_S after the window closed, it ends anyway. faulthandler's
@@ -493,7 +426,7 @@ _closing: dict = {"at": None, "file": None, "on": False}  # on: set by app/main.
 
 def exit_guard(limit_s: float = EXIT_LIMIT_S) -> None:
     """The window is closing (everything worth keeping is saved): end the process if it's still here after
-    limit_s. Once; the stall watch stops dumping stacks from now on."""
+    limit_s. Once."""
     import faulthandler
     import logging as _logging
 
@@ -527,27 +460,6 @@ def exit_guard_off() -> None:
         if _closing["at"] is not None:
             faulthandler.cancel_dump_traceback_later()
         _closing["at"], _closing["file"] = None, None
-
-
-def shorten_dump(text: str, names: dict | None = None, frames: int = 4) -> str:
-    """faulthandler's dump, one part per thread: "0x1a2b at file.py:12 f <- other.py:3 g", the current thread
-    (the one holding Python's lock, when it says) first."""
-    import re
-
-    parts = []
-    for block in re.split(r"\n(?=(?:Current thread|Thread) 0x)", text.strip()):
-        lines = block.strip().splitlines()
-        if not lines:
-            continue
-        head = re.match(r"(Current thread|Thread) (0x[0-9a-fA-F]+)", lines[0])
-        calls = [re.match(r'\s*File "(.*)", line (\d+) in (\S+)', line) for line in lines[1:]]
-        where = " <- ".join(f"{re.split(r'[\\/]', m.group(1))[-1]}:{m.group(2)} {m.group(3)}"
-                            for m in calls[:frames] if m)
-        if head and where:
-            holds = head.group(1) == "Current thread"
-            name = (names or {}).get(int(head.group(2), 16), head.group(2))
-            parts.insert(0 if holds else len(parts), f"{name}{' (holding the lock)' if holds else ''} at {where}")
-    return "; ".join(parts)[:2500]
 
 
 # A step that should be quick (a render tick) can be held up without Python's lock held, inside the graphics
