@@ -97,6 +97,7 @@ def device_label(kind: str) -> str:
     return "Desktop audio" if kind == "audio_output" else "Mic"
 
 
+PUSH_RELEASE_MS = (0, 100, 250, 500)
 DUCK_PICKS = ((-6.0, "-6 dB"), (-12.0, "-12 dB"), (-18.0, "-18 dB"))
 METER_MS = 80  # how often the Devices meters move, and only while that tab is on screen
 STALE_S = 0.5  # levels older than this are silence (the mixer stopped)
@@ -273,6 +274,9 @@ class AudioPage(QWidget):
             card = self._grid()
         box.setSpacing(14)
         box.addWidget(card)
+        if name == "Devices":
+            box.addWidget(self._hearing((devices() if callable(devices) else devices).get("audio_output", [])))
+            box.addWidget(self._push())
         if name == "Sounds":
             box.addWidget(self._ducking())
         box.addStretch(1)
@@ -411,6 +415,106 @@ class AudioPage(QWidget):
         self.global_on.toggled.connect(self._global_toggled)
         self._global_toggled(self.global_on.isChecked())
         return group
+
+    def _hearing(self, speakers: list[str]) -> QWidget:
+        """Hearing it yourself: where "Hear it" sounds play, and Windows left out of your mix."""
+        audio = self.collection.audio
+        group = QGroupBox("Hearing it yourself")
+        box = QVBoxLayout(group)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(12)
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.listen_through = QComboBox()
+        self.listen_through.addItem("Default (follows Windows)", "")
+        for name in speakers:
+            self.listen_through.addItem(nice_device_name(name), name)
+        if audio.monitor_device and self.listen_through.findData(audio.monitor_device) < 0:
+            self.listen_through.addItem(f"{nice_device_name(audio.monitor_device)} (not connected)",
+                                        audio.monitor_device)
+        self.listen_through.setCurrentIndex(max(0, self.listen_through.findData(audio.monitor_device)))
+        self.listen_through.setToolTip("Sounds set to Both or Just me under Sounds play here")
+        form.addRow("Listen through", self.listen_through)
+        box.addLayout(form)
+        self.windows_ducking_off = QCheckBox("Stop Windows turning other apps down when a mic opens")
+        self.windows_ducking_off.setChecked(audio.windows_ducking_off)
+        box.addWidget(self.windows_ducking_off)
+        return group
+
+    def _push(self) -> QWidget:
+        """Push to talk: the mic is heard only while a key is held (or silent while it is)."""
+        from PySide6.QtGui import QKeySequence
+        from PySide6.QtWidgets import QKeySequenceEdit
+
+        audio = self.collection.audio
+        group = QGroupBox("Push to talk")
+        form = QFormLayout(group)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.push_mode = Segmented([("off", "Off"), ("talk", "Push to talk"), ("mute", "Push to mute")],
+                                   audio.push_mode)
+        mic = self.collection.source(audio.push_mic(self.collection)) if audio.push_mic(self.collection) else None
+        form.addRow("Mic", self.push_mode)
+        self.push_mode.setToolTip(f"Holds {mic.name}" if mic is not None else "Add a mic first")
+        self.push_key = QKeySequenceEdit(QKeySequence(audio.push_key))
+        self.push_key.setMaximumSequenceLength(1)
+        self.push_key.setFixedWidth(150)
+        line = self.push_key.findChild(QLineEdit)
+        if line is not None:
+            line.setPlaceholderText("No key")
+            line.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_key = QPushButton("Set key")
+        self.set_key.setAutoDefault(False)
+        self.set_key.setToolTip("Then press the key to hold")
+        self.set_key.clicked.connect(self._set_push_key)
+        self.push_note = QLabel()
+        self.push_note.setStyleSheet(f"color: {theme.WARN}")
+        key_row = QHBoxLayout()
+        key_row.setSpacing(10)
+        key_row.addWidget(self.push_key)
+        key_row.addWidget(self.set_key)
+        key_row.addWidget(self.push_note, 1)
+        form.addRow("Key", key_row)
+        self.push_release = Segmented([(ms, f"{ms} ms") for ms in PUSH_RELEASE_MS], int(audio.push_release_ms))
+        self.push_release.setToolTip("Letting go counts this much later, so the end of a word isn't cut off")
+        form.addRow("Let go after", self.push_release)
+        self._push_rows = (self.push_key, self.set_key, self.push_release)
+        self.push_mode.picked.connect(self._push_changed)
+        self.push_key.keySequenceChanged.connect(self._push_changed)
+        self._push_changed()
+        if mic is None:
+            self.push_mode.setEnabled(False)
+        return group
+
+    def push_key_text(self) -> str:
+        from PySide6.QtGui import QKeySequence
+
+        return self.push_key.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+
+    def _set_push_key(self) -> None:
+        self.push_key.clear()
+        self.push_key.setFocus()
+
+    def _push_changed(self, *_args) -> None:
+        """The key and Let go after are for when it's on; say so when it's on with no key, or a key that's taken."""
+        from sprigcast.app import hotkeys
+
+        on = self.push_mode.value() != "off"
+        for widget in self._push_rows:
+            widget.setEnabled(on)
+        key = self.push_key_text()
+        used = next((a for a, combo in (self.collection.hotkeys or {}).items() if key and combo == key), "")
+        note = ""
+        if on and not key:
+            note = "Pick a key"
+        elif key and hotkeys.taken_by(key):
+            note = hotkeys.taken_by(key)
+        elif key and used:
+            note = "A hotkey uses this key too"
+        self.push_note.setText(note)
 
     def _with_meter(self, source: SourceConfig, combo: QComboBox) -> QWidget:
         """The device's list with its level beside it (when Settings was given levels to show)."""
@@ -685,6 +789,12 @@ class AudioPage(QWidget):
         if audio.global_sources is None:  # pin the global devices before anything else moves
             audio.global_sources = collection.global_device_ids()
         audio.global_devices = self.global_on.isChecked()
+        audio.monitor_device = self.listen_through.currentData() or ""
+        audio.windows_ducking_off = self.windows_ducking_off.isChecked()
+        audio.push_mode = self.push_mode.value() or "off"
+        audio.push_key = self.push_key_text()
+        if self.push_release.value() is not None:  # (a time set by hand in the file lights none: left as it is)
+            audio.push_release_ms = int(self.push_release.value())
         audio.track_names = [e.text().strip() or TRACK_NAMES[i] for i, e in enumerate(self.track_names)]
         on, by = bool(self.duck_when.currentData()), self.duck_by.value()
         if on != self._duck_loaded[0]:  # only what was changed here: More… saves its own
