@@ -998,6 +998,17 @@ def _shadow_picture(ratio: float, colour: str) -> tuple:
     return found
 
 
+def warm_card_shadow(window) -> None:
+    """Once, just after start: make the small shadow picture. The first pop-up with a card made it as it opened, and
+    making it is Qt's graphics scene and blur for the first time in the run (their types and enums made on the spot):
+    69 ms and a late frame on the first Garden check while live (PC 2026-11-19). The same one picture every pop-up
+    uses, so nothing extra is kept."""
+    try:
+        _shadow_picture(window.devicePixelRatioF(), PANEL)
+    except Exception:  # noqa: BLE001 - a warm-up only: the first pop-up makes it then
+        pass
+
+
 def shadow_pieces(w: int, h: int, left: int, top: int, right: int, bottom: int) -> list[tuple]:
     """Nine (target, source) rectangles (x, y, w, h each; the target from the card's top left, the source in the
     small picture, both in the card's own units): corners copied as they are, edges and middle stretched."""

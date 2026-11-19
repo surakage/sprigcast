@@ -166,7 +166,10 @@ def tidy() -> tuple[int, float]:
 # frame's idle time, and the pieces run seconds apart rather than back to back.
 _frame_done = None  # threading.Event the render thread sets after each frame
 _frame_at = 0.0  # perf_counter time of the last frame
-FRAME_WAIT_S = 0.05  # wait at most this for the frame in progress (3 frames at 60 fps)
+# Wait at most this for the frame in progress: one frame at 60 fps and a little. It was 50 ms, and the wait is on
+# the window's thread: when the frame's end didn't come in time (the new engine's render tick, a busy moment), the
+# window stood still the whole 50 ms and then did its work on top (71 ms as Settings opened, PC 2026-11-19).
+FRAME_WAIT_S = 0.02
 HOUSEKEEPING_SLOW_MS = 5.0
 _housekeeping_logged = float("-inf")
 
