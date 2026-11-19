@@ -359,9 +359,16 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   the supervisor finds it again, with a new serial) or refused (this PC can't: the `windows-capture` package
   captures it, as without the engine). A capture nothing takes up within 5 s (the engine isn't drawing) goes back
   to the package too.
+- Starting and closing a capture call Windows' capture service in another process, and such a call can hang for
+  good (a window closing just as its capture started: PC test 2026-11-18). Both run on a thread of their own
+  (`start_capture`, `CaptureRetire` in `capture_wgc.cpp`); the frame thread only takes pictures. A capture not
+  started within 5 s is refused, so the package captures it.
+- A frame stuck anyway: Python's calls that wait for the frame (`sc_engine_capture_read`, `sc_engine_canvas_read`)
+  give up after 0.5 s, and once no frame has finished for 3 s after the watchdog's report, the bridge turns the
+  engine off and Python's compositor draws everything again.
 - A freeze keeps the capture running, held: Windows' pictures are still taken, the source keeps its own. A device
   rebuild starts each capture again on the new device.
-- Frames Python draws itself (a Move transition) read the picture back (`sc_engine_capture_read`), as the package
+- Frames Python draws itself (a screenshot, the Python engine) read the picture back (`sc_engine_capture_read`), as the package
   copied every picture before.
 - `SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1` captures in Python.
 - **Cameras** (`sc_media_set_device`): the engine's media player opens the camera through FFmpeg's input devices

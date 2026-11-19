@@ -164,6 +164,12 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
   Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
   transition, then goes back to the engine's same textures.
+- New engine: closing a captured window just as its capture started could leave the engine's frame stuck for good
+  (a call into Windows' capture service that never came back), and nothing was drawn after that (PC test
+  2026-11-18). Captures now start and close on a thread of their own, so a stuck call holds up only other
+  captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
+  Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
+  most. A capture waking up no longer fills the log with "no room for the picture".
 - New engine: Move transitions are drawn by the engine. Python lays both blooms out once when the Move starts,
   and the engine works out every frame itself on its own clock (the same arithmetic, checked against Python on
   thousands of frames), so a Move no longer hands the canvas and its recordings back to Python, and a busy

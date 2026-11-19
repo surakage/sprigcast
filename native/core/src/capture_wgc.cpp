@@ -11,8 +11,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <thread>
 
 #ifdef GetCurrentTime
 #undef GetCurrentTime
@@ -45,7 +49,85 @@ std::string hr_text(const char *what, HRESULT hr) {
     return std::string(what) + " (" + code + ")";
 }
 
+// The capture thread: starts and closes captures, one after another, so a call into Windows that hangs holds up
+// only other captures, never a frame. It lives as long as the process (never joined: it may be stuck for good).
+class Keeper {
+public:
+    static Keeper &get() {
+        static Keeper *keeper = new Keeper();  // never deleted: its thread may outlive everything
+        return *keeper;
+    }
+
+    void post(std::function<void()> job) {
+        {
+            std::lock_guard<std::mutex> hold(m);
+            jobs.push_back(std::move(job));
+        }
+        wake.notify_one();
+    }
+
+    bool on_thread() const { return std::this_thread::get_id() == id; }
+
+private:
+    Keeper() {
+        std::thread worker([this] { run(); });
+        id = worker.get_id();
+        worker.detach();
+    }
+
+    void run() {
+        name_thread(L"SprigCast captures");
+        try {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        } catch (...) {  // already set up: fine
+        }
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock<std::mutex> hold(m);
+                wake.wait(hold, [&] { return !jobs.empty(); });
+                job = std::move(jobs.front());
+                jobs.pop_front();
+            }
+            try {
+                job();
+            } catch (...) {
+            }
+        }
+    }
+
+    std::mutex m;
+    std::condition_variable wake;
+    std::deque<std::function<void()>> jobs;
+    std::thread::id id;
+};
+
 }  // namespace
+
+void CaptureRetire::operator()(ScreenCapture *capture) const {
+    if (!capture) return;
+    Keeper &keeper = Keeper::get();
+    if (keeper.on_thread()) {
+        delete capture;
+        return;
+    }
+    keeper.post([capture] { delete capture; });
+}
+
+std::shared_ptr<CaptureStart> start_capture(const ComPtr<ID3D11Device> &device, const CaptureAsk &ask) {
+    auto slot = std::make_shared<CaptureStart>();
+    Keeper::get().post([slot, device, ask] {
+        CaptureRefusal refusal = CaptureRefusal::NONE;
+        std::string why;
+        CapturePtr cap = ScreenCapture::start(device, ask, refusal, why);
+        std::lock_guard<std::mutex> hold(slot->m);
+        slot->cap = std::move(cap);
+        slot->refusal = refusal;
+        slot->why = std::move(why);
+        slot->done = true;
+    });
+    return slot;
+}
 
 struct ScreenCapture::Impl {
     HWND window = nullptr;           // a window capture's window: closed, the capture ends (Closed may not come)
@@ -99,8 +181,8 @@ ScreenCapture::~ScreenCapture() {
     if (impl) impl->close();
 }
 
-std::unique_ptr<ScreenCapture> ScreenCapture::start(sc_device &dev, const CaptureAsk &ask, CaptureRefusal &refusal,
-                                                    std::string &why) {
+CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const CaptureAsk &ask, CaptureRefusal &refusal,
+                                std::string &why) {
     refusal = CaptureRefusal::NONE;
     why.clear();
     if (!ask.window == !ask.monitor) {
@@ -108,7 +190,7 @@ std::unique_ptr<ScreenCapture> ScreenCapture::start(sc_device &dev, const Captur
         why = "a capture needs one window or one display";
         return nullptr;
     }
-    std::unique_ptr<ScreenCapture> made(new ScreenCapture());
+    CapturePtr made(new ScreenCapture());
     Impl &c = *made->impl;
     try {
         if (!wgc::GraphicsCaptureSession::IsSupported()) {
@@ -137,7 +219,7 @@ std::unique_ptr<ScreenCapture> ScreenCapture::start(sc_device &dev, const Captur
             return nullptr;
         }
         ComPtr<IDXGIDevice> dxgi;
-        hr = dev.device.As(&dxgi);
+        hr = device.As(&dxgi);
         winrt::Windows::Foundation::IInspectable inspectable;
         if (SUCCEEDED(hr))
             hr = CreateDirect3D11DeviceFromDXGIDevice(dxgi.Get(),
@@ -148,7 +230,7 @@ std::unique_ptr<ScreenCapture> ScreenCapture::start(sc_device &dev, const Captur
             return nullptr;
         }
         c.d3d = inspectable.as<wdx::Direct3D11::IDirect3DDevice>();
-        c.device = dev.device.Get();
+        c.device = device.Get();
         c.pool_size = c.item.Size();
         c.pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(c.d3d, PICTURE_FORMAT, POOL_PICTURES,
                                                                      c.pool_size);
@@ -298,8 +380,12 @@ int read_capture(sc_device &dev, uint64_t id, ComPtr<ID3D11Texture2D> &staging, 
     if (td.Format != DXGI_FORMAT_B8G8R8A8_UNORM) return fail(SC_ERR_ARGUMENT, "sc_engine_capture_read: not a capture");
     *w = s.pic_w;
     *h = s.pic_h;
-    if (!bgra || s.pic_w > max_w || s.pic_h > max_h || stride < s.pic_w * 4)
-        return fail(SC_ERR_ARGUMENT, "sc_engine_capture_read: no room for the picture");
+    if (!bgra) return SC_OK;  // asked for its size only
+    if (s.pic_w > max_w || s.pic_h > max_h || stride < s.pic_w * 4) {
+        // Not logged: Python asks again with the size given back (a capture that changed size, or woke up)
+        set_last_error("sc_engine_capture_read: no room for the picture");
+        return SC_ERR_ARGUMENT;
+    }
     D3D11_TEXTURE2D_DESC sd = {};
     if (staging) staging->GetDesc(&sd);
     if (!staging || sd.Width != td.Width || sd.Height != td.Height) {

@@ -404,8 +404,9 @@ SC_API int sc_engine_source_capture_hold(sc_engine *engine, uint64_t id, int hel
 SC_API int sc_engine_capture_state(sc_engine *engine, uint64_t id, int *state, int *width, int *height,
                                    uint64_t *frames);
 /* Source `id`'s captured picture as BGRA rows (`stride` bytes apart), for a frame Python draws itself. Its size goes
- * to width and height; SC_ERR_ARGUMENT when there is no picture yet or it is bigger than max_width x max_height
- * (then width and height say what it needs). */
+ * to width and height; bgra = NULL asks for the size only. SC_ERR_ARGUMENT when there is no picture yet or it is
+ * bigger than max_width x max_height (then width and height say what it needs, and nothing is logged).
+ * SC_ERR_TIMEOUT when a frame that never ends holds the engine (0.5 s at most). */
 SC_API int sc_engine_capture_read(sc_engine *engine, uint64_t id, uint8_t *bgra, int stride, int max_width,
                                   int max_height, int *width, int *height);
 /* Source `id` shows what audio visualizer `visual` draws (sc_visual_open): every frame the engine takes its newest

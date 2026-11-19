@@ -33,6 +33,7 @@ log = logging.getLogger(__name__)
 
 STILL_AFTER_S = 1.0  # a source that sent nothing for this long is treated as a still picture (kept for rebuilds)
 STATS_EVERY_S = 1.0
+HUNG_GIVE_UP_S = 3.0  # a frame stuck this long (after the engine's own 2 s) and Python draws everything again
 
 
 FAULT_KINDS = {1: "a C++ exception", 2: "an access violation", 3: "a lost graphics card", 4: "a frame stuck for 3 s"}
@@ -233,6 +234,8 @@ class NativeCanvases:
         self._lists = 0
         self._stats_at = 0.0
         self._rebuilds = 0
+        self._hung_since: float | None = None  # when a stuck frame was first seen (no frame finished since)
+        self._hung_ticks = -1
         self._faults = planned_faults(os.environ.get("SPRIGCAST_ENGINE_FAULT"))  # crash gate test on a PC
         self._began: float | None = None
         if self._faults:
@@ -918,8 +921,17 @@ class NativeCanvases:
             self.output_drops = 0
         if stats["faulted"]:
             self.fail("it stopped after repeated faults")
-        elif stats["hung"]:
-            log.warning("native engine: a frame is stuck")
+        elif stats["hung"] and stats.get("ticks", 0) == self._hung_ticks:
+            self._hung_since = now if self._hung_since is None else self._hung_since
+            if now - self._hung_since >= HUNG_GIVE_UP_S:
+                # A frame that never ends (a call into Windows that never came back: PC test 2026-11-18). The
+                # engine can't be stopped from here; Python draws everything again and the engine is left alone.
+                self.fail(f"a frame has been stuck for {now - self._hung_since:.0f} s")
+            else:
+                log.warning("native engine: a frame is stuck")
+        else:
+            self._hung_since = None
+        self._hung_ticks = stats.get("ticks", 0)
 
     def close(self) -> None:
         drawn.ENGINE = False
