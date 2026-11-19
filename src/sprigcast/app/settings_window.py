@@ -76,7 +76,12 @@ PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
 SEARCH: list[tuple[str, str, bool]] = [
     ("Theme", "General", False), ("Start with Windows", "General", False), ("Start minimized", "General", False),
-    ("Updates", "General", False), ("Ask before ending a stream", "General", False),
+    ("Updates", "General", False), ("Ask before ending the stream", "General", False),
+    ("Ask before going live", "General", False), ("Keep recording when the stream ends", "General", False),
+    ("Start Instant replay when I go live", "General", False), ("Snapping", "General", False),
+    ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
+    ("Always on top", "General", False), ("Hide the mouse pointer", "General", False),
+    ("Hide from screen capture", "General", False), ("Privacy", "General", False),
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
     ("Process priority", "General", False), ("Sources not on screen", "General", False),
@@ -173,6 +178,10 @@ SAVE_STYLE = theme.PILL_STYLE + (
     f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}")
 
 CONFIRM_STREAM = "general/confirm_end_stream"
+CONFIRM_GO_LIVE = "general/confirm_go_live"  # off unless picked: Go live has always gone at once
+KEEP_RECORDING = "general/keep_recording_after_stream"  # "Record when I go live" carries on past the stream
+REPLAY_ON_LIVE = "general/replay_on_live"  # Instant replay (clips) starts with the stream
+SNAP_DISTANCES = (5, 10, 20, 40)  # px on screen (the same as Build's right-click → Snapping → Sensitivity)
 CONFIRM_RECORDING = "general/confirm_stop_recording"
 PENDING_VIDEO = "video/pending"  # canvas changes saved here, applied at the next start
 
@@ -735,14 +744,79 @@ class SettingsWindow(QDialog):
             up_row.addWidget(_hint(f"Version {__version__}"), 1)
             up_box.addLayout(up_row)
 
-            safety = QGroupBox("Confirmations")
+            safety = QGroupBox("Going live")
             box = QVBoxLayout(safety)
-            self.confirm_stream = QCheckBox("Ask before ending a stream")
+            self.confirm_go_live = QCheckBox("Ask before going live")
+            self.confirm_go_live.setChecked(q.value(CONFIRM_GO_LIVE, False, type=bool))
+            box.addWidget(self.confirm_go_live)
+            self.confirm_stream = QCheckBox("Ask before ending the stream")
             self.confirm_stream.setChecked(confirm_enabled(CONFIRM_STREAM))
             box.addWidget(self.confirm_stream)
             self.confirm_recording = QCheckBox("Ask before stopping a recording")
             self.confirm_recording.setChecked(confirm_enabled(CONFIRM_RECORDING))
             box.addWidget(self.confirm_recording)
+            self.keep_recording = QCheckBox("Keep recording when the stream ends")
+            self.keep_recording.setToolTip("For \"Record when I go live\" (Recording): the recording carries on")
+            self.keep_recording.setChecked(q.value(KEEP_RECORDING, False, type=bool))
+            box.addWidget(self.keep_recording)
+            self.replay_on_live = QCheckBox("Start Instant replay when I go live")
+            self.replay_on_live.setChecked(q.value(REPLAY_ON_LIVE, False, type=bool))
+            box.addWidget(self.replay_on_live)
+
+            from sprigcast.app.preview import snap_settings
+
+            snap_now = snap_settings()
+            snapping = QGroupBox("Snapping")
+            sform = QFormLayout(snapping)
+            self.snap_on = QCheckBox("On")
+            self.snap_on.setToolTip("Hold Ctrl while dragging to place a part without snapping")
+            self.snap_on.setChecked(snap_now["enabled"])
+            sform.addRow("Snap", self.snap_on)
+            self.snap_distance = QComboBox()
+            for px in SNAP_DISTANCES:
+                self.snap_distance.addItem(f"{px} px", float(px))
+            near = min(SNAP_DISTANCES, key=lambda px: abs(px - snap_now["distance"]))
+            self.snap_distance.setCurrentIndex(SNAP_DISTANCES.index(near))
+            sform.addRow("Distance", self.snap_distance)
+            snap_row = QHBoxLayout()
+            snap_row.setSpacing(18)
+            self.snap_to: dict[str, QCheckBox] = {}
+            for key, label in (("edges", "Edges"), ("sources", "Other parts"), ("center", "Center")):
+                tick = QCheckBox(label)
+                tick.setChecked(snap_now[key])
+                snap_row.addWidget(tick)
+                self.snap_to[key] = tick
+            snap_row.addStretch(1)
+            sform.addRow("Snap to", snap_row)
+
+            def snap_follow(on: bool) -> None:
+                self.snap_distance.setEnabled(on)
+                for tick in self.snap_to.values():
+                    tick.setEnabled(on)
+            self.snap_on.toggled.connect(snap_follow)
+            snap_follow(self.snap_on.isChecked())
+
+            from sprigcast.app import projector, privacy
+
+            popouts = QGroupBox("Pop-out views")
+            pbox = QVBoxLayout(popouts)
+            self.projector_hide_pointer = QCheckBox("Hide the mouse pointer")
+            self.projector_hide_pointer.setToolTip("On full-screen pop-outs")
+            self.projector_hide_pointer.setChecked(projector.hide_pointer())
+            pbox.addWidget(self.projector_hide_pointer)
+            self.projector_on_top = QCheckBox("Always on top")
+            self.projector_on_top.setToolTip("Pop-out windows stay above other windows")
+            self.projector_on_top.setChecked(projector.on_top())
+            pbox.addWidget(self.projector_on_top)
+
+            private = QGroupBox("Privacy")
+            prbox = QVBoxLayout(private)
+            self.hide_from_capture = QCheckBox("Hide SprigCast from screen capture")
+            self.hide_from_capture.setToolTip("Display captures and screen sharing leave out SprigCast's own windows."
+                                              "\nPop-out views still show.")
+            self.hide_from_capture.setChecked(privacy.hidden())
+            self.hide_from_capture.setEnabled(privacy.supported())
+            prbox.addWidget(self.hide_from_capture)
 
             from sprigcast.app import logbook
 
@@ -768,7 +842,7 @@ class SettingsWindow(QDialog):
                 self.feature_ticks[name] = tick
 
             layout = page.layout()
-            for card in (used, updates, safety, logs, self._clear_data_card()):
+            for card in (safety, snapping, popouts, private, used, updates, logs, self._clear_data_card()):
                 layout.insertWidget(layout.count() - 1, card)  # above the stretch
 
         if self.isVisible():
@@ -1085,6 +1159,18 @@ class SettingsWindow(QDialog):
         settings.setValue("general/theme", self.theme.currentData())
         settings.setValue(CONFIRM_STREAM, self.confirm_stream.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
+        settings.setValue(CONFIRM_GO_LIVE, self.confirm_go_live.isChecked())
+        settings.setValue(KEEP_RECORDING, self.keep_recording.isChecked())
+        settings.setValue(REPLAY_ON_LIVE, self.replay_on_live.isChecked())
+        settings.setValue("editing/snap", self.snap_on.isChecked())
+        settings.setValue("editing/snap_distance", self.snap_distance.currentData())
+        for key, tick in self.snap_to.items():
+            settings.setValue(f"editing/snap_{key}", tick.isChecked())
+        from sprigcast.app import projector, privacy
+
+        settings.setValue(projector.HIDE_POINTER, self.projector_hide_pointer.isChecked())
+        settings.setValue(projector.ON_TOP, self.projector_on_top.isChecked())
+        settings.setValue(privacy.HIDE_FROM_CAPTURE, self.hide_from_capture.isChecked())
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
         from sprigcast.app.updates import AUTO_CHECK
 

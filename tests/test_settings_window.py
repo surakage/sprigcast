@@ -248,7 +248,7 @@ def test_settings_look_titles_pills_and_pages(app):
     assert tabs(w.recording_tabs.tabs) == ["Recording", "Clips"]
     assert tabs(w.video_tabs) == ["Canvases", "Virtual camera"]
     assert tabs(w.audio_page.tabs) == ["Devices", "Tracks", "Sounds"]
-    assert not hasattr(w, "snap_enabled") and not w.findChildren(type(w.tabs), "settingsColour")
+    assert not w.findChildren(type(w.tabs), "settingsColour")
     w.close()
 
 
@@ -784,3 +784,46 @@ def test_fine_tuning_is_its_own_card_two_to_a_row_with_expert(app):
     assert not f.audio.isVisible()  # Stream's audio bitrate is in its Sound card
     assert w.recording_tabs.record_form.fine.title() == "Fine tuning"
     w.close()
+
+
+def test_general_going_live_snapping_popouts_and_privacy_are_saved(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import privacy, projector
+    from sprigcast.app.preview import snap_settings
+    from sprigcast.app.settings_window import CONFIRM_GO_LIVE, KEEP_RECORDING, REPLAY_ON_LIVE
+
+    w = _window(_collection(), tab="General")
+    w.ensure_all()
+    from PySide6.QtWidgets import QGroupBox
+
+    titles = [b.title() for b in w.findChildren(QGroupBox)]
+    for title in ("Going live", "Snapping", "Pop-out views", "Privacy"):
+        assert title in titles
+    assert not w.confirm_go_live.isChecked() and w.snap_on.isChecked() and w.projector_hide_pointer.isChecked()
+    w.confirm_go_live.setChecked(True)
+    w.keep_recording.setChecked(True)
+    w.replay_on_live.setChecked(True)
+    w.snap_distance.setCurrentIndex(w.snap_distance.findData(20.0))
+    w.snap_to["center"].setChecked(False)
+    w.snap_on.setChecked(False)
+    assert not w.snap_distance.isEnabled()
+    w.projector_on_top.setChecked(True)
+    w.projector_hide_pointer.setChecked(False)
+    w.hide_from_capture.setChecked(True)
+    assert w.apply()
+    q = QSettings()
+    assert q.value(CONFIRM_GO_LIVE, type=bool) and q.value(KEEP_RECORDING, type=bool) and q.value(REPLAY_ON_LIVE, type=bool)
+    snap = snap_settings()
+    assert not snap["enabled"] and snap["distance"] == 20.0 and not snap["center"] and snap["edges"]
+    assert projector.on_top() and not projector.hide_pointer() and privacy.hidden()
+    w.close()
+
+
+def test_privacy_does_nothing_off_windows(app, monkeypatch):
+    import sys
+
+    from sprigcast.app import privacy
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not privacy.supported() and not privacy.apply_to(object(), True)
