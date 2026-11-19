@@ -584,7 +584,7 @@ class MainWindow(QMainWindow):
         self.scene_tree.delegate.plus_clicked.connect(self._library_plus)
         self.library.search.textChanged.connect(lambda _text: self._refresh_scenes())
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
-        self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
+        # No double-click to put on air: Build never changes what's on air (user, 2026-11-19). Live does that.
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.scene_tree.dot_clicked.connect(self._pick_folder_colour)
         self.scene_tree.customContextMenuRequested.connect(self._scene_context_menu)
@@ -1332,7 +1332,6 @@ class MainWindow(QMainWindow):
         if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
-                menu.addAction("Put on air").triggered.connect(self._make_active)
                 menu.addAction("Duplicate").triggered.connect(lambda _=False, sid=scene.id: self._copy_bloom(sid))
                 self._fill_move_menu(menu.addMenu("Move to folder"), scene)
                 if scene.canvas != self.collection.canvases[0].id:
@@ -1887,13 +1886,11 @@ class MainWindow(QMainWindow):
         right.addWidget(scroll, 1)
 
     def _fill_bloom_tools(self) -> None:
-        """Above the canvas, on the right: Put on air, Link (vertical blooms) and Safe zones."""
+        """Above the canvas, on the right: Link (vertical blooms) and Safe zones. No Put on air: what's on air
+        is picked on Live, so editing in Build while streaming never changes the show (user, 2026-11-19)."""
         style = theme.SMALL_PILL_STYLE
         self.link_button.setText("⇄ Link")
-        self.on_air_button = QPushButton("▶ Put on air")
-        self.on_air_button.setToolTip("Show this bloom on its canvas now (and the blooms linked to it)")
-        self.on_air_button.clicked.connect(self._put_on_air)
-        for button in (self.on_air_button, self.link_button, self.safe_zone_button):
+        for button in (self.link_button, self.safe_zone_button):
             button.setStyleSheet(style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.build_bar.tools.addWidget(button)
@@ -3406,7 +3403,6 @@ class MainWindow(QMainWindow):
         """Above the canvas: the bloom you're editing and whether it's on air; Inside's heading names it too."""
         active = self.collection.active_scenes.get(self.build_canvas)
         selected = self._scene()
-        selected_show = selected.id if selected is not None and selected.kind == "show" else None
         if selected is None:
             self.build_bar.show_place("", f"Pick {a(SHOW)} or {a(PART)} on the left")
             self.build_stage.inside_note.setText("")
@@ -3418,11 +3414,9 @@ class MainWindow(QMainWindow):
         else:
             self.build_bar.show_place(selected.name, "on air" if selected.id == active else "not on air")
             self.build_stage.inside_note.setText(selected.name)
-        if hasattr(self, "on_air_button"):
-            self.on_air_button.setVisible(selected_show is not None and selected_show != active)
 
     def _pick_bloom(self, scene_id: str) -> None:
-        """A bloom pill: edit that bloom. It goes on air only with "Put on air" (or from Live)."""
+        """A bloom pill: edit that bloom. It never goes on air from here: Live picks what's on air."""
         self.selected_scene_id = scene_id
         self.selected_folder_id = self.collection.scene(scene_id).folder
         self.last_bloom_id = scene_id
@@ -3432,15 +3426,6 @@ class MainWindow(QMainWindow):
         self._refresh_scenes()
         self._refresh_sources()
         self._show_part_editor()
-
-    def _put_on_air(self) -> None:
-        if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
-            scene = self._scene()
-            answer = QMessageBox.question(self, "SprigCast", f"You're live. Put “{scene.name}” on air now?")
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        self._make_active()
-        self._refresh_sources()
 
     def _swap_shape(self, canvas_id: str) -> None:
         """The twin was clicked: edit that shape instead (the old one becomes the twin)."""
