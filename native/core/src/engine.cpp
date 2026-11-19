@@ -169,12 +169,13 @@ struct SharedPictures {
     static constexpr uint32_t ON_CARD = 2;
     // The counter of a picture not taken yet, with where it is and how to read it; 0 when there is none. A
     // picture on the card gives no data: `texture` names its texture and `how` its size.
-    uint64_t newest(const uint8_t **data, sc_upload *how, std::wstring *texture) const {
+    uint64_t newest(const uint8_t **data, sc_upload *how, std::wstring *texture, uint32_t *flags) const {
         if (!view) return 0;
         const uint64_t seq = counter();
         if (seq == 0 || seq == seen) return 0;
-        uint32_t head[4];
+        uint32_t head[5];
         std::memcpy(head, view + 8, sizeof head);
+        *flags = head[4];  // sc::SHARED_*: 0 from a browser page
         if (head[2] == ON_CARD) {
             if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384) return 0;
             *data = nullptr;
@@ -1312,12 +1313,13 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         const uint8_t *data = nullptr;
         sc_upload how{};
         std::wstring texture;
-        const uint64_t seq = block.newest(&data, &how, &texture);
+        uint32_t flags = 0;
+        const uint64_t seq = block.newest(&data, &how, &texture, &flags);
         if (!seq) continue;
         const bool held = shared_held.count(id) != 0;  // frozen: taken so the page goes on, the picture kept
         if (!held) e.kept_sources.erase(id);
         if (!data) {  // drawn on the card by the helper: copied there, never through memory
-            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height, !held);
+            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height, !held, flags);
             if (code == SC_NOT_YET) continue;
             if (code != SC_OK) {
                 if (!block.page_said) {

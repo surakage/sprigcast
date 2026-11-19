@@ -447,6 +447,17 @@ SC_API int sc_page_target_fill(sc_page_target *target, const float *rgba);
 /* publish = 1: the engine may take the picture (key 1); 0: drawn only to be read back, the helper keeps it. */
 SC_API int sc_page_target_end(sc_page_target *target, int publish);
 SC_API void sc_page_target_destroy(sc_page_target *target);
+/* A capture run for another process (capture_feed.cpp): the capture helper program captures a window or a display
+ * (one of the two; flags SC_SCREEN_*, interval_ms as sc_engine_source_capture) on a device of its own on the card
+ * with that LUID, and shares each picture with the engine: `block` names a small block of shared memory this makes,
+ * which the engine is given with sc_engine_source_shared. Returns at once; sc_capture_feed_state says how it is
+ * doing (SC_SCREEN_STARTING, _RUNNING with the pictures' size and count, _ENDED: the window closed or the display
+ * went, _REFUSED: it can't be captured here). Destroying it ends the capture. */
+typedef struct sc_capture_feed sc_capture_feed;
+SC_API int sc_capture_feed_create(uint32_t luid_low, int32_t luid_high, uint64_t window, uint64_t monitor, int flags,
+                                  int interval_ms, const wchar_t *block, sc_capture_feed **out);
+SC_API int sc_capture_feed_state(sc_capture_feed *feed, int *state, int *width, int *height, uint64_t *frames);
+SC_API void sc_capture_feed_destroy(sc_capture_feed *feed);
 SC_API int sc_engine_look_set(sc_engine *engine, uint64_t id, const float *table, int n);
 SC_API int sc_engine_mask_set(sc_engine *engine, uint64_t id, const uint8_t *rgba, int width, int height, int luma);
 SC_API int sc_engine_snapshot_set(sc_engine *engine, const sc_snapshot *snapshot);
