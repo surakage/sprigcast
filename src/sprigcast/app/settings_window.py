@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTabWidget,
@@ -113,25 +114,34 @@ SEARCH: list[tuple[str, str, bool]] = [
 
 
 def window_style() -> str:
-    """The Settings look: a pill menu on the left, soft cards with titles inside, borderless fields."""
+    """The Settings look: a pill menu on the left, titled section cards that stand off the window (a leaf
+    before each title), fields that sink into the card with an edge that reads, bright labels."""
     t = theme
+    try:
+        leaf = t.section_title_rule(t.nature_pictures(), "#settingsWindow QGroupBox::title")
+    except OSError:  # can't write the picture: titles without the leaf
+        leaf = ""
     return f"""
 #settingsWindow {{ background: {t.BG}; border: none; }}
 #settingsNav {{ background: transparent; border: none; padding: 0px; outline: none; }}
 #settingsNav::item {{ color: {t.MUTED}; padding: 10px 16px; margin: 2px 0px; border-radius: 18px; border: none; }}
 #settingsNav::item:hover {{ background: {t.PANEL}; color: {t.TEXT}; }}
 #settingsNav::item:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600; }}
-#settingsWindow QGroupBox {{ background: {t.CARD}; border: none; border-radius: 20px; margin-top: 0px;
-    padding: 46px 18px 16px 18px; font-weight: 400; }}
+#settingsWindow QGroupBox {{ background: {t.SECTION}; border: 1px solid {t.SECTION_EDGE}; border-radius: 20px;
+    margin-top: 0px; padding: 50px 18px 16px 18px; font-weight: 400; }}
 #settingsWindow QGroupBox::title {{ subcontrol-origin: padding; subcontrol-position: top left; left: 18px;
-    top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: 14px; font-weight: 600; }}
+    top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: {t.SECTION_TITLE_PX}px; font-weight: 600; }}
+{leaf}
+#settingsWindow QGroupBox QLabel {{ color: {t.LABEL}; }}
+#settingsWindow QGroupBox QCheckBox, #settingsWindow QGroupBox QRadioButton {{ color: {t.LABEL}; }}
 #settingsWindow QLineEdit, #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox,
-#settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.PANEL}; border: none;
-    border-radius: 10px; padding: 7px 14px; min-height: 20px; }}
+#settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.FIELD}; border: 1px solid {t.FIELD_EDGE};
+    border-radius: 10px; padding: 6px 13px; min-height: 20px; }}
 #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox {{ padding-right: 24px; }}
-#settingsWindow QLabel#valueChip {{ background: {t.PANEL}; border-radius: 10px; padding: 7px 14px; }}
+#settingsWindow QLabel#valueChip {{ background: {t.FIELD}; border: 1px solid {t.FIELD_EDGE}; border-radius: 10px;
+    padding: 6px 13px; }}
 #settingsWindow QLineEdit:focus, #settingsWindow QSpinBox:focus, #settingsWindow QDoubleSpinBox:focus,
-#settingsWindow QComboBox:focus {{ background: {t.RAISED}; }}
+#settingsWindow QComboBox:focus {{ border-color: {t.ACCENT}; }}
 #settingsWindow QComboBox::drop-down {{ border: none; width: 26px; background: transparent; }}
 #settingsWindow QSpinBox::up-button, #settingsWindow QSpinBox::down-button,
 #settingsWindow QDoubleSpinBox::up-button, #settingsWindow QDoubleSpinBox::down-button {{
@@ -238,10 +248,40 @@ def _devices(devices) -> dict[str, list[str]]:
     return devices
 
 
+LINED_UP = "settingsLinedUp"  # a form label already set level with its box
+TALL_FIELD = 48  # a box taller than this (text areas, lists) keeps its label at the top
+
+
+def line_up_labels(root: QWidget) -> None:
+    """Every form label in `root` sits level with its box. Qt puts a label at the top of its row, so next to
+    a padded box it rode high (Settings redesign, 2026-11-19). Cheap to run again: done labels are skipped."""
+    import shiboken6
+
+    if not shiboken6.isValid(root):
+        return
+    label_role, field_role = QFormLayout.ItemRole.LabelRole, QFormLayout.ItemRole.FieldRole
+    for form in root.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            label, field = form.itemAt(row, label_role), form.itemAt(row, field_role)
+            widget = label.widget() if label is not None else None
+            if not isinstance(widget, QLabel) or field is None or widget.property(LINED_UP):
+                continue
+            if field.sizeHint().height() > TALL_FIELD:
+                continue
+            widget.setProperty(LINED_UP, True)
+            widget.setSizePolicy(widget.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Expanding)
+            flags = widget.alignment() & ~Qt.AlignmentFlag.AlignVertical_Mask
+            widget.setAlignment(flags | Qt.AlignmentFlag.AlignVCenter)
+
+
+SECTION_GAP = 14  # between a page's section cards
+
+
 def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(SECTION_GAP)
     for widget in widgets:
         layout.addWidget(widget)
     if stretch:
@@ -514,6 +554,7 @@ class SettingsWindow(QDialog):
             self.stack.setCurrentIndex(current)
             self._show_sub(name)
             self._tab_changed(current)
+            line_up_labels(page)
 
         if self.isVisible():
             # Made now, put in its place (titled, styled, laid out) first thing next tick: both at once were the
@@ -568,6 +609,7 @@ class SettingsWindow(QDialog):
             call()
         except Exception:  # noqa: BLE001  one part going wrong never stops the parts after it (pages stay blank)
             log.exception("settings: part of a page failed to make")
+        line_up_labels(self.stack)
         if self._slices:
             from PySide6.QtCore import QTimer
 
@@ -580,6 +622,7 @@ class SettingsWindow(QDialog):
                 call()
             except Exception:  # noqa: BLE001
                 log.exception("settings: part of a page failed to make")
+        line_up_labels(self.stack)
 
     def soon(self, call) -> None:
         """call() once the first page is made (now, if it is)."""

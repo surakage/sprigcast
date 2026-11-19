@@ -47,6 +47,15 @@ BUTTON_EDGE = "#4a5a52"  # about 2.2:1 against PANEL and CARD, where RAISED and 
 BUTTON_EDGE_HOVER = "#62766c"
 BUTTON_TOP = "#5a6b62"  # the lit top edge
 BUTTON_OFF_EDGE = "#36433d"  # a disabled button keeps its shape, just quieter
+# Titled sections (Settings and other pop-ups): a card that stands off the window, fields that sink into
+# it, labels bright enough to read at a glance. Contrast: card 2.0:1 on BG, field edge 3.2:1 on the card,
+# labels 9.5:1 on the card.
+SECTION = "#1d2823"
+SECTION_EDGE = "#3b4b43"
+FIELD = CHROME
+FIELD_EDGE = "#62776c"
+LABEL = "#c3cfc8"
+SECTION_TITLE_PX = 15
 WARN = "#e6c55a"
 BAD = "#f2665e"
 INFO = "#7fb8ff"
@@ -182,11 +191,13 @@ QToolButton:pressed {{ background: {PRESSED}; }}
 QToolButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}
 QDialog, QMessageBox {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; }}
 QGroupBox {{
-    background: {BG}; border: 1px solid {EDGE}; border-radius: 16px; margin-top: 16px; padding: 12px 10px 10px 10px;
+    background: {SECTION}; border: 1px solid {SECTION_EDGE}; border-radius: 16px; margin-top: 22px;
+    padding: 12px 10px 10px 10px;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {MUTED}; font-weight: 600; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {TEXT_BRIGHT};
+    font-size: {SECTION_TITLE_PX}px; font-weight: 600; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background: {CHROME}; color: {TEXT}; border: 1px solid {EDGE_STRONG}; border-radius: 10px; padding: 3px 8px;
+    background: {FIELD}; color: {TEXT}; border: 1px solid {FIELD_EDGE}; border-radius: 10px; padding: 3px 8px;
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
@@ -692,6 +703,11 @@ NATURE_PICTURES = {
     "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
     "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
     "seed_handle": _seed_handle_svg,
+    # A section title's mark: a small filled leaf before the title.
+    "section_leaf": lambda: ('<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16">'
+                             f'<path d="M2 14C2 6 7 2 14 2c0 7-4 12-12 12z" fill="{ACCENT}"/>'
+                             f'<path d="M3.5 12.5L10 6" stroke="{ACCENT_TEXT}" stroke-width="1.3"'
+                             ' stroke-linecap="round"/></svg>'),
     "chevron": lambda: (f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
                         f'<path d="M3,4.5 L6,7.5 L9,4.5" fill="none" stroke="{MUTED}" stroke-width="1.6"'
                         ' stroke-linecap="round" stroke-linejoin="round"/></svg>'),
@@ -725,6 +741,12 @@ def nature_pictures(folder: str | None = None) -> dict[str, str]:
 _NATURE_WRITTEN: dict[tuple, dict[str, str]] = {}  # nature_pictures' answers, by folder and picture files
 
 
+def section_title_rule(pic: dict[str, str], selector: str = "QGroupBox::title") -> str:
+    """A titled section's leaf mark, drawn before the title (the room for it is the title's left padding)."""
+    return (f"{selector} {{ padding-left: 20px; background-image: url({pic['section_leaf']});"
+            " background-repeat: no-repeat; background-position: left center; }")
+
+
 def nature_rules(folder: str | None = None) -> str:
     """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaf-cut boxes and seeds."""
     try:
@@ -750,6 +772,7 @@ def nature_rules(folder: str | None = None) -> str:
                  f" margin: -7px 0; border-radius: 9px; image: url({pic['seed_handle']}); }}")
     rules.append(f"QSlider::handle:vertical {{ background: transparent; border: none; width: 18px; height: 18px;"
                  f" margin: 0 -7px; border-radius: 9px; image: url({pic['seed_handle']}); }}")
+    rules.append(section_title_rule(pic))
     # Tick lists get room to breathe: nothing touches the box's edge, rows aren't packed together.
     rules.append("QListWidget, QTreeWidget { padding: 6px; }")
     rules.append("QListWidget::item, QTreeWidget::item { padding: 5px 8px; min-height: 22px; }")

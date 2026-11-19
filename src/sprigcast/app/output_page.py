@@ -576,14 +576,18 @@ class RecordingTabs(QWidget):
                                        "encoder.\nLighter on your PC. Recording first and going live after uses "
                                        "the settings below.")
         self.same_as_stream.setChecked(rec.same_as_stream)
-        inner.addWidget(self.same_as_stream)
+        form = recording_page.layout()
+        if not isinstance(form, QFormLayout):  # a page without a form: a plain one under it
+            form = QFormLayout()
+            inner.addLayout(form)
+        # Ticks without a label line up with the boxes above them, never out under the labels (user, 2026-11-19).
+        form.addRow("", self.same_as_stream)
         self.record_when_live = QCheckBox("Record when I go live")
         self.record_when_live.setToolTip("Ending the stream stops that recording too.")
         self.record_when_live.setChecked(rec.record_when_live)
-        inner.addWidget(self.record_when_live)
+        form.addRow("", self.record_when_live)
         split_row = QHBoxLayout()
         split_row.setSpacing(10)
-        split_row.addWidget(QLabel("Split files"))
         self.split = QComboBox()
         for label, minutes, gb in SPLITS:
             self.split.addItem(label, (minutes, gb))
@@ -598,7 +602,7 @@ class RecordingTabs(QWidget):
                               "Drives formatted FAT32 can't hold a file over 4 GB.")
         split_row.addWidget(self.split)
         split_row.addStretch(1)
-        inner.addLayout(split_row)
+        form.addRow("Split files", split_row)
         recording_group.setEnabled(not recording)
         box.addWidget(recording_group)
         self.recording = recording

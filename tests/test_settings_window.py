@@ -667,3 +667,52 @@ def test_the_recording_page_shows_its_boxes(app):
     assert not inner.isHidden() and inner.isVisible() and inner.height() > 100
     assert w.recording_tabs.same_as_stream.isVisible()
     w.close()
+
+
+def test_sections_are_titled_cards_with_a_leaf_and_fields_with_an_edge(app):
+    from sprigcast.app import theme
+    from sprigcast.app.settings_window import window_style
+
+    style = window_style()
+    assert theme.SECTION in style and theme.SECTION_EDGE in style and theme.FIELD_EDGE in style
+    assert theme.LABEL in style and f"font-size: {theme.SECTION_TITLE_PX}px" in style
+    assert theme.nature_pictures()["section_leaf"] in style
+
+
+def test_form_labels_sit_level_with_their_boxes(app):
+    from PySide6.QtWidgets import QFormLayout, QPlainTextEdit
+
+    w = _window(_collection(), tab="General")
+    w.resize(1000, 760)
+    w.show()
+    w.ensure_all()
+    app.processEvents()
+    checked = 0
+    for form in w.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            if label is None or field is None or not label.widget() or not label.widget().isVisible():
+                continue
+            box = field.geometry()
+            if box.height() > 48 or isinstance(field.widget(), QPlainTextEdit):
+                continue
+            middle = label.widget().geometry().center().y()
+            assert abs(middle - box.center().y()) <= 2, label.widget().text()
+            checked += 1
+    assert checked >= 5
+    w.close()
+
+
+def test_recording_ticks_line_up_with_the_boxes(app):
+    w = _window(_collection(), tab="Recording")
+    w.resize(1000, 760)
+    w.show()
+    w.ensure_all()
+    app.processEvents()
+    from PySide6.QtWidgets import QCheckBox, QComboBox
+
+    tick = next(t for t in w.findChildren(QCheckBox) if t.text() == "Same as stream while live")
+    split = next(c for c in w.findChildren(QComboBox) if c.toolTip().startswith("A new file starts"))
+    assert abs(tick.mapTo(w, tick.rect().topLeft()).x() - split.mapTo(w, split.rect().topLeft()).x()) <= 2
+    w.close()
