@@ -156,6 +156,73 @@ def test_a_sprig_snapshot_is_the_engines_own_copy(device):
     device.forget("a")
 
 
+@needs_engine
+def test_a_sprig_laid_over_the_whole_canvas_draws_as_its_items_would(device):
+    """A sprig placed at 0, 0 at the canvas's size, untouched (what a nested scene from OBS becomes), is drawn
+    straight onto the canvas: no picture of its own. The canvas must come out as if its items were placed there,
+    sprigs inside it included, and the same sprig placed small elsewhere still gets its picture."""
+    w, h = nc.W, nc.H
+    uploads = [("bg", nc.picture(w, h, seed=9), "RGBA", None), ("a", nc.picture(64, 48, seed=1, alpha=True), "RGBA", None),
+               ("e", nc.picture(48, 32, seed=2, alpha=True), "RGBA", None)]
+    a = SceneItem(source="a", x=10, y=10, align="top_left")
+    e = SceneItem(source="e", x=40, y=20, align="top_left")
+    small = SceneItem(source="ps", x=80, y=40, scale=0.5, align="top_left")
+    inner = native_snapshot.SceneDraw("inner", nc.scene("inner", [a]), (w, h))
+    outer = native_snapshot.SceneDraw("outer", nc.scene("outer", [SceneItem(source="pi", align="top_left"), e]), (w, h))
+    nested = nc.Case("laid_over", uploads,
+                     [inner, outer, nc.bloom([SceneItem(source="bg", align="top_left"),
+                                              SceneItem(source="po", align="top_left"), small])],
+                     {}, {("pi", "outer"): "inner", ("po", "h"): "outer", ("ps", "h"): "inner"})
+    flat = nc.Case("laid_over_flat", uploads,
+                   [inner, nc.bloom([SceneItem(source="bg", align="top_left"), a, e, small])],
+                   {}, {("ps", "h"): "inner"})
+    got, want = nc.draw_native(device, nested), nc.draw_native(device, flat)
+    assert np.abs(got.astype(int) - want.astype(int)).max() <= 2
+    without = nc.Case("laid_over_bare", uploads, [nc.bloom([SceneItem(source="bg", align="top_left")])], {}, {})
+    bare = nc.draw_native(device, without)
+    assert np.abs(got[45:, 85:].astype(int) - bare[45:, 85:].astype(int)).max() > 16  # the small one is there
+    # Faded, the whole sprig fades as one picture (not each item over the other): that keeps its own picture.
+    faded = nc.Case("laid_over_faded", uploads,
+                    [inner, outer, nc.bloom([SceneItem(source="bg", align="top_left"),
+                                             SceneItem(source="po", align="top_left")], {"po": 0.5})],
+                    {}, {("pi", "outer"): "inner", ("po", "h"): "outer"})
+    half = nc.draw_native(device, faded).astype(int)
+    full = nc.draw_native(device, nc.Case("laid_over_full", uploads, faded.scenes[:2] + [nc.bloom(
+        [SceneItem(source="bg", align="top_left"), SceneItem(source="po", align="top_left")])], {},
+        faded.parts)).astype(int)
+    assert np.abs(half - (full + bare.astype(int)) // 2).max() <= 3
+
+
+@needs_engine
+def test_a_sprig_that_only_wraps_one_picture_draws_as_that_picture_would(device):
+    """OBS gardens wrap each browser page in a nested scene and cut, scale and place that: the sprig holds one
+    source of its own size, untouched. Its placement is drawn straight from the source (no picture for the
+    sprig), and must look as the source placed that way would: cut, scaled, turned, filtered, faded, and through
+    a second wrapper too. A wrapper whose source is moved inside it is not one: it keeps its picture."""
+    w, h = nc.W, nc.H
+    uploads = [("bg", nc.picture(w, h, seed=9), "RGBA", None), ("page", nc.picture(w, h, seed=3, alpha=True), "RGBA", None)]
+    how = {"x": 30, "y": 12, "scale": 0.59, "crop": (20, 6, 30, 10), "rotation": 8, "align": "top_left"}
+    fx = {"placed": VideoEffects(shape=nc.SHAPE_IDS["circle"], border=2.0, opacity=0.8)}
+    wrap = native_snapshot.SceneDraw("wrap", nc.scene("wrap", [SceneItem(source="page", align="top_left")]), (w, h))
+    wrap2 = native_snapshot.SceneDraw("wrap2", nc.scene("wrap2", [SceneItem(source="inner", align="top_left")]), (w, h))
+    bg = SceneItem(source="bg", align="top_left")
+    wrapped = nc.Case("wrapped", uploads, [wrap, wrap2, nc.bloom([bg, SceneItem(source="placed", **how)], {"placed": 0.7})],
+                      fx, {("inner", "wrap2"): "wrap", ("placed", "h"): "wrap2"})
+    direct = nc.Case("wrapped_direct", uploads, [nc.bloom([bg, SceneItem(source="page", **how)], {"page": 0.7})],
+                     {"page": fx["placed"]}, {})
+    got, want = nc.draw_native(device, wrapped), nc.draw_native(device, direct)
+    stats = nc.compare(got, want)
+    assert stats["max"] <= 3, stats
+    assert nc.compare(got, nc.draw_native(device, nc.Case("bare", uploads, [nc.bloom([bg])])))["mean"] > 1  # it shows
+    moved = native_snapshot.SceneDraw("wrap", nc.scene("wrap", [SceneItem(source="page", x=40, y=0, align="top_left")]),
+                                      (w, h))
+    off = nc.draw_native(device, nc.Case("wrapped_moved", uploads, [moved, nc.bloom([bg, SceneItem(source="placed", **how)])],
+                                         {}, {("placed", "h"): "wrap"}))
+    plain = nc.draw_native(device, nc.Case("wrapped_plain", uploads, [wrap, nc.bloom([bg, SceneItem(source="placed", **how)])],
+                                           {}, {("placed", "h"): "wrap"}))
+    assert nc.compare(off, plain)["mean"] > 0.5  # the page sits 40 px to the right inside its sprig
+
+
 def _nv12(i420_rows: np.ndarray, w: int, h: int) -> np.ndarray:
     """The same picture as NV12: Y rows, then U and V interleaved (UVUV...)."""
     uv = i420_rows[h:]

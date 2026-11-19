@@ -116,7 +116,9 @@ struct DrawList {  // sc_engine_source_draws: count < 0 drops it
 
 // A browser page's pictures in the browser helper's shared memory (sc_engine_source_shared; the writer is
 // app/browser_helper.py FrameSlot): a 64-byte header, u64 counter then u32 width, height and slot, and two slots
-// splitting the rest of the block, as the block's size rounds up to whole pages on both sides.
+// of the size the header gives at byte 32 (u64). Not half the rest of the block: the size Windows gives here is
+// rounded up to whole pages, the helper's is not, and the second slot then sat 2016 bytes off for a 1920x1080
+// page: every other picture came out 504 pixels to the side, wrapped around (2026-11-19).
 struct SharedPictures {
     static constexpr size_t HEADER = 64;
     std::wstring name;
@@ -186,7 +188,10 @@ struct SharedPictures {
             *texture = name + L"-tex" + std::to_wstring(head[3]);
             return seq;
         }
-        const size_t capacity = (size - HEADER) / 2;
+        const size_t room = (size - HEADER) / 2;
+        uint64_t said = 0;
+        std::memcpy(&said, view + 32, sizeof said);
+        const size_t capacity = said > 0 && said <= room ? static_cast<size_t>(said) : room;
         const size_t bytes = static_cast<size_t>(head[0]) * head[1] * 4;
         if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384 || bytes > capacity || head[2] > 1) return 0;
         *data = view + HEADER + head[2] * capacity;

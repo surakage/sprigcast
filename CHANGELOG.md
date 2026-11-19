@@ -4,6 +4,21 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 "Tested" means tried on a real Windows PC. Everything else passed the automated tests but still needs a try.
 
+## Unreleased
+
+Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 nested sprigs). Not tried on a PC yet.
+
+- A web page read from memory (Build with a sprig open, the old engine, a projector) no longer jumps sideways on
+  every other picture. SprigCast and its page helper disagreed by 2016 bytes about where the second of a page's two
+  pictures starts, so it came out 504 pixels to the side and wrapped around (a 1920x1080 page).
+- The engine no longer draws a whole-canvas picture for a sprig that only wraps one page or picture of its own
+  size, or one laid untouched over the whole canvas: it draws what the sprig holds, in the sprig's place. A bloom
+  from OBS has about 27 of these per canvas, which kept the graphics card at 71% doing nothing.
+- Build's sprig list and "used in" counts walk the garden once, not once per sprig (0.8 to 1.1 s freezes with that
+  garden).
+- Pages brought over from OBS sleep while not on screen, like any SprigCast page. OBS keeps every page running
+  unless told otherwise, and that was carried over. One note after the import says so.
+
 ## 0.2.0 (2026-11-19)
 
 The first named release since the build guide. SprigCast now looks and works like its own app instead of an OBS copy:

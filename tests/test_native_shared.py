@@ -69,6 +69,37 @@ def test_the_engine_shows_a_pages_pictures_from_shared_memory():
         slot.close()
 
 
+def test_pictures_in_both_slots_land_where_they_belong():
+    """Windows gives the engine the block's size rounded up to whole pages and the helper the size it asked
+    for: with each halving its own, the second slot sat 2016 bytes apart, and every other picture of a page came
+    out to the side and wrapped around (a 1920x1080 page: 504 pixels; the user's recording, 2026-11-19). The
+    first picture written goes to the second slot."""
+    from sprigcast.render import native_bridge
+
+    col = _collection()
+    slot = FrameSlot.create(f"sprigcast-test-{uuid.uuid4().hex[:8]}", 64 * 48)
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    try:
+        left, right = (255, 0, 0), (0, 0, 255)
+        for _ in range(2):  # one picture for each slot
+            pic = np.zeros((48, 64, 4), np.uint8)
+            pic[:, :40] = (*left, 255)
+            pic[:, 40:] = (*right, 255)
+            pic[:6] = (0, 255, 0, 255)
+            slot.write(pic)
+            if left[0]:  # the first time round
+                assert bridge.attach_media("page", slot.shm.name)
+                bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+                bridge.watch("h", (64, 48), 0)
+            img = _shown(bridge, left)
+            assert img is not None and not bridge.failed
+            assert np.abs(img[..., :3].astype(int) - pic[..., :3].astype(int)).max() <= 2
+            left, right = right, left
+    finally:
+        bridge.close()
+        slot.close()
+
+
 def test_a_block_that_isnt_there_is_said_once_and_harms_nothing():
     from sprigcast.render import native_bridge
 

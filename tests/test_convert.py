@@ -121,6 +121,21 @@ def test_obs_positions_from_the_anchor_point():
     assert (logo.x, logo.y) == (0, 50)  # 200x100 centred on 100,100
 
 
+def test_pages_from_obs_sleep_while_not_on_screen():
+    """OBS keeps every page running unless told otherwise; carried over, a garden of 61 pages kept all 61 awake
+    (PC, 2026-11-19). They sleep like any SprigCast page, and one note says so."""
+    from sprigcast.core import convert as convert_mod
+
+    data = obs_file()
+    chat = next(s for s in data["sources"] if s["name"] == "Chat")
+    chat["settings"].pop("shutdown")
+    data["sources"].append({**chat, "name": "Alerts", "uuid": "b2"})
+    col, notes = from_obs(data, _like())
+    pages = [s for s in col.sources if s.kind == "browser"]
+    assert pages and all(s.settings["keep_running"] is False for s in pages)
+    assert notes.count(convert_mod.PAGES_SLEEP_NOTE) == 1
+
+
 def test_obs_sources_and_sound():
     col, _ = from_obs(obs_file(), _like(), audio_devices=["Mic (Elgato Wave:3)"])
     by_name = {s.name: s for s in col.sources}
