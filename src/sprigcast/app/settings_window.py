@@ -87,7 +87,8 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
     ("Always on top", "General", False), ("Reopen pop-outs", "General", False), ("Hide the mouse pointer", "General", False),
     ("Hide from screen capture", "General", False), ("Privacy", "General", False),
-    ("System tray", "General", False), ("Minimize to the tray", "General", False),
+    ("System tray", "General", False), ("Import from OBS", "General", False),
+    ("Import from Streamlabs", "General", False), ("Import from Meld", "General", False), ("Minimize to the tray", "General", False),
     ("Close to the tray", "General", False),
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
@@ -451,6 +452,7 @@ class SettingsWindow(QDialog):
         self._subs: dict[str, str] = {}  # page -> its own tab to open on once it's made
         self.on_ducking = None  # passed on to the Audio page (the main window opens the Ducking window)
         self.on_clear_data = None  # the main window's clear_all_data(parent)
+        self.on_import = None  # the main window's: closes Settings, then offers what can be imported
         for name in TABS:
             QListWidgetItem(name, self.tabs)
             stand_in = QWidget()  # stands in until the page is made
@@ -950,7 +952,8 @@ class SettingsWindow(QDialog):
                 self.feature_ticks[name] = tick
 
             layout = page.layout()
-            for card in (safety, snapping, popouts, in_tray, private, used, updates, logs, self._clear_data_card()):
+            for card in (safety, snapping, popouts, in_tray, private, used, updates, logs, self._import_card(),
+                         self._clear_data_card()):
                 layout.insertWidget(layout.count() - 1, card)  # above the stretch
 
         if self.isVisible():
@@ -1016,6 +1019,18 @@ class SettingsWindow(QDialog):
         settings.setValue(theme.THEME_KEY, self.theme.currentData())
         settings.setValue(theme.TEXT_SIZE_KEY, self.text_size.value() or "normal")
         settings.setValue(theme.COLORS_KEY, self.color_preset.value() or "default")
+
+    def _import_card(self) -> QGroupBox:
+        """Import: scenes from OBS, Streamlabs or Meld (the Gardens menu's Import, where people look for it)."""
+        card = QGroupBox("Import")
+        row = QHBoxLayout(card)
+        row.addWidget(QLabel("Bring your scenes over from OBS, Streamlabs or Meld."), 1)
+        self.import_button = QPushButton("Import…")
+        self.import_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.import_button.setToolTip("Settings closes first. Changes you haven't applied are dropped.")
+        self.import_button.clicked.connect(lambda: self.on_import and self.on_import(self))
+        row.addWidget(self.import_button)
+        return card
 
     def _clear_data_card(self) -> QGroupBox:
         """Clear all my data: keys, sign-ins, settings and files go, then SprigCast closes (app/clear_data.py)."""

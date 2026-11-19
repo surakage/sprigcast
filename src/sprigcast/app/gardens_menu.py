@@ -243,7 +243,15 @@ class GardenControl:
             menu.addAction("Import…").triggered.connect(lambda: self._import(kind))
             menu.addAction("Export…").triggered.connect(lambda: self._export(kind))
             return
-        imports = menu.addMenu("Import")
+        self.fill_imports(menu.addMenu("Import"))
+        exports = menu.addMenu("Export")
+        exports.addAction(f"Just the {COLLECTION}…").triggered.connect(lambda: self._export(kind))
+        exports.addAction("With its files…").triggered.connect(lambda: self._export_pack())
+        menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
+        menu.addAction("Show file").triggered.connect(lambda: self.w._show_garden_file())
+
+    def fill_imports(self, imports: QMenu, kind: str = "garden") -> None:
+        """From a file…, then the scene collections OBS and Streamlabs keep on this PC, by app."""
         imports.addAction("From a file…").triggered.connect(lambda: self._import(kind))
         for app, files in self._other_apps().items():
             names = convert.streamlabs_names(files[0].parent) if app == "streamlabs" else {}
@@ -256,11 +264,16 @@ class GardenControl:
                 label = names.get(file.stem, file.stem.replace("_", " "))
                 sub.addAction(label.replace("&", "&&")).triggered.connect(
                     lambda _=False, f=file: self._report(self.import_garden(f)))
-        exports = menu.addMenu("Export")
-        exports.addAction(f"Just the {COLLECTION}…").triggered.connect(lambda: self._export(kind))
-        exports.addAction("With its files…").triggered.connect(lambda: self._export_pack())
-        menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
-        menu.addAction("Show file").triggered.connect(lambda: self.w._show_garden_file())
+
+    def choose_import(self) -> None:
+        """Settings → General → Import: the same choices, at the pointer (Settings has closed by now, so the
+        garden it was showing is never saved over the one just brought in)."""
+        from PySide6.QtGui import QCursor
+
+        menu = QMenu(self.w)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.fill_imports(menu)
+        menu.popup(QCursor.pos())
 
     def switch_choices(self) -> list[tuple[str, str, bool, object]]:
         """(group, name, in use, switch) for each garden and path: the palette lists them, as the chip does."""

@@ -2969,6 +2969,9 @@ class MainWindow(QMainWindow):
         return sizes
 
     def _poll_engine(self) -> None:
+        tray = getattr(self, "tray", None)
+        if tray is not None and tray.icon is not None:
+            tray.show_state(self.streaming is not None, self.recording is not None)
         for projector in self.projectors:
             if projector.view is not None:
                 projector.take_pending()
@@ -6518,6 +6521,12 @@ class MainWindow(QMainWindow):
         window.applied.connect(self._after_settings)
         window.on_ducking = self._open_ducking  # handed to the Audio page when it's made
         window.on_clear_data = self.clear_all_data
+
+        def import_from(settings) -> None:
+            settings.reject()  # first: an import switches gardens, and Settings must not save over it
+            QTimer.singleShot(0, self, self.gardens.choose_import)
+
+        window.on_import = import_from
         window.optimize_requested.connect(lambda: QTimer.singleShot(0, self, self.open_optimizer))
         window.restart_requested.connect(lambda: QTimer.singleShot(0, self, self.restart_app))
         modal(window)
