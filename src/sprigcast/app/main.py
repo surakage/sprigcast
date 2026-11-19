@@ -366,6 +366,7 @@ def run() -> None:
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    window.start_in_live()  # always opens on Live, not the screen it closed on
     try:
         from sprigcast.app.leftovers import clean_up_recordings
 

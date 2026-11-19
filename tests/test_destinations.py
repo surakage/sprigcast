@@ -114,6 +114,9 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         assert w.build_stage.isVisible() and w.previews["horizontal"].editable
         assert w.previews["horizontal"].isVisible() and not w.previews["horizontal"].live_look
         assert QSettings().value("window/mode") == "build"
+        # Start-up opens on Live with Destinations, even though it was left on Build (soak, 2026-11-19).
+        w.start_in_live()
+        assert w.mode == "live" and w.live_stage.isVisible() and not w.build_stage.isVisible()
     finally:
         w.close()
         QSettings().clear()
