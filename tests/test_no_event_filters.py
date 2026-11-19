@@ -80,3 +80,15 @@ def test_card_shadow_is_one_small_picture_for_every_size(app):
         corner = pieces[0]
         assert corner[0][2:] == corner[1][2:]  # corners are copied, not stretched
     assert len(theme._shadow_pictures) == 1
+
+
+def test_a_cards_whole_shadow_is_put_together_once_per_size(app):
+    from sprigcast.app import theme
+
+    theme._shadows_put_together.clear()
+    picture, left, top = theme.card_shadow(600, 420, 1.0, theme.PANEL)
+    assert picture.width() > 600 and picture.height() > 420 and left < 0 and top < 0
+    assert theme.card_shadow(600, 420, 1.0, theme.PANEL)[0] is picture  # kept
+    for extra in range(theme.SHADOWS_KEPT + 3):  # a card that grows: only the last few sizes stay
+        theme.card_shadow(600, 430 + extra, 1.0, theme.PANEL)
+    assert len(theme._shadows_put_together) == theme.SHADOWS_KEPT

@@ -1012,16 +1012,44 @@ def shadow_pieces(w: int, h: int, left: int, top: int, right: int, bottom: int) 
     return [((tx, ty, tw, th), (sx, sy, sw, sh)) for ty, th, sy, sh in ys for tx, tw, sx, sw in xs if tw > 0 and th > 0]
 
 
+_shadows_put_together: dict[tuple, tuple] = {}
+SHADOWS_KEPT = 6
+
+
+def card_shadow(w: int, h: int, ratio: float, colour: str) -> tuple:
+    """(picture, left, top): a w x h card's whole shadow, put together from the small picture's nine pieces (no
+    blurring) the first time a size is asked for, and kept for the last few sizes. Painting the nine pieces each
+    time was a dozen calls into Qt per paint, each handing Python's lock over and waiting for it back while live;
+    this way a paint is one."""
+    key = (w, h, ratio, colour)
+    found = _shadows_put_together.get(key)
+    if found is not None:
+        return found
+    from PySide6.QtGui import QPixmap
+
+    picture, left, top, right, bottom = _shadow_picture(ratio, colour)
+    whole = QPixmap(round((w + left + right) * ratio), round((h + top + bottom) * ratio))
+    whole.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(whole)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    for (tx, ty, tw, th), (sx, sy, sw, sh) in shadow_pieces(w, h, left, top, right, bottom):
+        painter.drawPixmap(QRectF((left + tx) * ratio, (top + ty) * ratio, tw * ratio, th * ratio), picture,
+                           QRectF(sx * ratio, sy * ratio, sw * ratio, sh * ratio))
+    painter.end()
+    whole.setDevicePixelRatio(ratio)
+    if len(_shadows_put_together) >= SHADOWS_KEPT:  # pop-ups that grow: the oldest go
+        _shadows_put_together.pop(next(iter(_shadows_put_together)))
+    found = _shadows_put_together[key] = (whole, -left, -top)
+    return found
+
+
 def paint_card_shadow(window, card) -> None:
     """From a pop-up's paintEvent: the soft shadow under its card (see CARD_SHADOW)."""
-    rect = card.geometry()
-    if rect.width() <= 0 or rect.height() <= 0:
+    rect = card.geometry().getRect()
+    x, y, w, h = rect
+    if w <= 0 or h <= 0:
         return
-    ratio = window.devicePixelRatioF()
-    picture, left, top, right, bottom = _shadow_picture(ratio, PANEL)
+    picture, left, top = card_shadow(w, h, window.devicePixelRatioF(), PANEL)
     painter = QPainter(window)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-    for (tx, ty, tw, th), (sx, sy, sw, sh) in shadow_pieces(rect.width(), rect.height(), left, top, right, bottom):
-        painter.drawPixmap(QRectF(rect.left() + tx, rect.top() + ty, tw, th), picture,
-                           QRectF(sx * ratio, sy * ratio, sw * ratio, sh * ratio))
+    painter.drawPixmap(x + left, y + top, picture)
     painter.end()

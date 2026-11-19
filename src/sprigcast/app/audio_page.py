@@ -693,7 +693,9 @@ class AudioPage(QWidget):
         box.addWidget(_hint(f"Tracks: {legend}"))
         return group
 
-    ROWS_NOW = 2  # sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK)
+    # Sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK). None now: two rows (~100 calls into Qt)
+    # made with the page were most of the 61 ms the Sound gear took to open on the PC while live (2026-11-19).
+    ROWS_NOW = 0
     ROWS_PER_TICK = 1  # three were 136 ms a tick on the PC while live (2026-11-18): each row is ~50 calls into Qt
     ROW_GAP_MS = 15
 

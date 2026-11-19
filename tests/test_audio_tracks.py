@@ -154,6 +154,7 @@ def test_audio_page_sets_switch_tracks_and_which_sounds_go_where(monkeypatch):
     assert on_track(col.source("desktop"), 4) and on_track(col.source("song"), 2)
     assert on_track(col.source("mic"), 3)  # untouched
     again = AudioPage(col, {})
+    again.finish()  # (its rows come a tick apart)
     assert set(again.track_ticks) == {"mic-2", "song"}  # switched-off global devices leave the list
     assert not again.global_rows[0].isEnabled()
 
