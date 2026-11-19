@@ -875,7 +875,7 @@ class ChatPanel(QWidget):
         """You signed in to YouTube or Kick (anywhere in the app): its chat joins your chats here."""
         from sprigcast.output import stream_details
 
-        if self.active:
+        if self.active and service == "kick" and self.hub.names().get("kick"):
             self._show_say()  # Kick's chat can be written in only while you're signed in to it
         if service not in saved_names() or not stream_details.account(service):
             return  # signed out, or a sign-in that named no chat: nothing here changes
