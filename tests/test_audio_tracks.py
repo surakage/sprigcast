@@ -397,3 +397,26 @@ def test_devices_set_listen_through_windows_ducking_and_push_to_talk():
 
     col.sources = [s for s in col.sources if s.kind != "audio_input"]
     assert not AudioPage(col, {}).push_mode.isEnabled()  # no mic to hold
+
+
+def test_a_tabs_further_cards_can_be_made_a_tick_apart_in_their_places():
+    from sprigcast.app.audio_page import AudioPage
+
+    col = _collection()
+    page = AudioPage(col, {"audio_input": ["Wave"], "audio_output": ["Speakers"]}, first="Sounds")
+    waiting = []
+    page.build_tab("Devices", later=waiting.append)
+    assert len(waiting) == 2 and len(page._parts_waiting) == 2
+    assert not hasattr(page, "listen_through")  # Hearing it yourself: not made yet
+    waiting[1]()  # the last card first
+    waiting[0]()
+    box = page.tabs.widget(page.TABS.index("Devices")).layout()
+    titles = [box.itemAt(i).widget().title() for i in range(box.count()) if box.itemAt(i).widget() is not None]
+    assert titles[0] == "Devices" and len(titles) == 3 and titles[1] != titles[2]
+    assert hasattr(page, "listen_through") and not page._parts_waiting
+    waiting[0]()  # once only
+    assert box.count() == 4  # three cards and the stretch
+    again = AudioPage(col, {}, first="Sounds")
+    again.build_tab("Devices", later=lambda call: None)
+    again.finish()  # makes what was still waiting
+    assert not again._parts_waiting and hasattr(again, "listen_through")

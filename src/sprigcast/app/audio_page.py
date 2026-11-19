@@ -231,6 +231,7 @@ class AudioPage(QWidget):
         self.setStyleSheet(page_style())
         self._levels = levels
         self.meters: dict[str, LevelDots] = {}
+        self._parts_waiting: list = []  # (tab's layout, place, makes a card): cards still to make (build_tab)
         self._meter_timer = QTimer(self)
         self._meter_timer.setInterval(METER_MS)
         self._meter_timer.timeout.connect(self._move_meters)
@@ -258,34 +259,55 @@ class AudioPage(QWidget):
             self.show_tab(first)
         self.tabs.currentChanged.connect(self._tab_shown)
 
-    def build_tab(self, name: str) -> None:
-        """Make one tab's contents (once)."""
+    def build_tab(self, name: str, later=None) -> None:
+        """Make one tab's contents (once). later(call): the tab's first card is made now and each further card
+        handed to it, to be made a tick apart (Settings' _slice): Devices' three cards in one go held the window
+        63 ms on the PC while live (184 ms with the old engine, 2026-11-19). None: all of it now."""
         box = self._holders.pop(name, None)
         if box is None:
             return
         if name in self.later:
             self.later.remove(name)
+        devices = None
         if name == "Devices":
             devices = self._audio_devices
-            card = self._devices(devices() if callable(devices) else devices)
+            devices = devices() if callable(devices) else devices
+            card = self._devices(devices)
         elif name == "Tracks":
             card = self._tracks(self.recording)
         else:
             card = self._grid()
         box.setSpacing(14)
         box.addWidget(card)
-        if name == "Devices":
-            box.addWidget(self._hearing((devices() if callable(devices) else devices).get("audio_output", [])))
-            box.addWidget(self._push())
-        if name == "Sounds":
-            box.addWidget(self._ducking())
         box.addStretch(1)
+        more = []
+        if name == "Devices":
+            more = [lambda: self._hearing(devices.get("audio_output", [])), self._push]
+        if name == "Sounds":
+            more = [self._ducking]
+        for at, make in enumerate(more, 1):
+            part = (box, at, make)
+            self._parts_waiting.append(part)
+            if later is None:
+                self._make_part(part)
+            else:
+                later(lambda part=part: self._make_part(part))
         self._tab_shown()
 
+    def _make_part(self, part) -> None:
+        """One more card of a tab, under the ones made before it (once: finish() may have made it already)."""
+        if part not in self._parts_waiting:
+            return
+        self._parts_waiting.remove(part)
+        box, at, make = part
+        box.insertWidget(min(at, box.count() - 1), make())  # in its place, whichever is made first; above the stretch
+
     def finish(self) -> None:
-        """Make every tab and sound row still waiting (before reading what's picked)."""
+        """Make every tab, card and sound row still waiting (before reading what's picked)."""
         for name in list(self.later):
             self.build_tab(name)
+        for part in list(self._parts_waiting):
+            self._make_part(part)
         while getattr(self, "_rows_waiting", None):
             self._sound_row(*self._rows_waiting.pop(0))
 
