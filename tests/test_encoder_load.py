@@ -169,9 +169,10 @@ def test_reading_while_a_worker_adds_samples_never_fails():
     stop, errors = threading.Event(), []
 
     def worker():
-        while not stop.is_set():
-            slow.run(0.001, 15.5)
-            clock.now += 0.001
+        while not stop.is_set():  # one frame a tick, 15.5 ms each: always overloaded, whatever the window holds
+            slow.frames += 1
+            slow.encode_seconds += 0.0155
+            clock.now += 1 / slow.fps
             w.tick(recording=_Recording(slow))
 
     t = threading.Thread(target=worker)
