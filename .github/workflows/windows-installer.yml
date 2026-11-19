@@ -65,6 +65,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }
       - name: Start SprigCast for 30 seconds with a video playing
         shell: pwsh
+        timeout-minutes: 8  # smoke.py fails itself after 180 s with the log tail; this only backs it up
         run: |
           # The whole app, started the way a person starts it (packaging/smoke.py): it must stay open, draw,
           # play a video and log no errors. Catches what only breaks when everything starts at once.

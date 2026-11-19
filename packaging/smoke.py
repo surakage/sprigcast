@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -94,6 +95,32 @@ def problems(text: str) -> list[str]:
     return found
 
 
+HANG_AFTER_S = 150.0  # beyond the run itself: a check stuck this long prints what it has and fails (a CI build hung
+# here for 24 min with nothing to show, 2026-11-19)
+_stage = ["starting"]
+_day_log: list[Path] = []
+
+
+def stage(text: str) -> None:
+    _stage[0] = text
+    print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True)
+
+
+def _hung(seconds: float) -> None:
+    print(f"FAILED: the start-up check hung for {seconds:.0f} s at: {_stage[0]}", flush=True)
+    if _day_log and _day_log[0].is_file():
+        text = _day_log[0].read_bytes()[-20000:].decode("utf-8", "replace")
+        print(f"----- {_day_log[0].name} (last 20 KB) -----\n{text}----- end of log -----", flush=True)
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(["tasklist", "/V"], capture_output=True, text=True, timeout=20, check=False).stdout
+            print("----- processes -----\n" + "\n".join(line for line in out.splitlines()
+                                                         if "python" in line.lower() or "sprig" in line.lower()))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    os._exit(2)
+
+
 def size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -104,33 +131,57 @@ def size(path: Path) -> int:
 def main() -> int:
     seconds = float(sys.argv[1])
     command = sys.argv[2:]
+    watchdog = threading.Timer(seconds + HANG_AFTER_S, _hung, args=(seconds + HANG_AFTER_S,))
+    watchdog.daemon = True
+    watchdog.start()
     work = Path(tempfile.mkdtemp(prefix="sprigcast-smoke-"))
     clip = work / "smoke clip.mp4"
-    subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True)
+    stage("making the test video")
+    subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True, timeout=120)
     print(f"Made {clip} ({size(clip) // 1024} KB)", flush=True)
-    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip)], check=True,
+    stage("setting up the garden")
+    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip)], check=True, timeout=120,
                                       capture_output=True, text=True).stdout.strip().splitlines()[-1])
     print(f"Garden {paths['garden']}: the clip plays on top of {paths['bloom']}", flush=True)
     logs = Path(paths["logs"])
     day_log = logs / f"sprigcast {time.strftime('%Y-%m-%d')}.log"
     crash_log = logs / "crash.log"
     log_from, crash_from = size(day_log), size(crash_log)
+    _day_log.append(day_log)
 
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-    proc = subprocess.Popen(command, env=env)
+    stage(f"running SprigCast for {seconds:.0f} s")
+    # The app writes to a file, not this step's console: a helper that outlives taskkill (stuck in the
+    # graphics driver, say) would otherwise hold the console open and the CI step waits on it for ever.
+    output = work / "app output.txt"
+    with output.open("wb") as sink:
+        proc = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT)
     started = time.monotonic()
     while time.monotonic() - started < seconds and proc.poll() is None:
         time.sleep(0.5)
     alive = proc.poll() is None
     if alive:
-        if sys.platform == "win32":  # with the helpers it started
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
-        else:
+        stage("closing SprigCast")
+        try:
+            if sys.platform == "win32":  # with the helpers it started
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30, check=False)
+            else:
+                proc.kill()
+        except subprocess.TimeoutExpired:
+            print("taskkill didn't finish in 30 s", flush=True)
+        try:
+            proc.wait(30)
+        except subprocess.TimeoutExpired:
+            print("SprigCast was still running 30 s after it was ended", flush=True)
             proc.kill()
-        proc.wait(30)
+        stage("SprigCast closed")
     else:
         print(f"SprigCast closed by itself after {time.monotonic() - started:.0f} s (exit {proc.returncode})")
 
+    watchdog.cancel()
+    said = output.read_bytes()[-20000:].decode("utf-8", "replace").strip() if output.is_file() else ""
+    if said:
+        print(f"----- what SprigCast printed -----\n{said}\n----- end -----", flush=True)
     text = day_log.read_bytes()[log_from:].decode("utf-8", "replace") if day_log.is_file() else ""
     print(f"----- {day_log.name} (this run) -----\n{text}----- end of log -----", flush=True)
     failed = [] if alive else ["SprigCast didn't stay open"]
