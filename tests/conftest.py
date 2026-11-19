@@ -14,6 +14,8 @@ os.environ.setdefault("SPRIGCAST_BROWSER_IN_PROCESS", "1")
 os.environ.setdefault("SPRIGCAST_ENGINE", "python")
 # Plugin sources run in SprigCast in tests, unless a test starts the plugin helper itself (test_plugin_helper.py).
 os.environ.setdefault("SPRIGCAST_PLUGINS_IN_PROCESS", "1")
+# The capture helper is another program too: tests capture in the engine, tests/test_capture_helper.py aside.
+os.environ.setdefault("SPRIGCAST_CAPTURE_IN_ENGINE", "1")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 
