@@ -435,7 +435,10 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
     pop = PopUp("Garden check", parent, bare=True)  # the page has its own title (with the sloth) and buttons
     # Filled a tick after it's put in the pop-up: its rows made in the same go as the pop-up were 75-101 ms of the
     # open on the PC while live (2026-11-18), and the pop-up's style reached every row as it was put in.
-    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter, fill=False)
+    # Made as the stack's child from the start: made on its own and put in after, Qt went through every tile and
+    # label again to hand them the pop-up's look (62 ms in add_tab on the PC while live, 2026-11-19).
+    pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter, fill=False,
+                                 parent=pop.stack)
     pop.add_tab("garden", "Garden check", pop.garden)
     pop.show_tab("garden")
     pop.garden.done.clicked.connect(pop.accept)

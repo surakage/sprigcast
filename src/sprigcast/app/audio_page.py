@@ -222,12 +222,12 @@ class AudioPage(QWidget):
     TABS = ("Devices", "Sounds", "Tracks")
 
     def __init__(self, collection: SceneCollection, audio_devices, recording: bool = False,
-                 streaming: bool = False, first: str | None = None, levels=None):
+                 streaming: bool = False, first: str | None = None, levels=None, parent: QWidget | None = None):
         """audio_devices: a dict, or something that gives one when called (Settings: waits for the scan).
         first: make only this tab now; the others are listed in `later` (Settings makes them a tick apart, see
         SettingsWindow._slice) and made by finish() if still waiting. None: every tab now.
         levels: gives (when heard, {sound id: (peak, rms dB)}) for the Devices meters; None: no meters."""
-        super().__init__()
+        super().__init__(parent)
         self.setStyleSheet(page_style())
         self._levels = levels
         self.meters: dict[str, LevelDots] = {}
