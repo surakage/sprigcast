@@ -6051,6 +6051,12 @@ class MainWindow(QMainWindow):
         self._refresh_stream_boxes()
 
     def _on_live_clicked(self) -> None:
+        from sprigcast.app.settings_window import CONFIRM_GO_LIVE
+
+        if self.streaming is None and QSettings().value(CONFIRM_GO_LIVE, False, type=bool):
+            answer = QMessageBox.question(self, "SprigCast", "Go live now?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
             answer = QMessageBox.question(self, "SprigCast", "End the stream?")
             if answer != QMessageBox.StandardButton.Yes:
@@ -6160,7 +6166,16 @@ class MainWindow(QMainWindow):
         self._stream_status_at = 0.0
         self._refresh_stream_status()
         self._record_with_stream()
+        self._replay_with_stream()
         return {"started": True, "warnings": warnings}
+
+    def _replay_with_stream(self) -> None:
+        """Settings → General → "Start Instant replay when I go live"."""
+        from sprigcast.app import features
+        from sprigcast.app.settings_window import REPLAY_ON_LIVE
+
+        if self.replay is None and features.on("clips") and QSettings().value(REPLAY_ON_LIVE, False, type=bool):
+            self._toggle_replay(True)
 
     def _record_with_stream(self) -> None:
         """Settings → Recording → "Record when I go live": the stream's own recording starts with it
@@ -6323,8 +6338,10 @@ class MainWindow(QMainWindow):
         session.stop(wait=False)  # the encoders and connections finish on their own thread
         if getattr(self, "_recording_for_stream", False):
             self._recording_for_stream = False
-            if self.recording is not None:
-                self._stop_recording()  # it started with the stream: it ends with it
+            from sprigcast.app.settings_window import KEEP_RECORDING
+
+            if self.recording is not None and not QSettings().value(KEEP_RECORDING, False, type=bool):
+                self._stop_recording()  # it started with the stream: it ends with it (unless kept going)
         delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)
         if delayed > 0:
             self.statusBar().showMessage(f"Stream delay: the last {delayed:g} s still go out to viewers.",
@@ -6719,6 +6736,10 @@ class MainWindow(QMainWindow):
 
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""
+        from sprigcast.app import privacy
+
+        if privacy.supported():
+            privacy.apply_to(self)  # Hide from screen capture, as just set
         clips = getattr(self, "_clips_before", None)
         if clips is not None:
             self._restart_clips_if_changed(clips)
@@ -6884,6 +6905,12 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._pace_poll()
+        if not getattr(self, "_privacy_set", False):
+            self._privacy_set = True
+            from sprigcast.app import privacy
+
+            if privacy.hidden():  # Settings → General → Privacy
+                privacy.apply_to(self, True)
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)

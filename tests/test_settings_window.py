@@ -165,8 +165,10 @@ def test_one_quality_choice_hides_the_expert_rows(app):
     w.show()
     app.processEvents()
     f = w.stream_quality.stream_form
-    assert not w.expert.isChecked() and f.quality.isVisible() and not f.rate_control.isVisible()
+    assert not w.expert.isChecked() and f.quick.isVisible() and not f.quality.isVisible()
+    assert not f.rate_control.isVisible()
     assert not f.preset.isVisible() and not f.audio.isVisible() and f.quality.currentData() == "balanced"
+    assert f.quick.value() == "balanced" and f.chip.text().startswith(("GPU", "CPU"))
     f.quality.setCurrentIndex(f.quality.findData("lighter"))
     f.quality.activated.emit(f.quality.currentIndex())
     assert f.values().preset == "p3" and f.values().x264_preset == "superfast"
@@ -246,7 +248,7 @@ def test_settings_look_titles_pills_and_pages(app):
     assert tabs(w.recording_tabs.tabs) == ["Recording", "Clips"]
     assert tabs(w.video_tabs) == ["Canvases", "Virtual camera"]
     assert tabs(w.audio_page.tabs) == ["Devices", "Tracks", "Sounds"]
-    assert not hasattr(w, "snap_enabled") and not w.findChildren(type(w.tabs), "settingsColour")
+    assert not w.findChildren(type(w.tabs), "settingsColour")
     w.close()
 
 
@@ -726,3 +728,102 @@ def test_accounts_is_gone_and_old_links_land_on_stream_places(app):
     assert "Accounts" not in TABS and w.current_tab() == "Stream"
     assert w.stream_tabs.tabText(w.stream_tabs.currentIndex()) == "Places"
     w.close()
+
+
+def test_quality_tab_quick_picks_places_and_delay(app):
+    from sprigcast.core.scene import Output
+
+    col = _collection()
+    col.outputs = [Output(id="t", type="stream", service="twitch", canvas="horizontal", enabled=True,
+                          bitrate_kbps=6000, auto_bitrate=True),
+                   Output(id="y", type="stream", service="youtube", canvas="vertical", enabled=True, bitrate_kbps=4500,
+                          auto_bitrate=False),
+                   Output(id="k", type="stream", service="kick", canvas="horizontal", enabled=False)]
+    w = _window(col, tab="Stream/Quality")
+    w.show()
+    app.processEvents()
+    q = w.stream_quality
+    f = q.stream_form
+    f.quick.buttons["lighter"].click()  # Faster
+    assert f.quality.currentData() == "lighter" and f.values().preset == "p3"
+    texts = [q.places_grid.itemAt(i).widget().text() for i in range(q.places_grid.count())]
+    assert "Twitch" in texts and "YouTube" in texts and "Kick" not in texts and "6,000 kbps" in texts
+    assert "Vertical 1080×1920" in texts and "On" in texts and "Off" in texts
+    assert "10.8 Mbps" in q.upload.text()  # 6000 + 4500 + 2 × 160 audio
+    q.audio_quick.buttons[192].click()
+    q.delay_quick.buttons[30].click()
+    assert not f.load_row.isVisibleTo(f)  # no reading off air
+    w.stream_page.outputs[1].enabled = False  # an unsaved change on Places shows on Quality
+    w.stream_tabs.setCurrentIndex(0)
+    w.stream_tabs.setCurrentIndex(1)
+    texts = [q.places_grid.itemAt(i).widget().text() for i in range(q.places_grid.count())]
+    assert "YouTube" not in texts
+    q.change_places.click()
+    assert w.stream_tabs.currentIndex() == 0
+    assert w.apply()
+    from sprigcast.app.settings_window import stream_delay
+
+    assert col.stream_encoder.audio_kbps == 192 and stream_delay() == 30
+    f.set_room(40.0, True, "Encoder 40% busy · room for about 2 more")
+    assert f.load_row.isVisibleTo(f) and f.load_bar.value() == 40
+    w.close()
+
+
+def test_fine_tuning_is_its_own_card_two_to_a_row_with_expert(app):
+    w = _window(_collection(), tab="Stream/Quality")
+    w.show()
+    app.processEvents()
+    f = w.stream_quality.stream_form
+    assert f.fine.title() == "Fine tuning" and not f.fine.isVisible()
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert f.fine.isVisible() and f.rate_control.parentWidget() is f.fine
+    grid = f._fine_grid
+    columns = {grid.getItemPosition(grid.indexOf(f.rate_control))[1], grid.getItemPosition(grid.indexOf(f.keyint))[1]}
+    assert columns == {1, 3}  # side by side
+    assert not f.audio.isVisible()  # Stream's audio bitrate is in its Sound card
+    assert w.recording_tabs.record_form.fine.title() == "Fine tuning"
+    w.close()
+
+
+def test_general_going_live_snapping_popouts_and_privacy_are_saved(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import privacy, projector
+    from sprigcast.app.preview import snap_settings
+    from sprigcast.app.settings_window import CONFIRM_GO_LIVE, KEEP_RECORDING, REPLAY_ON_LIVE
+
+    w = _window(_collection(), tab="General")
+    w.ensure_all()
+    from PySide6.QtWidgets import QGroupBox
+
+    titles = [b.title() for b in w.findChildren(QGroupBox)]
+    for title in ("Going live", "Snapping", "Pop-out views", "Privacy"):
+        assert title in titles
+    assert not w.confirm_go_live.isChecked() and w.snap_on.isChecked() and w.projector_hide_pointer.isChecked()
+    w.confirm_go_live.setChecked(True)
+    w.keep_recording.setChecked(True)
+    w.replay_on_live.setChecked(True)
+    w.snap_distance.setCurrentIndex(w.snap_distance.findData(20.0))
+    w.snap_to["center"].setChecked(False)
+    w.snap_on.setChecked(False)
+    assert not w.snap_distance.isEnabled()
+    w.projector_on_top.setChecked(True)
+    w.projector_hide_pointer.setChecked(False)
+    w.hide_from_capture.setChecked(True)
+    assert w.apply()
+    q = QSettings()
+    assert q.value(CONFIRM_GO_LIVE, type=bool) and q.value(KEEP_RECORDING, type=bool) and q.value(REPLAY_ON_LIVE, type=bool)
+    snap = snap_settings()
+    assert not snap["enabled"] and snap["distance"] == 20.0 and not snap["center"] and snap["edges"]
+    assert projector.on_top() and not projector.hide_pointer() and privacy.hidden()
+    w.close()
+
+
+def test_privacy_does_nothing_off_windows(app, monkeypatch):
+    import sys
+
+    from sprigcast.app import privacy
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not privacy.supported() and not privacy.apply_to(object(), True)
