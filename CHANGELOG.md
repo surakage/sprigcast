@@ -170,6 +170,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: on a PC with no graphics driver (only Windows' software renderer, the Microsoft Basic Render
+  Driver) the old engine draws, as the new one fell 5-47 s behind per frame there; `SPRIGCAST_ENGINE=native` still
+  asks for it. Copies back from the card (previews, outputs) wait for an event query, never in Map, and a stuck
+  frame's log line names the step it was on. (#625)
 - New engine: its shaders are compiled when SprigCast is built and ship inside the engine, so nothing is compiled
   while it runs. Compiling one still held a frame 3.4 s on the CI start-up check, even ahead of time on a
   thread of its own (the frame needing it waited).

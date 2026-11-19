@@ -29,7 +29,7 @@ frame.
   `sc_last_error()` saying what went wrong. No C++ exception crosses it. Bump `SC_INTERFACE_VERSION` and
   `sprigcore.INTERFACE_VERSION` together when it changes.
 - **The app always works.** Each part that moves has an old and a new path. The native engine is the default on
-  Windows; `SPRIGCAST_ENGINE=python`, safe mode (asked for after SprigCast didn't close properly, or
+  Windows with a graphics driver (with only the software renderer, the Python engine draws); `SPRIGCAST_ENGINE=python`, safe mode (asked for after SprigCast didn't close properly, or
   `--safe-mode`), a missing DLL or an older one means the Python engine for that start. While it runs, a faulted
   or stuck engine hands drawing back to Python by itself. The Python path for a part is deleted only after the
   native one passes its PC tests.
