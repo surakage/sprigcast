@@ -74,7 +74,7 @@ PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
 SEARCH: list[tuple[str, str, bool]] = [
-    ("Theme", "General", False), ("Start with Windows", "General", False), ("Start minimised", "General", False),
+    ("Theme", "General", False), ("Start with Windows", "General", False), ("Start minimized", "General", False),
     ("Updates", "General", False), ("Ask before ending a stream", "General", False),
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
@@ -656,9 +656,9 @@ class SettingsWindow(QDialog):
         self.start_with_windows = QCheckBox("Start SprigCast when Windows starts")
         self.start_with_windows.setChecked(autostart.enabled())
         self.start_with_windows.setEnabled(autostart.supported())
-        self.start_with_windows.setToolTip("When Windows starts it, SprigCast always opens minimised to the taskbar")
+        self.start_with_windows.setToolTip("When Windows starts it, SprigCast always opens minimized to the taskbar")
         start_box.addWidget(self.start_with_windows)
-        self.start_minimized = QCheckBox("Start minimised")
+        self.start_minimized = QCheckBox("Start minimized")
         self.start_minimized.setChecked(q.value(autostart.START_MINIMIZED, False, type=bool))
         start_box.addWidget(self.start_minimized)
 

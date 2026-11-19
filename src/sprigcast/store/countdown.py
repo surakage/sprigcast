@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "countdown", "name": "Countdown", "version": 2, "adds": "Source",
           "about": "A countdown on a SprigCast card, for a Starting soon bloom or a break.",
-          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
+          "new": "A Style tab: your own colors, font, text size and corners, and a custom look box."}
 
 KIND = "countdown_timer"  # "countdown" is the plugins folder's example
 H = cards.H

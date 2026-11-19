@@ -880,7 +880,7 @@ class NativeApi:
         source = self._source(data, "source")
         return {"id": source.id, "name": source.name, "kind": source.kind, "settings": dict(source.settings)}
 
-    @action("source.set", "Change some of a source's settings: text, a browser page's url, an image file, a colour...",
+    @action("source.set", "Change some of a source's settings: text, a browser page's url, an image file, a color...",
             source="name or id", settings="{key: value}")
     def source_set(self, data):
         source = self._source(data, "source")

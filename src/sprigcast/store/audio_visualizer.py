@@ -632,7 +632,7 @@ def _set(api, data):
         if data.get(key) is not None:
             value = str(data[key]).strip()
             if not re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value):
-                raise ApiError("bad_request", f"{key} must be a colour like #4fd88f.")
+                raise ApiError("bad_request", f"{key} must be a color like #4fd88f.")
             change[key] = value
     if data.get("sensitivity") is not None:
         value = data["sensitivity"]
@@ -648,5 +648,5 @@ def _set(api, data):
 
 register_action("visualizer.set", "Change an audio visualizer's look (no source: every one).",
                 {"source": "?which Audio visualizer (default: all of them)", "style": "?bars, wave, circle or line",
-                 "color": "?colour like #4fd88f", "peak_color": "?colour the tips light up to",
+                 "color": "?color like #4fd88f", "peak_color": "?color the tips light up to",
                  "sensitivity": "?0.05 to 10 (1 is normal)"}, _set)

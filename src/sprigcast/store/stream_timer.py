@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 
 PLUGIN = {"id": "stream_timer", "name": "Stream timer", "version": 4, "adds": "Source",
           "about": "How long you've been live, a countdown or a stopwatch, in a small card on stream.",
-          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
+          "new": "A Style tab: your own colors, font, text size and corners, and a custom look box."}
 
 KIND = "stream_timer"
 H = cards.H

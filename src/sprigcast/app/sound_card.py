@@ -844,7 +844,7 @@ class TunePage(QWidget):
     @staticmethod
     def _balance_text(balance: float) -> str:
         if abs(balance) < 0.005:
-            return "Centre"
+            return "Center"
         return f"{abs(balance) * 100:.0f}% {'left' if balance < 0 else 'right'}"
 
     def _volume_moved(self, value: int) -> None:

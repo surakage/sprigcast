@@ -115,7 +115,7 @@ def privacy_block(read=None) -> str:
         read = _read_reg
     checks = (
         ("HKLM", r"Software\Policies\Microsoft\Windows\AppPrivacy", "LetAppsAccessCamera", "2",
-         "Your organisation turned camera access off."),
+         "Your organization turned camera access off."),
         ("HKLM", _CONSENT, "Value", "Deny", "Camera access is off for this PC."),
         ("HKCU", _CONSENT, "Value", "Deny", "Camera access is off."),
         ("HKCU", _CONSENT + r"\NonPackaged", "Value", "Deny", "Desktop apps may not use the camera."),
