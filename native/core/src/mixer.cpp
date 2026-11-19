@@ -177,6 +177,7 @@ struct Source {
     int media_asleep = 0;
     std::vector<float> held;   // the delay's samples between blocks
     float gate = 1.0f;         // sound per bloom: its fade now
+    float talk = 1.0f;         // push to talk: its gain now (1 heard, 0 not)
     float peak_db = FLOOR_DB, rms_db = FLOOR_DB, level = 0.0f;
     bool measured = false;
     uint64_t underruns = 0;
@@ -200,6 +201,10 @@ struct sc_mixer {
     std::map<int, Tap> taps;
     int next_source = 1, next_tap = 1;
     sc_mixer_ducking ducking{};
+    int push_source = 0, push_mode = SC_PUSH_OFF;  // push to talk: the sound it holds, and how
+    int push_release_blocks = 0;                   // blocks a let-go waits before it counts
+    bool push_down = false;                        // the key is held
+    int push_hold = 0;                             // blocks left before a let-go counts
     float duck_gain = 1.0f, hold_left = 0.0f;
     float master_peak = FLOOR_DB, master_rms = FLOOR_DB;
     bool master_measured = false;
@@ -291,6 +296,29 @@ struct sc_mixer {
         }
     }
 
+    // Push to talk: whether the held sound is heard now (the key, or a let-go still waiting out its delay).
+    float push_target() const {
+        const bool held = push_down || push_hold > 0;
+        return (push_mode == SC_PUSH_TALK) == held ? 1.0f : 0.0f;
+    }
+
+    // ... and its gain on the sound this block, gliding over the block when it changes.
+    void push_gate(int id, Source &s) {
+        if (id != push_source || push_mode == SC_PUSH_OFF) return;
+        const float target = push_target();
+        const float start = s.talk;
+        s.talk = target;
+        if (start == target) {
+            if (target == 0.0f) std::fill(s.block.begin(), s.block.end(), 0.0f);
+            return;
+        }
+        for (int i = 0; i < BLOCK; ++i) {
+            const float g = start + (target - start) * static_cast<float>(i) / static_cast<float>(BLOCK - 1);
+            s.block[2 * i] *= g;
+            s.block[2 * i + 1] *= g;
+        }
+    }
+
     // Ducking: the gain on every sound that isn't a voice this block, gliding from the last one (start, end).
     std::pair<float, float> duck(float voice_db) {
         const sc_mixer_ducking &d = ducking;
@@ -314,9 +342,11 @@ struct sc_mixer {
 
     void mix_one() {
         float voice_db = FLOOR_DB;
+        if (!push_down && push_hold > 0) --push_hold;  // a let-go waits out its delay block by block
         for (auto &[id, s] : sources) {
             read(s);
             fade(s);
+            push_gate(id, s);
             const float gain = std::max(0.0f, s.settings.gain);
             float peak = FLOOR_DB, rms = FLOOR_DB;
             if (gain > 0.0f) measure(s.block.data(), gain, peak, rms);
@@ -529,6 +559,38 @@ SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking
         if (!mixer || !ducking) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_set_ducking: nothing given");
         std::lock_guard<std::mutex> hold(mixer->lock);
         mixer->ducking = *ducking;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_push_set(sc_mixer *mixer, int source, int mode, int release_ms) {
+    return sc::guarded("sc_mixer_push_set", [&]() -> int {
+        if (!mixer) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_push_set: no mixer");
+        if (mode < SC_PUSH_OFF || mode > SC_PUSH_MUTE)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_push_set: mode is SC_PUSH_OFF, _TALK or _MUTE");
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        const bool changed = mixer->push_source != source || mixer->push_mode != mode;
+        mixer->push_source = mode == SC_PUSH_OFF ? 0 : source;
+        mixer->push_mode = mixer->push_source ? mode : SC_PUSH_OFF;
+        const int ms = std::clamp(release_ms, 0, 2000);
+        mixer->push_release_blocks = (ms * RATE / 1000 + BLOCK - 1) / BLOCK;
+        if (changed) {
+            mixer->push_hold = 0;
+            for (auto &[id, s] : mixer->sources)  // a newly held sound starts where it belongs, no glide
+                s.talk = id == mixer->push_source ? mixer->push_target() : 1.0f;
+        }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_push_key(sc_mixer *mixer, int down) {
+    return sc::guarded("sc_mixer_push_key", [&]() -> int {
+        if (!mixer) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_push_key: no mixer");
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        const bool was = mixer->push_down;
+        mixer->push_down = down != 0;
+        if (was && !mixer->push_down) mixer->push_hold = mixer->push_release_blocks;
+        if (mixer->push_down) mixer->push_hold = 0;
         return SC_OK;
     });
 }

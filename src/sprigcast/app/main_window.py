@@ -536,6 +536,10 @@ class MainWindow(QMainWindow):
         self.hotkeys = Hotkeys(self)
         self.hotkeys.triggered.connect(self._on_hotkey)
         self.hotkeys.apply(self.collection.hotkeys)
+        from sprigcast.app.hotkeys import PushKey
+
+        self.push_key = PushKey(self.engine.push_key)  # push to talk: pynput's thread straight to the mixer
+        self._sync_push_key()
         self.camera = None  # SprigCast Camera (Settings → Video → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
         self._camera_timer.timeout.connect(self._poll_camera)
@@ -3076,6 +3080,7 @@ class MainWindow(QMainWindow):
         self._save_soon()
         self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.snapshot()))
+        self._sync_push_key()
         self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
@@ -3195,6 +3200,7 @@ class MainWindow(QMainWindow):
             self._save_thumbs()
             self.gardens.close()
         self.hotkeys.stop()
+        self.push_key.stop()
         self.meter.stop()
         self.control.stop()
         if self.camera is not None:
@@ -6434,6 +6440,13 @@ class MainWindow(QMainWindow):
             self.mode_clock.setToolTip(f"{sum(sending) / 1000:.1f} Mbps up in all")
 
     # Hotkeys -----------------------------------------------------------------
+
+    def _sync_push_key(self) -> None:
+        """Push to talk listens for its key only while it's on (Settings → Audio → Devices)."""
+        push = getattr(self, "push_key", None)
+        if push is not None:
+            audio = self.collection.audio
+            push.apply(audio.push_key, active=audio.push_mode != "off")
 
     def _apply_hotkeys(self) -> None:
         self.hotkeys.apply(self.collection.hotkeys)

@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 33
+#define SC_INTERFACE_VERSION 34
 
 enum {
     SC_OK = 0,
@@ -809,6 +809,13 @@ typedef struct sc_mixer_filter {
 } sc_mixer_filter;
 SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filter *filters, int count);
 SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking);
+/* Push to talk (audio.push_mode): one sound (your mic) is heard only while the key is held (SC_PUSH_TALK), or is
+ * silent while it's held (SC_PUSH_MUTE). Letting go takes effect release_ms later (0 .. 2000), so a word's end isn't
+ * cut. Each change glides over one block. source 0 or SC_PUSH_OFF: none. The key itself is sc_mixer_push_key
+ * (down 1 / up 0), from whatever hears the keyboard; the mixer does the rest per block. */
+enum { SC_PUSH_OFF = 0, SC_PUSH_TALK, SC_PUSH_MUTE };
+SC_API int sc_mixer_push_set(sc_mixer *mixer, int source, int mode, int release_ms);
+SC_API int sc_mixer_push_key(sc_mixer *mixer, int down);
 /* An output's queue of finished blocks: each holds `count` entries (SC_TRACK_*, SC_MIXER_MONITOR or
  * SC_MIXER_SOURCE_TAP + id) one after another, SC_MIXER_BLOCK * 2 floats each. At most 64 wait; then the oldest
  * goes and is counted. */
@@ -843,6 +850,9 @@ typedef struct sc_capture_stats {
 SC_API int sc_capture_open(sc_mixer *mixer, int source, const wchar_t *device, int loopback, sc_capture **out);
 SC_API int sc_capture_stats_get(sc_capture *capture, sc_capture_stats *out);
 SC_API void sc_capture_close(sc_capture *capture);
+/* opt_out 1 (the default): a mic the engine opens asks Windows not to turn other apps down for it (communications
+ * ducking, IAudioSessionControl2::SetDuckingPreference). Captures opened after the call follow it. */
+SC_API int sc_audio_windows_ducking(int opt_out);
 
 /* Sound playback (playback.cpp): one of a mixer's mixes (a track, or the monitor mix) played on a playback device
  * with WASAPI on a thread of its own, so monitoring never passes through Python. At most 120 ms is buffered: older

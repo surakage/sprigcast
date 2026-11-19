@@ -305,6 +305,12 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   takes the same calls as Python's `Mixer`; `make_mixer` picks it with the switch on and logs "sound: mixed by the
   engine". Video and sound files go straight from their engine player into the mix. `SPRIGCAST_NO_NATIVE_MIXER=1`
   keeps Python's mixer.
+- **Push to talk** (`sc_mixer_push_set`, `sc_mixer_push_key`): Settings → Audio's push to talk or push to mute
+  on the mic is worked per block in the mixer: the key listener (`app/hotkeys.PushKey`, pynput) only says down or
+  up, and the mixer holds a let-go for "Let go after" (`audio.push_release_ms`) and glides each change over one
+  block. Python's mixer does the same when it mixes.
+- **Windows ducking** (`sc_audio_windows_ducking`, `audio.windows_ducking_off`, on by default): each mic the engine
+  opens asks Windows not to turn other apps down for it (`SetDuckingPreference`). A mic Python captures can't ask.
 - **Capture** (`sc_capture_*`): a microphone or desktop sound with no Python-only filters, and no plugin listening to it, is
   read with WASAPI on a thread of its own and pushed straight into the mix. Windows converts the sound to 48 kHz
   stereo itself; if a driver refuses, the engine converts it. The capture finds its device again every 2 s, and a
