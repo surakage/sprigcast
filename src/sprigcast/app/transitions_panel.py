@@ -107,7 +107,7 @@ class TransitionPicture(QWidget):
         super().__init__(parent)
         self.transition = transition
         self.wide = wide  # a little stream screen (the pop-up) rather than a thin strip
-        self.setFixedHeight(56 if not wide else 180)
+        self.setFixedHeight(56 if not wide else self.WIDE_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
@@ -152,12 +152,12 @@ class TransitionPicture(QWidget):
             self._every.stop()
         super().hideEvent(event)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        if self.wide:
-            height = round(self.width() * 9 / 16)
-            if self.height() != height:
-                self.setFixedHeight(height)
+    # The pop-up's screen keeps one height. It used to follow its own width (16:9), inside a scroll area: when
+    # the page was about as tall as the pop-up, the scroll bar coming took width away, the screen got shorter,
+    # the page fit, the scroll bar went, the screen got taller... Qt ran that loop inside itself until the
+    # stack ran out and SprigCast closed (PC 2026-11-19, the Live card's gear). Its height must never depend
+    # on its width.
+    WIDE_HEIGHT = 216  # 16:9 of the room in the 480 px pop-up
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self.play(1)
