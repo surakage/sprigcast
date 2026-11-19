@@ -277,6 +277,9 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     elif kind == "wasapi_process_output_capture":
         _title, exe = _window_parts(s.get("window", ""))
         out = "app_audio", {"apps": [exe] if exe else []}
+    if out is None and kind == "obs_glow_source":
+        notes.append(f"{name}: the Glow plugin's source has no match; add the Glow effect in Filters instead.")
+        return None
     if out is None:
         notes.append(f"{name}: {kind or 'this kind of source'} has no match in SprigCast yet.")
         return None
@@ -284,6 +287,9 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser"):
         settings["volume_db"] = _volume_db(obs.get("volume", 1.0))
         settings["muted"] = bool(obs.get("muted", False))
+    monitoring = int(_num(obs.get("monitoring_type"), 0))  # OBS: 1 = monitor only, 2 = monitor and output
+    if sk in ("audio_input", "audio_output", "app_audio", "media", "browser", "camera") and monitoring in (1, 2):
+        settings["monitor"] = "only" if monitoring == 1 else True
     return SourceConfig(id="", kind=sk, name=name, settings=settings, filters=_filters(obs, notes))
 
 
@@ -580,6 +586,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         col.active_scenes[canvas_id] = on.id
 
     _transitions(data, col, by_name, made, notes)
+    _scene_filters(scenes, by_name, sources, notes)
     _hotkeys(raw, made, sources, col)
     col.wrap_blooms()
     set_aside_unused(col, notes)
@@ -875,6 +882,31 @@ def vertical_twin(path: str) -> str:
         except OSError:
             continue
     return ""
+
+
+def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sources: dict[int, SourceConfig],
+                   notes: list[str]) -> None:
+    """Filters on OBS scenes. A Move filter that only turns one thing in the scene (a barrel roll) becomes a
+    Barrel roll filter on that thing, off until triggered like in OBS; anything else is noted, not dropped
+    quietly (PC, 2026-11-19: "THSV Barrel Roll" on the Elgato scene went missing without a word)."""
+    for scene in scenes:
+        for f in scene.get("filters") or []:
+            if not isinstance(f, dict):
+                continue
+            kind, s, label = str(f.get("id", "")), f.get("settings") or {}, f.get("name") or f.get("id")
+            target = sources.get(id(by_name.get(str(s.get("source", "")), {})))
+            moves = any(_num((s.get(k) or {}).get(a)) for k in ("pos", "scale", "bounds") for a in ("x", "y"))
+            turn = _num(s.get("rot"))
+            if kind == "move_source_filter" and target is not None and turn and not moves:
+                ms = _num(s.get("duration"), 300) if s.get("custom_duration", True) else 300
+                target.filters.append(Filter(
+                    id=f"f-{len(target.filters)}", kind="barrel_roll", name=str(label), enabled=False,
+                    settings={"seconds": max(0.5, min(120.0, ms / 1000)), "turns": max(1, round(abs(turn) / 360)),
+                              "direction": "anticlockwise" if s.get("rot_sign") == "-" else "clockwise"}))
+                notes.append(f"{label}: now a Barrel roll on {target.name} (add Barrel Roll from the Plugin store "
+                             f"to use it).")
+                continue
+            notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
 
 
 def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> Transition | None:

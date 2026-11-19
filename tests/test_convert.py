@@ -432,3 +432,24 @@ def test_stinger_finds_its_vertical_video_beside_it(tmp_path):
     data["current_transition"] = "Sting"
     col, _ = from_obs(data, _like())
     assert col.transition.stinger.vertical_path == str(tmp_path / "stinger-vertical.webm")
+
+
+def test_obs_scene_filters_and_monitoring():
+    """A Move filter on a scene that only turns one thing becomes a Barrel roll (off) on it; other scene
+    filters are noted, not dropped quietly; OBS's monitoring comes along (PC, 2026-11-19)."""
+    data = obs_file()
+    scene = next(s for s in data["sources"] if s["name"] == "Overlay")
+    scene["filters"] = [
+        {"id": "move_source_filter", "name": "Roll", "enabled": False,
+         "settings": {"source": "Chat", "rot": 1800, "duration": 12000, "custom_duration": True,
+                      "pos": {"x": 0, "y": 0}, "scale": {"x": 0, "y": 0}}},
+        {"id": "some_scene_filter", "name": "Sparkle", "settings": {}}]
+    chat = next(s for s in data["sources"] if s["name"] == "Chat")
+    chat["monitoring_type"] = 2
+    col, notes = from_obs(data, _like())
+    page = next(s for s in col.sources if s.name == "Chat")
+    roll = next(f for f in page.filters if f.kind == "barrel_roll")
+    assert not roll.enabled and roll.settings == {"seconds": 12.0, "turns": 5, "direction": "clockwise"}
+    assert page.settings["monitor"] is True
+    assert "Overlay: the Sparkle filter has no match yet." in notes
+    assert any(n.startswith("Roll: now a Barrel roll on Chat") for n in notes)
