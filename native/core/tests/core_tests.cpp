@@ -88,6 +88,22 @@ int main() {
         CHECK(index == 0 && std::abs(out[0] - 0.375f) < 1e-5f && std::abs(out.back() - 0.375f) < 1e-5f);
         CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 0);
         CHECK(sc_mixer_source_push(mixer, 999, block.data(), SC_MIXER_BLOCK) == SC_ERR_ARGUMENT);
+        // Push to talk on sound a: silent until the key is held, then heard.
+        CHECK(sc_mixer_push_set(mixer, a, SC_PUSH_TALK, 0) == SC_OK);
+        CHECK(sc_mixer_push_set(mixer, a, 7, 0) == SC_ERR_ARGUMENT);
+        auto mixed = [&]() {
+            CHECK(sc_mixer_source_push(mixer, a, block.data(), SC_MIXER_BLOCK) == SC_OK);
+            CHECK(sc_mixer_source_push(mixer, b, block.data(), SC_MIXER_BLOCK) == SC_OK);
+            CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+            CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+            return out.back();
+        };
+        CHECK(std::abs(mixed() - 0.125f) < 1e-5f);
+        CHECK(sc_mixer_push_key(mixer, 1) == SC_OK);
+        CHECK(std::abs(mixed() - 0.375f) < 1e-5f);
+        CHECK(sc_mixer_push_key(mixer, 0) == SC_OK);
+        CHECK(std::abs(mixed() - 0.125f) < 1e-5f);
+        CHECK(sc_audio_windows_ducking(1) == SC_OK);
         sc_mixer_destroy(mixer);
         sc_mixer *clocked = nullptr;  // its own thread mixes, and stops cleanly
         CHECK(sc_mixer_create(1, &clocked) == SC_OK);
@@ -684,6 +700,38 @@ int main() {
         engine_draws_it("while a display is captured");
         CHECK(sc_engine_source_capture(eng, 21, 0, 0, 0, 0) == SC_OK);  // stopped: the source keeps its picture
         CHECK(sc_engine_capture_state(eng, 21, &state, nullptr, nullptr, nullptr) == SC_OK && state == SC_SCREEN_NONE);
+
+        {  // The capture helper's way: captured on a device of its own, shared with the engine on the card.
+            void *engine_device = nullptr;
+            int engine_rebuilds = 0;
+            uint32_t low = 0;
+            int32_t high = 0;
+            CHECK(sc_engine_device(eng, &engine_device, &engine_rebuilds) == SC_OK && engine_device);
+            CHECK(sc_d3d_device_luid(engine_device, &low, &high) == SC_OK);
+            sc_capture_feed *feed = nullptr;
+            CHECK(sc_capture_feed_create(low, high, 1, 2, 0, 0, L"sprigcore-feed-check", &feed) == SC_ERR_ARGUMENT);
+            CHECK(sc_capture_feed_create(low, high, 0, reinterpret_cast<uint64_t>(monitor), SC_SCREEN_CURSOR, 16,
+                                         L"sprigcore-feed-check", &feed) == SC_OK && feed);
+            sc_capture_feed *twice = nullptr;  // a block of that name is there already
+            CHECK(sc_capture_feed_create(low, high, 0, reinterpret_cast<uint64_t>(monitor), 0, 16,
+                                         L"sprigcore-feed-check", &twice) == SC_ERR_DEVICE && !twice);
+            CHECK(sc_engine_source_shared(eng, 23, L"sprigcore-feed-check") == SC_OK);
+            int fstate = SC_SCREEN_STARTING, fw = 0, fh = 0;
+            uint64_t fframes = 0;
+            for (int waited = 0; waited < 7000 && fstate == SC_SCREEN_STARTING; waited += 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                CHECK(sc_capture_feed_state(feed, &fstate, &fw, &fh, &fframes) == SC_OK);
+            }
+            std::printf("capture feed: state %d, %dx%d, %llu pictures\n", fstate, fw, fh,
+                        static_cast<unsigned long long>(fframes));
+            CHECK(fstate == SC_SCREEN_RUNNING || fstate == SC_SCREEN_ENDED || fstate == SC_SCREEN_REFUSED);
+            if (fstate == SC_SCREEN_RUNNING) CHECK(fw > 0 && fh > 0 && fframes > 0);
+            engine_draws_it("while the helper's capture is shown");
+            CHECK(sc_engine_source_shared(eng, 23, nullptr) == SC_OK);
+            sc_capture_feed_destroy(feed);
+            sc_capture_feed_destroy(nullptr);
+            engine_draws_it("after the helper's capture ended");
+        }
 
         HWND window = CreateWindowExW(0, L"STATIC", L"sprigcore capture check", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40,
                                       40, 200, 120, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);

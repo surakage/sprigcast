@@ -59,4 +59,38 @@ def test_a_sprig_reads_as_what_it_shows():
                 Scene(id="colour", name="Wash", canvas=H, kind="part", items=[SceneItem(source="bg")]),
                 Scene(id="empty", name="Empty", canvas=H, kind="part")])
     kinds = {s.id: col.sprig_kind(s, H) for s in col.parts()}
-    assert kinds == {"cam-sprig": "camera", "wrap": "camera", "mix": "scene", "colour": "color", "empty": "scene"}
+    assert kinds == {"cam-sprig": "camera", "wrap": "camera", "mix": "scene", "colour": "color", "empty": "empty"}
+
+
+def test_empty_and_nested_sprigs_get_their_own_icon():
+    """A blank sprig shows an empty icon until something goes in; two or more sprigs inside show a nested one
+    (user, 2026-11-19)."""
+    S = lambda i, kind: SourceConfig(id=i, kind=kind, name=i)  # noqa: E731
+    P = lambda i, part: SourceConfig(id=i, kind=PART_KIND, name=i, settings={"scene": part})  # noqa: E731
+    col = SceneCollection(
+        canvases=[Canvas(id=H, width=1920, height=1080)],
+        sources=[S("cam", "camera"), S("chat", "chat"), P("p-cam", "cams"), P("p-chat", "chats"), P("p-none", "blank")],
+        scenes=[Scene(id="cams", name="Cam", canvas=H, kind="part", items=[SceneItem(source="cam")]),
+                Scene(id="chats", name="Chat", canvas=H, kind="part", items=[SceneItem(source="chat")]),
+                Scene(id="blank", name="Blank", canvas=H, kind="part"),
+                Scene(id="nest", name="Nest", canvas=H, kind="part",
+                      items=[SceneItem(source="p-cam"), SceneItem(source="p-chat")]),
+                Scene(id="one", name="One", canvas=H, kind="part", items=[SceneItem(source="p-none")]),
+                Scene(id="nest-and-cam", name="Mix", canvas=H, kind="part",
+                      items=[SceneItem(source="p-chat"), SceneItem(source="p-cam"), SceneItem(source="cam")])])
+    kinds = {s.id: col.sprig_kind(s, H) for s in col.parts()}
+    assert kinds["blank"] == "empty" and kinds["one"] == "empty"  # an empty sprig inside shows nothing
+    assert kinds["nest"] == "nested"
+    assert kinds["nest-and-cam"] == "scene"  # sprigs plus other things: the plain sprig leaf
+    col.scene("blank").items.append(SceneItem(source="chat"))
+    assert col.sprig_kind(col.scene("blank"), H) == "chat"  # something added: the icon changes
+
+
+def test_leaves_tags_are_icons():
+    from sprigcast.app import theme
+    from sprigcast.app.build_stage import tag_badges
+
+    assert tag_badges("") == []
+    assert tag_badges("2 hidden here · filters · problem") == [
+        ("eye-off", theme.MUTED), ("sliders", theme.MUTED), ("warning", theme.BAD)]
+    assert tag_badges("waiting") == [("clock", theme.MUTED)]

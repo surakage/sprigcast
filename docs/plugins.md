@@ -22,7 +22,7 @@ The first start puts `countdown_example.py` in the folder: a small working plugi
 line that matters. Copy it into your plugins folder, restart, and add it with **+ → Plugins → Hello sprig**. It has:
 
 1. **A source**: `@register("example_hello_sprig")` puts a card under + → Plugins.
-2. **Settings**: `defaults` gives it a name, a colour and a wave count. Double-click the card to change them.
+2. **Settings**: `defaults` gives it a name, a color and a wave count. Double-click the card to change them.
 3. **Drawing**: `video_frame()` draws the card with Pillow, only when a setting changed.
 4. **An action**: `hello_sprig.wave`, for Streamer.bot, Stream Deck or a web link.
 5. **A hotkey**: Hello sprig: Wave, in Tools → Hotkeys → Plugins.
@@ -143,7 +143,7 @@ you draw:
 ```python
 from sprigcast.core import style
 
-look = style.resolve(self.settings, {"text_color": "#f2f7f3", "card_color": "#151c19e0"})  # your own colours
+look = style.resolve(self.settings, {"text_color": "#f2f7f3", "card_color": "#151c19e0"})  # your own colors
 p.setFont(style.qfont(look, 48))                  # their font, at their text size
 style.draw_card(p, rect, 36, look)                # round, leaf or square, with their border and shadow
 if look.shows("date", self.settings): ...         # show_date, or "hide: date" in a custom look

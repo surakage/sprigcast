@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal
 
-from sprigcast.chat import PLATFORMS, ChatMessage, make_reader
+from sprigcast.chat import PLATFORMS, ChatMessage, hidden, make_reader
 from sprigcast.chat.feed import FEED
 from sprigcast.core.quiet import Every
 
@@ -27,6 +27,7 @@ class ChatHub(QObject):
     deleted = Signal(str, str)  # platform, message id
     cleared = Signal(str, str)  # platform, user id ("" = everyone)
     changed = Signal()  # which chats are read, or one's state, changed
+    hid = Signal(str)  # an account was hidden: its lines leave (the name, without capitals)
 
     def __init__(self, names: Callable[[], dict[str, str]], parent: QObject | None = None):
         super().__init__(parent)
@@ -34,6 +35,7 @@ class ChatHub(QObject):
         self.readers: dict[str, object] = {}
         self.states: dict[str, str] = {}
         self.reasons: set[str] = set()
+        self.hidden: frozenset[str] = frozenset(hidden.load())  # accounts whose lines are never shown
 
     def want(self, reason: str, on: bool) -> None:
         before = bool(self.reasons)
@@ -80,7 +82,26 @@ class ChatHub(QObject):
         self.reasons.clear()
         self.refresh()
 
+    def set_hidden(self, names: list[str]) -> None:
+        """Replace the hidden accounts (saved). Lines already shown from newly hidden ones leave."""
+        new = [n for n in names if n not in self.hidden]
+        hidden.save(names)
+        self.hidden = frozenset(names)
+        for name in new:
+            FEED.remove(user=name)
+            self.hid.emit(name)
+
+    def hide(self, name: str) -> bool:
+        name = hidden.clean(name) or ""
+        if not name or name in self.hidden:
+            return False
+        self.set_hidden([*hidden.load(), name])
+        log.info("chat: an account was hidden (%d hidden)", len(self.hidden))  # in the logbook, no names
+        return True
+
     def _message(self, message: ChatMessage) -> None:
+        if self.hidden and not message.notice and message.user.lower() in self.hidden:
+            return
         FEED.push(message)
         self.message.emit(message)
 

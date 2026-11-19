@@ -496,3 +496,36 @@ def test_a_held_switch_draws_the_new_blooms_sprigs_only_once_it_shows():
     assert engine._still_waking(fake, "h", 0.0) is old
     engine._sprigs_held = frozenset()
     assert engine._still_waking(fake, "h", 0.0) is None
+
+
+def test_slow_wakes_are_spread_over_ticks(monkeypatch):
+    """A bloom's sources waking all in one tick held that frame for every canvas (PC soak 2026-11-19): once waking
+    has taken WAKE_BUDGET_S of a tick, the rest wake on the next ticks."""
+    from sprigcast.render import engine as module
+
+    engine, col = _engine()
+    fake = FakeCompositor()
+    col.scenes[1].items = [SceneItem(source=i) for i in ("game", "soon", "cam")]
+    col.scenes[0].items = []
+    col.active_scenes["h"] = "a"
+    engine._tick(fake, 1.0)
+    engine._tick(fake, 1.0 + CAMERA_SLEEP_AFTER + SLEEP_AFTER + 0.1)
+    assert all(s.asleep for s in engine._sources.values())
+    clock = [100.0]
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0])
+
+    def slow_wake(source):
+        def wake():
+            source.log.append("wake")
+            clock[0] += module.WAKE_BUDGET_S * 1.5
+        return wake
+
+    for source in engine._sources.values():
+        source.wake = slow_wake(source)
+    col.active_scenes["h"] = "b"
+    awake = []
+    for step in range(3):
+        engine._tick(fake, 50.0 + step / 60)
+        awake.append(sum(not s.asleep for s in engine._sources.values()))
+    assert awake == [1, 2, 3]
+    assert all(s.log.count("wake") == 1 for s in engine._sources.values())

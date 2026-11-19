@@ -15,6 +15,8 @@ Start, pause, reset and add time with hotkeys (Tools → Hotkeys → Plugins), a
     {"do": "countdown.reset"}                 back to the start, stopped
     {"do": "countdown.add", "seconds": 60}    more time; negative takes some off
     {"do": "countdown.get"}                   where it is: {"seconds", "running", "done", "text"}
+With more than one Countdown, those (and the hotkeys) are for the ones on air now, or every one when none is on
+air; "source": "name" picks one. Each answer says which: "source" (the one the numbers are about) and "sources".
 Apps hear "countdown.changed" after each of those, and "countdown.done" when it reaches 0 on screen.
 
 Settings: Minutes, Until, Label (small words above the time), Done text (shown when it ends), Restart when shown,
@@ -46,11 +48,15 @@ from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "countdown", "name": "Countdown", "version": 2, "adds": "Source",
+PLUGIN = {"id": "countdown", "name": "Countdown", "version": 4, "adds": "Source",
           "about": "A countdown on a SprigCast card, for a Starting soon bloom or a break.",
-          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
+          "new": "The Done text is never cut off, and hotkeys and apps work on the countdown that's on air."}
 
-KIND = "countdown_timer"  # "countdown" is the plugins folder's example
+# "countdown" was the plugins-folder example's kind: owning it, a countdown made from the example becomes this card
+# (its minutes carry on). The example is "example_countdown" now (plugins.py). Version 1 called it countdown_timer.
+KIND = "countdown"
+OLD_KIND = "countdown_timer"
+KINDS = (KIND, OLD_KIND)
 H = cards.H
 W = 396  # how wide the card starts (its box follows the length: card_width)
 MOST_MINUTES = 24 * 60
@@ -182,13 +188,13 @@ def card_words(text: str, label: str, counting: bool, vine: float | None) -> car
 
 def card_width(longest_text: str, text: str, label: str, vine: bool, look=None) -> int:
     """The box: the longest time it shows, or what it shows now if that's longer (a Done text may shrink to
-    60% to fit)."""
+    75% to fit)."""
     v = 1.0 if vine else None
     shown = [cards.Words(longest_text, label, vine=v)]
     if any(c.isdigit() for c in text):
         shown.append(cards.Words(cards.even(text), label, vine=v))
     else:
-        shown.append(cards.Words(text, label, vine=v, shrink=0.6))
+        shown.append(cards.Words(text, label, shrink=0.75))  # a Done text: drawn without the vine
     return cards.card_width(shown, look)
 
 
@@ -242,7 +248,7 @@ def _make_ui():
         def on_restart(self, source_id: str) -> None:
             api = _window_api()
             source = next((s for s in api.col.sources if s.id == source_id), None) if api is not None else None
-            if source is not None and source.kind == KIND:
+            if source is not None and source.kind in KINDS:
                 change(api, [source], restarted)
 
         @Slot(str)
@@ -364,21 +370,61 @@ class CountdownSource(Source):
         return frame
 
 
+@register(OLD_KIND)
+class CountdownTimerSource(CountdownSource):
+    """A countdown made with version 1 (kind countdown_timer): the same card, left out of the + menu."""
+
+    label = ""
+
+
 # The API, hotkeys and right-click ----------------------------------------------------------------
 
 
+def on_air_ids(col) -> set[str]:
+    """Ids of the sources showing now: in the bloom on air on each switched-on canvas, through its sprigs, eye on."""
+    configs = {s.id: s for s in col.sources}
+    scenes = {s.id: s for s in col.scenes}
+    found: set[str] = set()
+
+    def walk(scene, canvas_id: str, depth: int = 0) -> None:
+        for item in scene.items:
+            config = configs.get(item.source)
+            if config is None or not item.visible or depth > 16:
+                continue
+            found.add(config.id)
+            part = col.part_of(config)
+            if part is not None:
+                walk(col.shape_for(part, canvas_id), canvas_id, depth + 1)
+
+    for canvas in col.canvases:
+        scene = scenes.get(col.active_scenes.get(canvas.id))
+        if scene is not None and getattr(canvas, "enabled", True):
+            walk(scene, canvas.id)
+    return found
+
+
 def _countdowns(api, data: dict | None = None, *, control: bool = True) -> list:
-    """The countdowns this is for: the one named (source), or every one (that start and pause work on)."""
+    """The countdowns this is for: the one named (source); else the ones on air now; else, with none on air, every
+    one. With control, only those start and pause work on. The ones on air come first, so the answer (the first)
+    is about the card viewers see: with one off air and one on air, the answers were all about the one off air
+    (PC check 2026-11-19)."""
     if data and data.get("source") is not None:
         source = api._source(data, "source")
-        if source.kind != KIND:
+        if source.kind not in KINDS:
             raise ApiError("bad_request", f"{source.name} isn't a countdown.")
         if control and to_a_time(source.settings):
             raise ApiError("bad_request", _why_not(source))
         return [source]
-    found = [s for s in api.col.sources if s.kind == KIND]
+    found = [s for s in api.col.sources if s.kind in KINDS]
     if not found:
         raise ApiError("not_found", "Add a Countdown first (+ → Plugins → Countdown).")
+    try:
+        showing = on_air_ids(api.col)
+    except Exception:  # noqa: BLE001 (an odd garden: every countdown, as before)
+        log.debug("countdown: couldn't tell what's on air", exc_info=True)
+        showing = set()
+    on_air = [s for s in found if s.id in showing]
+    found = on_air or found
     if not control:
         return found
     usable = [s for s in found if not to_a_time(s.settings)]
@@ -397,17 +443,23 @@ def _answer(source) -> dict[str, Any]:
             "done": read["done"], "text": read["text"]}
 
 
+def _answers(sources) -> dict[str, Any]:
+    """The answer: about the first (source names it), with sources naming every countdown it was for."""
+    return {**_answer(sources[0]), "sources": [s.name for s in sources]}
+
+
 def change(api, sources, how) -> dict:
     """Give each countdown how(settings, now), save it (it's kept with your blooms) and redraw. Answers the first."""
     now = time.time()
     for source in sources:
         source.settings = how(dict(source.settings), now)
     commit_settings(api.host, sources, "countdown")
-    try:
-        send_event(api, "countdown.changed", _answer(sources[0]))
-    except Exception:
-        log.debug("couldn't tell apps about the countdown", exc_info=True)
-    return _answer(sources[0])
+    for source in sources:  # one event for each countdown it changed
+        try:
+            send_event(api, "countdown.changed", _answer(source))
+        except Exception:
+            log.debug("couldn't tell apps about the countdown", exc_info=True)
+    return _answers(sources)
 
 
 def _seconds(data, key: str) -> float:
@@ -450,10 +502,10 @@ def _add(api, data):
 
 
 def _get(api, data):
-    return _answer(_countdowns(api, data, control=False)[0])
+    return _answers(_countdowns(api, data, control=False)[:1])
 
 
-_WHICH = {"source": "?which Countdown (default: every one)"}
+_WHICH = {"source": "?which Countdown (default: the ones on air; with none on air, every one)"}
 register_action("countdown.start", "Start the countdown, or carry on after a pause. minutes starts a fresh one.",
                 {"minutes": "?a countdown of this many minutes, from the start", **_WHICH}, _start)
 register_action("countdown.pause", "Pause the countdown.", dict(_WHICH), _pause)
@@ -462,7 +514,7 @@ register_action("countdown.reset", "The countdown back to the start, stopped.", 
 register_action("countdown.add", "Add seconds to the countdown; negative takes time off.",
                 {"seconds": "how many seconds", **_WHICH}, _add)
 register_action("countdown.get", "Where the countdown is, without changing it.",
-                {"source": "?which Countdown (default: the first)"}, _get)
+                {"source": "?which Countdown (default: the one on air, else the first)"}, _get)
 
 
 HOTKEYS = {
@@ -473,7 +525,7 @@ HOTKEYS = {
 
 
 def _hotkeys(collection):
-    if not any(s.kind == KIND for s in collection.sources):
+    if not any(s.kind in KINDS for s in collection.sources):
         return []
     return [(hid, label) for hid, (label, _fn) in HOTKEYS.items()]
 
@@ -494,7 +546,7 @@ register_hotkeys(_hotkeys, _run_hotkey)
 
 
 def _menu(api, source, add):
-    if source is None or source.kind != KIND or to_a_time(source.settings):
+    if source is None or source.kind not in KINDS or to_a_time(source.settings):
         return
     going = reading(source.settings)["counting"]
     add("Pause" if going else "Start", lambda: change(api, [source], toggled))

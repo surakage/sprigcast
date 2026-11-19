@@ -25,7 +25,8 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 33  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 34  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -427,7 +428,64 @@ def engine_choice() -> str:
     asked = os.environ.get("SPRIGCAST_ENGINE", "").strip().lower()
     if asked in ("native", "python"):
         return asked
-    return "native" if sys.platform == "win32" else "python"
+    if sys.platform != "win32":
+        return "python"
+    return "python" if software_only() else "native"
+
+
+def why_python() -> str:
+    """Why engine_choice() said python, for the log."""
+    if _python_only:
+        return "safe mode"
+    if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "python":
+        return "SPRIGCAST_ENGINE=python"
+    if sys.platform == "win32" and software_only():
+        return "no graphics driver here, only a software renderer"
+    return "the engine is built for Windows only"
+
+
+_engine_failed = ""  # why the engine stopped drawing during this run (render/native_bridge.py fail)
+
+
+def note_engine_failed(why: str) -> None:
+    global _engine_failed
+    _engine_failed = _engine_failed or str(why) or "it stopped"
+
+
+def old_engine_warning() -> str:
+    """Why the old (Python) engine draws on a PC whose graphics card could run the new one, in a few words for
+    the window's warning; "" when the new engine draws, or when this PC has no graphics card for it (the old
+    engine is kept for those, user 2026-11-19, and nothing is said there)."""
+    if sys.platform != "win32" or software_only():
+        return ""
+    if _python_only:
+        return "Safe mode"
+    if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "python":
+        return "Turned off"
+    if not available():
+        return "Engine file missing"
+    return "Engine stopped" if _engine_failed else ""
+
+
+_software: list[bool] = []  # worked out once: whether Windows has only a software renderer
+
+
+def software_only() -> bool:
+    """True when every graphics card Windows lists is a software renderer (the Microsoft Basic Render Driver: no
+    graphics driver, as on a build machine or a fresh install). The engine draws there on the CPU and falls far
+    behind (CI saw single frames take 5-47 s), so by default the old engine draws instead; SPRIGCAST_ENGINE=native
+    still asks for the engine."""
+    if not _software:
+        found = adapters() if sys.platform == "win32" else []
+        _software.append(bool(found) and all(_is_software(card) for card in found))
+        if _software[0]:
+            log.info("native engine: only a software renderer here (%s); the Python engine draws",
+                     ", ".join(card["name"] for card in found))
+    return _software[0]
+
+
+def _is_software(card: dict) -> bool:
+    return bool(card.get("software")) or (card.get("vendor_id") == 0x1414 and card.get("device_id") == 0x8C)
 
 
 def use_python_engine() -> None:
@@ -440,6 +498,15 @@ def use_python_engine() -> None:
 def use_native() -> bool:
     """True when the native engine was asked for and loads. Parts that have moved check this once at start."""
     return engine_choice() == "native" and available()
+
+
+def set_windows_ducking(opt_out: bool) -> bool:
+    """Ask Windows not to turn other apps down when the engine opens a mic (True), or let it (False). Mics opened
+    after this follow it. False when there is no engine to tell."""
+    lib = _lib() or _media_lib()
+    if lib is None:
+        return False
+    return lib.sc_audio_windows_ducking(int(bool(opt_out))) == 0
 
 
 def drain_log() -> int:
@@ -1264,6 +1331,8 @@ def _media_sigs() -> dict:
         "sc_mixer_source_push": (c_int, [vp, c_int, vp, c_int]),
         "sc_mixer_source_media": (c_int, [vp, c_int, vp, c_int]),
         "sc_mixer_set_ducking": (c_int, [vp, ctypes.POINTER(MixerDucking)]),
+        "sc_mixer_push_set": (c_int, [vp, c_int, c_int, c_int]),
+        "sc_mixer_push_key": (c_int, [vp, c_int]),
         "sc_mixer_tap_add": (c_int, [vp, ctypes.POINTER(c_int), c_int, ctypes.POINTER(c_int)]),
         "sc_mixer_tap_remove": (c_int, [vp, c_int]),
         "sc_mixer_tap_take": (c_int, [vp, c_int, vp, c_int, ctypes.POINTER(ctypes.c_int64),
@@ -1273,6 +1342,7 @@ def _media_sigs() -> dict:
         "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
         "sc_mixer_source_filters": (c_int, [vp, c_int, ctypes.POINTER(MixerFilter), c_int]),
         "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
+        "sc_audio_windows_ducking": (c_int, [c_int]),
         "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
         "sc_capture_close": (None, [vp]),
         "sc_playback_open": (c_int, [vp, c_int, ctypes.c_wchar_p, ctypes.POINTER(vp)]),
@@ -1911,6 +1981,13 @@ class SoundMixer:
         d = MixerDucking(int(bool(enabled)), float(amount_db), float(threshold_db), float(attack_ms),
                          float(release_ms), float(hold_ms))
         _check(self._call(self._lib.sc_mixer_set_ducking, ctypes.byref(d)))
+
+    def set_push(self, source: int, mode: int, release_ms: int) -> None:
+        """Push to talk on one sound (PUSH_TALK or PUSH_MUTE; PUSH_OFF or source 0: none)."""
+        _check(self._call(self._lib.sc_mixer_push_set, int(source), int(mode), int(release_ms)))
+
+    def push_key(self, down: bool) -> None:
+        _check(self._call(self._lib.sc_mixer_push_key, int(bool(down))))
 
     def add_tap(self, what: list[int]) -> int:
         entries = (ctypes.c_int * len(what))(*what)

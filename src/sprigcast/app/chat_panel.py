@@ -29,10 +29,12 @@ from collections import OrderedDict, deque
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QTextDocument
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
     QTextBrowser,
@@ -41,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.chat import PLATFORMS, ChatMessage, name_for, readable_colour
+from sprigcast.chat import PLATFORMS, ChatMessage, hidden, name_for, readable_colour
 
 log = logging.getLogger(__name__)
 KEY = "chat"  # the panel's key in app/panels.py
@@ -132,6 +134,10 @@ def _words(text: str) -> str:
 
 
 class ChatView(QTextBrowser):
+    reply_asked = Signal(object)  # a ChatMessage: start a reply to its sender
+    hide_asked = Signal(str)  # a chatter's name: never show them again
+    moderate_asked = Signal(object, str, int)  # a ChatMessage, "timeout" / "ban" / "delete" / "block", seconds
+
     """The native chat list. Keeps the last KEEP lines; emote pictures load once each.
 
     Scrolled up to read? New lines don't yank you down: a "New messages" pill appears instead."""
@@ -144,6 +150,8 @@ class ChatView(QTextBrowser):
         self.document().setDocumentMargin(2)
         self.document().setMaximumBlockCount(KEEP)  # the oldest line leaves as a new one comes
         self.messages: deque[ChatMessage] = deque(maxlen=KEEP)
+        self.can_reply = lambda message: False  # the panel says which lines can be answered from here
+        self.powers = lambda message: ()  # ...and what you may do to a line's sender (chat/moderation.POWERS)
         self.mixed = False  # several chats at once: mark each line with its platform
         self.names: frozenset[str] = frozenset()  # your channel names, lowercase, for mention highlights
         self._urls: dict[str, str] = {}  # emote id -> picture, for platforms that send their own
@@ -177,6 +185,65 @@ class ChatView(QTextBrowser):
         self.notice.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.notice.hide()
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
+
+    # Right-click a line -------------------------------------------------------------------
+
+    def message_at(self, pos) -> ChatMessage | None:
+        """The chat line under a point of the view, or None (between lines, or the page is being redrawn)."""
+        self.flush()
+        if self.document().blockCount() != len(self.messages):
+            return None
+        cursor = self.cursorForPosition(pos)
+        block = cursor.block()
+        rect = self.document().documentLayout().blockBoundingRect(block)
+        y = pos.y() + self.verticalScrollBar().value()
+        if not (rect.top() <= y <= rect.bottom()):
+            return None
+        return self.messages[block.blockNumber()]
+
+    def line_menu(self, message: ChatMessage) -> QMenu:
+        """Reply, Hide and Copy for one line (made here, shown by contextMenuEvent)."""
+        menu = QMenu(self)
+        if message.user and not message.notice:
+            if self.can_reply(message):
+                menu.addAction(f"Reply to {message.user}").triggered.connect(lambda: self.reply_asked.emit(message))
+            menu.addAction(f"Hide {message.user}").triggered.connect(lambda: self.hide_asked.emit(message.user))
+            menu.addSeparator()
+            self._moderation(menu, message)
+        menu.addAction("Copy message").triggered.connect(
+            lambda: QApplication.clipboard().setText(f"{message.user}: {message.text}" if message.user else message.text))
+        return menu
+
+    def _moderation(self, menu: QMenu, message: ChatMessage) -> None:
+        """Timeout, Ban, Delete and Block, where the platform and your sign-in have them."""
+        from sprigcast.chat import moderation
+
+        powers = self.powers(message)
+        if not powers:
+            return
+
+        def ask(action: str, seconds: int = 0):
+            return lambda: self.moderate_asked.emit(message, action, seconds)
+
+        if "timeout" in powers:
+            lengths = menu.addMenu(f"Timeout {message.user}")
+            for seconds, words in moderation.TIMEOUTS:
+                lengths.addAction(words.capitalize()).triggered.connect(ask("timeout", seconds))
+        if "ban" in powers:  # the second step is the "are you sure?"
+            menu.addMenu(f"Ban {message.user}").addAction("Ban for good").triggered.connect(ask("ban"))
+        if "delete" in powers and message.id:
+            menu.addAction("Delete message").triggered.connect(ask("delete"))
+        if "block" in powers:
+            menu.addAction(f"Block {message.user}").triggered.connect(ask("block"))
+        menu.addSeparator()
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        message = self.message_at(event.pos())
+        if message is None:
+            return
+        menu = self.line_menu(message)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        menu.popup(event.globalPos())  # popup(), not exec(): no second event loop inside the click
 
     def set_notice(self, text: str) -> None:
         if not text:
@@ -270,7 +337,8 @@ class ChatView(QTextBrowser):
         self.document().clear()  # also drops the pictures it holds
         self.redraw()
 
-    def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False) -> None:
+    def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False,
+               user: str = "") -> None:
         """A moderator deleted a message, timed someone out, or cleared chat (on one platform).
         Only those lines leave the page; the rest isn't rebuilt (a full redraw cost 60 ms on a Twitch clear)."""
         from PySide6.QtGui import QTextCursor
@@ -278,7 +346,8 @@ class ChatView(QTextBrowser):
         def goes(m: ChatMessage) -> bool:
             if platform and m.platform != platform:
                 return False
-            return everything or bool(message_id and m.id == message_id) or bool(user_id and m.user_id == user_id)
+            return (everything or bool(message_id and m.id == message_id) or bool(user_id and m.user_id == user_id)
+                    or bool(user and not m.notice and m.user.lower() == user))  # a hidden account, by name
 
         self.flush()
         gone = [i for i, m in enumerate(self.messages) if goes(m)]
@@ -428,7 +497,7 @@ class ChatPanel(QWidget):
         from sprigcast.chat.hub import ChatHub
 
         super().__init__()
-        self.connect_twitch = connect_twitch  # opens Accounts (the one place to sign in); the panel hears the result
+        self.connect_twitch = connect_twitch  # opens Settings → Stream (sign-in is on the place); the panel hears the result
         # The readers live in the hub, shared with chat sources on your stream (sources/chat.py).
         self.hub = ChatHub(self.reading, self)
         self._was_live: set[tuple[str, str]] = set()  # (platform, channel) chats that have read since starting
@@ -461,7 +530,8 @@ class ChatPanel(QWidget):
         self.view = ChatView()
         self.web_holder = QWidget()
         QVBoxLayout(self.web_holder).setContentsMargins(0, 0, 0, 0)
-        for page in (self.empty, self.link_page, self.names_page, self.view, self.web_holder):
+        self.hidden_page = self._hidden_page()
+        for page in (self.empty, self.link_page, self.names_page, self.hidden_page, self.view, self.web_holder):
             self.pages.addWidget(page)
         root.addWidget(self._say_row())
         self.pages.currentChanged.connect(lambda _: self._show_say())
@@ -469,22 +539,43 @@ class ChatPanel(QWidget):
         from sprigcast.output import twitch_auth
 
         twitch_auth.account_events().changed.connect(self._account_changed)
+        from sprigcast.output import stream_details
+
+        self._named: set[str] = set()  # sign-ins already checked this run for a chat to follow
+        stream_details.account_events().changed.connect(self._signed_in)
         self.hub.message.connect(self.view.add)
         self.hub.deleted.connect(lambda platform, mid: self.view.remove(platform=platform, message_id=mid))
         self.hub.cleared.connect(lambda platform, uid: self.view.remove(platform=platform, user_id=uid,
                                                                         everything=not uid))
         self.hub.changed.connect(self._hub_changed)
+        self.hub.hid.connect(lambda name: self.view.remove(user=name))
+        self.view.hide_asked.connect(self.hub.hide)
+        self.view.reply_asked.connect(self.reply_to)
+        self.view.can_reply = lambda message: self.say_row.isVisibleTo(self) and bool(self._mine(message.platform)) \
+            and any(platform == message.platform for platform, _ in self._say_targets())
+        self.view.powers = self.powers
+        self.view.moderate_asked.connect(self.moderate)
+        self.acted.connect(self._acted)
+        self.needs_allow.connect(self._offer_allow)
 
     # Chatting back -----------------------------------------------------------------------
 
     sent = Signal(str)  # "" when sent, else why not (from the sending thread)
 
     def _say_row(self) -> QWidget:
-        """A box under the chat to say something on Twitch as your connected account."""
+        """A box under the chat to say something on Twitch or Kick as your signed-in account."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        self._say_on = ""  # the platform a message goes to, when there's more than one to choose from
+        self.say_where = QPushButton("")  # shown only with a choice: click to change where you're chatting
+        self.say_where.setStyleSheet(CHIP_STYLE.replace("padding: 7px 16px", "padding: 7px 12px"))
+        self.say_where.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.say_where.setToolTip("Change which chat you're writing in")
+        self.say_where.clicked.connect(self._next_say_target)
+        self.say_where.hide()
+        layout.addWidget(self.say_where)
         self.say = QLineEdit()
         self.say.setStyleSheet(FIELD_STYLE)
         self.say.setMaxLength(500)
@@ -501,31 +592,63 @@ class ChatPanel(QWidget):
         self.say_row = row
         return row
 
-    def _say_target(self) -> str | None:
-        """The Twitch channel a message would go to, or None when there's nowhere to send."""
-        return self.hub.names().get("twitch") if self.pages.currentWidget() is self.view else None
+    def _mine(self, platform: str) -> str:
+        """Your signed-in name on a platform ("" = not signed in). Settings only: no credential store."""
+        if platform == "twitch":
+            return self._account() or ""
+        if platform == "kick":
+            from sprigcast.output import stream_details
+
+            return stream_details.account("kick").lower()
+        return ""
+
+    def _say_targets(self) -> list[tuple[str, str]]:
+        """(platform, channel) for each chat you can write in: Twitch, and Kick once you're signed in to it."""
+        from sprigcast.chat import moderation
+
+        if self.pages.currentWidget() is not self.view:
+            return []
+        names = self.hub.names()
+        return [(p, names[p]) for p in moderation.CAN_SAY if names.get(p) and (p == "twitch" or self._mine(p))]
+
+    def _say_target(self) -> tuple[str, str] | None:
+        """The (platform, channel) a message would go to, or None when there's nowhere to send."""
+        targets = self._say_targets()
+        return next((t for t in targets if t[0] == self._say_on), targets[0] if targets else None)
+
+    def _next_say_target(self) -> None:
+        targets = self._say_targets()
+        now = self._say_target()
+        if now in targets and len(targets) > 1:
+            self._say_on = targets[(targets.index(now) + 1) % len(targets)][0]
+        self._show_say()
 
     def _show_say(self) -> None:
-        channel = self._say_target()
-        self.say_row.setVisible(channel is not None)
-        if channel is None:
+        target = self._say_target()
+        self.say_row.setVisible(target is not None)
+        if target is None:
             return
-        mine = self._account()
-        if not mine:
-            self.say.setPlaceholderText("Sign in to Twitch to chat back")
+        platform, channel = target
+        title = PLATFORMS[platform][0]
+        self.say_where.setVisible(len(self._say_targets()) > 1)
+        self.say_where.setText(title)
+        if not self._mine(platform):
+            self.say.setPlaceholderText(f"Sign in to {title} to chat back")
             self.say_button.setText("Sign in")
         else:
-            self.say.setPlaceholderText("Chat on Twitch…")
-            self.say.setToolTip(f"Sends to {channel}'s Twitch chat as you")
+            self.say.setPlaceholderText(f"Chat on {title}…")
+            self.say.setToolTip(f"Sends to {channel}'s {title} chat as you")
             self.say_button.setText("Send")
 
     def send(self) -> None:
+        from sprigcast.chat import moderation
         from sprigcast.output import twitch_auth
 
-        channel = self._say_target()
-        if channel is None or self._sending:
+        target = self._say_target()
+        if target is None or self._sending:
             return
-        if not self._account() or not twitch_auth.can_send_chat():
+        platform, channel = target
+        if platform == "twitch" and (not self._account() or not twitch_auth.can_send_chat()):
             self.say.setToolTip("SprigCast needs your OK once to send chat: sign in to Twitch again.")
             self._connect()
             return
@@ -537,9 +660,12 @@ class ChatPanel(QWidget):
 
         def work():
             try:
-                twitch_auth.send_chat(channel, text)
+                moderation.say(platform, channel, text)
                 self.sent.emit("")
-            except Exception as exc:  # worded for you by twitch_auth, or a surprise
+            except moderation.NeedsAllow as exc:
+                self.sent.emit(str(exc))
+                self.needs_allow.emit(exc.platform, str(exc))
+            except Exception as exc:  # worded for you, or a surprise
                 self.sent.emit(str(exc) or "Couldn't send")
 
         from sprigcast.core import workers
@@ -551,12 +677,90 @@ class ChatPanel(QWidget):
         self.say.setEnabled(True)
         if problem:
             self.say.setToolTip(problem)
-            self.where.setText(f"<span style='color:{theme.BAD}'>●</span> {html.escape(problem)}")
-            QTimer.singleShot(5000, self._show_states)
+            self._say_so(problem, bad=True)
         else:
             self.say.clear()
             self.say.setToolTip("")
         self.say.setFocus()
+
+    def _say_so(self, text: str, bad: bool = False) -> None:
+        """A few words in the panel's top line for five seconds (what was done, or why it wasn't)."""
+        self.where.setText(f"<span style='color:{theme.BAD if bad else theme.ACCENT}'>●</span> {html.escape(text)}")
+        QTimer.singleShot(5000, self, self._show_states)
+
+    # Moderating ---------------------------------------------------------------------------
+
+    acted = Signal(object, str, int, str)  # the ChatMessage, the action, seconds, "" or why not (from the worker)
+    needs_allow = Signal(str, str)  # a platform whose sign-in doesn't allow it yet, and the words for that
+
+    def powers(self, message: ChatMessage) -> tuple[str, ...]:
+        """What you may do to a line's sender: nothing to yourself, to events, or where you aren't signed in."""
+        from sprigcast.chat import moderation
+
+        mine = self._mine(message.platform)
+        if not mine or message.notice or not message.user_id or message.user.lower() == mine:
+            return ()
+        return moderation.POWERS.get(message.platform, ())
+
+    def moderate(self, message: ChatMessage, action: str, seconds: int = 0) -> None:
+        """Timeout, ban, delete or block from a chat line, on a worker; the top line says how it went."""
+        from sprigcast.chat import moderation
+        from sprigcast.core import workers
+
+        channel = self.hub.names().get(message.platform)
+        if not channel or action not in self.powers(message):
+            return
+
+        def work():
+            try:
+                moderation.act(message.platform, channel, action, user_id=message.user_id, message_id=message.id,
+                               seconds=seconds)
+                self.acted.emit(message, action, seconds, "")
+            except moderation.NeedsAllow as exc:
+                self.acted.emit(message, action, seconds, str(exc))
+                self.needs_allow.emit(exc.platform, str(exc))
+            except Exception as exc:  # worded for you, or a surprise
+                self.acted.emit(message, action, seconds, str(exc) or "That didn't work")
+
+        workers.run(work, name="chat-moderate")
+
+    def _acted(self, message: ChatMessage, action: str, seconds: int, problem: str) -> None:
+        from sprigcast.chat import moderation
+
+        if problem:
+            self._say_so(problem, bad=True)
+            return
+        if action == "delete":
+            self.hub._deleted(message.platform, message.id)
+        elif action in ("timeout", "ban"):  # the platform says so too; this is at once
+            self.hub._cleared(message.platform, message.user_id)
+        else:  # blocked: Twitch keeps their lines in your own chat, so they're hidden here as well
+            self.hub.hide(message.user)
+        self._say_so({"timeout": f"{message.user} timed out for {moderation.length_words(seconds)}",
+                      "ban": f"{message.user} banned", "delete": "Message deleted",
+                      "block": f"{message.user} blocked"}[action])
+
+    def _offer_allow(self, platform: str, text: str) -> None:
+        """A sign-in from before SprigCast asked for chat or moderation: offer the sign-in that allows it."""
+        if platform != "kick":
+            self._connect()
+            return
+        from sprigcast.app.signin_dialog import SignInDialog
+        from sprigcast.output import service_signin
+
+        if getattr(self, "_allowing", False):
+            return
+        self._allowing = True
+        QSettings().setValue(service_signin.KICK_POWERS, True)  # this and later Kick sign-ins ask for both
+        dialog = SignInDialog("kick", self.window(), begin=lambda s: service_signin.begin(s, keep=True), hint="")
+        if dialog.message.text().startswith("Finish"):  # the browser opened
+            dialog.message.setText("Finish in your browser: Kick asks you to let SprigCast send chat and moderate.")
+        try:
+            if dialog.exec():
+                self._say_so("Kick allowed it. Try again.")
+        finally:
+            self._allowing = False
+            dialog.deleteLater()
 
     @property
     def readers(self) -> dict[str, object]:
@@ -665,6 +869,34 @@ class ChatPanel(QWidget):
             return
         self.active = True
         self.refresh()
+        self._follow_sign_ins()
+
+    def _signed_in(self, service: str) -> None:
+        """You signed in to YouTube or Kick (anywhere in the app): its chat joins your chats here."""
+        from sprigcast.output import stream_details
+
+        if self.active and service == "kick" and self.hub.names().get("kick"):
+            self._show_say()  # Kick's chat can be written in only while you're signed in to it
+        if service not in saved_names() or not stream_details.account(service):
+            return  # signed out, or a sign-in that named no chat: nothing here changes
+        QSettings().setValue(SOURCE, "chat")
+        if self.active:
+            self.refresh()
+
+    def _follow_sign_ins(self) -> None:
+        """Signed in before sign-ins named the chat: look the channel up once, off the UI thread."""
+        import threading
+
+        from sprigcast.output import service_signin, stream_details
+
+        names = saved_names()
+        todo = [s for s in ("youtube", "kick") if s in PLATFORMS and s not in names and s not in self._named
+                and stream_details.account(s)
+                and not QSettings().value(service_signin.CHAT_NAMED.format(s), False, type=bool)]
+        self._named.update(todo)
+        if todo:
+            threading.Thread(target=lambda: [service_signin.name_chat_from_sign_in(s) for s in todo],
+                             name="chat-follow-sign-in", daemon=True).start()
 
     def sleep(self) -> None:
         """The panel was taken off every screen: stop reading and free the page until it's shown again."""
@@ -681,6 +913,58 @@ class ChatPanel(QWidget):
         self.where.setText("Pick a chat")
         self.link_field.setFocus()
         self.link_field.selectAll()
+
+    # Hidden accounts ---------------------------------------------------------------------
+
+    def _hidden_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+        label = QLabel("Hidden accounts")
+        label.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600")
+        layout.addWidget(label)
+        self.hidden_field = QPlainTextEdit()
+        self.hidden_field.setPlaceholderText("One name a line")
+        self.hidden_field.setStyleSheet(FIELD_STYLE.replace("QLineEdit", "QPlainTextEdit"))
+        layout.addWidget(self.hidden_field, 1)
+        hint = QLabel("These never show in chat here or on your stream. They aren't blocked on the platform.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.MUTED}")
+        layout.addWidget(hint)
+        row = self._buttons(("Add common bots", CHIP_STYLE, self._add_common_bots))
+        row.insertStretch(row.count(), 1)
+        row.takeAt(0)  # the button sits on the left
+        layout.addLayout(row)
+        layout.addLayout(self._buttons(("Cancel", CHIP_STYLE, self.refresh), ("Save", GO_STYLE, self._use_hidden)))
+        return page
+
+    def ask_hidden(self) -> None:
+        self.hidden_field.setPlainText("\n".join(hidden.load()))
+        self.pages.setCurrentWidget(self.hidden_page)
+        self.where.setText("Hidden accounts")
+        self._show_say()
+        self.hidden_field.setFocus()
+
+    def _add_common_bots(self) -> None:
+        names = hidden.parse(self.hidden_field.toPlainText())
+        self.hidden_field.setPlainText("\n".join([*names, *(b for b in hidden.COMMON_BOTS if b not in names)]))
+
+    def _use_hidden(self) -> None:
+        self.hub.set_hidden(hidden.parse(self.hidden_field.toPlainText()))
+        self.refresh()
+
+    def reply_to(self, message: ChatMessage) -> None:
+        """Start a reply: the message box begins with @name (sent like any message, in that line's chat)."""
+        if not self.say_row.isVisibleTo(self):
+            return
+        self._say_on = message.platform
+        self._show_say()
+        start = f"@{message.user} "
+        if not self.say.text().startswith(start):
+            self.say.setText(start + self.say.text())
+        self.say.setFocus()
+        self.say.setCursorPosition(len(self.say.text()))
 
     def ask_names(self) -> None:
         names = saved_names()
@@ -896,7 +1180,7 @@ class ChatPanel(QWidget):
 
         kind, _ = self.source()
         key = (bool(self.reading()), kind, bool(QSettings().value(LINK, "")), bool(self._account()),
-               self.web is not None)
+               self.web is not None, len(self.hub.hidden))
         menu = getattr(self, "_menu", None)
         if menu is not None and shiboken6.isValid(menu) and self._menu_key == key:
             return
@@ -905,7 +1189,9 @@ class ChatPanel(QWidget):
         self._menu, self._menu_key = self.build_menu(), key
         self._menu.ensurePolished()
         self._menu.adjustSize()
-        self._menu.winId()
+        # create(), not winId(): winId() marks it native, which makes its parent and the parent's other
+        # children native too, and a native parent window warned "must be a top level window" (PC soak 2026-11-18).
+        self._menu.create()
 
     def build_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -925,6 +1211,8 @@ class ChatPanel(QWidget):
             menu.addSeparator()
         menu.addAction("Channels…").triggered.connect(self.ask_names)
         menu.addAction("Change link…" if saved else "Paste a link…").triggered.connect(self.ask_link)
+        count = len(self.hub.hidden)
+        menu.addAction(f"Hidden accounts ({count})…" if count else "Hidden accounts…").triggered.connect(self.ask_hidden)
         if not self._account():
             menu.addAction("Sign in…").triggered.connect(self._connect)
         menu.addSeparator()

@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, QStandardPaths, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -38,6 +37,8 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import card as popups
+from sprigcast.app import message as msgbox
+from sprigcast.app import theme
 from sprigcast.app.modal import modal
 from sprigcast.app.terms import COLLECTION, COLLECTIONS, PROFILE, PROFILES, cap
 from sprigcast.core import convert, pack
@@ -242,7 +243,15 @@ class GardenControl:
             menu.addAction("Import…").triggered.connect(lambda: self._import(kind))
             menu.addAction("Export…").triggered.connect(lambda: self._export(kind))
             return
-        imports = menu.addMenu("Import")
+        self.fill_imports(menu.addMenu("Import"))
+        exports = menu.addMenu("Export")
+        exports.addAction(f"Just the {COLLECTION}…").triggered.connect(lambda: self._export(kind))
+        exports.addAction("With its files…").triggered.connect(lambda: self._export_pack())
+        menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
+        menu.addAction("Show file").triggered.connect(lambda: self.w._show_garden_file())
+
+    def fill_imports(self, imports: QMenu, kind: str = "garden") -> None:
+        """From a file…, then the scene collections OBS and Streamlabs keep on this PC, by app."""
         imports.addAction("From a file…").triggered.connect(lambda: self._import(kind))
         for app, files in self._other_apps().items():
             names = convert.streamlabs_names(files[0].parent) if app == "streamlabs" else {}
@@ -255,11 +264,16 @@ class GardenControl:
                 label = names.get(file.stem, file.stem.replace("_", " "))
                 sub.addAction(label.replace("&", "&&")).triggered.connect(
                     lambda _=False, f=file: self._report(self.import_garden(f)))
-        exports = menu.addMenu("Export")
-        exports.addAction(f"Just the {COLLECTION}…").triggered.connect(lambda: self._export(kind))
-        exports.addAction("With its files…").triggered.connect(lambda: self._export_pack())
-        menu.addAction("Missing files…").triggered.connect(lambda: self.show_missing())
-        menu.addAction("Show file").triggered.connect(lambda: self.w._show_garden_file())
+
+    def choose_import(self) -> None:
+        """Settings → General → Import: the same choices, at the pointer (Settings has closed by now, so the
+        garden it was showing is never saved over the one just brought in)."""
+        from PySide6.QtGui import QCursor
+
+        menu = QMenu(self.w)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.fill_imports(menu)
+        menu.popup(QCursor.pos())
 
     def switch_choices(self) -> list[tuple[str, str, bool, object]]:
         """(group, name, in use, switch) for each garden and path: the palette lists them, as the chip does."""
@@ -282,12 +296,12 @@ class GardenControl:
 
     def _report(self, problem: str | None) -> None:
         if problem:
-            QMessageBox.information(self.w, "SprigCast", problem)
+            msgbox.information(self.w, "SprigCast", problem)
 
     def _pick(self, kind: str, entry_id: str) -> None:
         if kind == "garden" and self.w.streaming is not None:
             name = self.shelf.find("garden", entry_id).name
-            answer = QMessageBox.question(self.w, "SprigCast", f"You're live. Switch to {name} now?")
+            answer = msgbox.question(self.w, "SprigCast", f"You're live. Switch to {name} now?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self._report(self.switch(kind, entry_id))
@@ -302,7 +316,7 @@ class GardenControl:
     # The chip in the header: which garden and path are in use, and a quick way to switch ------
 
     def make_chip(self) -> QToolButton:
-        from sprigcast.app import icons, theme
+        from sprigcast.app import icons
 
         chip = QToolButton()
         chip.setObjectName("shelfChip")
@@ -376,7 +390,7 @@ class GardenControl:
         if at is None:
             return
         entry = others[at]
-        answer = QMessageBox.question(self.w, "SprigCast", f"Remove {entry.name}?")
+        answer = msgbox.question(self.w, "SprigCast", f"Remove {entry.name}?")
         if answer == QMessageBox.StandardButton.Yes:
             self._report(self.do(kind, "remove", entry.id))
 
@@ -436,7 +450,7 @@ class GardenControl:
             return f"{path.name} couldn't be turned into a {COLLECTION}."
         self._changed()
         self.last_notes = notes
-        if self.w.streaming is not None and QMessageBox.question(
+        if self.w.streaming is not None and msgbox.question(
                 self.w, "SprigCast", f"Added {entry.name}. You're live: switch to it now?") \
                 != QMessageBox.StandardButton.Yes:
             self.w.statusBar().showMessage(f"Added {entry.name} to {COLLECTIONS}.", 8000)
@@ -526,25 +540,25 @@ class _Found(QObject):
     done = Signal(list)
 
 
-class MissingFiles(QDialog):
+class MissingFiles(popups.CardDialog):
     """Files the garden can't find, each with Find… to point it at where the file is now."""
 
     def __init__(self, window: MainWindow):
-        super().__init__(window)
+        super().__init__("Missing files", window, width=560)
         self.w = window
-        self.setWindowTitle("Missing files")
-        self.setMinimumWidth(520)
-        self.box = QVBoxLayout(self)
-        self.box.setContentsMargins(20, 20, 20, 20)
-        self.box.setSpacing(12)
+        self.box = self.body
         self.rows = QWidget()
         self.rows_box = QVBoxLayout(self.rows)
         self.rows_box.setContentsMargins(0, 0, 0, 0)
         self.rows_box.setSpacing(8)
         self.box.addWidget(self.rows)
         close = QPushButton("Done")
+        close.setStyleSheet(popups.PRIMARY_PILL)
+        close.setDefault(True)
         close.clicked.connect(self.accept)
         self.look = QPushButton("Look in a folder…")
+        self.look.setStyleSheet(theme.button_style(17, "9px 18px"))
+        self.look.setAutoDefault(False)
         self.look.clicked.connect(self.look_in_folder)
         end = QHBoxLayout()
         end.addWidget(self.look)
@@ -582,6 +596,8 @@ class MissingFiles(QDialog):
             label.setToolTip(value)
             row.addWidget(label, 1)
             find = QPushButton("Find…")
+            find.setStyleSheet(theme.button_style(15, "6px 14px"))
+            find.setAutoDefault(False)
             find.clicked.connect(lambda _=False, v=value: self.locate(v))
             row.addWidget(find)
             holder = QWidget()
@@ -669,21 +685,19 @@ class _Progress:
         return result.get("value")
 
 
-class ImportNotes(QDialog):
+class ImportNotes(popups.CardDialog):
     """What an import couldn't bring over, one line each."""
 
     def __init__(self, window: MainWindow, name: str, notes: list[str]):
-        super().__init__(window)
-        self.setWindowTitle(f"{name}: to check")
-        self.setMinimumWidth(560)
-        box = QVBoxLayout(self)
-        box.setContentsMargins(20, 20, 20, 20)
-        box.setSpacing(12)
+        super().__init__(f"{name}: to check", window, width=600)
+        box = self.body
         text = QLabel("\n".join(f"•  {n}" for n in notes[:40]) + (f"\n…and {len(notes) - 40} more" if len(notes) > 40 else ""))
         text.setWordWrap(True)
         text.setTextInteractionFlags(text.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse)
         box.addWidget(text)
         done = QPushButton("Done")
+        done.setStyleSheet(popups.PRIMARY_PILL)
+        done.setDefault(True)
         done.clicked.connect(self.accept)
         end = QHBoxLayout()
         end.addStretch(1)

@@ -129,35 +129,22 @@ def test_a_cpu_by_thread_line_goes_in_the_log(caplog):
     assert line.startswith("CPU by thread:") and "sprigcast-busy" in line and line in caplog.text
 
 
-def test_a_stall_dump_names_the_thread_holding_the_lock():
-    """The stall watch can only look once Python's lock is free again; faulthandler prints every stack during it."""
-    import threading
+def test_the_stall_watch_never_reads_running_threads_stacks(caplog):
+    """Printing every thread's stack while Python's lock was held (SPRIGCAST_STALL_DUMPS=1) read frames that were
+    going away and killed SprigCast on the PC (2026-11-19 09:52, the old engine, 1 s after a stream started; the
+    2026-11-18 12:21 crash was the same). The watch doesn't do it any more, also when the old switch is set."""
+    import inspect
 
-    from sprigcast.core.pacing import _StallDump, shorten_dump
+    from sprigcast.core import pacing
 
-    me = threading.get_ident()
-    text = (f"Thread 0x{me + 1:x} (most recent call first):\n"
-            '  File "C:\\\\x\\\\nvenc_d3d11.py", line 597 in encode_texture\n'
-            '  File "C:\\\\x\\\\recorder.py", line 10 in _run\n\n'
-            f"Current thread 0x{me:x} (most recent call first):\n"
-            '  File "C:\\\\x\\\\compositor.py", line 943 in upload\n'
-            '  File "C:\\\\x\\\\engine.py", line 1870 in _tick\n')
-    short = shorten_dump(text, {me: "render"})
-    assert short.startswith("render (holding the lock) at compositor.py:943 upload <- engine.py:1870 _tick")
-    assert "nvenc_d3d11.py:597 encode_texture" in short
-
-    assert _StallDump().file is None  # off unless SPRIGCAST_STALL_DUMPS=1: it reads running threads' stacks
-    dump = _StallDump(on=True)
-    import faulthandler
-    import time as _time
-
-    faulthandler.dump_traceback_later(0.05, repeat=False, file=dump.file)
-    end = _time.monotonic() + 0.3
-    while _time.monotonic() < end:  # holds the lock: faulthandler's own thread prints anyway
-        pass
-    got = dump.take()
-    assert "MainThread at test_pacing.py" in got and "test_a_stall_dump_names_the_thread_holding_the_lock" in got
-    assert dump.take() == ""  # read once
+    with caplog.at_level("WARNING"):
+        assert pacing.old_stall_switches({}) == [] and caplog.text == ""
+        assert pacing.old_stall_switches({"SPRIGCAST_STALL_DUMPS": "1", "SPRIGCAST_STALL_DUMP_MS": "200"})
+    assert "SPRIGCAST_STALL_DUMPS / SPRIGCAST_STALL_DUMP_MS is set but no longer used" in caplog.text
+    watch = inspect.getsource(pacing.watch_stalls)
+    assert "old_stall_switches()" in watch and "dump_traceback" not in watch and not hasattr(pacing, "_StallDump")
+    uses = [line for line in inspect.getsource(pacing).splitlines() if "faulthandler.dump_traceback_later(" in line]
+    assert len(uses) == 1 and "exit=True" in uses[0]  # only the exit guard, when SprigCast is ending anyway
 
 
 def test_only_the_main_thread_frees_what_the_cycle_collector_finds():
@@ -214,17 +201,6 @@ def test_warm_up_keeps_its_imports_aside():
         assert gc.get_freeze_count() >= 100
     finally:
         gc.unfreeze()
-
-
-def test_stall_dumps_can_be_asked_for_shorter_stalls():
-    """A 235 ms stall held a media source on the PC (2026-11-18), under the usual 350 ms dump: a test run can ask
-    for dumps from 200 ms (never shorter: the watch re-arms the dump every half of it)."""
-    from sprigcast.core.pacing import DUMP_AFTER_MIN_S, DUMP_AFTER_S, dump_after_s
-
-    assert dump_after_s({}) == DUMP_AFTER_S
-    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "220"}) == 0.22
-    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "50"}) == DUMP_AFTER_MIN_S
-    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "soon"}) == DUMP_AFTER_S
 
 
 def test_a_tidy_can_say_what_kinds_of_garbage_it_freed(monkeypatch, caplog):

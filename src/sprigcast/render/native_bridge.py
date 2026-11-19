@@ -205,8 +205,10 @@ class NativeCanvases:
     and the Python compositor carries on alone."""
 
     def __init__(self, collection: SceneCollection, warp: bool = False):
-        fps = max((c.fps for c in collection.canvases), default=60)
-        self.engine = sprigcore.Engine(warp=warp, fps=(int(fps), 1))
+        from sprigcast.core.scene import drawing_fps
+
+        self.fps = drawing_fps(collection.canvases)
+        self.engine = sprigcore.Engine(warp=warp, fps=(self.fps, 1))
         self.resources = native_snapshot.Resources()
         self.failed = False
         self._slots: dict[str, int] = {}
@@ -266,9 +268,11 @@ class NativeCanvases:
             return
         if luid is not None:
             self._card_told = True
+            from sprigcast.app import capture_helper
             from sprigcast.sources import browser
 
             browser.use_card(luid)
+            capture_helper.HELPER.use_card(luid)  # captures run on the same card, in the capture helper
 
     # ---- what goes in ------------------------------------------------------------------------------------------
 
@@ -289,6 +293,7 @@ class NativeCanvases:
             self.failed = True
             drawn.ENGINE = False
             log.error("native engine: %s; the Python compositor draws the previews again", why)
+            sprigcore.note_engine_failed(why)  # the window says the old engine is in use (app/main.py)
             self._unlink_all()
 
     def upload(self, source_id: str, frame, channel_order: str, size) -> None:
@@ -303,14 +308,16 @@ class NativeCanvases:
         self._guard("upload", self.engine.upload, source_id, frame, channel_order, size, keep=keep)
 
     def attach_media(self, source_id: str, player, held: bool = False) -> bool:
-        """``player`` (a sprigcore.MediaPlayer, the name of a browser page's shared memory block, a
-        sprigcore.CaptureTarget, or None) is where the engine takes this source's pictures from, each frame, by
-        itself. True while it does: the render thread then sends it none. ``held``: a page's block or a capture
+        """``player`` (a sprigcore.MediaPlayer, the name of a browser page's or a capture helper feed's shared
+        memory block, a sprigcore.CaptureTarget, or None) is where the engine takes this source's pictures from,
+        each frame, by itself. True while it does: the render thread then sends it none. ``held``: a page's block or a capture
         frozen (Snap's freeze): the engine keeps its picture but still takes the new ones, which would otherwise
         wait for it (and make a page's texture again every few seconds: PC, 2026-11-18; a capture would have to
         start over)."""
         if self.failed:
             return False
+        if not self._card_told and player is not None:
+            self._tell_card()
         capture = isinstance(player, sprigcore.CaptureTarget)
         held = bool(held) and (isinstance(player, str) or capture)
         if held != (source_id in self._held):
@@ -323,8 +330,9 @@ class NativeCanvases:
             elif isinstance(player, str) or not held:
                 self._guard("hold", self.engine.hold_shared, source_id, held)
         had = self._media.get(source_id)
+        feed = isinstance(player, str) and hasattr(player, "link")  # the capture helper's (app/capture_helper.py)
         if had is player or ((isinstance(player, str) or capture) and had == player):
-            if capture and not player.linked:
+            if (capture or feed) and not player.linked:
                 player.link(self.engine, source_id)
             return player is not None
         if isinstance(had, sprigcore.CaptureTarget):
@@ -332,6 +340,8 @@ class NativeCanvases:
             if not capture:  # a capture let go (a new one replaces it in the engine)
                 self._guard("capture", self.engine.attach_capture, source_id, None)
         elif isinstance(had, str):
+            if hasattr(had, "link"):
+                had.link(None)
             if not isinstance(player, str):  # a block let go (a new one would replace it)
                 self._guard("shared", self.engine.attach_shared, source_id, None)
         elif had is not None and (player is None or isinstance(player, str) or capture):  # a player let go
@@ -347,7 +357,9 @@ class NativeCanvases:
             if not self.failed:
                 player.link(self.engine, source_id)
         elif isinstance(player, str):
-            self._guard("shared", self.engine.attach_shared, source_id, player)
+            self._guard("shared", self.engine.attach_shared, source_id, str(player))
+            if feed and not self.failed:
+                player.link(self.engine, source_id)
         else:
             self._guard("media", self.engine.attach_media, source_id, player)
         return not self.failed
@@ -394,7 +406,7 @@ class NativeCanvases:
         for gone in (set(self._last_upload) | set(self._media) | set(self._arts)) - set(source_ids):
             self._last_upload.pop(gone, None)
             had = self._media.pop(gone, None)
-            if isinstance(had, sprigcore.CaptureTarget):
+            if isinstance(had, sprigcore.CaptureTarget) or (isinstance(had, str) and hasattr(had, "link")):
                 had.link(None)
             self._held.discard(gone)
             self._forget_arts(gone)
@@ -869,7 +881,7 @@ class NativeCanvases:
         for slot, out in list(self._links):
             self._unlink(slot, out)
         for had in self._media.values():  # captures read their pictures from the engine no more
-            if isinstance(had, sprigcore.CaptureTarget):
+            if isinstance(had, sprigcore.CaptureTarget) or (isinstance(had, str) and hasattr(had, "link")):
                 had.link(None)
 
     def _count_drops(self, slot: int, out: int, dropped: int) -> None:

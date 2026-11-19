@@ -453,6 +453,18 @@ def recording_path(folder: Path, canvas_id: str, when: datetime, container: str)
 X264_PRESETS = {"p1": "ultrafast", "p2": "superfast", "p3": "veryfast", "p4": "veryfast", "p5": "veryfast",
                 "p6": "faster", "p7": "fast"}  # CPU encoding: keep it light, games need the CPU too
 LOOKAHEAD_FRAMES = 16
+# x264 on the CPU keeps pictures in memory for every frame it looks ahead. A PC with four CPU threads or fewer (the
+# 4 GB all-in-ones) looks at most X264_LIGHT_LOOKAHEAD frames ahead (720p medium: 184 -> 84 MB). The thread count
+# stays x264's own: giving it one ("threads") made one canvas's recording come out 15 frames short next to the
+# replay buffer (tests/test_packet_writer.py on a 4-thread machine, 2026-11-19), so it is not set until that is
+# understood.
+X264_LIGHT_CPUS = 4
+X264_LIGHT_LOOKAHEAD = 10  # veryfast's own; the slower presets look 20-60 frames ahead
+X264_NO_LOOKAHEAD = ("ultrafast", "superfast")  # these presets look at none: left alone
+
+
+def x264_light(cpus: int | None = None) -> bool:
+    return max(1, cpus or os.cpu_count() or 1) <= X264_LIGHT_CPUS
 AMF_QUALITY = {"p1": "speed", "p2": "speed", "p3": "speed", "p4": "balanced", "p5": "balanced",
                "p6": "quality", "p7": "quality"}
 QSV_PRESETS = {"p1": "veryfast", "p2": "veryfast", "p3": "faster", "p4": "fast", "p5": "medium",
@@ -568,6 +580,8 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
             opts["nal-hrd"] = "cbr"
     if not enc.adaptive_quant:
         opts["aq-mode"] = "0"
+    if x264_light() and opts["preset"] not in X264_NO_LOOKAHEAD and opts.get("tune") != "zerolatency":
+        opts["rc-lookahead"] = str(X264_LIGHT_LOOKAHEAD)  # (zerolatency looks at none either)
     return opts
 
 
@@ -631,6 +645,9 @@ class Recorder:
     opening_queue = OPENING_QUEUE  # tests feed frames faster than real time and raise this
 
     def start(self) -> None:
+        from sprigcast.core.memory_map import around_encoder
+
+        around_encoder(self._thread.name.removeprefix("sprigcast-"))
         self._opening = True
         self._thread.start()
 

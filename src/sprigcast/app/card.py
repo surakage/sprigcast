@@ -17,12 +17,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLayout,
     QLineEdit,
     QPushButton,
+    QSizeGrip,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -59,22 +59,25 @@ class CardDialog(QDialog):
         card.setObjectName("popCard")
         card.setStyleSheet(f"#popCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
                            " border-radius: 24px; }")
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 190))
-        card.setGraphicsEffect(shadow)
+        # Its shadow is a picture made once per size and drawn under it (paintEvent), as the other pop-ups' is. A
+        # drop-shadow effect blurred the whole card in software on its first paint and again on every repaint
+        # inside it, the text field's blinking caret among them (Gardens > New, 61 ms on the PC, 2026-11-19).
+        self._card = card
         outer.addWidget(card)
         self.body = QVBoxLayout(card)
         self.body.setContentsMargins(24, 20, 24, 20)
         self.body.setSpacing(14)
-        heading = QLabel(title)
+        heading = self.heading = QLabel(title)
+        heading.setWordWrap(True)
         font = heading.font()
         font.setPixelSize(19)
         font.setWeight(font.Weight.DemiBold)
         heading.setFont(font)
         heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; background: transparent;")
         self.body.addWidget(heading)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self._card)
 
     def line_edit(self, placeholder: str = "") -> QLineEdit:
         edit = QLineEdit()
@@ -202,6 +205,60 @@ def ask_text(parent: QWidget | None, title: str, label: str, text: str = "", pri
 
     dialog = TextDialog(title, label, text, parent, primary, placeholder=placeholder)
     return (dialog.text(), True) if modal(dialog) else ("", False)
+
+
+class CardWindow(QDialog):
+    """A big window (Hotkeys, Plugin store, Filters…) as a rounded card: no square Windows frame. Lay its content
+    out in self.card. Drag it by any empty spot, resize it by the bottom right corner; Esc closes it.
+
+    name: the card's object name, for a style sheet that styles the window by name (it gets BG and the rounded
+    edge whatever that sheet says). size: the card's starting size.
+    """
+
+    MARGINS = (20, 14, 20, 26)  # room for the shadow
+
+    def __init__(self, title: str, parent: QWidget | None = None, size: tuple[int, int] | None = None,
+                 name: str = "windowCard"):
+        super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowTitle(title)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._drag = None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(*self.MARGINS)
+        self.card = QFrame()
+        self.card.setObjectName(name)
+        self.card.setStyleSheet(f"#{name} {{ background: {theme.BG}; border: 1px solid {theme.EDGE_STRONG};"
+                                " border-radius: 24px; }")
+        outer.addWidget(self.card)
+        self._grip = QSizeGrip(self)
+        self._grip.setFixedSize(18, 18)
+        self._grip.setStyleSheet("background: transparent;")
+        if size is not None:
+            left, top, right, bottom = self.MARGINS
+            self.resize(size[0] + left + right, size[1] + top + bottom)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self.card)  # drawn once per size, not blurred on every paint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        _, _, right, bottom = self.MARGINS
+        self._grip.move(self.width() - right - 24, self.height() - bottom - 24)
+        self._grip.raise_()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag = None
+        super().mouseReleaseEvent(event)
 
 
 class ColourRow(QWidget):

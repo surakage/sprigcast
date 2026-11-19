@@ -57,6 +57,26 @@ KICK_API = "https://api.kick.com/public/v1"
 # One Kick sign-in serves the destination (stream key) and Stream details (title, category, tags).
 KICK_SCOPES = "user:read channel:read channel:write streamkey:read"
 KICK_DETAILS_SCOPES = KICK_SCOPES
+# Chat back and moderation on Kick are asked for only once you choose them in the Chat panel (KICK_POWERS on):
+# a sign-in that asks for more than the Kick app allows fails, and the stream key must never depend on chat.
+KICK_CHAT_SCOPES = "chat:write moderation:ban"
+KICK_POWERS = "kick/chat_powers"  # QSettings
+
+
+def kick_scopes() -> str:
+    from PySide6.QtCore import QSettings
+
+    on = QSettings().value(KICK_POWERS, False, type=bool)
+    return f"{KICK_SCOPES} {KICK_CHAT_SCOPES}" if on else KICK_SCOPES
+
+
+def _powers_refused(service: str) -> None:
+    """A Kick sign-in that asked for chat and moderation didn't finish: the next one asks for the usual only."""
+    from PySide6.QtCore import QSettings
+
+    if service == "kick" and QSettings().value(KICK_POWERS, False, type=bool):
+        QSettings().setValue(KICK_POWERS, False)
+        log.info("sign-in: kick didn't finish with chat and moderation asked for; next sign-in asks without them")
 CHAT_NAMES = "chat/names"  # QSettings, as app/chat_panel.NAMES: the channels the Chat panel reads
 KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this one
 KICK_REDIRECT = f"http://localhost:{KICK_PORT}/callback"
@@ -128,10 +148,12 @@ class Flow:
             else:
                 fetched = (_youtube_rest if self.service == "youtube" else _kick_rest)(self, code)
         except Cancelled:
-            log.info("sign-in: %s cancelled", self.service)
+            log.info("sign-in: %s canceled", self.service)
+            _powers_refused(self.service)
             raise
         except SignInError as exc:
             log.info("sign-in: %s failed: %s", self.service, exc)
+            _powers_refused(self.service)
             raise
         except Exception:
             log.exception("sign-in: %s failed", self.service)
@@ -161,7 +183,7 @@ def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
     else:
         waiter = Waiter(KICK_PORT, host="localhost", label="Kick")
         params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url,
-                  "scope": KICK_SCOPES,
+                  "scope": kick_scopes(),
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state}
         auth = KICK_AUTH
     try:
@@ -244,8 +266,54 @@ def _name_chat(service: str, name: str) -> None:
         names[service] = name
         settings.setValue(CHAT_NAMES, json.dumps(names))
         log.info("sign-in: %s chat follows the signed-in channel", service)
+        from sprigcast.output import stream_details
+
+        stream_details.announce(service)  # the Chat panel starts reading it now
     except Exception:  # noqa: BLE001
         log.info("sign-in: couldn't name the %s chat", service, exc_info=True)
+
+
+CHAT_NAMED = "{}/chat_named"  # QSettings: chat was pointed at this sign-in's channel once (name_chat_from_sign_in)
+
+
+def name_chat_from_sign_in(service: str) -> bool:
+    """For a sign-in made before sign-ins named the chat (#603): point Chat at the signed-in channel, once.
+    Worker thread (YouTube asks for the channel's @handle). True when chat got a name."""
+    import json
+
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.output import stream_details
+
+    settings = QSettings()
+    if service not in ("youtube", "kick") or settings.value(CHAT_NAMED.format(service), False, type=bool):
+        return False
+    account = stream_details.account(service)
+    if not account:
+        return False
+    try:
+        names = json.loads(str(settings.value(CHAT_NAMES, "") or "{}"))
+    except ValueError:
+        names = {}
+    if isinstance(names, dict) and names.get(service):
+        settings.setValue(CHAT_NAMED.format(service), True)  # already reading a channel there
+        return False
+    if service == "kick":
+        name = account if account != "Kick" else ""
+    else:
+        try:
+            token = stream_details.access_token("youtube")
+            name = str(_youtube_channel(token).get("customUrl") or "")
+        except stream_details.NeedsSignIn:
+            return False  # signed out meanwhile: the next sign-in names the chat itself
+        except Exception as exc:  # noqa: BLE001 - offline, quota: try again next run
+            log.info("sign-in: couldn't look up the YouTube channel for chat (%s)", exc)
+            return False
+    settings.setValue(CHAT_NAMED.format(service), True)
+    if not name:
+        return False
+    _name_chat(service, name)
+    return True
 
 
 def _youtube_rest(flow: Flow, code: str) -> Fetched:
@@ -335,7 +403,7 @@ SIGN_IN = {"youtube": youtube, "kick": kick}
 
 
 def key_from_account(service: str, vertical: bool = False) -> Fetched:
-    """The stream key (and Kick's server) through the account signed in under Accounts: no new sign-in.
+    """The stream key (and Kick's server) through the account signed in on that platform: no new sign-in.
     Worker thread. Raises SignInError, worded for the person."""
     from sprigcast.output import stream_details
 
@@ -347,7 +415,7 @@ def key_from_account(service: str, vertical: bool = False) -> Fetched:
         channel = channels[0] if channels else {}
         stream = channel.get("stream") or {}
         if not stream.get("key"):
-            raise SignInError("Kick didn't share the stream key. Sign out under Accounts and sign in again.")
+            raise SignInError("Kick didn't share the stream key. Sign out in Settings → Stream and sign in again.")
         slug = str(channel.get("slug") or "Kick")
         return Fetched(account=slug, key=stream["key"], server=str(stream.get("url") or ""))
 

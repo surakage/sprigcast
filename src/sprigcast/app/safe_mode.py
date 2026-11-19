@@ -37,18 +37,17 @@ def choose(argv: list[str], crashed, minimized: bool, ask) -> bool:
 
 def ask() -> bool:
     """The question after an unexpected close. True: safe mode."""
-    from PySide6.QtWidgets import QMessageBox
+    from sprigcast.app.message import MessageCard
 
-    box = QMessageBox(QMessageBox.Icon.Question, "SprigCast",
-                      "SprigCast didn't close properly last time.\n\n"
-                      "Start in safe mode? Plugins and web panels stay off and the old engine runs until the next start.")
-    safe = box.addButton("Safe mode", QMessageBox.ButtonRole.AcceptRole)
-    normal = box.addButton("Start normally", QMessageBox.ButtonRole.RejectRole)
-    box.setDefaultButton(normal)
+    box = MessageCard("SprigCast didn't close properly last time",
+                      "Start in safe mode? Plugins and web panels stay off and the old engine runs until the next "
+                      "start.", kind="ask", width=480)
+    safe = box.add_button("Safe mode")
+    box.add_button("Start normally", primary=True)
     from sprigcast.app.logbook import crash_notes_paused
 
     with crash_notes_paused():  # COM's own handled 0x8001010d notes while it waits (see there)
         box.exec()
-    chosen = box.clickedButton() is safe
+    chosen = box.clicked is safe
     box.deleteLater()
     return chosen

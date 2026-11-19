@@ -314,6 +314,10 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
     text = words.big
     if big_m.horizontalAdvance(text) > room:  # a long Done text: smaller, then cut with "…"
         big.setPixelSize(max(40, int(big.pixelSize() * room / big_m.horizontalAdvance(text))))
+        # A font isn't exactly as wide as its size says: step down until it fits, so "Starting now" isn't cut to
+        # "Starting no…" by a pixel (PC check 2026-11-19). Only at the smallest size is it cut.
+        while big.pixelSize() > 40 and QFontMetricsF(big).horizontalAdvance(text) > room:
+            big.setPixelSize(big.pixelSize() - 1)
         big_m = QFontMetricsF(big)
         text = big_m.elidedText(text, Qt.TextElideMode.ElideRight, room)
     small_m = QFontMetricsF(small)

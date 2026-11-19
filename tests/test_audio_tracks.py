@@ -154,6 +154,7 @@ def test_audio_page_sets_switch_tracks_and_which_sounds_go_where(monkeypatch):
     assert on_track(col.source("desktop"), 4) and on_track(col.source("song"), 2)
     assert on_track(col.source("mic"), 3)  # untouched
     again = AudioPage(col, {})
+    again.finish()  # (its rows come a tick apart)
     assert set(again.track_ticks) == {"mic-2", "song"}  # switched-off global devices leave the list
     assert not again.global_rows[0].isEnabled()
 
@@ -169,7 +170,7 @@ def test_audio_page_has_tabs_and_bitrate_lives_with_each_encoder():
     QApplication.instance() or QApplication([])
     col = _collection()
     page = AudioPage(col, {})
-    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["Devices", "Tracks", "Sounds"]
+    assert [page.tabs.tabText(i) for i in range(page.tabs.count())] == ["Devices", "Sounds", "Tracks"]
     col.stream_encoder.audio_kbps = 128
     page.apply_to(col)
     assert col.stream_encoder.audio_kbps == 128  # the Audio page leaves the encoders alone
@@ -249,3 +250,174 @@ def test_many_sound_rows_are_made_a_few_per_tick_and_saving_makes_the_rest():
     again = AudioPage(col, {}, first="Sounds")
     again.apply_to(col)  # before the rest are made: they're made then
     assert set(again.sound_rows) == set(sounds)
+
+
+def test_devices_show_a_level_beside_each_device_only_while_that_tab_is_on_screen():
+    """Settings redesign (2026-11-19): a meter next to Mic and Desktop sound. Nothing ticks when it isn't seen."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage, LevelDots
+
+    app = QApplication.instance() or QApplication([])
+    col = _collection()
+    heard = {"at": time.monotonic(), "levels": {"mic": (-3.0, -12.0), "gone": (0.0, 0.0)}}
+    page = AudioPage(col, {}, levels=lambda: (heard["at"], heard["levels"]))
+    assert set(page.meters) == {"mic", "desktop", "mic-2"} and not page._meter_timer.isActive()  # not shown yet
+    page.show()
+    app.processEvents()
+    assert page._meter_timer.isActive()
+    page._move_meters()
+    assert page.meters["mic"].lit() == round(48 / 60 * LevelDots.DOTS) and page.meters["desktop"].lit() == 0
+    page.show_tab("Sounds")
+    assert not page._meter_timer.isActive()
+    page.show_tab("Devices")
+    assert page._meter_timer.isActive()
+    heard["at"] -= 5  # the mixer stopped: an old level isn't shown as sound
+    for _ in range(40):
+        page._move_meters()
+    assert page.meters["mic"].lit() == 0
+    page.hide()
+    assert not page._meter_timer.isActive()
+    page.close()
+    assert not AudioPage(col, {}).meters  # no levels given (tests, the off-screen warm-up): just the lists
+
+
+def test_volume_keeps_a_tenth_of_a_db_set_elsewhere_and_slides_in_halves():
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import DbSlider
+
+    QApplication.instance() or QApplication([])
+    volume = DbSlider(-7.3)
+    assert volume.value() == -7.3 and volume.text.text() == "-7.3 dB"  # untouched: saved as it was
+    volume.slider.setValue(-9)
+    assert volume.value() == -4.5 and volume.text.text() == "-4.5 dB"
+    volume.setValue(40)
+    assert volume.value() == 12.0 and volume.text.text() == "+12.0 dB"
+
+
+def test_ducking_picks_under_the_sounds_change_only_what_was_picked():
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    page = AudioPage(col, {})
+    assert page.duck_when.currentData() is False and not page.duck_by.isEnabled()
+    assert page.duck_by.value() is None  # -14 dB (set under More…) is none of the three
+    page.apply_to(col)
+    assert not col.audio.ducking and col.audio.duck_amount_db == -14.0  # nothing picked: nothing changed
+    page.duck_when.setCurrentIndex(1)
+    assert page.duck_by.isEnabled()
+    page.duck_by.buttons[-18.0].click()
+    page.apply_to(col)
+    assert col.audio.ducking and col.audio.duck_amount_db == -18.0
+
+    def more(_page):  # the Ducking window saves its own changes straight away
+        col.audio.ducking, col.audio.duck_amount_db = False, -9.0
+
+    page.on_ducking = more
+    page.ducking_button.click()
+    assert page.duck_when.currentData() is False and page.duck_by.value() is None  # shown as it now is
+    page.apply_to(col)
+    assert not col.audio.ducking and col.audio.duck_amount_db == -9.0  # and not put back
+
+
+def test_tracks_name_the_sounds_on_each_as_ticked_in_sounds():
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    col.sources.append(SourceConfig(id="song", kind="media", name="Song", settings={"group": "Music"}))
+    page = AudioPage(col, {})
+    page.finish()
+
+    def chips(n):
+        row = page.track_chips[n - 1]
+        return [row.itemAt(i).widget().text() for i in range(row.count()) if isinstance(row.itemAt(i).widget(), QLabel)]
+
+    assert "Song" in chips(1) and "Song" not in chips(2)  # music stays off VOD-safe
+    assert chips(4) == ["Nothing yet"]
+    page.track_ticks["song"][3].setChecked(True)
+    page.track_ticks["song"][0].setChecked(False)
+    hear = page.sound_rows["mic-2"]["hear"]
+    hear.setCurrentIndex(hear.findData("only"))  # just me: on no track
+    page.show_tab("Tracks")
+    assert chips(4) == ["Song"] and "Song" not in chips(1)
+    assert not any(col.source("mic-2").name in chips(n) for n in range(1, 6))
+    col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(6)]
+    many = AudioPage(col, {})
+    row = many.track_chips[0]
+    assert row.itemAt(4).widget().text().endswith("more")  # four named, the rest counted
+
+
+def test_devices_set_listen_through_windows_ducking_and_push_to_talk():
+    """Settings → Audio → Devices: Hearing it yourself and Push to talk (engine side: #660)."""
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    col.audio.monitor_device = "Old Headset"  # unplugged since: still listed, never dropped by a save
+    page = AudioPage(col, {"audio_output": ["Speakers", "Headphones"]})
+    assert page.listen_through.currentData() == "Old Headset" and "not connected" in page.listen_through.currentText()
+    assert page.windows_ducking_off.isChecked() and page.push_mode.value() == "off"
+    assert not page.push_key.isEnabled() and not page.push_release.isEnabled() and page.push_note.text() == ""
+    page.apply_to(col)
+    assert col.audio.monitor_device == "Old Headset" and col.audio.push_mode == "off"
+    assert col.audio.push_release_ms == 250
+
+    page.listen_through.setCurrentIndex(page.listen_through.findData("Headphones"))
+    page.windows_ducking_off.setChecked(False)
+    page.push_mode.buttons["talk"].click()
+    assert page.push_key.isEnabled() and page.push_note.text() == "Pick a key"
+    page.push_key.setKeySequence(QKeySequence("F13"))
+    assert page.push_note.text() == ""
+    page.push_release.buttons[500].click()
+    page.apply_to(col)
+    audio = col.audio
+    assert (audio.monitor_device, audio.windows_ducking_off) == ("Headphones", False)
+    assert (audio.push_mode, audio.push_key, audio.push_release_ms) == ("talk", "F13", 500)
+
+    col.hotkeys = {"toggle_record": "F9"}
+    col.audio.push_release_ms = 180  # set by hand in the file: none of the picks, and a save leaves it
+    again = AudioPage(col, {})
+    assert again.listen_through.currentData() == "Headphones" and again.push_release.value() is None
+    again.push_key.setKeySequence(QKeySequence("F9"))
+    assert again.push_note.text() == "A hotkey uses this key too"
+    again.push_mode.buttons["mute"].click()
+    again.apply_to(col)
+    assert (col.audio.push_mode, col.audio.push_key, col.audio.push_release_ms) == ("mute", "F9", 180)
+
+    col.sources = [s for s in col.sources if s.kind != "audio_input"]
+    assert not AudioPage(col, {}).push_mode.isEnabled()  # no mic to hold
+
+
+def test_a_tabs_further_cards_can_be_made_a_tick_apart_in_their_places():
+    from sprigcast.app.audio_page import AudioPage
+
+    col = _collection()
+    page = AudioPage(col, {"audio_input": ["Wave"], "audio_output": ["Speakers"]}, first="Sounds")
+    waiting = []
+    page.build_tab("Devices", later=waiting.append)
+    assert len(waiting) == 2 and len(page._parts_waiting) == 2
+    assert not hasattr(page, "listen_through")  # Hearing it yourself: not made yet
+    waiting[1]()  # the last card first
+    waiting[0]()
+    box = page.tabs.widget(page.TABS.index("Devices")).layout()
+    titles = [box.itemAt(i).widget().title() for i in range(box.count()) if box.itemAt(i).widget() is not None]
+    assert titles[0] == "Devices" and len(titles) == 3 and titles[1] != titles[2]
+    assert hasattr(page, "listen_through") and not page._parts_waiting
+    waiting[0]()  # once only
+    assert box.count() == 4  # three cards and the stretch
+    again = AudioPage(col, {}, first="Sounds")
+    again.build_tab("Devices", later=lambda call: None)
+    again.finish()  # makes what was still waiting
+    assert not again._parts_waiting and hasattr(again, "listen_through")

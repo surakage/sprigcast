@@ -154,6 +154,14 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Fixed a crash about a second after a stream or recording started, seen twice on the old engine (and once
+  while live on 2026-11-18): the stall watch's every-thread dump (SPRIGCAST_STALL_DUMPS=1, a test switch) read
+  the stacks of running threads. The dump is gone for good; the switch does nothing now and the log says so.
+- x264 (encoding on the CPU) on a PC with four CPU threads or fewer: the slower presets look at most 10 frames
+  ahead, which is where their memory goes (720p medium: 184 MB down to 84 MB). The thread count is x264's own again:
+  setting it left one canvas's recording 15 frames short next to the replay buffer.
+- Fixed a 1.7 s freeze 30 s after start (and on Save in Settings): the copy of the settings is written by a short
+  program of its own, so the window and the show no longer wait for the file.
 - Now playing (v6) with the new engine: the card is handed over as a list of pictures (cover card, words,
   sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
   times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to
@@ -170,6 +178,34 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: a bloom switch on one canvas no longer makes the other canvas's frames late (PC soak 2026-11-19:
+  about 24 late frames a minute, in bursts on each vertical-only switch). While a switch waited for a picture,
+  Python drew every sprig and copied every source of every canvas again; now only the sources it waits for are
+  copied. Sources waking are spread over ticks (about 4 ms of waking a tick), and the window measures its
+  previews four times a second, not on every poll.
+- New engine capture: a display, window or game capture whose bloom leaves the screen is parked, not closed: it
+  takes one picture a second and goes on at once when the bloom comes back, for as long as SprigCast is open
+  (no time limit: a capture started again after a long break would lose the memory again). Every capture
+  Windows starts left about one picture of graphics memory behind for good (PC 2026-11-19: +8.4 MB per wake at
+  1080p, the same on the old engine with windows-capture, so not something closing it better could fix; 5.5 MB a
+  minute over the 80-minute soak). Coming back is also instant now, with no wait for Windows to start. Not
+  confirmed on the PC yet.
+- New engine capture: graphics memory grew about 16 MB each time a display capture woke (PC soak 2026-11-19,
+  5.5 MB a minute over 80 minutes; 16 MB is one capture's pool of 2 pictures). A capture going to sleep now hands
+  every picture Windows drew back before it closes its pool, and the log says each capture's start and close with
+  how many are still open, so a capture left open shows at once. Not confirmed on the PC yet.
+- New engine: switching to a bloom with a display, window or game capture no longer reads the capture back from
+  the card and copies it to Python's compositor while the switch waits for its first picture (PC soak 2026-11-19:
+  display capture 22 to 130 ms on the switch frame, a 191 ms frame). The engine says when it has shown a picture.
+- New engine: on a PC with no graphics driver (only Windows' software renderer, the Microsoft Basic Render
+  Driver) the old engine draws, as the new one fell 5-47 s behind per frame there; `SPRIGCAST_ENGINE=native` still
+  asks for it. Copies back from the card (previews, outputs) wait for an event query, never in Map, and a stuck
+  frame's log line names the step it was on. (#625)
+- Your own plugins' sources (a .py you wrote in the plugins folder) are drawn in a helper process: a plugin that
+  raises, hangs or crashes can't freeze or close SprigCast any more. Its pictures go to the engine through shared
+  memory, like a browser page's; a crashed helper starts again by itself with the same sources. Hotkeys, menus
+  and Settings of the plugin work as before. Store plugins stay in SprigCast. SPRIGCAST_PLUGINS_IN_PROCESS=1 runs
+  them all in SprigCast as before.
 - New engine: its shaders are compiled when SprigCast is built and ship inside the engine, so nothing is compiled
   while it runs. Compiling one still held a frame 3.4 s on the CI start-up check, even ahead of time on a
   thread of its own (the frame needing it waited).
@@ -224,6 +260,22 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   couldn't say which one.
 - `SPRIGCAST_CRASH_TEST=<seconds>[,main]` crashes SprigCast on purpose, to test the crash guard on a PC.
 - The safe-mode question after a crash no longer adds a "0x8001010d" note to crash.log while it waits.
+- The small ask-a-name and pick-one cards (Gardens > New, Rename, Remove) draw their shadow from a picture made
+  once, as the other pop-ups do, instead of blurring it again on every repaint (61 ms on the PC); the Garden
+  check's page is made inside its pop-up from the start (62 ms putting it in afterwards), and Settings' Audio
+  page inside its page (51 ms). Message cards (Keyboard shortcuts, 111 ms) get the same shadow.
+- Garden check fills its tiles, its rows and its chips a tick apart as it opens (all in one go was 94 ms of the window standing still on the old engine while live).
+- The shadow pop-ups share is made just after start, not by the first pop-up as it opens (69 ms and a late frame on the first Garden check while live).
+- The 10-second and once-a-minute housekeeping waits at most 20 ms for the frame in progress, not 50: the wait is
+  on the window's thread, and a missed frame end held the window 71 ms on the PC as Settings opened.
+- Painting a pop-up's shadow is one call into Qt again (its nine pieces are put together once per size, with no
+  blurring): painted piece by piece it was a dozen calls per paint, each waiting for Python's lock while live
+  (Garden check 52-61 ms on the PC). The Sounds table makes all its rows a tick apart (Sound gear, 61 ms), and
+  Stream details makes its form inside its card (61 ms).
+- A pop-up card's shadow is one small picture whose edges stretch to any size, instead of a blurred picture per card
+  size (a card that fits its contents changed size as it filled: Garden check and Stream details, about 55 ms
+  each on the PC). Settings' Audio tabs make their cards a tick apart (Sound gear's first open, 63-184 ms), and
+  the minute's thread count is taken off the window's thread (about 50 ms with the old engine).
 - Pop-ups open lighter (sweep 13): the Live screen's place rows, the number fields and the previews no longer run
   Python for every event they get (the window losing focus to a pop-up reached each of them), and the Garden
   check shows its rows in one layout pass.
@@ -485,6 +537,15 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Kick chat is back, rebuilt on Kick's official API: SprigCast's small relay (integrations/kick-chat) takes Kick's
   signed chat webhooks and passes them to the app. Nobody signs in, and the app never talks to kick.com itself.
   It needs the relay deployed once (see its README).
+- Hidden accounts: right-click a chat line to hide its sender, or edit the list under ⋯ → Hidden accounts… (common
+  bots one click away). Hidden accounts never show in the Chat panel or in chat on your stream. Right-click also
+  offers Reply (starts your message with @name, Twitch) and Copy.
+- Moderate from the Chat panel: right-click a chat line to Timeout (1 minute to 1 day), Ban, Delete message or Block
+  on Twitch, and to Timeout or Ban on Kick, as the account you signed in with (your own chat, or one you moderate).
+  The lines leave the panel and chat on your stream at once. You can write in Kick chat too: a chip beside the
+  message box picks Twitch or Kick, and Reply picks the line's own chat. Sign-ins made before this need one more
+  sign-in to allow it; Kick is asked for chat and moderation only after you choose to use them. YouTube waits for
+  Google's review.
 
 ### Gardens and paths
 

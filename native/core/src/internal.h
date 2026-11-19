@@ -135,7 +135,14 @@ int upload_nv12(sc_device &device, uint64_t id, const uint8_t *data, const sc_up
 // still holds the texture. `page` keeps the opened texture from one frame to the next. Takes device.lock.
 // copy = false: the picture is taken (the helper may draw the next) but the source keeps the one it has (a freeze).
 int source_page(sc_device &device, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height,
-                bool copy = true);
+                bool copy = true, uint32_t flags = 0);
+// What a shared block's header says about its pictures (the u32 after the texture number; 0 for a browser page,
+// whose pictures are premultiplied RGBA). The capture helper's (capture_feed.cpp) are as Windows captured them.
+constexpr uint32_t SHARED_STRAIGHT = 1;  // not premultiplied
+constexpr uint32_t SHARED_OPAQUE = 2;    // alpha ignored
+// A shared texture as sc_page_target_create makes, in B8G8R8A8 (what Windows captures in).
+int page_target_bgra(uint32_t luid_low, int32_t luid_high, void *device, int width, int height, const wchar_t *name,
+                     sc_page_target **out);
 
 }  // namespace sc
 

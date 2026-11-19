@@ -32,7 +32,7 @@ from sprigcast.core.events import (
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
 from sprigcast.core import drawn, pacing, retire
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
+from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem, drawing_fps
 from sprigcast.core.source import Source, create_source, source_class
 from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer, open_stinger
@@ -59,6 +59,7 @@ GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again thi
 GRAPHICS_RESTART_CALM_S = 120.0  # a start this long after the last one counts as the first again
 GRAPHICS_RESTART_MAX_S = 60.0
 FIRST_UPLOAD_BYTES = 24 * 1024 * 1024  # first pictures after a wake copied to the card per tick, at most (+1)
+WAKE_BUDGET_S = 0.004  # waking sources takes at most about this of one tick; the rest wake on the next ticks
 WAKE_LOG_S = 0.003  # a source this slow on a frame that woke some is named in the "waking frame" log line
 SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thread is (the late-frame line says)
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
@@ -507,10 +508,11 @@ class Engine:
             log.info("render thread priority raised")
         self._sync_sources(compositor)
         self._warm_up(compositor)
-        fps = max(c.fps for c in self._collection.canvases)
+        fps = drawing_fps(self._collection.canvases)
         interval = 1.0 / fps
         next_tick = time.perf_counter()
         render_times: deque[float] = deque(maxlen=fps)
+        log.info("drawing %d times a second", fps)
         ticks, dropped, stats_at = 0, 0, time.perf_counter()
         last_problem = None
         readbacks_at = 0
@@ -613,6 +615,12 @@ class Engine:
                     time.sleep(next_tick - now)
 
                 if now - stats_at >= 1.0:
+                    wanted = drawing_fps(self._collection.canvases)
+                    if wanted != fps:  # a canvas's frame rate changed, or one was turned on or off
+                        log.info("drawing %d times a second (was %d)", wanted, fps)
+                        fps, interval = wanted, 1.0 / wanted
+                        render_times = deque(render_times, maxlen=fps)
+                        self._follow_rate(fps)
                     avg_ms = 1000 * sum(render_times) / max(1, len(render_times))
                     self.events.put(Stats(fps=ticks / (now - stats_at), render_ms=avg_ms, dropped_ticks=dropped,
                                            readbacks=(self.readbacks - readbacks_at) / (now - stats_at)))
@@ -830,8 +838,16 @@ class Engine:
         if waiting is None:
             return False
         _outgoing, give_up, ids = waiting
-        return now < give_up and not all(sid in compositor.textures
-                                         and getattr(self._sources.get(sid), "first_picture", True) for sid in ids)
+        return now < give_up and not all(self._has_picture(compositor, sid) for sid in ids)
+
+    def _has_picture(self, compositor, source_id: str) -> bool:
+        """A source a switch waits for has its picture: in Python's compositor, or (a capture the engine does
+        itself) in the engine, which then draws the switch without Python ever getting a copy."""
+        source = self._sources.get(source_id)
+        if source_id in compositor.textures and getattr(source, "first_picture", True):
+            return True
+        return self._native is not None and not self._native.failed and (
+            hasattr(type(source), "engine_shows") and bool(source.engine_shows))
 
     def _still_waking(self, compositor, canvas_id: str, now: float):
         """The scene to keep showing while a switch waits for a camera to open, or None to go ahead."""
@@ -1008,7 +1024,7 @@ class Engine:
                 try:
                     source = create_source(config.kind, config.id, config.settings)
                     if hasattr(source, "canvas_fps"):  # captures ask Windows for no more pictures than this
-                        source.canvas_fps = max((c.fps for c in self._collection.canvases), default=60)
+                        source.canvas_fps = drawing_fps(self._collection.canvases)
                     if getattr(source, "wants_engine", False):  # plugins that tap frames or sound (Instant replay)
                         source.engine = self
                     if self._may_sleep(source) and source_id not in self._shown_sources():
@@ -1099,6 +1115,10 @@ class Engine:
         out = getattr(self, "_sound_out", None)
         return out.status if out is not None else "off"
 
+    def push_key(self, down: bool) -> None:
+        """The push-to-talk key went down or up (any thread): the mixer opens or closes the mic per block."""
+        self.mixer.push_key(down)
+
     def _sync_audio_options(self) -> None:
         """Ducking settings to the mixer; start monitoring when a source is monitored, stop when none is."""
         audio = self._collection.audio
@@ -1106,6 +1126,24 @@ class Engine:
             enabled=audio.ducking, amount_db=audio.duck_amount_db, threshold_db=audio.duck_threshold_db,
             attack_ms=audio.duck_attack_ms, release_ms=audio.duck_release_ms, hold_ms=audio.duck_hold_ms,
         ))
+        self.mixer.set_push(audio.push_mic(self._collection), audio.push_mode, audio.push_release_ms)
+        if audio.windows_ducking_off != getattr(self, "_windows_ducking_off", None):
+            from sprigcast import sprigcore
+
+            self._windows_ducking_off = audio.windows_ducking_off
+            try:
+                sprigcore.set_windows_ducking(audio.windows_ducking_off)
+            except Exception as exc:  # noqa: BLE001 (an older engine: Windows keeps its own setting)
+                log.info("couldn't set Windows ducking: %s", exc)
+        device = audio.monitor_device or None
+        if device != getattr(self, "_monitor_device", None):  # "Listen through" changed: a monitor on that device
+            self._monitor_device = device
+            was = self._monitoring
+            if was:
+                self.mixer.remove_monitor_tap(self.monitor.write)
+                self.monitor.stop()
+                self._monitoring = False
+            self.monitor = make_monitor(self.mixer, device)
         monitoring = any(
             s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources_in_use()
             if s.kind in ("audio_input", "audio_output", "app_audio", "media")
@@ -1243,17 +1281,25 @@ class Engine:
         self._visible_fresh = True
         slowest = ("", "", 0.0)  # (source, wake or sleep, seconds): named in the late-frame line
         self._woke = 0
+        waking_spent = 0.0
         for source_id, source in self._sources.items():
             began = time.perf_counter()
             if source_id in visible or not self._may_sleep(source):
                 self._last_shown[source_id] = now
                 if source.asleep:
+                    # A bloom's sources woken all in one tick held that frame 17-58 ms, on every canvas (PC soak
+                    # 2026-11-19: a vertical-only switch made the streamed horizontal canvas late). Once this
+                    # tick's waking has taken WAKE_BUDGET_S, the rest stay asleep one more tick (a switch that
+                    # waits for their pictures waits for these too: _wait_for_waking).
+                    if waking_spent >= WAKE_BUDGET_S:
+                        continue
                     source.asleep = False
                     if source.kind == "camera":
                         self._camera_back(source_id, now)
                     self._failing.pop(source_id, None)  # asked for a picture straight away
                     self._safely(source_id, source, "wake", source.wake)
                     self._woke += 1
+                    waking_spent += time.perf_counter() - began
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
                     self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera"
                     else SLEEP_AFTER if source_id in shown else 0.0):
@@ -1727,7 +1773,10 @@ class Engine:
         doesn't show)? If not, it skips the sprigs too."""
         from sprigcast.render.native_bridge import native_transition
 
-        if self._waking or self.editing_part or self._grabs:
+        # (A switch waiting for a picture isn't a reason: the engine draws the bloom held, and the sources waited
+        # for are copied for Python's compositor on their own, see `awaited` in _tick. Counting it as one had
+        # Python draw every sprig and copy every source of every canvas for the whole wait.)
+        if self.editing_part or self._grabs:
             return True
         canvases = {c.id for c in self._collection.canvases if c.enabled}
         riding = {f"view:{name}" for names in self._riders.values() for name in names}
@@ -1927,6 +1976,19 @@ class Engine:
             self._window_at = pacing.window_at()
         marks.append((name, now))
 
+    def _follow_rate(self, fps: int) -> None:
+        """The native engine and captures follow the drawing rate when it changes."""
+        native = self._native
+        if native is not None and not native.failed and getattr(native, "fps", fps) != fps:
+            try:
+                native.engine.set_rate(fps, 1)
+                native.fps = fps
+            except Exception as exc:  # noqa: BLE001 (it keeps its old rate; drawing still follows)
+                log.warning("native engine: couldn't change its rate to %d fps: %s", fps, exc)
+        for source in list(self._sources.values()):
+            if hasattr(source, "canvas_fps"):
+                source.canvas_fps = fps
+
     def _where(self) -> str:
         """The last frame's slowest steps, for the late-frame log line."""
         marks = getattr(self, "_marks", None)
@@ -1985,6 +2047,10 @@ class Engine:
         frozen = self._freezes(compositor)
         textures = getattr(compositor, "textures", {})
         woke = bool(self._woke or self._waking)  # a bloom is coming back: first pictures are spread out
+        # Sources a switch is waiting on: only these are copied for Python's compositor while it waits (their
+        # textures there are what ends the wait). Every other source stays with the engine: copying them all
+        # made a switch on one canvas cost the other canvas a read-back of each video (media 10.8 ms a frame).
+        awaited = set().union(*(ids for _o, _t, ids in self._waking.values())) if self._waking else ()
         first_bytes, waking = 0, []
         native = self._native if self._native is not None and not self._native.failed else None
         for source_id, source in self._sources.items():
@@ -2007,7 +2073,10 @@ class Engine:
             began = time.perf_counter()
             missed = self._missed.pop(source_id, None) if self._missed and freeze is None else None
             try:
-                if direct and not self._python_drew and not self._waking:
+                # (A capture the engine does itself isn't copied for a waiting switch either: the engine says
+                # when it has a picture, see _has_picture. Its copy is a read-back from the card.)
+                if direct and not self._python_drew and (
+                        source_id not in awaited or hasattr(type(source), "engine_shows")):
                     source.engine_tick()  # nothing of Python's shows it this tick: no picture is copied at all
                     frame = None
                 else:
@@ -2038,7 +2107,7 @@ class Engine:
                     first_bytes += getattr(frame, "nbytes", 0)
             if frame is not None:
                 layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
-                if native is not None and not self._python_drew and not self._waking and freeze is None:
+                if native is not None and not self._python_drew and source_id not in awaited and freeze is None:
                     # Python's compositor drew nothing last tick: only the engine gets it. Python's copy waits
                     # here (the newest only) for a tick it draws again. The native simple run (2026-11-17) had
                     # every camera picture sent to both, ~3x the default engine's CPU.

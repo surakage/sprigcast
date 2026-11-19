@@ -36,6 +36,9 @@ constexpr auto RETRY = std::chrono::seconds(2);
 constexpr auto DEFAULT_CHECK = std::chrono::seconds(2);
 const std::wstring TEST_TONE = L"sprigcast-test-tone";
 
+// "Stop Windows turning other apps down when a mic opens" (sc_audio_windows_ducking): on by default.
+std::atomic<int> no_windows_ducking{1};
+
 using sc::sound::narrow;
 
 // Interleaved frames of any channel count and rate -> 48 kHz stereo (front left and right; mono doubled).
@@ -255,6 +258,16 @@ struct sc_capture {
                 return false;
             }
         }
+        if (!as_loopback && no_windows_ducking.load()) {
+            // Windows' communications ducking: opening a mic can turn every other app down (Sound settings,
+            // Communications). Opting this stream's session out keeps game and music where they are.
+            ComPtr<IAudioSessionControl> session;
+            ComPtr<IAudioSessionControl2> session2;
+            if (SUCCEEDED(client->GetService(__uuidof(IAudioSessionControl),
+                                             reinterpret_cast<void **>(session.GetAddressOf()))) &&
+                SUCCEEDED(session.As(&session2)))
+                session2->SetDuckingPreference(TRUE);
+        }
         ComPtr<IAudioCaptureClient> reader;
         if (FAILED(client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void **>(reader.GetAddressOf())))
             || FAILED(client->Start())) {
@@ -369,6 +382,11 @@ SC_API int sc_capture_open(sc_mixer *mixer, int source, const wchar_t *device, i
         *out = c.release();
         return SC_OK;
     });
+}
+
+SC_API int sc_audio_windows_ducking(int opt_out) {
+    no_windows_ducking.store(opt_out ? 1 : 0);  // captures opened from now on (and reopened ones) follow it
+    return SC_OK;
 }
 
 SC_API int sc_capture_stats_get(sc_capture *capture, sc_capture_stats *out) {

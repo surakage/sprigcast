@@ -40,6 +40,14 @@ constexpr int REBUILDS_PER_MINUTE = 5;   // more than this and the engine gives 
 constexpr int BUILD_TRIES = 10;          // a new device that can't be made after this many tries: faulted
 constexpr int WAIT_MS = 2000;            // how long Python waits for the frame thread before giving up
 constexpr int FRAME_WAIT_MS = 500;       // how long a Python call waits for a frame to let go (a stuck one never does)
+// A capture whose source went to sleep stays open, parked, taking a picture a second, and is taken up again when
+// the source wakes: every capture Windows starts leaves about one picture of graphics memory behind until the
+// program ends, whoever starts it and however it is closed (PC 2026-11-19: +8.4 MB per wake of a 1080p window or
+// display, the same with windows-capture on the old engine and in OBS; 5.5 MB a minute over an 80-minute soak of
+// 15 s bloom switches). It is parked for as long as the source exists (user, 2026-11-19: no time limit, a bloom
+// back after an hour would cost a start again); a capture helper that can be restarted is to replace this.
+constexpr double CAPTURE_BACK_S = 0.5;   // back from parked with nothing new drawn by then: its picture stands
+constexpr double CAPTURE_FRESH_S = 2.0;  // a parked capture's picture this new is shown at once on waking
 constexpr double CAPTURE_START_S = 5.0;  // a capture Windows hasn't started by then is given up (Python captures)
 
 int64_t qpc() {
@@ -91,7 +99,15 @@ struct CaptureRun {
     uint64_t serial = 0;
     uint64_t frames = 0;
     bool done = false;
+    sc::CaptureAsk ask;        // what `cap` captures
+    int64_t parked = 0;        // when its source went to sleep (qpc), 0 while it is wanted
+    int64_t copied = 0;        // when it last gave the source a picture (qpc)
+    int64_t back = 0;          // when it came back from being parked (qpc), until its first news is said
 };
+
+bool same_ask(const sc::CaptureAsk &a, const sc::CaptureAsk &b) {
+    return a.window == b.window && a.monitor == b.monitor && a.flags == b.flags && a.interval_ms == b.interval_ms;
+}
 
 struct DrawList {  // sc_engine_source_draws: count < 0 drops it
     int width = 0, height = 0, count = -1;
@@ -153,12 +169,13 @@ struct SharedPictures {
     static constexpr uint32_t ON_CARD = 2;
     // The counter of a picture not taken yet, with where it is and how to read it; 0 when there is none. A
     // picture on the card gives no data: `texture` names its texture and `how` its size.
-    uint64_t newest(const uint8_t **data, sc_upload *how, std::wstring *texture) const {
+    uint64_t newest(const uint8_t **data, sc_upload *how, std::wstring *texture, uint32_t *flags) const {
         if (!view) return 0;
         const uint64_t seq = counter();
         if (seq == 0 || seq == seen) return 0;
-        uint32_t head[4];
+        uint32_t head[5];
         std::memcpy(head, view + 8, sizeof head);
+        *flags = head[4];  // sc::SHARED_*: 0 from a browser page
         if (head[2] == ON_CARD) {
             if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384) return 0;
             *data = nullptr;
@@ -239,6 +256,7 @@ struct Watch {  // shared: what Python asked for and the newest picture
 struct Reader {  // the frame thread's: a small picture and three copies on their way back
     sc::Target target;
     ComPtr<ID3D11Texture2D> staging[3];
+    ComPtr<ID3D11Query> done[3];  // each copy's end: Map is tried only once the card says it's finished
     bool pending[3] = {false, false, false};
     double drawn[3] = {0, 0, 0};
     int next = 0;
@@ -444,6 +462,7 @@ struct PoolEntry {
 struct OutReader {  // the frame thread's: an output's two planes and three copies of them on their way back
     sc::Nv12Planes planes;
     ComPtr<ID3D11Texture2D> ys[3], uvs[3];
+    ComPtr<ID3D11Query> done[3];  // as Reader's
     bool pending[3] = {false, false, false};
     double drawn[3] = {0, 0, 0};
     uint64_t serial[3] = {0, 0, 0};
@@ -534,6 +553,8 @@ struct sc_engine {
     std::atomic<bool> dead{false};          // faulted for good
     std::atomic<int64_t> tick_started{0};   // 0 = between frames
     std::atomic<bool> hung{false};
+    std::atomic<const char *> doing{"between frames"};  // what the frame thread is on: the watchdog says it
+    std::atomic<uint64_t> doing_id{0};                   // and for which source, when it's one
 };
 
 namespace {
@@ -563,6 +584,11 @@ sc_snapshot view_of(const SnapData &s) {
 
 // An engine call's answer, from the frame thread: a bad value was already logged and the frame goes on; a
 // faulted or lost device ends the frame and the engine rebuilds.
+void at(sc_engine &e, const char *what, uint64_t id = 0) {
+    e.doing_id.store(id, std::memory_order_relaxed);
+    e.doing.store(what, std::memory_order_release);
+}
+
 void check(int code) {
     switch (code) {
     case SC_OK:
@@ -789,19 +815,41 @@ void show_preview(sc_engine &e, const PreviewCfg &cfg, PreviewGpu &pg, int64_t n
     ++presented;
 }
 
+// Whether a copy started earlier has finished on the card. Map with DO_NOT_WAIT should never wait, but the
+// software renderer (WARP) can still hold the frame thread there for seconds while it catches up; asking an
+// event query never waits on any driver. No query (it couldn't be made): Map decides, as before.
+bool copy_done(sc_device &dev, ID3D11Query *query) {
+    if (!query) return true;
+    const HRESULT hr = dev.context->GetData(query, nullptr, 0, 0);
+    if (is_lost(hr)) throw Gone("the graphics card was reset or removed (read-back)");
+    return hr != S_FALSE;
+}
+
+// Marks the end of a copy just started, so copy_done can tell when it's finished.
+void mark_copy(sc_device &dev, ComPtr<ID3D11Query> &query) {
+    if (!query) {
+        D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+        if (FAILED(dev.device->CreateQuery(&qd, &query))) query.Reset();
+    }
+    if (query) dev.context->End(query.Get());
+}
+
 // Copies of watched canvases: draw the small picture, start its copy back, and collect copies that are done,
 // never waiting on the card (a copy still on its way is looked at again next frame).
 void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &want, double seconds, int64_t now) {
     Reader &r = e.readers[index];
     sc_device &dev = *e.dev;
+    at(e, "read-back: waiting for the device", static_cast<uint64_t>(index) + 1);
     std::lock_guard<std::mutex> lock(dev.lock);
     if (!canvas || want.width <= 0) {
         r = Reader();
         return;
     }
+    at(e, "read-back: collecting finished copies", static_cast<uint64_t>(index) + 1);
     for (int k = 0; k < 3; ++k) {  // oldest first
         const int s = (r.next + k) % 3;
         if (!r.pending[s]) continue;
+        if (!copy_done(dev, r.done[s].Get())) break;
         D3D11_MAPPED_SUBRESOURCE mapped;
         HRESULT hr = dev.context->Map(r.staging[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
         if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
@@ -853,9 +901,12 @@ void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &wa
     }
     const int s = r.next;
     if (r.pending[s]) return;  // all three still on their way: the card is behind, skip this one
+    at(e, "read-back: drawing the small picture", static_cast<uint64_t>(index) + 1);
     check(draw_view(dev, r.target.target.Get(), want.width, want.height, canvas->view.Get(), 0, 0,
                     static_cast<float>(want.width), static_cast<float>(want.height), 1.0f, false));
+    at(e, "read-back: starting its copy", static_cast<uint64_t>(index) + 1);
     dev.context->CopyResource(r.staging[s].Get(), r.target.texture.Get());
+    mark_copy(dev, r.done[s]);
     r.pending[s] = true;
     r.drawn[s] = seconds;
     r.next = (s + 1) % 3;
@@ -1002,6 +1053,7 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
     for (int k = 0; k < 3; ++k) {  // oldest first
         const int s = (r.next + k) % 3;
         if (!r.pending[s]) continue;
+        if (!copy_done(dev, r.done[s].Get())) break;
         D3D11_MAPPED_SUBRESOURCE my, muv;
         HRESULT hr = dev.context->Map(r.ys[s].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &my);
         if (hr == DXGI_ERROR_WAS_STILL_DRAWING) break;
@@ -1083,6 +1135,7 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
                     r.planes.uv.target.Get(), want.width, want.height, want.scale));
     dev.context->CopyResource(r.ys[s].Get(), r.planes.y.texture.Get());
     dev.context->CopyResource(r.uvs[s].Get(), r.planes.uv.texture.Get());
+    mark_copy(dev, r.done[s]);
     r.pending[s] = true;
     r.drawn[s] = drawn;
     r.serial[s] = want.serial;
@@ -1131,6 +1184,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     if (fault == 3) throw Gone("a pretend lost graphics card (crash gate check)");
     if (fault == 4) Sleep(3000);  // a stuck frame: the watchdog reports it
 
+    at(e, "making the graphics device");
     if (!e.dev && !build(e)) {
         std::lock_guard<std::mutex> lock(e.state);
         e.detach_done = e.detach_asked;  // no device, no windows held
@@ -1156,6 +1210,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::set<uint64_t> captures_held;
     std::vector<std::pair<uint64_t, CaptureShown>> capture_news;
     uint64_t detach_seen;
+    at(e, "taking what Python sent");
     {
         std::lock_guard<std::mutex> lock(e.state);
         medias.assign(e.medias.begin(), e.medias.end());
@@ -1187,6 +1242,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
 
     for (uint64_t id : forgets) {
+        at(e, "letting a source go", id);
         e.kept_sources.erase(id);
         e.kept_draws.erase(id);
         check(sc_source_forget(e.dev, id));
@@ -1202,9 +1258,11 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         auto &seen = e.media_seen[id];
         if (seen.first != player.get()) seen = {player.get(), 0};
         MediaDue due;
+        at(e, "asking a video for its picture", id);
         media_due(player, &seen.second, &due);
         if (due.what == SC_MEDIA_PICTURE && due.texture) {  // still on the card, where the decoder left it
             e.kept_sources.erase(id);
+            at(e, "taking a video's picture on the card", id);
             ComPtr<ID3D11Device> on;
             auto *texture = static_cast<ID3D11Texture2D *>(due.texture);
             texture->GetDevice(&on);
@@ -1217,6 +1275,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
                 media_card_refused();  // the next ones come in memory; this one is skipped
             }
         } else if (due.what == SC_MEDIA_PICTURE) {
+            at(e, "uploading a video's picture", id);
             e.kept_sources.erase(id);
             check(sc_source_upload(e.dev, id, due.data, &due.how));
         } else if (due.what == SC_MEDIA_BLANK) {
@@ -1234,6 +1293,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         auto &seen = e.media_seen[id];
         if (seen.first != drawings.get()) seen = {drawings.get(), 0};
         MediaDue due;
+        at(e, "a visualizer's drawing", id);
         visual_due(drawings, &seen.second, &due);
         if (due.what == SC_MEDIA_PICTURE) {
             e.kept_sources.erase(id);
@@ -1247,17 +1307,19 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         found = here ? std::next(found) : e.shared_open.erase(found);
     }
     for (auto &[id, name] : shareds) {
+        at(e, "a browser page or helper's picture", id);
         SharedPictures &block = e.shared_open[id];
         if (block.name != name && !block.open(name)) continue;
         const uint8_t *data = nullptr;
         sc_upload how{};
         std::wstring texture;
-        const uint64_t seq = block.newest(&data, &how, &texture);
+        uint32_t flags = 0;
+        const uint64_t seq = block.newest(&data, &how, &texture, &flags);
         if (!seq) continue;
         const bool held = shared_held.count(id) != 0;  // frozen: taken so the page goes on, the picture kept
         if (!held) e.kept_sources.erase(id);
         if (!data) {  // drawn on the card by the helper: copied there, never through memory
-            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height, !held);
+            const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height, !held, flags);
             if (code == SC_NOT_YET) continue;
             if (code != SC_OK) {
                 if (!block.page_said) {
@@ -1283,14 +1345,43 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     for (auto run = e.capture_runs.begin(); run != e.capture_runs.end();) {
         const bool here = std::any_of(captures.begin(), captures.end(),
                                       [&](const auto &c) { return c.first == run->first; });
-        if (!here) e.capture_staging.erase(run->first);
-        run = here ? std::next(run) : e.capture_runs.erase(run);
+        if (here) {
+            ++run;
+            continue;
+        }
+        e.capture_staging.erase(run->first);
+        // Asleep: parked, not closed. It takes a picture a second so it is current on waking.
+        CaptureRun &r = run->second;
+        const int64_t tick_now = qpc();
+        const bool forgotten = forgets.count(run->first) != 0;
+        bool keep = !forgotten && r.cap && !r.done && r.cap->device() == e.dev->device.Get();
+        if (keep && !r.parked) {
+            r.parked = tick_now;
+            r.starting.reset();
+            r.cap->slow(true);
+        }
+        if (keep) {
+            at(e, "a parked capture", run->first);
+            if (r.cap->take(*e.dev, run->first, true)) r.copied = tick_now;
+            keep = !r.cap->ended();
+        }
+        run = keep ? std::next(run) : e.capture_runs.erase(run);
     }
     for (auto &[id, want] : captures) {
+        at(e, "a screen or window capture", id);
         CaptureRun &run = e.capture_runs[id];
         if (run.serial != want.serial) {
-            run = CaptureRun();
+            if (run.parked && run.cap && same_ask(run.ask, want.ask) && !run.cap->ended()) {
+                run.cap->slow(false);  // its source woke: the same capture goes on, none is started
+                run.parked = 0;
+                run.frames = 0;
+                run.back = qpc();
+                log_line(SC_LOG_INFO, "engine: a parked capture goes on (its source woke; none started)");
+            } else {
+                run = CaptureRun();
+            }
             run.serial = want.serial;
+            run.ask = want.ask;
         }
         if (run.done) continue;
         if (run.cap && run.cap->device() != e.dev->device.Get()) run.cap.reset();
@@ -1336,6 +1427,22 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (got) {
             e.kept_sources.erase(id);
             ++run.frames;
+            run.copied = qpc();
+            run.back = 0;
+        } else if (run.back && run.cap->width() > 0) {
+            // Back from parked and Windows has drawn nothing new (a still window): the picture it took while
+            // parked is the one to show. Said at once when that picture is fresh, else after a short wait for a
+            // newer one.
+            const double f = static_cast<double>(qpf());
+            const int64_t tick_now = qpc();
+            if (static_cast<double>(run.back - run.copied) < CAPTURE_FRESH_S * f ||
+                static_cast<double>(tick_now - run.back) >= CAPTURE_BACK_S * f) {
+                run.back = 0;
+                run.frames = 1;
+                if (!run.cap->ended())
+                    capture_news.emplace_back(id, CaptureShown{SC_SCREEN_RUNNING, run.cap->width(),
+                                                               run.cap->height(), run.frames, want.serial});
+            }
         }
         if (run.cap->ended()) {
             run.done = true;
@@ -1349,6 +1456,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
     std::vector<std::pair<uint64_t, std::vector<uint8_t>>> used;
     for (auto &[id, pic] : uploads) {
+        at(e, "uploading a picture from Python", id);
         check(sc_source_upload(e.dev, id, pic.data.data(), &pic.how));
         e.kept_draws.erase(id);
         if (pic.keep) {
@@ -1360,6 +1468,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
     // Sources drawn from a list (after the pictures above, which the lists use).
     for (auto &[id, d] : draws) {
+        at(e, "drawing a source's list", id);
         check(sc_source_draws(e.dev, id, d.width, d.height, d.items.data(), d.count));
         if (d.count < 0) {
             e.kept_draws.erase(id);
@@ -1376,6 +1485,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         check(sc_mask_set(e.dev, id, m.rgba.data(), m.width, m.height, m.luma ? 1 : 0));
         e.kept_masks[id] = std::move(m);
     }
+    at(e, "setting looks, masks and the blooms");
     if (snapshot) {
         sc_snapshot v = view_of(*snapshot);
         check(sc_snapshot_set(e.dev, &v));
@@ -1390,6 +1500,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             c = nullptr;
         }
         if (cfg.width <= 0) continue;
+        at(e, "drawing a canvas", static_cast<uint64_t>(i));
         if (!c) {
             int code = sc_canvas_create(e.dev, cfg.width, cfg.height, &c);
             check(code);
@@ -1421,8 +1532,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (cfg.scene) check(sc_canvas_render(c, cfg.scene, seconds));
         else check(sc_canvas_clear(c, 0, 0, 0, 0));
     }
+    at(e, "reading the canvases back for the previews");
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) read_back(e, i, e.gpu[i], watches[i], seconds, now);
     const double clock = static_cast<double>(now) / static_cast<double>(qpf());  // Python's perf_counter()
+    at(e, "making the outputs' frames");
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
         for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) output_back(e, i, o, e.gpu[i], outputs[i][o], clock);
     }
@@ -1432,7 +1545,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
                                         [&](const PreviewCfg &p) { return p.id == it->first; });
         it = wanted ? std::next(it) : e.shown.erase(it);
     }
+    at(e, "showing the previews");
     for (const PreviewCfg &cfg : previews) show_preview(e, cfg, e.shown[cfg.id], now, presented, skipped);
+    at(e, "finishing the frame");
     if (detach_seen) {  // let the window go for good before telling Python it can close it
         std::lock_guard<std::mutex> lock(e.dev->lock);
         e.dev->context->ClearState();
@@ -1471,6 +1586,7 @@ void tick(sc_engine &e) {
         }
         if (!why.empty()) {
             try {
+                at(e, "rebuilding after a fault");
                 teardown(e, why);
             } catch (...) {
                 give_up(e, "a fault while rebuilding");
@@ -1482,6 +1598,7 @@ void tick(sc_engine &e) {
     }
     const int64_t end = qpc();
     e.tick_started.store(0);
+    at(e, "between frames");
     if (e.hung.exchange(false)) {
         char line[160];
         std::snprintf(line, sizeof line, "engine: the frame thread is going again (that frame took %.1f s)",
@@ -1647,7 +1764,11 @@ DWORD WINAPI watchdog_main(void *arg) {
         const int64_t started = e.tick_started.load();
         if (started && static_cast<double>(qpc() - started) > HANG_S * static_cast<double>(qpf()) &&
             !e.hung.exchange(true)) {
-            log_line(SC_LOG_ERROR, "engine: one frame has taken more than 2 s (the frame thread is stuck)");
+            const uint64_t id = e.doing_id.load(std::memory_order_relaxed);
+            std::string line = "engine: one frame has taken more than 2 s (the frame thread is stuck) at: ";
+            line += e.doing.load(std::memory_order_acquire);
+            if (id) line += " (" + std::to_string(id) + ")";
+            log_line(SC_LOG_ERROR, line);
         }
     }
     return 0;

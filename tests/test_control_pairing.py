@@ -347,3 +347,66 @@ def test_paired_devices_and_secrets_are_read_only_from_sprigcasts_own_settings(m
     assert not q.fallbacksEnabled()
     src = Path(control_server.__file__).read_text(encoding="utf-8")
     assert "QSettings().value(DEVICES" not in src
+
+
+def test_last_seen_is_kept_when_a_key_signs_in_or_leaves_without_writing_each_time():
+    """Settings shows "Last seen 2 min ago" (2026-11-19): each device keeps when its key last signed in or left.
+    Saving happens at most once a minute per device, since web links sign in on every button press."""
+    from sprigcast.control.pairing import SEEN_SAVE_SECONDS, Device
+
+    clock, wall, saves = Clock(), [1_763_566_190.0], []
+    pairing = Pairing(clock=clock, wall=lambda: wall[0])
+    pairing.on_seen = lambda: saves.append(1)
+    device = pairing.redeem(pairing.start(), "StreamBridge")
+    assert device.last_seen == "2025-11-19T15:29:50Z"  # paired counts as seen
+    wall[0] += 30
+    clock.now += 30
+    assert pairing.seen(device.key) is device and device.last_seen == "2025-11-19T15:30:20Z"
+    assert saves == []  # paired 30 s ago: that save is recent enough
+    clock.now += SEEN_SAVE_SECONDS
+    wall[0] += SEEN_SAVE_SECONDS
+    pairing.seen(device.key)
+    pairing.seen(device.key)
+    assert saves == [1] and device.last_seen == "2025-11-19T15:31:20Z"
+    assert pairing.seen("leafy") is None and pairing.seen("") is None  # the password isn't a device
+    # Saved and read back; lists saved before last_seen read as never seen.
+    again = Pairing.devices_from_json(pairing.to_json())
+    assert again[0].last_seen == "2025-11-19T15:31:20Z"
+    assert Pairing.devices_from_json(json.dumps([{"id": "a", "name": "Old", "key": "k", "added": ""}]))[0].last_seen == ""
+    # A merge with another copy's list keeps the newer time, whichever had it.
+    newer = Device(id=device.id, name="StreamBridge", key=device.key, added=device.added, last_seen="2025-11-19T16:00:00Z")
+    assert pairing.merged([newer], {device.id})[0].last_seen == "2025-11-19T16:00:00Z"
+
+
+def test_web_links_and_both_doors_mark_the_device_seen(monkeypatch):
+    from sprigcast.app import control_server
+    from sprigcast.control.protocol import Session
+    from test_control_api import _api as _obs_api, _qt
+
+    api, pairing = _api(), Pairing(clock=Clock(), wall=lambda: 1_763_566_190.0)
+    device = pairing.redeem(pairing.start(), "Streamer.bot")
+    device.last_seen = ""
+    status, _ = web.handle(api, _request(f"GET /api/app.info HTTP/1.1\r\nAuthorization: Bearer {device.key}\r\n\r\n"),
+                           enabled=True, password="leafy", keys=pairing.keys(), pairing=pairing)
+    assert status == 200 and device.last_seen == "2025-11-19T15:29:50Z"
+
+    _qt()
+    server = control_server.ControlServer(_obs_api()[0])
+    monkeypatch.setattr(server, "keep_devices", lambda: None)
+    marks = []
+    monkeypatch.setattr(server.pairing, "seen", lambda key: marks.append(key))
+    native = NativeSession(api=server.native, password="leafy", keys=[device.key])
+    list(native.receive(json.dumps({"auth": auth_string(device.key, native.salt, native.challenge)})))
+    server._mark_seen(native)
+    server._mark_seen(native)  # later messages on the same connection don't count again
+    obs = Session(handler=lambda *a: None, password="leafy", keys=[device.key])
+    list(obs.receive(json.dumps({"op": 1, "d": {"rpcVersion": 1,
+                                                 "authentication": auth_string(device.key, obs.salt, obs.challenge)}})))
+    assert obs.identified and obs.key == device.key
+    server._mark_seen(obs)
+    server._mark_seen(native, leaving=True)
+    by_password = NativeSession(api=server.native, password="leafy")
+    list(by_password.receive(json.dumps({"auth": auth_string("leafy", by_password.salt, by_password.challenge)})))
+    server._mark_seen(by_password)
+    assert marks == [device.key] * 3
+    server.deleteLater()

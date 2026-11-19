@@ -10,6 +10,8 @@ crash in the first seconds.
 1. A short video (picture and sound) is made in another process, so this one never imports PyAV first.
 2. The garden gets a sprig playing it, on top of the bloom on air; Getting started is marked as done.
 3. SprigCast starts offscreen and must still be running after <seconds>.
+   With SMOKE_LIGHT=1 the canvases are made 640x360 at 30 fps (CI runs it with SPRIGCAST_ENGINE=native: the
+   new engine on the build machine's software renderer, which can't keep up with full-size canvases).
 4. Its log for the run must have no errors, no import trouble and no media that couldn't play, and it
    must say which graphics it drew with. crash.log must not have grown.
 The whole log is printed either way.
@@ -22,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -61,9 +64,16 @@ from sprigcast.app.main import config_dir, load_collection
 from sprigcast.core.gardens import Shelf
 from sprigcast.core.scene import SourceConfig
 QSettings().setValue(getting_started.DONE, True)  # its window would ask to replace the blooms
+from sprigcast.app import crash_report
+# A run this check ended before (it's ended by force) would make this one ask about safe mode and wait.
+(config_dir() / crash_report.MARK).unlink(missing_ok=True)
 path = Shelf(config_dir()).garden_file()
 path.parent.mkdir(parents=True, exist_ok=True)
 garden = load_collection(path)
+if sys.argv[2] == "light":  # small canvases at 30 fps: what even the software renderer keeps up with
+    for c in garden.canvases:
+        c.width, c.height = (640, 360) if c.width >= c.height else (360, 640)
+        c.fps = 30
 canvas = next(c for c in garden.canvases if c.enabled)
 bloom = garden.scene(garden.active_scenes.get(canvas.id) or garden.scenes_for(canvas.id)[0].id)
 clip = SourceConfig(id=garden.new_id("media"), kind="media", name="Smoke clip",
@@ -80,6 +90,20 @@ BAD = re.compile(r"partially initialized|circular import|ImportError|ModuleNotFo
 LEVEL = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ (ERROR|CRITICAL|WARNING) ")
 
 
+# The capture helper (app/capture_helper.py) is in the installed program and starts: it says "ready" and ends.
+HELPER = """
+import subprocess, sys
+from sprigcast.app import capture_helper
+command = capture_helper.helper_command()
+if command is None:
+    sys.exit("SprigCastCapture.exe isn't next to sprigcore.dll")
+out = subprocess.run([*command, "--check"], capture_output=True, text=True, timeout=30)
+if out.returncode != 0 or "ready" not in out.stdout:
+    sys.exit(f"SprigCastCapture.exe --check: exit code {out.returncode}, said {out.stdout!r} {out.stderr!r}")
+print(command[0])
+"""
+
+
 def problems(text: str) -> list[str]:
     """The lines in a run's log that fail the check (an error, or a warning about import or media trouble)."""
     found = []
@@ -94,6 +118,32 @@ def problems(text: str) -> list[str]:
     return found
 
 
+HANG_AFTER_S = 150.0  # beyond the run itself: a check stuck this long prints what it has and fails (a CI build hung
+# here for 24 min with nothing to show, 2026-11-19)
+_stage = ["starting"]
+_day_log: list[Path] = []
+
+
+def stage(text: str) -> None:
+    _stage[0] = text
+    print(f"[{time.strftime('%H:%M:%S')}] {text}", flush=True)
+
+
+def _hung(seconds: float) -> None:
+    print(f"FAILED: the start-up check hung for {seconds:.0f} s at: {_stage[0]}", flush=True)
+    if _day_log and _day_log[0].is_file():
+        text = _day_log[0].read_bytes()[-20000:].decode("utf-8", "replace")
+        print(f"----- {_day_log[0].name} (last 20 KB) -----\n{text}----- end of log -----", flush=True)
+    if sys.platform == "win32":
+        try:
+            out = subprocess.run(["tasklist", "/V"], capture_output=True, text=True, timeout=20, check=False).stdout
+            print("----- processes -----\n" + "\n".join(line for line in out.splitlines()
+                                                         if "python" in line.lower() or "sprig" in line.lower()))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    os._exit(2)
+
+
 def size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -104,43 +154,67 @@ def size(path: Path) -> int:
 def main() -> int:
     seconds = float(sys.argv[1])
     command = sys.argv[2:]
+    watchdog = threading.Timer(seconds + HANG_AFTER_S, _hung, args=(seconds + HANG_AFTER_S,))
+    watchdog.daemon = True
+    watchdog.start()
     work = Path(tempfile.mkdtemp(prefix="sprigcast-smoke-"))
     clip = work / "smoke clip.mp4"
+    stage("making the test video")
     subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True, timeout=120)
     print(f"Made {clip} ({size(clip) // 1024} KB)", flush=True)
-    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip)], check=True, timeout=120,
+    if sys.platform == "win32":
+        stage("checking the capture helper")
+        checked = subprocess.run([sys.executable, "-I", "-c", HELPER], capture_output=True, text=True, timeout=120,
+                                 check=False)
+        if checked.returncode != 0:
+            print(f"SMOKE TEST FAILED: the capture helper doesn't start: {checked.stderr.strip()}", flush=True)
+            return 1
+        print(f"The capture helper starts ({checked.stdout.strip()})", flush=True)
+    stage("setting up the garden")
+    light = os.environ.get("SMOKE_LIGHT") == "1"
+    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip), "light" if light else "full"],
+                                      check=True, timeout=120,
                                       capture_output=True, text=True).stdout.strip().splitlines()[-1])
     print(f"Garden {paths['garden']}: the clip plays on top of {paths['bloom']}", flush=True)
     logs = Path(paths["logs"])
     day_log = logs / f"sprigcast {time.strftime('%Y-%m-%d')}.log"
     crash_log = logs / "crash.log"
     log_from, crash_from = size(day_log), size(crash_log)
+    _day_log.append(day_log)
 
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-    # SprigCast's output goes to a file, not this console: a helper it starts that outlives it would otherwise
-    # hold the console pipe open, and the CI step would wait for it forever (2026-11-19).
-    out_file = work / "sprigcast output.txt"
-    with open(out_file, "wb") as out:
-        proc = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+    stage(f"running SprigCast for {seconds:.0f} s")
+    # The app writes to a file, not this step's console: a helper that outlives taskkill (stuck in the
+    # graphics driver, say) would otherwise hold the console open and the CI step waits on it for ever.
+    output = work / "app output.txt"
+    with output.open("wb") as sink:
+        proc = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT)
     started = time.monotonic()
     while time.monotonic() - started < seconds and proc.poll() is None:
         time.sleep(0.5)
     alive = proc.poll() is None
     if alive:
-        if sys.platform == "win32":  # with the helpers it started
-            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
-        else:
-            proc.kill()
+        stage("closing SprigCast")
+        try:
+            if sys.platform == "win32":  # with the helpers it started
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30, check=False)
+            else:
+                proc.kill()
+        except subprocess.TimeoutExpired:
+            print("taskkill didn't finish in 30 s", flush=True)
         try:
             proc.wait(30)
         except subprocess.TimeoutExpired:
             print("SprigCast was still running 30 s after it was ended", flush=True)
+            proc.kill()
+        stage("SprigCast closed")
     else:
         print(f"SprigCast closed by itself after {time.monotonic() - started:.0f} s (exit {proc.returncode})")
 
-    printed = out_file.read_bytes().decode("utf-8", "replace").strip() if out_file.is_file() else ""
-    if printed:
-        print(f"----- what SprigCast printed -----\n{printed[-6000:]}\n-----", flush=True)
+    watchdog.cancel()
+    said = output.read_bytes()[-20000:].decode("utf-8", "replace").strip() if output.is_file() else ""
+    if said:
+        print(f"----- what SprigCast printed -----\n{said}\n----- end -----", flush=True)
     text = day_log.read_bytes()[log_from:].decode("utf-8", "replace") if day_log.is_file() else ""
     print(f"----- {day_log.name} (this run) -----\n{text}----- end of log -----", flush=True)
     failed = [] if alive else ["SprigCast didn't stay open"]
@@ -152,8 +226,13 @@ def main() -> int:
     if size(crash_log) > crash_from:
         crash = crash_log.read_bytes()[crash_from:].decode("utf-8", "replace")
         print(f"----- crash.log -----\n{crash[-6000:]}")
-        if "Fatal Python error" in crash or "Windows fatal exception" in crash:
+        # Python's faulthandler also writes "Windows fatal exception" for native exceptions that are caught and
+        # handled (it sees them first): with SprigCast still running and no Python stack, that's not a crash.
+        python_stack = "most recent call first" in crash
+        if "Fatal Python error" in crash or ("Windows fatal exception" in crash and (python_stack or not alive)):
             failed.append("crash.log has a crash")
+        elif "Windows fatal exception" in crash:
+            print("NOTE: crash.log has native exceptions that were handled (SprigCast kept running); not a crash")
     for line in failed:
         print(f"FAILED: {line}")
     if not failed:

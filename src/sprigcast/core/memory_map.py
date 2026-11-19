@@ -16,6 +16,7 @@ import collections
 import logging
 import sys
 import threading
+import time
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ def summarize(regions) -> str:
     the same allocation base (one VirtualAlloc: a heap segment, a driver allocation, a big numpy array)."""
     private: dict[int, int] = collections.defaultdict(int)
     mapped = image = 0
-    for base, size, state, kind in regions:
+    for base, size, state, kind, *_ in regions:
         if state != MEM_COMMIT:
             continue
         if kind == MEM_PRIVATE:
@@ -47,8 +48,91 @@ def summarize(regions) -> str:
             f"program files {image / MB:.0f} MB")
 
 
+PROTECT = {0x01: "no access", 0x02: "read-only", 0x04: "read-write", 0x08: "copy-on-write", 0x10: "execute",
+           0x20: "execute-read", 0x40: "execute-read-write", 0x80: "execute-copy"}
+
+
+def protect_name(protect: int) -> str:
+    """PAGE_* in words. Write-combined is how a graphics driver maps memory the card reads (upload buffers)."""
+    name = PROTECT.get(protect & 0xFF, f"protect {protect:#x}")
+    if protect & 0x400:
+        name += " write-combined"
+    elif protect & 0x200:
+        name += " uncached"
+    if protect & 0x100:
+        name += " guard"
+    return name
+
+
+def big_blocks(regions, heaps=frozenset(), top: int = 8) -> str:
+    """The private blocks of BIG or more, biggest first, each with the protection it was allocated with and
+    whether it is one of the process's heaps ("heap": its base is a GetProcessHeaps handle). Who made a block
+    can't be read from here; the protection tells driver memory (write-combined), JIT code (execute-read-write)
+    and ordinary allocations (read-write) apart."""
+    sizes: dict[int, int] = collections.defaultdict(int)
+    protects: dict[int, int] = {}
+    for base, size, state, kind, *more in regions:
+        if state == MEM_COMMIT and kind == MEM_PRIVATE:
+            sizes[base] += size
+            if more:
+                protects.setdefault(base, more[0])
+    big = sorted(((size, base) for base, size in sizes.items() if size >= BIG), reverse=True)[:top]
+    parts = []
+    for size, base in big:
+        words = [f"{size / MB:.0f} MB"]
+        if base in protects:
+            words.append(protect_name(protects[base]))
+        if base in heaps:
+            words.append("heap")
+        parts.append(" ".join(words))
+    return ", ".join(parts)
+
+
+def program_files(regions, name_of, top: int = 6) -> str:
+    """The modules (DLLs) with the most committed image memory: "Qt6WebEngineCore.dll 180 MB, ..."."""
+    sizes: dict[int, int] = collections.defaultdict(int)
+    for base, size, state, kind, *_ in regions:
+        if state == MEM_COMMIT and kind == MEM_IMAGE:
+            sizes[base] += size
+    named: dict[str, int] = collections.defaultdict(int)
+    for base, size in sizes.items():
+        named[name_of(base) or "unnamed"] += size
+    biggest = sorted(named.items(), key=lambda kv: -kv[1])[:top]
+    return ", ".join(f"{name} {size / MB:.0f} MB" for name, size in biggest)
+
+
+def windows_heaps() -> frozenset[int]:
+    """The base addresses of this process's heaps (GetProcessHeaps)."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    get = kernel32.GetProcessHeaps
+    get.restype, get.argtypes = wintypes.DWORD, [wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+    count = get(0, None)
+    if not count:
+        return frozenset()
+    handles = (ctypes.c_void_p * (count + 16))()
+    count = min(get(len(handles), handles), len(handles))
+    return frozenset(h for h in handles[:count] if h)
+
+
+def module_name(base: int) -> str | None:
+    """The file name of the module loaded at `base` (an image's allocation base is its module handle)."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    kernel32.GetModuleFileNameW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR, wintypes.DWORD]
+    path = ctypes.create_unicode_buffer(520)
+    if not kernel32.GetModuleFileNameW(ctypes.c_void_p(base), path, 520):
+        return None
+    return path.value.rsplit("\\", 1)[-1]
+
+
 def windows_regions():
-    """(allocation base, size, state, type) for every region of this process's address space."""
+    """(allocation base, size, state, type, allocation protect) for every region of this process's address
+    space."""
     import ctypes
     from ctypes import wintypes
 
@@ -67,7 +151,7 @@ def windows_regions():
             break
         if not info.RegionSize:
             break
-        yield info.AllocationBase or 0, info.RegionSize, info.State, info.Type
+        yield info.AllocationBase or 0, info.RegionSize, info.State, info.Type, info.AllocationProtect
         address = (info.BaseAddress or 0) + info.RegionSize
 
 
@@ -136,13 +220,28 @@ def graphics_memory() -> tuple[int, int] | None:
     return (local, system) if found else None
 
 
-def memory_map_line() -> str | None:
-    """"memory map: private ... ; graphics driver: ... on the card, ... in system memory", or None off Windows."""
+def memory_map_line(reason: str = "") -> str | None:
+    """"memory map: private ... ; big blocks ...; graphics driver: ... on the card, ... in system memory", or None
+    off Windows. `reason` says when it was taken ("before Twitch's encoder opens")."""
     if sys.platform != "win32":
         return None
     parts = []
     try:
-        parts.append(summarize(windows_regions()))
+        regions = list(windows_regions())
+        parts.append(summarize(regions))
+        try:
+            heaps = windows_heaps()
+        except Exception:  # noqa: BLE001
+            heaps = frozenset()
+        blocks = big_blocks(regions, heaps)
+        if blocks:
+            parts.append("big blocks " + blocks)
+        try:
+            modules = program_files(regions, module_name)
+        except Exception:  # noqa: BLE001 (the rest of the line still counts)
+            modules = ""
+        if modules:
+            parts.append("biggest program files " + modules)
     except Exception as exc:  # noqa: BLE001 (a diagnostic: never in the way)
         parts.append(f"address space unreadable ({exc})")
     try:
@@ -151,14 +250,16 @@ def memory_map_line() -> str | None:
         graphics = None
     if graphics is not None:
         parts.append(f"graphics driver {graphics[0] / MB:.0f} MB on the card, {graphics[1] / MB:.0f} MB in system memory")
-    return "memory map: " + "; ".join(parts)
+    return f"memory map{f' ({reason})' if reason else ''}: " + "; ".join(parts)
 
 
-def log_memory_map() -> None:
-    """Log the memory map from a thread of its own (the window never waits for the walk)."""
+def log_memory_map(reason: str = "", after_s: float = 0.0) -> None:
+    """Log the memory map from a thread of its own (the window never waits for the walk), `after_s` from now."""
     def run():
+        if after_s > 0:
+            time.sleep(after_s)
         try:
-            line = memory_map_line()
+            line = memory_map_line(reason)
         except Exception:  # noqa: BLE001
             return
         if line:
@@ -166,3 +267,20 @@ def log_memory_map() -> None:
 
     if sys.platform == "win32":
         threading.Thread(target=run, name="memory map", daemon=True).start()
+
+
+ENCODER_AFTER_S = 10.0  # the map again this long after an encoder starts: the driver's session is set up by then
+_encoder_logged = 0.0
+
+
+def around_encoder(name: str) -> None:
+    """An encoder is about to start: the map now and ENCODER_AFTER_S later, so a block can be tied to that moment
+    (light-PC test 2026-11-19: going live added 32, 32 and 21 MB blocks nobody could name). Encoders starting
+    together (a stream and its recording) share one pair."""
+    global _encoder_logged
+    now = time.monotonic()
+    if now - _encoder_logged < 2.0:
+        return
+    _encoder_logged = now
+    log_memory_map(f"before {name} starts")
+    log_memory_map(f"{ENCODER_AFTER_S:.0f} s after {name} started", ENCODER_AFTER_S)

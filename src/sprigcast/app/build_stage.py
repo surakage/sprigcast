@@ -1,7 +1,7 @@
 """Build mode's own screen: every bloom and sprig on the left, the canvas in the middle, and what's
 inside the picked one on the right with the inspector under it.
 
-    ┌ Library ──────┐ ┌ Just Chatting ───────────── ▶ Put on air ┐ ┌ Inside ──────┐
+    ┌ Library ──────┐ ┌ Just Chatting ──────────────────── ⇄ Link ┐ ┌ Inside ──────┐
     │ ⌕ Find…       │ │  the shape you edit            [twin]    │ │ ❧ Webcam     │
     │ Blooms     +  │ │                                          │ │ ▣ Game       │
     │  ▾ Main Scenes│ │                                          │ ├──────────────┤
@@ -49,7 +49,7 @@ RIGHT_WIDTH = 320
 
 
 class BuildBar(QWidget):
-    """Above the canvas: what you're editing on the left, tools (Put on air, Link, Safe zones) on the right."""
+    """Above the canvas: what you're editing on the left, tools (Link, Safe zones) on the right."""
 
     def __init__(self):
         super().__init__()
@@ -190,7 +190,7 @@ ICON = 22
 
 KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_capture": "game",
               "slideshow": "slide show",  # the Slide show plugin
-              "camera": "camera", "color": "colour",
+              "camera": "camera", "color": "color",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
               "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
 
@@ -199,7 +199,7 @@ KIND_TINTS = {  # each kind its own colour, so a list reads at a glance (pink st
     "game_capture": "#b388ff", "display_capture": "#7fb8ff", "window_capture": "#9aa7ff", "camera": "#4cc9f0",
     "chat": "#ffd23f", "browser": "#5fe0d0", "image": "#a6e36b", "slideshow": "#c8e86b", "media": "#ff9f5a",
     "text": "#dfe7e2", "audio_input": "#ffb35c", "audio_output": "#f2c46b", "app_audio": "#ffc98a",
-    "scene": theme.ACCENT,
+    "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
 }
 
 
@@ -302,12 +302,61 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         tri.lineTo(cx - 2, cy + 3)
         tri.closeSubpath()
         p.drawPath(tri)
-    elif kind == "scene":
-        icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "sprig", ink, 1.4)
+    elif kind == "scene":  # a sprig mixing things: four little tiles, each a kind's own colour
+        p.setPen(Qt.PenStyle.NoPen)
+        for (dx, dy), tile in zip(((-6.5, -6.5), (0.5, -6.5), (-6.5, 0.5), (0.5, 0.5)),
+                                  ("game_capture", "camera", "chat", "media")):
+            p.setBrush(QColor(KIND_TINTS[tile]))
+            p.drawRoundedRect(QRectF(cx + dx, cy + dy, 6, 6), 1.8, 1.8)
+    elif kind == "empty":  # nothing in it yet: a dashed box with a bright +
+        dash = QPen(ink, 1.3)
+        dash.setDashPattern([2.2, 1.8])
+        p.setPen(dash)
+        p.drawRoundedRect(QRectF(cx - 6.5, cy - 6.5, 13, 13), 3.5, 3.5)
+        plus = QPen(QColor(theme.ACCENT_HOVER), 1.8)
+        plus.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(plus)
+        p.drawLine(QPointF(cx - 3, cy), QPointF(cx + 3, cy))
+        p.drawLine(QPointF(cx, cy - 3), QPointF(cx, cy + 3))
+    elif kind == "nested":  # sprigs inside a sprig: three stacked layers, each its own colour
+        def layer(y: float, fill: str) -> None:
+            path = QPainterPath()
+            path.moveTo(cx, y - 3.6)
+            path.lineTo(cx + 7, y)
+            path.lineTo(cx, y + 3.6)
+            path.lineTo(cx - 7, y)
+            path.closeSubpath()
+            p.setPen(QPen(_mix(fill, under, 0.55), 1))
+            p.setBrush(QColor(fill))
+            p.drawPath(path)
+
+        layer(cy + 3.6, KIND_TINTS["camera"])
+        layer(cy, KIND_TINTS["game_capture"])
+        layer(cy - 3.6, theme.ACCENT)
     else:  # plugins and anything new: a little puzzle-ish dot
         p.drawEllipse(QRectF(cx - 4, cy - 4, 8, 8))
         p.drawPoint(QPointF(cx + 5.5, cy))
     p.restore()
+
+
+BADGE = 20  # one status icon's room on a row
+
+# A Leaves row's quiet tags as icons: what needs a look in warm colours, the rest quiet.
+_BADGES = {"problem": ("warning", theme.BAD), "not found": ("warning", theme.WARN), "lost": ("warning", theme.WARN),
+           "closed": ("warning", theme.WARN), "busy": ("warning", theme.WARN), "unplugged": ("plug", theme.WARN),
+           "waiting": ("clock", theme.MUTED), "starting": ("clock", theme.MUTED), "asleep": ("moon", theme.MUTED),
+           "filters": ("sliders", theme.MUTED)}
+
+
+def tag_badges(tag: str) -> list[tuple[str, str]]:
+    """'2 hidden here · filters · problem' → the icons to draw for it, in that order."""
+    out = []
+    for word in (w.strip() for w in tag.split("·")):
+        if word.endswith("hidden here"):
+            out.append(("eye-off", theme.MUTED))
+        elif word in _BADGES:
+            out.append(_BADGES[word])
+    return out
 
 
 def action_rects(top: QRectF) -> list[QRectF]:
@@ -366,23 +415,17 @@ class InsideDelegate(QStyledItemDelegate):
             elif action == "remove" and tools:
                 icons.paint_icon(p, box, "trash", theme.MUTED)
         p.setFont(font)
-        tag = index.data(ROLE_TAG) or ""
-        small = QFont(option.font)
-        small.setPixelSize(11)
-        small_metrics = QFontMetrics(small)
-        cap = int(top.width() * 0.4)  # the name always keeps most of the row
-        tag = small_metrics.elidedText(tag, Qt.TextElideMode.ElideRight, cap - 12) if tag else ""
-        tag_w = small_metrics.horizontalAdvance(tag) + 12 if tag else 0
+        badges = tag_badges(index.data(ROLE_TAG) or "")  # small icons, not words (the tooltip says it)
+        tag_w = BADGE * len(badges) + 6 if badges else 0
         colour = theme.SELECT_TEXT if selected else theme.TEXT if shown else theme.MUTED
         p.setPen(QColor(colour))
         width = int(top.right() - lock_w - x - tag_w - 8)
         p.drawText(QRectF(x, top.y(), width, top.height()), Qt.AlignmentFlag.AlignVCenter,
                    metrics.elidedText(name, Qt.TextElideMode.ElideRight, width))
-        if tag:
-            p.setFont(small)
-            p.setPen(QColor(theme.MUTED))
-            p.drawText(QRectF(top.right() - lock_w - tag_w - 4, top.y(), tag_w, top.height()),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, tag)
+        bx = top.right() - lock_w - tag_w + 2
+        for icon, tint in badges:
+            icons.paint_icon(p, QRectF(bx + 1, top.center().y() - 7, 14, 14), icon, tint, 1.5)
+            bx += BADGE
         children = index.data(ROLE_CHILDREN) or []
         y = top.bottom()
         p.setFont(QFont(option.font))

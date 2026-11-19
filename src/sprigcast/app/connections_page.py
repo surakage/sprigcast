@@ -11,6 +11,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,7 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.app.live_stage import heading
+from sprigcast.app.badged import BadgedGroup
+from sprigcast.app.live_stage import Switch
 from sprigcast.app.control_server import (
     ENABLED,
     LAN,
@@ -37,47 +39,25 @@ from sprigcast.app.control_server import (
 )
 from sprigcast.control.protocol import new_password
 
-def _hint(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setWordWrap(True)
-    label.setStyleSheet(f"color: {theme.MUTED}")
-    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-    return label
+FIELD_H = 40  # server, port and password share one height so the address reads as one line
 
 
-FIELD_STYLE = (  # roomier than the usual Settings field, so the text never hugs the edge
-    f"QLineEdit, QSpinBox {{ background: {theme.PANEL}; border: none; border-radius: 12px;"
-    f" padding: 9px 16px; min-height: 20px; }}"
-    f"QLineEdit:focus, QSpinBox:focus {{ background: {theme.RAISED}; }}"
-    "QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }"
-)
-LABEL_W = 104  # the same label column as the Stream page
-
-
-def _card(title: str) -> tuple[QFrame, QVBoxLayout]:
-    """A soft rounded card with its title inside, like the Stream page's."""
-    card = QFrame()
-    card.setObjectName("connectionsCard")
-    card.setStyleSheet(f"#connectionsCard {{ background: {theme.CARD}; border-radius: 20px; }}")
-    box = QVBoxLayout(card)
-    box.setContentsMargins(28, 22, 28, 24)
-    box.setSpacing(14)
-    box.addWidget(heading(title, 15))
-    return card, box
-
-
-def _row(label: str, *widgets: QWidget, stretch: bool = True) -> QHBoxLayout:
-    row = QHBoxLayout()
-    row.setSpacing(10)
-    name = QLabel(label)
-    name.setFixedWidth(LABEL_W)
-    name.setStyleSheet(theme.MUTED_STYLE)
-    row.addWidget(name)
-    for widget in widgets:
-        row.addWidget(widget, 1 if isinstance(widget, QLineEdit) else 0)
-    if stretch:
-        row.addStretch(1)
-    return row
+def page_style() -> str:
+    """One sheet for the page: the address box, the fields with their names above, and the app rows."""
+    t = theme
+    return (
+        f"QFrame#connAddress {{ background: {t.FIELD}; border: 1px solid {t.FIELD_EDGE}; border-radius: 12px; }}"
+        f"QLabel#connUrl {{ color: {t.TEXT_BRIGHT}; font-family: Consolas, 'Cascadia Mono', monospace;"
+        f" font-size: 14px; }}"
+        f"QLabel#fieldName {{ color: {t.LABEL}; font-size: 12px; }}"
+        f"QSpinBox::up-button, QSpinBox::down-button {{ width: 0px; border: none; }}"
+        f"QLabel#appTile {{ background: {t.RAISED}; color: {t.ACCENT}; border-radius: 8px; font-size: 11px;"
+        f" font-weight: 700; }}"
+        f"QLabel#appName {{ color: {t.TEXT_BRIGHT}; font-size: 14px; font-weight: 600; }}"
+        f"QLabel#appNote {{ color: {t.MUTED}; }}"
+        f"QLabel#appOn {{ color: {t.ACCENT}; font-weight: 600; }}"
+        f"QFrame#appLine {{ background: {t.SECTION_EDGE}; border: none; max-height: 1px; min-height: 1px; }}"
+    )
 
 
 def _stacked(name: str, field) -> QVBoxLayout:
@@ -94,32 +74,6 @@ def _stacked(name: str, field) -> QVBoxLayout:
     return col
 
 
-def _joint() -> QVBoxLayout:
-    """The ':' between server and port (and port and password): one address in parts."""
-    joint = QLabel(":")
-    joint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    joint.setFixedSize(22, FIELD_H)
-    joint.setStyleSheet(f"color: {theme.ACCENT}; font-size: 20px; font-weight: 700;")
-    col = QVBoxLayout()
-    col.setSpacing(6)
-    col.addStretch(1)
-    col.addWidget(joint)
-    return col
-
-
-FIELD_H = 40  # server, port and password share one height so the address reads as one line
-
-
-def _value_chip(text: str) -> QLineEdit:
-    """A read-only field that looks exactly like its editable neighbours."""
-    chip = QLineEdit(text)
-    chip.setReadOnly(True)
-    chip.setStyleSheet(FIELD_STYLE.replace(theme.PANEL, theme.RAISED))
-    chip.setFixedSize(124, FIELD_H)
-    chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    return chip
-
-
 def _pill(text: str) -> QPushButton:
     button = QPushButton(text)
     button.setStyleSheet(theme.PILL_STYLE)
@@ -128,51 +82,180 @@ def _pill(text: str) -> QPushButton:
     return button
 
 
+OBS_STYLE = "OBS-style connection"
+
+
+def initials(name: str) -> str:
+    """Two letters for an app's little tile: "Stream Deck" SD, "StreamBridge" SB, "phone" PH."""
+    import re
+
+    words = re.findall(r"[A-Za-z0-9]+", name)
+    if len(words) >= 2:
+        return (words[0][0] + words[1][0]).upper()
+    word = words[0] if words else "?"
+    humps = re.findall(r"[A-Z]", word[1:])
+    return (word[0] + (humps[0] if humps else word[1:2])).upper()
+
+
+def connected_apps(server) -> list[tuple[str, str]]:
+    """(name, how it's connected) for each app connected now, A-Z. An app made for OBS never says who it is; one
+    that paired is known by the name it gave then."""
+    if server is None:
+        return []
+    sessions = getattr(server, "sessions", None) or []
+    sessions = list(sessions.values()) if isinstance(sessions, dict) else list(sessions)
+    pairing = getattr(server, "pairing", None)
+    names = {d.key: d.name for d in pairing.devices} if pairing is not None else {}
+    apps = []
+    for session in sessions:
+        if hasattr(session, "identified"):  # control.protocol.Session: the OBS-style door
+            apps.append(("App made for OBS", OBS_STYLE))
+        else:
+            key = getattr(session, "key", "")
+            apps.append((names[key], "Paired device") if key in names else ("SprigCast app", "On this PC"))
+    return sorted(apps, key=lambda a: a[0].lower())
+
+
+def _app_row(name: str, note: str, *right: QWidget, tile_text: str = "") -> QWidget:
+    row = QWidget()
+    line = QHBoxLayout(row)
+    line.setContentsMargins(0, 6, 0, 6)
+    line.setSpacing(12)
+    tile = QLabel(tile_text or initials(name))
+    tile.setObjectName("appTile")
+    tile.setFixedSize(30, 30)
+    tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    line.addWidget(tile)
+    words = QVBoxLayout()
+    words.setSpacing(1)
+    title = QLabel(name)
+    title.setObjectName("appName")
+    title.setTextFormat(Qt.TextFormat.PlainText)  # a paired app chose its own name
+    words.addWidget(title)
+    small = QLabel(note)
+    small.setObjectName("appNote")
+    words.addWidget(small)
+    line.addLayout(words, 1)
+    for widget in right:
+        line.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
+    return row
+
+
+def _connected() -> QLabel:
+    label = QLabel("\u25cf  Connected")
+    label.setObjectName("appOn")
+    return label
+
+
+def _line() -> QFrame:
+    line = QFrame()
+    line.setObjectName("appLine")
+    return line
+
+
+def _empty(rows: QVBoxLayout) -> None:
+    while rows.count():
+        item = rows.takeAt(0)
+        if item.widget() is not None:
+            item.widget().deleteLater()
+
+
+def paired_on(added: str) -> str:
+    """"Paired Nov 18" from the day it was saved (YYYY-MM-DD); as saved if it's anything else."""
+    from datetime import date
+
+    try:
+        day = date.fromisoformat(added)
+    except ValueError:
+        return f"Paired {added}".strip()
+    return f"Paired {day.strftime('%b')} {day.day}"
+
+
+SEEN_MS = 30_000  # "Last seen" is worked out again this often, and only while the page is on screen
+
+
+def last_seen(seen: str, now=None) -> str:
+    """"Last seen 2 min ago" from a paired device's last_seen (UTC, "2026-11-19T15:29:50Z"); "" when never."""
+    from datetime import datetime, timezone
+
+    try:
+        when = datetime.fromisoformat(seen.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    seconds = max(0.0, (now - when).total_seconds())  # (a clock set back never reads "in the future")
+    if seconds < 60:
+        ago = "just now"
+    elif seconds < 3600:
+        ago = f"{int(seconds // 60)} min ago"
+    elif seconds < 86400:
+        ago = f"{int(seconds // 3600)} h ago"
+    elif seconds < 2 * 86400:
+        ago = "yesterday"
+    else:
+        local = when.astimezone()
+        ago = f"{local.strftime('%b')} {local.day}"
+        if local.year != now.astimezone().year:
+            ago += f", {local.year}"
+    return f"Last seen {ago}"
+
+
 class ConnectionsPage(QWidget):
     def __init__(self, server=None, parent: QWidget | None = None):
         super().__init__(parent)
         self.server = server
         s = saved_settings()
 
-        main, box = _card("Remote control")
-        self.enabled = QCheckBox("Let other apps control SprigCast")
+        self.setStyleSheet(page_style())
+        self._seen_timer = QTimer(self, interval=SEEN_MS)
+        self._seen_timer.timeout.connect(self._seen_tick)
+        main = self.remote = BadgedGroup("Remote control", "", theme.SELECT_TEXT)
+        self.status = main.badge  # "On · 2 apps connected", at the right of the title
+        box = QVBoxLayout(main)
+        box.setSpacing(14)
+        self.enabled = Switch()  # a whole feature on or off: a switch
         self.enabled.setChecked(s["enabled"])
-        box.addWidget(self.enabled)
-        box.addWidget(_hint("Stream tools, control decks and bots can switch blooms, mute sounds and go live."))
+        self.enabled.setToolTip("Stream tools, control decks and bots can switch blooms, mute sounds and go live")
+        on_row = QHBoxLayout()
+        on_row.setSpacing(10)
+        on_row.addWidget(self.enabled)
+        on_row.addWidget(QLabel("Let apps control SprigCast"))
+        on_row.addStretch(1)
+        box.addLayout(on_row)
 
-        # One connected block: the address apps type in, with the port and password that make it up.
-        block = QFrame()
-        block.setObjectName("connBlock")
-        block.setStyleSheet(f"#connBlock {{ background: {theme.PANEL}; border-radius: 18px; }}"
-                            f"#connBlock QLabel#fieldName {{ color: {theme.MUTED}; font-size: 12px; }}")
+        # The address apps type in, then the server, port and password that make it up.
+        block = self.block = QWidget()
         bl = QVBoxLayout(block)
-        bl.setContentsMargins(20, 16, 20, 18)
+        bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(14)
-        top = QHBoxLayout()
+        address = QFrame()
+        address.setObjectName("connAddress")
+        top = QHBoxLayout(address)
+        top.setContentsMargins(14, 8, 8, 8)
         top.setSpacing(10)
         self.dot = QLabel()
-        self.dot.setFixedSize(10, 10)
+        self.dot.setFixedSize(8, 8)
         top.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
         self.address = QLabel()
+        self.address.setObjectName("connUrl")
         self.address.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.address.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-family: Consolas, 'Cascadia Mono', monospace;"
-                                   " font-size: 14px;")
         top.addWidget(self.address, 1)
         self.copy = _pill("Copy")
         self.copy.setToolTip("Copy the address, port and password for the app you're connecting")
         self.copy.clicked.connect(self._copy)
         top.addWidget(self.copy)
-        bl.addLayout(top)
+        bl.addWidget(address)
 
         self.port = QSpinBox()
         self.port.setRange(1024, 65535)
-        self.port.setStyleSheet(FIELD_STYLE.replace(theme.PANEL, theme.RAISED))
         self.port.setFixedSize(110, FIELD_H)
         self.port.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.port.setValue(s["port"])
         self.password = QLineEdit(s["password"])
-        self.password.setStyleSheet(FIELD_STYLE.replace(theme.PANEL, theme.RAISED))
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password.setCursorPosition(0)  # a long one starts at its start, not scrolled to its end
         self.password.setFixedHeight(FIELD_H)
         self.show_password = _pill("Show")
         self.show_password.setCheckable(True)
@@ -180,48 +263,47 @@ class ConnectionsPage(QWidget):
         self.new_password = _pill("New")
         self.new_password.setToolTip("Make a new password (apps using the old one need the new one)")
         self.new_password.clicked.connect(lambda: self.password.setText(new_password()))
+        server_box = QLineEdit("127.0.0.1")
+        server_box.setReadOnly(True)
+        server_box.setFixedHeight(FIELD_H)
         fields = QHBoxLayout()
-        fields.setSpacing(0)
-        fields.addLayout(_stacked("Server", _value_chip("127.0.0.1")))
-        fields.addLayout(_joint())
+        fields.setSpacing(12)
+        fields.addLayout(_stacked("Server", server_box), 2)
         fields.addLayout(_stacked("Port", self.port))
-        fields.addLayout(_joint())
         pw = QHBoxLayout()
         pw.setSpacing(8)
         pw.addWidget(self.password, 1)
         pw.addWidget(self.show_password)
         pw.addWidget(self.new_password)
-        fields.addLayout(_stacked("Password", pw), 1)
+        fields.addLayout(_stacked("Password", pw), 3)
         bl.addLayout(fields)
         self.use_password = QCheckBox("Ask for a password")
         self.use_password.setChecked(s["use_password"])
         bl.addWidget(self.use_password)
-        self.status = QLabel()
-        self.status.setStyleSheet(theme.MUTED_STYLE)
-        bl.addWidget(self.status)
-        box.addSpacing(4)
+        self.obs_door = QCheckBox("OBS-style connection (for Streamer.bot and other OBS tools)")
+        self.obs_door.setToolTip("Apps made for OBS (Streamer.bot, THSV StreamBridge) connect as they would to OBS")
+        self.obs_door.setChecked(s["obs_door"])
+        bl.addWidget(self.obs_door)
+        self.lan = QCheckBox("Let phones and other computers on my network connect")
+        self.lan.setToolTip("Only needed when the app runs on another device. Keep a password on.")
+        self.lan.setChecked(s["lan"])
+        bl.addWidget(self.lan)
+        self.web_door = QCheckBox("Allow web links")
+        self.web_door.setToolTip("For buttons and scripts that can only open a link. Always needs the password.")
+        self.web_door.setChecked(s["web_door"])
+        bl.addWidget(self.web_door)
         box.addWidget(block)
         self.use_password.toggled.connect(lambda on: [w.setEnabled(on) for w in (self.password, self.show_password, self.new_password)])
         self.use_password.toggled.emit(self.use_password.isChecked())
         self.enabled.toggled.connect(block.setEnabled)
         block.setEnabled(self.enabled.isChecked())
 
+        now = self.connected_card = QGroupBox("Connected now")
+        self.connected_rows = QVBoxLayout(now)
+        self.connected_rows.setSpacing(0)
+        self._apps_shown: list | None = None
+
         pair_card = self._pair_card()
-
-        devices, dbox = _card("Who can connect")
-        self.obs_door = QCheckBox("OBS-style connection (for Streamer.bot)")
-        self.obs_door.setToolTip("Apps made for OBS (Streamer.bot, THSV StreamBridge) connect as they would to OBS")
-        self.obs_door.setChecked(s["obs_door"])
-        dbox.addWidget(self.obs_door)
-        self.lan = QCheckBox("Let phones and other computers on my network connect")
-        self.lan.setToolTip("Only needed when the app runs on another device. Keep a password on.")
-        self.lan.setChecked(s["lan"])
-        dbox.addWidget(self.lan)
-        self.web_door = QCheckBox("Allow web links")
-        self.web_door.setToolTip("For buttons and scripts that can only open a link. Always needs the password.")
-        self.web_door.setChecked(s["web_door"])
-        dbox.addWidget(self.web_door)
-
         for signal in (self.enabled.toggled, self.use_password.toggled, self.lan.toggled, self.obs_door.toggled,
                        self.web_door.toggled):
             signal.connect(self._refresh)
@@ -245,8 +327,8 @@ class ConnectionsPage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(20)
-        for card in (main, pair_card, devices):
+        layout.setSpacing(14)
+        for card in (main, now, pair_card):
             layout.addWidget(card)
         self._saved_password = s["password"]
         self._refresh()
@@ -261,7 +343,12 @@ class ConnectionsPage(QWidget):
 
     def _pair_card(self) -> QFrame:
         """Pair a device: a 6-digit code for 2 minutes instead of the password, and the devices paired so far."""
-        card, box = _card("Paired devices")
+        card = QGroupBox("Paired devices")
+        box = QVBoxLayout(card)
+        box.setSpacing(12)
+        self.device_rows = QVBoxLayout()
+        self.device_rows.setSpacing(0)
+        box.addLayout(self.device_rows)
         line = QHBoxLayout()
         line.setSpacing(16)
         self.pair_button = _pill("Pair a device")
@@ -277,9 +364,6 @@ class ConnectionsPage(QWidget):
         self.pair_note.setStyleSheet(theme.MUTED_STYLE)
         line.addWidget(self.pair_note, 1, Qt.AlignmentFlag.AlignVCenter)
         box.addLayout(line)
-        self.device_rows = QVBoxLayout()
-        self.device_rows.setSpacing(8)
-        box.addLayout(self.device_rows)
         self._pair_timer = QTimer(self, interval=1000)
         self._pair_timer.timeout.connect(self._pair_tick)
         self._paired_count = len(self._pairing.devices) if self._pairing else 0
@@ -330,10 +414,8 @@ class ConnectionsPage(QWidget):
         self.pair_note.setText(note)
 
     def _fill_devices(self) -> None:
-        while self.device_rows.count():
-            item = self.device_rows.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+        _empty(self.device_rows)
+        self._seen_labels: dict[str, QLabel] = {}
         pairing = self._pairing
         self.pair_button.setEnabled(pairing is not None)
         devices = sorted(pairing.devices, key=lambda d: d.name.lower()) if pairing else []
@@ -341,24 +423,60 @@ class ConnectionsPage(QWidget):
             none = QLabel("None yet")
             none.setStyleSheet(theme.MUTED_STYLE)
             self.device_rows.addWidget(none)
-        for device in devices:
-            row = QFrame()
-            row.setObjectName("deviceRow")
-            row.setStyleSheet(f"#deviceRow {{ background: {theme.PANEL}; border-radius: 14px; }}")
-            line = QHBoxLayout(row)
-            line.setContentsMargins(18, 8, 10, 8)
-            line.setSpacing(12)
-            name = QLabel(device.name)
-            name.setStyleSheet(f"color: {theme.TEXT_BRIGHT};")
-            line.addWidget(name, 1)
-            added = QLabel(device.added)
-            added.setStyleSheet(theme.MUTED_STYLE)
-            line.addWidget(added)
+        sessions = getattr(self.server, "sessions", None) or []
+        sessions = list(sessions.values()) if isinstance(sessions, dict) else list(sessions)
+        here = {getattr(s, "key", "") for s in sessions}
+        for at, device in enumerate(devices):
+            if at:
+                self.device_rows.addWidget(_line())
             remove = _pill("Remove")
             remove.setToolTip("It can't connect any more (pair it again to bring it back)")
             remove.clicked.connect(lambda _=False, d=device.id: self._remove_device(d))
-            line.addWidget(remove)
-            self.device_rows.addWidget(row)
+            if device.key in here:
+                right = [_connected(), remove]
+            else:
+                seen = QLabel(last_seen(getattr(device, "last_seen", "")))
+                seen.setObjectName("appNote")
+                self._seen_labels[device.id] = seen
+                right = [seen, remove]
+            self.device_rows.addWidget(_app_row(device.name, paired_on(device.added), *right))
+
+    def _seen_tick(self) -> None:
+        """"Last seen 2 min ago" moves on (the server keeps each device's last_seen current, and tells nobody)."""
+        pairing = self._pairing
+        for device in (pairing.devices if pairing else []):
+            label = self._seen_labels.get(device.id)
+            if label is not None:
+                label.setText(last_seen(getattr(device, "last_seen", "")))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._seen_tick()
+        self._seen_timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._seen_timer.stop()
+
+    def _fill_connected(self) -> None:
+        """The apps connected now (made again only when the list changed)."""
+        apps = connected_apps(self.server)
+        if apps == self._apps_shown:
+            return
+        paired_before = {a for a in (self._apps_shown or []) if a[1] == "Paired device"}
+        self._apps_shown = apps
+        _empty(self.connected_rows)
+        if not apps:
+            none = QLabel("No apps yet")
+            none.setStyleSheet(theme.MUTED_STYLE)
+            self.connected_rows.addWidget(none)
+        for at, (name, note) in enumerate(apps):
+            if at:
+                self.connected_rows.addWidget(_line())
+            self.connected_rows.addWidget(_app_row(name, note, _connected(),
+                                                   tile_text="OBS" if note == OBS_STYLE else ""))
+        if {a for a in apps if a[1] == "Paired device"} != paired_before:
+            self._fill_devices()  # its row says Connected
 
     def _remove_device(self, device_id: str) -> None:
         pairing = self._pairing
@@ -384,16 +502,18 @@ class ConnectionsPage(QWidget):
         self.address.setText(f"ws://127.0.0.1:{self.port.value()}{NATIVE_PATH}")
         server = self.server
         on = self.enabled.isChecked() and server is not None and server.listening
-        self.dot.setStyleSheet(f"background: {theme.ACCENT if on else theme.MUTED}; border-radius: 5px;")
+        self.dot.setStyleSheet(f"background: {theme.ACCENT if on else theme.MUTED}; border-radius: 4px;")
         if not self.enabled.isChecked():
-            self.status.setText("Off")
+            text = "Off"
         elif server is None or not server.listening:
             error = getattr(server, "error", "")
-            self.status.setText(f"Couldn't start: {error}. Try another port." if error else "Starts when you press Apply")
+            text = f"Couldn't start: {error}. Try another port." if error else "Starts when you press Apply"
         else:
             count = len(server.sessions)
             apps = "no apps" if count == 0 else "1 app" if count == 1 else f"{count} apps"
-            self.status.setText(f"On · {apps} connected")
+            text = f"On · {apps} connected"
+        self.remote.set_badge(text)
+        self._fill_connected()
 
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(self.connect_text())

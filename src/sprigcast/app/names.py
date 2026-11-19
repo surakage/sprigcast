@@ -9,7 +9,11 @@ from sprigcast.app.modal import modal
 
 import re
 
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
+
+from sprigcast.app import theme
+from sprigcast.app.card import BOX_HEIGHT, PRIMARY_PILL, CardDialog
 
 # Brand words dropped from device names: the thing you plugged in matters, not who made it.
 BRANDS = {"elgato", "logitech", "razer", "microsoft", "avermedia", "insta360", "obsbot", "anker", "creative",
@@ -118,33 +122,41 @@ def status_summary(status: str, size: tuple[int, int] | None = None) -> str:
     return ""
 
 
-class NameDialog(QDialog):
+class NameDialog(CardDialog):
     """After adding: use the short name (editable) or keep the device's original name."""
 
     def __init__(self, short: str, original: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Name it")
-        self.setMinimumWidth(320)
+        super().__init__("Name it", parent, width=460)
         self.original = original
-        root = QVBoxLayout(self)
-        root.setSpacing(10)
-        hint = QLabel(f"Full name: {original}")
+        root = self.body
+        hint = QLabel(original)
         hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         root.addWidget(hint)
-        self.edit = QLineEdit(short)
+        self.edit = self.line_edit()
+        self.edit.setMinimumHeight(BOX_HEIGHT)
+        self.edit.setText(short)
         self.edit.selectAll()
         root.addWidget(self.edit)
         row = QHBoxLayout()
+        row.setSpacing(8)
         keep = QPushButton("Keep full name")
+        keep.setStyleSheet(theme.button_style(17, "9px 18px"))
+        keep.setAutoDefault(False)
         keep.clicked.connect(self._keep)
         use = QPushButton("Use this name")
+        use.setStyleSheet(PRIMARY_PILL)
         use.setDefault(True)
         use.clicked.connect(self.accept)
-        row.addWidget(keep)
+        for button in (keep, use):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         row.addStretch(1)
+        row.addWidget(keep)
         row.addWidget(use)
+        root.addSpacing(4)
         root.addLayout(row)
         self.choice = short
+        self.edit.setFocus()
 
     def _keep(self) -> None:
         self.edit.setText(self.original)

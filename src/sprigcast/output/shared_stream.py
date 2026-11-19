@@ -7,7 +7,9 @@ is a ``StreamLink``: its own connection, sender thread, reconnects and health, f
 A link that falls behind (slow upload) skips packets until it has caught up and a keyframe comes,
 so it never holds the encoder or the other destinations back. A link that drops reconnects on its
 own and starts again at a fresh keyframe; the others carry on. With auto bitrate on, the encoder
-follows the link that is struggling most, since they all share one bitrate.
+follows the links' backlog, since they all share one bitrate: when several fall behind (the PC's own upload),
+it lowers for all of them; when one alone does (that service's own path), it may cost the others one small step
+(LONE_LOWERS) and past that the slow link skips frames on its own instead of dragging the rest down.
 """
 
 from __future__ import annotations
@@ -27,9 +29,9 @@ from sprigcast.output.stream import (
     MAX_BACKLOG,
     RESUME_BACKLOG,
     RETRY_FIRST,
-    RETRY_MAX,
     SEVERITY,
     log_live,
+    retry_plan,
     explain_connect,
     open_ingest,
     stream_url,
@@ -38,7 +40,8 @@ from sprigcast.output.stream import (
 log = logging.getLogger(__name__)
 
 
-SHARE_WITHIN = 0.25  # destinations whose bitrates are this close (of the higher one) share one encoder
+SHARE_WITHIN = 0.4  # destinations whose bitrates are this close (of the higher one) share one encoder
+LONE_LOWERS = 0.8  # one link alone behind may lower a shared bitrate this far (of what's set), no further
 
 
 def share_key(target) -> tuple | None:
@@ -55,9 +58,11 @@ def bitrate_groups(targets: list) -> list[tuple[int, bool, list]]:
 
     One encoder serves every destination whose own bitrate is within SHARE_WITHIN of the encoder's, and the
     encoder never goes above what any of them accepts (its service's limit, target.max_kbps). The highest
-    bitrates go first, so each encoder runs as high as its destinations allow: YouTube 9000 and Kick 8000 share
-    one at 8000 (Kick's limit), Twitch at 6000 gets its own. Three destinations had three encoders before (PC
-    2026-11-18: the card's video engine at 90%, and auto-pilot lowering every stream for it)."""
+    bitrates go first, so each encoder runs as high as its destinations allow: YouTube 9000, Kick 8000 (its limit)
+    and Twitch 6000 (its limit) share one at 6000. Three destinations had three encoders before (PC 2026-11-18:
+    the card's video engine at 90%, and auto-pilot lowering every stream for it); within 25% Twitch still had
+    its own (2026-11-19 soak: 80% with five encodes). Far apart (2500 and 9000) they keep their own encoders,
+    since the higher one would look much worse at the lower bitrate."""
     groups: list[list] = []  # [kbps, members]
     for t in sorted(targets, key=lambda t: -int(t.bitrate_kbps)):
         want = int(t.bitrate_kbps)
@@ -91,6 +96,9 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         super().__init__(f"stream-{canvas.id}", canvas.width, canvas.height, fps, bitrate_kbps, codec, start_time,
                          0.0, "flv", encoder or EncoderSettings(), out_size, tracks=("stream",))
         self._init_file_tap(("stream",))
+        # The stream's encoder, not a replay: it keeps no clips unless they borrow it (light-PC test 2026-11-19
+        # read "sprigcast-replay-stream-horizontal" as a replay buffer running with clips off).
+        self._thread.name = f"sprigcast-encoder-{canvas.id}"
         self.source_id = canvas.id  # the canvas it encodes
         self.links: list[StreamLink] = []
         self.holders: set[str] = {"stream"}
@@ -103,6 +111,12 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
     @property
     def current_kbps(self) -> int:
         return self.autopilot.current_kbps if self.autopilot else self.bitrate_kbps
+
+    @property
+    def label(self) -> str:
+        """For the log: the canvas and who the encoder sends to (a canvas can have two shared encoders)."""
+        names = ", ".join(link.name for link in list(self.links))
+        return f"{self.canvas_id} ({names})" if names else self.canvas_id
 
     def request_keyframe(self) -> None:
         self._force_key = True  # read on the encoder thread before the next frame
@@ -141,10 +155,10 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
                 or self.file_path is not None or self._templates is None  # not open yet: links wait for it
             if wanted and self.paused_since is not None:
                 self.resume()
-                log.info("shared stream %s: a destination is connected again, encoding", self.canvas_id)
+                log.info("shared stream %s: a destination is connected again, encoding", self.label)
             elif not wanted and self.paused_since is None and self.links:
                 self.pause()
-                log.info("shared stream %s: no destination is connected, encoding rests", self.canvas_id)
+                log.info("shared stream %s: no destination is connected, encoding rests", self.label)
 
     def let_go(self, who: str) -> bool:
         """`who` is done with the encoder. Returns True when nobody else holds it (then on_last_let_go runs)."""
@@ -180,10 +194,26 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         live = [link for link in self.links if link.connected and now - link._connected_at >= GRACE_SECONDS]
         if not live:
             return
-        kbps = self.autopilot.update(now, max(link.backlog_seconds() for link in live))
+        behind, link = self.steering_backlog([(link.backlog_seconds(), link) for link in live])
+        kbps = self.autopilot.update(now, behind)
         if kbps is not None:
-            log.info("shared stream %s: auto-pilot bitrate %d kbps", self.canvas_id, kbps)
+            why = f" ({link.name} behind {link.backlog_seconds():.2f} s)" if kbps < self._want_kbps and link else ""
+            log.info("shared stream %s: auto-pilot bitrate %d kbps%s", self.label, kbps, why)
             self._want_kbps = kbps
+
+    def steering_backlog(self, backlogs: list[tuple[float, "StreamLink"]]) -> tuple[float, "StreamLink | None"]:
+        """The backlog the shared bitrate follows, and whose it is. Several links behind: the PC's own upload,
+        so the worst one. One link alone behind: that service's own path (PC soak 2026-11-19: Kick at 0.41 s
+        with YouTube at 0), so it may lower the bitrate to LONE_LOWERS of what's set and no further; past that
+        the bitrate follows the next link, and the slow one skips frames until it catches up."""
+        from sprigcast.output.autopilot import BEHIND_S, FAR_BEHIND_S
+
+        ranked = sorted(backlogs, key=lambda b: -b[0])
+        if len(ranked) < 2 or ranked[1][0] > BEHIND_S:
+            return ranked[0]
+        if self.autopilot.current_kbps > self.autopilot.target_kbps * LONE_LOWERS:
+            return min(ranked[0][0], FAR_BEHIND_S), ranked[0][1]  # a small step, never a big one, for one link
+        return ranked[1]
 
     def _writer_before(self, writer) -> None:
         """The engine's writer encodes (packets mode): the bitrate steered here goes to it before the next picture."""
@@ -540,9 +570,9 @@ class StreamLink:
                 if time.monotonic() - began > 60:
                     delay = RETRY_FIRST
                 self.reconnects += 1
-                hint = "" if self.bytes_out else " (check the server and stream key)"
+                hint, delay, after = retry_plan(message, self.bytes_out, delay)
                 self.status = f"disconnected: {message}{hint}; retrying in {delay:.0f} s"
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return
-                delay = min(delay * 2, RETRY_MAX)
+                delay = after

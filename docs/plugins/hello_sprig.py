@@ -5,7 +5,7 @@ It adds a card that says "Hello, NAME!" and counts waves. Press a hotkey (or cal
 To try it:
 1. Copy this file into SprigCast's plugins folder (Tools → Plugin store → Your plugins → Open plugins folder).
 2. Restart SprigCast.
-3. Add it with + → Plugins → Hello sprig. Double-click it to change the name and colour.
+3. Add it with + → Plugins → Hello sprig. Double-click it to change the name and color.
 4. Give "Hello sprig: Wave" a key in Tools → Hotkeys → Plugins, or call `hello_sprig.wave` from Streamer.bot.
 
 The file has four parts, in this order:
@@ -44,7 +44,7 @@ class HelloSprig(Source):
     # a number box, True/False → a tick box. A key that ends in "color" gets a Pick… button.
     defaults = {
         "name": "friend",
-        "color": "#2f6b4fff",  # the card colour, as #RRGGBBAA
+        "color": "#2f6b4fff",  # the card color, as #RRGGBBAA
         "waves": 0,
     }
 
@@ -91,7 +91,7 @@ def draw_card(settings):
     """
     try:
         color = ImageColor.getcolor(str(settings.get("color", "")), "RGBA")
-    except ValueError:  # someone typed a colour that isn't one: fall back instead of failing
+    except ValueError:  # someone typed a color that isn't one: fall back instead of failing
         color = ImageColor.getcolor(HelloSprig.defaults["color"], "RGBA")
 
     picture = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))  # see-through to start with

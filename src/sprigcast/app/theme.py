@@ -47,9 +47,175 @@ BUTTON_EDGE = "#4a5a52"  # about 2.2:1 against PANEL and CARD, where RAISED and 
 BUTTON_EDGE_HOVER = "#62766c"
 BUTTON_TOP = "#5a6b62"  # the lit top edge
 BUTTON_OFF_EDGE = "#36433d"  # a disabled button keeps its shape, just quieter
+# Titled sections (Settings and other pop-ups): a card that stands off the window, fields that sink into
+# it, labels bright enough to read at a glance. Contrast: card 2.0:1 on BG, field edge 3.2:1 on the card,
+# labels 9.5:1 on the card.
+SECTION = "#1d2823"
+SECTION_EDGE = "#3b4b43"
+FIELD = CHROME
+FIELD_EDGE = "#62776c"
+LABEL = "#c3cfc8"
+SECTION_TITLE_PX = 15
 WARN = "#e6c55a"
 BAD = "#f2665e"
 INFO = "#7fb8ff"
+
+# Settings → Appearance: text size and a color preset. Both are read once, when SprigCast starts: every style in
+# the app is built from the names above as it loads, so a change shows after a restart (Settings says so).
+TEXT_SIZE_KEY = "appearance/text_size"
+COLORS_KEY = "appearance/colors"
+TEXT_SIZES = {"small": ("Small", 0.9), "normal": ("Normal", 1.0), "large": ("Large", 1.15)}
+COLOR_PRESETS = {"default": "Default", "colorblind": "Color-blind friendly", "contrast": "High contrast"}
+# What each preset changes. Color-blind friendly: blue, yellow and orange-red in place of green, yellow and red
+# (told apart with the common kinds of color blindness). High contrast: brighter text and stronger edges.
+PRESET_COLORS: dict[str, dict[str, str]] = {
+    "default": {},
+    "colorblind": {
+        "ACCENT": "#56b4e9", "ACCENT_HOVER": "#7cc6ef", "ACCENT_TEXT": "#06121a", "SELECT_BG": "#17303f",
+        "SELECT_TEXT": "#c4e4f7", "WARN": "#f0e442", "BAD": "#e8743b", "INFO": "#c9a7ff",
+    },
+    "contrast": {
+        "BG": "#060908", "TEXT": "#ffffff", "TEXT_BRIGHT": "#ffffff", "MUTED": "#b4c2ba", "EDGE": "#3b4b43",
+        "EDGE_STRONG": "#62776c", "SECTION_EDGE": "#62776c", "FIELD_EDGE": "#8da196", "LABEL": "#e3ebe6",
+        "BUTTON_EDGE": "#7d9187", "BUTTON_TOP": "#8da196",
+    },
+}
+
+
+def preset_colors(name: str) -> dict[str, str]:
+    """The good / warning / bad colors a preset shows (for its preview in Settings)."""
+    base = {"ACCENT": "#4fd88f", "WARN": "#e6c55a", "BAD": "#f2665e"}
+    return {**base, **{k: v for k, v in PRESET_COLORS.get(name, {}).items() if k in base}}
+
+
+def _settings() -> QSettings:
+    """SprigCast's settings, also before the app has been given its name (this module loads before that)."""
+    from PySide6.QtCore import QCoreApplication
+
+    return QSettings() if QCoreApplication.organizationName() else QSettings("Slothbloom", "SprigCast")
+
+
+def chosen_colors() -> str:
+    try:
+        name = str(_settings().value(COLORS_KEY, "default"))
+    except Exception:  # noqa: BLE001  (no settings yet)
+        return "default"
+    return name if name in COLOR_PRESETS else "default"
+
+
+def chosen_text_size() -> str:
+    try:
+        name = str(_settings().value(TEXT_SIZE_KEY, "normal"))
+    except Exception:  # noqa: BLE001
+        return "normal"
+    return name if name in TEXT_SIZES else "normal"
+
+
+# Themes: Night Canopy in other colors. Each one keeps every surface, edge and text exactly as bright as Night
+# Canopy's (so buttons, sections and labels read just as well) and only turns the hue: `neutral` is the hue and
+# the strength of the backgrounds and greys, `accent` the hue of the one action color. Pink stays for Live and
+# Recording in all of them, and warning yellow and bad red never move. Like text size and colors, a theme is
+# read once, when SprigCast starts.
+THEME_KEY = "general/theme"
+THEMES = {
+    "slothbloom": "Night Canopy",
+    "moonlit": "Moonlit Pond",
+    "orchid": "Dusk Orchid",
+    "autumn": "Autumn Leaf",
+    "stone": "River Stone",
+    "system": "System (Windows default)",
+}
+THEME_LOOKS: dict[str, dict[str, tuple[float, float] | None]] = {
+    "slothbloom": {"neutral": None, "accent": None},
+    "moonlit": {"neutral": (218.0, 1.6), "accent": (190.0, 1.2)},  # deep blue water, an aqua accent
+    "orchid": {"neutral": (266.0, 1.5), "accent": (262.0, 1.4)},  # dusk violet, a lavender accent
+    "autumn": {"neutral": (26.0, 1.3), "accent": (32.0, 1.5)},  # warm bark, an amber accent
+    "stone": {"neutral": (215.0, 0.3), "accent": None},  # near-grey stone, Night Canopy's green accent
+}
+THEME_ABOUT = {
+    "slothbloom": "Deep greens, a green accent",
+    "moonlit": "Deep blues, an aqua accent",
+    "orchid": "Dusk violets, a lavender accent",
+    "autumn": "Warm bark, an amber accent",
+    "stone": "Quiet greys, a green accent",
+}
+
+
+def _rgb(color: str) -> tuple[float, float, float]:
+    return tuple(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))  # type: ignore[return-value]
+
+
+def luminance(color: str) -> float:
+    """How bright a color looks, 0 .. 1 (WCAG relative luminance)."""
+    r, g, b = (c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in _rgb(color))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a: str, b: str) -> float:
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def tint(color: str, look: dict[str, tuple[float, float] | None]) -> str:
+    """A Night Canopy color in a theme's hue, exactly as bright as it was. Only Night Canopy's greens turn:
+    strong ones (the accent family) to the theme's accent, soft ones (surfaces, edges, text) to its neutral."""
+    import colorsys
+
+    if not (isinstance(color, str) and len(color) == 7 and color.startswith("#")):
+        return color
+    r, g, b = _rgb(color)
+    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    if sat < 0.02 or not 90 <= hue * 360 <= 185:
+        return color
+    to = look.get("accent" if sat >= 0.25 else "neutral")
+    if to is None:
+        return color
+    new_hue, new_sat = to[0] / 360, min(1.0, sat * to[1])
+    want, low, high = luminance(color), 0.0, 1.0
+    for _ in range(24):  # the lightness in the new hue that looks as bright as the old color did
+        mid = (low + high) / 2
+        out = "#%02x%02x%02x" % tuple(round(c * 255) for c in colorsys.hls_to_rgb(new_hue, mid, new_sat))
+        if luminance(out) < want:
+            low = mid
+        else:
+            high = mid
+    return out
+
+
+def chosen_theme() -> str:
+    if os.environ.get("SPRIGCAST_THEME", "").lower() == "system":
+        return "system"
+    try:
+        name = str(_settings().value(THEME_KEY, "slothbloom"))
+    except Exception:  # noqa: BLE001  (no settings yet)
+        return "slothbloom"
+    return name if name in THEMES else "slothbloom"
+
+
+_NIGHT_CANOPY: dict[str, str] = {name: value for name, value in list(globals().items())
+                                 if name.isupper() and isinstance(value, str) and len(value) == 7
+                                 and value.startswith("#")}
+
+
+def palette(theme_name: str = "slothbloom", preset: str = "default") -> dict[str, str]:
+    """Every theme color by name, for a theme and a color preset (what Settings → Appearance previews, and
+    what this run is drawn with)."""
+    look = THEME_LOOKS.get(theme_name) or THEME_LOOKS["slothbloom"]
+    colors = {**_NIGHT_CANOPY, **PRESET_COLORS.get(preset, {})}
+    return {name: tint(value, look) for name, value in colors.items()}
+
+
+def _themed(name: str, color: str) -> str:
+    """A color named further down this file, written in Night Canopy's greens: in the theme this run uses."""
+    _NIGHT_CANOPY[name] = color
+    return tint(color, THEME_LOOKS[theme_in_use])
+
+
+_chosen = chosen_theme()
+theme_in_use = _chosen if _chosen in THEME_LOOKS else "slothbloom"  # the colors this run is drawn with
+colors_in_use = chosen_colors()  # what this run is drawn with (Settings compares it to what's saved)
+text_size_in_use: str | None = None  # set when the theme is first applied
+globals().update(palette(theme_in_use, colors_in_use))
 
 # Older names, kept so plugins and older code keep working.
 BARK, MOSS, LICHEN, LEAF, BLOOM, INPUT, PETAL, DUSK = BG, PANEL, EDGE_STRONG, ACCENT, LIVE, CHROME, TEXT, MUTED
@@ -103,8 +269,8 @@ def paint_button(p: QPainter, rect: QRectF, radius: float, hover: bool = False) 
 
 
 # Live screen (see live_stage.py) and pop-ups: round pill buttons in the shared button look.
-TRACK = "#1a221e"  # the empty part of thin level bars
-STAGE_EMPTY = "#1d3428"  # a bloom tile before it has a picture
+TRACK = _themed("TRACK", "#1a221e")  # the empty part of thin level bars
+STAGE_EMPTY = _themed("STAGE_EMPTY", "#1d3428")  # a bloom tile before it has a picture
 LIVE_TEXT = "#ff8fb4"  # pink text on dark, for the on-air clock
 PILL_STYLE = button_style(19, "10px 14px")
 SMALL_PILL_STYLE = button_style(13, "6px 13px", "QPushButton, QToolButton")  # chips and small tools
@@ -182,11 +348,13 @@ QToolButton:pressed {{ background: {PRESSED}; }}
 QToolButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}
 QDialog, QMessageBox {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; }}
 QGroupBox {{
-    background: {BG}; border: 1px solid {EDGE}; border-radius: 16px; margin-top: 16px; padding: 12px 10px 10px 10px;
+    background: {SECTION}; border: 1px solid {SECTION_EDGE}; border-radius: 16px; margin-top: 22px;
+    padding: 12px 10px 10px 10px;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {MUTED}; font-weight: 600; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {TEXT_BRIGHT};
+    font-size: {SECTION_TITLE_PX}px; font-weight: 600; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background: {CHROME}; color: {TEXT}; border: 1px solid {EDGE_STRONG}; border-radius: 10px; padding: 3px 8px;
+    background: {FIELD}; color: {TEXT}; border: 1px solid {FIELD_EDGE}; border-radius: 10px; padding: 3px 8px;
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
@@ -245,15 +413,7 @@ QSplitter::handle {{ background: {BG}; }}
 looks_applied = 0  # how many times a theme was applied: a font may have changed since a widget measured itself
 _applied: str | None = None  # the theme last applied: re-applying it restyles every widget (~1 s)
 
-THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
 _system_style: str | None = None
-
-
-def chosen_theme() -> str:
-    if os.environ.get("SPRIGCAST_THEME", "").lower() == "system":
-        return "system"
-    name = str(QSettings().value("general/theme", "slothbloom"))
-    return name if name in THEMES else "slothbloom"
 
 
 FONT_ENGINE = "SPRIGCAST_FONT_ENGINE"  # "directwrite" keeps Qt's default font engine
@@ -285,6 +445,20 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
     font = app.font()
     font.setFamilies([font.family(), "Segoe UI Symbol", "Segoe UI Emoji"])
     app.setFont(font)
+
+
+def _set_text_size(app: QApplication) -> None:
+    """Settings → Appearance → Text size: the app's font, a little smaller or larger. Once, at start."""
+    global text_size_in_use
+    text_size_in_use = chosen_text_size()
+    scale = TEXT_SIZES[text_size_in_use][1]
+    if scale != 1.0:
+        font = app.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() * scale)
+        elif font.pixelSize() > 0:
+            font.setPixelSize(round(font.pixelSize() * scale))
+        app.setFont(font)
 
 
 def guarded_style(base: str):
@@ -477,7 +651,9 @@ def view_activation(view: QWidget, event) -> bool | None:
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
     global _system_style, _applied
-    wanted = name or chosen_theme()
+    # Every theme but "system" is the same style sheet in this run's colors (a new theme's colors come in
+    # at the next start), so picking another one mustn't restyle the app.
+    wanted = "system" if (name or chosen_theme()) == "system" else "slothbloom"
     if wanted == _applied:
         return wanted != "system"
     _applied = wanted
@@ -486,6 +662,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
     if _system_style is None:
         _system_style = app.style().name()
         _set_symbol_fallbacks(app)
+        _set_text_size(app)
     if wanted == "system":
         app.setStyleSheet("")
         app.setStyle(guarded_style(_system_style))  # the system look, still with the wheel guard
@@ -525,7 +702,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
 # style sheet can only show pictures for checkbox, radio and slider parts, so those are small SVGs
 # written once to the cache folder; painted widgets use leaf_path()/paint_leaf().
 
-LEAF_OFF = "#5d6b64"  # an unpicked leaf's outline: reads on PANEL and CARD without shouting
+LEAF_OFF = _themed("LEAF_OFF", "#5d6b64")  # an unpicked leaf's outline: reads on PANEL and CARD without shouting
 
 # One leaf in unit space: stem end bottom-left, tip top-right, both edges curved.
 _LEAF = ((-0.5, 0.5), (-0.6, -0.2), (0.1, -0.6), (0.55, -0.55), (0.6, 0.05), (0.1, 0.6))
@@ -576,7 +753,7 @@ def paint_leaf(p: QPainter, rect: QRectF, filled: bool, colour: str | QColor = A
     p.restore()
 
 
-ACCENT_DARK = "#2a9c5e"  # a deeper leaf green, for a sprout drawn on a light knob
+ACCENT_DARK = _themed("ACCENT_DARK", "#2a9c5e")  # a deeper leaf green, for a sprout drawn on a light knob
 
 
 def paint_sprout(p: QPainter, rect: QRectF, colour: str | QColor = ACCENT_DARK) -> None:
@@ -692,6 +869,11 @@ NATURE_PICTURES = {
     "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
     "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
     "seed_handle": _seed_handle_svg,
+    # A section title's mark: a small filled leaf before the title.
+    "section_leaf": lambda: ('<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16">'
+                             f'<path d="M2 14C2 6 7 2 14 2c0 7-4 12-12 12z" fill="{ACCENT}"/>'
+                             f'<path d="M3.5 12.5L10 6" stroke="{ACCENT_TEXT}" stroke-width="1.3"'
+                             ' stroke-linecap="round"/></svg>'),
     "chevron": lambda: (f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
                         f'<path d="M3,4.5 L6,7.5 L9,4.5" fill="none" stroke="{MUTED}" stroke-width="1.6"'
                         ' stroke-linecap="round" stroke-linejoin="round"/></svg>'),
@@ -725,6 +907,12 @@ def nature_pictures(folder: str | None = None) -> dict[str, str]:
 _NATURE_WRITTEN: dict[tuple, dict[str, str]] = {}  # nature_pictures' answers, by folder and picture files
 
 
+def section_title_rule(pic: dict[str, str], selector: str = "QGroupBox::title") -> str:
+    """A titled section's leaf mark, drawn before the title (the room for it is the title's left padding)."""
+    return (f"{selector} {{ padding-left: 20px; background-image: url({pic['section_leaf']});"
+            " background-repeat: no-repeat; background-position: left center; }")
+
+
 def nature_rules(folder: str | None = None) -> str:
     """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaf-cut boxes and seeds."""
     try:
@@ -750,6 +938,7 @@ def nature_rules(folder: str | None = None) -> str:
                  f" margin: -7px 0; border-radius: 9px; image: url({pic['seed_handle']}); }}")
     rules.append(f"QSlider::handle:vertical {{ background: transparent; border: none; width: 18px; height: 18px;"
                  f" margin: 0 -7px; border-radius: 9px; image: url({pic['seed_handle']}); }}")
+    rules.append(section_title_rule(pic))
     # Tick lists get room to breathe: nothing touches the box's edge, rows aren't packed together.
     rules.append("QListWidget, QTreeWidget { padding: 6px; }")
     rules.append("QListWidget::item, QTreeWidget::item { padding: 5px 8px; min-height: 22px; }")
@@ -757,26 +946,33 @@ def nature_rules(folder: str | None = None) -> str:
     return "\n".join(rules) + "\n"
 
 
-# A pop-up card's soft shadow, drawn once per size and then copied. A QGraphicsDropShadowEffect on the card drew the
-# whole card into a picture and blurred it on every repaint of anything in it (a Garden check's numbers each second,
-# a busy bar, hover): part of every pop-up's open on the PC while live (2026-11-18).
+# A pop-up card's soft shadow: one small picture, made once, whose corners are copied and whose edges are stretched
+# to any card's size. A QGraphicsDropShadowEffect on the card drew the whole card into a picture and blurred it on
+# every repaint of anything in it (a Garden check's numbers each second, a busy bar, hover): part of every pop-up's
+# open on the PC while live (2026-11-18). A picture per card size still blurred a whole card the first time each
+# size was shown, and a card that fits its contents changes size as it fills (Garden check and Stream details,
+# about 55 ms each on the PC, 2026-11-19).
 CARD_SHADOW = (36, 10, 190)  # blur, drop and darkness, as the effect had them
 CARD_RADIUS = 24
+SHADOW_CORNER = CARD_RADIUS + CARD_SHADOW[0]  # this far in from a card's corner its shadow is the same all along
+_SHADOW_CARD = 2 * SHADOW_CORNER + 8  # the small card the picture is made from
 _shadow_pictures: dict[tuple, tuple] = {}
 
 
-def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
-    """(picture, left, top): the shadow of a w x h rounded card, and where its top left sits from the card's."""
+def _shadow_picture(ratio: float, colour: str) -> tuple:
+    """(picture, left, top, right, bottom): the shadow of a small rounded card, and how far it reaches past each of
+    the card's sides."""
     from PySide6.QtGui import QBrush, QImage, QPixmap
     from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsPathItem, QGraphicsScene
 
-    key = (w, h, ratio, colour)
+    key = (ratio, colour)
     found = _shadow_pictures.get(key)
     if found is not None:
         return found
     blur, drop, dark = CARD_SHADOW
+    side = _SHADOW_CARD
     path = QPainterPath()
-    path.addRoundedRect(QRectF(0, 0, w, h), CARD_RADIUS, CARD_RADIUS)
+    path.addRoundedRect(QRectF(0, 0, side, side), CARD_RADIUS, CARD_RADIUS)
     scene = QGraphicsScene()
     item = QGraphicsPathItem(path)
     item.setPen(QPen(Qt.PenStyle.NoPen))
@@ -787,7 +983,7 @@ def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
     effect.setColor(QColor(0, 0, 0, dark))
     item.setGraphicsEffect(effect)
     scene.addItem(item)
-    area = effect.boundingRectFor(QRectF(0, 0, w, h)).toAlignedRect()
+    area = effect.boundingRectFor(QRectF(0, 0, side, side)).toAlignedRect()
     image = QImage(round(area.width() * ratio), round(area.height() * ratio), QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
@@ -795,19 +991,76 @@ def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
     scene.render(painter, QRectF(0, 0, image.width(), image.height()), QRectF(area))
     painter.end()
     picture = QPixmap.fromImage(image)
-    picture.setDevicePixelRatio(ratio)
-    if len(_shadow_pictures) > 8:  # a few sizes at most (pop-ups that grow): the oldest go
+    if len(_shadow_pictures) > 4:  # a screen scale and a theme or two: the oldest go
         _shadow_pictures.pop(next(iter(_shadow_pictures)))
-    found = _shadow_pictures[key] = (picture, area.left(), area.top())
+    found = _shadow_pictures[key] = (picture, -area.left(), -area.top(), area.right() + 1 - side,
+                                     area.bottom() + 1 - side)
+    return found
+
+
+def warm_card_shadow(window) -> None:
+    """Once, just after start: make the small shadow picture. The first pop-up with a card made it as it opened, and
+    making it is Qt's graphics scene and blur for the first time in the run (their types and enums made on the spot):
+    69 ms and a late frame on the first Garden check while live (PC 2026-11-19). The same one picture every pop-up
+    uses, so nothing extra is kept."""
+    try:
+        _shadow_picture(window.devicePixelRatioF(), PANEL)
+    except Exception:  # noqa: BLE001 - a warm-up only: the first pop-up makes it then
+        pass
+
+
+def shadow_pieces(w: int, h: int, left: int, top: int, right: int, bottom: int) -> list[tuple]:
+    """Nine (target, source) rectangles (x, y, w, h each; the target from the card's top left, the source in the
+    small picture, both in the card's own units): corners copied as they are, edges and middle stretched."""
+    corner = min(SHADOW_CORNER, w // 2, h // 2)
+    side = _SHADOW_CARD
+    xs = ((-left, left + corner, 0, left + corner),  # (target x, width, source x, source width)
+          (corner, w - 2 * corner, left + corner, side - 2 * corner),
+          (w - corner, corner + right, left + side - corner, corner + right))
+    ys = ((-top, top + corner, 0, top + corner),
+          (corner, h - 2 * corner, top + corner, side - 2 * corner),
+          (h - corner, corner + bottom, top + side - corner, corner + bottom))
+    return [((tx, ty, tw, th), (sx, sy, sw, sh)) for ty, th, sy, sh in ys for tx, tw, sx, sw in xs if tw > 0 and th > 0]
+
+
+_shadows_put_together: dict[tuple, tuple] = {}
+SHADOWS_KEPT = 6
+
+
+def card_shadow(w: int, h: int, ratio: float, colour: str) -> tuple:
+    """(picture, left, top): a w x h card's whole shadow, put together from the small picture's nine pieces (no
+    blurring) the first time a size is asked for, and kept for the last few sizes. Painting the nine pieces each
+    time was a dozen calls into Qt per paint, each handing Python's lock over and waiting for it back while live;
+    this way a paint is one."""
+    key = (w, h, ratio, colour)
+    found = _shadows_put_together.get(key)
+    if found is not None:
+        return found
+    from PySide6.QtGui import QPixmap
+
+    picture, left, top, right, bottom = _shadow_picture(ratio, colour)
+    whole = QPixmap(round((w + left + right) * ratio), round((h + top + bottom) * ratio))
+    whole.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(whole)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    for (tx, ty, tw, th), (sx, sy, sw, sh) in shadow_pieces(w, h, left, top, right, bottom):
+        painter.drawPixmap(QRectF((left + tx) * ratio, (top + ty) * ratio, tw * ratio, th * ratio), picture,
+                           QRectF(sx * ratio, sy * ratio, sw * ratio, sh * ratio))
+    painter.end()
+    whole.setDevicePixelRatio(ratio)
+    if len(_shadows_put_together) >= SHADOWS_KEPT:  # pop-ups that grow: the oldest go
+        _shadows_put_together.pop(next(iter(_shadows_put_together)))
+    found = _shadows_put_together[key] = (whole, -left, -top)
     return found
 
 
 def paint_card_shadow(window, card) -> None:
     """From a pop-up's paintEvent: the soft shadow under its card (see CARD_SHADOW)."""
-    rect = card.geometry()
-    if rect.width() <= 0 or rect.height() <= 0:
+    rect = card.geometry().getRect()
+    x, y, w, h = rect
+    if w <= 0 or h <= 0:
         return
-    picture, left, top = _shadow_picture(rect.width(), rect.height(), window.devicePixelRatioF(), PANEL)
+    picture, left, top = card_shadow(w, h, window.devicePixelRatioF(), PANEL)
     painter = QPainter(window)
-    painter.drawPixmap(rect.left() + left, rect.top() + top, picture)
+    painter.drawPixmap(x + left, y + top, picture)
     painter.end()

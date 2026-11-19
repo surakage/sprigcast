@@ -208,7 +208,7 @@ class Waiter:
             while not self._done.wait(step):
                 waited += step
                 if cancelled is not None and cancelled.is_set():
-                    raise Cancelled("Sign-in cancelled.")
+                    raise Cancelled("Sign-in canceled.")
                 if waited >= timeout:
                     raise SignInError("Sign-in took too long. Try again.")
             query = self.result or {}

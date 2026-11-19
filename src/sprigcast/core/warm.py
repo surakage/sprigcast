@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
 import time
 
 log = logging.getLogger(__name__)
@@ -93,9 +94,15 @@ def warm_encoders(recording=None, stream=None) -> None:
         log.info("warm-up: encoder check failed: %s", exc)
 
 
+keyring_loading = threading.Event()  # set while warm_keyring is at it: a read from the window would wait for it
+
+
 def warm_keyring() -> None:
     """Load the saved-password store (keyring and its Windows backend) in the background: the first stream
-    key read loaded it on the window's thread, which froze 2.9 s on the PC (2026-11-16). Reads nothing."""
+    key read loaded it on the window's thread, which froze 2.9 s on the PC (2026-11-16). Reads nothing.
+    While it loads, the off-screen Settings warm-up waits (it reads a place's key, and would wait here too:
+    16.6 s on a cold build machine, 2026-11-19)."""
+    keyring_loading.set()
     try:
         began = time.perf_counter()
         import keyring
@@ -105,3 +112,5 @@ def warm_keyring() -> None:
                  type(backend).__name__)
     except Exception as exc:  # noqa: BLE001 (no store here: reading a key says so when it happens)
         log.info("warm-up: password store unavailable: %s", exc)
+    finally:
+        keyring_loading.clear()

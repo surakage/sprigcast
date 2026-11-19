@@ -146,6 +146,10 @@ private:
 
 thread_local bool Keeper::keeper_thread = false;
 
+// Captures started and not yet closed. Said in the log with each start and close: a capture left open keeps its
+// frame pool on the card (2 pictures; PC soak 2026-11-19: 16 MB more graphics memory per wake of a display capture).
+std::atomic<int> open_captures{0};
+
 }  // namespace
 
 void CaptureRetire::operator()(ScreenCapture *capture) const {
@@ -188,14 +192,32 @@ struct ScreenCapture::Impl {
     std::chrono::steady_clock::duration step{};
     std::chrono::steady_clock::time_point next_due{};
     int width = 0, height = 0;
+    bool counted = false;  // started: one of open_captures
+    bool slowed = false;   // parked: a picture a second (slow)
+    bool paced = false;    // Windows was told a slower rate while parked: told the usual one again after
+    int usual_ms = 0;      // the ask's interval
+    std::chrono::steady_clock::duration usual_step{};
 
     void close() noexcept {
+        const auto began = std::chrono::steady_clock::now();
         try {
             closed.revoke();
         } catch (...) {
         }
         try {
-            if (session) session.Close();
+            if (session) session.Close();  // first: Windows draws no more pictures into the pool
+        } catch (...) {
+        }
+        // Pictures Windows drew that were never taken go back before the pool closes: one still out keeps the
+        // pool's textures on the card.
+        int handed_back = 0;
+        try {
+            while (pool) {
+                wgc::Direct3D11CaptureFrame left = pool.TryGetNextFrame();
+                if (!left) break;
+                left.Close();
+                ++handed_back;
+            }
         } catch (...) {
         }
         try {
@@ -206,6 +228,18 @@ struct ScreenCapture::Impl {
         pool = nullptr;
         item = nullptr;
         d3d = nullptr;
+        if (counted) {
+            counted = false;
+            const int open = --open_captures;
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - began).count();
+            try {
+                log_line(SC_LOG_INFO, "capture: closed in " + std::to_string(ms) + " ms (" +
+                                          std::to_string(handed_back) + " pictures handed back, " +
+                                          std::to_string(open) + " still open)");
+            } catch (...) {
+            }
+        }
     }
 
     // As sources/capture.py did: steady on a grid while pictures keep up, a little slack so 60 on a 60 Hz game
@@ -303,12 +337,16 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
             }
         }
 #endif
+        c.usual_ms = ask.interval_ms;
         c.opaque = (ask.flags & SC_SCREEN_OPAQUE) != 0;
         c.window = reinterpret_cast<HWND>(static_cast<uintptr_t>(ask.window));
         if (ask.interval_ms > 0)
             c.step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::milliseconds(ask.interval_ms));
         c.session.StartCapture();
+        c.counted = true;
+        log_line(SC_LOG_INFO, std::string("capture: started a ") + (ask.window ? "window" : "display") + " (" +
+                                  std::to_string(++open_captures) + " open)");
     } catch (const winrt::hresult_error &x) {
         refusal = x.code() == E_ACCESSDENIED ? CaptureRefusal::NOT_HERE : CaptureRefusal::TARGET_GONE;
         why = hr_text("the capture didn't start", x.code());
@@ -321,7 +359,11 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
     return made;
 }
 
-bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
+bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) { return take_any(&dev, id, copy, nullptr); }
+
+bool ScreenCapture::take_to(const CapturePicture &to) { return take_any(nullptr, 0, true, &to); }
+
+bool ScreenCapture::take_any(sc_device *engine, uint64_t id, bool copy, const CapturePicture *to) {
     Impl &c = *impl;
     if (c.broken || !c.pool) return false;
     if (c.window && !IsWindow(c.window)) {  // Windows says Closed on the item's own time, or not at all (CI)
@@ -362,7 +404,13 @@ bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
             newest.Close();
             return false;
         }
-        {
+        if (to) {  // the capture helper's own copy (capture_feed.cpp)
+            if (!(*to)(picture.Get(), w, h)) {
+                newest.Close();
+                return false;
+            }
+        } else {
+            sc_device &dev = *engine;
             std::lock_guard<std::mutex> lock(dev.lock);
             dev.comp.drawn.erase(id);  // a picture again: no longer drawn from a list
             Source &s = dev.comp.sources[id];
@@ -404,6 +452,27 @@ bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
         c.broken = true;
         return false;
     }
+}
+
+void ScreenCapture::slow(bool on) {
+    Impl &c = *impl;
+    if (on == c.slowed) return;
+    c.slowed = on;
+    if (on) c.usual_step = c.step;
+    c.step = on ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(1))
+                : c.usual_step;
+    c.next_due = {};
+#if defined(NTDDI_WIN11_GE) && defined(WDK_NTDDI_VERSION) && WDK_NTDDI_VERSION >= NTDDI_WIN11_GE
+    // Windows draws no more often than it is taken (Windows 11 24H2+; older ones draw on, and take() skips).
+    try {
+        const int ms = on ? 1000 : c.usual_ms > 0 ? c.usual_ms * 9 / 10 : 1;
+        if (c.session && (on || c.paced))
+            c.session.MinUpdateInterval(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+                std::chrono::milliseconds(ms)));
+        if (on) c.paced = true;
+    } catch (...) {
+    }
+#endif
 }
 
 bool ScreenCapture::ended() const { return impl->broken || impl->gone->load(); }

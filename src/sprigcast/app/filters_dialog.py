@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -30,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.app.card import CardWindow
 from sprigcast.core import looks
 from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
 from sprigcast.core.scene import Filter, SourceConfig
@@ -246,19 +246,17 @@ NUMBER_STYLE = (
     " { subcontrol-origin: margin; width: 0px; height: 0px; border: none; }")
 
 
-class FiltersDialog(QDialog):
+class FiltersDialog(CardWindow):
     """Edits `source.filters` in place and calls on_change(save=False) after every edit, so the
     preview updates live. Closing calls on_change(save=True)."""
 
     def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None,
                  media: str | None = None, sounds: list[tuple[str, str]] | None = None):
-        super().__init__(parent)
+        super().__init__(f"Filters for “{source.name}”", parent, (820, 520))
         self.source = source
         self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
         self.on_change = on_change
         self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
-        self.setWindowTitle(f"Filters for “{source.name}”")
-        self.resize(820, 520)
         self.form: FilterForm | None = None
 
         # Calm and roomy: the filters as a list of rounded rows on the left (tick to switch one off),
@@ -323,7 +321,7 @@ class FiltersDialog(QDialog):
         self.reset_button.clicked.connect(self._reset)
         hint = QLabel(
             "They run top to bottom. Untick one to switch it off without removing it." if self.media == "audio"
-            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, colour, look, then shape."
+            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, color, look, then shape."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
@@ -335,7 +333,7 @@ class FiltersDialog(QDialog):
         right.setSpacing(12)
         self.save_look_button = QPushButton("Save as look…")
         self.save_look_button.setStyleSheet(RAISED_PILL)
-        self.save_look_button.setToolTip("Save these colour settings as a .cube LUT you can use anywhere")
+        self.save_look_button.setToolTip("Save these color settings as a .cube LUT you can use anywhere")
         self.save_look_button.clicked.connect(self._save_look)
         self.save_look_button.hide()
         top = QHBoxLayout()
@@ -353,7 +351,7 @@ class FiltersDialog(QDialog):
         done = QPushButton("Done")
         done.setStyleSheet(theme.PRIMARY_STYLE)
         done.clicked.connect(self.reject)
-        root = QVBoxLayout(self)
+        root = QVBoxLayout(self.card)
         root.setContentsMargins(22, 22, 22, 22)
         root.setSpacing(18)
         root.addLayout(body, 1)

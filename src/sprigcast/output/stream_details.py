@@ -114,10 +114,36 @@ def account(service: str) -> str:
         return ""
 
 
+_events = None
+
+
+def account_events():
+    """A Qt object whose `changed(str)` fires with the service ("youtube" or "kick") when its sign-in comes,
+    goes or names its chat. Create it on the UI thread first (the Chat panel does), so signals land there."""
+    global _events
+    if _events is None:
+        from PySide6.QtCore import QObject, Signal
+
+        class _Events(QObject):
+            changed = Signal(str)
+
+        _events = _Events()
+    return _events
+
+
+def announce(service: str) -> None:
+    if _events is not None:
+        _events.changed.emit(service)
+
+
 def _remember(service: str, name: str) -> None:
     try:
         from PySide6.QtCore import QSettings
 
+        if str(QSettings().value(ACCOUNT_SETTING.format(service), "") or "") != name:
+            QSettings().setValue(ACCOUNT_SETTING.format(service), name)
+            announce(service)  # not on every hourly token renewal: only when who's signed in changes
+            return
         QSettings().setValue(ACCOUNT_SETTING.format(service), name)
     except Exception:  # noqa: BLE001
         pass
@@ -139,7 +165,8 @@ def save_tokens(service: str, reply: dict, name: str) -> None:
     if not reply.get("refresh_token"):
         raise DetailsError(f"{LABELS[service]} didn't let SprigCast stay signed in. Sign in again.")
     tokens = {"access_token": reply["access_token"], "refresh_token": reply["refresh_token"],
-              "expires_at": time.time() + int(reply.get("expires_in") or 3600) - 60, "account": name}
+              "expires_at": time.time() + int(reply.get("expires_in") or 3600) - 60, "account": name,
+              "scope": str(reply.get("scope") or "")}  # what the sign-in allowed (Kick: chat and moderation)
     set_key(TOKEN_REF[service], json.dumps(tokens))
     _remember(service, name)
     log.info("stream details: %s signed in", service)
@@ -206,6 +233,8 @@ def _refresh(service: str, old: dict) -> dict:
                 raise NeedsSignIn(f"Your {LABELS[service]} sign-in ran out. Sign in again.")
             raise DetailsError(f"Couldn't renew the {LABELS[service]} sign-in right now. Try again in a minute.")
         reply.setdefault("refresh_token", latest.get("refresh_token", ""))  # Google keeps the same one
+        if not reply.get("scope"):
+            reply["scope"] = latest.get("scope", "")
         save_tokens(service, reply, latest.get("account", ""))
         return _tokens(service)
 
@@ -215,6 +244,19 @@ def _access(service: str) -> dict:
     if time.time() >= float(tokens.get("expires_at", 0)):
         tokens = _refresh(service, tokens)
     return tokens
+
+
+def allowed(service: str, scope: str) -> bool:
+    """Did the kept sign-in allow `scope`? Reads the credential store: use a worker."""
+    try:
+        return scope in str(_tokens(service).get("scope") or "").split()
+    except DetailsError:
+        return False
+
+
+def access_token(service: str) -> str:
+    """A working access token for the signed-in account (renewed if it ran out). Worker thread."""
+    return str(_access(service)["access_token"])
 
 
 # Web calls ---------------------------------------------------------------------------------------------
@@ -302,7 +344,7 @@ def _twitch(call):
     if not tokens:
         raise NeedsSignIn("Sign in to Twitch to change your stream details.")
     if TWITCH_SCOPE not in (tokens.get("scope") or []):
-        raise NeedsSignIn("Sign in to Twitch again once (Settings → Accounts), so SprigCast may change your stream details.")
+        raise NeedsSignIn("Sign in to Twitch again once (Settings → Stream), so SprigCast may change your stream details.")
     try:
         if time.time() >= float(tokens.get("expires_at", 0)):
             tokens = twitch_auth._refresh(tokens, cid)
@@ -314,7 +356,7 @@ def _twitch(call):
     except twitch_auth.TwitchAuthError as exc:
         raise NeedsSignIn(str(exc)) from exc
     except PermissionError as exc:
-        raise NeedsSignIn("Sign in to Twitch again in Settings → Accounts.") from exc
+        raise NeedsSignIn("Sign in to Twitch again in Settings → Stream.") from exc
 
 
 def _helix(method: str, path: str, token: str, cid: str, body: dict | None = None) -> dict:

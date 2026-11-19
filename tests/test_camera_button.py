@@ -120,7 +120,9 @@ def test_main_window_button_turns_the_camera_off_again_when_start_fails(app, tmp
         assert w.live_side.camera_note.text() == Refused.error
         from PySide6.QtWidgets import QMessageBox
 
-        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+        from sprigcast.app import message as msgbox
+
+        monkeypatch.setattr(msgbox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
         monkeypatch.setattr(virtualcam, "installed", lambda: False)
         w._toggle_camera()
         assert "isn't set up" in w.live_side.camera_note.text()
@@ -133,6 +135,8 @@ def test_turning_the_camera_on_sets_it_up_once_and_checks_windows_privacy(app, t
     import keyring
     from PySide6.QtWidgets import QMessageBox
 
+    from sprigcast.app import message as msgbox
+
     from sprigcast.app.main import load_collection
     from sprigcast.app.main_window import MainWindow
     from sprigcast.output import virtualcam
@@ -144,7 +148,7 @@ def test_turning_the_camera_on_sets_it_up_once_and_checks_windows_privacy(app, t
     monkeypatch.setattr(virtualcam, "needs_update", lambda: False)
     monkeypatch.setattr(virtualcam, "set_up", lambda: done.__setitem__("set_up", done["set_up"] + 1) or True)
     asked = []
-    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.Ok)
+    monkeypatch.setattr(msgbox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.StandardButton.Ok)
     monkeypatch.setattr(virtualcam, "privacy_block", lambda: "Desktop apps may not use the camera.")
     w = MainWindow(load_collection(tmp_path / "scenes.json"), tmp_path / "scenes.json")
     offered = []

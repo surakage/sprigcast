@@ -25,6 +25,11 @@ def app():
     QCoreApplication.setApplicationName("ChatTest")
     QSettings().clear()
     yield app
+    from sprigcast.app import chat_panel
+
+    for widget in app.allWidgets():  # a panel left reading would answer later tests' sign-ins
+        if isinstance(widget, chat_panel.ChatPanel):
+            widget.sleep()
     QSettings().clear()
 
 
@@ -367,3 +372,277 @@ def test_a_busy_chat_is_drawn_in_batches_and_clears_only_remove_their_lines(app)
     view.add(ChatMessage("twitch", "a", "after"))
     view.remove(platform="twitch", message_id="nope")  # a delete waits for nothing: the batch is drawn first
     assert view.document().lastBlock().text().endswith("after")
+
+
+def test_signing_in_to_youtube_or_kick_starts_its_chat(app, monkeypatch):
+    """A sign-in names the chat (service_signin._name_chat) and the open panel starts reading it at once."""
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import kick
+    from sprigcast.output import service_signin, stream_details
+
+    started = []
+    monkeypatch.setattr(kick.KickChat, "start", lambda self, name: (started.append(name), setattr(self, "channel", name)))
+    monkeypatch.setattr(kick.KickChat, "stop", lambda self: None)
+    QSettings().setValue(chat_panel.SOURCE, "link")
+    QSettings().setValue(chat_panel.LINK, "http://127.0.0.1:8787/chat")
+    panel = chat_panel.ChatPanel()
+    monkeypatch.setattr(panel, "_show_link", lambda url: None)
+    panel.activate()
+    assert not panel.readers
+    QSettings().setValue(stream_details.ACCOUNT_SETTING.format("kick"), "slothbloom")  # what a Kick sign-in does:
+    service_signin._name_chat("kick", "slothbloom")  # it remembers the account, then names the chat
+    assert set(started) == {"slothbloom"} and set(panel.readers) == {"kick"} and panel.source()[0] == "chat"
+
+
+def test_an_older_sign_in_names_its_chat_once(app, monkeypatch):
+    from sprigcast.app import chat_panel
+    from sprigcast.output import service_signin, stream_details
+
+    QSettings().setValue(stream_details.ACCOUNT_SETTING.format("kick"), "slothbloom")
+    QSettings().setValue(stream_details.ACCOUNT_SETTING.format("youtube"), "Sloth Bloom")
+    monkeypatch.setattr(stream_details, "access_token", lambda service: "tok")
+    monkeypatch.setattr(service_signin, "_youtube_channel", lambda token: {"title": "Sloth Bloom", "customUrl": "@slothbloom"})
+    assert service_signin.name_chat_from_sign_in("kick") and service_signin.name_chat_from_sign_in("youtube")
+    assert chat_panel.saved_names() == {"kick": "slothbloom", "youtube": "@slothbloom"}
+    chat_panel.save_names({})  # you cleared them: they aren't put back
+    assert not service_signin.name_chat_from_sign_in("kick") and not service_signin.name_chat_from_sign_in("youtube")
+    assert chat_panel.saved_names() == {}
+
+
+def test_hidden_accounts_never_show_and_a_line_can_hide_its_sender(app, monkeypatch):
+    from PySide6.QtCore import QPoint
+
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import hidden
+    from sprigcast.chat.feed import FEED
+    from sprigcast.output import twitch_auth
+
+    assert hidden.parse("Nightbot, @StreamElements\nnightbot  a b!") == ["nightbot", "streamelements", "a"]
+    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: setattr(self, "channel", ch))
+    monkeypatch.setattr(twitch.TwitchChat, "stop", lambda self: None)
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "surakage")
+    FEED.clear()
+    panel = chat_panel.ChatPanel()
+    panel.resize(320, 500)
+    panel.show()
+    panel.activate()
+    for user, text in (("Nightbot", "!commands"), ("fern", "hello"), ("oak", "hi fern")):
+        panel.hub._message(ChatMessage("twitch", user, text))
+    panel.view.flush()
+    app.processEvents()
+    assert [m.user for m in panel.view.messages] == ["Nightbot", "fern", "oak"]
+
+    # Right-click the first line: Reply (Twitch, signed in), Hide, Copy
+    first = panel.view.document().firstBlock()
+    rect = panel.view.document().documentLayout().blockBoundingRect(first)
+    message = panel.view.message_at(QPoint(20, int(rect.center().y())))
+    assert message is not None and message.user == "Nightbot"
+    menu = panel.view.line_menu(message)
+    labels = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert labels == ["Reply to Nightbot", "Hide Nightbot", "Copy message"]
+    next(a for a in menu.actions() if a.text() == "Reply to Nightbot").trigger()
+    assert panel.say.text() == "@Nightbot "
+    next(a for a in menu.actions() if a.text() == "Hide Nightbot").trigger()
+    assert [m.user for m in panel.view.messages] == ["fern", "oak"]  # gone from the panel...
+    assert [line.message.user for line in FEED.snapshot()[1]] == ["fern", "oak"]  # ...and from chat on your stream
+    assert hidden.load() == ["nightbot"]
+    panel.hub._message(ChatMessage("kick", "NIGHTBOT", "again"))  # any platform, any capitals
+    panel.hub._message(ChatMessage("twitch", "", "Nightbot subscribed", notice=True))  # events still show
+    panel.view.flush()
+    assert [m.text for m in panel.view.messages] == ["hello", "hi fern", "Nightbot subscribed"]
+
+    # The list in the ⋯ menu: edit it, add the usual bots, take one back out
+    assert "Hidden accounts (1)…" in [a.text() for a in panel.build_menu().actions()]
+    panel.ask_hidden()
+    assert panel.hidden_field.toPlainText() == "nightbot"
+    panel._add_common_bots()
+    assert "streamelements" in panel.hidden_field.toPlainText().split("\n")
+    panel.hidden_field.setPlainText("oak")
+    panel._use_hidden()
+    assert hidden.load() == ["oak"] and [m.user for m in panel.view.messages] == ["fern", ""]
+    panel.hub._message(ChatMessage("twitch", "Nightbot", "back"))
+    panel.view.flush()
+    assert panel.view.messages[-1].user == "Nightbot"
+    panel.sleep()
+
+
+# Moderating: timeout, ban, delete, block -------------------------------------------------------------------
+
+
+def test_twitch_moderation_calls_helix_as_you_and_needs_the_newer_sign_in(monkeypatch):
+    from sprigcast.output import twitch_auth
+
+    tokens = {"access_token": "t", "refresh_token": "r", "expires_at": 9e12, "login": "surakage",
+              "user_id": "42", "scope": [twitch_auth.CHAT_SCOPE]}
+    monkeypatch.setattr(twitch_auth, "_load", lambda: tokens)
+    with pytest.raises(twitch_auth.NeedsReconnect):
+        twitch_auth.moderate("surakage", "timeout", user_id="7", seconds=600)
+    assert all(scope in twitch_auth.SCOPES.split() for scope in twitch_auth.MOD_SCOPES)
+    tokens["scope"] += list(twitch_auth.MOD_SCOPES)
+    calls = []
+    monkeypatch.setattr(twitch_auth, "_get", lambda path, token, cid: {"data": [{"id": "99"}]})
+    monkeypatch.setattr(twitch_auth, "_send", lambda method, path, body, token, cid: calls.append((method, path, body)))
+    twitch_auth.moderate("surakage", "timeout", user_id="7", seconds=600)
+    twitch_auth.moderate("#MossFriend", "ban", user_id="7")
+    twitch_auth.moderate("surakage", "delete", message_id="m-1")
+    twitch_auth.moderate("surakage", "block", user_id="7")
+    assert calls == [
+        ("POST", "/moderation/bans?broadcaster_id=42&moderator_id=42", {"data": {"user_id": "7", "duration": 600}}),
+        ("POST", "/moderation/bans?broadcaster_id=99&moderator_id=42", {"data": {"user_id": "7"}}),
+        ("DELETE", "/moderation/chat?broadcaster_id=42&moderator_id=42&message_id=m-1", None),
+        ("PUT", "/users/blocks?target_user_id=7", None),
+    ]
+
+    def refused(*a):
+        raise PermissionError("token rejected")
+
+    monkeypatch.setattr(twitch_auth, "_send", refused)
+    monkeypatch.setattr(twitch_auth, "_refresh", lambda tok, cid: tok)
+    with pytest.raises(twitch_auth.NeedsReconnect):  # turned away even after a fresh token: sign in again
+        twitch_auth.moderate("surakage", "ban", user_id="7")
+
+
+def test_kick_chat_back_and_bans_use_the_kept_sign_in_once_it_allows_them(monkeypatch):
+    from sprigcast.chat import moderation
+    from sprigcast.output import stream_details as sd
+
+    allowed = set()
+    monkeypatch.setattr(sd, "allowed", lambda service, scope: scope in allowed)
+    monkeypatch.setattr(sd, "_with_token", lambda service, call: call("tok"))
+    calls = []
+
+    def call(method, url, token, body=None, **kw):
+        calls.append((method, url.removeprefix(sd.KICK_API), body))
+        return {"data": [{"broadcaster_user_id": 77}]} if method == "GET" else {"data": {"is_sent": True}}
+
+    monkeypatch.setattr(sd, "_call", call)
+    moderation._kick_ids.clear()
+    with pytest.raises(moderation.NeedsAllow) as caught:
+        moderation.say("kick", "Moss", "hi")
+    assert caught.value.platform == "kick" and not calls
+    allowed.update({moderation.KICK_SAY_SCOPE, moderation.KICK_BAN_SCOPE})
+    moderation.say("kick", "Moss", "hi")
+    moderation.act("kick", "moss", "timeout", user_id="5", seconds=600)
+    moderation.act("kick", "moss", "ban", user_id="5")
+    assert calls == [
+        ("GET", "/channels?slug=moss", None),  # asked once, then remembered
+        ("POST", "/chat", {"broadcaster_user_id": 77, "content": "hi", "type": "user"}),
+        ("POST", "/moderation/bans", {"broadcaster_user_id": 77, "user_id": 5, "duration": 10}),
+        ("POST", "/moderation/bans", {"broadcaster_user_id": 77, "user_id": 5}),
+    ]
+    with pytest.raises(moderation.ModerationError):
+        moderation.act("kick", "moss", "block", user_id="5")  # Kick's API has no block
+
+    def said_no(*a, **kw):
+        raise sd._worded("Kick", 403, "")
+
+    monkeypatch.setattr(sd, "_call", said_no)
+    with pytest.raises(moderation.ModerationError, match="moderator") as caught:
+        moderation.act("kick", "moss", "ban", user_id="5")
+    assert not isinstance(caught.value, moderation.NeedsAllow)  # allowed already: it's the channel that said no
+
+
+def test_kick_sign_in_asks_for_chat_and_moderation_only_once_chosen(app, monkeypatch):
+    from sprigcast.output import service_signin, stream_details as sd
+
+    QSettings().setValue(service_signin.KICK_POWERS, False)
+    assert service_signin.kick_scopes() == service_signin.KICK_SCOPES
+    QSettings().setValue(service_signin.KICK_POWERS, True)
+    assert service_signin.kick_scopes().split()[-2:] == ["chat:write", "moderation:ban"]
+    service_signin._powers_refused("kick")  # that sign-in didn't finish: the next asks for the usual only
+    assert service_signin.kick_scopes() == service_signin.KICK_SCOPES
+
+    kept = {}
+    monkeypatch.setattr(sd, "set_key", lambda ref, value: kept.__setitem__(ref, value))
+    monkeypatch.setattr(sd, "get_key", lambda ref: kept.get(ref, ""))
+    sd.save_tokens("kick", {"access_token": "a", "refresh_token": "r", "scope": "user:read chat:write"}, "moss")
+    assert sd.allowed("kick", "chat:write") and not sd.allowed("kick", "moderation:ban")
+    QSettings().setValue(sd.ACCOUNT_SETTING.format("kick"), "")
+
+
+def test_right_click_moderates_where_you_are_signed_in(app, monkeypatch):
+    import time
+
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import kick, moderation
+    from sprigcast.chat.feed import FEED
+    from sprigcast.output import stream_details as sd, twitch_auth
+
+    for reader in (twitch.TwitchChat, kick.KickChat):
+        monkeypatch.setattr(reader, "start", lambda self, ch: setattr(self, "channel", ch))
+        monkeypatch.setattr(reader, "stop", lambda self: None)
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "surakage")
+    QSettings().setValue(sd.ACCOUNT_SETTING.format("kick"), "")
+    chat_panel.save_names({"kick": "moss"})
+    offered = []
+    monkeypatch.setattr(chat_panel.ChatPanel, "_offer_allow", lambda self, platform, text: offered.append(platform))
+    done = []
+
+    def act(platform, channel, action, **kw):
+        if platform == "kick" and action == "ban":
+            raise moderation.NeedsAllow("kick", "Sign in to Kick again once to allow this.")
+        done.append((platform, channel, action, kw["user_id"], kw["message_id"], kw["seconds"]))
+
+    monkeypatch.setattr(moderation, "act", act)
+    FEED.clear()
+    panel = chat_panel.ChatPanel()
+    panel.resize(320, 500)
+    panel.show()
+    panel.activate()
+    fern = ChatMessage("twitch", "Fern", "spam", id="m1", user_id="7")
+    me = ChatMessage("twitch", "Surakage", "hi", id="m2", user_id="42")
+    oak = ChatMessage("kick", "Oak", "spam", id="k1", user_id="5")
+    for message in (fern, me, oak):
+        panel.hub._message(message)
+    panel.view.flush()
+
+    def labels(message):
+        menu = panel.view.line_menu(message)
+        return menu, [a.text() for a in menu.actions() if not a.isSeparator()]
+
+    def settle(until):
+        for _ in range(200):
+            app.processEvents()
+            if until():
+                break
+            time.sleep(0.01)
+        app.processEvents()
+
+    menu, names = labels(fern)
+    assert names == ["Reply to Fern", "Hide Fern", "Timeout Fern", "Ban Fern", "Delete message", "Block Fern",
+                     "Copy message"]
+    assert labels(me)[1] == ["Reply to Surakage", "Hide Surakage", "Copy message"]  # never yourself
+    assert labels(oak)[1] == ["Hide Oak", "Copy message"]  # not signed in to Kick: nothing to offer there
+    timeout = next(a for a in menu.actions() if a.text() == "Timeout Fern").menu()
+    assert [a.text() for a in timeout.actions()] == ["1 minute", "10 minutes", "1 hour", "1 day"]
+    timeout.actions()[1].trigger()
+    settle(lambda: done and fern not in panel.view.messages)
+    assert done == [("twitch", "surakage", "timeout", "7", "m1", 600)]
+    assert fern not in panel.view.messages and "timed out for 10 minutes" in panel.where.text()
+    assert [line.message.user for line in FEED.snapshot()[1]] == ["Surakage", "Oak"]  # off your stream too
+
+    QSettings().setValue(sd.ACCOUNT_SETTING.format("kick"), "moss")
+    menu, names = labels(oak)
+    assert names == ["Reply to Oak", "Hide Oak", "Timeout Oak", "Ban Oak", "Copy message"]
+    ban = next(a for a in menu.actions() if a.text() == "Ban Oak").menu()
+    assert [a.text() for a in ban.actions()] == ["Ban for good"]  # the second step is the "are you sure?"
+    ban.actions()[0].trigger()
+    settle(lambda: offered)
+    assert offered == ["kick"] and oak in panel.view.messages  # an older sign-in: the sign-in is offered instead
+
+    # Writing back: Twitch by default, Kick too once signed in; replying to a line picks that line's chat
+    panel._show_say()
+    assert panel._say_targets() == [("twitch", "surakage"), ("kick", "moss")] and not panel.say_where.isHidden()
+    assert panel._say_target() == ("twitch", "surakage") and panel.say_where.text() == "Twitch"
+    panel.reply_to(oak)
+    assert panel._say_target() == ("kick", "moss") and panel.say.text() == "@Oak "
+    said = []
+    monkeypatch.setattr(moderation, "say", lambda platform, channel, text: said.append((platform, channel, text)))
+    panel.send()
+    settle(lambda: said and panel.say.isEnabled())
+    assert said == [("kick", "moss", "@Oak")] and panel.say.text() == ""
+    panel.say_where.click()
+    assert panel._say_target() == ("twitch", "surakage")
+    QSettings().setValue(sd.ACCOUNT_SETTING.format("kick"), "")
+    chat_panel.save_names({})
+    panel.sleep()

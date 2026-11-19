@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QWidget
 from sprigcast.app import theme
 from sprigcast.core.scene import ALIGNS
 
-NAMES = {"top_left": "Top left", "top": "Top", "top_right": "Top right", "left": "Left", "center": "Centre",
+NAMES = {"top_left": "Top left", "top": "Top", "top_right": "Top right", "left": "Left", "center": "Center",
          "right": "Right", "bottom_left": "Bottom left", "bottom": "Bottom", "bottom_right": "Bottom right"}
 
 

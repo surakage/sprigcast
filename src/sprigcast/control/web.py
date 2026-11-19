@@ -138,6 +138,8 @@ def handle(api: NativeApi, request: Request, *, enabled: bool, password: str, ke
     given = given or request.headers.get("x-sprigcast-password")
     if not given or not matches(given, [password, *(keys or [])]):
         return _error("auth", "Wrong or missing password.")
+    if pairing is not None:
+        pairing.seen(given)  # a paired device's key: Settings shows when it was last seen
     if request.method not in ("GET", "POST"):
         return 405, {"ok": False, "error": {"code": "bad_request", "message": "Use GET or POST."}}
     name = request.path.rstrip("/")[len("/api"):].lstrip("/") or "app.actions"

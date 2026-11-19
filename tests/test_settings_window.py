@@ -58,7 +58,7 @@ def test_tabs_and_apply_writes_everything(app):
     enabled, width, height, fps = w.video_fields["horizontal"]
     width.setValue(1280)
     height.setValue(720)
-    fps.setCurrentIndex(fps.findData(30))
+    fps.buttons[30].click()
     assert w.apply() and fired
 
     assert col.recording.canvases == ["horizontal"] and col.recording.container == "mp4"
@@ -73,7 +73,7 @@ def test_tabs_and_apply_writes_everything(app):
 
 def test_bad_hotkey_blocks_save_in_the_hotkeys_window(app, monkeypatch):
     from PySide6.QtGui import QKeySequence
-    from PySide6.QtWidgets import QMessageBox
+    from sprigcast.app import message as msgbox
 
     from sprigcast.app.hotkeys_dialog import HotkeysWindow
 
@@ -83,7 +83,7 @@ def test_bad_hotkey_blocks_save_in_the_hotkeys_window(app, monkeypatch):
     edits[0].setKeySequence(QKeySequence("Ctrl+Alt+1"))
     edits[1].setKeySequence(QKeySequence("Ctrl+Alt+1"))
     shown = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **k: shown.append(a[2])))
+    monkeypatch.setattr(msgbox, "warning", staticmethod(lambda *a, **k: shown.append(a[2])))
     w.save_button.click()
     assert "used twice" in shown[0] and col.hotkeys == {} and not w.result()
     edits[1].setKeySequence(QKeySequence("Ctrl+C"))  # every app copies with it
@@ -165,8 +165,10 @@ def test_one_quality_choice_hides_the_expert_rows(app):
     w.show()
     app.processEvents()
     f = w.stream_quality.stream_form
-    assert not w.expert.isChecked() and f.quality.isVisible() and not f.rate_control.isVisible()
+    assert not w.expert.isChecked() and f.quick.isVisible() and not f.quality.isVisible()
+    assert not f.rate_control.isVisible()
     assert not f.preset.isVisible() and not f.audio.isVisible() and f.quality.currentData() == "balanced"
+    assert f.quick.value() == "balanced" and f.chip.text().startswith(("GPU", "CPU"))
     f.quality.setCurrentIndex(f.quality.findData("lighter"))
     f.quality.activated.emit(f.quality.currentIndex())
     assert f.values().preset == "p3" and f.values().x264_preset == "superfast"
@@ -224,7 +226,7 @@ def test_clip_length_shapes_and_ready_on_open(app):
 def test_settings_look_titles_pills_and_pages(app):
     from sprigcast.app.settings_window import ABOUT, TABS
 
-    assert TABS == ["General", "Stream", "Accounts", "Recording", "Audio", "Video", "Connections"]
+    assert TABS == ["General", "Appearance", "Stream", "Audio", "Video", "Recording", "Connections"]
     w = _window(_collection(), tab="Stream/Quality")
     assert set(ABOUT) == set(TABS) and w.objectName() == "settingsWindow"
     assert [b.text() for b in (w.cancel_button, w.apply_button, w.save_button)] == ["Cancel", "Apply", "Save"]
@@ -245,8 +247,8 @@ def test_settings_look_titles_pills_and_pages(app):
     assert tabs(w.stream_tabs) == ["Places", "Quality"]
     assert tabs(w.recording_tabs.tabs) == ["Recording", "Clips"]
     assert tabs(w.video_tabs) == ["Canvases", "Virtual camera"]
-    assert tabs(w.audio_page.tabs) == ["Devices", "Tracks", "Sounds"]
-    assert not hasattr(w, "snap_enabled") and not w.findChildren(type(w.tabs), "settingsColour")
+    assert tabs(w.audio_page.tabs) == ["Devices", "Sounds", "Tracks"]
+    assert not w.findChildren(type(w.tabs), "settingsColour")
     w.close()
 
 
@@ -301,7 +303,7 @@ def test_video_page_base_and_output_size(app):
     assert not out.isVisible()  # an expert row while it's the canvas size
     w.expert.setChecked(True)
     app.processEvents()
-    assert out.isVisible() and out.itemText(0).startswith("Same as base (1920×1080)")
+    assert out.isVisible() and out.itemText(0).startswith("Same as the canvas (1920×1080)")
     out.setCurrentIndex(out.findData(720))
     assert out.currentText() == "1280×720" and downscale.isEnabled()
     downscale.setCurrentIndex(downscale.findData("lanczos"))
@@ -537,14 +539,14 @@ def test_a_page_picked_before_the_window_fills_in_stays_picked(app):
 
     w = _window(_collection(), tab="General", fill_after_show=True)
     w.show()
-    w.tabs.setCurrentRow(TABS.index("Accounts"))  # before the fill's timer
+    w.tabs.setCurrentRow(TABS.index("Connections"))  # before the fill's timer
     deadline = time.monotonic() + 3
     while (w._fill_tab is not None or w._slices) and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.005)
     app.processEvents()
-    assert w.current_tab() == "Accounts" and w.stack.currentIndex() == TABS.index("Accounts")
-    assert not w._stand_in(TABS.index("Accounts"))
+    assert w.current_tab() == "Connections" and w.stack.currentIndex() == TABS.index("Connections")
+    assert not w._stand_in(TABS.index("Connections"))
     w.close()
 
 
@@ -555,12 +557,12 @@ def test_a_picked_page_waiting_on_held_back_timers_is_put_in_anyway(app, caplog)
     app.processEvents()
     w._slice(lambda: 1 / 0)  # a part that fails never stops the parts after it
     w._flush_slices()
-    w.ensure("Accounts")  # made, waiting to be put in
+    w.ensure("Connections")  # made, waiting to be put in
     w._slices.insert(0, w._slices.pop())  # (as a slice that never got its tick)
-    w.tabs.setCurrentRow(TABS.index("Accounts"))
-    assert w._stand_in(TABS.index("Accounts"))
-    w._make_sure_shown(TABS.index("Accounts"))
-    assert not w._stand_in(TABS.index("Accounts")) and w.stack.currentIndex() == TABS.index("Accounts")
+    w.tabs.setCurrentRow(TABS.index("Connections"))
+    assert w._stand_in(TABS.index("Connections"))
+    w._make_sure_shown(TABS.index("Connections"))
+    assert not w._stand_in(TABS.index("Connections")) and w.stack.currentIndex() == TABS.index("Connections")
     w.close()
 
 
@@ -651,4 +653,332 @@ def test_plugin_store_reads_its_files_off_the_window_thread(app, monkeypatch):
     w.store.finish()
     assert "slide_show" in w.store.rows and w.store.rows["slide_show"].button.text() == "Add"
     assert threads and threading.main_thread() not in threads
+    w.close()
+
+
+def test_the_recording_page_shows_its_boxes(app):
+    """Its tabs were taken out and put back in scroll areas, and taking a tab out hides its page: the Recording
+    page was blank (found going over Settings, 2026-11-19)."""
+    w = _window(_collection(), tab="Recording")
+    w.resize(1000, 760)
+    w.show()
+    w._flush_slices()
+    app.processEvents()
+    page = w.recording_tabs.tabs.widget(0).widget()  # the scroll area's holder
+    inner = page.layout().itemAt(0).widget()
+    assert not inner.isHidden() and inner.isVisible() and inner.height() > 100
+    assert w.recording_tabs.same_as_stream.isVisible()
+    w.close()
+
+
+def test_sections_are_titled_cards_with_a_leaf_and_fields_with_an_edge(app):
+    from sprigcast.app import theme
+    from sprigcast.app.settings_window import window_style
+
+    style = window_style()
+    assert theme.SECTION in style and theme.SECTION_EDGE in style and theme.FIELD_EDGE in style
+    assert theme.LABEL in style and f"font-size: {theme.SECTION_TITLE_PX}px" in style
+    assert theme.nature_pictures()["section_leaf"] in style
+
+
+def test_form_labels_sit_level_with_their_boxes(app):
+    from PySide6.QtWidgets import QFormLayout, QPlainTextEdit
+
+    w = _window(_collection(), tab="General")
+    w.resize(1000, 760)
+    w.show()
+    w.ensure_all()
+    app.processEvents()
+    checked = 0
+    for form in w.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            field = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+            if label is None or field is None or not label.widget() or not label.widget().isVisible():
+                continue
+            box = field.geometry()
+            if box.height() > 48 or isinstance(field.widget(), QPlainTextEdit):
+                continue
+            middle = label.widget().geometry().center().y()
+            assert abs(middle - box.center().y()) <= 2, label.widget().text()
+            checked += 1
+    assert checked >= 5
+    w.close()
+
+
+def test_recording_ticks_line_up_with_the_boxes(app):
+    w = _window(_collection(), tab="Recording")
+    w.resize(1000, 760)
+    w.show()
+    w.ensure_all()
+    app.processEvents()
+    from PySide6.QtWidgets import QCheckBox, QComboBox
+
+    tick = next(t for t in w.findChildren(QCheckBox) if t.text() == "Same as stream while live")
+    split = next(c for c in w.findChildren(QComboBox) if c.toolTip().startswith("A new file starts"))
+    assert abs(tick.mapTo(w, tick.rect().topLeft()).x() - split.mapTo(w, split.rect().topLeft()).x()) <= 2
+    w.close()
+
+
+def test_accounts_is_gone_and_old_links_land_on_stream_places(app):
+    w = _window(_collection(), tab="Accounts")
+    w.show()
+    w.ensure_all()
+    app.processEvents()
+    assert "Accounts" not in TABS and w.current_tab() == "Stream"
+    assert w.stream_tabs.tabText(w.stream_tabs.currentIndex()) == "Places"
+    w.close()
+
+
+def test_quality_tab_quick_picks_places_and_delay(app):
+    from sprigcast.core.scene import Output
+
+    col = _collection()
+    col.outputs = [Output(id="t", type="stream", service="twitch", canvas="horizontal", enabled=True,
+                          bitrate_kbps=6000, auto_bitrate=True),
+                   Output(id="y", type="stream", service="youtube", canvas="vertical", enabled=True, bitrate_kbps=4500,
+                          auto_bitrate=False),
+                   Output(id="k", type="stream", service="kick", canvas="horizontal", enabled=False)]
+    w = _window(col, tab="Stream/Quality")
+    w.show()
+    app.processEvents()
+    q = w.stream_quality
+    f = q.stream_form
+    f.quick.buttons["lighter"].click()  # Faster
+    assert f.quality.currentData() == "lighter" and f.values().preset == "p3"
+    texts = [q.places_grid.itemAt(i).widget().text() for i in range(q.places_grid.count())]
+    assert "Twitch" in texts and "YouTube" in texts and "Kick" not in texts and "6,000 kbps" in texts
+    assert "Vertical 1080×1920" in texts and "On" in texts and "Off" in texts
+    assert "10.8 Mbps" in q.upload.text()  # 6000 + 4500 + 2 × 160 audio
+    q.audio_quick.buttons[192].click()
+    q.delay_quick.buttons[30].click()
+    assert not f.load_row.isVisibleTo(f)  # no reading off air
+    w.stream_page.outputs[1].enabled = False  # an unsaved change on Places shows on Quality
+    w.stream_tabs.setCurrentIndex(0)
+    w.stream_tabs.setCurrentIndex(1)
+    texts = [q.places_grid.itemAt(i).widget().text() for i in range(q.places_grid.count())]
+    assert "YouTube" not in texts
+    q.change_places.click()
+    assert w.stream_tabs.currentIndex() == 0
+    assert w.apply()
+    from sprigcast.app.settings_window import stream_delay
+
+    assert col.stream_encoder.audio_kbps == 192 and stream_delay() == 30
+    f.set_room(40.0, True, "Encoder 40% busy · room for about 2 more")
+    assert f.load_row.isVisibleTo(f) and f.load_bar.value() == 40
+    w.close()
+
+
+def test_fine_tuning_is_its_own_card_two_to_a_row_with_expert(app):
+    w = _window(_collection(), tab="Stream/Quality")
+    w.show()
+    app.processEvents()
+    f = w.stream_quality.stream_form
+    assert f.fine.title() == "Fine tuning" and not f.fine.isVisible()
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert f.fine.isVisible() and f.rate_control.parentWidget() is f.fine
+    grid = f._fine_grid
+    columns = {grid.getItemPosition(grid.indexOf(f.rate_control))[1], grid.getItemPosition(grid.indexOf(f.keyint))[1]}
+    assert columns == {1, 3}  # side by side
+    assert not f.audio.isVisible()  # Stream's audio bitrate is in its Sound card
+    assert w.recording_tabs.record_form.fine.title() == "Fine tuning"
+    w.close()
+
+
+def test_general_going_live_snapping_popouts_and_privacy_are_saved(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import privacy, projector
+    from sprigcast.app.preview import snap_settings
+    from sprigcast.app.settings_window import CONFIRM_GO_LIVE, KEEP_RECORDING, REPLAY_ON_LIVE
+
+    w = _window(_collection(), tab="General")
+    w.ensure_all()
+    from PySide6.QtWidgets import QGroupBox
+
+    titles = [b.title() for b in w.findChildren(QGroupBox)]
+    for title in ("Going live", "Snapping", "Pop-out views", "Privacy"):
+        assert title in titles
+    assert not w.confirm_go_live.isChecked() and w.snap_on.isChecked() and w.projector_hide_pointer.isChecked()
+    w.confirm_go_live.setChecked(True)
+    w.keep_recording.setChecked(True)
+    w.replay_on_live.setChecked(True)
+    w.snap_distance.setCurrentIndex(w.snap_distance.findData(20.0))
+    w.snap_to["center"].setChecked(False)
+    w.snap_on.setChecked(False)
+    assert not w.snap_distance.isEnabled()
+    assert not w.show_overflow.isChecked()  # off until asked for
+    w.show_overflow.setChecked(True)
+    w.projector_on_top.setChecked(True)
+    w.projector_hide_pointer.setChecked(False)
+    w.hide_from_capture.setChecked(True)
+    assert w.apply()
+    q = QSettings()
+    from sprigcast.app.preview import show_overflow_setting
+
+    assert show_overflow_setting()
+    assert q.value(CONFIRM_GO_LIVE, type=bool) and q.value(KEEP_RECORDING, type=bool) and q.value(REPLAY_ON_LIVE, type=bool)
+    snap = snap_settings()
+    assert not snap["enabled"] and snap["distance"] == 20.0 and not snap["center"] and snap["edges"]
+    assert projector.on_top() and not projector.hide_pointer() and privacy.hidden()
+    w.close()
+
+
+def test_privacy_does_nothing_off_windows(app, monkeypatch):
+    import sys
+
+    from sprigcast.app import privacy
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not privacy.supported() and not privacy.apply_to(object(), True)
+
+
+def test_appearance_page_saves_text_size_and_colors_and_asks_for_a_restart(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import theme
+    from sprigcast.app.settings_window import appearance_waiting
+
+    w = _window(_collection(), tab="Appearance")
+    w.show()
+    app.processEvents()
+    assert w.current_tab() == "Appearance" and w.text_size.value() == "normal" and w.color_preset.value() == "default"
+    assert not appearance_waiting() and not w.restart_note.isVisible()
+    w.color_preset.buttons["colorblind"].click()
+    assert w.color_preview.colors["ACCENT"] == theme.PRESET_COLORS["colorblind"]["ACCENT"]
+    w.text_size.buttons["large"].click()
+    assert w.apply()
+    q = QSettings()
+    assert q.value(theme.COLORS_KEY) == "colorblind" and q.value(theme.TEXT_SIZE_KEY) == "large"
+    assert theme.chosen_colors() == "colorblind" and theme.colors_in_use == "default"  # drawn after a restart
+    assert w.restart_note.isVisible() and "restart" in w.restart_note.text()
+    w.close()
+
+
+def test_color_presets_only_change_known_theme_names():
+    from sprigcast.app import theme
+
+    for name, changes in theme.PRESET_COLORS.items():
+        assert name in theme.COLOR_PRESETS
+        for key, value in changes.items():
+            assert hasattr(theme, key) and value.startswith("#") and len(value) == 7
+    assert set(theme.preset_colors("contrast")) == {"ACCENT", "WARN", "BAD"}
+
+
+def test_quality_made_but_not_yet_in_its_tab_goes_with_the_window(app):
+    """Full test runs, 2026-11-19: the warm-up Settings went between Quality being made and being put in its tab,
+    and Quality stayed behind as a window of its own."""
+    w = _window(_collection(), tab="Stream")
+    w.show()
+    app.processEvents()
+    while w._slices and "stream_quality" not in w.__dict__:
+        w._slices.pop(0)()  # the part that makes Quality; putting it in its tab still waits
+    quality = w.stream_quality
+    assert quality.parentWidget() is not None and quality.window() is w and not quality.isWindow()
+    w.close()
+
+
+def test_canvas_cards_pick_a_size_and_a_frame_rate(app):
+    """Settings redesign (2026-11-19): a card per canvas with its shape, a size list and 30 / 60 quick picks."""
+    col = _collection()
+    w = _window(col, tab="Video")
+    w.show()
+    app.processEvents()
+    enabled, width, height, fps = w.video_fields["horizontal"]
+    size, (big, small) = w.video_sizes["horizontal"], w.video_heads["horizontal"]
+    assert size.currentText() == "1920×1080 (1080p)" and not width.isVisible()  # the boxes are for Custom
+    assert big.text() == "1920×1080" and small.text().startswith("Landscape")
+    assert [f for f, b in fps.buttons.items() if not b.isHidden()] == sorted({30, 60, fps.value()})
+    size.setCurrentIndex(size.findText("1280×720 (720p)"))
+    assert (width.value(), height.value()) == (1280, 720) and big.text() == "1280×720"
+    size.setCurrentIndex(size.findText("Custom"))
+    app.processEvents()
+    assert width.isVisible()
+    width.setValue(1000)
+    assert big.text() == "1000×720" and size.currentText() == "Custom"  # typing never jumps the list about
+    fps.buttons[30].click()
+    assert small.text().endswith("30 fps") and fps.currentData() == 30
+    other = w.video_other_fps["horizontal"]
+    assert not other.isVisible()  # the rarer frame rates are for experts
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert other.isVisible()
+    other.setCurrentIndex(other.findData(50))
+    assert fps.currentData() == 50 and not fps.buttons[50].isHidden() and other.currentIndex() == 0
+    assert small.text().endswith("50 fps")
+    assert w.video_sizes["vertical"].currentText() == "1080×1920 (1080p)"
+    assert w.video_heads["vertical"][1].text().startswith("Portrait")
+    w.close()
+
+
+def test_a_canvas_size_of_your_own_opens_on_custom(app):
+    col = _collection()
+    col.canvases[0].width, col.canvases[0].height = 1600, 900
+    w = _window(col, tab="Video")
+    w.show()
+    app.processEvents()
+    assert w.video_sizes["horizontal"].currentText() == "Custom" and w.video_fields["horizontal"][1].isVisible()
+    assert w.apply() and (col.canvases[0].width, col.canvases[0].height) == (1600, 900)
+    w.close()
+
+
+def test_one_scaling_for_every_canvas_only_changes_them_when_it_is_changed(app):
+    col = _collection()
+    col.canvases[0].downscale, col.canvases[1].downscale = "bicubic", "lanczos"
+    w = _window(col, tab="Video")
+    w.show()
+    app.processEvents()
+    assert not w.sent_out.isVisible()  # Sent out at is for experts while everything goes out at canvas size
+    assert w.apply()
+    assert [c.downscale for c in col.canvases[:2]] == ["bicubic", "lanczos"]  # untouched: each keeps its own
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert w.sent_out.isVisible() and w.sent_out.badge.text() == "Expert"
+    w.scaling.setCurrentIndex(w.scaling.findData("bilinear"))
+    assert w.apply()
+    assert [c.downscale for c in col.canvases[:2]] == ["bilinear", "bilinear"]
+    w.close()
+
+
+def test_themes_turn_the_hue_and_keep_everything_as_readable():
+    from sprigcast.app import theme
+
+    canopy = theme.palette("slothbloom")
+    assert canopy["ACCENT"] == "#4fd88f" and canopy["BG"] == "#0e1311"  # Night Canopy is untouched
+    pairs = [("TEXT", "BG"), ("ACCENT_TEXT", "ACCENT"), ("BUTTON_EDGE", "PANEL"), ("LABEL", "SECTION"),
+             ("FIELD_EDGE", "SECTION"), ("SELECT_TEXT", "SELECT_BG"), ("MUTED", "PANEL")]
+    for name in theme.THEME_LOOKS:
+        assert name in theme.THEMES and name in theme.THEME_ABOUT
+        colors = theme.palette(name)
+        assert set(colors) == set(canopy)
+        for kept in ("LIVE", "LIVE_HOVER", "LIVE_EDGE", "WARN", "BAD"):  # pink is for Live; warnings never move
+            assert colors[kept] == canopy[kept], (name, kept)
+        for a, b in pairs:
+            assert abs(theme.contrast(colors[a], colors[b]) - theme.contrast(canopy[a], canopy[b])) < 0.25, (name, a, b)
+    assert theme.palette("moonlit")["ACCENT"] != canopy["ACCENT"] and theme.palette("stone")["ACCENT"] == canopy["ACCENT"]
+    assert theme.palette("moonlit", "colorblind")["ACCENT"] == theme.PRESET_COLORS["colorblind"]["ACCENT"]
+
+
+def test_appearance_picks_a_theme_from_its_tile_and_previews_it(app):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import theme
+    from sprigcast.app.settings_window import appearance_waiting
+
+    w = _window(_collection(), tab="Appearance")
+    w.show()
+    app.processEvents()
+    assert set(w.theme_tiles) == set(theme.THEMES) and w.theme_tiles["slothbloom"].isChecked()
+    assert not w.theme.isVisibleTo(w)  # the tiles are how you pick
+    w.theme_tiles["orchid"].click()
+    assert w.theme.currentData() == "orchid" and w.color_preview.theme_name == "orchid"
+    assert w.color_preview.colors["ACCENT"] == theme.palette("orchid")["ACCENT"]
+    w.text_size.buttons["large"].click()
+    assert w.color_preview.text_size == "large"
+    w.color_preview.grab()  # paints
+    w.theme_tiles["system"].grab()
+    assert w.apply()
+    assert QSettings().value(theme.THEME_KEY) == "orchid" and theme.theme_in_use == "slothbloom"
+    assert appearance_waiting() and w.restart_note.isVisible() and "Theme" in w.restart_note.text()
     w.close()

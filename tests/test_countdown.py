@@ -24,13 +24,13 @@ def countdown(added):
 
 def _api(settings, name="Countdown"):
     col = _collection()
-    col.sources.append(SourceConfig(id="cd-1", kind="countdown_timer", name=name, settings=settings))
+    col.sources.append(SourceConfig(id="cd-1", kind="countdown", name=name, settings=settings))
     host = Host(col)
     return col, host, NativeApi(host)
 
 
 def test_its_only_there_once_added():
-    assert "countdown_timer" not in known_kinds()
+    assert "countdown" not in known_kinds()
     assert "countdown.start" not in NativeApi(Host(_collection())).all_actions()
 
 
@@ -63,7 +63,7 @@ def test_its_box_is_the_card_and_stays_put_while_it_counts(countdown, monkeypatc
     now = [1000.0]
     monkeypatch.setattr(countdown.time, "time", lambda: now[0])
     cls = countdown.CountdownSource
-    source = create_source("countdown_timer", "cd", countdown.started({**cls.defaults, "minutes": 10.0}, 1000.0))
+    source = create_source("countdown", "cd", countdown.started({**cls.defaults, "minutes": 10.0}, 1000.0))
     first = source.video_frame()
     w, h = source.size
     assert h == 220 and first.shape == (220, w, 4)
@@ -75,7 +75,7 @@ def test_its_box_is_the_card_and_stays_put_while_it_counts(countdown, monkeypatc
         now[0] = t
         assert source.video_frame() is not None
         assert source.size == (w, h)
-    five = create_source("countdown_timer", "cd5", {**cls.defaults, "minutes": 5.0})
+    five = create_source("countdown", "cd5", {**cls.defaults, "minutes": 5.0})
     five.video_frame()
     assert five.size[0] < w  # a shorter countdown, a narrower card
 
@@ -116,7 +116,7 @@ def test_it_starts_over_when_it_comes_on_screen_and_says_when_it_ends(countdown,
     asked, done = [], []
     signal = lambda out: type("S", (), {"emit": lambda self, i: out.append(i)})()  # noqa: E731
     monkeypatch.setattr(countdown, "_UI", type("Ui", (), {"restart": signal(asked), "finished": signal(done)})())
-    source = create_source("countdown_timer", "cd", {"minutes": 1.0})
+    source = create_source("countdown", "cd", {"minutes": 1.0})
     source.start()
     assert asked == ["cd"] and source.video_frame() is None  # waits for the fresh start
     source.update({**source.settings, "run_since": time.time() - 61})
@@ -169,7 +169,7 @@ def test_a_card_from_before_keeps_its_place_on_the_canvas():
 
 def test_adding_one_notes_the_width_it_was_laid_out_for(countdown):
     col = _collection()
-    col.sources.append(SourceConfig(id="c", kind="countdown_timer", name="Countdown"))
+    col.sources.append(SourceConfig(id="c", kind="countdown", name="Countdown"))
     col.own_sprig(col.scene("chat-h"), "c", countdown.CountdownSource.own_sprig, "Countdown", "top_left")
     assert col.source("c").settings[CARD_W] == countdown.W
 
@@ -179,8 +179,74 @@ def test_the_cards_start_as_wide_as_they_draw(countdown, added):
     added("local_time")
     added("stream_timer")
     lt, st = sys.modules["sprigcast_plugin_local_time"], sys.modules["sprigcast_plugin_stream_timer"]
-    for kind, cls in (("countdown_timer", countdown.CountdownSource), ("local_time", lt.LocalTimeSource),
+    for kind, cls in (("countdown", countdown.CountdownSource), ("local_time", lt.LocalTimeSource),
                       ("stream_timer", st.StreamTimerSource)):
         source = create_source(kind, "x", dict(cls.defaults))
         source.video_frame()
         assert abs(source.size[0] - cls.own_sprig[0]) <= 2, kind
+
+
+def test_countdowns_made_before_are_the_card_too(countdown):
+    """Version 1's kind (countdown_timer) and the old example's (countdown, with its text settings) both draw the card."""
+    from sprigcast.core.source import source_class
+
+    assert source_class("countdown").label == "Countdown" and source_class("countdown_timer").label == ""  # not listed twice
+    old_example = {"text": "", "minutes": 5, "label": "Starting in ", "font": "segoeui.ttf", "size": 72, "outline": True}
+    for kind, settings in (("countdown", old_example), ("countdown_timer", {"minutes": 5.0})):
+        source = create_source(kind, "x", settings)
+        frame = source.video_frame()
+        assert frame is not None and frame.shape[:2] == (220, source.size[0]), kind
+    col, host, api = _api({"minutes": 5.0})
+    col.source("cd-1").kind = "countdown_timer"
+    assert api.run("countdown.get", {})["text"] == "5:00"
+
+
+def test_a_done_text_is_shown_whole(countdown):
+    """PC check 2026-11-19: "Starting now" showed as "Starting no…" (the box was measured with the vine's smaller
+    words, the card painted without it, and a font isn't exactly as wide as its size says)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFontMetricsF
+
+    seen = []
+    real = QFontMetricsF.elidedText
+    try:
+        QFontMetricsF.elidedText = lambda self, text, mode, width, *a: seen.append(real(self, text, mode, width)) or seen[-1]
+        for done_text in ("Starting now", "Be right back", "Go", "We are starting the stream now"):
+            for extra in ({}, {"text_scale": 140}, {"vine": False}, {"label": ""}):
+                settings = {**countdown.CountdownSource.defaults, "done_text": done_text, **extra}
+                image = countdown.paint_fitted(done_text, "", settings, False, None, bool(settings["vine"]))
+                assert image.width() <= 1400
+    finally:
+        QFontMetricsF.elidedText = real
+    assert seen and not [t for t in seen if "…" in t], seen
+    assert Qt is not None
+
+
+def test_with_two_countdowns_apps_work_on_the_one_on_air(countdown, monkeypatch):
+    """PC check 2026-11-19: with "FT countdown" off air and "CD check" on air, every answer was about FT countdown."""
+    now = [5000.0]
+    monkeypatch.setattr(countdown.time, "time", lambda: now[0])
+    col, host, api = _api({"minutes": 5.0}, name="FT countdown")  # in no bloom: off air
+    col.sources.append(SourceConfig(id="cd-2", kind="countdown", name="CD check", settings={"minutes": 2.0}))
+    col.scene("p-frame").items.append(SceneItem(source="cd-2"))  # in a sprig of the bloom on air
+    events = []
+    api.plugin_event = lambda name, data: events.append((name, data["source"]))
+    assert countdown.on_air_ids(col) >= {"cd-2", "cam"} and "cd-1" not in countdown.on_air_ids(col)
+
+    out = api.run("countdown.start", {})
+    assert out["source"] == "CD check" and out["sources"] == ["CD check"] and out["text"] == "2:00"
+    assert not countdown.running(col.source("cd-1").settings)  # the one off air is left alone
+    now[0] += 30
+    assert api.run("countdown.get", {})["source"] == "CD check" and api.run("countdown.get", {})["text"] == "1:30"
+    assert api.run("countdown.pause", {})["text"] == "1:30"
+    assert events == [("countdown.changed", "CD check")] * 2
+    assert plugin_hooks.run_hotkey(api, "plugin:countdown:toggle") and countdown.running(col.source("cd-2").settings)
+    out = api.run("countdown.get", {"source": "FT countdown"})  # one by name, on air or not
+    assert out["source"] == "FT countdown" and out["text"] == "5:00" and out["sources"] == ["FT countdown"]
+
+    col.scene("p-frame").items[-1].visible = False  # its eye off: none on air, so every one, as before
+    out = api.run("countdown.reset", {})
+    assert out["sources"] == ["FT countdown", "CD check"] and out["source"] == "FT countdown"
+    col.scene("p-frame").items[-1].visible = True
+    col.active_scenes = {"horizontal": "brb-h", "vertical": "brb-v"}  # another bloom on air
+    assert api.run("countdown.get", {})["source"] == "FT countdown"

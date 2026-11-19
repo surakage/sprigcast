@@ -82,7 +82,7 @@ def read_cube(path: str | Path) -> np.ndarray:
     if not 2 <= size <= 128:
         raise LutError("Not a 3D .cube file (no LUT_3D_SIZE).")
     if len(rows) != size ** 3:
-        raise LutError(f"The file says {size}³ colours but has {len(rows)}.")
+        raise LutError(f"The file says {size}³ colors but has {len(rows)}.")
     table = np.asarray(rows, np.float32).reshape(size, size, size, 3)
     span = np.where(hi - lo == 0, 1, hi - lo)
     return np.clip((table - lo) / span, 0.0, 1.0)

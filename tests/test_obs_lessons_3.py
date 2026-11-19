@@ -257,8 +257,10 @@ def test_record_when_live_starts_one_recording_and_leaves_yours_alone():
 def test_closing_while_live_asks_first(monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
+    from sprigcast.app import message as msgbox
+
     asked = []
-    monkeypatch.setattr(QMessageBox, "question", lambda *a: asked.append(a[2]) or QMessageBox.StandardButton.No)
+    monkeypatch.setattr(msgbox, "question", lambda *a: asked.append(a[2]) or QMessageBox.StandardButton.No)
     w = _window()
     assert w._may_close() and not asked
     w.streaming, w.recording = object(), object()

@@ -497,3 +497,36 @@ def test_picture_runs_cleanly_from_a_to_b_for_every_kind():
             assert np.abs(middle[..., :3] - (a[..., :3] + b[..., :3]) / 2).max() <= 2
     # The preview is a picture of the change, not a screen size: no "1280×720" badge.
     assert "1280×720" not in open(transitions_panel.__file__, encoding="utf-8").read()
+
+
+def test_pop_up_screen_height_never_follows_its_width():
+    """PC 2026-11-19: the gear on Live's Transitions card closed SprigCast (stack overflow in Qt6Widgets). The
+    pop-up's screen set its height from its width inside a scroll area, so at some pop-up heights the scroll bar
+    and the screen's height chased each other inside Qt. Run before the fix, this test ends the test run."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import TransitionPicture, TransitionsPanel
+
+    t = Transition(kind="fade")
+    picture = TransitionPicture(lambda: t, wide=True)
+    for width in (300, 373, 384, 600):
+        picture.resize(width, picture.height())
+        app.processEvents()
+        assert picture.height() == TransitionPicture.WIDE_HEIGHT
+    panel = TransitionsPanel(t, lambda: None, compact=True, collection=collection("a", t))
+    dialog = panel.settings_dialog()
+    dialog.show()
+    app.processEvents()
+    for height in range(360, 800, 2):  # every height where the page just fits or just doesn't
+        for width in (481, 470):
+            dialog.resize(width, height)
+            app.processEvents()
+            app.processEvents()
+    assert dialog.panel.picture.height() == TransitionPicture.WIDE_HEIGHT
+    dialog.close()
+    panel.close()

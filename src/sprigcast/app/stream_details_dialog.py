@@ -134,7 +134,9 @@ class Pane(QWidget):
 
     def __init__(self, service: str, dialog: StreamDetailsDialog, key_ref: str | None = None,
                  vertical_key_ref: str | None = None):
-        super().__init__()
+        # Made inside the card it ends up in: put in afterwards, Qt went through every field again to hand it the
+        # card's look (part of the 61 ms the card took to open on the PC while live, 2026-11-19).
+        super().__init__(getattr(dialog, "_card", None))
         self.service, self.dialog = service, dialog
         self.vertical_key_ref = vertical_key_ref  # YouTube Dual stream: the vertical destination's key
         self.key_ref = key_ref  # YouTube: this destination's stream key, so it edits the stream that key goes to
@@ -146,13 +148,13 @@ class Pane(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(12)
 
-        # Signed in as ... (signing in and out is in Accounts, the one place for it)
+        # Signed in as ... (signing in and out is on the place, in Settings → Stream)
         who = QHBoxLayout()
         self.who = _quiet()
         who.addWidget(self.who, 1)
         box.addLayout(who)
 
-        # Not signed in: a line and a button that opens Accounts
+        # Not signed in: a line and a button that opens Settings → Stream on this place
         self.signed_out = QWidget()
         out = QHBoxLayout(self.signed_out)
         out.setContentsMargins(0, 0, 0, 0)
@@ -358,8 +360,8 @@ class Pane(QWidget):
     # Sign in and out ------------------------------------------------------------------------------------
 
     def _sign_in(self) -> None:
-        """Accounts opens over the card; whoever is signed in there afterwards is read again."""
-        self.dialog.open_accounts(self.dialog)
+        """Settings opens over the card on this platform's place; whoever is signed in afterwards is read again."""
+        self.dialog.open_accounts(self.dialog, self.service)
         self.dialog.reload(self.service)  # horizontal and vertical YouTube share the sign-in
 
     # Save -----------------------------------------------------------------------------------------------
@@ -439,11 +441,11 @@ class StreamDetailsDialog(CardDialog):
 
     def __init__(self, parent: QWidget | None = None, places: list | None = None,
                  youtube_key_ref: str | None = None, connect_twitch: Callable[[QWidget], object] | None = None,
-                 open_accounts: Callable[[QWidget], object] | None = None):
+                 open_accounts: Callable[[QWidget, str], object] | None = None):
         long = sum(1 for p in places or [] if not isinstance(p, str) and len(p.label) > 8)  # "YouTube Vertical"
         super().__init__("Stream details", parent, width=740 if len(places or []) > 3 and long else 560)
         self.jobs = Jobs(self)
-        self.connect_twitch = connect_twitch or (lambda _parent: None)  # older callers; Accounts does it now
+        self.connect_twitch = connect_twitch or (lambda _parent: None)  # older callers; Settings → Stream does it now
         if open_accounts is None:
             from sprigcast.app.accounts_page import open_accounts
         self.open_accounts = open_accounts

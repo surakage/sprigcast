@@ -402,6 +402,20 @@ class AudioSettings(BaseModel):
     # and leave the Sound list, so only the mics and desktop sounds you add yourself play.
     global_devices: bool = True
     global_sources: list[str] | None = None  # their source ids; None (older files): the first desktop and mic
+    # Hearing it yourself: the device monitoring plays on ("Listen through"); "" = the Windows default.
+    monitor_device: str = ""
+    # Ask Windows not to turn other apps down when SprigCast opens a mic (communications ducking).
+    windows_ducking_off: bool = True
+    # Push to talk on the mic: "talk" (heard only while the key is held), "mute" (silent while held) or "off".
+    push_mode: Literal["off", "talk", "mute"] = "off"
+    push_key: str = ""  # the key, as hotkeys are written ("F13", "Ctrl+Alt+T")
+    push_release_ms: int = 250  # "Let go after": letting go counts this much later (0, 100, 250 or 500)
+
+    def push_mic(self, collection: "SceneCollection") -> str:
+        """The mic push to talk holds: the global mic, else the first mic (its source id, "" for none)."""
+        ids = collection.global_device_ids()
+        mics = [s for s in collection.sources if s.kind == "audio_input"]
+        return next((s.id for s in mics if s.id in ids), mics[0].id if mics else "")
 
     def track_name(self, number: int) -> str:
         names = [*self.track_names, *TRACK_NAMES[len(self.track_names):]]
@@ -650,19 +664,32 @@ class SceneCollection(BaseModel):
     def sprig_kind(self, part: Scene, canvas_id: str | None = None, _seen: frozenset = frozenset()) -> str:
         """What a sprig shows, as a source kind for its icon: "camera" for a webcam sprig, "chat" for a chat
         one... A colour behind something else and its sound don't count; nested sprigs count as what they
-        show. "scene" when it mixes kinds (or is empty): the sprig icon."""
+        show. "empty" when it holds nothing yet, "nested" when it holds two or more sprigs (and nothing else),
+        "scene" when it mixes kinds: the sprig icon."""
         part = self.main_part(part)
         if part.id in _seen:
             return "scene"
         layout = self.shape_for(part, canvas_id) if canvas_id else part
         kinds: list[str] = []
+        sprigs = others = 0
         for item in layout.items:
             try:
                 source = self.source(item.source)
             except StopIteration:
                 continue
             inner = self.part_of(source) if source.kind == PART_KIND else None
-            kinds.append(self.sprig_kind(inner, canvas_id, _seen | {part.id}) if inner is not None else source.kind)
+            if inner is not None:
+                sprigs += 1
+                kind = self.sprig_kind(inner, canvas_id, _seen | {part.id})
+                if kind != "empty":  # an empty sprig inside shows nothing
+                    kinds.append(kind)
+            else:
+                others += 1
+                kinds.append(source.kind)
+        if sprigs >= 2 and not others:
+            return "nested"
+        if not kinds:
+            return "empty"
         found = set(kinds)
         visual = found - {"audio_input", "audio_output", "app_audio"}
         if visual:
@@ -1482,3 +1509,11 @@ def _free_spot(canvas: Canvas, size: tuple[int, int], corner: str, height_share:
         box = (box[0], y, box[2], y + h)
     box = at(corner if corner in CORNERS else "bottom_left")
     return placed(scale, box[0], box[1])
+
+
+def drawing_fps(canvases) -> int:
+    """How often the canvases are drawn: the fastest canvas that is on. A canvas that is off (the vertical one on a
+    light PC) doesn't count: a 30 fps canvas beside a 60 fps one that's off ticked at 60 (light-PC test
+    2026-11-19, twice the work on a weak PC)."""
+    on = [c for c in canvases if c.enabled] or list(canvases)
+    return int(max((c.fps for c in on), default=60))

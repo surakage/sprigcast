@@ -873,7 +873,9 @@ class LiveSide(QWidget):
         self._add_menu_ready = True
         self.add_menu.ensurePolished()
         self.add_menu.adjustSize()
-        self.add_menu.winId()
+        # create(), not winId(): winId() marks it native, which makes its parent and the parent's other
+        # children native too, and a native parent window warned "must be a top level window" (PC soak 2026-11-18).
+        self.add_menu.create()
 
     def set_editing(self, on: bool) -> None:
         """Edit mode: each place gets Remove, its shape and (Twitch) test mode, without leaving Live."""

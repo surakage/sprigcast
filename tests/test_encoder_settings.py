@@ -20,6 +20,21 @@ def test_x264_preset_and_tune():
     assert opts["preset"] == "veryfast" and "tune" not in opts
 
 
+def test_x264_looks_less_far_ahead_on_a_small_pc_and_keeps_its_own_threads(monkeypatch):
+    """Each frame x264 looks ahead keeps a picture in memory (720p medium: 184 -> 84 MB with 10 instead of 40).
+    The thread count is x264's own: setting one left a recording 15 frames short beside the replay buffer."""
+    monkeypatch.setattr(recorder.os, "cpu_count", lambda: 4)  # the 4 GB all-in-one
+    opts = recorder.video_options("libx264", EncoderSettings(x264_preset="medium"), 3000)
+    assert "threads" not in opts and opts["rc-lookahead"] == "10"  # medium's own is 40 frames
+    for quick in ({"x264_preset": "superfast"}, {"x264_preset": "faster", "x264_tune": "zerolatency"},
+                  {"x264_preset": "faster", "tuning": "ull"}):
+        opts = recorder.video_options("libx264", EncoderSettings(**quick), 3000)
+        assert "threads" not in opts and "rc-lookahead" not in opts  # they look at no frames ahead: left so
+    monkeypatch.setattr(recorder.os, "cpu_count", lambda: 16)
+    opts = recorder.video_options("libx264", EncoderSettings(x264_preset="medium"), 6000)
+    assert "threads" not in opts and "rc-lookahead" not in opts
+
+
 def test_resolve_codec_falls_back(monkeypatch):
     monkeypatch.setattr(recorder, "pick_codec", lambda: "h264_nvenc")
     monkeypatch.setattr(recorder, "encoder_works", lambda c: c in ("h264_nvenc", "hevc_nvenc", "libx264"))

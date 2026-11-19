@@ -77,7 +77,7 @@ def test_twitch_account_row(fake_keyring, monkeypatch):
     d = StreamPage(col)
     assert d.twitch_row.isVisibleTo(d) and d.twitch_button.text() == "Connect Account (recommended)"
     assert not d.use_account.isVisibleTo(d)
-    monkeypatch.setattr(twitch_auth, "connected_account", lambda: "surakage")
+    monkeypatch.setattr(twitch_auth, "remembered_login", lambda: "surakage")
     d._show_service(d.outputs[0])
     assert d.twitch_label.text() == "Connected as surakage" and d.use_account.isVisibleTo(d)
     d.use_account.setChecked(True)
@@ -179,7 +179,7 @@ def test_a_place_signs_in_once_then_gets_its_key_from_the_account(fake_keyring, 
         def __init__(self, service, parent, **kw):
             self.fetched, self.error = outcome["fetched"], outcome["error"]
             if self.fetched is not None:
-                signed_in[service] = self.fetched.account  # the one sign-in signs Accounts in too
+                signed_in[service] = self.fetched.account  # the one sign-in signs the platform in everywhere
 
         def exec(self):
             return self.fetched is not None
@@ -195,7 +195,8 @@ def test_a_place_signs_in_once_then_gets_its_key_from_the_account(fake_keyring, 
     d = StreamPage(col)
     assert d.signin_state.text() == "Not signed in" and d.sign_in_button.text() == "Sign in"
     d._sign_in_clicked()
-    assert d.signin_state.text() == "Signed in as Sloth Bloom" and d.sign_in_button.text() == "Get key"  # no Sign out
+    assert d.signin_state.text() == "Signed in as Sloth Bloom" and d.sign_in_button.text() == "Get key"
+    assert d.sign_out_button.isVisibleTo(d)  # signing out lives on the place now (no Accounts tab)
     assert d.key.text() == "yt-key" and d.apply_to(col) and col.outputs[0].account == "Sloth Bloom"
     d.key.setText("")
     monkeypatch.setattr(service_signin, "key_from_account",
@@ -240,3 +241,88 @@ def test_keys_are_read_only_when_a_place_is_shown(fake_keyring, monkeypatch):
     d2._saved_keys.setdefault("k/c", None)
     d2.keys["k/c"] = ""
     assert d2.apply_to(col) and fake_keyring.get(("SprigCast", "k/c"), "") == ""
+
+
+def test_sign_out_on_a_place_signs_the_platform_out(fake_keyring, monkeypatch):
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import accounts_page
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import service_signin, stream_details
+
+    monkeypatch.setattr(service_signin, "available", lambda s: s in ("youtube", "kick"))
+    signed_in = {"kick": "slothbloom"}
+    monkeypatch.setattr(stream_details, "account", lambda s: signed_in.get(s, ""))
+    gone = []
+
+    def sign_out(service):
+        gone.append(service)
+        signed_in[service] = ""
+        return ""
+
+    monkeypatch.setattr(accounts_page, "sign_out", sign_out)
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="k", type="stream", service="kick", canvas="horizontal", key_ref="sprigcast/k")],
+    )
+    d = StreamPage(col)
+    assert d.signin_state.text() == "Signed in as slothbloom" and d.sign_out_button.isVisibleTo(d)
+    d.sign_out_button.click()
+    assert gone == ["kick"] and d.signin_state.text() == "Not signed in"
+    assert not d.sign_out_button.isVisibleTo(d) and d.sign_in_button.text() == "Sign in"
+
+
+def test_twitch_place_shows_sign_out_once_connected(fake_keyring, monkeypatch):
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import accounts_page
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import twitch_auth
+
+    login = {"name": "sloth"}
+    monkeypatch.setattr(twitch_auth, "remembered_login", lambda: login["name"])
+    monkeypatch.setattr(twitch_auth, "connected_account", lambda: login["name"] or None)
+    monkeypatch.setattr(accounts_page, "sign_out", lambda s: login.update(name="") or "")
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="t", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/t")],
+    )
+    d = StreamPage(col)
+    assert d.twitch_sign_out.isVisibleTo(d) and not d.twitch_button.isVisibleTo(d)
+    d.twitch_sign_out.click()
+    assert not d.twitch_sign_out.isVisibleTo(d) and d.twitch_button.isVisibleTo(d)
+
+
+def test_a_login_never_recorded_is_looked_up_off_the_window_thread_and_filled_in(fake_keyring, monkeypatch):
+    """Opening the password store while the Stream page was being made held it 16.6 s on a cold build machine."""
+    import threading
+    import time
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import twitch_auth
+
+    asked_on, recorded, gate = [], [], threading.Event()
+
+    def slow_store():
+        asked_on.append(threading.current_thread() is threading.main_thread())
+        gate.wait(5)
+        return "surakage"
+
+    monkeypatch.setattr(twitch_auth, "remembered_login", lambda: recorded[-1] if recorded else None)
+    monkeypatch.setattr(twitch_auth, "connected_account", slow_store)
+    monkeypatch.setattr(twitch_auth, "_announce", recorded.append)
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal")],
+    )
+    began = time.monotonic()
+    d = StreamPage(col)  # made while the store is still busy
+    d._show_service(d.outputs[0])  # shown again meanwhile: one lookup, not two
+    assert time.monotonic() - began < 2 and not d.use_account.isVisibleTo(d)
+    gate.set()
+    end = time.monotonic() + 5
+    while not recorded and time.monotonic() < end:
+        app.processEvents()
+        time.sleep(0.01)
+    assert asked_on == [False] and recorded == ["surakage"]
+    assert d.twitch_label.text() == "Connected as surakage" and d.use_account.isVisibleTo(d)
+    assert not d._twitch_poll.isActive()

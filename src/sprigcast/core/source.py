@@ -86,6 +86,16 @@ class Source(ABC):
 
 
 _REGISTRY: dict[str, Callable[[str, dict[str, Any]], Source]] = {}
+# Kinds made somewhere else: your own plugins' sources run in the plugin helper (app/plugin_helper.py), and
+# create_source makes the stand-in that talks to it. source_class still gives the plugin's own class.
+_ELSEWHERE: dict[str, Callable[[str, dict[str, Any]], Source]] = {}
+
+
+def run_elsewhere(kind: str, factory: Callable[[str, dict[str, Any]], Source] | None) -> None:
+    if factory is None:
+        _ELSEWHERE.pop(kind, None)
+    else:
+        _ELSEWHERE[kind] = factory
 
 
 def register(kind: str):
@@ -102,6 +112,7 @@ def unregister_module(module: str) -> list[str]:
     gone = [kind for kind, cls in _REGISTRY.items() if getattr(cls, "__module__", "") == module]
     for kind in gone:
         del _REGISTRY[kind]
+        _ELSEWHERE.pop(kind, None)
     return gone
 
 
@@ -109,7 +120,7 @@ def create_source(kind: str, source_id: str, settings: dict[str, Any]) -> Source
     import sprigcast.sources  # noqa: F401  (registers the built-in kinds)
 
     try:
-        factory = _REGISTRY[kind]
+        factory = _ELSEWHERE.get(kind) or _REGISTRY[kind]
     except KeyError:
         raise ValueError(f"unknown source kind {kind!r}") from None
     return factory(source_id, settings)

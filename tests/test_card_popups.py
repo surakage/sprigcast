@@ -57,3 +57,24 @@ def test_camera_and_plugin_settings_are_cards(app):
 
     assert isinstance(CameraDialog([CameraDevice(0, "Cam", "a")]), CardDialog)
     assert isinstance(SettingsDialog("Text", {"text": "Hi", "size": 72}, {}), CardDialog)
+
+
+def test_the_big_windows_are_rounded_cards(app):
+    from PySide6.QtCore import Qt
+
+    from sprigcast.app.card import CardWindow
+    from sprigcast.app.doctor import DoctorDialog
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.app.hotkeys_dialog import HotkeysWindow
+    from sprigcast.app.plugin_store_page import PluginStoreWindow
+    from sprigcast.app.wizard import OptimizeWizard
+
+    for cls in (DoctorDialog, FiltersDialog, HotkeysWindow, PluginStoreWindow, OptimizeWizard):
+        assert issubclass(cls, CardWindow), cls.__name__
+    window = CardWindow("Test", size=(400, 300))
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert window.card.size().isValid() and window.width() == 440  # the card plus room for its shadow
+    window.show()
+    app.processEvents()
+    assert window.card.width() == 400 and window.card.geometry().contains(window._grip.geometry())  # still resizable
+    window.close()

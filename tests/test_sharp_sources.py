@@ -81,7 +81,7 @@ def test_pictures_and_cameras_are_not_sharp():
 
 
 CARDS = {"local_time": (603, 220), "stream_timer": (416, 220), "countdown": (396, 220), "now_playing": (1100, 200)}
-KINDS = {"countdown": "countdown_timer"}  # a store id whose source kind is named differently
+KINDS: dict[str, str] = {}  # a store id whose source kind is named differently
 
 
 @pytest.fixture

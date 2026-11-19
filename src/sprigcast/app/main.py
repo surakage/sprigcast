@@ -10,7 +10,7 @@ from importlib import resources
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QStandardPaths, Qt
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from sprigcast import __version__
 from sprigcast.core.scene import SceneCollection
@@ -242,7 +242,7 @@ def run() -> None:
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
                      [c["name"] for c in sprigcore.adapters()])
     else:
-        logging.info("Python engine (SPRIGCAST_ENGINE=python)")
+        logging.info("Python engine (%s)", sprigcore.why_python())
     import_av()
     package = inside_package()
     if package:
@@ -277,7 +277,8 @@ def run() -> None:
     app.aboutToQuit.connect(lambda: settings_keeper.keep(config_dir()))
     from PySide6.QtCore import QTimer
 
-    QTimer.singleShot(30_000, lambda: settings_keeper.keep(config_dir()))  # a copy even if closing is cut short
+    # A copy even if closing is cut short; made aside, so the window and the show don't wait for the file
+    QTimer.singleShot(30_000, lambda: settings_keeper.keep_aside(config_dir()))
     app.setWindowIcon(app_icon())
     from sprigcast.core.painted import brand_fonts
 
@@ -342,7 +343,9 @@ def run() -> None:
     try:
         collection = load_collection(scenes_path)
     except Exception as exc:
-        QMessageBox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
+        from sprigcast.app import message as msgbox
+
+        msgbox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
         sys.exit(1)
 
     from sprigcast.app.settings_window import apply_pending_video
@@ -366,6 +369,7 @@ def run() -> None:
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    window.start_in_live()  # always opens on Live, not the screen it closed on
     try:
         from sprigcast.app.leftovers import clean_up_recordings
 
@@ -380,7 +384,9 @@ def run() -> None:
         from sprigcast.core import backups
 
         opened = f"so SprigCast opened {backups.when(restored)}" if restored else "so it started fresh"
-        QTimer.singleShot(1500, lambda: QMessageBox.warning(
+        from sprigcast.app import message as msgbox
+
+        QTimer.singleShot(1500, lambda: msgbox.warning(
             window, "SprigCast", f"{shelf.garden().name} couldn't be read, {opened}.\n"
                                  f"The old file is kept as:\n{scenes_path.with_suffix('.broken.json')}"))
     window.plugin_report = plugins
@@ -419,7 +425,8 @@ def run() -> None:
     # Each piece waits for the end of a frame and they run seconds apart (see pacing.housekeeping): together, at
     # once, they made a late frame on the same second of the minute on the PC (2026-11-17).
     tidy.timeout.connect(lambda: QTimer.singleShot(  # which threads come and go, for the next long test
-        20_000, lambda: pacing.housekeeping("thread count", pacing.watch_threads)))
+        20_000, lambda: workers.run(pacing.watch_threads, name="thread count")))
+    # (on a shared worker: asking Windows for the process's thread count held the window about 50 ms, 2026-11-19)
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and where memory goes, every 10 minutes
         40_000, lambda: pacing.housekeeping("memory line", pacing.watch_memory)))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and which threads use the CPU, every 5 minutes
@@ -439,9 +446,15 @@ def run() -> None:
                     name="warm-up")
 
     QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
+    from sprigcast.app.theme import warm_card_shadow
+
+    QTimer.singleShot(warm.WARM_AFTER_MS + 1_000, lambda: warm_card_shadow(window))  # the shadow pop-ups share
     QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time
     workers.run(warm.warm_keyring, name="warm-keyring")  # now: a stream key or chat sign-in may want it soon
     QTimer.singleShot(20_000, pacing.trim_working_set_later)  # start-up's one-time pages (imports, shaders) go back
+    from sprigcast.app import engine_warning
+
+    engine_warning.install(window)  # says when the old engine draws on a PC that could run the new one
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
