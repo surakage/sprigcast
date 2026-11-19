@@ -532,6 +532,63 @@ class FitScroll(QScrollArea):
         return QSize(0, min(shortest, self._content.sizeHint().height()))
 
 
+class _PlaceDrag:
+    """A place's row: a press and a pull starts dragging it (LiveSide._place_mouse). Its own mouse handlers, not an
+    event filter: a filter ran Python for every event of every row, the Garden check's open among them (its
+    window's deactivation reaches each row: 54 ms frames on the PC, sweep 13, 2026-11-19)."""
+
+    owner = None
+
+    def _told(self, event) -> bool:
+        owner = self.owner
+        return owner is not None and owner._place_mouse(self, event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._told(event)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._told(event)
+        super().mouseReleaseEvent(event)
+
+
+class _PlaceButton(_PlaceDrag, QPushButton):
+    pass
+
+
+class _PlaceBox(_PlaceDrag, QWidget):
+    pass
+
+
+class _PlacesBox(QWidget):
+    """The list of places: a dragged place drops here (LiveSide._places_drop), with its own drag handlers."""
+
+    owner = None
+
+    def _told(self, event) -> bool:
+        return self.owner is not None and self.owner._places_drag(event)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dropEvent(event)
+
+
 class LiveSide(QWidget):
     """The right-hand column: the big stream button, Record and Save clip, where it goes, and sound."""
 
@@ -663,10 +720,10 @@ class LiveSide(QWidget):
         self.manage.clicked.connect(lambda: self.set_editing(not self.editing))
         top.addWidget(self.manage)
         where.addLayout(top)
-        places_box = QWidget()
+        places_box = _PlacesBox()
         # Drag a place up or down the list to set its order (Edit mode has Move up and Move down too).
         places_box.setAcceptDrops(True)
-        places_box.installEventFilter(self)
+        places_box.owner = self
         self.places_box = places_box
         self.drop_line = QFrame(places_box)  # where a dragged place lands
         self.drop_line.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 1px;")
@@ -893,7 +950,7 @@ class LiveSide(QWidget):
 
     def _place_row(self, place: Destination) -> QWidget:
         if not self.editing:
-            box = QPushButton()
+            box = _PlaceButton()
             # The row's height in the style sheet too: the app's QPushButton min-height would win at polish.
             box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
                               " min-height: 44px; max-height: 44px; }")
@@ -901,7 +958,8 @@ class LiveSide(QWidget):
             box.setToolTip("Open this place's settings")
             box.clicked.connect(lambda _=False, pid=place.id: self.on_destination(pid))
         else:
-            box = QWidget()
+            box = _PlaceBox()
+        box.owner = self  # a press and a pull starts dragging it (_PlaceDrag)
         outer = QVBoxLayout(box)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
@@ -937,7 +995,6 @@ class LiveSide(QWidget):
             box.setFixedHeight(44)  # a QPushButton sizes to its text, not its layout: give it the row's height
         self.place_rows[place.id] = (tile, name, note, switch)
         box.setProperty("place_id", place.id)
-        box.installEventFilter(self)  # a press and a pull starts dragging it
         if self.editing:
             tools_row = QHBoxLayout()
             tools_row.setContentsMargins(44, 0, 0, 2)  # under the name, so the tools read as this place's
@@ -977,24 +1034,28 @@ class LiveSide(QWidget):
 
     # Dragging places into order ---------------------------------------------------------------
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+    def _places_drag(self, event) -> bool:
+        """A drag over the list of places (_PlacesBox): True when it was a place's, handled here."""
         kind = event.type()
-        if watched is getattr(self, "places_box", None):
-            if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove) and event.mimeData().hasFormat(PLACE_MIME):
-                event.acceptProposedAction()
-                self._show_drop(self.drop_index(event.position().y()))
-                return True
-            if kind == QEvent.Type.DragLeave:
-                self.drop_line.hide()
-                return True
-            if kind == QEvent.Type.Drop and event.mimeData().hasFormat(PLACE_MIME):
-                self.drop_line.hide()
-                place_id = bytes(event.mimeData().data(PLACE_MIME)).decode()
-                self.move_place(place_id, self.drop_index(event.position().y()))
-                event.acceptProposedAction()
-                return True
-            return False
-        place_id = watched.property("place_id") if isinstance(watched, QWidget) else None
+        if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove) and event.mimeData().hasFormat(PLACE_MIME):
+            event.acceptProposedAction()
+            self._show_drop(self.drop_index(event.position().y()))
+            return True
+        if kind == QEvent.Type.DragLeave:
+            self.drop_line.hide()
+            return True
+        if kind == QEvent.Type.Drop and event.mimeData().hasFormat(PLACE_MIME):
+            self.drop_line.hide()
+            place_id = bytes(event.mimeData().data(PLACE_MIME)).decode()
+            self.move_place(place_id, self.drop_index(event.position().y()))
+            event.acceptProposedAction()
+            return True
+        return False
+
+    def _place_mouse(self, row: QWidget, event) -> bool:
+        """A mouse event on a place's row (_PlaceDrag): True when it started a drag (the row then ignores it)."""
+        kind = event.type()
+        place_id = row.property("place_id")
         if place_id and len(self._places) > 1:
             if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._drag = (place_id, event.position().toPoint())
@@ -1002,11 +1063,11 @@ class LiveSide(QWidget):
                 from PySide6.QtWidgets import QApplication
 
                 if (event.position().toPoint() - self._drag[1]).manhattanLength() >= QApplication.startDragDistance():
-                    self._start_drag(watched, self._drag[0])
+                    self._start_drag(row, self._drag[0])
                     return True
             elif kind == QEvent.Type.MouseButtonRelease:
                 self._drag = None
-        return super().eventFilter(watched, event)
+        return False
 
     def _start_drag(self, row: QWidget, place_id: str) -> None:
         from PySide6.QtCore import QMimeData
