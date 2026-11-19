@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 30
+#define SC_INTERFACE_VERSION 31
 
 enum {
     SC_OK = 0,
@@ -582,6 +582,9 @@ typedef struct sc_media_picture {
 SC_API int sc_media_ffmpeg_load(const char *avutil, const char *avcodec, const char *avformat, const char *swscale,
                                 const char *swresample);
 SC_API int sc_media_ffmpeg_ready(void);
+/* Loads FFmpeg's input devices (libavdevice, of the same FFmpeg, UTF-8 path) so a player can show a camera
+ * (sc_media_set_device). After sc_media_ffmpeg_load; again does nothing. */
+SC_API int sc_media_ffmpeg_load_devices(const char *avdevice);
 
 /* ---- Writing a recording or stream (writer.cpp) -----------------------------------------------------------
  * A file or stream written by a thread of the engine's own with SprigCast's FFmpeg (load it first with
@@ -675,6 +678,14 @@ SC_API int sc_media_set_decode(sc_media *media, int hardware);
 /* Another file (UTF-8 path; "" = none) from its start. video: 1 when it should have a picture (told by its
  * name until the file is open). playing: as sc_media_create. */
 SC_API int sc_media_set_file(sc_media *media, const char *path, int video, int playing);
+/* A camera instead of a file: opened through FFmpeg's input device `format` ("dshow"), trying each of `choices` in
+ * turn, one a line: the device's input name, then a tab and its options as "key=value:key=value" (may be empty).
+ * Its newest picture is always the one shown (no clock, no end, never a backlog), at most `fps` a second (0 = all
+ * it sends; extra MJPEG and raw pictures are skipped before decoding). Unplugged or busy, it is opened again every
+ * 2 s; sc_media_info's status says so. mirror: flipped left to right. sc_media_set_picture limits its size and
+ * sc_media_set_shrink makes it smaller, as for files. Needs sc_media_ffmpeg_load_devices. */
+SC_API int sc_media_set_device(sc_media *media, const char *format, const char *choices, int fps, int mirror);
+SC_API int sc_media_set_mirror(sc_media *media, int mirror);
 SC_API int sc_media_control(sc_media *media, int what, double value);
 /* Shown at most `shrink` of its size anywhere (1, 1/2, 1/4): the next pictures are made that small. */
 SC_API int sc_media_set_shrink(sc_media *media, float shrink);

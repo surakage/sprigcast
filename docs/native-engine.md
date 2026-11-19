@@ -358,6 +358,13 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
 - Frames Python draws itself (a Move transition) read the picture back (`sc_engine_capture_read`), as the package
   copied every picture before.
 - `SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1` captures in Python.
+- **Cameras** (`sc_media_set_device`): the engine's media player opens the camera through FFmpeg's input devices
+  (`dshow`, from PyAV's libavdevice, `sc_media_ffmpeg_load_devices`), trying the modes `sources/camera.py` chose
+  from the camera's own list, best first. It always shows the newest picture (no clock, no backlog), skips the
+  extra MJPEG pictures of a camera faster than asked before decoding, sends 4:2:2 as 4:2:0 planes, mirrors in the
+  decoder thread, and opens an unplugged or busy camera again every 2 s. The camera source hands the player to
+  the render thread like a video's; frames Python draws read it back. A player that can't be made, or faults,
+  hands the camera back to Python's reader. `SPRIGCAST_NO_NATIVE_CAMERA=1` reads cameras in Python.
 
 ## Phases
 
@@ -371,6 +378,6 @@ Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai
 | 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
 | 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | In progress: the audio visualizer is heard and drawn in the engine; Snap's, Death count's, Now playing's and PNGtuber's animations are drawn by the engine from lists of pictures |
-| 7 | Capture and camera inside the engine | In progress: display, window and game capture in the engine (behind the switch); cameras next |
+| 7 | Capture and camera inside the engine | In progress: display, window and game capture and cameras in the engine (behind the switch); PC test next |
 | 8 | Old Python engine and its packages removed | |
 | 9 | Only if needed: Control API into the engine, screens to Qt C++ | |
