@@ -451,6 +451,7 @@ class _Feed:
         self.opened_with = None
         log.info("%s: the engine reads %r", self.id, device.name)
         self.player = player
+        lost = None  # what the engine said when the camera went (the log says when it comes back)
         try:
             while not (self._stop.is_set() or self._restart.is_set()):
                 info = player.info()
@@ -463,8 +464,14 @@ class _Feed:
                     self.status = f"capturing {info.width}x{info.height}"
                     for source in list(self.subscribers):
                         source._size = (info.width, info.height)
+                    if lost is not None:
+                        log.info("%s: %r is back (%dx%d)", self.id, device.name, info.width, info.height)
+                        lost = None
                 elif text not in ("ok", "starting"):
                     self.status = text
+                    if lost is None:
+                        log.warning("%s: %r went away: %s", self.id, device.name, text)
+                    lost = text
                 player.set_shrink(self.shrink())
                 self._restart.wait(0.25)
         finally:

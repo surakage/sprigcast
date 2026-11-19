@@ -108,6 +108,15 @@ struct Compositor {
 };
 
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
+// Compiles every shader the engine draws with into compile()'s cache, ahead of the first frame that needs it
+// (sc_engine_create runs it on a thread of its own): compiling one on the frame thread held a frame 2.3 s on the
+// software renderer (CI start-up check, 2026-11-19), and slow PCs are not much quicker.
+void warm_shaders();
+void warm_drawing_shaders();
+void warm_compositor_shaders();
+void warm_repack_shaders();
+void warm_nv12_shaders();
+void warm_transition_shaders();
 int make_target(ID3D11Device *device, int width, int height, Target &out,
                 DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM);
 // Checks an upload's description; gives the bytes its data spans (the last row needs only its own pixels).

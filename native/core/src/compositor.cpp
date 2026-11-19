@@ -470,6 +470,12 @@ int sc::upload_bytes(const sc_upload &how, size_t &bytes) {
     return SC_OK;
 }
 
+void sc::warm_compositor_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(COMPOSITOR_HLSL, sizeof COMPOSITOR_HLSL - 1, "vs_main", "vs_4_0", code);
+    compile(COMPOSITOR_HLSL, sizeof COMPOSITOR_HLSL - 1, "ps_main", "ps_4_0", code);
+}
+
 int sc_device::prepare_compositor() {
     if (comp.vs) return SC_OK;
     int ready = prepare_drawing();  // the blend and rasterizer states

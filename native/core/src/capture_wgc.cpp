@@ -51,10 +51,12 @@ std::string hr_text(const char *what, HRESULT hr) {
 
 // The capture thread: starts and closes captures, one after another, so a call into Windows that hangs holds up
 // only other captures, never a frame. It lives as long as the process (never joined: it may be stuck for good).
+// A call that hasn't come back in STUCK_S is left on its thread and a new capture thread takes the jobs after
+// it: one slow start turned engine capture off for every source until a restart (PC, 2026-11-19).
 class Keeper {
 public:
     static Keeper &get() {
-        static Keeper *keeper = new Keeper();  // never deleted: its thread may outlive everything
+        static Keeper *keeper = new Keeper();  // never deleted: its threads may outlive everything
         return *keeper;
     }
 
@@ -63,19 +65,29 @@ public:
             std::lock_guard<std::mutex> hold(m);
             jobs.push_back(std::move(job));
         }
-        wake.notify_one();
+        wake.notify_all();
     }
 
-    bool on_thread() const { return std::this_thread::get_id() == id; }
+    bool on_thread() const { return keeper_thread; }
 
 private:
+    static constexpr auto STUCK_S = std::chrono::seconds(3);
+    static constexpr int MOST_LEFT = 4;  // threads left stuck in Windows before the queue just waits
+
     Keeper() {
-        std::thread worker([this] { run(); });
-        id = worker.get_id();
-        worker.detach();
+        std::lock_guard<std::mutex> hold(m);
+        spawn();
+        std::thread([this] { guard(); }).detach();
     }
 
-    void run() {
+    void spawn() {  // under m
+        const uint64_t gen = ++generation;
+        busy = false;
+        std::thread([this, gen] { run(gen); }).detach();
+    }
+
+    void run(uint64_t gen) {
+        keeper_thread = true;
         name_thread(L"SprigCast captures");
         try {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);
@@ -85,22 +97,54 @@ private:
             std::function<void()> job;
             {
                 std::unique_lock<std::mutex> hold(m);
-                wake.wait(hold, [&] { return !jobs.empty(); });
+                wake.wait(hold, [&] { return gen != generation || !jobs.empty(); });
+                if (gen != generation) return;  // left behind after a stuck call: a newer thread has the jobs
                 job = std::move(jobs.front());
                 jobs.pop_front();
+                busy = true;
+                busy_since = std::chrono::steady_clock::now();
             }
+            watch.notify_all();
             try {
                 job();
             } catch (...) {
             }
+            std::lock_guard<std::mutex> hold(m);
+            if (gen != generation) return;
+            busy = false;
         }
     }
 
+    void guard() {
+        name_thread(L"SprigCast captures watch");
+        std::unique_lock<std::mutex> hold(m);
+        for (;;) {
+            watch.wait(hold, [&] { return busy && left < MOST_LEFT; });  // asleep while nothing runs
+            const auto since = busy_since;
+            const uint64_t gen = generation;
+            watch.wait_until(hold, since + STUCK_S);
+            if (busy && busy_since == since && generation == gen && left < MOST_LEFT &&
+                std::chrono::steady_clock::now() - since >= STUCK_S) {
+                ++left;
+                log_line(SC_LOG_WARNING, "capture: a call into Windows hasn't come back in 3 s; captures go on "
+                                         "on a new thread");
+                spawn();
+                wake.notify_all();
+            }
+        }
+    }
+
+    static thread_local bool keeper_thread;
     std::mutex m;
-    std::condition_variable wake;
+    std::condition_variable wake, watch;
     std::deque<std::function<void()>> jobs;
-    std::thread::id id;
+    uint64_t generation = 0;
+    bool busy = false;
+    std::chrono::steady_clock::time_point busy_since{};
+    int left = 0;
 };
+
+thread_local bool Keeper::keeper_thread = false;
 
 }  // namespace
 
