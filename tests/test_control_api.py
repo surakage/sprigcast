@@ -527,3 +527,102 @@ def test_stream_start_lists_the_places_and_can_insist_on_them():
     assert started == []
     out = api.stream_start({"places": ["yt", "tw"]})
     assert out["on"] and [p["id"] for p in out["places"]] == ["tw", "yt"] and started == [1]
+
+
+def test_connections_names_the_apps_connected_now_and_marks_paired_ones():
+    """Settings redesign (2026-11-19): a Connected now section, and Connected on a paired device's row."""
+    _qt()
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QLabel
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ConnectionsPageTest")
+    from sprigcast.app.connections_page import ConnectionsPage, connected_apps, initials, paired_on
+    from sprigcast.control.pairing import Device, Pairing
+    from sprigcast.control.protocol import Session
+
+    assert [initials(n) for n in ("Stream Deck", "StreamBridge", "phone", "x", "")] == ["SD", "SB", "PH", "X", "?"]
+    assert paired_on("2026-11-18") == "Paired Nov 18" and paired_on("last week") == "Paired last week"
+
+    class Server:
+        listening, error = True, ""
+        on_clients_changed = None
+        sessions: dict = {}
+        pairing = Pairing([Device(id="a", name="StreamBridge", key="k1", added="2026-11-18"),
+                           Device(id="b", name="<b>Deck</b>", key="k2", added="2026-11-12")])
+
+        def drop_key(self, key):
+            pass
+
+    server = Server()
+    assert connected_apps(None) == [] and connected_apps(server) == []
+    page = ConnectionsPage(server)
+
+    def texts(rows):
+        return [label.text() for i in range(rows.count()) if rows.itemAt(i).widget() is not None
+                for label in rows.itemAt(i).widget().findChildren(QLabel)] + [
+            rows.itemAt(i).widget().text() for i in range(rows.count()) if isinstance(rows.itemAt(i).widget(), QLabel)]
+
+    assert texts(page.connected_rows) == ["No apps yet"] and page.status.text() == "On · no apps connected"
+    assert "●  Connected" not in texts(page.device_rows)
+    server.sessions = {1: Session(handler=None), 2: SimpleNamespace(key="k2"), 3: SimpleNamespace(key="")}
+    server.on_clients_changed(3)
+    assert connected_apps(server) == [("<b>Deck</b>", "Paired device"), ("App made for OBS", "OBS-style connection"),
+                                      ("SprigCast app", "On this PC")]
+    shown = texts(page.connected_rows)
+    assert "<b>Deck</b>" in shown and "OBS" in shown and page.status.text() == "On · 3 apps connected"
+    assert texts(page.device_rows).count("●  Connected") == 1  # the Deck's row, not StreamBridge's
+    assert "Paired Nov 18" in texts(page.device_rows)
+    server.sessions = {}
+    server.on_clients_changed(0)
+    assert texts(page.connected_rows) == ["No apps yet"] and "●  Connected" not in texts(page.device_rows)
+    page.enabled.setChecked(False)
+    assert page.status.text() == "Off" and not page.block.isEnabled()
+    QSettings().clear()
+
+
+def test_paired_devices_say_when_they_were_last_seen_and_only_tick_on_screen():
+    _qt()
+    from datetime import datetime, timezone
+
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ConnectionsPageTest")
+    from sprigcast.app.connections_page import ConnectionsPage, last_seen
+    from sprigcast.control.pairing import Device, Pairing
+
+    now = datetime(2026, 11, 19, 15, 30, tzinfo=timezone.utc)
+    assert last_seen("2026-11-19T15:29:50Z", now) == "Last seen just now"
+    assert last_seen("2026-11-19T15:28:00Z", now) == "Last seen 2 min ago"
+    assert last_seen("2026-11-19T12:10:00Z", now) == "Last seen 3 h ago"
+    assert last_seen("2026-11-18T12:10:00Z", now) == "Last seen yesterday"
+    assert last_seen("2026-11-02T12:10:00Z", now) == "Last seen Nov 2"
+    assert last_seen("2026-11-19T15:40:00Z", now) == "Last seen just now"  # a clock set back: never "in the future"
+    assert last_seen("", now) == "" and last_seen("soon", now) == "" and last_seen(None, now) == ""
+
+    class Server:
+        listening, error = True, ""
+        on_clients_changed = None
+        sessions: dict = {}
+        pairing = Pairing([Device(id="a", name="StreamBridge", key="k1", added="2026-11-18",
+                                  last_seen="2020-01-05T00:00:00Z"),
+                           Device(id="b", name="Old", key="k2", added="2026-11-12")])  # an older saved list
+
+    server = Server()
+    page = ConnectionsPage(server)
+    assert page._seen_labels["a"].text() == "Last seen Jan 5, 2020" and page._seen_labels["b"].text() == ""
+    assert not page._seen_timer.isActive()
+    page.show()
+    QApplication.processEvents()
+    assert page._seen_timer.isActive()
+    server.pairing.devices[1].last_seen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    page._seen_tick()
+    assert page._seen_labels["b"].text() == "Last seen just now"
+    page.hide()
+    assert not page._seen_timer.isActive()
+    page.close()
+    QSettings().clear()

@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import message as msgbox
 from sprigcast.app.modal import modal
 from sprigcast.app.open_folder import open_folder
 from sprigcast.app.labels import literal
@@ -497,6 +498,7 @@ class MainWindow(QMainWindow):
         self.stats_panel = StatsPanel()
         self._last_stats = None
         self.peak_watch = doctor.PeakWatch()
+        self._last_levels: tuple[float, dict] = (0.0, {})  # (when, {sound id: (peak, rms)}): Settings meters
         self.status = QLabel("Starting renderer…")
         self.meter = ResourceMeter(gpu=not os.environ.get("SPRIGCAST_NO_GPU_METER"))
         self._warned_ram = False
@@ -535,6 +537,14 @@ class MainWindow(QMainWindow):
         self.hotkeys = Hotkeys(self)
         self.hotkeys.triggered.connect(self._on_hotkey)
         self.hotkeys.apply(self.collection.hotkeys)
+        from sprigcast.app.hotkeys import PushKey
+
+        self.push_key = PushKey(self.engine.push_key)  # push to talk: pynput's thread straight to the mixer
+        self._sync_push_key()
+        from sprigcast.app.tray import Tray
+
+        self.tray = Tray(self)  # Settings → General → System tray; the icon only while that is on
+        self.tray.sync()
         self.camera = None  # SprigCast Camera (Settings → Video → Virtual camera), see _sync_camera
         self._camera_timer = QTimer(self, interval=1000)
         self._camera_timer.timeout.connect(self._poll_camera)
@@ -1212,7 +1222,7 @@ class MainWindow(QMainWindow):
             self.engine.add_frame_tap(f"view:{view}", projector.tap)
         projector.target = (kind, ref or canvas_id)
         self.projectors.append(projector)
-        QTimer.singleShot(0, self._pace_poll)  # once it's shown: a projector wants every picture
+        QTimer.singleShot(0, self, self._pace_poll)  # once it's shown: a projector wants every picture
         return projector
 
     def _projector_closed(self, projector) -> None:
@@ -2497,7 +2507,7 @@ class MainWindow(QMainWindow):
         for canvas in self.collection.canvases:
             wanted = choice == "both" or canvas.id == choice
             if canvas.enabled and not wanted and (self.streaming is not None or canvas.id in self.encoders.encoders):
-                QMessageBox.information(self, "SprigCast", f"The {canvas.id} canvas is recording or live. "
+                msgbox.information(self, "SprigCast", f"The {canvas.id} canvas is recording or live. "
                                         "Stop that first, then switch it off.")
                 self._sync_canvas_choice()
                 return False
@@ -2855,10 +2865,8 @@ class MainWindow(QMainWindow):
     def _show_shortcuts(self) -> None:
         rows = "".join(f"<tr><td style='padding:3px 18px 3px 0'><b>{k}</b></td><td>{t}</td></tr>"
                        for k, t in self.shortcut_lines())
-        box = QMessageBox(self)
-        box.setWindowTitle("Keyboard shortcuts")
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(f"<table>{rows}</table>")
+        box = msgbox.MessageCard("Keyboard shortcuts", f"<table cellspacing='6'>{rows}</table>", self, rich=True)
+        box.add_button("Done", primary=True)
         modal(box)
 
     def _show_about(self) -> None:
@@ -2872,7 +2880,7 @@ class MainWindow(QMainWindow):
 
     def _edit_custom_docks(self) -> None:
         if not custom_docks.web_engine_available():
-            QMessageBox.warning(self, "SprigCast", "Web panels need Qt WebEngine, which isn't installed.")
+            msgbox.warning(self, "SprigCast", "Web panels need Qt WebEngine, which isn't installed.")
             return
         dialog = custom_docks.CustomDocksDialog(custom_docks.load(), self)
         if modal(dialog):
@@ -3017,6 +3025,7 @@ class MainWindow(QMainWindow):
             elif isinstance(event, AudioLevels):
                 heard = self.__dict__.setdefault("_heard_at", {})
                 now = time.monotonic()
+                self._last_levels = (now, event.levels)  # Settings → Audio → Devices shows them
                 for source_id, (_peak, rms) in event.levels.items():
                     if rms > -50:  # above the hiss: something was heard
                         heard[source_id] = now
@@ -3048,7 +3057,7 @@ class MainWindow(QMainWindow):
             elif isinstance(event, EngineError):
                 self.statusBar().showMessage(event.message.split("\n")[0], 10000)
                 if event.graphics or "compositor" in event.message:
-                    QMessageBox.critical(self, "SprigCast", event.message)
+                    msgbox.critical(self, "SprigCast", event.message)
         if self.recording is not None:
             self._refresh_recording_status()
         if self.streaming is not None:
@@ -3074,6 +3083,7 @@ class MainWindow(QMainWindow):
         self._save_soon()
         self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.snapshot()))
+        self._sync_push_key()
         self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
@@ -3169,15 +3179,25 @@ class MainWindow(QMainWindow):
         self.live_panel.show_scenes(self.collection)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        tray = getattr(self, "tray", None)
+        if event.spontaneous() and tray is not None and tray.closing():
+            event.ignore()  # Close to the tray: hidden, and everything carries on
+            self._pace_poll()
+            return
         if event.spontaneous() and not self._may_close():
             event.ignore()
             return
+        if tray is not None:
+            tray.remove()
         self.hide()  # gone at once; what follows only tidies up
         from sprigcast.core import pacing
 
         pacing.ui_rest()  # a hidden window isn't one that doesn't answer
         pacing.exit_guard()  # whatever gets stuck from here on, SprigCast ends (after saving, below)
         awake.hold(False)
+        from sprigcast.app import projector as pop_outs
+
+        pop_outs.save_open(self.projectors)  # Reopen them next time (General → Pop-out views)
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()
@@ -3193,6 +3213,7 @@ class MainWindow(QMainWindow):
             self._save_thumbs()
             self.gardens.close()
         self.hotkeys.stop()
+        self.push_key.stop()
         self.meter.stop()
         self.control.stop()
         if self.camera is not None:
@@ -3826,7 +3847,7 @@ class MainWindow(QMainWindow):
     def _pick_audio_device(self, kind: str, current: str = "default") -> str | None:
         devices = list_audio_devices(loopback=(kind == "audio_output"))
         if not devices:
-            QMessageBox.information(self, "SprigCast", "Audio capture is only available on Windows.")
+            msgbox.information(self, "SprigCast", "Audio capture is only available on Windows.")
             return None
         names = ["default"] + [d.name for d in devices]
         labels = ["Default (follows Windows)"] + [sound_label(d.name) for d in devices]
@@ -3910,7 +3931,7 @@ class MainWindow(QMainWindow):
     def _edit_filters(self) -> None:
         item = self._item()
         if item is None:
-            QMessageBox.information(self, "SprigCast", "Select a source first.")
+            msgbox.information(self, "SprigCast", "Select a source first.")
             return
         self._open_filters(item.source)
 
@@ -4082,10 +4103,10 @@ class MainWindow(QMainWindow):
             self._refresh_sources()
         scene, part = self._scene(), self.collection.scene(part_id)
         if scene is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         if self.collection.contains(part, scene.id):
-            QMessageBox.information(self, "SprigCast", f"{part.name!r} already contains this scene, so it can't go inside it.")
+            msgbox.information(self, "SprigCast", f"{part.name!r} already contains this scene, so it can't go inside it.")
             return
         config = SourceConfig(id=self.collection.new_id("part-src"), kind=PART_KIND, name=part.name,
                               settings={"scene": part.id})
@@ -4394,7 +4415,7 @@ class MainWindow(QMainWindow):
         main = self.collection.main_part(scene)
         question = (f"Remove the {scene.canvas} layout of {main.name!r}?\n\n"
                     f"{scene.canvas.capitalize()} {SHOWS} will use its {main.canvas} layout, scaled to fit.")
-        if QMessageBox.question(self, "Remove layout", question) != QMessageBox.StandardButton.Yes:
+        if msgbox.question(self, "Remove layout", question) != QMessageBox.StandardButton.Yes:
             return
         self.collection.remove_shape(scene)
         self.selected_scene_id = main.id
@@ -4530,9 +4551,9 @@ class MainWindow(QMainWindow):
             self._remove_part(self.collection.main_part(scene))
             return
         if len(self.collection.scenes_for(scene.canvas)) == 1:
-            QMessageBox.information(self, "SprigCast", "Each canvas needs at least one scene.")
+            msgbox.information(self, "SprigCast", "Each canvas needs at least one scene.")
             return
-        if QMessageBox.question(self, "Remove scene", f"Remove {scene.name!r}?") != QMessageBox.StandardButton.Yes:
+        if msgbox.question(self, "Remove scene", f"Remove {scene.name!r}?") != QMessageBox.StandardButton.Yes:
             return
         self.collection.scenes = [s for s in self.collection.scenes if s.id != scene.id]
         for other in self.collection.scenes:
@@ -4552,7 +4573,7 @@ class MainWindow(QMainWindow):
         if uses:
             names = ", ".join(s.name for s in uses)
             question += f"\n\nIt's used in {len(uses)} scene{'s' if len(uses) != 1 else ''} ({names}) and will disappear from them."
-        if QMessageBox.question(self, f"Remove {PART}", question) != QMessageBox.StandardButton.Yes:
+        if msgbox.question(self, f"Remove {PART}", question) != QMessageBox.StandardButton.Yes:
             return
         placed = {s.id for s in self.collection.sources if self.collection.part_of(s) is part}
         for scene in self.collection.scenes:
@@ -4573,7 +4594,7 @@ class MainWindow(QMainWindow):
     def _add_item(self, config: SourceConfig) -> None:
         scene = self._scene()
         if scene is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         if scene.kind == "show" and config.kind != PART_KIND:  # blooms hold sprigs only: it goes into the bloom's sprig, opened to edit
             scene = self._open_bloom_sprig(scene)
@@ -4624,7 +4645,7 @@ class MainWindow(QMainWindow):
         """Your mixed chat drawn on the canvas (sources/chat.py). Sized to fit the canvas's shape."""
         scene = self._scene()
         if scene is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         from sprigcast.sources.chat import DEFAULTS
 
@@ -4654,7 +4675,7 @@ class MainWindow(QMainWindow):
 
     def _add_browser(self) -> None:
         if self.browser_host is None:
-            QMessageBox.information(self, "SprigCast", "Browser sources need Qt WebEngine, which isn't installed.")
+            msgbox.information(self, "SprigCast", "Browser sources need Qt WebEngine, which isn't installed.")
             return
         self._add_from_class("browser", "Browser")
         config = self.collection.sources[-1] if self.collection.sources else None
@@ -4668,7 +4689,7 @@ class MainWindow(QMainWindow):
     def _add_from_class(self, kind: str, name: str) -> None:
         """Add a source whose settings form is described by its class's `defaults` (text and plugins)."""
         if self._scene() is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         cls = source_class(kind)
         defaults = dict(getattr(cls, "defaults", {}) or {})
@@ -4858,7 +4879,7 @@ class MainWindow(QMainWindow):
 
         monitors = list_monitors()
         if not monitors:
-            QMessageBox.information(self, "SprigCast", "Display capture is only available on Windows.")
+            msgbox.information(self, "SprigCast", "Display capture is only available on Windows.")
             return None
         dialog = DisplayCaptureDialog(settings, monitors, self)
         return dialog.values() if modal(dialog) else None
@@ -4869,7 +4890,7 @@ class MainWindow(QMainWindow):
 
         windows = list_windows()
         if not windows and not settings.get("title"):
-            QMessageBox.information(self, "SprigCast", "Window capture is only available on Windows.")
+            msgbox.information(self, "SprigCast", "Window capture is only available on Windows.")
             return None
         dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows)
         return dialog.values() if modal(dialog) else None
@@ -4877,7 +4898,7 @@ class MainWindow(QMainWindow):
     def _add_display(self, monitor=None) -> None:
         scene = self._scene()
         if scene is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         settings = {"monitor": monitor.index, "cursor": True} if monitor is not None else \
             self._display_dialog({"monitor": 1, "cursor": True})
@@ -4910,7 +4931,7 @@ class MainWindow(QMainWindow):
         from sprigcast.core.capture_sound import APP, set_capture_sound
 
         if self._scene() is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         if window is None:
             settings = {"mode": "any", "cursor": False}
@@ -4941,7 +4962,7 @@ class MainWindow(QMainWindow):
 
     def _add_window(self, window=None) -> None:
         if self._scene() is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         sound = False
         if window is not None:
@@ -4970,7 +4991,7 @@ class MainWindow(QMainWindow):
     def _camera_dialog(self, current: dict | None = None, source_id: str | None = None) -> dict | None:
         cameras = list_cameras()
         if not cameras:
-            QMessageBox.information(self, "SprigCast", "No cameras found. Is one plugged in and not in use by another app?")
+            msgbox.information(self, "SprigCast", "No cameras found. Is one plugged in and not in use by another app?")
             return None
         source = self.engine._sources.get(source_id) if source_id else None
         modes = getattr(source, "modes_seen", None) or None
@@ -4981,7 +5002,7 @@ class MainWindow(QMainWindow):
         """Add a camera: pick one and its mode, or (from + Add's list) that camera at its usual mode."""
         scene = self._scene()
         if scene is None:
-            QMessageBox.information(self, "SprigCast", "Select a scene first.")
+            msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         if device is not None:
             dialog = CameraDialog([device], {"name": device.name, "path": device.path}, self,
@@ -5384,7 +5405,7 @@ class MainWindow(QMainWindow):
             cls = source_class(config.kind)
             defaults = getattr(cls, "defaults", None) if cls is not None else None
             if not defaults:
-                QMessageBox.information(self, "SprigCast", f"{config.kind!r} sources have no settings to edit.")
+                msgbox.information(self, "SprigCast", f"{config.kind!r} sources have no settings to edit.")
                 return
             if config.kind == "browser":
                 from sprigcast.app.web_page_dialog import WebPageDialog
@@ -5567,7 +5588,7 @@ class MainWindow(QMainWindow):
 
     def _on_record_clicked(self) -> None:
         if self.recording is not None and confirm_enabled(CONFIRM_RECORDING):
-            answer = QMessageBox.question(self, "SprigCast", "Stop recording?")
+            answer = msgbox.question(self, "SprigCast", "Stop recording?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self._toggle_recording()
@@ -5586,7 +5607,7 @@ class MainWindow(QMainWindow):
         canvases = [c for c in self.collection.canvases if c.enabled and c.id in settings.canvases]
         if not canvases:
             if not remote:
-                QMessageBox.information(self, "SprigCast", "Tick at least one canvas to record.")
+                msgbox.information(self, "SprigCast", "Tick at least one canvas to record.")
             return {"problem": "Tick at least one canvas to record."}
         from sprigcast.output import storage
 
@@ -5601,7 +5622,7 @@ class MainWindow(QMainWindow):
                 if not force:
                     return {"warnings": warnings}
             else:
-                answer = QMessageBox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
+                answer = msgbox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
                 if answer != QMessageBox.StandardButton.Yes:
                     return {"problem": "Canceled."}
         self._say("Starting the recording…")
@@ -5619,7 +5640,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.recording = None
             if not remote:
-                QMessageBox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
+                msgbox.critical(self, "SprigCast", f"Could not start recording:\n{exc}")
             return {"problem": f"Could not start recording: {exc}"}
         plugin_hooks.output_changed("record", getattr(self.recording, "started_at", time.monotonic()))
         if settings.source_record:
@@ -5696,7 +5717,7 @@ class MainWindow(QMainWindow):
             settings = self.collection.recording
             canvases = self._clip_canvases()
             if not canvases:
-                QMessageBox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
+                msgbox.information(self, "SprigCast", "Turn on a canvas first (Settings → Video).")
                 return
             self._set_encoder_tracks()
             self._wake_up()
@@ -5710,7 +5731,7 @@ class MainWindow(QMainWindow):
                     short_side=settings.short_side, stream_encoders=self._clip_stream_encoders(),
                 )
             except Exception as exc:
-                QMessageBox.critical(self, "SprigCast", f"Could not get clips ready:\n{exc}")
+                msgbox.critical(self, "SprigCast", f"Could not get clips ready:\n{exc}")
                 return
             self.statusBar().showMessage(f"Clips ready: Save clip keeps the last {settings.replay_seconds} s.", 4000)
             self._clips_used_at, self._clips_idle_paused = time.monotonic(), False
@@ -5877,7 +5898,7 @@ class MainWindow(QMainWindow):
         finish_later(session.paths, chapters=getattr(session, "chapters", None))
         if errors:
             self.live_panel.set_recording("")
-            QMessageBox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
+            msgbox.warning(self, "SprigCast", "Recording stopped with an error:\n" + "\n".join(errors))
         else:
             self._say(f"Saved {names}")
             self.live_panel.set_recording("")
@@ -6054,11 +6075,11 @@ class MainWindow(QMainWindow):
         from sprigcast.app.settings_window import CONFIRM_GO_LIVE
 
         if self.streaming is None and QSettings().value(CONFIRM_GO_LIVE, False, type=bool):
-            answer = QMessageBox.question(self, "SprigCast", "Go live now?")
+            answer = msgbox.question(self, "SprigCast", "Go live now?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
         if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
-            answer = QMessageBox.question(self, "SprigCast", "End the stream?")
+            answer = msgbox.question(self, "SprigCast", "End the stream?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self._toggle_streaming()
@@ -6106,7 +6127,7 @@ class MainWindow(QMainWindow):
         if not outputs:
             text = "Tick at least one place to stream to, or add one with Stream…."
             if not remote:
-                QMessageBox.information(self, "SprigCast", text)
+                msgbox.information(self, "SprigCast", text)
             return {"problem": text}
         targets, problems = [], []
         for output in outputs:
@@ -6119,7 +6140,7 @@ class MainWindow(QMainWindow):
                 targets.append(target)
         if problems:
             if not remote:
-                QMessageBox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
+                msgbox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
             return {"problem": "Not ready to go live: " + " ".join(problems)}
         warnings: list[str] = []
         if remote:
@@ -6141,7 +6162,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.streaming = None
             if not remote:
-                QMessageBox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
+                msgbox.critical(self, "SprigCast", f"Could not go live:\n{exc}")
             else:
                 self._say(f"Could not go live: {exc}")
             return {"problem": f"Could not go live: {exc}"}
@@ -6282,7 +6303,7 @@ class MainWindow(QMainWindow):
             log.warning("Enhanced Broadcasting unavailable: %s", exc)
             if quiet:
                 return target
-            answer = QMessageBox.question(
+            answer = msgbox.question(
                 self, "SprigCast",
                 f"Enhanced Broadcasting isn't available right now:\n\n{exc}\n\n"
                 "Go live with a single quality instead?",
@@ -6291,7 +6312,7 @@ class MainWindow(QMainWindow):
         if config.warning and quiet:
             log.warning("Twitch says: %s (an app is going live, so no question)", config.warning)
         elif config.warning:
-            answer = QMessageBox.question(self, "SprigCast", f"Twitch says:\n\n{config.warning}\n\nGo live anyway?")
+            answer = msgbox.question(self, "SprigCast", f"Twitch says:\n\n{config.warning}\n\nGo live anyway?")
             if answer != QMessageBox.StandardButton.Yes:
                 return None
         log.info("Enhanced Broadcasting: %s", config.describe())
@@ -6433,6 +6454,13 @@ class MainWindow(QMainWindow):
 
     # Hotkeys -----------------------------------------------------------------
 
+    def _sync_push_key(self) -> None:
+        """Push to talk listens for its key only while it's on (Settings → Audio → Devices)."""
+        push = getattr(self, "push_key", None)
+        if push is not None:
+            audio = self.collection.audio
+            push.apply(audio.push_key, active=audio.push_mode != "off")
+
     def _apply_hotkeys(self) -> None:
         self.hotkeys.apply(self.collection.hotkeys)
         if self.collection.hotkeys and self.hotkeys.mode == "window":
@@ -6532,7 +6560,7 @@ class MainWindow(QMainWindow):
         try:
             settings_file.export_settings(self.collection, Path(path))
         except OSError as exc:
-            QMessageBox.warning(self, "Export settings", f"Couldn't save it: {exc}")
+            msgbox.warning(self, "Export settings", f"Couldn't save it: {exc}")
             return False
         self._saved_note("Settings exported", Path(path).parent, detail="No stream keys or passwords are in it")
         return True
@@ -6544,7 +6572,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app import settings_file
 
         if self.streaming is not None or self.recording is not None:
-            QMessageBox.information(self, "Import settings", "Stop streaming and recording first.")
+            msgbox.information(self, "Import settings", "Stop streaming and recording first.")
             return False
         if path is None:
             start = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
@@ -6554,7 +6582,7 @@ class MainWindow(QMainWindow):
         try:
             done = settings_file.import_settings(self.collection, Path(path))
         except ValueError as exc:
-            QMessageBox.warning(self, "Import settings", str(exc))
+            msgbox.warning(self, "Import settings", str(exc))
             return False
         log.info("settings imported from %s: %s", Path(path).name, ", ".join(done) or "nothing")
         self.collection.save(self.scenes_path)
@@ -6688,7 +6716,7 @@ class MainWindow(QMainWindow):
             return why
         if not virtualcam.installed() or virtualcam.needs_update():
             fresh = not virtualcam.installed()
-            answer = QMessageBox.question(
+            answer = msgbox.question(
                 self, "SprigCast Camera",
                 ("SprigCast Camera needs setting up once so other apps can see it."
                  if fresh else "SprigCast Camera needs a quick update.")
@@ -6714,13 +6742,12 @@ class MainWindow(QMainWindow):
     def _offer_camera_privacy(self, why: str) -> None:
         from sprigcast.output import virtualcam
 
-        box = QMessageBox(self)
-        box.setWindowTitle("SprigCast Camera")
-        box.setText(f"{why}\nIn Windows Settings, turn on Camera access and Let desktop apps access your camera.")
-        open_button = box.addButton("Open camera settings", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Close)
+        box = msgbox.MessageCard("SprigCast Camera", f"{why}\nIn Windows Settings, turn on Camera access and Let "
+                                 "desktop apps access your camera.", self)
+        box.add_button("Close")
+        open_button = box.add_button("Open camera settings", primary=True)
         modal(box)
-        if box.clickedButton() is open_button:
+        if box.clicked is open_button:
             virtualcam.open_privacy_settings()
 
     def _camera_settings(self) -> None:
@@ -6740,6 +6767,7 @@ class MainWindow(QMainWindow):
 
         if privacy.supported():
             privacy.apply_to(self)  # Hide from screen capture, as just set
+        self.tray.sync()  # Show in the tray, as just set
         clips = getattr(self, "_clips_before", None)
         if clips is not None:
             self._restart_clips_if_changed(clips)
@@ -6885,7 +6913,7 @@ class MainWindow(QMainWindow):
         if not doing:
             return True
         what = "live and recording" if len(doing) == 2 else doing[0]
-        answer = QMessageBox.question(self, "SprigCast", f"You're {what}. Close SprigCast and end it?")
+        answer = msgbox.question(self, "SprigCast", f"You're {what}. Close SprigCast and end it?")
         return answer == QMessageBox.StandardButton.Yes
 
     def changeEvent(self, event) -> None:
@@ -6898,9 +6926,15 @@ class MainWindow(QMainWindow):
                 self.setWindowOpacity(1.0)
                 self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
                 log.info("window opened while still being drawn for a minimized start: made whole")
+            if self.isMinimized() and getattr(self, "tray", None) is not None:
+                QTimer.singleShot(0, self, self._minimized_to_tray)  # (not from inside the state change)
             self._pace_poll()
             if self.isMinimized():
                 QTimer.singleShot(1000, self._sweep_if_due)
+
+    def _minimized_to_tray(self) -> None:
+        if self.isMinimized() and self.tray.minimized():
+            self._pace_poll()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -6911,6 +6945,42 @@ class MainWindow(QMainWindow):
 
             if privacy.hidden():  # Settings → General → Privacy
                 privacy.apply_to(self, True)
+            QTimer.singleShot(1500, self, self.reopen_projectors)  # once the window is up and drawn
+
+    def reopen_projectors(self) -> list:
+        """Open the pop-outs that were open last time (Settings → General → Pop-out views → Reopen them next
+        time). One whose bloom, source, canvas or screen is gone is left out: nothing opens somewhere else."""
+        from sprigcast.app import projector as pop_outs
+
+        opened = []
+        screens = QGuiApplication.screens()
+        for was in pop_outs.saved():
+            try:
+                canvas_id, kind, ref = str(was.get("canvas", "")), str(was.get("kind", "canvas")), str(was.get("ref", ""))
+                canvas = next((c for c in self.collection.canvases if c.id == canvas_id), None)
+                if canvas is None or not canvas.enabled or kind not in ("canvas", "bloom", "sprig", "source"):
+                    continue
+                if kind == "bloom" and not any(sc.id == ref for sc in self.collection.scenes):
+                    continue
+                if kind in ("sprig", "source") and not any(
+                        c.id == ref for c in [*self.collection.sources, *self.collection.scenes]):
+                    continue
+                name, window = str(was.get("screen", "")), was.get("window") or []
+                screen = next((s for s in screens if s.name() == name), None) if name else None
+                if name and screen is None:
+                    continue  # that monitor isn't plugged in now
+                if any(p.target == (kind, ref or canvas_id) and (p.screen() is screen if name else not p.isFullScreen())
+                       for p in self.projectors):
+                    continue  # already open (asked twice)
+                projector = self.open_projector(canvas_id, screen, kind, "" if kind == "canvas" else ref)
+                if not name and pop_outs.on_a_screen(window, screens):
+                    projector.setGeometry(*(int(v) for v in window))
+                opened.append(projector)
+            except Exception:  # noqa: BLE001  a pop-out that can't come back never stops the others
+                log.warning("pop-outs: couldn't reopen %r", was, exc_info=True)
+        if opened:
+            log.info("pop-outs: reopened %d from last time", len(opened))
+        return opened
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
@@ -7055,7 +7125,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app import clear_data
 
         if self.streaming is not None or self.recording is not None or self.replay is not None:
-            QMessageBox.information(parent or self, "Clear all my data", "Stop streaming, recording and clips first.")
+            msgbox.information(parent or self, "Clear all my data", "Stop streaming, recording and clips first.")
             return False
         go, recordings = clear_data.ask(parent or self)
         if not go:
@@ -7074,7 +7144,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app import lowend
 
         if self.streaming is not None or self.recording is not None or self.replay is not None:
-            QMessageBox.information(self, "Light settings", "Stop streaming, recording and the replay buffer first.")
+            msgbox.information(self, "Light settings", "Stop streaming, recording and the replay buffer first.")
             return False
         cpu = pick_codec() == "libx264"
         facts = lowend.pc_facts()
@@ -7086,16 +7156,16 @@ class MainWindow(QMainWindow):
         lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
                                           older=older, hdd=hdd)
         if not lines:
-            QMessageBox.information(self, "Light settings", "You're already on light settings.")
+            msgbox.information(self, "Light settings", "You're already on light settings.")
             return False
         text = (why + "\n\n" if why else "") + "Light settings keep streaming smooth on a slower PC:\n\n"
         text += "\n".join(f"•  {line}" for line in lines)
         text += "\n\nYou can change any of it back in Settings."
-        box = QMessageBox(QMessageBox.Icon.Question, "Light settings", text, parent=self)
-        use = box.addButton("Use light settings", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box = msgbox.MessageCard("Light settings", text, self, "ask")
+        box.add_button("Not now")
+        use = box.add_button("Use light settings", primary=True)
         modal(box)
-        if box.clickedButton() is not use:
+        if box.clicked is not use:
             return False
         _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
                                       older=older, hdd=hdd)
@@ -7158,7 +7228,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.wizard import OptimizeWizard
 
         if self.streaming is not None or self.recording is not None or self.replay is not None:
-            QMessageBox.information(self, "Optimize for this PC", "Stop streaming, recording and the replay buffer first.")
+            msgbox.information(self, "Optimize for this PC", "Stop streaming, recording and the replay buffer first.")
             return False
         wizard = OptimizeWizard(self.collection, lowend.waiting_fps(), first_run=first_run, parent=self)
         if wants is not None:  # Get started already asked: live, record
@@ -7487,7 +7557,7 @@ class MainWindow(QMainWindow):
         from sprigcast.output import twitch_auth
 
         if self.gardens.busy():
-            QMessageBox.information(self, "Get started", "Stop streaming and recording first.")
+            msgbox.information(self, "Get started", "Stop streaming and recording first.")
             return None
 
         def connect_twitch(parent):
@@ -7532,7 +7602,7 @@ class MainWindow(QMainWindow):
                 entry = self.gardens._new("garden", garden_name)
                 problem = self.gardens.switch("garden", entry.id)
                 if problem:
-                    QMessageBox.information(self, "Get started", problem)
+                    msgbox.information(self, "Get started", problem)
                     return None
             # Path: a new install's (or one with no places yet) takes the new name; otherwise a new one is made.
             path_name = gs.plan_path_name(answers)
@@ -7545,10 +7615,10 @@ class MainWindow(QMainWindow):
                 entry = self.gardens._new("path", gs.free_name(path_name, [p.name for p in shelf.paths()]))
                 problem = self.gardens.switch("path", entry.id)
                 if problem:
-                    QMessageBox.information(self, "Get started", problem)
+                    msgbox.information(self, "Get started", problem)
                     return None
         except ShelfError as exc:
-            QMessageBox.information(self, "Get started", str(exc))
+            msgbox.information(self, "Get started", str(exc))
             return None
         places = gs.apply_path(answers, self.collection, self.gardens.taken_output_ids())
         if dialog.twitch is not None:
@@ -7727,14 +7797,14 @@ class MainWindow(QMainWindow):
         bad = self._doctor_warnings()
         if not bad:
             return True
-        box = QMessageBox(QMessageBox.Icon.Warning, "Stream doctor", "\n\n".join(bad), parent=self)
-        go = box.addButton("Go live anyway", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Open doctor", QMessageBox.ButtonRole.HelpRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
+        box = msgbox.MessageCard("Stream doctor", "\n\n".join(bad), self, "warn", width=520)
+        box.add_button("Cancel")
+        doctor_button = box.add_button("Open doctor")
+        go = box.add_button("Go live anyway", primary=True)
         modal(box)
-        if box.clickedButton() is go:
+        if box.clicked is go:
             return True
-        if box.buttonRole(box.clickedButton()) == QMessageBox.ButtonRole.HelpRole:
+        if box.clicked is doctor_button:
             self._open_doctor()
         return False
 

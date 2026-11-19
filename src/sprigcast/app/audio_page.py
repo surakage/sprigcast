@@ -1,23 +1,26 @@
-"""Settings → Audio, in tabs: Devices, Tracks and Sounds (which go on each track).
+"""Settings → Audio, in tabs: Devices, Sounds (which go on each track) and Tracks.
 
 - Global devices: the Desktop audio and Mic every setup starts with. Switched off, they are not opened
   at all and leave the Sound list, so only the mics and desktop sounds you add yourself play.
 - Tracks: a recording can keep up to five sound tracks. 1 is everything, 2 is VOD-safe (everything
   but the sounds you keep out of it, music by default), 3 is your voice, 4 and 5 are yours to fill.
-- Sounds: one row per sound, like OBS's Advanced Audio Properties: volume, mono, balance, sync
-  offset, listeners and its tracks. The Sound card's ⚙ opens it.
+- Sounds: one row per sound: volume, balance, mono, delay, who hears it and its tracks (the numbered
+  pills). The Sound card's ⚙ opens it. Ducking's two everyday picks sit under the table.
 
 Sound bitrate sits with the rest of each encoder (Stream → Quality and Recording, expert rows).
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import time
+
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -32,6 +35,8 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
+from sprigcast.app.live_stage import Switch
+from sprigcast.app.segmented import Segmented
 from sprigcast.audio.mixer import is_monitor_only, source_tracks
 from sprigcast.core.scene import AUDIO_DEVICE_KINDS, AUDIO_TRACKS, TRACK_NAMES, SceneCollection, SourceConfig
 from sprigcast.sources.audio import device_label as nice_device_name
@@ -92,15 +97,143 @@ def device_label(kind: str) -> str:
     return "Desktop audio" if kind == "audio_output" else "Mic"
 
 
+PUSH_RELEASE_MS = (0, 100, 250, 500)
+DUCK_PICKS = ((-6.0, "-6 dB"), (-12.0, "-12 dB"), (-18.0, "-18 dB"))
+METER_MS = 80  # how often the Devices meters move, and only while that tab is on screen
+STALE_S = 0.5  # levels older than this are silence (the mixer stopped)
+CHIPS_SHOWN = 4  # sounds named on a track's row before "+2 more"
+
+
+def page_style() -> str:
+    """One style sheet for the whole page (a sheet per pill or chip was Qt work for every row)."""
+    t = theme
+    return (
+        f"QFrame#audioTable {{ background: transparent; border: 1px solid {t.SECTION_EDGE}; border-radius: 14px; }}"
+        f"QFrame#audioLine {{ background: {t.SECTION_EDGE}; border: none; max-height: 1px; min-height: 1px; }}"
+        f"QLabel#audioHead {{ color: {t.MUTED}; font-size: 11px; font-weight: 600; letter-spacing: 1px; }}"
+        f"QLabel#audioName {{ color: {t.TEXT_BRIGHT}; font-weight: 600; }}"
+        f"QLabel#audioDb {{ color: {t.LABEL}; }}"
+        f"QLabel#audioChip {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; border-radius: 11px;"
+        f" padding: 3px 10px; font-weight: 600; }}"
+        f"QPushButton#trackPill {{ background: {t.RAISED}; color: {t.LABEL}; border: none; border-radius: 11px;"
+        f" min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; padding: 0; font-weight: 600; }}"
+        f"QPushButton#trackPill:checked {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; }}"
+        f"QPushButton#trackPill:disabled {{ color: {t.EDGE_STRONG}; }}"
+        f"QSlider#balance::sub-page:horizontal {{ background: {t.EDGE_STRONG}; }}"
+        f"QSpinBox#audioDelay {{ background: transparent; border: 1px solid transparent; padding: 4px 0px;"
+        f" min-height: 18px; }}"
+        # No arrows (type, scroll or the arrow keys). NoButtons can't be used: with the app's style sheet it
+        # shrinks the number to 1 px wide (see theme).
+        f"QSpinBox#audioDelay::up-button, QSpinBox#audioDelay::down-button {{ subcontrol-origin: margin;"
+        f" width: 0px; height: 0px; border: none; }}"
+        f"QSpinBox#audioDelay:hover, QSpinBox#audioDelay:focus {{ background: {t.FIELD};"
+        f" border: 1px solid {t.FIELD_EDGE}; }}"
+    )
+
+
+def _head(text: str) -> QLabel:
+    label = QLabel(text.upper())
+    label.setObjectName("audioHead")
+    return label
+
+
+def _line() -> QFrame:
+    line = QFrame()
+    line.setObjectName("audioLine")
+    return line
+
+
+class LevelDots(QWidget):
+    """A row of small bars that fill with a device's level: green, yellow when loud, pink close to clipping."""
+
+    DOTS = 20
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.level = 0.0  # 0..1 of -60..0 dBFS
+        self.setFixedSize(self.DOTS * 6, 12)
+
+    def set_db(self, rms: float) -> None:
+        target = (min(0.0, max(-60.0, rms)) + 60.0) / 60.0
+        level = target if target > self.level else max(target, self.level - 0.06)  # falls back, not drops
+        if round(level * self.DOTS) != round(self.level * self.DOTS):
+            self.update()
+        self.level = level
+
+    def lit(self) -> int:
+        return round(self.level * self.DOTS)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        lit = self.lit() if self.isEnabled() else 0
+        for i in range(self.DOTS):
+            where = (i + 1) / self.DOTS
+            colour = theme.TRACK if i >= lit else (
+                theme.ACCENT if where <= 2 / 3 else theme.WARN if where <= 0.9 else theme.LIVE)
+            p.setBrush(QColor(colour))
+            p.drawRoundedRect(QRectF(i * 6, 0, 4, 12), 2, 2)
+        p.end()
+
+
+class DbSlider(QWidget):
+    """A sound's volume: a slider (-60 to +12 dB, half a dB a step) with what it's set to beside it."""
+
+    def __init__(self, db: float = 0.0, parent: QWidget | None = None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(-120, 24)  # half dBs
+        self.slider.setPageStep(6)
+        self.slider.setFixedWidth(100)
+        self.text = QLabel()
+        self.text.setObjectName("audioDb")
+        self.text.setFixedWidth(56)
+        self.text.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.slider)
+        row.addWidget(self.text)
+        self._db = None
+        self.setValue(db)
+        self.slider.valueChanged.connect(self._moved)
+
+    def value(self) -> float:
+        return self._db
+
+    def setValue(self, db: float) -> None:  # noqa: N802 (as a spin box's)
+        """Any tenth of a dB is kept as given (set by hand on the Sound card); the slider sits at the nearest half."""
+        self._db = round(min(12.0, max(-60.0, float(db))), 1)
+        self.slider.blockSignals(True)
+        self.slider.setValue(round(self._db * 2))
+        self.slider.blockSignals(False)
+        self._show()
+
+    def _moved(self, halves: int) -> None:
+        self._db = halves / 2
+        self._show()
+
+    def _show(self) -> None:
+        self.text.setText(f"{self._db:+.1f} dB")
+
+
 class AudioPage(QWidget):
-    TABS = ("Devices", "Tracks", "Sounds")
+    TABS = ("Devices", "Sounds", "Tracks")
 
     def __init__(self, collection: SceneCollection, audio_devices, recording: bool = False,
-                 streaming: bool = False, first: str | None = None):
+                 streaming: bool = False, first: str | None = None, levels=None):
         """audio_devices: a dict, or something that gives one when called (Settings: waits for the scan).
         first: make only this tab now; the others are listed in `later` (Settings makes them a tick apart, see
-        SettingsWindow._slice) and made by finish() if still waiting. None: every tab now."""
+        SettingsWindow._slice) and made by finish() if still waiting. None: every tab now.
+        levels: gives (when heard, {sound id: (peak, rms dB)}) for the Devices meters; None: no meters."""
         super().__init__()
+        self.setStyleSheet(page_style())
+        self._levels = levels
+        self.meters: dict[str, LevelDots] = {}
+        self._meter_timer = QTimer(self)
+        self._meter_timer.setInterval(METER_MS)
+        self._meter_timer.timeout.connect(self._move_meters)
         self.collection = collection
         self.streaming, self.recording = streaming, recording
         self._audio_devices = audio_devices
@@ -123,6 +256,7 @@ class AudioPage(QWidget):
             self.build_tab(name)
         if first in self.TABS:
             self.show_tab(first)
+        self.tabs.currentChanged.connect(self._tab_shown)
 
     def build_tab(self, name: str) -> None:
         """Make one tab's contents (once)."""
@@ -138,10 +272,15 @@ class AudioPage(QWidget):
             card = self._tracks(self.recording)
         else:
             card = self._grid()
+        box.setSpacing(14)
         box.addWidget(card)
+        if name == "Devices":
+            box.addWidget(self._hearing((devices() if callable(devices) else devices).get("audio_output", [])))
+            box.addWidget(self._push())
         if name == "Sounds":
-            box.addLayout(self._ducking_row())
+            box.addWidget(self._ducking())
         box.addStretch(1)
+        self._tab_shown()
 
     def finish(self) -> None:
         """Make every tab and sound row still waiting (before reading what's picked)."""
@@ -150,15 +289,71 @@ class AudioPage(QWidget):
         while getattr(self, "_rows_waiting", None):
             self._sound_row(*self._rows_waiting.pop(0))
 
-    def _ducking_row(self) -> QHBoxLayout:
-        """Ducking's amounts, next to the sounds it lowers (Live's Mic first switch turns it on and off)."""
+    def _ducking(self) -> QWidget:
+        """Ducking's everyday picks, under the sounds it lowers. More… opens the rest (voices, timing)."""
+        group = QGroupBox("Ducking")
+        form = QFormLayout(group)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.duck_when = QComboBox()
+        self.duck_when.addItem("Never", False)
+        self.duck_when.addItem("Mic is talking", True)
+        form.addRow("Music drops when", self.duck_when)
         row = QHBoxLayout()
-        self.ducking_button = QPushButton("Ducking…")
-        self.ducking_button.setToolTip("How much other sounds dip while you talk (Mic first on Live)")
-        self.ducking_button.clicked.connect(lambda: self.on_ducking and self.on_ducking(self))
+        row.setSpacing(12)
+        self.duck_by = Segmented(list(DUCK_PICKS))
+        self.ducking_button = QPushButton("More…")
+        self.ducking_button.setAutoDefault(False)
+        self.ducking_button.clicked.connect(self._more_ducking)
+        row.addWidget(self.duck_by)
         row.addWidget(self.ducking_button)
         row.addStretch(1)
-        return row
+        form.addRow("Lower by", row)
+        self.duck_when.currentIndexChanged.connect(lambda _i: self.duck_by.setEnabled(bool(self.duck_when.currentData())))
+        self._load_ducking()
+        return group
+
+    def _load_ducking(self) -> None:
+        """Show what the collection has now (at first, and after More… saved its own changes)."""
+        audio = self.collection.audio
+        self._duck_loaded = (bool(audio.ducking), float(audio.duck_amount_db))
+        self.duck_when.setCurrentIndex(1 if audio.ducking else 0)
+        self.duck_by.set_value(float(audio.duck_amount_db))  # an amount set under More… lights none
+        self.duck_by.setEnabled(bool(audio.ducking))
+
+    def _more_ducking(self) -> None:
+        if self.on_ducking:
+            self.on_ducking(self)
+            self._load_ducking()
+
+    # Meters (Devices): only while that tab is on screen ------------------------------------
+
+    def _tab_shown(self, *_args) -> None:
+        name = self.TABS[self.tabs.currentIndex()]
+        want = bool(self.meters) and self._levels is not None and name == "Devices" and self.isVisible()
+        if want != self._meter_timer.isActive():
+            self._meter_timer.start() if want else self._meter_timer.stop()
+        if name == "Tracks" and hasattr(self, "track_chips"):
+            self._fill_chips()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._tab_shown()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._meter_timer.stop()
+
+    def _move_meters(self) -> None:
+        try:
+            heard_at, levels = self._levels()
+        except Exception:  # noqa: BLE001  a meter is never in the way of Settings
+            heard_at, levels = 0.0, {}
+        fresh = time.monotonic() - heard_at < STALE_S
+        for source_id, meter in self.meters.items():
+            meter.set_db(levels[source_id][1] if fresh and source_id in levels else -120.0)
 
     def show_tab(self, name: str) -> None:
         if name in self.TABS:
@@ -184,19 +379,19 @@ class AudioPage(QWidget):
         box.setContentsMargins(0, 0, 0, 0)  # the card's own padding (settings_window style) is enough
         box.setSpacing(12)
         c = self.collection
-        self.global_on = QCheckBox("Use global devices")
-        self.global_on.setToolTip("On: the Desktop audio and Mic below play in every bloom.\n"
-                                  "Off: they stay closed and leave the Sound list; add your own in Build → + Add.")
+        self.global_on = QCheckBox("Use the same mic and desktop sound in every bloom")
+        self.global_on.setToolTip("Off: they stay closed and leave the Sound list; add your own in Build → + Add")
         self.global_on.setChecked(c.audio.global_devices)
         box.addWidget(self.global_on)
         form = QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         global_ids = c.global_device_ids()
         self.global_rows: list[QWidget] = []
         for source in (s for s in c.sources if s.id in global_ids):
             combo = self._combo(source, audio_devices.get(source.kind, []))
-            form.addRow(device_label(source.kind), combo)
+            form.addRow("Desktop sound" if source.kind == "audio_output" else "Mic", self._with_meter(source, combo))
             self.global_rows.append(combo)
         if not global_ids:
             form.addRow(_hint("No global devices. Add a mic or desktop sound in Build → + Add."))
@@ -212,16 +407,137 @@ class AudioPage(QWidget):
             own_form = QFormLayout()
             own_form.setHorizontalSpacing(18)
             own_form.setVerticalSpacing(10)
+            own_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             for source in own:
-                own_form.addRow(source.name, self._combo(source, audio_devices.get(source.kind, [])))
+                combo = self._combo(source, audio_devices.get(source.kind, []))
+                own_form.addRow(source.name, self._with_meter(source, combo))
             box.addLayout(own_form)
         self.global_on.toggled.connect(self._global_toggled)
         self._global_toggled(self.global_on.isChecked())
         return group
 
+    def _hearing(self, speakers: list[str]) -> QWidget:
+        """Hearing it yourself: where "Hear it" sounds play, and Windows left out of your mix."""
+        audio = self.collection.audio
+        group = QGroupBox("Hearing it yourself")
+        box = QVBoxLayout(group)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(12)
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.listen_through = QComboBox()
+        self.listen_through.addItem("Default (follows Windows)", "")
+        for name in speakers:
+            self.listen_through.addItem(nice_device_name(name), name)
+        if audio.monitor_device and self.listen_through.findData(audio.monitor_device) < 0:
+            self.listen_through.addItem(f"{nice_device_name(audio.monitor_device)} (not connected)",
+                                        audio.monitor_device)
+        self.listen_through.setCurrentIndex(max(0, self.listen_through.findData(audio.monitor_device)))
+        self.listen_through.setToolTip("Sounds set to Both or Just me under Sounds play here")
+        form.addRow("Listen through", self.listen_through)
+        box.addLayout(form)
+        self.windows_ducking_off = QCheckBox("Stop Windows turning other apps down when a mic opens")
+        self.windows_ducking_off.setChecked(audio.windows_ducking_off)
+        box.addWidget(self.windows_ducking_off)
+        return group
+
+    def _push(self) -> QWidget:
+        """Push to talk: the mic is heard only while a key is held (or silent while it is)."""
+        from PySide6.QtGui import QKeySequence
+        from PySide6.QtWidgets import QKeySequenceEdit
+
+        audio = self.collection.audio
+        group = QGroupBox("Push to talk")
+        form = QFormLayout(group)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.push_mode = Segmented([("off", "Off"), ("talk", "Push to talk"), ("mute", "Push to mute")],
+                                   audio.push_mode)
+        mic = self.collection.source(audio.push_mic(self.collection)) if audio.push_mic(self.collection) else None
+        form.addRow("Mic", self.push_mode)
+        self.push_mode.setToolTip(f"Holds {mic.name}" if mic is not None else "Add a mic first")
+        self.push_key = QKeySequenceEdit(QKeySequence(audio.push_key))
+        self.push_key.setMaximumSequenceLength(1)
+        self.push_key.setFixedWidth(150)
+        line = self.push_key.findChild(QLineEdit)
+        if line is not None:
+            line.setPlaceholderText("No key")
+            line.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_key = QPushButton("Set key")
+        self.set_key.setAutoDefault(False)
+        self.set_key.setToolTip("Then press the key to hold")
+        self.set_key.clicked.connect(self._set_push_key)
+        self.push_note = QLabel()
+        self.push_note.setStyleSheet(f"color: {theme.WARN}")
+        key_row = QHBoxLayout()
+        key_row.setSpacing(10)
+        key_row.addWidget(self.push_key)
+        key_row.addWidget(self.set_key)
+        key_row.addWidget(self.push_note, 1)
+        form.addRow("Key", key_row)
+        self.push_release = Segmented([(ms, f"{ms} ms") for ms in PUSH_RELEASE_MS], int(audio.push_release_ms))
+        self.push_release.setToolTip("Letting go counts this much later, so the end of a word isn't cut off")
+        form.addRow("Let go after", self.push_release)
+        self._push_rows = (self.push_key, self.set_key, self.push_release)
+        self.push_mode.picked.connect(self._push_changed)
+        self.push_key.keySequenceChanged.connect(self._push_changed)
+        self._push_changed()
+        if mic is None:
+            self.push_mode.setEnabled(False)
+        return group
+
+    def push_key_text(self) -> str:
+        from PySide6.QtGui import QKeySequence
+
+        return self.push_key.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+
+    def _set_push_key(self) -> None:
+        self.push_key.clear()
+        self.push_key.setFocus()
+
+    def _push_changed(self, *_args) -> None:
+        """The key and Let go after are for when it's on; say so when it's on with no key, or a key that's taken."""
+        from sprigcast.app import hotkeys
+
+        on = self.push_mode.value() != "off"
+        for widget in self._push_rows:
+            widget.setEnabled(on)
+        key = self.push_key_text()
+        used = next((a for a, combo in (self.collection.hotkeys or {}).items() if key and combo == key), "")
+        note = ""
+        if on and not key:
+            note = "Pick a key"
+        elif key and hotkeys.taken_by(key):
+            note = hotkeys.taken_by(key)
+        elif key and used:
+            note = "A hotkey uses this key too"
+        self.push_note.setText(note)
+
+    def _with_meter(self, source: SourceConfig, combo: QComboBox) -> QWidget:
+        """The device's list with its level beside it (when Settings was given levels to show)."""
+        if self._levels is None:
+            return combo
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(14)
+        row.addWidget(combo, 1)
+        meter = LevelDots()
+        self.meters[source.id] = meter
+        row.addWidget(meter)
+        return holder
+
     def _global_toggled(self, on: bool) -> None:
         for row in self.global_rows:
             row.setEnabled(on)
+        global_ids = set(self.collection.global_device_ids())
+        for source_id, meter in self.meters.items():
+            if source_id in global_ids:
+                meter.setEnabled(on)
+                meter.update()
 
     # Tracks ------------------------------------------------------------------------------
 
@@ -230,40 +546,91 @@ class AudioPage(QWidget):
         box = QVBoxLayout(group)
         box.setContentsMargins(0, 0, 0, 0)  # the card's own padding (settings_window style) is enough
         box.setSpacing(12)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(10)
-        grid.addWidget(_hint("Track"), 0, 0)
-        grid.addWidget(_hint("Name"), 0, 1)
-        grid.addWidget(_hint("Recordings keep it"), 0, 2)
+        table = QFrame()
+        table.setObjectName("audioTable")
+        grid = QGridLayout(table)
+        grid.setContentsMargins(16, 10, 16, 10)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(8)
+        for col, text in enumerate(("#", "Name", "What's on it", "In recordings")):
+            grid.addWidget(_head(text), 0, col)
         audio, kept = self.collection.audio, set(self.collection.recording.audio_tracks)
         self.track_names: list[QLineEdit] = []
         self.track_kept: list[QCheckBox] = []
+        self.track_chips: list[QHBoxLayout] = []
         for n in range(1, len(AUDIO_TRACKS) + 1):
+            grid.addWidget(_line(), 2 * n - 1, 0, 1, 4)
             number = QLabel(str(n))
-            number.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            grid.addWidget(number, n, 0)
+            number.setObjectName("audioName")
+            grid.addWidget(number, 2 * n, 0)
             name = QLineEdit(audio.track_name(n))
             name.setPlaceholderText(TRACK_NAMES[n - 1])
             name.setMaxLength(24)
             name.setToolTip(TRACK_TIPS[n - 1])
-            name.setFixedWidth(280)
-            grid.addWidget(name, n, 1)
-            keep = QCheckBox()
+            name.setFixedWidth(220)
+            grid.addWidget(name, 2 * n, 1)
+            chips = QHBoxLayout()
+            chips.setSpacing(6)
+            grid.addLayout(chips, 2 * n, 2)
+            keep = Switch()
             keep.setChecked(n in kept or n == 1)
             keep.setEnabled(n != 1 and not recording)  # track 1 is always there: it's what players play
             keep.setToolTip(TRACK_TIPS[n - 1] if n != 1 else "Always kept: players play the first track")
-            grid.addWidget(keep, n, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(keep, 2 * n, 3, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             self.track_names.append(name)
             self.track_kept.append(keep)
-        grid.setColumnStretch(3, 1)  # spare width goes to the right, so names and ticks sit together
-        box.addLayout(grid)
-        box.addWidget(_hint("Track 2 leaves out music, so you can upload it without copyright strikes. "
-                            "Pick which sounds go on each track in Sounds."
+            self.track_chips.append(chips)
+        grid.setColumnStretch(2, 1)
+        box.addWidget(table)
+        box.addWidget(_hint("Track 2 leaves music out, so uploads don't get copyright strikes."
                             + (" Stop the recording to change which tracks it keeps." if recording else "")))
+        self._fill_chips()
         return group
 
-    # Sounds: one row per sound, like OBS's Advanced Audio Properties -------------------------
+    def sounds_on_track(self, number: int) -> list[str]:
+        """Names of the sounds on track 1-5: as ticked in Sounds where that row is made, else as saved."""
+        names = []
+        for source in self.collection.sources:
+            if not has_sound(source) or self.collection.device_off(source):
+                continue
+            ticks, row = getattr(self, "track_ticks", {}).get(source.id), getattr(self, "sound_rows", {}).get(source.id)
+            if ticks is not None and row is not None:
+                on = ticks[number - 1].isChecked() and row["hear"].currentData() != "only"
+                on = on and (number != 2 or ticks[0].isChecked())  # VOD-safe is a part of track 1
+            else:
+                on = on_track(source, number)
+            if on:
+                names.append(source.name)
+        return names
+
+    def _fill_chips(self) -> None:
+        """What's on each track, from the Sounds ticks as they stand (asked again each time Tracks is shown)."""
+        wanted = [self.sounds_on_track(n) for n in range(1, len(self.track_chips) + 1)]
+        if wanted == getattr(self, "_chips_shown", None):
+            return
+        self._chips_shown = wanted
+        for chips, names in zip(self.track_chips, wanted):
+            while chips.count():
+                item = chips.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+            shown = names[:CHIPS_SHOWN]
+            for text in shown or ["Nothing yet"]:
+                chip = QLabel(text, self)
+                if shown:
+                    chip.setObjectName("audioChip")
+                    chip.setTextFormat(Qt.TextFormat.PlainText)
+                else:
+                    chip.setStyleSheet(f"color: {theme.MUTED}")
+                chips.addWidget(chip)
+            if len(names) > len(shown):
+                more = QLabel(f"+{len(names) - len(shown)} more", self)
+                more.setToolTip(", ".join(names[len(shown):]))
+                more.setStyleSheet(f"color: {theme.MUTED}")
+                chips.addWidget(more)
+            chips.addStretch(1)
+
+    # Sounds: one row per sound ---------------------------------------------------------------
 
     HEAR = (("Stream", False), ("Both", True), ("Just me", "only"))
 
@@ -278,19 +645,17 @@ class AudioPage(QWidget):
         if not sounds:
             box.addWidget(_hint("No sounds yet."))
             return group
-        grid = QGridLayout()
+        table = QFrame()
+        table.setObjectName("audioTable")
+        grid = QGridLayout(table)
+        grid.setContentsMargins(14, 10, 14, 10)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
         tracks = len(AUDIO_TRACKS)
-        heads = ["Sound", "Volume", "Mono", "Balance", "Sync offset", "Listeners",
-                 *(str(n) for n in range(1, tracks + 1))]
-        for col, text in enumerate(heads):
-            head = QLabel(text)
-            head.setStyleSheet(f"color: {theme.MUTED}")
-            if col >= 6:
-                head.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                head.setToolTip(f"Track {text}: {self.collection.audio.track_name(int(text))}")
-            grid.addWidget(head, 0, col)
+        for col, text in enumerate(("Sound", "Volume", "Balance", "Mono", "Delay", "Hear it", "Tracks")):
+            grid.addWidget(_head(text), 0, col)
+        for row in range(1, len(sounds) + 1):
+            grid.addWidget(_line(), 2 * row - 1, 0, 1, 7)
         self._rows_waiting = [(grid, row, source, tracks) for row, source in enumerate(sounds, 1)]
         for _ in range(min(self.ROWS_NOW, len(self._rows_waiting))):
             self._sound_row(*self._rows_waiting.pop(0))
@@ -301,7 +666,7 @@ class AudioPage(QWidget):
 
             QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
         grid.setColumnStretch(0, 1)
-        box.addLayout(grid)
+        box.addWidget(table)
         legend = " · ".join(f"{n} {self.collection.audio.track_name(n)}" for n in range(1, tracks + 1))
         box.addWidget(_hint(f"Tracks: {legend}"))
         return group
@@ -330,34 +695,37 @@ class AudioPage(QWidget):
             volume, mono, balance, sync = self._first_halves.pop(source.id)
             self._row_rest(grid, row, source, tracks, st, volume, mono, balance, sync)
             return
-        grid.addWidget(QLabel(source.name), row, 0)
-        volume = QDoubleSpinBox()
-        volume.setRange(-60.0, 12.0)
-        volume.setSingleStep(0.5)
-        volume.setDecimals(1)
-        volume.setSuffix(" dB")
-        volume.setValue(float(st.get("volume_db", 0.0) or 0.0))
-        volume.setFixedWidth(108)
-        grid.addWidget(volume, row, 1)
-        mono = QCheckBox()
-        mono.setChecked(bool(st.get("mono", False)))
-        grid.addWidget(mono, row, 2, alignment=_CENTRE)
+        at = 2 * row  # (odd rows are the hairlines between sounds)
+        name = QLabel(source.name)
+        name.setObjectName("audioName")
+        name.setTextFormat(Qt.TextFormat.PlainText)
+        name.setMinimumWidth(70)  # a long name is cut short, never wider than the window; the tip has all of it
+        name.setToolTip(source.name)
+        grid.addWidget(name, at, 0)
+        volume = DbSlider(float(st.get("volume_db", 0.0) or 0.0))
+        grid.addWidget(volume, at, 1)
         balance = QSlider(Qt.Orientation.Horizontal)
+        balance.setObjectName("balance")
         balance.setRange(-100, 100)
         balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
-        balance.setFixedWidth(90)
-        balance.setToolTip("Left / right (double-click the Sound card's slider to center)")
+        balance.setFixedWidth(64)
+        balance.setToolTip("Left / right")
         balance.valueChanged.connect(lambda v, b=balance: b.setToolTip(
             "Center" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
-        grid.addWidget(balance, row, 3)
+        grid.addWidget(balance, at, 2)
+        mono = QCheckBox()
+        mono.setChecked(bool(st.get("mono", False)))
+        grid.addWidget(mono, at, 3, alignment=_CENTRE)
         sync = QSpinBox()
+        sync.setObjectName("audioDelay")
         sync.setRange(0, 2000)
         sync.setSingleStep(10)
         sync.setSuffix(" ms")
         sync.setValue(int(st.get("delay_ms", 0) or 0))
-        sync.setFixedWidth(100)
+        sync.setFixedWidth(72)
+        sync.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # (the theme then gives the number room on both sides)
         sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
-        grid.addWidget(sync, row, 4)
+        grid.addWidget(sync, at, 4)
         if half == 1:
             self.__dict__.setdefault("_first_halves", {})[source.id] = (volume, mono, balance, sync)
             return
@@ -370,17 +738,23 @@ class AudioPage(QWidget):
             hear.addItem(text, value)
         hear.setCurrentIndex(2 if current == "only" else 1 if current else 0)
         hear.setEnabled(source.kind != "audio_output")  # desktop sound already plays on your speakers
-        hear.setFixedWidth(118)
-        grid.addWidget(hear, row, 5)
+        hear.setFixedWidth(104)
+        grid.addWidget(hear, 2 * row, 5)
         ticks = []
         have = source_tracks(source)  # once a row, not once a tick (on_track asks for all of them each time)
         names = self._track_names(tracks)
+        pills = QHBoxLayout()
+        pills.setSpacing(4)
         for n in range(1, tracks + 1):
-            tick = QCheckBox()
+            tick = QPushButton(str(n))
+            tick.setObjectName("trackPill")
+            tick.setCheckable(True)
+            tick.setAutoDefault(False)
             tick.setChecked(AUDIO_TRACKS[n - 1] in have)
             tick.setToolTip(f"{source.name} on {names[n - 1]} (track {n})")
-            grid.addWidget(tick, row, 5 + n, alignment=_CENTRE)
+            pills.addWidget(tick)
             ticks.append(tick)
+        grid.addLayout(pills, 2 * row, 6)
         self.track_ticks[source.id] = ticks
         self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
                                       "hear": hear}
@@ -415,7 +789,19 @@ class AudioPage(QWidget):
         if audio.global_sources is None:  # pin the global devices before anything else moves
             audio.global_sources = collection.global_device_ids()
         audio.global_devices = self.global_on.isChecked()
+        audio.monitor_device = self.listen_through.currentData() or ""
+        audio.windows_ducking_off = self.windows_ducking_off.isChecked()
+        audio.push_mode = self.push_mode.value() or "off"
+        audio.push_key = self.push_key_text()
+        if self.push_release.value() is not None:  # (a time set by hand in the file lights none: left as it is)
+            audio.push_release_ms = int(self.push_release.value())
         audio.track_names = [e.text().strip() or TRACK_NAMES[i] for i, e in enumerate(self.track_names)]
+        on, by = bool(self.duck_when.currentData()), self.duck_by.value()
+        if on != self._duck_loaded[0]:  # only what was changed here: More… saves its own
+            audio.ducking = on
+        if by is not None and by != self._duck_loaded[1]:
+            audio.duck_amount_db = float(by)
+        self._duck_loaded = (bool(audio.ducking), float(audio.duck_amount_db))
         if not recording:
             collection.recording.audio_tracks = [n for n, keep in enumerate(self.track_kept, 1) if keep.isChecked()]
             collection.recording.voice_track = 3 in collection.recording.audio_tracks

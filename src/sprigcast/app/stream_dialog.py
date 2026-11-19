@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -23,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import message as msgbox
 from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.app.live_stage import Switch
@@ -837,7 +837,7 @@ class StreamPage(QWidget):
                 if key != self._saved_keys.get(key_ref, ""):
                     set_key(key_ref, key)
         except Exception as exc:
-            QMessageBox.critical(self, "SprigCast", f"Could not save the stream key:\n{exc}")
+            msgbox.critical(self, "SprigCast", f"Could not save the stream key:\n{exc}")
             return False
         others = [o for o in collection.outputs if o.type != "stream"]
         picked = [o for o in self.outputs if o.id not in self._unpicked]  # a place left blank isn't kept

@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QKeySequenceEdit,
@@ -16,7 +15,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import message as msgbox
 from sprigcast.app import theme
+from sprigcast.app.card import CardWindow
 from sprigcast.app.hotkeys import sections, taken_by, to_pynput
 from sprigcast.app.live_stage import heading
 from sprigcast.core.scene import SceneCollection
@@ -201,7 +202,7 @@ class HotkeysPage(QWidget):
         return None
 
 
-class HotkeysWindow(QDialog):
+class HotkeysWindow(CardWindow):
     """Tools → Hotkeys: every key in a window of its own (it used to make Settings very tall)."""
 
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None, fill_after_show: bool = False):
@@ -209,13 +210,10 @@ class HotkeysWindow(QDialog):
         held the window 380 ms on the PC, 2026-11-18, the canvases waiting meanwhile)."""
         from sprigcast.app.settings_window import SAVE_STYLE, window_style
 
-        super().__init__(parent)
-        self.setWindowTitle("Hotkeys")
-        self.setObjectName("settingsWindow")
+        super().__init__("Hotkeys", parent, (760, 720), name="settingsWindow")
         self.setStyleSheet(window_style())
-        self.resize(760, 720)
         self.collection = collection
-        root = QVBoxLayout(self)
+        root = QVBoxLayout(self.card)
         root.setContentsMargins(24, 22, 24, 20)
         root.setSpacing(16)
         root.addWidget(heading("Hotkeys", 20))
@@ -256,13 +254,11 @@ class HotkeysWindow(QDialog):
             QTimer.singleShot(30, self._fill)  # after the window's first paint
 
     def _save(self) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
         self._fill()
 
         problem = self.page.problem()
         if problem:
-            QMessageBox.warning(self, "Hotkeys", problem)
+            msgbox.warning(self, "Hotkeys", problem)
             return
         self.collection.hotkeys = self.page.result_hotkeys()
         self.accept()

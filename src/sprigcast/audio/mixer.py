@@ -14,6 +14,8 @@ Two extras on top of the plain mix:
   to the voice track), plus "vod" (VOD-safe: everything recorded except music) and "track4" and
   "track5" (your own picks); see source_tracks. Only the tracks some output asks for are mixed.
 - Source record's "clean" track: the recording track less the sources in clean_out.
+- Push to talk (set_push / push_key): one sound (your mic) is heard only while a key is held ("talk"), or is
+  silent while it's held ("mute"); letting go counts release_ms later. The engine's mixer does the same.
 - Sound per bloom: sources in bloom_out (picked to play only in blooms that aren't on air) fade out
   over BLOOM_FADE_S, and fade back in when one of their blooms goes on air.
 """
@@ -178,6 +180,9 @@ class Mixer:
         # Sound per bloom: these sources are quiet in the blooms on air now (the engine sets it).
         self.bloom_out: frozenset[str] = frozenset()
         self._bloom_gates: dict[str, float] = {}
+        self._push_source, self._push_mode = "", "off"  # push to talk: the sound it holds, and "talk" / "mute"
+        self._push_release, self._push_down, self._push_hold = 0, False, 0  # blocks; key held; blocks left
+        self._push_gain = 1.0
         # Sounds some Ducking filter follows: their levels go to SOUND_LEVELS (the engine sets it).
         self.followed: frozenset[str] = frozenset()  # source id -> gain now, while fading or quiet
         self._lock = threading.Lock()
@@ -258,6 +263,36 @@ class Mixer:
         with self._lock:
             self._monitor_taps = [t for t in self._monitor_taps if t != callback]
 
+    def set_push(self, source_id: str, mode: str, release_ms: int) -> None:
+        """Push to talk on one sound: mode "talk", "mute" or "off" (or no source)."""
+        mode = mode if source_id and mode in ("talk", "mute") else "off"
+        changed = (source_id, mode) != (self._push_source, self._push_mode)
+        self._push_source, self._push_mode = (source_id if mode != "off" else ""), mode
+        ms = max(0, min(2000, int(release_ms)))
+        self._push_release = (ms * SAMPLE_RATE // 1000 + BLOCK - 1) // BLOCK
+        if changed:
+            self._push_hold = 0
+            self._push_gain = self._push_target()
+
+    def push_key(self, down: bool) -> None:
+        """The push-to-talk key went down or up (from whatever hears the keyboard; any thread)."""
+        was, self._push_down = self._push_down, bool(down)
+        if was and not self._push_down:
+            self._push_hold = self._push_release
+        if self._push_down:
+            self._push_hold = 0
+
+    def _push_target(self) -> float:
+        held = self._push_down or self._push_hold > 0
+        return 1.0 if (self._push_mode == "talk") == held else 0.0
+
+    def _push_gate(self) -> np.ndarray | float:
+        target, start = self._push_target(), self._push_gain
+        self._push_gain = target
+        if start == target:
+            return target
+        return np.linspace(start, target, BLOCK, dtype=np.float32)[:, None]
+
     def _bloom_gate(self, source_id: str) -> np.ndarray | float:
         """This block's gain for a sound per bloom: 1.0 normally, 0.0 while quiet, a ramp while fading."""
         target = 0.0 if source_id in self.bloom_out else 1.0
@@ -305,6 +340,8 @@ class Mixer:
         with self._lock:
             sources, taps, monitor_taps = self._sources + self._extras, self._taps, self._monitor_taps
         processed, meters = [], {}
+        if not self._push_down and self._push_hold > 0:
+            self._push_hold -= 1  # a let-go waits out its delay block by block
         listened = self.followed
         heard = listen.LISTENERS  # plugins hearing a sound (the audio visualizer); usually empty
         voice_db = FLOOR_DB
@@ -324,6 +361,10 @@ class Mixer:
             gate = self._bloom_gate(source.id) if (self.bloom_out or self._bloom_gates) else 1.0
             if isinstance(gate, np.ndarray) or gate != 1.0:
                 block = block * gate
+            if self._push_mode != "off" and source.id == self._push_source:
+                talk = self._push_gate()
+                if isinstance(talk, np.ndarray) or talk != 1.0:
+                    block = block * talk
             try:
                 gain = float(source.gain)
             except Exception as exc:  # a plugin's sound: quiet this block rather than the whole mix

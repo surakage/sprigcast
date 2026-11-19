@@ -8,6 +8,7 @@
 #include <objbase.h>
 #include <propidl.h>
 #include <audioclient.h>
+#include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
 #endif

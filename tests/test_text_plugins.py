@@ -42,24 +42,48 @@ def test_example_plugin_loads(tmp_path):
     assert (tmp_path / "countdown_example.py").read_text(encoding="utf-8") == EXAMPLE
     report = load_plugins(tmp_path)
     assert report.loaded == ["countdown_example.py"] and not report.failed
-    assert "countdown" in known_kinds()
-    cls = source_class("countdown")
+    assert "example_countdown" in known_kinds()  # "countdown" is the Countdown store plugin's
+    cls = source_class("example_countdown")
     assert cls.label == "Example countdown" and "minutes" in cls.defaults  # the store's Countdown is "Countdown"
-    src = create_source("countdown", "c1", {**cls.defaults, "minutes": 2, "label": "Back in "})
+    src = create_source("example_countdown", "c1", {**cls.defaults, "minutes": 2, "label": "Back in "})
     assert src._current_text() in ("Back in 2:00", "Back in 1:59")
     assert src.video_frame() is not None
 
 
-def test_an_untouched_old_example_is_brought_up_to_date(tmp_path):
-    from sprigcast.plugins import OLD_EXAMPLE
+@pytest.mark.parametrize("which", [0, 1])
+def test_an_untouched_old_example_is_brought_up_to_date(tmp_path, which):
+    """The old example took kind "countdown", the Countdown store plugin's (PC, build eac4928: source.new made the
+    example's plain text and countdown.start said "Add a Countdown first"). Updated, its countdowns get the card."""
+    from sprigcast.plugins import OLD_EXAMPLES
 
     old = tmp_path / "countdown_example.py"
-    old.write_text(OLD_EXAMPLE, encoding="utf-8")
+    old.write_text(OLD_EXAMPLES[which], encoding="utf-8")
     ensure_example(tmp_path)
-    assert old.read_text(encoding="utf-8") == EXAMPLE
-    old.write_text(OLD_EXAMPLE + "# mine now\n", encoding="utf-8")
+    assert old.read_text(encoding="utf-8") == EXAMPLE and '@register("countdown")' not in EXAMPLE
+    assert (tmp_path / "countdown.py").exists()  # the store Countdown, added for the countdowns made from it
+    old.write_text(OLD_EXAMPLES[0] + "# mine now\n", encoding="utf-8")
     ensure_example(tmp_path)
     assert old.read_text(encoding="utf-8").endswith("# mine now\n")  # changed by you: left alone
+
+
+def test_the_store_countdown_wins_its_kind_over_an_edited_old_example(tmp_path):
+    from sprigcast import plugin_store
+    from sprigcast.plugins import OLD_EXAMPLES
+    from sprigcast.core.source import unregister_module
+
+    pytest.importorskip("PySide6.QtWidgets")
+    (tmp_path / "countdown_example.py").write_text(OLD_EXAMPLES[0] + "# mine now\n", encoding="utf-8")
+    plugin = next(p for p in plugin_store.catalog() if p.id == "countdown")
+    import shutil
+
+    shutil.copyfile(plugin.file, tmp_path / "countdown.py")
+    try:
+        report = load_plugins(tmp_path)
+        assert report.loaded == ["countdown_example.py", "countdown.py"]  # the store's last
+        assert source_class("countdown").__module__ == "sprigcast_plugin_countdown"
+    finally:
+        plugin_store.remove(tmp_path, "countdown")
+        unregister_module("sprigcast_plugin_countdown_example")
 
 
 def test_example_not_rewritten_when_folder_has_plugins(tmp_path):
@@ -130,14 +154,23 @@ def test_a_changed_text_is_drawn_on_a_worker(monkeypatch):
     assert drawn_on and drawn_on[0].startswith("sprigcast-pictures")  # the one pictures lane
 
 
-def test_a_text_keeps_its_picture_while_asleep_and_draws_again_only_if_it_changed():
+def test_a_text_keeps_its_picture_while_asleep_and_draws_again_only_if_it_changed(tmp_path):
     """Heavy run 2026-11-17: texts and clock cards were drawn again on every bloom switch (10-14 ms each). Asleep
     their texture stays (the engine doesn't forget it); woken, nothing is drawn unless the words changed."""
+    from sprigcast import plugin_store
     from sprigcast.sources.text import TextSource
-    from sprigcast.store.local_time import LocalTimeSource
-    from sprigcast.store.stream_timer import StreamTimerSource
 
-    assert TextSource.keeps_picture and LocalTimeSource.keeps_picture and StreamTimerSource.keeps_picture
+    assert TextSource.keeps_picture
+    # Added and removed as the store does: importing sprigcast.store.* here left the kinds, actions and right-click
+    # entries registered for the rest of the run (test_stream_timer failed when it ran after this file).
+    for plugin_id in ("local_time", "stream_timer"):
+        plugin = next(p for p in plugin_store.catalog() if p.id == plugin_id)
+        assert plugin_store.install(tmp_path, plugin) is None
+        try:
+            assert source_class(plugin_id).keeps_picture
+        finally:
+            plugin_store.remove(tmp_path, plugin_id)
+        assert plugin_id not in known_kinds()
     src = TextSource("t", {"text": "Hello", "size": 20})
     assert src.video_frame() is not None
     src.sleep()

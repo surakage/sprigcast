@@ -111,9 +111,111 @@ def chosen_text_size() -> str:
     return name if name in TEXT_SIZES else "normal"
 
 
+# Themes: Night Canopy in other colors. Each one keeps every surface, edge and text exactly as bright as Night
+# Canopy's (so buttons, sections and labels read just as well) and only turns the hue: `neutral` is the hue and
+# the strength of the backgrounds and greys, `accent` the hue of the one action color. Pink stays for Live and
+# Recording in all of them, and warning yellow and bad red never move. Like text size and colors, a theme is
+# read once, when SprigCast starts.
+THEME_KEY = "general/theme"
+THEMES = {
+    "slothbloom": "Night Canopy",
+    "moonlit": "Moonlit Pond",
+    "orchid": "Dusk Orchid",
+    "autumn": "Autumn Leaf",
+    "stone": "River Stone",
+    "system": "System (Windows default)",
+}
+THEME_LOOKS: dict[str, dict[str, tuple[float, float] | None]] = {
+    "slothbloom": {"neutral": None, "accent": None},
+    "moonlit": {"neutral": (218.0, 1.6), "accent": (190.0, 1.2)},  # deep blue water, an aqua accent
+    "orchid": {"neutral": (266.0, 1.5), "accent": (262.0, 1.4)},  # dusk violet, a lavender accent
+    "autumn": {"neutral": (26.0, 1.3), "accent": (32.0, 1.5)},  # warm bark, an amber accent
+    "stone": {"neutral": (215.0, 0.3), "accent": None},  # near-grey stone, Night Canopy's green accent
+}
+THEME_ABOUT = {
+    "slothbloom": "Deep greens, a green accent",
+    "moonlit": "Deep blues, an aqua accent",
+    "orchid": "Dusk violets, a lavender accent",
+    "autumn": "Warm bark, an amber accent",
+    "stone": "Quiet greys, a green accent",
+}
+
+
+def _rgb(color: str) -> tuple[float, float, float]:
+    return tuple(int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))  # type: ignore[return-value]
+
+
+def luminance(color: str) -> float:
+    """How bright a color looks, 0 .. 1 (WCAG relative luminance)."""
+    r, g, b = (c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in _rgb(color))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a: str, b: str) -> float:
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def tint(color: str, look: dict[str, tuple[float, float] | None]) -> str:
+    """A Night Canopy color in a theme's hue, exactly as bright as it was. Only Night Canopy's greens turn:
+    strong ones (the accent family) to the theme's accent, soft ones (surfaces, edges, text) to its neutral."""
+    import colorsys
+
+    if not (isinstance(color, str) and len(color) == 7 and color.startswith("#")):
+        return color
+    r, g, b = _rgb(color)
+    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    if sat < 0.02 or not 90 <= hue * 360 <= 185:
+        return color
+    to = look.get("accent" if sat >= 0.25 else "neutral")
+    if to is None:
+        return color
+    new_hue, new_sat = to[0] / 360, min(1.0, sat * to[1])
+    want, low, high = luminance(color), 0.0, 1.0
+    for _ in range(24):  # the lightness in the new hue that looks as bright as the old color did
+        mid = (low + high) / 2
+        out = "#%02x%02x%02x" % tuple(round(c * 255) for c in colorsys.hls_to_rgb(new_hue, mid, new_sat))
+        if luminance(out) < want:
+            low = mid
+        else:
+            high = mid
+    return out
+
+
+def chosen_theme() -> str:
+    if os.environ.get("SPRIGCAST_THEME", "").lower() == "system":
+        return "system"
+    try:
+        name = str(_settings().value(THEME_KEY, "slothbloom"))
+    except Exception:  # noqa: BLE001  (no settings yet)
+        return "slothbloom"
+    return name if name in THEMES else "slothbloom"
+
+
+_NIGHT_CANOPY: dict[str, str] = {name: value for name, value in list(globals().items())
+                                 if name.isupper() and isinstance(value, str) and len(value) == 7
+                                 and value.startswith("#")}
+
+
+def palette(theme_name: str = "slothbloom", preset: str = "default") -> dict[str, str]:
+    """Every theme color by name, for a theme and a color preset (what Settings → Appearance previews, and
+    what this run is drawn with)."""
+    look = THEME_LOOKS.get(theme_name) or THEME_LOOKS["slothbloom"]
+    colors = {**_NIGHT_CANOPY, **PRESET_COLORS.get(preset, {})}
+    return {name: tint(value, look) for name, value in colors.items()}
+
+
+def _themed(name: str, color: str) -> str:
+    """A color named further down this file, written in Night Canopy's greens: in the theme this run uses."""
+    _NIGHT_CANOPY[name] = color
+    return tint(color, THEME_LOOKS[theme_in_use])
+
+
+_chosen = chosen_theme()
+theme_in_use = _chosen if _chosen in THEME_LOOKS else "slothbloom"  # the colors this run is drawn with
 colors_in_use = chosen_colors()  # what this run is drawn with (Settings compares it to what's saved)
 text_size_in_use: str | None = None  # set when the theme is first applied
-globals().update(PRESET_COLORS[colors_in_use])
+globals().update(palette(theme_in_use, colors_in_use))
 
 # Older names, kept so plugins and older code keep working.
 BARK, MOSS, LICHEN, LEAF, BLOOM, INPUT, PETAL, DUSK = BG, PANEL, EDGE_STRONG, ACCENT, LIVE, CHROME, TEXT, MUTED
@@ -167,8 +269,8 @@ def paint_button(p: QPainter, rect: QRectF, radius: float, hover: bool = False) 
 
 
 # Live screen (see live_stage.py) and pop-ups: round pill buttons in the shared button look.
-TRACK = "#1a221e"  # the empty part of thin level bars
-STAGE_EMPTY = "#1d3428"  # a bloom tile before it has a picture
+TRACK = _themed("TRACK", "#1a221e")  # the empty part of thin level bars
+STAGE_EMPTY = _themed("STAGE_EMPTY", "#1d3428")  # a bloom tile before it has a picture
 LIVE_TEXT = "#ff8fb4"  # pink text on dark, for the on-air clock
 PILL_STYLE = button_style(19, "10px 14px")
 SMALL_PILL_STYLE = button_style(13, "6px 13px", "QPushButton, QToolButton")  # chips and small tools
@@ -311,15 +413,7 @@ QSplitter::handle {{ background: {BG}; }}
 looks_applied = 0  # how many times a theme was applied: a font may have changed since a widget measured itself
 _applied: str | None = None  # the theme last applied: re-applying it restyles every widget (~1 s)
 
-THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
 _system_style: str | None = None
-
-
-def chosen_theme() -> str:
-    if os.environ.get("SPRIGCAST_THEME", "").lower() == "system":
-        return "system"
-    name = str(QSettings().value("general/theme", "slothbloom"))
-    return name if name in THEMES else "slothbloom"
 
 
 FONT_ENGINE = "SPRIGCAST_FONT_ENGINE"  # "directwrite" keeps Qt's default font engine
@@ -557,7 +651,9 @@ def view_activation(view: QWidget, event) -> bool | None:
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
     global _system_style, _applied
-    wanted = name or chosen_theme()
+    # Every theme but "system" is the same style sheet in this run's colors (a new theme's colors come in
+    # at the next start), so picking another one mustn't restyle the app.
+    wanted = "system" if (name or chosen_theme()) == "system" else "slothbloom"
     if wanted == _applied:
         return wanted != "system"
     _applied = wanted
@@ -606,7 +702,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
 # style sheet can only show pictures for checkbox, radio and slider parts, so those are small SVGs
 # written once to the cache folder; painted widgets use leaf_path()/paint_leaf().
 
-LEAF_OFF = "#5d6b64"  # an unpicked leaf's outline: reads on PANEL and CARD without shouting
+LEAF_OFF = _themed("LEAF_OFF", "#5d6b64")  # an unpicked leaf's outline: reads on PANEL and CARD without shouting
 
 # One leaf in unit space: stem end bottom-left, tip top-right, both edges curved.
 _LEAF = ((-0.5, 0.5), (-0.6, -0.2), (0.1, -0.6), (0.55, -0.55), (0.6, 0.05), (0.1, 0.6))
@@ -657,7 +753,7 @@ def paint_leaf(p: QPainter, rect: QRectF, filled: bool, colour: str | QColor = A
     p.restore()
 
 
-ACCENT_DARK = "#2a9c5e"  # a deeper leaf green, for a sprout drawn on a light knob
+ACCENT_DARK = _themed("ACCENT_DARK", "#2a9c5e")  # a deeper leaf green, for a sprout drawn on a light knob
 
 
 def paint_sprout(p: QPainter, rect: QRectF, colour: str | QColor = ACCENT_DARK) -> None:
