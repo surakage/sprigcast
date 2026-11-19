@@ -114,3 +114,72 @@ def test_paired_devices_are_never_copied_or_put_back(tmp_path, live):
     live.setValue("control/devices", "dpapi:paired since")
     settings_keeper.restore(config, live)
     assert live.value("control/devices") == "dpapi:paired since"  # a newer pairing is never written over
+
+
+def _wait_for_copies(seconds=30.0):
+    import time
+
+    end = time.monotonic() + seconds
+    while settings_keeper._aside and time.monotonic() < end:
+        time.sleep(0.02)
+    return not settings_keeper._aside
+
+
+def test_a_copy_made_while_sprigcast_runs_is_made_by_a_program_of_its_own(tmp_path, live, monkeypatch):
+    """Qt writes the copy with Python's lock held: on the PC (2026-11-19) the copy 30 s after start froze the
+    window and every Python thread for 1.7 s (99 frames missed on the old engine). keep() isn't called here."""
+    monkeypatch.delenv(settings_keeper.ENV_HERE, raising=False)
+    here = []
+    kept = settings_keeper.keep
+    monkeypatch.setattr(settings_keeper, "keep", lambda *a, **k: here.append(a) or kept(*a, **k))
+    config = tmp_path / "config"
+    assert settings_keeper.keep_aside(config, live) and here == []
+    assert _wait_for_copies() and settings_keeper.path(config).is_file()
+    live.remove("control")
+    live.remove("window/mode")
+    back = settings_keeper.restore(config, live)
+    assert "control/port" in back and "window/mode" in back and int(live.value("control/port")) == 4456
+    assert bytes(live.value("window/geometry")) == b"\x01\x02geometry"  # values are copied as Qt keeps them
+
+
+def test_named_settings_are_found_by_the_copying_program(tmp_path, monkeypatch):
+    monkeypatch.delenv(settings_keeper.ENV_HERE, raising=False)
+    monkeypatch.setattr(settings_keeper, "stopped", False)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "place"))
+    try:
+        named = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "Slothbloom", "SprigCast keeper test")
+        named.setValue("control/port", 4456)
+        named.sync()
+        config = tmp_path / "config"
+        command = settings_keeper.aside_command(config, named)
+        assert command[5:8] == ["Slothbloom", "SprigCast keeper test", str(tmp_path / "place")]
+        assert settings_keeper.keep_aside(config, named) and _wait_for_copies()
+        copy = QSettings(str(settings_keeper.path(config)), QSettings.Format.IniFormat)
+        assert int(copy.value("control/port")) == 4456 and copy.value(settings_keeper.MARKER)
+    finally:
+        folder = os.path.dirname(os.path.dirname(QSettings().fileName()))
+        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, folder)
+
+
+def test_a_copying_program_that_cant_start_leaves_the_copy_to_sprigcast(tmp_path, live, monkeypatch, caplog):
+    monkeypatch.delenv(settings_keeper.ENV_HERE, raising=False)
+    config = tmp_path / "config"
+    with caplog.at_level("WARNING"):
+        assert not settings_keeper.keep_aside(config, live, command=[str(tmp_path / "nowhere" / "python")])
+    assert settings_keeper.path(config).is_file() and "didn't start" in caplog.text
+    monkeypatch.setenv(settings_keeper.ENV_HERE, "1")
+    settings_keeper.path(config).unlink()
+    assert not settings_keeper.keep_aside(config, live) and settings_keeper.path(config).is_file()
+
+
+def test_clear_all_my_data_ends_a_copy_being_made(tmp_path, live, monkeypatch):
+    import sys
+
+    monkeypatch.delenv(settings_keeper.ENV_HERE, raising=False)
+    config = tmp_path / "config"
+    slow = [sys.executable, "-c", "import time; time.sleep(30)"]
+    assert settings_keeper.keep_aside(config, live, command=slow)
+    proc = settings_keeper._aside[-1]
+    settings_keeper.forget(config)
+    assert proc.poll() is not None and not settings_keeper.path(config).exists()
+    assert not settings_keeper.keep_aside(config, live) and _wait_for_copies(5)
