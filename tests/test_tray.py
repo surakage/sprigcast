@@ -218,3 +218,30 @@ def test_the_gardens_import_choices_list_a_file_and_the_other_apps(clean, tmp_pa
         assert len(subs) == 1 and [a.text() for a in subs[0].actions()] == ["My Stream"]
     finally:
         w.close()
+
+
+def test_unticking_the_tray_shows_its_two_options_off_and_brings_them_back(clean):
+    """PC check 2026-11-19: with "Show in the tray" off, "Minimize to the tray" stayed ticked, greyed out."""
+    from test_settings_window import _collection, _window
+
+    w = _window(_collection(), tab="General")
+    w.tray_show.setChecked(True)
+    w.tray_minimize.setChecked(True)
+    w.tray_show.setChecked(False)
+    assert not w.tray_minimize.isChecked() and not w.tray_close.isChecked() and not w.tray_minimize.isEnabled()
+    assert w.apply()
+    assert not tray.wanted() and not tray.minimize_to()
+    w.tray_show.setChecked(True)
+    assert w.tray_minimize.isChecked() and not w.tray_close.isChecked()  # as they were
+    assert w.apply()
+    assert tray.minimize_to() and not tray.close_to()
+    w.close()
+    again = _window(_collection(), tab="General")  # saved while the tray was off: still remembered
+    again.tray_show.setChecked(False)
+    assert again.apply()
+    again.close()
+    last = _window(_collection(), tab="General")
+    assert not last.tray_minimize.isChecked()
+    last.tray_show.setChecked(True)
+    assert last.tray_minimize.isChecked()
+    last.close()

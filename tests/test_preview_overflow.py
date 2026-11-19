@@ -72,3 +72,41 @@ def test_the_setting_reaches_builds_canvases(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_settings_apply_reaches_build_and_the_open_windows(app, tmp_path, monkeypatch):
+    """PC check 2026-11-19: the tick did nothing until a restart, and an open Settings window stayed in captures
+    after "Hide SprigCast from screen capture" was applied."""
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("OverflowApplyTest")
+    QSettings().clear()
+    from PySide6.QtWidgets import QDialog
+
+    from sprigcast.app import privacy
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.app.preview import OVERFLOW_KEY
+    from sprigcast.app.projector import Projector
+    from sprigcast.core.scene import Canvas, SceneCollection
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          scenes=[Scene(id="h1", name="Main", canvas="horizontal")])
+    w = MainWindow(col, tmp_path / "scenes.json")
+    told = []
+    monkeypatch.setattr(privacy, "supported", lambda: True)
+    monkeypatch.setattr(privacy, "apply_to", lambda widget, on=None: told.append(widget))
+    dialog = QDialog(w)
+    try:
+        w.show()
+        dialog.show()
+        QSettings().setValue(OVERFLOW_KEY, True)
+        w._after_settings()
+        assert all(p.show_overflow for p in w.previews.values())
+        assert w in told and dialog in told
+        assert not any(isinstance(x, Projector) for x in told)
+    finally:
+        dialog.close()
+        w.close()
+        QSettings().clear()
