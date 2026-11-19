@@ -261,7 +261,43 @@ def watch_threads(now: float | None = None) -> str | None:
     top = ", ".join(f"{k} {n}" for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))[:8])
     line = f"threads {total} (python {python}: {top}; native {max(0, total - python)})"
     log.info(line)
+    if sys.platform == "win32":  # whose the native ones are, from a thread of its own (it opens each thread)
+        def name_them():
+            native = native_threads()
+            if native:
+                log.info("native threads by who started them: %s", native)
+
+        threading.Thread(target=name_them, name="sprigcast-thread-names", daemon=True).start()
     return line
+
+
+_native_labels: dict[int, str] = {}
+
+
+def native_threads(top: int = 10) -> str:
+    """Windows: the threads that aren't Python's, counted by their own description (sprigcore names its threads)
+    or the library they were started in: "nvwgf2umx.dll 20, ntdll.dll 18, SprigCast engine frames 1, ...". The
+    light-PC test (2026-11-19) saw "native 88" and couldn't say whose. Empty elsewhere or when it can't be read."""
+    if sys.platform != "win32":
+        return ""
+    import re
+
+    try:
+        from sprigcast.tools.cpuwhere import _windows_thread_times, native_thread_label
+
+        ours = {t.native_id for t in threading.enumerate()}
+        ids = [tid for tid in _windows_thread_times() if tid not in ours]
+        counts: dict[str, int] = {}
+        for tid in ids:
+            if tid not in _native_labels:
+                _native_labels[tid] = (native_thread_label(tid) or "unknown").removeprefix("threads started in ")
+            kind = re.sub(r"([-_ #][^-_ #]*\d[^-_ #]*)+$", "", _native_labels[tid]) or _native_labels[tid]
+            counts[kind] = counts.get(kind, 0) + 1
+        for tid in [t for t in _native_labels if t not in set(ids)]:
+            del _native_labels[tid]  # thread ids get reused
+        return ", ".join(f"{k} {n}" for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:top])
+    except Exception:  # noqa: BLE001 (a diagnostic: never in the way)
+        return ""
 
 
 CPU_EVERY_S = 300.0  # a CPU-by-thread line this often (watch_cpu)
