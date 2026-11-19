@@ -238,8 +238,11 @@ class StreamPage(QWidget):
         self.twitch_label = QLabel()
         self.twitch_button = QPushButton()
         self.twitch_button.clicked.connect(self._twitch_clicked)
+        self.twitch_sign_out = QPushButton("Sign out")
+        self.twitch_sign_out.clicked.connect(lambda: self._sign_out("twitch"))
         twitch.addWidget(self.twitch_button)
         twitch.addWidget(self.twitch_label, 1)
+        twitch.addWidget(self.twitch_sign_out)
         self.account_label = QLabel("Account")
         form.addRow(self.account_label, self.twitch_row)
         self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
@@ -265,8 +268,11 @@ class StreamPage(QWidget):
         self.sign_in_button.setToolTip("Sign in to fill in the stream key")
         self.sign_in_button.clicked.connect(self._sign_in_clicked)
         self.signin_state = QLabel()
+        self.sign_out_button = QPushButton("Sign out")
+        self.sign_out_button.clicked.connect(lambda: self._sign_out(self._current_service()))
         signin.addWidget(self.sign_in_button)
         signin.addWidget(self.signin_state, 1)
+        signin.addWidget(self.sign_out_button)
         self.signin_label = QLabel("Account")
         form.addRow(self.signin_label, self.signin_row)
         self.signin_error = QLabel()
@@ -537,12 +543,13 @@ class StreamPage(QWidget):
         can_sign_in = service_signin.available(output.service or "")
         self.signin_row.setVisible(can_sign_in)
         self.signin_label.setVisible(can_sign_in)
-        if can_sign_in:  # signing out is under Accounts only; signed in there, the key comes without a sign-in
+        if can_sign_in:  # one sign-in per platform: signed in, the key comes without a new sign-in
             from sprigcast.output import stream_details
 
             central = stream_details.account(output.service or "")
             name = central or output.account
             self.signin_state.setText(f"Signed in as {name}" if name else "Not signed in")
+            self.sign_out_button.setVisible(bool(central))
             self.sign_in_button.setText("Get key" if central else "Sign in")
             self.sign_in_button.setToolTip("Fill in the stream key from your account" if central
                                            else "Sign in to fill in the stream key")
@@ -551,7 +558,8 @@ class StreamPage(QWidget):
         if is_twitch:
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
             self.twitch_button.setText("Connect Account (recommended)")
-            self.twitch_button.setVisible(not account)  # signing out is under Accounts only
+            self.twitch_button.setVisible(not account)
+            self.twitch_sign_out.setVisible(bool(account))
 
     def _card_text(self, output: Output) -> str:
         return f"{NEW_PLACE}\n{PICK_SERVICE}" if output.id in self._unpicked else place_card_text(output)
@@ -640,7 +648,7 @@ class StreamPage(QWidget):
         output = self._current()
         if output is None:
             return
-        if twitch_auth.connected_account():  # signing out is under Accounts only
+        if twitch_auth.connected_account():  # connected already: Sign out is the button beside it
             self._show_service(output)
             return
         from sprigcast.app.twitch_connect import TwitchConnectDialog
@@ -673,8 +681,8 @@ class StreamPage(QWidget):
         return self.keys[ref]
 
     def _sign_in_clicked(self) -> None:
-        """YouTube or Kick: fill in the key (and Kick's server). Signed in under Accounts, straight from the account;
-        otherwise sign in once, which signs in Accounts too."""
+        """YouTube or Kick: fill in the key (and Kick's server). Signed in to the platform already, straight from
+        the account; otherwise sign in once, which signs in Stream details and chat too."""
         output = self._current()
         if output is None:
             return
@@ -699,6 +707,26 @@ class StreamPage(QWidget):
                 self.signin_error.show()
             return
         self._use_fetched(output, fetched)
+
+    def _current_service(self) -> str:
+        output = self._current()
+        return (output.service or "") if output is not None else ""
+
+    def _sign_out(self, service: str) -> None:
+        """Sign out of the platform everywhere: every place on it, Stream details and chat. Keys already filled in
+        keep working. Never done after a place's own sign-in: Google's revoke ends the whole grant (#596/#603)."""
+        if not service:
+            return
+        from sprigcast.app.accounts_page import sign_out
+
+        error = sign_out(service)
+        output = self._current()
+        if error and output is not None:
+            self._error_for = output.id
+            self.signin_error.setText(error)
+            self.signin_error.show()
+        if output is not None:
+            self._show_service(output)
 
     def _use_fetched(self, output: Output, fetched) -> None:
         self._error_for = ""

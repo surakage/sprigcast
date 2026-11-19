@@ -335,7 +335,7 @@ SIGN_IN = {"youtube": youtube, "kick": kick}
 
 
 def key_from_account(service: str, vertical: bool = False) -> Fetched:
-    """The stream key (and Kick's server) through the account signed in under Accounts: no new sign-in.
+    """The stream key (and Kick's server) through the account signed in on that platform: no new sign-in.
     Worker thread. Raises SignInError, worded for the person."""
     from sprigcast.output import stream_details
 
@@ -347,7 +347,7 @@ def key_from_account(service: str, vertical: bool = False) -> Fetched:
         channel = channels[0] if channels else {}
         stream = channel.get("stream") or {}
         if not stream.get("key"):
-            raise SignInError("Kick didn't share the stream key. Sign out under Accounts and sign in again.")
+            raise SignInError("Kick didn't share the stream key. Sign out in Settings → Stream and sign in again.")
         slug = str(channel.get("slug") or "Kick")
         return Fetched(account=slug, key=stream["key"], server=str(stream.get("url") or ""))
 
