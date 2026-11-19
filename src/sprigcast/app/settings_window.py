@@ -86,6 +86,8 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
     ("Always on top", "General", False), ("Hide the mouse pointer", "General", False),
     ("Hide from screen capture", "General", False), ("Privacy", "General", False),
+    ("System tray", "General", False), ("Minimize to the tray", "General", False),
+    ("Close to the tray", "General", False),
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
     ("Process priority", "General", False), ("Sources not on screen", "General", False),
@@ -916,6 +918,29 @@ class SettingsWindow(QDialog):
             self.projector_on_top.setChecked(projector.on_top())
             pbox.addWidget(self.projector_on_top)
 
+            from sprigcast.app import tray
+
+            in_tray = QGroupBox("System tray")
+            tbox = QVBoxLayout(in_tray)
+            self.tray_show = QCheckBox("Show in the tray")
+            self.tray_show.setChecked(tray.wanted())
+            tbox.addWidget(self.tray_show)
+            self.tray_minimize = QCheckBox("Minimize to the tray")
+            self.tray_minimize.setToolTip("With Start minimized, SprigCast starts there")
+            self.tray_minimize.setChecked(q.value(tray.MINIMIZE_TO, False, type=bool))
+            tbox.addWidget(self.tray_minimize)
+            self.tray_close = QCheckBox("Close to the tray")
+            self.tray_close.setToolTip("The window's × hides it and SprigCast keeps running. Quit is on the tray icon.")
+            self.tray_close.setChecked(q.value(tray.CLOSE_TO, False, type=bool))
+            tbox.addWidget(self.tray_close)
+
+            def tray_on(on: bool) -> None:
+                self.tray_minimize.setEnabled(on)
+                self.tray_close.setEnabled(on)
+
+            self.tray_show.toggled.connect(tray_on)
+            tray_on(self.tray_show.isChecked())
+
             private = QGroupBox("Privacy")
             prbox = QVBoxLayout(private)
             self.hide_from_capture = QCheckBox("Hide SprigCast from screen capture")
@@ -949,7 +974,7 @@ class SettingsWindow(QDialog):
                 self.feature_ticks[name] = tick
 
             layout = page.layout()
-            for card in (safety, snapping, popouts, private, used, updates, logs, self._clear_data_card()):
+            for card in (safety, snapping, popouts, in_tray, private, used, updates, logs, self._clear_data_card()):
                 layout.insertWidget(layout.count() - 1, card)  # above the stretch
 
         if self.isVisible():
@@ -1401,6 +1426,11 @@ class SettingsWindow(QDialog):
         settings.setValue(projector.HIDE_POINTER, self.projector_hide_pointer.isChecked())
         settings.setValue(projector.ON_TOP, self.projector_on_top.isChecked())
         settings.setValue(privacy.HIDE_FROM_CAPTURE, self.hide_from_capture.isChecked())
+        from sprigcast.app import tray
+
+        settings.setValue(tray.SHOW, self.tray_show.isChecked())
+        settings.setValue(tray.MINIMIZE_TO, self.tray_minimize.isChecked())
+        settings.setValue(tray.CLOSE_TO, self.tray_close.isChecked())
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
         from sprigcast.app.updates import AUTO_CHECK
 
