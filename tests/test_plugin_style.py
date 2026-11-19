@@ -191,7 +191,7 @@ def test_clock_cards_take_the_look(app):  # noqa: F811
 def test_the_clock_plugins_have_the_style_tab(added):  # noqa: F811
     from sprigcast.core.source import create_source
 
-    for plugin, kind in (("local_time", "local_time"), ("countdown", "countdown_timer"),
+    for plugin, kind in (("local_time", "local_time"), ("countdown", "countdown"),
                          ("stream_timer", "stream_timer")):
         added(plugin)
         source = create_source(kind, "s", {})
