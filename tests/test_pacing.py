@@ -225,3 +225,29 @@ def test_stall_dumps_can_be_asked_for_shorter_stalls():
     assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "220"}) == 0.22
     assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "50"}) == DUMP_AFTER_MIN_S
     assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "soon"}) == DUMP_AFTER_S
+
+
+def test_a_tidy_can_say_what_kinds_of_garbage_it_freed(monkeypatch, caplog):
+    import gc
+    import logging
+
+    from sprigcast.core import pacing
+
+    monkeypatch.setenv("SPRIGCAST_GC_TYPES", "1")
+    monkeypatch.setattr(pacing, "SLOW_GC_MS", -1.0)
+
+    class Knot:
+        pass
+
+    for _ in range(50):
+        a, b = Knot(), Knot()
+        a.other, b.other = b, a
+    del a, b
+    try:
+        with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
+            pacing.tidy()
+        assert any("Knot" in r.getMessage() for r in caplog.records)
+        assert gc.garbage == [] and not gc.get_debug() & gc.DEBUG_SAVEALL
+        assert not any(type(o).__name__ == "Knot" for o in gc.get_objects())  # freed, not kept aside
+    finally:
+        gc.unfreeze()

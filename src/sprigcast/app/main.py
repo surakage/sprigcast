@@ -407,10 +407,12 @@ def run() -> None:
     beat.timeout.connect(pacing.ui_beat)
     beat.start(beat_ms)
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
-    tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
+    collect = QTimer(window)  # then a small collection every few seconds instead of a long one every ten minutes
+    collect.timeout.connect(lambda: pacing.housekeeping("tidy", pacing.tidy))
+    collect.start(pacing.TIDY_EVERY_MS)
+    tidy = QTimer(window)  # and the minute's housekeeping
     # Each piece waits for the end of a frame and they run seconds apart (see pacing.housekeeping): together, at
     # once, they made a late frame on the same second of the minute on the PC (2026-11-17).
-    tidy.timeout.connect(lambda: pacing.housekeeping("tidy", pacing.tidy))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # which threads come and go, for the next long test
         20_000, lambda: pacing.housekeeping("thread count", pacing.watch_threads)))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and where memory goes, every 10 minutes
@@ -418,7 +420,7 @@ def run() -> None:
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and which threads use the CPU, every 5 minutes
         50_000, lambda: threading.Thread(target=pacing.watch_cpu, name="CPU by thread", daemon=True).start()))
     # (on its own thread: naming ~100 native threads held the window 340 ms on the PC, 2026-11-17)
-    tidy.start(pacing.TIDY_EVERY_MS)
+    tidy.start(pacing.MINUTE_MS)
     from sprigcast.core import warm, workers
 
     def _warm_art():  # the sloth pictures pop-ups show (app/empty.py)
