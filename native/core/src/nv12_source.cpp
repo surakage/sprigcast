@@ -171,6 +171,12 @@ int repack(sc_device &dev, Source &s, int w, int h) {
 
 }  // namespace
 
+void sc::warm_repack_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(REPACK_HLSL, sizeof REPACK_HLSL - 1, "vs_main", "vs_4_0", code);
+    compile(REPACK_HLSL, sizeof REPACK_HLSL - 1, "ps_main", "ps_4_0", code);
+}
+
 int sc_device::prepare_repack() {
     if (repack_vs) return SC_OK;
     ComPtr<ID3DBlob> vs_code, ps_code;

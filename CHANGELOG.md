@@ -170,6 +170,13 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: shaders are compiled on a thread of their own as the engine starts, instead of on the frame
+  thread the first time each is needed. On the software renderer one held a frame 2.3 s (CI start-up check),
+  and slow PCs are not much quicker. A shader that is slow to compile says so in the log.
+- New engine capture: a call into Windows that hangs no longer holds up every later capture. After 3 s the
+  captures go on on a new thread, so one slow start only moves that one source to the old capture, and it tries
+  the engine again a minute later. A window or game that closes and opens again is found within a quarter of a
+  second instead of waiting 2 s (PC test 2026-11-19).
 - Cameras read by the engine now say in the log when one is unplugged and when it comes back (PC test
   2026-11-19). The memory map behind the 10-minute memory line loads in the warm-up, not on the window's
   thread (its first load held the window 268 ms).

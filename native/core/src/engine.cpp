@@ -1607,6 +1607,34 @@ DWORD WINAPI frame_main(void *arg) {
     return 0;
 }
 
+// Compiles every shader before the frame thread needs one (internal.h warm_shaders): once per process.
+DWORD WINAPI warm_main(void *) {
+    name_thread(L"SprigCast engine shaders");
+    try {
+        const int64_t start = qpc();
+        warm_shaders();
+        char line[96];
+        std::snprintf(line, sizeof line, "engine: shaders ready in %.0f ms",
+                      1000.0 * static_cast<double>(qpc() - start) / static_cast<double>(qpf()));
+        log_line(SC_LOG_INFO, line);
+    } catch (...) {
+        log_line(SC_LOG_WARNING, "engine: compiling shaders ahead failed; each compiles when first used");
+    }
+    return 0;
+}
+
+void warm_once() {
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    HANDLE thread = CreateThread(nullptr, 0, warm_main, nullptr, 0, nullptr);
+    if (thread) {
+        SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
+        CloseHandle(thread);
+    } else {
+        started.store(false);
+    }
+}
+
 DWORD WINAPI watchdog_main(void *arg) {
     sc_engine &e = *static_cast<sc_engine *>(arg);
     name_thread(L"SprigCast engine watchdog");
@@ -1654,6 +1682,7 @@ SC_API int sc_engine_create(int adapter, int flags, sc_engine **out) {
         }
         e->device_out = e->dev->device;
         media_card(e->dev->device.Get());  // videos asked to decode on the card decode on the engine's device
+        warm_once();  // before the frame thread: its first frames find the shaders compiled, or being compiled
         e->stats.running = 1;  // from now: a call made before the thread's first moment still waits for frames
         e->threads[0] = CreateThread(nullptr, 0, frame_main, e.get(), 0, nullptr);
         e->threads[1] = e->threads[0] ? CreateThread(nullptr, 0, watchdog_main, e.get(), 0, nullptr) : nullptr;

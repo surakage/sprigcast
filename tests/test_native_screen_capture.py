@@ -203,6 +203,31 @@ def test_when_the_engine_refuses_the_package_captures(in_engine, package):
         src.stop()
 
 
+def test_a_refused_source_tries_the_engine_again_later_and_others_never_stop(in_engine, package, monkeypatch):
+    """One slow start (refused) moved that source to the package, and it stays there only a while: it tries the
+    engine again after ENGINE_AGAIN_SECONDS (PC 2026-11-19: every source stayed on the package until a restart)."""
+    monkeypatch.setattr(capture, "ENGINE_AGAIN_SECONDS", 0.2)
+    engine = EngineCaptures()
+    src = create_source("display_capture", "d", {"monitor": 1})
+    other = create_source("display_capture", "d2", {"monitor": 2})
+    src.start()
+    try:
+        assert wait_for(lambda: src.engine_player is not None)
+        refused = src.engine_player
+        refused.link(engine, "d")
+        engine.states["d"] = (sprigcore.SCREEN_REFUSED, 0, 0, 0)
+        assert wait_for(lambda: len(package) == 1)
+        other.start()
+        assert wait_for(lambda: other.engine_player is not None)  # another source still goes to the engine
+        time.sleep(0.25)
+        engine.states.pop("d")
+        src._restart.set()  # the package's capture ends (its target changed): the engine is asked again
+        assert wait_for(lambda: src.engine_player is not None and src.engine_player.serial > refused.serial)
+    finally:
+        src.stop()
+        other.stop()
+
+
 def test_a_capture_no_engine_takes_up_falls_back_to_the_package(in_engine, package, monkeypatch):
     monkeypatch.setattr(capture, "LINK_SECONDS", 0.1)
     src = create_source("display_capture", "d", {"monitor": 1})

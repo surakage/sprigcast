@@ -173,6 +173,12 @@ float shape_reach(int mode, int width, int height, float progress) {
 
 }  // namespace
 
+void sc::warm_transition_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(TRANSITION_HLSL, sizeof TRANSITION_HLSL - 1, "vs_main", "vs_4_0", code);
+    compile(TRANSITION_HLSL, sizeof TRANSITION_HLSL - 1, "ps_main", "ps_4_0", code);
+}
+
 int sc_device::prepare_transitions() {
     if (trans_vs) return SC_OK;
     int ready = prepare_compositor();  // its wrap sampler

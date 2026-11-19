@@ -4,6 +4,7 @@
 #include "internal.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -29,26 +30,71 @@ int fail_hr(int code, const char *what, HRESULT hr) {
 }
 
 // Compiled shaders, kept for the life of the process: a new device (a rebuild after a fault, a second engine)
-// skips compiling again, which takes over a second on the software renderer and on slow PCs.
+// skips compiling again, which takes over a second on the software renderer and on slow PCs. A shader another
+// thread is compiling right now (warm_shaders, at the engine's start) is waited for, not compiled twice.
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
+    struct Entry {
+        bool done = false;
+        ComPtr<ID3DBlob> blob;
+    };
     static std::mutex cache_lock;
-    static std::map<std::string, ComPtr<ID3DBlob>> cache;
+    static std::condition_variable cache_done;
+    static std::map<std::string, Entry> cache;
     const std::string key = std::to_string(reinterpret_cast<uintptr_t>(source)) + ":" + std::to_string(size) + ":" +
                             entry + ":" + profile;
     {
-        std::lock_guard<std::mutex> lock(cache_lock);
-        auto found = cache.find(key);
-        if (found != cache.end()) {
-            out = found->second;
-            return S_OK;
+        std::unique_lock<std::mutex> lock(cache_lock);
+        for (;;) {
+            auto found = cache.find(key);
+            if (found == cache.end()) {
+                cache[key];  // this thread compiles it; others wait for it
+                break;
+            }
+            if (found->second.done) {
+                out = found->second.blob;
+                return S_OK;
+            }
+            cache_done.wait(lock);  // being compiled (or failed and gone: then this thread tries)
         }
     }
-    HRESULT hr = compile_now(source, size, entry, profile, out);
-    if (SUCCEEDED(hr)) {
-        std::lock_guard<std::mutex> lock(cache_lock);
-        cache[key] = out;
+    HRESULT hr = E_FAIL;
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
+    try {
+        hr = compile_now(source, size, entry, profile, out);
+    } catch (...) {
+        hr = E_FAIL;
     }
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    const double ms = 1000.0 * static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(freq.QuadPart);
+    if (ms >= 100.0) {  // which shader is slow to make on this PC (a frame waits for it if it isn't ready)
+        char line[128];
+        std::snprintf(line, sizeof line, "shader: %s %s (%zu bytes of source) took %.0f ms to compile", profile, entry,
+                      size, ms);
+        log_line(SC_LOG_INFO, line);
+    }
+    {
+        std::lock_guard<std::mutex> lock(cache_lock);
+        if (SUCCEEDED(hr)) {
+            cache[key].blob = out;
+            cache[key].done = true;
+        } else {
+            cache.erase(key);
+        }
+    }
+    cache_done.notify_all();
     return hr;
+}
+
+void warm_shaders() {
+    // In the order a frame first needs them: drawing, the compositor, a planar picture's repack, outputs, then
+    // transitions.
+    warm_drawing_shaders();
+    warm_compositor_shaders();
+    warm_repack_shaders();
+    warm_nv12_shaders();
+    warm_transition_shaders();
 }
 
 HRESULT compile_now(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
@@ -115,6 +161,12 @@ struct DrawConstants {
 };
 
 }  // namespace
+
+void sc::warm_drawing_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(SHADER, sizeof SHADER - 1, "vs_main", "vs_4_0", code);
+    compile(SHADER, sizeof SHADER - 1, "ps_main", "ps_4_0", code);
+}
 
 int sc_device::prepare_drawing() {
     if (vs) return SC_OK;
