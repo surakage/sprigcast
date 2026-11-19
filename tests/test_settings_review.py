@@ -121,7 +121,7 @@ def test_snapping_lives_in_builds_right_click(window):
     menu = window._preview_menu("horizontal", -1)
     snap = next(a.menu() for a in menu.actions() if a.text() == "Snapping")
     texts = [a.text() for a in snap.actions()]
-    assert texts[:1] == ["Snap"] and "To the centre" in texts and "Sensitivity" in texts
+    assert texts[:1] == ["Snap"] and "To the center" in texts and "Sensitivity" in texts
     edges = next(a for a in snap.actions() if a.text() == "To canvas edges")
     edges.setChecked(False)
     from sprigcast.app.preview import snap_settings

@@ -346,9 +346,9 @@ class AudioPage(QWidget):
         balance.setRange(-100, 100)
         balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
         balance.setFixedWidth(90)
-        balance.setToolTip("Left / right (double-click the Sound card's slider to centre)")
+        balance.setToolTip("Left / right (double-click the Sound card's slider to center)")
         balance.valueChanged.connect(lambda v, b=balance: b.setToolTip(
-            "Centre" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
+            "Center" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
         grid.addWidget(balance, row, 3)
         sync = QSpinBox()
         sync.setRange(0, 2000)

@@ -932,7 +932,7 @@ class MainWindow(QMainWindow):
         entries = [
             ("App sound", lambda sub: self._fill_app_sound_menu(sub)),
             ("Chat", self._add_chat),
-            ("Colour…", self._add_color),
+            ("Color…", self._add_color),
             ("Desktop sound", devices("audio_output")),
             ("Game capture", games),
             ("Microphone", devices("audio_input")),
@@ -1023,7 +1023,7 @@ class MainWindow(QMainWindow):
         snap.addSeparator()
         tick("To canvas edges", "editing/snap_edges", now["edges"])
         tick("To other sources", "editing/snap_sources", now["sources"])
-        tick("To the centre", "editing/snap_center", now["center"])
+        tick("To the center", "editing/snap_center", now["center"])
         snap.addSeparator()
         reach = snap.addMenu("Sensitivity")
         for px in self.SNAP_DISTANCES:
@@ -3592,7 +3592,7 @@ class MainWindow(QMainWindow):
             self.prop_uncrop.setVisible(any(item.crop))
             self.prop_extra.setText(
                 {
-                    "color": "Colour",
+                    "color": "Color",
                     "image": "Image",
                     "display_capture": "Monitor",
                     "window_capture": "Window",
@@ -5108,7 +5108,7 @@ class MainWindow(QMainWindow):
             ("fit", "Fit to canvas", "Ctrl+F", self._fit_item),
             ("fill", "Fill the canvas (crop the edges)", "Ctrl+Alt+F", self._fill_item),
             ("stretch", "Stretch to fill the canvas", "Ctrl+Shift+F", self._stretch_item),
-            ("center", "Centre on the canvas", "Ctrl+E", self._center_item),
+            ("center", "Center on the canvas", "Ctrl+E", self._center_item),
             ("reset", "Reset size, crop and rotation", "Ctrl+R", self._reset_item_size),
             ("uncrop", "Remove crop", "Ctrl+Shift+R", self._reset_crop),
             ("front", "Bring to front", "Ctrl+Shift+Up", lambda: self._to_edge(True)),
@@ -5603,7 +5603,7 @@ class MainWindow(QMainWindow):
             else:
                 answer = QMessageBox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
                 if answer != QMessageBox.StandardButton.Yes:
-                    return {"problem": "Cancelled."}
+                    return {"problem": "Canceled."}
         self._say("Starting the recording…")
         self._set_encoder_tracks()
         self._wake_up()
@@ -6108,7 +6108,7 @@ class MainWindow(QMainWindow):
             if problem:
                 problems.append(problem)
             elif target is None:
-                return {"problem": "Cancelled."}  # the user chose not to go live
+                return {"problem": "Canceled."}  # the user chose not to go live
             else:
                 targets.append(target)
         if problems:
@@ -6122,7 +6122,7 @@ class MainWindow(QMainWindow):
                 log.info("an app asked to go live; the Stream doctor said wait: %s", " | ".join(warnings))
                 return {"warnings": warnings}
         elif not self._doctor_says_go():
-            return {"problem": "Cancelled."}
+            return {"problem": "Canceled."}
         self._say("Connecting…")
         self._wake_up()
         try:

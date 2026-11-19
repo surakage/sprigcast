@@ -190,7 +190,7 @@ ICON = 22
 
 KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_capture": "game",
               "slideshow": "slide show",  # the Slide show plugin
-              "camera": "camera", "color": "colour",
+              "camera": "camera", "color": "color",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
               "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
 

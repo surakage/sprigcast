@@ -55,13 +55,13 @@ LABELS = {
     "audio_to_mixer": "Sound in the Sound card",
     "keep_running": "Keep running when hidden",
     "hide_after": "Hide after (seconds)",
-    "platform_marks": "Platform colours",
-    "text_color": "Text colour",
-    "card_color": "Card colour",
+    "platform_marks": "Platform colors",
+    "text_color": "Text color",
+    "card_color": "Card color",
     "hour_24": "24-hour clock",
     "time_zone": "Show time zone",
-    "bubble_color": "Bubble colour",
-    "background_color": "Box colour",
+    "bubble_color": "Bubble color",
+    "background_color": "Box color",
     "path": "File",
     "restart_on_show": "Restart when shown",
     "clear_on_end": "Show nothing when it ends",
@@ -69,8 +69,8 @@ LABELS = {
     "save_polaroid_copy": "Save a polaroid copy",
     "freeze_screen": "Freeze the screen while it prints",
     "listen_to": "Mic",
-    "color": "Colour",
-    "peak_color": "Peak colour",
+    "color": "Color",
+    "peak_color": "Peak color",
     "talk_at": "Talks above (dB)",
     "yell_at": "Yells above (dB)",
     "hold": "Hold (seconds)",
@@ -80,14 +80,14 @@ LABELS = {
     "text_size": "Size",
     "all_caps": "All caps",
     "align": "Alignment",
-    "outline_color": "Outline colour",
+    "outline_color": "Outline color",
     "capture": "Replay",
     "corner": "In the corner",
     "corner_at": "Corner",
     "corner_size": "Corner size (%)",
     "replay_sound": "Replay sound",
     "sound_level": "Sound level (%)",
-    "accent_color": "Accent colour",
+    "accent_color": "Accent color",
     "font": "Font",
     "text_scale": "Text size",
     "corners": "Corners",
@@ -210,7 +210,7 @@ class SettingsDialog(CardDialog):
             form.addRow("", tip)
         if "hide_after" in defaults and "bubble_color" in defaults:  # the chat source
             tip = QLabel("Shows the chats you picked in the Chat panel (⋯ → Channels…). Hide after 0 keeps "
-                         "messages up. A colour ending in 00 is see-through.")
+                         "messages up. A color ending in 00 is see-through.")
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
