@@ -1017,7 +1017,7 @@ class CameraTab(QWidget):
 
     def __init__(self, collection: SceneCollection | None = None, parent: QWidget | None = None):
         from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QPushButton
+        from PySide6.QtWidgets import QComboBox, QFormLayout, QHBoxLayout, QPushButton
 
         from sprigcast.output import virtualcam
 
@@ -1026,16 +1026,30 @@ class CameraTab(QWidget):
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 4, 0, 0)
         box.setSpacing(14)
+        from sprigcast.app.live_stage import Switch
+
         group = QGroupBox("SprigCast Camera")
         inner = QVBoxLayout(group)
         inner.setSpacing(12)
-        self.on = QCheckBox("Show SprigCast as a camera")
-        self.on.setChecked(camera_wanted())
-        inner.addWidget(self.on)
         form = QFormLayout()
         form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.on = Switch()  # a whole feature on or off: a switch (Settings redesign, 2026-11-19)
+        self.on.setChecked(camera_wanted())
+        self.on_text = QLabel()
+        on_row = QHBoxLayout()
+        on_row.setSpacing(10)
+        on_row.addWidget(self.on)
+        on_row.addWidget(self.on_text)
+        on_row.addStretch(1)
+        form.addRow("Camera", on_row)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        form.addRow("Status", self.status)
+        self.on.toggled.connect(lambda _on: self.refresh())
         self.shows = QComboBox()
-        self.shows.addItem("Matches the app (horizontal or vertical canvas)", "auto")
+        self.shows.addItem("Matches the app (horizontal or vertical)", "auto")
         for canvas in (collection.canvases if collection else []):
             self.shows.addItem(f"{canvas.id.capitalize()} canvas ({canvas.width}\u00d7{canvas.height})",
                                f"canvas:{canvas.id}")
@@ -1068,17 +1082,25 @@ class CameraTab(QWidget):
         self._device_poll = QTimer(self, interval=100)
         self._device_poll.timeout.connect(self._fill_sound)
         self._device_poll.start()
+        self.sound.setToolTip("For TikTok LIVE Studio, send the sound to a virtual cable (like CABLE Input) and "
+                              "pick its other end (CABLE Output) as the mic there.\n"
+                              "It plays only while an app has the camera open.")
         form.addRow("Sound to", self.sound)
+        works = QHBoxLayout()
+        works.setSpacing(8)
+        self.works_with: list[QLabel] = []
+        for name in ("TikTok LIVE Studio", "Zoom", "Discord", "OBS", "Browsers"):
+            chip = QLabel(name)
+            chip.setObjectName("worksWith")
+            chip.setToolTip("Lists it as \u201cSprigCast Camera\u201d. If the app wants another shape than what "
+                            "it shows, you get black bars instead of a stretched picture.")
+            works.addWidget(chip)
+            self.works_with.append(chip)
+        works.addStretch(1)
+        form.addRow("Works with", works)
+        group.setStyleSheet(f"QLabel#worksWith {{ color: {theme.LABEL}; border: 1px solid {theme.FIELD_EDGE};"
+                            f" border-radius: 12px; padding: 4px 11px; }}")
         inner.addLayout(form)
-        inner.addWidget(_hint("TikTok LIVE Studio, Zoom, Discord, OBS and browsers list it as "
-                              "\u201cSprigCast Camera\u201d. If the app wants another shape than what it shows, "
-                              "you get black bars instead of a stretched picture."))
-        inner.addWidget(_hint("For TikTok LIVE Studio, send the sound to a virtual cable (like CABLE Input) and "
-                              "pick its other end (CABLE Output) as the mic there. It plays only while an app "
-                              "has the camera open."))
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        inner.addWidget(self.status)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.setup = QPushButton("Set up the camera")
@@ -1099,8 +1121,8 @@ class CameraTab(QWidget):
         row.addWidget(self.privacy)
         row.addStretch(1)
         inner.addLayout(row)
-        inner.addWidget(_hint("Setting up copies the camera into Program Files and registers it with Windows. "
-                              "Windows asks for permission once. It uses no memory or CPU until an app opens it."))
+        self.setup.setToolTip("Copies the camera into Program Files and registers it with Windows, which asks for "
+                              "permission once.\nIt uses no memory or CPU until an app opens it.")
         box.addWidget(group)
         box.addStretch(1)
         self._timer = QTimer(self, interval=1500)  # after the admin prompt: notice when setup finished
@@ -1133,19 +1155,22 @@ class CameraTab(QWidget):
         if not ok:
             text = why
         elif not installed:
-            text = "Not set up yet."
+            text = "Not set up yet"
         elif self.vc.needs_update():
             text = "Set up, but this SprigCast has a newer camera. Press Update."
         else:
-            text = "Set up. It turns on when you press Apply." if self.on.isChecked() else "Set up."
+            text = "Ready" if self.on.isChecked() else "Set up"
         blocked = self.vc.privacy_block() if ok else ""
         if blocked:
             text = f"{blocked} Windows won't add SprigCast Camera until you turn it on."
         elif installed and self.vc.state.privacy_failed:
             text = "Windows blocked the camera. Its camera settings may say why."
-        self.status.setText(text)
+        ready = text == "Ready"
+        self.status.setText(f"\u25cf  {text}" if ready else text)
+        self.on_text.setText("On" if self.on.isChecked() else "Off")
         self.privacy.setVisible(bool(blocked) or self.vc.state.privacy_failed)
-        self.status.setStyleSheet(f"color: {theme.MUTED if installed or not ok else theme.TEXT}")
+        colour = theme.ACCENT if ready else theme.MUTED if installed or not ok else theme.TEXT
+        self.status.setStyleSheet(f"color: {colour}; font-weight: {600 if ready else 400}")
         self.setup.setVisible(ok and (not installed or self.vc.needs_update()))
         self.setup.setText("Update the camera" if installed else "Set up the camera")
         self.remove.setVisible(ok and installed)
