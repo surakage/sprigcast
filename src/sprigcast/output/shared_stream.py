@@ -29,9 +29,9 @@ from sprigcast.output.stream import (
     MAX_BACKLOG,
     RESUME_BACKLOG,
     RETRY_FIRST,
-    RETRY_MAX,
     SEVERITY,
     log_live,
+    retry_plan,
     explain_connect,
     open_ingest,
     stream_url,
@@ -96,6 +96,9 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         super().__init__(f"stream-{canvas.id}", canvas.width, canvas.height, fps, bitrate_kbps, codec, start_time,
                          0.0, "flv", encoder or EncoderSettings(), out_size, tracks=("stream",))
         self._init_file_tap(("stream",))
+        # The stream's encoder, not a replay: it keeps no clips unless they borrow it (light-PC test 2026-11-19
+        # read "sprigcast-replay-stream-horizontal" as a replay buffer running with clips off).
+        self._thread.name = f"sprigcast-encoder-{canvas.id}"
         self.source_id = canvas.id  # the canvas it encodes
         self.links: list[StreamLink] = []
         self.holders: set[str] = {"stream"}
@@ -567,9 +570,9 @@ class StreamLink:
                 if time.monotonic() - began > 60:
                     delay = RETRY_FIRST
                 self.reconnects += 1
-                hint = "" if self.bytes_out else " (check the server and stream key)"
+                hint, delay, after = retry_plan(message, self.bytes_out, delay)
                 self.status = f"disconnected: {message}{hint}; retrying in {delay:.0f} s"
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return
-                delay = min(delay * 2, RETRY_MAX)
+                delay = after

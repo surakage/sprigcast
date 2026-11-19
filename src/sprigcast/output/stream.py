@@ -21,6 +21,7 @@ from sprigcast.output.recorder import Recorder, rate_limits, video_options
 log = logging.getLogger(__name__)
 
 RETRY_FIRST, RETRY_MAX = 2.0, 30.0
+OFFLINE_RETRY = 5.0  # the PC can't look the server up (its internet is down): ask again this often, not slower
 CONNECT_TIMEOUT, SEND_TIMEOUT = 10.0, 20.0  # seconds: connecting, and any one send stalled on the network
 GRACE_SECONDS = 5.0  # right after connecting, frames queued during the handshake are still going out
 HOLD_SECONDS = 10.0  # a warning stays on screen this long so it can be read
@@ -128,6 +129,23 @@ def explain_connect(url: str):
     finally:
         if louder:
             avlog.set_level(old)
+
+
+def offline(message: str) -> bool:
+    """The server's name didn't resolve: this PC's internet or DNS is down, not the server or the key."""
+    m = message.lower()
+    return "resolve hostname" in m or "name does not resolve" in m or "getaddrinfo" in m
+
+
+def retry_plan(message: str, bytes_out: int, delay: float) -> tuple[str, float, float]:
+    """After a failed (re)connect: (hint for the status, seconds to wait now, the next backoff). With the PC
+    offline the wait stays short, so the stream is back within seconds of the internet (light-PC test
+    2026-11-19: Twitch's name stopped resolving at minute 28 and tries went out at 4, 19, 16, 30, 30 s)."""
+    if offline(message):
+        wait = min(delay, OFFLINE_RETRY)
+        return " (this PC can't reach the internet right now)", wait, min(wait * 2, OFFLINE_RETRY)
+    hint = "" if bytes_out else " (check the server and stream key)"
+    return hint, delay, min(delay * 2, RETRY_MAX)
 
 
 @dataclass
@@ -475,12 +493,12 @@ class Streamer(Recorder):
                 if time.monotonic() - began > 60:
                     delay = RETRY_FIRST  # it had been running fine: start the backoff again
                 self.reconnects += 1
-                hint = "" if self.bytes_out else " (check the server and stream key)"
+                hint, delay, after = retry_plan(message, self.bytes_out, delay)
                 self.status = f"disconnected: {message}{hint}; retrying in {delay:.0f} s"
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return
-                delay = min(delay * 2, RETRY_MAX)
+                delay = after
 
 
 def log_live(st) -> None:

@@ -1509,3 +1509,11 @@ def _free_spot(canvas: Canvas, size: tuple[int, int], corner: str, height_share:
         box = (box[0], y, box[2], y + h)
     box = at(corner if corner in CORNERS else "bottom_left")
     return placed(scale, box[0], box[1])
+
+
+def drawing_fps(canvases) -> int:
+    """How often the canvases are drawn: the fastest canvas that is on. A canvas that is off (the vertical one on a
+    light PC) doesn't count: a 30 fps canvas beside a 60 fps one that's off ticked at 60 (light-PC test
+    2026-11-19, twice the work on a weak PC)."""
+    on = [c for c in canvases if c.enabled] or list(canvases)
+    return int(max((c.fps for c in on), default=60))
